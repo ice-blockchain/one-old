@@ -6,55 +6,13 @@ description: >
   "connect to the [name] endpoint", "call the API to", "I need to GET/POST/PUT/DELETE".
 ---
 
-> ⚛️ react-best-practices — create-service skill
+# Skill: Create Service
 
-## Steps
+Confirm the service function and hook before creating any files.
 
-### 1. Add the service function to the right file
-- Existing domain → `src/services/[domain].ts` or `src/features/[name]/services/[name].ts`
-- New domain → create a new file
+1. State the file: `src/services/[domain].ts` or `src/features/[name]/services/`
+2. State the function signature with typed return value
+3. State the React Query hook that will wrap it
+4. Ask: "Should I go ahead?"
 
-```ts
-import { api } from '@/services/api';
-import { ResourceType } from '../types';
-
-// GET — typed return, no any
-export async function getResource(id: string): Promise<ResourceType> {
-  const { data } = await api.get<ResourceType>(`/resources/${id}`);
-  return data;
-}
-
-// POST — validate input with zod before calling
-export async function createResource(payload: CreateResourceInput): Promise<ResourceType> {
-  const { data } = await api.post<ResourceType>('/resources', payload);
-  return data;
-}
-```
-
-### 2. Add a React Query hook in the feature hooks folder
-
-```ts
-// read
-export function useResource(id: string) {
-  return useQuery({
-    queryKey: ['resources', id],
-    queryFn: () => getResource(id),
-    staleTime: 30_000,
-  });
-}
-
-// write
-export function useCreateResource() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: createResource,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['resources'] }),
-  });
-}
-```
-
-## Rules
-- Service functions are plain async — never hooks
-- Always type the return value
-- Never call `api` directly in a component
-- Validate mutation payloads with Zod before calling the service
+<!-- TODO: full scaffold template goes here once structure is validated -->
