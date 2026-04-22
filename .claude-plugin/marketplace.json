@@ -1,0 +1,14 @@
+{
+  "name": "react-best-practices-marketplace",
+  "owner": {
+    "name": "Traffic-One"
+  },
+  "plugins": [
+    {
+      "name": "react-best-practices",
+      "source": ".",
+      "version": "2.0.0",
+      "description": "Enforces React architecture, security, and clean code on every prompt — no slash commands needed. Compatible with Claude Code, Codex CLI, and Cursor."
+    }
+  ]
+}

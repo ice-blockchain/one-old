@@ -1,0 +1,19 @@
+<!-- SOURCE OF TRUTH: rules/components.md — update there first, then mirror here -->
+---
+globs: "src/components/**,src/features/**/components/**"
+alwaysApply: false
+---
+
+# Component Rules
+
+- Keep components under 150 lines. Split into sub-components if larger.
+- One component per file, file named `ComponentName.tsx`.
+- Destructure props at the function signature level.
+- Extract complex JSX expressions into named variables above the `return`.
+- Wrap pure child components with `React.memo` only when there is a **proven** render bottleneck.
+- Memoize stable callbacks passed to children with `useCallback`.
+- Memoize expensive calculations with `useMemo`.
+- If the component fetches data, extract that into a `useComponentName` hook — keep the component presentational.
+- Always handle `isLoading`, `isError`, and empty states explicitly.
+- Lazy-load page-level components: `React.lazy` + `Suspense` with a skeleton fallback.
+- Never create objects or arrays inline in JSX props — extract to `useMemo` or module-level const.

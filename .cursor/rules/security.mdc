@@ -1,0 +1,27 @@
+<!-- SOURCE OF TRUTH: rules/security.md — update there first, then mirror here -->
+---
+globs: "src/services/**,src/features/**/services/**,src/lib/**,src/utils/**"
+alwaysApply: false
+---
+
+# Security Rules
+
+## Tokens & auth
+- Never store JWT access tokens in `localStorage` — use `httpOnly` cookies or in-memory only.
+- Never log tokens, passwords, or PII to `console.*`.
+- Token expiry validated client-side before sensitive requests.
+- Auth header injected only in the axios interceptor.
+
+## API & data
+- Never interpolate user input raw into URL paths.
+- Validate all mutation payloads with Zod before sending to the API.
+- No `VITE_` env vars for secrets — they are public to the browser.
+- `.env` and `.env.local` in `.gitignore`. `.env.example` documents every var (values redacted).
+
+## XSS
+- No `dangerouslySetInnerHTML` without explicit DOMPurify sanitisation.
+- No `eval()` or `new Function()` with user-supplied input.
+
+## Dependencies
+- `npm audit` must pass with no high/critical issues.
+- Major versions pinned in `package.json`.

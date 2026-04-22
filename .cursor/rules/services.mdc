@@ -1,0 +1,24 @@
+<!-- SOURCE OF TRUTH: rules/services.md — update there first, then mirror here -->
+---
+globs: "src/services/**,src/features/**/services/**"
+alwaysApply: false
+---
+
+# Service Layer Rules
+
+- Service functions are **plain async functions** — not hooks, not classes.
+- Always type the return value explicitly — never `any`.
+- Shared axios instance lives in `src/services/api.ts`. All service files import from there.
+- One file per domain: `users.ts`, `products.ts`, `orders.ts`.
+- Never access `localStorage`, cookies, or auth tokens inside service functions — use the axios interceptor.
+- Interceptors for auth headers and error handling live in `src/services/api.ts` only.
+
+## api.ts pattern
+```ts
+import axios from 'axios';
+export const api = axios.create({ baseURL: import.meta.env.VITE_API_URL });
+api.interceptors.request.use((config) => {
+  // read token from store here
+  return config;
+});
+```

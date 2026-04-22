@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "⚛️  Detecting project mode…",
+            "command": "python3 scripts/detect-project.py 2>/dev/null || python3 -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.'}}))\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Applying React plugin rules…",
+            "command": "echo '{\"systemMessage\": \"⚛️  React plugin active\"}'"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "⚛️  Validating architecture…",
+            "command": "python3 -c \"\nimport sys, json, re\nd = json.load(sys.stdin)\nfp = d.get('tool_input', {}).get('file_path', '')\ncontent = d.get('tool_input', {}).get('content', '') or d.get('tool_input', {}).get('new_string', '')\n\nviolations = []\n\n# No service/store/hook files directly in pages/\nif re.search(r'src/pages/.*\\.(service|store|hook|query)\\.(ts|tsx)$', fp):\n    violations.append('Service/store/hook files belong in src/services/ or src/features/*/services|stores|hooks/ — not in src/pages/')\n\n# No components dumped directly in src/ root\nif re.search(r'^(src/|./src/)[A-Z][a-zA-Z]+\\.(tsx|ts)$', fp):\n    violations.append('Components must live in src/components/common/, src/components/ui/, or src/features/*/components/ — not directly in src/')\n\n# No direct cross-feature imports\nfeature_match = re.search(r'src/features/([^/]+)', fp)\nif feature_match:\n    current = feature_match.group(1)\n    cross = [m for m in re.findall(r\\\"from ['\\\\\\\"]@/features/([^/'\\\\\\\"]+)\\\", content) if m != current]\n    if cross:\n        violations.append(f'Cross-feature import detected ({current} → {cross}). Share via src/components/, src/hooks/, or src/stores/ instead.')\n\n# No default exports for components\nif fp.endswith('.tsx') and re.search(r'src/(components|features|pages)/', fp):\n    if re.search(r'^export default ', content, re.MULTILINE):\n        violations.append('Use named exports only — no default exports for components.')\n\n# No inline styles\nif fp.endswith('.tsx') and 'style={{' in content:\n    violations.append('No inline styles — use Tailwind classes only.')\n\n# No any type\nif fp.endswith(('.ts', '.tsx')) and re.search(r':\\s*any\\b', content):\n    violations.append('Avoid `any` — use `unknown` and narrow types.')\n\nif violations:\n    reason = 'React plugin — architecture violation(s):\\n' + '\\n'.join(f'  • {v}' for v in violations)\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': reason}}))\n\""
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "⚛️  Checking library allowlist…",
+            "command": "python3 -c \"\nimport sys, json, re\nd = json.load(sys.stdin)\ncmd = d.get('tool_input', {}).get('command', '')\n\n# Only check install commands\nif not re.search(r'(npm (install|i|add)|yarn add|pnpm add|bun add)', cmd):\n    sys.exit(0)\n\nforbidden = [\n    ('redux', 'Use zustand for global state'),\n    ('mobx', 'Use zustand for global state'),\n    ('recoil', 'Use zustand for global state'),\n    ('jotai', 'Use zustand for global state'),\n    ('styled-components', 'Use tailwindcss for styling'),\n    ('@emotion', 'Use tailwindcss for styling'),\n    ('react-query(?!/)', 'Use @tanstack/react-query instead'),\n    ('@mui/', 'Use shadcn/ui (built on Radix UI)'),\n    ('antd', 'Use shadcn/ui (built on Radix UI)'),\n    ('material-ui', 'Use shadcn/ui (built on Radix UI)'),\n    ('bootstrap', 'Use tailwindcss for styling'),\n    ('chakra-ui', 'Use shadcn/ui (built on Radix UI)'),\n    ('swr', 'Use @tanstack/react-query for data fetching'),\n    ('fetch(?!-)', 'Use axios wrapped in a service function'),\n    ('next\\\\b', 'This plugin targets Vite-based React apps'),\n]\n\nhits = [(lib, tip) for lib, tip in forbidden if re.search(lib, cmd)]\nif hits:\n    lines = '\\n'.join(f'  • {lib}: {tip}' for lib, tip in hits)\n    reason = f'Forbidden library detected:\\n{lines}\\n\\nSee rules/libraries.md for the approved stack.'\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': reason}}))\n\""
+          }
+        ]
+      }
+    ]
+  }
+}

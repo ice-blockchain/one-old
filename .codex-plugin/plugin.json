@@ -1,0 +1,14 @@
+{
+  "name": "react-best-practices",
+  "description": "Enforces React architecture, security, and clean code. Rules auto-load via AGENTS.md. Skills auto-trigger on semantic match. Hooks block forbidden library installs.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Traffic-One"
+  },
+  "policy": {
+    "installation": "INSTALLED_BY_DEFAULT"
+  },
+  "skills": "./skills",
+  "hooks": "./hooks/hooks.json",
+  "instructions": "./AGENTS.md"
+}

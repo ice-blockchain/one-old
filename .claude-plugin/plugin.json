@@ -1,0 +1,38 @@
+{
+  "name": "react-best-practices",
+  "description": "Enforces React architecture, security, and clean code on every prompt. Hooks block violations before files are written. Skills auto-trigger on semantic match — no slash commands needed.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Traffic-One"
+  },
+  "skills": [
+    {
+      "name": "detect-project",
+      "source": "./skills/detect-project.md"
+    },
+    {
+      "name": "create-component",
+      "source": "./skills/create-component.md"
+    },
+    {
+      "name": "create-feature",
+      "source": "./skills/create-feature.md"
+    },
+    {
+      "name": "create-page",
+      "source": "./skills/create-page.md"
+    },
+    {
+      "name": "create-service",
+      "source": "./skills/create-service.md"
+    },
+    {
+      "name": "security-review",
+      "source": "./skills/security-review.md"
+    },
+    {
+      "name": "refactor",
+      "source": "./skills/refactor.md"
+    }
+  ]
+}

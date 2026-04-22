@@ -1,0 +1,25 @@
+<!-- SOURCE OF TRUTH: rules/testing.md — update there first, then mirror here -->
+---
+globs: "**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx,src/test/**"
+alwaysApply: false
+---
+
+# Testing Rules
+
+- Test behaviour from the user's perspective — not implementation details.
+- Co-locate tests: `ComponentName.test.tsx` next to `ComponentName.tsx`.
+- One `describe` block per component/hook. One `it` per distinct behaviour.
+- Arrange–Act–Assert pattern inside every test.
+
+## React Testing Library
+- Query priority: `getByRole` → label → text → `getByTestId` (last resort only).
+- Use `userEvent` over `fireEvent` for realistic interaction.
+- Always `await` async interactions: `await userEvent.click(...)`, `await screen.findBy*`.
+
+## MSW
+- Handlers in `src/test/handlers.ts`.
+- Override per-test with `server.use(...)`.
+- Reset in `afterEach`: `server.resetHandlers()`.
+
+## Coverage targets
+- 80%+ on `src/features/` and `src/components/common/`.
