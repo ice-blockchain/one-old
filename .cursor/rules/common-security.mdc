@@ -1,0 +1,21 @@
+<!-- SOURCE OF TRUTH: rules/common/security.md — update there first, then mirror here -->
+---
+alwaysApply: true
+---
+
+# Security Baseline
+
+Applies to every change that touches input, auth, storage, or the network.
+
+- No hardcoded secrets. All secrets from env vars; presence validated at startup.
+- All user input validated with a schema (zod, pydantic) at the boundary.
+- SQL uses parameterized queries — never string interpolation.
+- HTML output escaped; no `dangerouslySetInnerHTML` without sanitization.
+- Auth AND authorization check on every protected endpoint (not just UI).
+- Rate limiting on public endpoints (auth, search, writes).
+- Error responses do not leak stack traces or internal paths in production.
+- `.env`, `.env.local`, credentials in `.gitignore`.
+- CORS restrictive — no `*` for credentialed endpoints.
+
+## If a secret leaks
+Rotate → invalidate derived tokens → scrub history (after rotation; scrubbing alone is not mitigation).

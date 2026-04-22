@@ -6,13 +6,18 @@
     "name": "Traffic-One"
   },
   "rules": [
+    "./.cursor/rules/common-clean-code.mdc",
+    "./.cursor/rules/common-security.mdc",
+    "./.cursor/rules/common-git.mdc",
     "./.cursor/rules/core.mdc",
     "./.cursor/rules/components.mdc",
     "./.cursor/rules/services.mdc",
     "./.cursor/rules/stores.mdc",
     "./.cursor/rules/security.mdc",
     "./.cursor/rules/testing.mdc",
-    "./.cursor/rules/performance.mdc"
+    "./.cursor/rules/performance.mdc",
+    "./.cursor/rules/backend-postgres.mdc",
+    "./.cursor/rules/backend-node.mdc"
   ],
   "skills": "./skills"
 }

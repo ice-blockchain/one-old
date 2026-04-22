@@ -1,0 +1,37 @@
+<!-- SOURCE OF TRUTH: rules/backend/postgres.md — update there first, then mirror here -->
+---
+description: PostgreSQL / Supabase rules — applies when editing SQL, migrations, Prisma schema, or DB service files.
+globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema.prisma", "src/services/**", "src/lib/db/**"]
+---
+
+# PostgreSQL Rules
+
+## Types (use these, not the tempting alternatives)
+| Use case | Correct | Avoid |
+|---|---|---|
+| IDs | `bigint` / `uuid` | `int`, random uuid in hot path |
+| Strings | `text` | `varchar(n)` |
+| Timestamps | `timestamptz` | `timestamp` |
+| Money | `numeric(12,2)` | `float` |
+| JSON | `jsonb` | `json` |
+
+## Indexes
+- B-tree default; composite `(a, b)` with equality columns first.
+- `GIN` for `jsonb @>` and full-text.
+- `BRIN` for wide time-series ranges.
+- Partial indexes for soft-delete: `WHERE deleted_at IS NULL`.
+
+## Queries
+- Parameterized only — never string interpolation.
+- No `SELECT *` in services. No N+1 loops — batch with `IN (...)` or JOIN.
+- Every hot query has an `EXPLAIN ANALYZE` showing index use.
+
+## Migrations
+- One concern per migration; reversible where possible.
+- Non-null on big table: add nullable → backfill in batches → add NOT NULL.
+- Drops are two-phase (stop reading → deploy → drop).
+
+## RLS (Supabase / multi-tenant)
+- ON for every user-data table. Default deny.
+- Policies per role per action. Tested with anon + authed roles in CI.
+- Never rely on client-side tenant filtering.

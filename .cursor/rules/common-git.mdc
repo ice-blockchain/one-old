@@ -1,0 +1,24 @@
+<!-- SOURCE OF TRUTH: rules/common/git.md — update there first, then mirror here -->
+---
+alwaysApply: true
+---
+
+# Git Workflow
+
+## Commits
+- Format: `<type>: <imperative>` (feat/fix/refactor/docs/test/chore/perf/ci).
+- Subject ≤72 chars, imperative mood. One logical change per commit.
+- Body explains *why*, not *what*.
+
+## Branching (GitHub Flow)
+- `main` always deployable. Short-lived feature branches (1–3 days).
+- PR → review → CI green → merge → deploy.
+
+## PRs
+- Title ≤70 chars; detail in body.
+- Summary = *why* bullets. Include test-plan checklist.
+- Base decisions on full `git diff <base>...HEAD`, not just latest commit.
+
+## Hygiene
+- Never commit secrets or `.env`. Never force-push `main`. Never skip hooks.
+- Prefer new commits over `--amend` once pushed.
