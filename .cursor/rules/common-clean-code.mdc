@@ -1,0 +1,34 @@
+<!-- SOURCE OF TRUTH: rules/common/clean-code.md — update there first, then mirror here -->
+---
+alwaysApply: true
+---
+
+# Clean Code (baseline)
+
+Universal principles that apply regardless of language or framework.
+
+## Core principles
+- **KISS** — simplest solution that works.
+- **DRY** — extract only after 2–3 real repetitions, not speculative.
+- **YAGNI** — no abstractions before a real caller exists.
+- **Readability first** — self-documenting names beat comments.
+
+## Immutability
+- Return new objects/arrays — never mutate inputs.
+- `const` by default; `let` only when reassignment is clearest.
+- Pure functions where possible; isolate side effects.
+
+## Naming
+- `camelCase` vars/funcs, `PascalCase` types, `UPPER_SNAKE_CASE` consts.
+- Booleans start with `is`/`has`/`should`/`can`.
+- Names describe intent, not implementation.
+
+## File & function size
+- 200–400 lines per file (800 hard ceiling). Many small files > few large.
+- ~50 lines per function; one responsibility; early returns over nesting.
+- No magic numbers — name every meaningful constant.
+
+## Error handling & types
+- Handle errors explicitly at every layer — never silently swallow.
+- Validate all input at system boundaries (HTTP, DB, file, user).
+- No `any` — use `unknown` and narrow. Infer types from schemas.

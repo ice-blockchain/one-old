@@ -1,0 +1,28 @@
+---
+# Always loaded
+---
+
+# Security Baseline
+
+Pre-commit checklist — applies to every change that touches input, auth, storage, or the network.
+
+- [ ] No hardcoded secrets (API keys, tokens, passwords, connection strings).
+- [ ] All secrets from environment variables; presence validated at startup.
+- [ ] All user input validated with a schema (zod, pydantic, etc.) at the boundary.
+- [ ] SQL uses parameterized queries — never string interpolation.
+- [ ] HTML output is escaped / auto-escaped by the framework. No `dangerouslySetInnerHTML` without sanitization.
+- [ ] Auth check on every protected endpoint — not just the UI.
+- [ ] Authorization check: is THIS user allowed to access THIS resource?
+- [ ] Rate limiting on public endpoints (auth, search, write operations).
+- [ ] Error responses do not leak stack traces, internal paths, or DB structure in production.
+- [ ] `.env`, `.env.local`, credential files in `.gitignore`.
+- [ ] CORS is restrictive — no `*` for credentialed endpoints.
+
+## If a secret leaks
+1. Rotate it immediately.
+2. Invalidate any derived tokens/sessions.
+3. Scrub git history only after rotation (history scrubbing alone does not help — assume the value is compromised).
+
+## Dependencies
+- Pin exact majors; review transitive updates.
+- Run `npm audit` / `pip-audit` / equivalent in CI; fail on high+ severity.

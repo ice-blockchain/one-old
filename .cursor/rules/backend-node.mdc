@@ -1,0 +1,25 @@
+<!-- SOURCE OF TRUTH: rules/backend/node.md — update there first, then mirror here -->
+---
+description: Node/backend rules — applies to service, api, and server-side route files.
+globs: ["src/services/**", "src/api/**", "server/**", "api/**", "**/*.route.ts", "**/*.controller.ts"]
+---
+
+# Node.js / Backend Rules
+
+## REST shape
+- Nouns, not verbs: `GET /api/widgets`, `POST /api/widgets`, `PATCH /api/widgets/:id`.
+- Query params for filter/sort/pagination; cursor pagination past ~10k rows.
+
+## Layering (never skip)
+`route → controller → service → repository → db`
+- Controller: validate input (zod), call service, map result. No DB access.
+- Service: business logic. No HTTP.
+- Repository: only layer that talks to DB.
+
+## Errors
+- One typed error hierarchy; central middleware maps to HTTP.
+- Log with request id. Never log secrets or PII.
+
+## Async & performance
+- Always `await`. Cache read-heavy endpoints. Long jobs → queue, never block requests.
+- Connection pool: `cpu_cores × 2` starting point.
