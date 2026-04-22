@@ -7,6 +7,9 @@
 .claude/settings.local.json
 .claude/
 
+# Plugin mode lock — written per-project, not committed
+.claude-plugin-mode
+
 # OS
 .DS_Store
 Thumbs.db
