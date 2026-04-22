@@ -1,0 +1,28 @@
+<!-- SOURCE OF TRUTH: rules/performance.md — update there first, then mirror here -->
+---
+globs: "src/pages/**,src/components/**,src/features/**/components/**"
+alwaysApply: false
+---
+
+# Performance Rules
+
+## Code splitting
+- Every page is lazy-loaded: `React.lazy(() => import('./Page'))`.
+- Wrap lazy pages with `<Suspense fallback={<PageSkeleton />}>` in the router.
+- Heavy third-party libs (charts, editors, PDF) are dynamic-imported at the usage site.
+
+## Renders
+- Never create objects or arrays inline in JSX props — `useMemo` or module-level const.
+- Never define functions inline in JSX props passed to memoised children — `useCallback`.
+- Zustand: subscribe to slices, never the whole store object.
+- React Query: use `select` to return only the data the component needs.
+
+## Bundle
+- Keep initial JS bundle under 200 KB gzipped.
+- Tree-shake: import named exports, never `import _ from 'lodash'`.
+- Analyse with `vite-bundle-visualizer` before each release.
+
+## Images
+- All images have explicit `width` and `height`.
+- Use `loading="lazy"` on below-the-fold images.
+- SVGs used as icons are inlined as React components (vite-plugin-svgr).

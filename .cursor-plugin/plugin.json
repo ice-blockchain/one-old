@@ -1,0 +1,18 @@
+{
+  "name": "react-best-practices",
+  "description": "Enforces React architecture, security, and clean code. Rules auto-attach via globs. Skills auto-trigger on semantic match.",
+  "version": "2.0.0",
+  "author": {
+    "name": "Cosmin Turcin"
+  },
+  "rules": [
+    "./.cursor/rules/core.mdc",
+    "./.cursor/rules/components.mdc",
+    "./.cursor/rules/services.mdc",
+    "./.cursor/rules/stores.mdc",
+    "./.cursor/rules/security.mdc",
+    "./.cursor/rules/testing.mdc",
+    "./.cursor/rules/performance.mdc"
+  ],
+  "skills": "./skills"
+}

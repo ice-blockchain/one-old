@@ -1,0 +1,12 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Claude Code local session settings — never commit these
+.claude/settings.local.json
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db

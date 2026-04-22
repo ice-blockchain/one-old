@@ -1,0 +1,34 @@
+<!-- SOURCE OF TRUTH: rules/stores.md — update there first, then mirror here -->
+---
+globs: "src/stores/**,src/features/**/stores/**,src/hooks/**,src/features/**/hooks/**"
+alwaysApply: false
+---
+
+# State & Hooks Rules
+
+## When to use what
+| Need | Tool |
+|------|------|
+| Component-local ephemeral state | `useState` / `useReducer` |
+| Shared UI/client state | Zustand store |
+| Server data | React Query — never copy into Zustand |
+| Form state | react-hook-form |
+
+## Zustand rules
+- Never store server data in Zustand.
+- One store per domain or feature.
+- Export a typed interface: `interface FeatureStore { ... }`.
+- Subscribe to slices: `useStore(s => s.field)` — never the whole store object.
+- Expose a `reset()` action for logout/unmount cleanup.
+
+## React Query rules
+- `queryKey` must be fully descriptive: `['users', userId, 'posts']`.
+- Set `staleTime` explicitly on every `useQuery` — never rely on the default 0.
+- Use `select` to reshape data instead of transforming in the component.
+- Invalidate only the minimum necessary keys after mutations.
+
+## Custom hooks
+- Live in `src/hooks/` (shared) or `src/features/[name]/hooks/` (scoped).
+- Always prefixed with `use`.
+- Never call hooks inside conditions, loops, or nested functions.
+- One concern per hook.
