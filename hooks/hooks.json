@@ -1,35 +1,37 @@
 {
-  "SessionStart": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "statusMessage": "⚛️  Detecting project mode…",
-          "command": "python3 scripts/detect-project.py 2>/dev/null || python3 -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.'}}))\""
-        }
-      ]
-    }
-  ],
-  "UserPromptSubmit": [
-    {
-      "hooks": [
-        {
-          "type": "command",
-          "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'⚛️  React plugin [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': '⚛️  React plugin active'}))\n\""
-        }
-      ]
-    }
-  ],
-  "PreToolUse": [
-    {
-      "matcher": "Bash",
-      "hooks": [
-        {
-          "type": "command",
-          "statusMessage": "⚛️  Checking library allowlist…",
-          "command": "python3 -c \"\nimport sys, json, re\nd = json.load(sys.stdin)\ncmd = d.get('tool_input', {}).get('command', '')\nif not re.search(r'(npm (install|i|add)|yarn add|pnpm add|bun add)', cmd):\n    sys.exit(0)\nforbidden = [\n    ('redux', 'Use zustand for global state'),\n    ('mobx', 'Use zustand for global state'),\n    ('recoil', 'Use zustand for global state'),\n    ('jotai', 'Use zustand for global state'),\n    ('styled-components', 'Use tailwindcss for styling'),\n    ('@emotion', 'Use tailwindcss for styling'),\n    ('(?<!tanstack/)react-query', 'Use @tanstack/react-query instead'),\n    ('@mui/', 'Use shadcn/ui (built on Radix UI)'),\n    ('antd', 'Use shadcn/ui (built on Radix UI)'),\n    ('material-ui', 'Use shadcn/ui (built on Radix UI)'),\n    ('bootstrap', 'Use tailwindcss for styling'),\n    ('chakra-ui', 'Use shadcn/ui (built on Radix UI)'),\n    ('swr', 'Use @tanstack/react-query for data fetching'),\n]\nhits = [(lib, tip) for lib, tip in forbidden if re.search(lib, cmd)]\nif hits:\n    lines = '\\n'.join(f'  - {lib}: {tip}' for lib, tip in hits)\n    reason = f'Forbidden library:\\n{lines}\\n\\nSee rules/core.md for the approved stack.'\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': reason}}))\n\""
-        }
-      ]
-    }
-  ]
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "⚛️  Detecting project mode…",
+            "command": "python3 scripts/detect-project.py 2>/dev/null || python3 -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.'}}))\""
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'⚛️  one-traffic [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': '⚛️  one-traffic active'}))\n\""
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "⚛️  Checking library allowlist…",
+            "command": "python3 -c \"\nimport sys, json, re\nd = json.load(sys.stdin)\ncmd = d.get('tool_input', {}).get('command', '')\nif not re.search(r'(npm (install|i|add)|yarn add|pnpm add|bun add)', cmd):\n    sys.exit(0)\nforbidden = [\n    ('redux', 'Use zustand for global state'),\n    ('mobx', 'Use zustand for global state'),\n    ('recoil', 'Use zustand for global state'),\n    ('jotai', 'Use zustand for global state'),\n    ('styled-components', 'Use tailwindcss for styling'),\n    ('@emotion', 'Use tailwindcss for styling'),\n    ('(?<!tanstack/)react-query', 'Use @tanstack/react-query instead'),\n    ('@mui/', 'Use shadcn/ui (built on Radix UI)'),\n    ('antd', 'Use shadcn/ui (built on Radix UI)'),\n    ('material-ui', 'Use shadcn/ui (built on Radix UI)'),\n    ('bootstrap', 'Use tailwindcss for styling'),\n    ('chakra-ui', 'Use shadcn/ui (built on Radix UI)'),\n    ('swr', 'Use @tanstack/react-query for data fetching'),\n]\nhits = [(lib, tip) for lib, tip in forbidden if re.search(lib, cmd)]\nif hits:\n    lines = '\\n'.join(f'  - {lib}: {tip}' for lib, tip in hits)\n    reason = f'Forbidden library:\\n{lines}\\n\\nSee rules/core.md for the approved stack.'\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': reason}}))\n\""
+          }
+        ]
+      }
+    ]
+  }
 }
