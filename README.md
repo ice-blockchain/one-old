@@ -1,4 +1,4 @@
-# react-best-practices — AI Agent Plugin
+# one-traffic — AI Agent Plugin
 
 Enforces React architecture, security, and clean code **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and **Cursor**.
@@ -76,13 +76,13 @@ with an explanation before any code is changed.
 ### Claude Code
 ```
 /plugin marketplace add cosminturcin/claude-plug
-/plugin install react-best-practices@react-best-practices-marketplace
+/plugin install one-traffic@one-traffic
 ```
 
 ### Codex CLI
 ```
 codex marketplace add cosminturcin/claude-plug
-codex plugin install react-best-practices
+codex plugin install one-traffic
 ```
 
 ### Cursor

@@ -1,4 +1,4 @@
-# React Best Practices — Codex CLI
+# one-traffic — Codex CLI
 <!-- SOURCE OF TRUTH for rules content: rules/*.md — update there first, then mirror here -->
 
 You are working in a React + TypeScript project. Every rule below is mandatory.
