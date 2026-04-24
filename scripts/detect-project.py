@@ -109,8 +109,31 @@ An existing codebase using Supabase was detected.
 }
 
 
+def load_rules(plugin_root: pathlib.Path) -> str:
+    """Read always-on rule files from the plugin and concat them for context injection.
+
+    Claude Code plugins do not auto-load CLAUDE.md, so we inline the core + common
+    rules here. SessionStart additionalContext is capped at 10,000 chars — keep this
+    set small. Path-scoped rules (components, services, backend/*) are NOT included
+    here; they will be injected on demand by PreToolUse hooks in a future iteration.
+    """
+    files = [
+        plugin_root / "rules" / "core.md",
+        plugin_root / "rules" / "common" / "clean-code.md",
+        plugin_root / "rules" / "common" / "security.md",
+        plugin_root / "rules" / "common" / "git.md",
+    ]
+    chunks = []
+    for f in files:
+        if f.exists():
+            chunks.append(f"# ── {f.relative_to(plugin_root)} ──\n{f.read_text()}")
+    return "\n\n".join(chunks)
+
+
 def main():
     cwd = pathlib.Path(os.getcwd())
+    # The plugin root is the parent of scripts/ — works regardless of caller CWD
+    plugin_root = pathlib.Path(__file__).resolve().parent.parent
 
     # Check lock file first — mode is pinned for the life of the project
     locked_mode = read_lock(cwd)
@@ -128,9 +151,18 @@ def main():
         if mode == "new-project":
             write_lock(cwd, mode)
 
-    context = MODE_CONTEXT[mode].strip()
+    mode_context = MODE_CONTEXT[mode].strip()
     if locked:
-        context += "\n[Mode pinned from first session — applies for all future sessions on this project]"
+        mode_context += "\n[Mode pinned from first session — applies for all future sessions on this project]"
+
+    rules_body = load_rules(plugin_root)
+
+    context = (
+        "═══ one-traffic plugin — always-on rules ═══\n\n"
+        f"{rules_body}\n\n"
+        "═══ Project mode ═══\n\n"
+        f"{mode_context}"
+    )
 
     print(json.dumps({
         "hookSpecificOutput": {

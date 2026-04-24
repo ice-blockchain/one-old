@@ -1,4 +1,5 @@
 ---
+name: create-component
 description: >
   Use PROACTIVELY whenever the user asks to create, add, build, make, scaffold, or generate
   a React component, UI element, card, modal, form, button, table, list, or any piece of UI.

@@ -1,4 +1,5 @@
 ---
+name: create-feature
 description: >
   Use PROACTIVELY whenever the user asks to create, add, build, or scaffold a feature, module,
   domain, or slice of functionality. Triggers: "create a feature", "add a [name] feature",
