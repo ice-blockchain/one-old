@@ -1,4 +1,5 @@
 ---
+name: create-page
 description: >
   Use PROACTIVELY whenever the user asks to create, add, or build a page, route, screen, or view.
   Triggers: "create a page", "add a route", "new screen for", "build the [name] page",

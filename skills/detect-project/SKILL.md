@@ -1,4 +1,5 @@
 ---
+name: detect-project
 description: >
   Use PROACTIVELY at the start of any session, or when the user mentions starting,
   setting up, or working on a project. Also trigger when the user asks "what should

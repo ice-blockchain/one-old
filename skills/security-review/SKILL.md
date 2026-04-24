@@ -1,4 +1,5 @@
 ---
+name: security-review
 description: >
   Use PROACTIVELY whenever the user asks to review, audit, or check code for security issues,
   or when writing authentication, authorization, token handling, or any code that touches

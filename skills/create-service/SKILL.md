@@ -1,4 +1,5 @@
 ---
+name: create-service
 description: >
   Use PROACTIVELY whenever the user asks to add an API call, create a service, fetch data from
   an endpoint, connect to a backend, or wire up HTTP requests.

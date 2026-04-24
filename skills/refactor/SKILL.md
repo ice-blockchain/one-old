@@ -1,4 +1,5 @@
 ---
+name: refactor
 description: >
   Use PROACTIVELY whenever the user asks to refactor, clean up, improve, simplify, or fix
   code quality issues in existing React code.
