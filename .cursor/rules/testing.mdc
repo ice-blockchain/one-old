@@ -1,25 +1,45 @@
 <!-- SOURCE OF TRUTH: rules/testing.md — update there first, then mirror here -->
 ---
-globs: "**/*.test.ts,**/*.test.tsx,**/*.spec.ts,**/*.spec.tsx,src/test/**"
-alwaysApply: false
+description: Testing rules (Jest + RTL + Playwright) — applies to test/spec files and e2e specs.
+globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/e2e/**", "**/playwright/**", "src/test/**", "apps/**/test/**", "packages/**/test/**"]
 ---
 
 # Testing Rules
 
-- Test behaviour from the user's perspective — not implementation details.
-- Co-locate tests: `ComponentName.test.tsx` next to `ComponentName.tsx`.
-- One `describe` block per component/hook. One `it` per distinct behaviour.
-- Arrange–Act–Assert pattern inside every test.
+## Three layers
+| Layer | Tool | Scope |
+|---|---|---|
+| Unit | jest | pure functions, reducers, selectors, hooks (`renderHook`) |
+| Integration | jest + RTL + msw | components rendered with real Redux store + mocked network |
+| E2E | @playwright/test | full app, real browser, mocked back-end at network edge |
+
+## What to test
+- Every component handling user interaction → integration test.
+- Every custom hook → unit test (`renderHook`).
+- Every reducer / selector / pure utility → unit test.
+- Every user-facing journey → at least one Playwright spec.
 
 ## React Testing Library
-- Query priority: `getByRole` → label → text → `getByTestId` (last resort only).
-- Use `userEvent` over `fireEvent` for realistic interaction.
-- Always `await` async interactions: `await userEvent.click(...)`, `await screen.findBy*`.
+- Query order: `getByRole` → label → text → placeholder. `getByTestId` last resort.
+- `userEvent` over `fireEvent`. Always `await` interactions.
+- Render through a real Redux Provider with the slice(s) under test.
+- Assert on what the user sees, never on Redux state.
 
 ## MSW
-- Handlers in `src/test/handlers.ts`.
-- Override per-test with `server.use(...)`.
-- Reset in `afterEach`: `server.resetHandlers()`.
+- Handlers in `src/test/handlers.ts` or `packages/test-utils/handlers.ts`.
+- WebSocket fake in `src/test/ws-fake.ts`.
+- `server.resetHandlers()` in `afterEach`.
 
-## Coverage targets
-- 80%+ on `src/features/` and `src/components/common/`.
+## Jest
+- Preset: `ts-jest` or `@swc/jest`. `testEnvironment: "jsdom"`.
+- ≥80% coverage on `apps/*/src/features/` and every `packages/*` library.
+
+## Playwright
+- Run against a built preview, not dev server.
+- Stub back-end via `route.fulfill()` for deterministic flows; reserve real back-end for smoke.
+- Trace + screenshot on failure (`trace: "on-first-retry"`).
+- Use `@axe-core/playwright` for a11y assertions.
+
+## Real-time tests
+- Drive WS service via in-memory fake.
+- Cover: connect → first message → disconnect → reconnect → backlog drain → malformed frame → buffer overflow.

@@ -1,28 +1,37 @@
 <!-- SOURCE OF TRUTH: rules/performance.md — update there first, then mirror here -->
 ---
-globs: "src/pages/**,src/components/**,src/features/**/components/**"
-alwaysApply: false
+description: Performance rules — applies when editing pages, components, or shared UI.
+globs: ["apps/**/src/pages/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui/**", "src/pages/**", "src/components/**", "src/features/**/components/**"]
 ---
 
 # Performance Rules
 
-## Code splitting
-- Every page is lazy-loaded: `React.lazy(() => import('./Page'))`.
-- Wrap lazy pages with `<Suspense fallback={<PageSkeleton />}>` in the router.
-- Heavy third-party libs (charts, editors, PDF) are dynamic-imported at the usage site.
+## Code splitting & loading
+- Every page lazy-loaded: `React.lazy` + `<Suspense fallback={<PageSkeleton />}>`.
+- Heavy libs (3D, video, PDF, charts) dynamic-imported at usage site.
+- Preload next probable route on hover/focus.
 
 ## Renders
-- Never create objects or arrays inline in JSX props — `useMemo` or module-level const.
-- Never define functions inline in JSX props passed to memoised children — `useCallback`.
-- Zustand: subscribe to slices, never the whole store object.
-- React Query: use `select` to return only the data the component needs.
+- No inline objects/arrays/functions as props to memoised children.
+- Subscribe narrowly: `useAppSelector(s => s.game.phase)`, not whole slices.
+- RTK Query: `selectFromResult` for narrow projections.
+- Virtualise lists >100 items.
+- Profile before adding `memo`/`useMemo` — measure.
+
+## Real-time render budget
+- Cap re-renders at ~30 fps for non-game UIs (60 fps for canvases).
+- Batch WS-driven dispatches via `requestAnimationFrame` or a tick aggregator.
+- Use `startTransition` for non-urgent updates.
 
 ## Bundle
-- Keep initial JS bundle under 200 KB gzipped.
-- Tree-shake: import named exports, never `import _ from 'lodash'`.
-- Analyse with `vite-bundle-visualizer` before each release.
+- Critical path ≤180 KB gzipped; per-route chunk ≤80 KB.
+- Tree-shake: named imports only (`import { x } from "lodash-es"`).
+- Mark side-effect-free packages with `"sideEffects": false`.
 
-## Images
-- All images have explicit `width` and `height`.
-- Use `loading="lazy"` on below-the-fold images.
-- SVGs used as icons are inlined as React components (vite-plugin-svgr).
+## Web Vitals targets
+- LCP ≤2.5 s, INP ≤200 ms, CLS ≤0.1, TTFB ≤800 ms.
+
+## Defensive UI
+- "Reconnecting…" banner when WS disconnects.
+- Last-known-good values rendered with `aria-busy="true"` while stale.
+- Queue or fail optimistic actions when socket is down.

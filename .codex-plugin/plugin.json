@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "description": "Enforces React architecture, security, and clean code. Rules auto-load via AGENTS.md. Skills auto-trigger on semantic match. Hooks block forbidden library installs.",
+  "description": "Real-time React + TypeScript monorepo plugin: Turborepo, RTK + RTK Query, vanilla-extract, Jest + Playwright, WebSocket patterns, accessibility, Gitflow. Rules auto-load via AGENTS.md; skills auto-trigger; hooks block forbidden library installs.",
   "version": "2.0.0",
   "author": {
     "name": "Cosmin Turcin"

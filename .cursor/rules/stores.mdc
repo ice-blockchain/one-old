@@ -1,34 +1,43 @@
 <!-- SOURCE OF TRUTH: rules/stores.md — update there first, then mirror here -->
 ---
-globs: "src/stores/**,src/features/**/stores/**,src/hooks/**,src/features/**/hooks/**"
-alwaysApply: false
+description: State management rules (Redux Toolkit + zustand boundaries) — applies to store/slice/zustand files.
+globs: ["apps/**/src/store/**", "apps/**/src/stores/**", "apps/**/src/features/**/stores/**", "src/store/**", "src/stores/**", "src/features/**/stores/**"]
 ---
 
-# State & Hooks Rules
+# State Management Rules
 
-## When to use what
+## Boundaries — pick exactly one
+
 | Need | Tool |
 |------|------|
-| Component-local ephemeral state | `useState` / `useReducer` |
-| Shared UI/client state | Zustand store |
-| Server data | React Query — never copy into Zustand |
-| Form state | react-hook-form |
+| Server data (REST/WS payloads, cached entities) | **RTK Query** (or Redux slice fed by WS service) |
+| Cross-feature global business state (auth, session, game phase) | **Redux Toolkit slice** |
+| Lightweight ephemeral UI state (modal open, hover) | **zustand** |
+| Component-local | useState/useReducer |
+| Form | react-hook-form |
 
-## Zustand rules
-- Never store server data in Zustand.
-- One store per domain or feature.
-- Export a typed interface: `interface FeatureStore { ... }`.
-- Subscribe to slices: `useStore(s => s.field)` — never the whole store object.
-- Expose a `reset()` action for logout/unmount cleanup.
+**Server data lives in exactly one place.** Never copy into zustand or component state.
 
-## React Query rules
-- `queryKey` must be fully descriptive: `['users', userId, 'posts']`.
-- Set `staleTime` explicitly on every `useQuery` — never rely on the default 0.
-- Use `select` to reshape data instead of transforming in the component.
-- Invalidate only the minimum necessary keys after mutations.
+## Redux Toolkit
+- Store config in `apps/<name>/src/store/index.ts` (or `packages/store` if shared).
+- One slice per domain.
+- `createSelector` for non-trivial derivations.
+- RTK Query for server state; `createAsyncThunk` only for non-cacheable side-effects.
+- Type the store: export `RootState` + `AppDispatch`; use `useAppSelector` / `useAppDispatch`.
+- Always select the narrowest slice — never grab the whole state.
 
-## Custom hooks
-- Live in `src/hooks/` (shared) or `src/features/[name]/hooks/` (scoped).
-- Always prefixed with `use`.
-- Never call hooks inside conditions, loops, or nested functions.
-- One concern per hook.
+## RTK Query
+- One `createApi` per service domain.
+- Tag-based invalidation: `providesTags` on queries, `invalidatesTags` on mutations.
+- `keepUnusedDataFor` per endpoint based on staleness tolerance.
+- Validate via `transformResponse` + zod.
+
+## zustand (UI-only)
+- One store per UI concern. No mega-store.
+- Allowed: booleans, ids, transient ranges. **Not** allowed: server entities or fetched lists.
+- Subscribe via selectors, never the whole store object.
+- Expose a `reset()` action; call on logout / feature unmount.
+
+## WebSocket → Redux bridge
+- WS service dispatches Redux actions on relevant frames.
+- Components read derived state via selectors; never touch the socket.

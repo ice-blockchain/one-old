@@ -1,30 +1,56 @@
 ---
 paths:
+  - "apps/**/src/stores/**"
+  - "apps/**/src/features/**/stores/**"
+  - "apps/**/src/store/**"
   - "src/stores/**"
   - "src/features/**/stores/**"
+  - "src/store/**"
 ---
 
 # State Management Rules
 
-## When to use what
+## Boundaries — pick exactly one
+
 | Need | Tool |
 |------|------|
-| Component-local ephemeral state | `useState` / `useReducer` |
-| Shared UI/client state (modals, filters, selections) | Zustand store |
-| Server data (API responses) | React Query — never copy into Zustand |
-| Form state | react-hook-form |
+| Server data (REST/WebSocket payloads, cached entities) | **RTK Query** (or a Redux slice fed by a WS service) |
+| Cross-feature global business state (auth, session, game phase) | **Redux Toolkit slice** |
+| Lightweight ephemeral UI state (modal open, hover target, drawer width) | **zustand** |
+| Component-local state | `useState` / `useReducer` |
+| Form state | `react-hook-form` |
 
-## Zustand store rules
-- Never store server data in Zustand — that belongs in React Query cache.
-- One store per domain or feature. No single global mega-store.
-- Export a typed interface for the store: `interface FeatureStore { ... }`.
-- Use `immer` middleware only when state updates are deeply nested.
-- Selectors: subscribe to slices, not the entire store object, to avoid unnecessary re-renders.
-- Reset logic: expose a `reset()` action for cleanup on unmount or logout.
+**Hard rule**: server data lives in exactly one place — RTK Query (or a Redux slice). Never copy server data into zustand or component state.
 
-## React Query rules
-- `queryKey` arrays must be stable and fully descriptive: `['users', userId, 'posts']`.
-- Set `staleTime` explicitly — never rely on the default 0 (causes waterfalls).
-- Use `select` to transform/reshape data rather than doing it in the component.
-- Invalidate only the minimum necessary keys after mutations.
-- Prefetch on hover/focus for anticipated navigations.
+## Redux Toolkit rules
+
+- Store config in `apps/<name>/src/store/index.ts` (or `packages/store` if shared).
+- One slice per domain (`authSlice`, `gameSlice`, `walletSlice`).
+- Slices export their reducer as default and named action creators + selectors.
+- Selectors: memoised with `createSelector` for any non-trivial derivation.
+- Async logic: RTK Query for server data, `createAsyncThunk` only for non-cacheable side-effects (e.g. logging out, reading from a sync local source).
+- Middleware order: RTK Query api → custom middleware (WS bridges, analytics) → defaults.
+- Never use `useSelector` to grab the whole state — always select the narrowest slice you need.
+- Type the store: export `RootState` and `AppDispatch`; consume via typed hooks `useAppDispatch` / `useAppSelector`.
+
+## RTK Query rules
+
+- One `createApi` per service domain.
+- Every query lists `providesTags`; every mutation lists `invalidatesTags`.
+- `keepUnusedDataFor` set per endpoint based on staleness tolerance — never rely on the global default for hot data.
+- Polling and `refetchOnFocus` are explicit, per-endpoint.
+- Use `transformResponse` to validate with zod; reject malformed payloads.
+
+## zustand rules (UI-only)
+
+- One store per UI concern. No mega-store.
+- Allowed contents: booleans, ids, transient ranges. **Not** allowed: arrays of server entities, fetched lists, or anything sourced from the network.
+- Always export a typed interface for the store.
+- Subscribe to slices via selectors — not the whole store object.
+- Expose a `reset()` action; call on logout or feature unmount.
+
+## WebSocket → Redux bridge
+
+- A WS service module dispatches Redux actions on relevant frames (e.g. `gameTick`, `oddsUpdate`).
+- Components read derived state via selectors — they never touch the socket directly.
+- See `rules/realtime.md` for the full bridge pattern.

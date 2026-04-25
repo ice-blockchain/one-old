@@ -2,18 +2,129 @@
 # Loaded when mode = new-project (≤5 source files detected)
 ---
 
-# Mode: New Project
+# Mode: New Project — Real-time React Monorepo
 
-Clean slate. Full rules apply. Our backend and infrastructure will be used.
+Clean slate. Scaffold the monorepo before writing any feature code.
 
-## Active constraints
-- All rules from rules/core.md are enforced
-- Our backend (Supabase fork) will be configured
-- Deployment targets our infrastructure
+## Target architecture
 
-## What happens when user asks to build something
-- Acknowledge mode: new project, full setup
-- Confirm what would be scaffolded (do not execute yet)
-- Wait for user confirmation before creating files
+```
+<repo-root>/
+├── package.json                   "private": true, workspaces declared
+├── pnpm-workspace.yaml            apps/*  packages/*
+├── turbo.json                     pipeline: build / dev / lint / test / typecheck / storybook
+├── tsconfig.base.json             strict, noUncheckedIndexedAccess, exactOptionalPropertyTypes
+├── .eslintrc.cjs                  shared rules; package overrides allowed
+├── .prettierrc
+├── .nvmrc                         pin Node major
+├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
+│
+├── apps/
+│   └── web/                       primary React app (Vite)
+│       ├── package.json
+│       ├── vite.config.ts
+│       ├── tsconfig.json          extends ../../tsconfig.base.json
+│       ├── index.html
+│       ├── src/
+│       │   ├── main.tsx           ReactDOM.createRoot + Provider chain
+│       │   ├── App.tsx            top-level routes + Suspense boundary
+│       │   ├── routes.tsx         react-router-dom v6 routes config
+│       │   ├── store/             Redux store + middleware wiring
+│       │   │   ├── index.ts
+│       │   │   └── hooks.ts       useAppDispatch, useAppSelector
+│       │   ├── features/          feature slices: each owns components, hooks, slice, services
+│       │   │   └── <name>/
+│       │   │       ├── components/
+│       │   │       ├── hooks/
+│       │   │       ├── slice.ts
+│       │   │       ├── api.ts     (RTK Query if needed)
+│       │   │       └── index.ts
+│       │   ├── pages/             thin route wrappers — no business logic
+│       │   ├── services/
+│       │   │   ├── ws/            app-specific WS bridges (if not shared in packages)
+│       │   │   └── ...
+│       │   ├── components/        app-only components not promoted to packages/ui yet
+│       │   └── styles/
+│       │       ├── theme.css.ts   themeContract + light/dark via createTheme
+│       │       └── global.css.ts
+│       └── e2e/                   Playwright specs
+│
+└── packages/
+    ├── ui/                        shared component library (Storybook)
+    │   ├── package.json           "exports": { ... }
+    │   ├── src/
+    │   │   ├── Button/
+    │   │   │   ├── Button.tsx
+    │   │   │   ├── Button.css.ts
+    │   │   │   ├── Button.test.tsx
+    │   │   │   └── Button.stories.tsx
+    │   │   └── index.ts           barrel: re-export public components
+    │   └── tsconfig.json
+    │
+    ├── design-tokens/             vanilla-extract themes + tokens
+    │   └── src/
+    │       ├── contract.css.ts    themeContract — the public type
+    │       ├── light.css.ts       createTheme(...)
+    │       └── dark.css.ts
+    │
+    ├── api-client/                axios instance + RTK Query baseQuery
+    │   └── src/
+    │       ├── instance.ts
+    │       ├── errors.ts          AppError discriminated union
+    │       └── index.ts
+    │
+    ├── ws-client/                 WebSocket transport + protocol layer
+    │   └── src/
+    │       ├── transport.ts       reconnect, heartbeat, backoff
+    │       ├── protocol.ts        zod schemas + decoders
+    │       ├── hooks.ts           useChannel(...) etc.
+    │       └── test-fake.ts       in-memory fake for tests
+    │
+    ├── utils/                     pure utilities, no React imports
+    │
+    ├── tsconfig/                  shared TS configs (base, react, node)
+    │
+    └── eslint-config/             shared ESLint config
+```
 
-<!-- TODO: full scaffold steps go here once structure is validated -->
+## Setup checklist (do these in order, do not skip)
+
+1. **Workspace skeleton**
+   - `package.json` with `"private": true`, `"packageManager": "pnpm@<latest>"`.
+   - `pnpm-workspace.yaml` listing `apps/*` and `packages/*`.
+   - `turbo.json` with the pipeline shown above.
+   - `tsconfig.base.json` with strict settings.
+   - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`.
+   - Initialise git, set Gitflow branches: `main`, `develop`.
+
+2. **Shared packages first**
+   - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
+   - `packages/design-tokens` — themeContract + at least one theme.
+   - `packages/utils` — empty barrel; populate as needed.
+   - `packages/api-client` — axios instance, AppError type, RTK Query baseQuery.
+   - `packages/ws-client` — transport + protocol scaffolding (per `rules/realtime.md`).
+   - `packages/ui` — Button, Input, Modal scaffolds with stories and tests.
+
+3. **App scaffold (`apps/web`)**
+   - Vite + React + TS template.
+   - Wire Redux store with `api-client` RTK Query and one starter feature slice.
+   - Set up Storybook for `packages/ui` (Vite builder).
+   - Set up Playwright with one smoke spec hitting `/`.
+
+4. **CI/CD pipeline (use Turborepo's caching)**
+   - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
+   - Remote cache enabled if available; otherwise local.
+   - Storybook build artefact uploaded for PR previews.
+
+5. **Tooling guards**
+   - Husky + lint-staged for pre-commit format + lint.
+   - Commitlint with conventional-commit rules.
+   - PR template: summary, test plan, screenshots/Storybook link, a11y check.
+
+## What happens when the user asks to build something
+
+- Acknowledge mode: **new project, monorepo not yet scaffolded**.
+- Confirm with the user **once**: "I'll scaffold the Turborepo workspace as above before any feature code. Proceed?"
+- On yes: scaffold in the order above. Stop after each step to verify (`pnpm install`, `pnpm -w turbo run lint typecheck`).
+- On no: ask which constraint they want relaxed; do not silently skip steps.
+- Never write feature code into a missing skeleton.

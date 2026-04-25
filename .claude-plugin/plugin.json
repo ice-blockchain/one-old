@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "description": "Enforces React architecture, security, and clean code on every prompt. Hooks block violations before files are written. Skills auto-trigger on semantic match — no slash commands needed.",
+  "description": "Real-time React + TypeScript monorepo plugin: Turborepo, RTK + RTK Query, vanilla-extract, Jest + Playwright, WebSocket patterns, accessibility, Gitflow. Hooks block forbidden libraries and architecture violations; skills auto-trigger on semantic match.",
   "version": "2.0.0",
   "author": {
     "name": "Cosmin Turcin"

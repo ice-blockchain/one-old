@@ -5,38 +5,52 @@ alwaysApply: true
 
 # traffic-one — Core (always active)
 
+Real-time React + TypeScript in a Turborepo monorepo. Optimised for low-latency rendering, predictable state, strict typing, accessibility.
+
 ## Forced library stack — no exceptions
-- **UI:** react ^18 + typescript ^5 (.tsx/.ts only)
+
+### Build & workspace
+- **Monorepo**: Turborepo with pnpm workspaces
+- **Per-app bundler**: Vite
+- **TypeScript ^5** with `"strict": true` and `"noUncheckedIndexedAccess": true`
+
+### Runtime
+- **UI:** react ^18 (.tsx/.ts only)
 - **Routing:** react-router-dom v6
-- **Global state:** zustand (no Redux, no MobX, no Context for state)
-- **Server state:** @tanstack/react-query (not the old `react-query` package)
-- **Styling:** tailwindcss + shadcn/ui (no styled-components, no @emotion, no CSS modules)
+- **Global state:** Redux Toolkit (slices + RTK Query for server state)
+- **Lightweight UI state:** zustand (ephemeral only — never server data)
+- **Real-time:** native WebSocket / socket.io-client behind a service singleton
+- **HTTP:** axios in services or RTK Query — never axios directly in components
 - **Forms:** react-hook-form + zod + @hookform/resolvers
-- **HTTP:** axios, inside service functions — never call axios directly in a component
-- **Testing:** vitest + @testing-library/react + msw
-- **Build:** vite
+- **Animations:** framer-motion + CSS + lottie-react / @react-three/fiber
 
-## Absolute rules — never break these
-- Function components only. No class components.
-- Named exports only. No `export default` for components.
-- No `any` — use `unknown` and narrow types.
-- No inline `style={{}}` — Tailwind classes only.
+### Styling
+- **vanilla-extract** — `.css.ts` static CSS at build time
+- **Design tokens** in `packages/design-tokens` (themeContract + createTheme)
+- **No** tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`
+
+### Testing
+- jest + @testing-library/react + @testing-library/user-event
+- @playwright/test (E2E)
+- msw (HTTP mocks) + in-memory WS fake
+- Storybook (@storybook/react-vite)
+
+## Absolute rules
+- Function components only. Named exports only.
+- No `any` — use `unknown` and narrow.
+- No inline styles, no Tailwind classes — vanilla-extract `.css.ts` only.
 - Props always have an explicit `ComponentNameProps` interface.
-- All API calls go through `src/services/` — never call axios in a component.
-- Server state lives in React Query. Never duplicate it in Zustand.
-- Features do not import from other features directly.
+- All API calls via `services/` or RTK Query.
+- Server state lives in RTK Query/Redux — never duplicated.
+- WebSocket connections owned by a service singleton; components subscribe via hooks.
+- Cross-package imports use workspace package names.
 
-## Folder structure
-```
-src/
-├── components/ui/          shadcn primitives — never edit
-├── components/common/      shared app components
-├── features/[name]/        components/ hooks/ stores/ services/ types.ts index.ts
-├── pages/                  thin wrappers only — no business logic
-├── hooks/                  shared custom hooks (use* prefix)
-├── stores/                 global Zustand stores
-├── services/               api.ts + per-domain files
-├── lib/                    third-party setup
-├── types/                  global TS types
-└── utils/                  pure functions
-```
+## Accessibility — non-negotiable
+- Semantic HTML first; ARIA only when semantics don't cover it.
+- Every interactive element keyboard-reachable with visible focus.
+- Live regions: `aria-live="polite"` for non-urgent updates.
+- All images have `alt`; forms always have `<label>`.
+
+## Git — Gitflow
+- Branches: `main` / `develop` / `feature/*` / `release/*` / `hotfix/*`.
+- Conventional commits with ticket id in scope.
