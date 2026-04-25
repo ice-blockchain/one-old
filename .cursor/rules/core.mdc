@@ -3,7 +3,7 @@
 alwaysApply: true
 ---
 
-# one-traffic — Core (always active)
+# traffic-one — Core (always active)
 
 ## Forced library stack — no exceptions
 - **UI:** react ^18 + typescript ^5 (.tsx/.ts only)

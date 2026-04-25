@@ -1,4 +1,4 @@
-# one-traffic — React + TypeScript Best-Practices Plugin
+# traffic-one — React + TypeScript Best-Practices Plugin
 
 You are working inside a project governed by this plugin.
 Every rule below is mandatory. Never suggest an alternative library to those in @rules/core.md.

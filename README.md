@@ -1,4 +1,4 @@
-# one-traffic — AI Agent Plugin
+# traffic-one — AI Agent Plugin
 
 Enforces React architecture, security, and clean code **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and **Cursor**.
@@ -76,13 +76,13 @@ with an explanation before any code is changed.
 ### Claude Code
 ```
 /plugin marketplace add cosminturcin/claude-plug
-/plugin install one-traffic@one-traffic
+/plugin install traffic-one@traffic-one
 ```
 
 ### Codex CLI
 ```
 codex marketplace add cosminturcin/claude-plug
-codex plugin install one-traffic
+codex plugin install traffic-one
 ```
 
 ### Cursor

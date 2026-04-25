@@ -1,5 +1,5 @@
 {
-  "name": "one-traffic",
+  "name": "traffic-one",
   "description": "Enforces React architecture, security, and clean code. Rules auto-attach via globs. Skills auto-trigger on semantic match.",
   "version": "2.0.0",
   "author": {

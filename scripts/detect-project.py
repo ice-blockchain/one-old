@@ -1,43 +1,115 @@
 #!/usr/bin/env python3
 """
-Project detection script — determines which of the 3 plugin modes applies.
+traffic-one SessionStart hook.
 
-Modes:
-  new-project             ≤5 source files → full rules + our backend + our infra
-  existing-codebase       >5 files, no Supabase → code improvement rules only
-  existing-with-supabase  >5 files + Supabase detected → code rules + migration offer
+Responsibilities on every session start:
+  1. Detect project mode (new-project / existing-codebase / existing-with-supabase).
+  2. Load or ask for the user's stack preference.
+  3. Pack the right rule files into additionalContext, capped at ~9500 chars
+     (the hook total is limited to 10,000 chars — leave ~500 for mode + wrapper).
 
-Mode lock:
-  On first detection, writes .claude-plugin-mode to the project root.
-  On subsequent sessions the lock file is read instead of re-detecting,
-  so a new-project that grows beyond 5 files stays in new-project mode.
+State file — `.traffic-one.json` at the project root. Pinned across sessions.
+Legacy `.claude-plugin-mode` is migrated on first read. File is gitignored.
 """
 
+import datetime
 import json
 import os
 import pathlib
 
 
-LOCK_FILE = ".claude-plugin-mode"
+# ── Constants ────────────────────────────────────────────────────────────────
+STATE_FILE         = ".traffic-one.json"
+LEGACY_LOCK_FILE   = ".claude-plugin-mode"
+BUDGET_CHARS       = 9500          # leave headroom under the 10k cap
+DEFAULT_STACK      = "react-supabase-recommended"
+STATE_VERSION      = 1
 
 
-def read_lock(cwd: pathlib.Path) -> str | None:
-    lock = cwd / LOCK_FILE
-    if lock.exists():
-        return lock.read_text().strip()
-    return None
+# ── Stack registry ───────────────────────────────────────────────────────────
+# Each stack lists rule files in descending priority order. The packer keeps
+# adding files until it would exceed BUDGET_CHARS, then stops. Files late in
+# the list may be dropped if the total would overflow.
+STACKS = {
+    "react-supabase-recommended": {
+        "label": "React + TS + Tailwind + Zustand + TanStack Query + Supabase-fork backend (recommended)",
+        "priority": [
+            "rules/core.md",
+            "rules/common/clean-code.md",
+            "rules/common/security.md",
+            "rules/components.md",
+            "rules/services.md",
+            "rules/backend/postgres.md",
+            "rules/stores.md",
+            "rules/testing.md",
+            "rules/common/git.md",
+            "rules/performance.md",
+        ],
+    },
+    "react-frontend-only": {
+        "label": "React + TS + Tailwind (frontend only, bring your own backend)",
+        "priority": [
+            "rules/core.md",
+            "rules/common/clean-code.md",
+            "rules/common/security.md",
+            "rules/common/git.md",
+            "rules/components.md",
+            "rules/services.md",
+            "rules/stores.md",
+            "rules/testing.md",
+            "rules/performance.md",
+        ],
+    },
+    "node-backend": {
+        "label": "Node + Postgres + Supabase-fork (backend only)",
+        "priority": [
+            "rules/common/clean-code.md",
+            "rules/common/security.md",
+            "rules/common/git.md",
+            "rules/backend/node.md",
+            "rules/backend/postgres.md",
+        ],
+    },
+    "minimal": {
+        "label": "Clean-code + security + git baseline (no framework rules)",
+        "priority": [
+            "rules/common/clean-code.md",
+            "rules/common/security.md",
+            "rules/common/git.md",
+        ],
+    },
+}
 
 
-def write_lock(cwd: pathlib.Path, mode: str) -> None:
-    (cwd / LOCK_FILE).write_text(mode)
+# ── State I/O ────────────────────────────────────────────────────────────────
+def read_state(cwd: pathlib.Path) -> dict:
+    """Read .traffic-one.json; migrate legacy .claude-plugin-mode if present."""
+    state_path = cwd / STATE_FILE
+    if state_path.exists():
+        try:
+            return json.loads(state_path.read_text())
+        except Exception:
+            return {}
+    # Legacy migration
+    legacy = cwd / LEGACY_LOCK_FILE
+    if legacy.exists():
+        mode = legacy.read_text().strip()
+        return {"version": STATE_VERSION, "mode": mode, "stack": None, "confirmed": False}
+    return {}
 
 
+def write_state(cwd: pathlib.Path, state: dict) -> None:
+    state["version"] = STATE_VERSION
+    (cwd / STATE_FILE).write_text(json.dumps(state, indent=2))
+
+
+# ── Detection ────────────────────────────────────────────────────────────────
 def load_package_json(cwd: pathlib.Path) -> dict:
-    pkg_path = cwd / "package.json"
-    if not pkg_path.exists():
+    pkg = cwd / "package.json"
+    if not pkg.exists():
         return {}
     try:
-        return json.loads(pkg_path.read_text())
+        return json.loads(pkg.read_text())
     except Exception:
         return {}
 
@@ -55,115 +127,150 @@ def has_supabase(deps: dict) -> bool:
     return any(p in deps for p in ("@supabase/supabase-js", "@supabase/ssr"))
 
 
-def detect_mode(cwd: pathlib.Path) -> dict:
+def detect_mode(cwd: pathlib.Path) -> str:
     pkg        = load_package_json(cwd)
     deps       = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
     file_count = count_source_files(cwd)
-    is_new     = file_count <= 5
-    supabase   = has_supabase(deps)
-
-    if is_new:
-        mode = "new-project"
-    elif supabase:
-        mode = "existing-with-supabase"
-    else:
-        mode = "existing-codebase"
-
-    return {
-        "mode":    mode,
-        "details": {
-            "sourceFileCount": file_count,
-            "isNewProject":    is_new,
-            "hasSupabase":     supabase,
-            "locked":          False,
-        },
-    }
+    if file_count <= 5:
+        return "new-project"
+    if has_supabase(deps):
+        return "existing-with-supabase"
+    return "existing-codebase"
 
 
-MODE_CONTEXT = {
-    "new-project": """\
-[PLUGIN MODE: NEW PROJECT]
-No significant codebase detected — starting from scratch.
-- Apply ALL rules from rules/core.md and rules/modes/new-project.md
-- Scaffold the full recommended folder structure before writing any feature code
-- Set up our backend (Supabase fork) and configure deployment on our infrastructure
-- Do NOT skip any setup step — this is the clean slate opportunity
-""",
-    "existing-codebase": """\
-[PLUGIN MODE: EXISTING CODEBASE]
-An existing codebase was detected.
-- Do NOT rename, move, or restructure any existing files or exports
-- Apply rules from rules/modes/existing-codebase.md to NEW code only
-- Improve new code: max function length, type safety, no any, no inline styles
-- Do not suggest backend or infrastructure changes
-""",
-    "existing-with-supabase": """\
-[PLUGIN MODE: EXISTING CODEBASE + SUPABASE DETECTED]
-An existing codebase using Supabase was detected.
-- Do NOT rename, move, or restructure any existing files or exports
-- Apply rules from rules/modes/existing-codebase.md to NEW code only
-- Inform the user once that they can migrate from Supabase to our fork (same API, lower cost)
-- Refer to rules/modes/supabase-migration.md if the user wants to explore migration
-- Do not push migration — mention it once and only proceed if the user asks
-""",
+# ── Rule packing ─────────────────────────────────────────────────────────────
+def pack_bundle(plugin_root: pathlib.Path, priority_list: list[str], budget: int) -> tuple[str, list[str], list[str]]:
+    """Concatenate rule file contents in priority order until the budget is hit.
+
+    Returns (body_text, included_files, dropped_files).
+    """
+    body_parts: list[str] = []
+    included:   list[str] = []
+    dropped:    list[str] = []
+    total = 0
+    for rel in priority_list:
+        f = plugin_root / rel
+        if not f.exists():
+            continue
+        content = f.read_text()
+        header  = f"# ── {rel} ──\n"
+        addition_size = len(header) + len(content) + 2
+        if total + addition_size > budget:
+            dropped.append(rel)
+            continue
+        body_parts.append(header + content)
+        included.append(rel)
+        total += addition_size
+    return "\n\n".join(body_parts), included, dropped
+
+
+# ── Context blocks ───────────────────────────────────────────────────────────
+MODE_SUMMARY = {
+    "new-project": "[PLUGIN MODE: NEW PROJECT]  No significant codebase detected.",
+    "existing-codebase": "[PLUGIN MODE: EXISTING CODEBASE]  Apply rules to NEW code only; do NOT restructure existing files.",
+    "existing-with-supabase": "[PLUGIN MODE: EXISTING CODEBASE + SUPABASE]  Apply to new code only. Mention the Supabase-fork migration ONCE if relevant.",
 }
 
 
-def load_rules(plugin_root: pathlib.Path) -> str:
-    """Read always-on rule files from the plugin and concat them for context injection.
-
-    Claude Code plugins do not auto-load CLAUDE.md, so we inline the core + common
-    rules here. SessionStart additionalContext is capped at 10,000 chars — keep this
-    set small. Path-scoped rules (components, services, backend/*) are NOT included
-    here; they will be injected on demand by PreToolUse hooks in a future iteration.
-    """
-    files = [
-        plugin_root / "rules" / "core.md",
-        plugin_root / "rules" / "common" / "clean-code.md",
-        plugin_root / "rules" / "common" / "security.md",
-        plugin_root / "rules" / "common" / "git.md",
+def onboarding_directive(mode: str) -> str:
+    """Tell the model to run a short guided setup on turn 1 and write the config itself."""
+    lines = [
+        "═══ traffic-one — FIRST-RUN ONBOARDING REQUIRED ═══",
+        "",
+        f"{MODE_SUMMARY[mode]}",
+        "",
+        "This project has no saved traffic-one configuration yet.",
+        "YOUR FIRST MESSAGE in this session MUST be a short onboarding Q&A.",
+        "Do NOT start coding, scaffolding, or answering the user's original request",
+        "until onboarding is complete. Greet briefly, then ask the questions below,",
+        "ONE AT A TIME, and write the user's answers into `.traffic-one.json` yourself",
+        "using the Write tool. Do not ask the user to edit any JSON.",
+        "",
+        "── Question 1 — What are you building? ──",
+        "Offer these four options verbatim:",
+        "  A) Frontend web app (React UI, talks to an existing API)",
+        "  B) Full-stack app (frontend + backend)  ← recommended for new projects",
+        "  C) Backend API / server only",
+        "  D) Minimal — just clean-code / security / git baseline (any language)",
+        "",
+        "Map the answer to `stack`:",
+        "  A → react-frontend-only",
+        "  B → react-supabase-recommended",
+        "  C → node-backend",
+        "  D → minimal",
+        "",
+        "── Question 2 (skip for A and D) — Backend host? ──",
+        "If user chose B or C, ask:",
+        "  1) Our Supabase-compatible backend (same API, lower cost at scale) ← recommended",
+        "  2) Self-hosted Supabase / Postgres",
+        "  3) Other (Firebase, DynamoDB, custom) — will skip Postgres-specific rules",
+        "",
+        "Map to `backend`:",
+        "  1 → ours",
+        "  2 → self-hosted",
+        "  3 → other",
+        "For A → `backend: \"external-api\"`. For D → `backend: \"none\"`.",
+        "",
+        "── After both answers: write `.traffic-one.json` ──",
+        "Use the Write tool to create EXACTLY this JSON (filling in values):",
+        "```json",
+        "{",
+        "  \"version\": 2,",
+        f"  \"mode\": \"{mode}\",",
+        "  \"stack\": \"<chosen-id>\",",
+        "  \"backend\": \"<chosen-backend>\",",
+        "  \"confirmed\": true,",
+        "  \"onboardingComplete\": true,",
+        "  \"confirmedAt\": \"<current ISO-8601 UTC timestamp>\"",
+        "}",
+        "```",
+        "",
+        "── Then tell the user ──",
+        "One short line: which stack was saved and that they should restart Claude Code",
+        "(or start a new session) so the full rule bundle for their stack loads on SessionStart.",
+        "",
+        "Until onboarding is complete, the minimal baseline rules below are in effect.",
+        "Do not invoke scaffolding skills (create-component, create-feature, etc.) until done.",
     ]
-    chunks = []
-    for f in files:
-        if f.exists():
-            chunks.append(f"# ── {f.relative_to(plugin_root)} ──\n{f.read_text()}")
-    return "\n\n".join(chunks)
+    return "\n".join(lines)
 
 
+# ── Main ─────────────────────────────────────────────────────────────────────
 def main():
-    cwd = pathlib.Path(os.getcwd())
-    # The plugin root is the parent of scripts/ — works regardless of caller CWD
+    cwd         = pathlib.Path(os.getcwd())
     plugin_root = pathlib.Path(__file__).resolve().parent.parent
+    state       = read_state(cwd)
 
-    # Check lock file first — mode is pinned for the life of the project
-    locked_mode = read_lock(cwd)
+    # ── Mode (detect once, pin) ─────────────────────────────────────────────
+    mode = state.get("mode") or detect_mode(cwd)
+    state["mode"] = mode
 
-    if locked_mode:
-        mode    = locked_mode
-        locked  = True
-        details = {"locked": True}
+    # ── Stack selection ──────────────────────────────────────────────────────
+    stack_id            = state.get("stack")
+    onboarding_complete = bool(state.get("onboardingComplete"))
+
+    if onboarding_complete and stack_id in STACKS:
+        # Fast path: onboarding done; pack the chosen stack's bundle.
+        priority = STACKS[stack_id]["priority"]
+        body, included, dropped = pack_bundle(plugin_root, priority, BUDGET_CHARS)
+        header = (
+            f"═══ traffic-one plugin — always-on rules (stack: {stack_id}) ═══\n"
+            f"{MODE_SUMMARY[mode]}\n"
+        )
+        if dropped:
+            header += f"[budget: {len(body)}/{BUDGET_CHARS} chars; deferred to path-scoped hooks: {', '.join(dropped)}]\n"
+        context = f"{header}\n{body}"
     else:
-        result  = detect_mode(cwd)
-        mode    = result["mode"]
-        details = result["details"]
-        locked  = False
-        # Pin new-project so it survives file creation across sessions
-        if mode == "new-project":
-            write_lock(cwd, mode)
+        # Slow path: onboarding not done. Tell the model to run the Q&A on turn 1.
+        directive = onboarding_directive(mode)
+        priority  = STACKS["minimal"]["priority"]
+        body, included, _ = pack_bundle(plugin_root, priority, BUDGET_CHARS // 2)
+        context = f"{directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n{body}"
 
-    mode_context = MODE_CONTEXT[mode].strip()
-    if locked:
-        mode_context += "\n[Mode pinned from first session — applies for all future sessions on this project]"
+    # Persist state (mode + any defaults initialized)
+    write_state(cwd, state)
 
-    rules_body = load_rules(plugin_root)
-
-    context = (
-        "═══ one-traffic plugin — always-on rules ═══\n\n"
-        f"{rules_body}\n\n"
-        "═══ Project mode ═══\n\n"
-        f"{mode_context}"
-    )
-
+    # Emit hook output
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName":    "SessionStart",
