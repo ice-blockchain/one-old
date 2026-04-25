@@ -1,0 +1,49 @@
+<!-- SOURCE OF TRUTH: rules/accessibility.md — update there first, then mirror here -->
+---
+description: Accessibility rules (WCAG 2.1 AA + real-time UI a11y).
+globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "apps/**/src/pages/**", "packages/ui/**", "src/components/**", "src/features/**/components/**", "src/pages/**"]
+---
+
+# Accessibility Rules
+
+## Semantic HTML first
+- `<button>` for actions, `<a href>` for navigation, `<dialog>` for modals.
+- Never an interactive `<div>` or `<span>`.
+- Outline pages with `<nav>`, `<main>`, `<header>`, `<footer>`, `<section>`.
+
+## Keyboard
+- Every interactive element reachable by Tab in document order.
+- Visible focus styles. Never `outline: none` without a replacement.
+- Match widget role: arrow keys in menus/tabs/listboxes, Esc closes dialogs.
+- Skip-link at top of layout.
+
+## Focus management
+- Modals trap focus; restore to trigger on close.
+- Move focus to `<main>` or new heading after route changes.
+- Live regions: `aria-live="polite"` for non-urgent (chat, score), `"assertive"` only for critical (errors, payment).
+- Don't move focus on real-time data updates.
+
+## Forms
+- Every input has `<label htmlFor>`. Placeholder is not a label.
+- Group related inputs with `<fieldset>` + `<legend>`.
+- Errors via `aria-describedby` + `role="alert"`.
+
+## Images & media
+- Meaningful `alt`; decorative images use `alt=""`.
+- Icon-only buttons: `aria-label`.
+- Captions for video; visible mute control on auto-play.
+
+## Colour & motion
+- Text contrast ≥4.5:1 (3:1 for large/bold text).
+- Never colour alone for state — pair with icon/text.
+- Respect `prefers-reduced-motion: reduce`.
+- Avoid flashes ≥3 Hz.
+
+## Real-time gotchas
+- Don't yank focus on incoming frames.
+- Score updates: `aria-live="polite"` + `aria-atomic="true"`.
+- Discoverable "reduced motion" toggle for game animations.
+
+## Testing
+- `@axe-core/playwright` on every E2E spec.
+- RTL queries by role + accessible name.

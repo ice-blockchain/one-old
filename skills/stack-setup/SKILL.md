@@ -10,25 +10,32 @@ Persist the user's rule-stack choice into `.traffic-one.json`. The SessionStart 
 ## Two entry paths
 
 ### Path A — First-run onboarding
-Triggered right after SessionStart shows `═══ traffic-one — FIRST-RUN ONBOARDING REQUIRED ═══`. The directive itself lists the questions. Your job: run the Q&A, write the file, confirm. Do not skip Q2 unless the user picked A (frontend) or D (minimal).
+Triggered right after SessionStart shows `═══ traffic-one — FIRST-RUN ONBOARDING REQUIRED ═══`. The directive itself lists the questions. Run the Q&A, write the file, confirm.
 
 ### Path B — Mid-project reconfigure
 Triggered when the user asks to change stacks on an existing setup. Read the current `.traffic-one.json`, ask only the fields the user wants to change, keep the rest, bump `confirmedAt`, leave `onboardingComplete: true`.
 
 ## Stack ids (only these are valid)
 
-- `react-supabase-recommended` — React + TS + Tailwind + Zustand + TanStack Query + Supabase-fork backend
-- `react-frontend-only` — React + TS + Tailwind (no backend rules)
-- `node-backend` — Node + Postgres + Supabase-fork backend, no frontend
-- `minimal` — clean-code + security + git only, language-agnostic
+- `react-realtime-monorepo` — Real-time React monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright. **Recommended for new projects.**
+- `react-frontend-only` — Single React app (no monorepo): Vite + RTK + vanilla-extract.
+- `node-backend` — Node + Postgres backend, no frontend.
+- `minimal` — clean-code + security + git baseline, language-agnostic.
 
-## Backend values (only these)
+## Backend values
 
-- `ours` — our Supabase-compatible fork
-- `self-hosted` — user runs their own Supabase / raw Postgres
+- `ours` — our managed Postgres / Supabase-compatible fork
+- `self-hosted` — user runs their own Postgres
+- `managed` — Supabase / Neon / RDS / similar
 - `other` — Firebase / DynamoDB / custom (skip Postgres rules)
 - `external-api` — frontend-only, consumes an existing API
 - `none` — minimal stack, no backend
+
+## Realtime values
+
+- `heavy` — gameplay / live markets / trading; full WebSocket rules + back-pressure
+- `light` — mostly REST with occasional live updates; WebSocket rules apply
+- `none` — pure REST; skip the WebSocket rule bundle (saves ~1k tokens)
 
 ## File shape (write exactly this via the Write tool)
 
@@ -38,9 +45,10 @@ Triggered when the user asks to change stacks on an existing setup. Read the cur
   "mode": "<existing mode, read from current file if present — never change>",
   "stack": "<chosen id from list above>",
   "backend": "<chosen backend>",
+  "realtime": "<heavy|light|none>",
   "confirmed": true,
   "onboardingComplete": true,
-  "confirmedAt": "<ISO-8601 UTC timestamp, e.g. 2026-04-24T10:00:00Z>"
+  "confirmedAt": "<ISO-8601 UTC timestamp, e.g. 2026-04-25T10:00:00Z>"
 }
 ```
 
@@ -51,13 +59,13 @@ Triggered when the user asks to change stacks on an existing setup. Read the cur
 ## After writing
 
 Reply with ONE short line:
-> "Saved — stack set to `<id>`. Restart Claude Code (or start a new session) so the full rule bundle for this stack loads on SessionStart."
+> "Saved — stack set to `<id>` with backend `<backend>` and realtime `<realtime>`. Restart Claude Code so the full rule bundle loads on SessionStart."
 
 Do not try to load the rules yourself or re-run the hook. Only session restart picks up the new bundle.
 
 ## Must-not-do
 
 - Do not ask the user to edit the JSON themselves.
-- Do not use stack ids that aren't in the list above. If the user describes something like Vue or Next.js, say those aren't supported yet and offer `minimal` as a safe default.
+- Do not use stack ids that aren't in the list above. If the user describes Vue / Next.js / Svelte, say those aren't supported yet and offer `minimal` as a safe default.
 - Do not change the `mode` field during a reconfigure.
 - Do not proceed with any other skill (`create-component`, etc.) while onboarding is incomplete — the SessionStart directive instructs you to hold.

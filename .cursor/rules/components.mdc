@@ -1,19 +1,39 @@
 <!-- SOURCE OF TRUTH: rules/components.md — update there first, then mirror here -->
 ---
-globs: "src/components/**,src/features/**/components/**"
-alwaysApply: false
+description: Component rules — applies when editing React components.
+globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui/**", "src/components/**", "src/features/**/components/**"]
 ---
 
 # Component Rules
 
-- Keep components under 150 lines. Split into sub-components if larger.
-- One component per file, file named `ComponentName.tsx`.
-- Destructure props at the function signature level.
-- Extract complex JSX expressions into named variables above the `return`.
-- Wrap pure child components with `React.memo` only when there is a **proven** render bottleneck.
-- Memoize stable callbacks passed to children with `useCallback`.
-- Memoize expensive calculations with `useMemo`.
-- If the component fetches data, extract that into a `useComponentName` hook — keep the component presentational.
-- Always handle `isLoading`, `isError`, and empty states explicitly.
-- Lazy-load page-level components: `React.lazy` + `Suspense` with a skeleton fallback.
-- Never create objects or arrays inline in JSX props — extract to `useMemo` or module-level const.
+## Structure
+- One component per file, named `ComponentName.tsx`.
+- Co-locate `ComponentName.css.ts` (vanilla-extract) and `ComponentName.stories.tsx`.
+- ≤150 lines; split if larger. Named exports only — no `export default`.
+
+## Props & types
+- Explicit `ComponentNameProps` interface above the component.
+- Discriminated unions over boolean flags + optional fields.
+- `React.forwardRef` for DOM-wrapping primitives.
+
+## Rendering & data
+- Data-fetching extracted into `useComponentName` hook; component stays presentational.
+- Always handle isLoading / isError / empty states explicitly.
+- Subscribe to real-time via a hook; never instantiate WebSocket in a component.
+- Lazy-load page-level components: `React.lazy` + `Suspense` + skeleton fallback.
+
+## Performance
+- `React.memo` / `useCallback` / `useMemo` only after profiling.
+- Virtualise lists >100 items (`@tanstack/react-virtual`).
+
+## Styling (vanilla-extract)
+- Sibling `.css.ts` file; pull every value from `@app/design-tokens`.
+- Themes via `createTheme` + `themeContract`. No JS-driven layout queries — use `@media`.
+
+## Accessibility
+- Semantic HTML first. Every interactive element keyboard-reachable.
+- Modals trap focus; restore on close. Forms paired with `<label>`.
+- Live regions for real-time updates: `aria-live="polite"` (or `"assertive"` for critical).
+
+## Stories
+- Every shared `packages/ui` component: default + variants + loading + error + empty states.

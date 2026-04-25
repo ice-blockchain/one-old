@@ -1,0 +1,42 @@
+<!-- SOURCE OF TRUTH: rules/realtime.md — update there first, then mirror here -->
+---
+description: WebSocket / real-time rules — reconnection, back-pressure, consistency, defensive UI states.
+globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/*.socket.ts", "**/*.ws.ts"]
+---
+
+# Real-time / WebSocket Rules
+
+## Architecture
+- **Singleton service per endpoint.** One module owns the connection.
+- Components subscribe via hooks (`useChannel`, `useGameTick`); never `new WebSocket()` in a component.
+- Three layers: Transport (connect/reconnect/heartbeat) → Protocol (zod-validated decode) → Bridge (Redux dispatch).
+
+## Connection lifecycle
+- Connect lazily on first subscriber, eagerly on mount for game UIs.
+- Heartbeat every 15–30 s; 2 missed pongs = disconnected.
+- Reconnect with exponential backoff + jitter (1, 2, 5, 10 s, capped at 30 s).
+- Resume cleanly with sequence id / resume token; server replays missed frames.
+- Surface a "reconnecting" banner after N attempts; "offline" after the cap.
+
+## Back-pressure
+- High-rate streams (>10 Hz): aggregate frames, flush via `requestAnimationFrame`.
+- Buffer threshold (e.g. 200 frames): drop oldest non-critical; never silently drop ordered messages.
+- Watch `bufferedAmount` on outbound — throttle if it grows.
+
+## Consistency
+- Sequence ids on every relevant frame. Drop or reorder out-of-order.
+- Periodic snapshots for state that must converge (scoreboards, balances).
+- On reconnect without resume support: invalidate dependent caches, refetch.
+
+## Errors & defensive UI
+- Validate every inbound frame with zod. Bad frame logs + drops, never crashes connection.
+- Components render: `idle` / `connecting` / `live` / `reconnecting` / `offline` / `degraded`.
+- `aria-live="polite"` on connection status region.
+
+## Hooks
+- Return a snapshot of relevant state; unsubscribe on unmount.
+- Multiple subscribers to same channel share one socket.
+
+## Security
+- `wss://` in production. Auth via URL param or first message — never cookies (CSRF surface).
+- Strip PII from client-side frame logs.

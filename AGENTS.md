@@ -1,7 +1,7 @@
 # traffic-one — Codex CLI
 <!-- SOURCE OF TRUTH for rules content: rules/*.md — update there first, then mirror here -->
 
-You are working in a React + TypeScript project. Every rule below is mandatory.
+You are working in a real-time React + TypeScript monorepo. Every rule below is mandatory.
 Never suggest an alternative library to those listed here.
 
 ---
@@ -19,99 +19,149 @@ Never suggest an alternative library to those listed here.
 - Auth AND authorization checks on every protected endpoint — UI gating is not enough.
 - No stack traces in production responses. `.env*` gitignored.
 
-## Git baseline (always)
-- Conventional commits: `<type>: <imperative>` (≤72 chars). One concern per commit.
-- PR title ≤70 chars; body = *why* bullets + test-plan checklist.
+## Git baseline (Gitflow)
+- Branches: `main` (production), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
+- Conventional commits: `<type>(scope): <imperative>` — subject ≤72 chars, ticket id in scope where applicable.
+- PR title ≤70 chars; body = *why* bullets + test-plan checklist + a11y check + Storybook link.
 - Analyze full `git diff <base>...HEAD` when writing PR descriptions.
-- Never force-push main. Never `--no-verify`.
+- Never force-push `main`/`develop`. Never `--no-verify`.
 
 ---
 
 ## Forced library stack — no exceptions
-- **UI:** react ^18 + typescript ^5 (.tsx/.ts only)
+
+### Build & workspace
+- **Monorepo**: Turborepo with pnpm workspaces (or npm/yarn workspaces if pnpm unavailable)
+- **Per-app bundler**: Vite for libraries and standalone apps
+- **TypeScript ^5** with `"strict": true` and `"noUncheckedIndexedAccess": true`
+
+### Runtime
+- **UI:** react ^18 (.tsx/.ts only)
 - **Routing:** react-router-dom v6
-- **Global state:** zustand (no Redux, no MobX, no Context for state)
-- **Server state:** @tanstack/react-query (not the old `react-query` package)
-- **Styling:** tailwindcss + shadcn/ui (no styled-components, no @emotion, no CSS modules)
+- **Global state:** Redux Toolkit (slices + RTK Query for server state)
+- **Lightweight UI state:** zustand (only ephemeral, non-server, non-shared-business)
+- **Real-time:** native WebSocket or socket.io-client, wrapped in a service singleton
+- **HTTP:** axios (in service functions) or RTK Query — never axios in a component
 - **Forms:** react-hook-form + zod + @hookform/resolvers
-- **HTTP:** axios, inside service functions — never call axios directly in a component
-- **Testing:** vitest + @testing-library/react + msw
-- **Build:** vite
+- **Animations:** framer-motion (declarative); CSS for micro; lottie-react / @react-three/fiber as needed
+
+### Styling
+- **vanilla-extract** — `.css.ts` files generate static CSS at build time
+- **Design tokens** in a shared `packages/design-tokens` (themeContract + createTheme)
+- **No** tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`
+
+### Testing
+- **Unit + integration:** jest + @testing-library/react + @testing-library/user-event
+- **E2E:** @playwright/test
+- **Mocks:** msw for HTTP, in-memory WS fake for real-time
+- **Component dev:** Storybook (@storybook/react-vite)
 
 ## Absolute rules
 - Function components only. No class components.
 - Named exports only. No `export default` for components.
 - No `any` — use `unknown` and narrow.
-- No inline `style={{}}` — Tailwind classes only.
+- No inline `style={{}}` — vanilla-extract `.css.ts` only.
+- No Tailwind utility classes — define styles in `.css.ts`.
 - Props always have an explicit `ComponentNameProps` interface.
-- All API calls go through `src/services/` — never axios in components.
-- Server state lives in React Query. Never duplicate it in Zustand.
-- Features do not import from other features. Share via `src/components/`, `src/hooks/`, `src/stores/`.
+- All API calls go through `services/` or RTK Query slices — never axios in components.
+- Server state lives in RTK Query (or Redux) — never duplicated in zustand or component state.
+- WebSocket connections owned by a service singleton; components subscribe via hooks. Never `new WebSocket()` in a component.
+- Cross-package imports use workspace package names (`@app/ui`, `@app/utils`) — never deep relative paths.
 
-## Folder structure
+## Folder structure (Turborepo monorepo)
 ```
-src/
-├── components/ui/          shadcn primitives — never edit
-├── components/common/      shared app components
-├── features/[name]/        components/ hooks/ stores/ services/ types.ts index.ts
-├── pages/                  thin route wrappers only — no business logic
-├── hooks/                  shared custom hooks (use* prefix)
-├── stores/                 global Zustand stores
-├── services/               api.ts (axios instance) + per-domain files
-├── lib/                    third-party setup
-├── types/                  global TS types
-└── utils/                  pure functions, no side effects
+<repo>/
+├── apps/
+│   └── web/
+│       ├── src/
+│       │   ├── store/             redux store + middleware
+│       │   ├── features/<name>/   components/ hooks/ slice.ts api.ts index.ts
+│       │   ├── pages/             thin route wrappers, no business logic
+│       │   ├── services/ws/       app-specific WS bridges (if not shared)
+│       │   ├── components/        app-only components
+│       │   └── styles/            theme.css.ts, global.css.ts
+│       └── e2e/                   Playwright specs
+└── packages/
+    ├── ui/                        shared component library + Storybook
+    ├── design-tokens/             vanilla-extract themes & tokens
+    ├── api-client/                axios + RTK Query baseQuery + AppError
+    ├── ws-client/                 WebSocket transport + protocol + hooks
+    ├── utils/                     pure utilities (no React imports)
+    ├── tsconfig/                  shared TS configs
+    └── eslint-config/             shared ESLint config
 ```
 
-## Component rules (applies when editing src/components/** or src/features/**/components/**)
-- Keep components under 150 lines. Split if larger.
-- One component per file, named `ComponentName.tsx`.
-- Destructure props at the function signature level.
-- Always handle `isLoading`, `isError`, and empty states explicitly.
-- Lazy-load pages: `React.lazy` + `Suspense` with a skeleton fallback.
+## Component rules (apps/**/src/components/**, packages/ui/**)
+- ≤150 lines, one per file. Co-locate `*.css.ts` and `*.stories.tsx`.
+- Named export. Explicit `ComponentNameProps` interface.
+- Discriminated unions over flag+optional combos for state shapes.
+- Always handle isLoading / isError / empty states explicitly.
+- Lazy-load page-level components: `React.lazy` + `Suspense` with skeleton fallback.
+- `React.memo` / `useCallback` / `useMemo` only after profiling — measure, don't guess.
+- All design values from `@app/design-tokens` — never hardcode colours/spacing.
 
-## Service layer rules (applies when editing src/services/** or src/features/**/services/**)
-- Service functions are plain async functions — not hooks.
-- Always type the return value explicitly.
-- One file per domain: `users.ts`, `products.ts`.
-- Shared axios instance in `src/services/api.ts` only.
+## Real-time rules (services/ws/**, packages/ws-client/**)
+- Singleton connection per endpoint. Components subscribe via hooks.
+- Reconnect with exponential backoff + jitter; heartbeat ping every 15–30 s.
+- Validate every inbound frame with zod; drop malformed, never crash the connection.
+- High-rate streams: aggregate frames and flush via `requestAnimationFrame`. Cap render rate at 30 fps for non-game UIs.
+- States components must render: `idle`, `connecting`, `live`, `reconnecting`, `offline`, `degraded`.
+- Always `wss://` in production. Strip PII from client-side frame logs.
 
 ## State rules
-- Component-local state → `useState` / `useReducer`
-- Shared UI state → Zustand (no server data in Zustand)
-- Server data → React Query with explicit `staleTime`
-- `queryKey` arrays must be fully descriptive: `['users', userId, 'posts']`
+- Server data → RTK Query (or a Redux slice fed by a WS service). Never copy into zustand/state.
+- Cross-feature business state → Redux Toolkit slice (auth, session, game phase).
+- Ephemeral UI state → zustand (one store per concern, never a mega-store).
+- Component-local → useState/useReducer. Form state → react-hook-form.
+- Selectors: `createSelector` for non-trivial derivations. Type with `useAppSelector`/`useAppDispatch`.
 
-## Security rules (applies when editing src/services/** or src/lib/**)
-- Never store JWT tokens in `localStorage` — use httpOnly cookies or in-memory
-- Never log tokens, passwords, or PII to console
-- Validate all mutation payloads with Zod before sending to the API
-- No `dangerouslySetInnerHTML` without DOMPurify sanitisation
-- Never put secrets in `VITE_`-prefixed env vars — they are public
-- Document every env var in `.env.example`, never commit `.env`
+## Service rules
+- Plain async services in `services/<domain>.ts`, RTK Query in feature `api.ts`.
+- Shared axios instance in `packages/api-client`. Interceptors map errors to a typed `AppError`.
+- Validate every response body with zod at the service boundary.
+- One file per domain; explicit return types; no `any`.
 
-## Testing rules (applies when editing **/*.test.* or **/*.spec.*)
-- Test behaviour, not implementation details
-- Query by role first (`getByRole`), then label, then text
-- Use `userEvent` over `fireEvent`
-- Always `await` async interactions
-- MSW handlers in `src/test/handlers.ts`, reset in `afterEach`
+## Testing rules (**/*.test.*, **/*.spec.*, **/e2e/**)
+- Unit: jest for pure functions / reducers / selectors / hooks (`renderHook`).
+- Integration: jest + RTL + msw, real Redux provider.
+- E2E: Playwright against a built preview, route-mocked back-end.
+- Query order: `getByRole` → label → text → placeholder. `getByTestId` last resort.
+- ≥80% coverage on `apps/*/src/features/` and every `packages/*` library.
+- Real-time tests: drive in-memory WS fake; cover connect/first/disconnect/reconnect/malformed/buffer-overflow.
 
-## Backend rules (applies when editing SQL, migrations, src/services/**, server/**, api/**)
-- Postgres types: `timestamptz` not `timestamp`; `numeric` for money; `text` not `varchar(n)`; `jsonb` not `json`.
-- Every hot-path `WHERE`/`JOIN`/`ORDER BY` column indexed; composite indexes equality-first.
-- RLS enabled on every user-data table (Supabase / multi-tenant PG); default-deny policies.
-- Migration safety: non-null on large tables = add nullable → backfill → add NOT NULL. Drops are two-phase.
+## Performance rules
+- Lazy-load every page; preload on hover/focus.
+- Bundle budget: critical path ≤180 KB gz, per-route chunk ≤80 KB gz.
+- Web Vitals targets: LCP ≤2.5 s, INP ≤200 ms, CLS ≤0.1.
+- Tree-shake: named imports only (`import { x } from "lodash-es"`).
+- Real-time render budget: ≤30 fps for non-game UIs; batch via `requestAnimationFrame`.
+- Defensive UI under degraded network: show "reconnecting" banner, mark stale data, queue or fail optimistic actions.
+
+## Accessibility rules
+- Semantic HTML first. `<button>` for actions, `<a>` for navigation, `<dialog>` for modals.
+- Every interactive element keyboard-reachable; visible focus styles.
+- Modals trap focus, restore on close. Skip-link at top of layout.
+- Forms: `<label htmlFor>`; errors via `aria-describedby` + `role="alert"`.
+- Live regions: `aria-live="polite"` for non-urgent (score updates), `"assertive"` only for critical.
+- Respect `prefers-reduced-motion`. Avoid flashes ≥3 Hz.
+- Run `@axe-core/playwright` on every E2E spec.
+
+## Backend rules (when editing SQL, migrations, server/, api/)
+- Postgres types: `timestamptz`, `numeric` (money), `text` (not `varchar(n)`), `jsonb`.
+- Indexes: every hot-path WHERE/JOIN/ORDER BY column; composite indexes equality-first.
+- RLS enabled on every user-data table; default-deny policies; tested with anon + authed roles.
+- Migrations: non-null on big tables = nullable → backfill → NOT NULL. Drops two-phase.
 - API layering: route → controller → service → repository → db. No layer-skipping.
-- All handler input validated with Zod; return 400 with flattened errors, never raw stack traces.
+- All handler input validated with Zod; return 400 with flattened errors.
 
 ## Available skills (invoke with $skill-name or describe your intent)
-- `$create-component` — scaffold a React component
-- `$create-feature` — scaffold a full feature slice
-- `$create-page` — scaffold a lazy-loaded page + route
-- `$create-service` — scaffold a service function + React Query hook
+- `$stack-setup` — first-run onboarding Q&A or stack reconfigure
+- `$create-component` — scaffold a React component (with `.css.ts` + story)
+- `$create-feature` — scaffold a full feature slice (Redux + components + api)
+- `$create-page` — scaffold a lazy-loaded page + route entry
+- `$create-service` — scaffold a service function or RTK Query endpoint
 - `$security-review` — audit code for security issues
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
 - `$context-budget` — audit token consumption across loaded rules/skills
-- `$git-commit` — craft clean commits and PR descriptions
+- `$git-commit` — craft Gitflow-conforming commits and PR descriptions

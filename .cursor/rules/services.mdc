@@ -1,24 +1,32 @@
 <!-- SOURCE OF TRUTH: rules/services.md — update there first, then mirror here -->
 ---
-globs: "src/services/**,src/features/**/services/**"
-alwaysApply: false
+description: Service-layer rules (REST + WebSocket) — applies to service / API client / WS files.
+globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "packages/api-client/**", "packages/ws-client/**", "src/services/**", "src/features/**/services/**"]
 ---
 
 # Service Layer Rules
 
-- Service functions are **plain async functions** — not hooks, not classes.
-- Always type the return value explicitly — never `any`.
-- Shared axios instance lives in `src/services/api.ts`. All service files import from there.
-- One file per domain: `users.ts`, `products.ts`, `orders.ts`.
-- Never access `localStorage`, cookies, or auth tokens inside service functions — use the axios interceptor.
-- Interceptors for auth headers and error handling live in `src/services/api.ts` only.
+## REST: pick RTK Query or plain axios service
+- **RTK Query** for cached server data (most reads).
+- **Plain axios service** for one-off mutations or anything where caching adds no value.
 
-## api.ts pattern
-```ts
-import axios from 'axios';
-export const api = axios.create({ baseURL: import.meta.env.VITE_API_URL });
-api.interceptors.request.use((config) => {
-  // read token from store here
-  return config;
-});
-```
+## Plain axios services
+- Plain async functions, not hooks. Explicit return types. No `any`.
+- One file per domain. Shared instance lives in `packages/api-client`.
+- No localStorage/cookie access in service functions — pass tokens as args or use the request interceptor.
+
+## RTK Query
+- One `createApi` per service domain. End-to-end typed via zod-inferred types.
+- Tag-based invalidation: `providesTags` on queries, `invalidatesTags` on mutations.
+- Polling and `refetchOnFocus` are explicit per-endpoint, not global.
+
+## Errors
+- Map transport errors to a typed `AppError` discriminated union (`network` / `auth` / `validation` / `server`).
+- Components branch on `error.kind`, never on raw HTTP status.
+
+## Validation
+- Validate every response body with zod at the service boundary. Treat as `unknown` until validated.
+
+## WebSocket — see realtime rules
+- Logic lives in `packages/ws-client/` or `apps/<n>/src/services/ws/`.
+- Singleton connection per endpoint. Components subscribe via hooks.
