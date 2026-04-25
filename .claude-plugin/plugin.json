@@ -1,5 +1,5 @@
 {
-  "name": "one-traffic",
+  "name": "traffic-one",
   "description": "Enforces React architecture, security, and clean code on every prompt. Hooks block violations before files are written. Skills auto-trigger on semantic match — no slash commands needed.",
   "version": "2.0.0",
   "author": {

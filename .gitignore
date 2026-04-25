@@ -7,7 +7,8 @@
 .claude/settings.local.json
 .claude/
 
-# Plugin mode lock — written per-project, not committed
+# traffic-one per-project state — written at session start, not committed
+.traffic-one.json
 .claude-plugin-mode
 
 # OS

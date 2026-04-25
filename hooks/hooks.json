@@ -16,7 +16,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'⚛️  one-traffic [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': '⚛️  one-traffic active'}))\n\""
+            "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'⚛️  traffic-one [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': '⚛️  traffic-one active'}))\n\""
           }
         ]
       }
