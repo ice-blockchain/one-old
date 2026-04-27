@@ -13,6 +13,14 @@ Never suggest an alternative library to those listed here.
 - Files 200–400 lines; functions do one thing (~50 lines max); early returns over nesting.
 - Handle every error explicitly; validate all input at boundaries with a schema.
 
+## Execution discipline (always)
+- State important assumptions before changing code; verify behavior/security/data-shape choices instead of guessing.
+- If a request has multiple plausible meanings, name the interpretations and ask or choose the smallest reversible step.
+- Implement the smallest code that satisfies the current requirement; no speculative abstractions or future-proofing.
+- Every changed line must trace to the user's request or to keeping verification healthy.
+- Do not reformat, rename, move, or improve adjacent code as a drive-by change.
+- Convert non-trivial work into concrete success criteria; reproduce bugs first when practical.
+
 ## Security baseline (always)
 - No hardcoded secrets. All secrets via env vars, presence checked at startup.
 - Parameterized SQL only. Validate every request body/query/params with Zod.
@@ -165,3 +173,4 @@ Never suggest an alternative library to those listed here.
 - `$postgres-review` — review SQL, migrations, indexes, RLS
 - `$context-budget` — audit token consumption across loaded rules/skills
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
+- `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification
