@@ -1,0 +1,53 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/services.md -->
+---
+description: React service layer — RTK Query slice patterns, generated hooks, tag invalidation.
+globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "apps/**/src/features/**/api.ts", "packages/api-client/**", "src/services/**", "src/features/**/services/**"]
+---
+
+# React Service Layer — RTK Query
+
+## When to use what
+- **RTK Query** for cached/refetched/shared data.
+- **Plain axios service** for one-off mutations / uploads / non-cacheable.
+- **Generated hooks only** in components.
+
+## Slice shape
+```ts
+export const marketsApi = createApi({
+  reducerPath: "marketsApi",
+  baseQuery: baseQueryWithAuth,
+  tagTypes: ["Market"],
+  endpoints: (b) => ({
+    getMarkets: b.query<Market[], { status?: string }>({
+      query: (params) => ({ url: "/markets", params }),
+      providesTags: (r) => r ? [...r.map(({id}) => ({type: "Market" as const, id})), "Market"] : ["Market"],
+      transformResponse: (raw: unknown) => MarketSchema.array().parse(raw),
+      keepUnusedDataFor: 30,
+    }),
+    placeBet: b.mutation<Bet, PlaceBetInput>({
+      query: (body) => ({ url: "/bets", method: "POST", body }),
+      invalidatesTags: ["Market"],
+    }),
+  }),
+});
+export const { useGetMarketsQuery, usePlaceBetMutation } = marketsApi;
+```
+
+## Component usage
+- Call generated hooks at the top of the component, not in callbacks/effects.
+- Project narrowly with `selectFromResult`.
+- Branch on the typed `AppError` discriminated union, never `error.status`.
+
+## Tag invalidation
+- Every mutation lists `invalidatesTags` for affected queries.
+- Target by id (`{ type: "Market", id }`) when possible — avoid broad invalidation.
+- Optimistic updates via `onQueryStarted` + `updateQueryData`. Always undo on failure.
+
+## Auth
+- Token reads in the request interceptor of `packages/api-client`. Never in endpoints/components.
+- Token refresh in a `baseQuery` wrapper that retries once on 401.
+
+## File location
+- App-specific: `apps/<n>/src/features/<feature>/api.ts`.
+- Shared: `packages/<n>/src/api.ts`.
+- Plain async services (uploads): `apps/<n>/src/services/<domain>.ts`.

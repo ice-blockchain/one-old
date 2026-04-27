@@ -8,45 +8,35 @@ paths:
   - "**/*.controller.ts"
 ---
 
-# Node.js / Backend Rules
+# Node.js Backend Rules
 
-## API shape (REST)
+## REST shape
 ```
-GET    /api/widgets            list
-GET    /api/widgets/:id        read
-POST   /api/widgets            create
-PATCH  /api/widgets/:id        partial update
-DELETE /api/widgets/:id        delete
+GET /api/widgets            list
+GET /api/widgets/:id        read
+POST /api/widgets           create
+PATCH /api/widgets/:id      partial update
+DELETE /api/widgets/:id     delete
 ```
-- Resource URLs, nouns not verbs.
-- Query params for filter/sort/pagination: `?status=active&sort=-createdAt&limit=20&cursor=...`.
-- Prefer cursor pagination over `offset` once tables exceed ~10k rows.
+- Resource nouns. Query params for filter/sort/pagination.
+- Cursor pagination once tables exceed ~10k rows.
 
-## Layering (never skip layers)
-```
-route  →  controller  →  service  →  repository  →  db
-```
-- **Route**: binds URL to controller. No logic.
-- **Controller**: parses input (zod), calls service, maps result to HTTP. No DB access.
-- **Service**: business logic. Orchestrates repos. Knows nothing about HTTP.
-- **Repository**: the only layer that talks to the DB.
+## Layering — never skip
+`route → controller → service → repository → db`
+- **Controller**: zod-validate input, call service, map to HTTP. No DB.
+- **Service**: business logic. No HTTP.
+- **Repository**: only layer that talks to DB.
 
-## Validation
-- Every handler validates its `body`, `query`, and `params` with a schema.
-- Return `400` with the zod error flattened, never a raw stack trace.
-
-## Errors
-- One typed error hierarchy (e.g. `AppError` with `status`, `code`, `message`).
-- Central error middleware maps thrown errors → HTTP.
-- Log with request id; never log secrets or full request bodies containing PII.
+## Validation & errors
+- Validate body / query / params with zod in every handler.
+- Return 400 with flattened zod errors — never raw stack traces.
+- One typed error hierarchy; central middleware maps to HTTP.
+- Log with request id; never log secrets or PII.
 
 ## Async & performance
-- Always `await` — unhandled promise rejections crash Node.
-- Cache read-heavy endpoints (HTTP cache headers or Redis).
-- Long jobs go to a queue (BullMQ, pg-boss) — never block the request.
-- Connection pool sized to `cpu_cores × 2` as a starting point; tune via load test.
+- Always `await`. Cache read-heavy endpoints. Long jobs → queue (BullMQ, pg-boss).
+- Connection pool: `cpu_cores × 2` starting point.
 
-## Dependencies (backend)
-- HTTP client: `axios` or native `fetch` — wrapped in a typed client module.
-- DB: parameterized queries only (`pg`, `drizzle`, `prisma`, `supabase-js`).
+## Dependencies
+- Parameterised SQL only (`pg`, `drizzle`, `prisma`, `supabase-js`).
 - Auth: battle-tested libs (`jsonwebtoken`, provider SDK) — never hand-roll crypto.

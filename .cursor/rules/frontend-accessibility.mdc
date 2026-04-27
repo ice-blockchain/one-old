@@ -1,0 +1,42 @@
+<!-- SOURCE OF TRUTH: rules/frontend/accessibility.md -->
+---
+description: Accessibility (WCAG 2.1 AA + real-time UI a11y) — framework-agnostic.
+globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
+---
+
+# Accessibility — framework-agnostic
+
+## Semantic HTML first
+- `<button>` for actions, `<a href>` for navigation, `<dialog>` for modals.
+- Never an interactive `<div>`. Outline pages with `<nav>` / `<main>` / `<header>` / `<footer>`.
+
+## Keyboard
+- Every interactive element reachable by Tab in document order.
+- Visible focus styles. Match widget role (arrows in menus/tabs, Esc closes dialogs).
+- Skip-link at the top of every layout.
+
+## Focus management
+- Modals trap focus; restore to trigger on close.
+- Move focus to `<main>` / new heading after route changes.
+- Live regions: `aria-live="polite"` (chat, score), `"assertive"` only for critical (errors, payment).
+- Don't move focus on real-time updates.
+
+## Forms
+- `<label htmlFor>` always; placeholder is not a label.
+- `<fieldset>` + `<legend>` for groups.
+- Errors via `aria-describedby` + `role="alert"`.
+
+## Images & media
+- Meaningful `alt`; decorative use `alt=""`. Icon-only buttons → `aria-label`.
+- Captions for video. No auto-play with sound without visible mute.
+
+## Colour & motion
+- Contrast ≥ 4.5:1 (3:1 for large/bold). Never colour alone for state.
+- Respect `prefers-reduced-motion`. Avoid flashes ≥ 3 Hz.
+
+## Real-time gotchas
+- Don't yank focus on incoming frames.
+- Score updates: `aria-live="polite"` + `aria-atomic="true"`.
+
+## Testing
+- `@axe-core/playwright` on every E2E spec. Manual smoke with VoiceOver / NVDA.

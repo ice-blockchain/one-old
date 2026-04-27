@@ -1,0 +1,41 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/testing.md -->
+---
+description: React testing — RTL queries, renderHook, jest config, real-time fakes in React.
+globs: ["**/*.test.tsx", "**/*.spec.tsx", "src/test/**", "apps/**/src/test/**"]
+---
+
+# React Testing — RTL + jest
+
+## RTL queries
+- Order: `getByRole` → label → text → placeholder. `getByTestId` last resort.
+- `userEvent` over `fireEvent`. Always `await` interactions and `findBy*`.
+- Render through real Redux Provider with the slice(s) under test.
+- Assert on what the user sees, never Redux state directly.
+
+## Test render helper
+- Each app exports `renderWithProviders` wrapping RTL render with the real provider chain.
+- Tests never construct providers ad-hoc.
+```tsx
+export function renderWithProviders(ui, { store = setupStore(), ...opts } = {}) {
+  return { store, ...rtlRender(<Provider store={store}><ThemeProvider>{ui}</ThemeProvider></Provider>, opts) };
+}
+```
+
+## Custom hooks
+- `renderHook` from `@testing-library/react`.
+- Same provider chain via `wrapper`. Drive state changes with `act()`. Assert via `result.current`.
+
+## Jest config
+- Preset: `ts-jest` or `@swc/jest`. `testEnvironment: "jsdom"`.
+- `setupFilesAfterEach`: `@testing-library/jest-dom`.
+- ≥80% coverage on `apps/*/src/features/` and every `packages/*` library.
+
+## Real-time tests
+- In-memory WS fake driving the bridge middleware.
+- `fake.push(...)` synchronously, then `await screen.findByText(...)`.
+- Cover: connect / disconnect / reconnect / malformed.
+
+## Accessibility assertions
+- `getByRole` with `name:` predicate.
+- `expect(button).toHaveAccessibleName(/place bet/i)`.
+- `axe` per spec via `@axe-core/react` (component) or `@axe-core/playwright` (E2E).

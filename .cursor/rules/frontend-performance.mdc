@@ -1,0 +1,36 @@
+<!-- SOURCE OF TRUTH: rules/frontend/performance.md -->
+---
+description: Frontend performance — framework-agnostic Web Vitals, bundles, images, fonts, frame batching.
+globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
+---
+
+# Frontend Performance — framework-agnostic
+
+## Web Vitals targets (4G mid-range)
+LCP ≤ 2.5 s · INP ≤ 200 ms · CLS ≤ 0.1 · TTFB ≤ 800 ms.
+
+## Bundle budgets
+Critical path ≤ 180 KB gz · per-route chunk ≤ 80 KB gz. Fail CI when over.
+
+## Code splitting & loading
+- Lazy-load routes; dynamic-import heavy libs at usage site.
+- Preload next probable route on hover/focus.
+- `<link rel="modulepreload">` for critical chunks; `<link rel="preconnect">` to API/CDN.
+
+## Tree-shaking
+- Named imports only (`import { x } from "lodash-es"`).
+- `"sideEffects": false` for pure packages. Dedup deps via pnpm + Turborepo.
+
+## Images & fonts
+- Explicit `width` / `height` (CLS).
+- `loading="lazy"` + `decoding="async"` below the fold. AVIF/WebP with fallback.
+- SVG icons inlined. Fonts: `font-display: swap`, preload primary weight, subset glyphs.
+
+## Real-time render budget
+- ~30 fps non-game UIs, 60 fps for canvases.
+- Batch high-rate updates (>10 Hz) via `requestAnimationFrame`.
+- Drop oldest non-critical frames past buffer threshold.
+
+## Defensive UI
+- "Reconnecting" banner; last-known-good values with `aria-busy="true"`.
+- Queue or fail optimistic actions when socket is down.

@@ -1,0 +1,41 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/stores.md -->
+---
+description: React state management — Redux Toolkit + RTK Query + zustand boundaries.
+globs: ["apps/**/src/store/**", "apps/**/src/stores/**", "apps/**/src/features/**/stores/**", "src/store/**", "src/stores/**", "src/features/**/stores/**"]
+---
+
+# React State Management
+
+## Boundaries
+| Need | Tool |
+|---|---|
+| Server data | **RTK Query** (or Redux slice fed by WS service) |
+| Cross-feature global business state | **Redux Toolkit slice** |
+| Lightweight ephemeral UI state | **zustand** |
+| Component-local | useState/useReducer |
+| Form | react-hook-form |
+
+**Server data lives in exactly one place.** Never copy into zustand or component state.
+
+## Redux Toolkit
+- Store config in `apps/<n>/src/store/index.ts` (or `packages/store` if shared).
+- One slice per domain. `createSelector` for non-trivial derivations.
+- RTK Query for server state; `createAsyncThunk` only for non-cacheable side-effects.
+- Type the store: `RootState`, `AppDispatch`. Use `useAppSelector` / `useAppDispatch`.
+- Always select the narrowest slice — never the whole state.
+
+## RTK Query
+- One `createApi` per service domain.
+- `providesTags` on queries, `invalidatesTags` on mutations.
+- `keepUnusedDataFor` per endpoint. Polling and `refetchOnFocus` explicit per-endpoint.
+- `transformResponse` + zod for validation.
+- Generated hooks only in components.
+
+## zustand (UI-only)
+- One store per UI concern. No mega-store.
+- Allowed: booleans, ids, transient ranges. Not allowed: server entities or fetched lists.
+- Subscribe via selectors. Expose `reset()`; call on logout / unmount.
+
+## WebSocket → Redux bridge
+- WS service dispatches Redux actions on relevant frames.
+- Components read derived state via selectors; never touch the socket.

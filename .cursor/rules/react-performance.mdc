@@ -1,0 +1,30 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/performance.md -->
+---
+description: React performance — lazy/Suspense, memo/useCallback/useMemo, useSyncExternalStore.
+globs: ["apps/**/src/pages/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui/**", "src/pages/**", "src/components/**", "src/features/**/components/**"]
+---
+
+# React Performance
+
+## Code splitting
+- Every page lazy-loaded: `React.lazy` + `<Suspense fallback={<PageSkeleton />}>`.
+- Heavy libs dynamic-imported at usage site.
+- Preload next probable route on hover/focus.
+
+## Renders
+- No inline objects/arrays/functions as props to memoised children.
+- Subscribe narrowly: `useAppSelector(s => s.game.phase)`.
+- zustand: select slices. RTK Query: `selectFromResult` for narrow projection.
+- Virtualise lists >100 items (`@tanstack/react-virtual`).
+- Profile before adding `memo`/`useMemo` — measure.
+
+## Real-time render budget (React-side)
+- Apply frame batching from `frontend/performance.md`.
+- `startTransition` for non-urgent updates.
+- Wrap WS-driven setState in a tick aggregator hook.
+
+## Hooks discipline
+- One responsibility per hook. Name `useThing`.
+- `useEffect` deps complete; never disable the lint rule.
+- Cleanup every subscription (listeners, timers, sockets).
+- `useSyncExternalStore` for external mutable sources outside Redux.

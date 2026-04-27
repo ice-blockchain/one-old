@@ -1,0 +1,30 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/components.md -->
+---
+description: React component rules — structure, props, vanilla-extract, Storybook.
+globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui/**", "src/components/**", "src/features/**/components/**"]
+---
+
+# React Component Rules
+
+## Structure
+- One component per file, named `ComponentName.tsx`.
+- Co-locate `ComponentName.css.ts` and `ComponentName.stories.tsx`.
+- ≤150 lines; split if larger. Named exports only.
+
+## Props & types
+- Explicit `ComponentNameProps` interface above the component.
+- Discriminated unions over boolean flags + optional fields.
+- `React.forwardRef` for DOM-wrapping primitives.
+
+## Rendering & data
+- Data-fetching extracted into `useComponentName` hook; component stays presentational.
+- Always handle isLoading / isError / empty states explicitly.
+- Subscribe to real-time via a hook; never `new WebSocket()` in a component.
+- Lazy-load page-level components: `React.lazy` + `Suspense` + skeleton fallback.
+
+## Styling (vanilla-extract)
+- Sibling `.css.ts` file. Pull every value from `@app/design-tokens`.
+- Themes via `createTheme` + `themeContract`. Responsive: `@media` inside `.css.ts`.
+
+## Stories
+- Every shared `packages/ui` component: default + variants + loading + error + empty.

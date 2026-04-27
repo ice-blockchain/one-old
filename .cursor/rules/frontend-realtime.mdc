@@ -1,0 +1,43 @@
+<!-- SOURCE OF TRUTH: rules/frontend/realtime.md -->
+---
+description: WebSocket / real-time architecture — framework-agnostic transport, lifecycle, back-pressure.
+globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/*.socket.ts", "**/*.ws.ts"]
+---
+
+# Real-time / WebSocket — framework-agnostic
+
+## Architecture
+- **Singleton per endpoint.** One module owns the connection.
+- Three layers: Transport → Protocol → Bridge.
+- Place in `packages/ws-client/` for shared, `apps/<n>/src/services/ws/` for app-only.
+
+## Connection lifecycle
+- Connect lazily on first subscriber, eagerly on mount for game UIs.
+- Heartbeat every 15–30 s; 2 missed pongs = disconnected.
+- Reconnect with exponential backoff (1, 2, 5, 10, capped at 30 s) plus jitter.
+- Resume cleanly with sequence id / resume token; server replays missed frames.
+- "Reconnecting" banner after N attempts; "offline" after the cap.
+
+## Back-pressure
+- High-rate streams (>10 Hz): aggregate frames, flush via `requestAnimationFrame`.
+- Buffer threshold (~200 frames): drop oldest non-critical; never silently drop ordered.
+- Watch outbound `bufferedAmount` — throttle if it grows.
+
+## Consistency
+- Sequence ids on every relevant frame. Drop or reorder out-of-order.
+- Periodic snapshots for state that must converge (scoreboards, balances).
+- On reconnect without resume support: invalidate dependent caches, refetch.
+
+## Errors & defensive UI
+- zod-validate every inbound frame. Bad frame logs + drops, never crashes connection.
+- Render: `idle` / `connecting` / `live` / `reconnecting` / `offline` / `degraded`.
+- `aria-live="polite"` on connection status region.
+
+## Security
+- `wss://` in production. Auth in URL/first-message, never cookies.
+- Strip PII from client-side frame logs.
+
+## Testing
+- Unit: protocol layer with deterministic frames.
+- Integration: in-memory WS fake driving the bridge synchronously.
+- Cover: connect → first → disconnect → reconnect → backlog drain → malformed → buffer overflow.
