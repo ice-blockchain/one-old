@@ -1,7 +1,8 @@
 # traffic-one — Real-time React + TypeScript Monorepo Plugin
 
 You are working inside a project governed by this plugin.
-Every rule below is mandatory. Never suggest an alternative library to those in @rules/core.md.
+Every rule below is mandatory. Never suggest an alternative library to those in
+`rules/core.md` and the active stack core (e.g. `rules/frontend/react/core.md`).
 
 ## Always-on rules (language-agnostic baseline)
 @rules/common/clean-code.md
@@ -9,19 +10,33 @@ Every rule below is mandatory. Never suggest an alternative library to those in 
 @rules/common/security.md
 @rules/common/git.md
 
-## Stack rules (React + TS, Turborepo monorepo, real-time)
+## Framework-agnostic project rules (TypeScript, monorepo, Gitflow)
 @rules/core.md
 
+## Stack-specific core (React web — replace this import for other flavours)
+@rules/frontend/react/core.md
+
 Path-scoped rules — load automatically when you touch matching files:
-- `rules/components.md` — React components
-- `rules/services.md` — REST + WebSocket service layer
-- `rules/stores.md` — Redux Toolkit + zustand boundaries
-- `rules/realtime.md` — WebSocket reconnect/back-pressure/consistency
-- `rules/accessibility.md` — WCAG 2.1 AA + real-time a11y
-- `rules/performance.md` — code splitting, render budget, Web Vitals
-- `rules/testing.md` — Jest + RTL + Playwright
-- `rules/backend/postgres.md` — Postgres types/indexes/migrations/RLS
-- `rules/backend/node.md` — Node service layering
+
+**Framework-agnostic frontend** (`rules/frontend/`):
+- `accessibility.md` — WCAG 2.1 AA + real-time a11y
+- `performance.md` — Web Vitals, bundle budgets, code splitting, defensive UI
+- `realtime.md` — WebSocket transport / protocol / bridge architecture
+- `services.md` — REST + WS service split, AppError contract, zod validation
+- `testing.md` — three-layer model, MSW, Playwright, real-time fakes
+
+**React-specific** (`rules/frontend/react/`):
+- `components.md` — component structure, props, vanilla-extract, Storybook
+- `stores.md` — Redux Toolkit + RTK Query + zustand boundaries
+- `services.md` — RTK Query slice patterns, generated hooks, tag invalidation
+- `realtime.md` — subscription hooks, Redux bridge middleware
+- `performance.md` — React.lazy, memo/useCallback, useSyncExternalStore
+- `testing.md` — React Testing Library, renderHook, jest config
+- `security.md` — JWT in cookies, DOMPurify, VITE_ env vars, CSP
+
+**Backend** (`rules/backend/`):
+- `postgres.md` — Postgres types/indexes/migrations/RLS
+- `node.md` — Node service layering
 
 Mode-specific rules (`rules/modes/*.md`) and the saved stack bundle are injected
 by the SessionStart hook based on `.traffic-one.json`.

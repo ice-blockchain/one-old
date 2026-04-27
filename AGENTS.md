@@ -4,6 +4,13 @@
 You are working in a real-time React + TypeScript monorepo. Every rule below is mandatory.
 Never suggest an alternative library to those listed here.
 
+The rules are layered:
+1. **Common baseline** (clean-code, security, git) — applies to any TypeScript project.
+2. **Project core** (TypeScript strict, Turborepo, Gitflow) — `rules/core.md`, framework-agnostic.
+3. **Stack core** (React + Redux + vanilla-extract + Jest) — `rules/frontend/react/core.md`.
+   Replace this layer to target React Native, Vue, etc. — never mix into the framework-agnostic core.
+4. **Path-scoped rules** (components, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
+
 ---
 
 ## Clean-code baseline (always)
@@ -36,12 +43,20 @@ Never suggest an alternative library to those listed here.
 
 ---
 
-## Forced library stack — no exceptions
+## Project core (framework-agnostic — `rules/core.md`)
 
-### Build & workspace
-- **Monorepo**: Turborepo with pnpm workspaces (or npm/yarn workspaces if pnpm unavailable)
+- **TypeScript ^5** strict (`strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`).
+- **Monorepo:** Turborepo with pnpm workspaces (npm/yarn fallback).
+- Shared code in `packages/*`; cross-package imports use workspace package names.
+- Validate every external input with a typed schema; map errors to a typed `AppError`.
+- Husky + lint-staged + commitlint; lockfile committed; `pnpm audit` in CI.
+
+## React (web) stack core (`rules/frontend/react/core.md`)
+
+### Forced library stack — no exceptions
+
+### Build
 - **Per-app bundler**: Vite for libraries and standalone apps
-- **TypeScript ^5** with `"strict": true` and `"noUncheckedIndexedAccess": true`
 
 ### Runtime
 - **UI:** react ^18 (.tsx/.ts only)

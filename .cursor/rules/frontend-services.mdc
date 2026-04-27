@@ -1,0 +1,35 @@
+<!-- SOURCE OF TRUTH: rules/frontend/services.md -->
+---
+description: Frontend service layer (REST + WS split, AppError, zod validation) — framework-agnostic.
+globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "packages/api-client/**", "packages/ws-client/**", "src/services/**", "src/features/**/services/**"]
+---
+
+# Service Layer — framework-agnostic
+
+## REST: pick a data layer or write a plain service
+- **Cache-friendly reads** → typed data-fetching layer (pick one per project).
+- **One-off mutations / uploads** → plain async service function.
+
+## Plain async services
+- Plain async functions, not hooks. Explicit return types. No `any`.
+- One file per domain. Shared HTTP client in `packages/api-client`.
+- No localStorage / cookies inside service functions — pass as args or use the request interceptor.
+
+## Error contract
+Map every transport error to a typed `AppError`:
+```ts
+type AppError =
+  | { kind: "network"; retryable: true }
+  | { kind: "auth"; status: 401 | 403 }
+  | { kind: "validation"; issues: ZodIssue[] }
+  | { kind: "server"; status: number; message: string };
+```
+UI branches on `error.kind`, never `error.message` / `error.status`.
+
+## Validation
+- zod-validate every response body at the service boundary.
+- Treat raw responses as `unknown` until validated.
+
+## WebSocket
+- Lifecycle, back-pressure, consistency, security: see `frontend/realtime.md`.
+- Components subscribe via framework-specific hooks; never call `new WebSocket()` outside `ws-client/` or `services/ws/`.

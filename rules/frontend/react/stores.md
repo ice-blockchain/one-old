@@ -8,7 +8,7 @@ paths:
   - "src/store/**"
 ---
 
-# State Management Rules
+# React State Management — Redux Toolkit + zustand
 
 ## Boundaries — pick exactly one
 
@@ -40,6 +40,7 @@ paths:
 - `keepUnusedDataFor` set per endpoint based on staleness tolerance — never rely on the global default for hot data.
 - Polling and `refetchOnFocus` are explicit, per-endpoint.
 - Use `transformResponse` to validate with zod; reject malformed payloads.
+- Generated hooks (`useGetMarketsQuery`, `useCreateBetMutation`) — never call the underlying api manually.
 
 ## zustand rules (UI-only)
 
@@ -53,4 +54,4 @@ paths:
 
 - A WS service module dispatches Redux actions on relevant frames (e.g. `gameTick`, `oddsUpdate`).
 - Components read derived state via selectors — they never touch the socket directly.
-- See `rules/realtime.md` for the full bridge pattern.
+- See `frontend/react/realtime.md` for the full bridge pattern.

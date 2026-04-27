@@ -1,0 +1,44 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/realtime.md -->
+---
+description: React real-time — subscription hooks, Redux bridge middleware, useSyncExternalStore.
+globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/use*Channel*.ts", "**/use*Channel*.tsx"]
+---
+
+# React Real-time — hooks & Redux bridge
+
+## Subscription hooks
+```ts
+// good — singleton owns the socket; component subscribes via hook
+const { phase, balance } = useGameTick(gameId);
+
+// bad
+useEffect(() => { const ws = new WebSocket("wss://…"); /* … */ }, []);
+```
+- Hook returns a snapshot; unsubscribes on unmount.
+- Multiple subscribers to the same channel share one socket.
+- Hooks live in `packages/ws-client/src/hooks.ts` (shared) or feature-local `ws/use<Thing>.ts`.
+
+## Redux bridge (recommended)
+- Middleware inside `packages/ws-client` decodes frames and dispatches typed actions.
+- Components read derived state via selectors. Outbound: dispatch a `sendFrame` action.
+
+## `useSyncExternalStore` (when not using Redux)
+```ts
+export function useChannel<T>(name: string, decoder: (frame: unknown) => T): T | null {
+  return useSyncExternalStore(
+    (cb) => channelRegistry.subscribe(name, cb),
+    () => channelRegistry.snapshot<T>(name),
+    () => null,
+  );
+}
+```
+`getServerSnapshot` returns null (or safe default). Registry is module-level singleton; tests inject a fake.
+
+## Render rate
+- Hook output ≤ ~30 changes/s for non-game UIs (60 for canvases).
+- `requestAnimationFrame` batching in the bridge or hook adapter.
+
+## Testing
+- `renderWithProviders` with WS bridge wired to in-memory fake.
+- Push frames synchronously and `await screen.findByText(...)`.
+- Cover: connect / disconnect-with-banner / malformed-ignored / reconnect-converges.

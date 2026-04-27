@@ -33,40 +33,58 @@ STATE_VERSION      = 1
 STACKS = {
     "react-realtime-monorepo": {
         "label": "Real-time React monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright (recommended)",
-        "priority": [
-            "rules/core.md",
+        # Always loaded — the model needs these to know the stack and rules of the road.
+        "mandatory": [
+            "rules/core.md",                    # framework-agnostic project core
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/components.md",
-            "rules/services.md",
-            "rules/stores.md",
-            "rules/realtime.md",
-            "rules/accessibility.md",
-            "rules/performance.md",
-            "rules/testing.md",
             "rules/common/git.md",
+            "rules/frontend/react/core.md",     # React-web stack core (forced libs + absolute rules)
+        ],
+        # Filled in priority order until budget is hit; the rest defer to path-scoped attach.
+        "optional": [
+            "rules/frontend/accessibility.md",
+            "rules/frontend/performance.md",
+            "rules/frontend/realtime.md",
+            "rules/frontend/services.md",
+            "rules/frontend/testing.md",
+            "rules/frontend/react/components.md",
+            "rules/frontend/react/stores.md",
+            "rules/frontend/react/services.md",
+            "rules/frontend/react/realtime.md",
+            "rules/frontend/react/performance.md",
+            "rules/frontend/react/testing.md",
+            "rules/frontend/react/security.md",
         ],
     },
     "react-frontend-only": {
         "label": "Single-app React: Vite + RTK + vanilla-extract (no backend, no monorepo)",
-        "priority": [
+        "mandatory": [
             "rules/core.md",
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/components.md",
-            "rules/services.md",
-            "rules/stores.md",
-            "rules/accessibility.md",
-            "rules/testing.md",
-            "rules/performance.md",
             "rules/common/git.md",
+            "rules/frontend/react/core.md",
+        ],
+        "optional": [
+            "rules/frontend/accessibility.md",
+            "rules/frontend/performance.md",
+            "rules/frontend/services.md",
+            "rules/frontend/testing.md",
+            "rules/frontend/react/components.md",
+            "rules/frontend/react/stores.md",
+            "rules/frontend/react/services.md",
+            "rules/frontend/react/performance.md",
+            "rules/frontend/react/testing.md",
+            "rules/frontend/react/security.md",
         ],
     },
     "node-backend": {
         "label": "Node + Postgres backend only",
-        "priority": [
+        "mandatory": [
+            "rules/core.md",
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
@@ -74,15 +92,17 @@ STACKS = {
             "rules/backend/node.md",
             "rules/backend/postgres.md",
         ],
+        "optional": [],
     },
     "minimal": {
         "label": "Clean-code + security + git baseline (no framework rules)",
-        "priority": [
+        "mandatory": [
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
             "rules/common/git.md",
         ],
+        "optional": [],
     },
 }
 
@@ -145,8 +165,14 @@ def detect_mode(cwd: pathlib.Path) -> str:
 
 
 # ── Rule packing ─────────────────────────────────────────────────────────────
-def pack_bundle(plugin_root: pathlib.Path, priority_list: list[str], budget: int) -> tuple[str, list[str], list[str]]:
-    """Concatenate rule file contents in priority order until the budget is hit.
+def pack_bundle(
+    plugin_root: pathlib.Path,
+    mandatory: list[str],
+    optional:  list[str],
+    budget:    int,
+) -> tuple[str, list[str], list[str]]:
+    """Concatenate rule files. Mandatory files are ALWAYS included even if they
+    push past the budget; optional files fill remaining headroom in priority order.
 
     Returns (body_text, included_files, dropped_files).
     """
@@ -154,7 +180,20 @@ def pack_bundle(plugin_root: pathlib.Path, priority_list: list[str], budget: int
     included:   list[str] = []
     dropped:    list[str] = []
     total = 0
-    for rel in priority_list:
+
+    # Phase 1 — mandatory: load all, regardless of budget
+    for rel in mandatory:
+        f = plugin_root / rel
+        if not f.exists():
+            continue
+        content = f.read_text()
+        header  = f"# ── {rel} ──\n"
+        body_parts.append(header + content)
+        included.append(rel)
+        total += len(header) + len(content) + 2
+
+    # Phase 2 — optional: fill until budget hit
+    for rel in optional:
         f = plugin_root / rel
         if not f.exists():
             continue
@@ -266,20 +305,24 @@ def main():
 
     if onboarding_complete and stack_id in STACKS:
         # Fast path: onboarding done; pack the chosen stack's bundle.
-        priority = STACKS[stack_id]["priority"]
-        body, included, dropped = pack_bundle(plugin_root, priority, BUDGET_CHARS)
+        spec = STACKS[stack_id]
+        body, included, dropped = pack_bundle(
+            plugin_root, spec["mandatory"], spec["optional"], BUDGET_CHARS,
+        )
         header = (
             f"═══ traffic-one plugin — always-on rules (stack: {stack_id}) ═══\n"
             f"{MODE_SUMMARY[mode]}\n"
         )
         if dropped:
-            header += f"[budget: {len(body)}/{BUDGET_CHARS} chars; deferred to path-scoped hooks: {', '.join(dropped)}]\n"
+            header += f"[budget {len(body)}/{BUDGET_CHARS}; {len(dropped)} rule file(s) deferred to path-scoped attach]\n"
         context = f"{header}\n{body}"
     else:
         # Slow path: onboarding not done. Tell the model to run the Q&A on turn 1.
         directive = onboarding_directive(mode)
-        priority  = STACKS["minimal"]["priority"]
-        body, included, _ = pack_bundle(plugin_root, priority, BUDGET_CHARS // 2)
+        spec      = STACKS["minimal"]
+        body, included, _ = pack_bundle(
+            plugin_root, spec["mandatory"], spec["optional"], BUDGET_CHARS // 2,
+        )
         context = f"{directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n{body}"
 
     # Persist state (mode + any defaults initialized)

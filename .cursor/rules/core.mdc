@@ -1,56 +1,37 @@
-<!-- SOURCE OF TRUTH: rules/core.md — update there first, then mirror here -->
+<!-- SOURCE OF TRUTH: rules/core.md -->
 ---
 alwaysApply: true
 ---
 
-# traffic-one — Core (always active)
+# traffic-one — Core (framework-agnostic)
 
-Real-time React + TypeScript in a Turborepo monorepo. Optimised for low-latency rendering, predictable state, strict typing, accessibility.
+Project-level conventions for any TypeScript project. Stack-specific rules live in
+`react-core.mdc` (React web) or future flavour files.
 
-## Forced library stack — no exceptions
+## Language
+- **TypeScript ^5** — never plain JS for new files.
+- `tsconfig` baseline: `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`.
+- No `any` — `unknown` and narrow.
+- Discriminated unions over flag + optional combos.
+- Infer types from schemas (zod, valibot).
 
-### Build & workspace
-- **Monorepo**: Turborepo with pnpm workspaces
-- **Per-app bundler**: Vite
-- **TypeScript ^5** with `"strict": true` and `"noUncheckedIndexedAccess": true`
+## Workspace
+- **Monorepo:** Turborepo + pnpm workspaces.
+- Shared code in `packages/*`; never duplicate utilities across apps.
+- Cross-package imports use workspace package names — never deep relative paths.
 
-### Runtime
-- **UI:** react ^18 (.tsx/.ts only)
-- **Routing:** react-router-dom v6
-- **Global state:** Redux Toolkit (slices + RTK Query for server state)
-- **Lightweight UI state:** zustand (ephemeral only — never server data)
-- **Real-time:** native WebSocket / socket.io-client behind a service singleton
-- **HTTP:** axios in services or RTK Query — never axios directly in components
-- **Forms:** react-hook-form + zod + @hookform/resolvers
-- **Animations:** framer-motion + CSS + lottie-react / @react-three/fiber
+## File & function size
+- 200–400 lines per file (800 hard cap). Functions ≤ 50 lines, single responsibility.
 
-### Styling
-- **vanilla-extract** — `.css.ts` static CSS at build time
-- **Design tokens** in `packages/design-tokens` (themeContract + createTheme)
-- **No** tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`
-
-### Testing
-- jest + @testing-library/react + @testing-library/user-event
-- @playwright/test (E2E)
-- msw (HTTP mocks) + in-memory WS fake
-- Storybook (@storybook/react-vite)
-
-## Absolute rules
-- Function components only. Named exports only.
-- No `any` — use `unknown` and narrow.
-- No inline styles, no Tailwind classes — vanilla-extract `.css.ts` only.
-- Props always have an explicit `ComponentNameProps` interface.
-- All API calls via `services/` or RTK Query.
-- Server state lives in RTK Query/Redux — never duplicated.
-- WebSocket connections owned by a service singleton; components subscribe via hooks.
-- Cross-package imports use workspace package names.
-
-## Accessibility — non-negotiable
-- Semantic HTML first; ARIA only when semantics don't cover it.
-- Every interactive element keyboard-reachable with visible focus.
-- Live regions: `aria-live="polite"` for non-urgent updates.
-- All images have `alt`; forms always have `<label>`.
+## Validation & errors
+- Validate every external input at the boundary with a typed schema.
+- Map transport errors to a typed `AppError` discriminated union.
+- Handle errors explicitly at every layer.
 
 ## Git — Gitflow
 - Branches: `main` / `develop` / `feature/*` / `release/*` / `hotfix/*`.
-- Conventional commits with ticket id in scope.
+- Conventional commits with ticket id in scope; subject ≤ 72 chars.
+
+## Tooling
+- Husky + lint-staged. Commitlint with conventional rules.
+- Lockfile committed; `pnpm audit` in CI.

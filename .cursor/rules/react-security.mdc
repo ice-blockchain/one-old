@@ -1,0 +1,41 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/security.md -->
+---
+description: React + Vite + browser security — JWT cookies, DOMPurify, VITE_ env vars, CSP.
+globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "apps/**/src/lib/**", "apps/**/src/utils/**", "packages/api-client/**", "src/services/**", "src/features/**/services/**", "src/lib/**", "src/utils/**"]
+---
+
+# React + Vite Frontend Security
+
+## Auth tokens
+- Never `localStorage` for JWT — `httpOnly` cookies or in-memory.
+- Auth state in a Redux slice; the axios interceptor reads from it. Nothing else.
+- Refresh-token flow once in `packages/api-client`, never per feature.
+
+## API calls
+- Never interpolate user input into URL paths — parameterised route helpers.
+- zod-validate user-supplied data before sending.
+- No API keys in frontend. `VITE_` for non-secret config; secrets via server-side proxy.
+
+## XSS
+- No `dangerouslySetInnerHTML` without DOMPurify.
+- No `eval()` / `new Function()` with user-supplied strings.
+- No template-string SQL/HTML construction in shared utilities.
+
+## CSRF
+- Cookie auth: `SameSite=Lax`/`Strict` + `Secure`.
+- Double-submit token or `credentials: "include"` + CSRF header.
+- WebSocket auth via URL/first-message, never cookies.
+
+## Env vars
+- All browser-exposed env vars prefixed `VITE_`. Document in `.env.example`.
+- Never commit `.env` / `.env.local`. Secrets never in `VITE_`.
+- Validate presence at startup; throw on missing critical vars.
+
+## Dependency hygiene
+- Pin majors. `pnpm audit` in CI; fail on high+. Lockfile committed.
+- Review postinstall scripts on additions.
+
+## CSP
+- Strict CSP in production: `default-src 'self'; script-src 'self'; connect-src 'self' wss://<host>`.
+- No `unsafe-inline`. vanilla-extract emits static CSS — strict-style compatible.
+- Report violations to a dedicated endpoint during rollout.
