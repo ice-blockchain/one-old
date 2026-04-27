@@ -1,0 +1,40 @@
+---
+# Language-agnostic behavior baseline - always loaded
+---
+
+# Execution Discipline
+
+Behavioral rules adapted for AI agents working in real codebases. These prevent
+silent assumptions, speculative architecture, and unrelated edits.
+
+## Think before coding
+- State important assumptions before changing code. If a choice affects behavior,
+  security, data shape, or user experience, verify it instead of guessing.
+- When a request has multiple plausible meanings, name the interpretations and
+  ask or choose the smallest reversible step.
+- Push back briefly when the requested path conflicts with project rules, security,
+  or a much simpler existing pattern.
+- If the codebase contradicts the request, stop and surface the mismatch with
+  concrete file references.
+
+## Simplicity first
+- Implement the smallest code that satisfies the current requirement.
+- Do not add abstractions, configuration, extension points, or alternate modes for
+  hypothetical future callers.
+- Prefer existing local patterns over new frameworks, helper layers, or clever APIs.
+- If a solution grows much larger than the behavior requires, simplify before
+  continuing.
+
+## Surgical changes
+- Every changed line must trace to the user's request or to keeping the build/tests
+  healthy after that request.
+- Do not reformat, rename, move, or "improve" adjacent code as a drive-by change.
+- Match existing style in files you touch, even when it differs from your preference.
+- Remove only dead code created by your change. Mention pre-existing dead code
+  separately unless the user asked for cleanup.
+
+## Goal-driven execution
+- Convert non-trivial work into verifiable success criteria before implementing.
+- For bugs, reproduce the failure first when practical, then make the smallest fix.
+- For refactors, preserve behavior and run before/after checks where possible.
+- Keep looping until the chosen verification passes, or report the blocker clearly.
