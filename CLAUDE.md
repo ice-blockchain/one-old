@@ -5,6 +5,7 @@ Every rule below is mandatory. Never suggest an alternative library to those in 
 
 ## Always-on rules (language-agnostic baseline)
 @rules/common/clean-code.md
+@rules/common/execution-discipline.md
 @rules/common/security.md
 @rules/common/git.md
 
