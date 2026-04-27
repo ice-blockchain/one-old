@@ -7,6 +7,7 @@
   },
   "rules": [
     "./.cursor/rules/common-clean-code.mdc",
+    "./.cursor/rules/common-execution-discipline.mdc",
     "./.cursor/rules/common-security.mdc",
     "./.cursor/rules/common-git.mdc",
     "./.cursor/rules/core.mdc",

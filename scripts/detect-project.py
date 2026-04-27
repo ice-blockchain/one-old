@@ -36,6 +36,7 @@ STACKS = {
         "priority": [
             "rules/core.md",
             "rules/common/clean-code.md",
+            "rules/common/execution-discipline.md",
             "rules/common/security.md",
             "rules/components.md",
             "rules/services.md",
@@ -52,6 +53,7 @@ STACKS = {
         "priority": [
             "rules/core.md",
             "rules/common/clean-code.md",
+            "rules/common/execution-discipline.md",
             "rules/common/security.md",
             "rules/components.md",
             "rules/services.md",
@@ -66,6 +68,7 @@ STACKS = {
         "label": "Node + Postgres backend only",
         "priority": [
             "rules/common/clean-code.md",
+            "rules/common/execution-discipline.md",
             "rules/common/security.md",
             "rules/common/git.md",
             "rules/backend/node.md",
@@ -76,6 +79,7 @@ STACKS = {
         "label": "Clean-code + security + git baseline (no framework rules)",
         "priority": [
             "rules/common/clean-code.md",
+            "rules/common/execution-discipline.md",
             "rules/common/security.md",
             "rules/common/git.md",
         ],
