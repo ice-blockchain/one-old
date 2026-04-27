@@ -34,6 +34,13 @@ The rules are layered:
 - Auth AND authorization checks on every protected endpoint — UI gating is not enough.
 - No stack traces in production responses. `.env*` gitignored.
 
+## Dependencies (always — applies to any new install)
+- **Library-first**: when a need isn't covered by the active stack core, search 2–3 candidates and apply the quality gate.
+- Quality gate (lib MUST pass all): maintained (commit ≤ 6 mo) · adopted (≥ 1k stars OR ≥ 100k weekly downloads) · permissive license (MIT/Apache/BSD/ISC) · ships types · no high+ `npm audit`. Frontend extras: ≤ 30 KB gz feature / 100 KB heavy, ESM treeshakeable.
+- If nothing passes → build under `packages/<name>` and write `architecture.md` **before** code. CI fails packages missing `architecture.md`.
+- Note the decision (chosen + rejected with reasons) in the commit body.
+- Trigger `library-pick` skill when in doubt.
+
 ## Git baseline (Gitflow)
 - Branches: `main` (production), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
 - Conventional commits: `<type>(scope): <imperative>` — subject ≤72 chars, ticket id in scope where applicable.

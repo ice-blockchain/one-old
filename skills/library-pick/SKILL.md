@@ -1,0 +1,66 @@
+---
+name: library-pick
+description: PROACTIVELY guide the library-vs-build decision when the user asks to add a library, integrate a new capability, or wonders whether a candidate package is acceptable. TRIGGER when the user says "add a library for X", "should I use Y", "I need a date picker / drag-drop / chart / fuzzy search / state machine / [any feature]", "find a lib for", "is package X any good", "evaluate this dependency", "what library should I use", or describes a need that suggests installing a new dependency. Walks through the quality gate from rules/common/dependencies.md and decides install-vs-build.
+---
+
+# Library Pick — quality-gated decision
+
+When triggered, do the following in this order. Stop and ask the user only if a step needs information you don't have.
+
+## Step 1 — Confirm the need is not already covered
+
+Check the active stack core (e.g. `rules/frontend/react/core.md` for React-web). If the capability is already provided by the forced stack (forms → react-hook-form, server state → RTK Query, animations → framer-motion, etc.), use that and stop. **Do not double up.**
+
+## Step 2 — Surface 2–3 candidates
+
+If the user named a candidate, evaluate it and at least one alternative. If they asked open-endedly, propose 2–3 candidates from npm / GitHub. Show the user the shortlist before evaluating, so they can add or remove.
+
+## Step 3 — Apply the quality gate
+
+For each candidate, fetch and report (via WebFetch / npm registry / GitHub API):
+
+| Check | Threshold | Source |
+|---|---|---|
+| **Maintained** | last commit on default branch ≤ 6 months ago | GitHub repo |
+| **Adopted** | ≥ 1,000 stars OR ≥ 100k weekly npm downloads | npmjs.com / GitHub |
+| **Issue health** | < 500 open OR active triage visible | GitHub Issues |
+| **License** | MIT / Apache-2.0 / BSD / ISC | npm `license` field |
+| **TypeScript** | ships own types OR current `@types/*` | `package.json#types` |
+| **Bundle (FE)** | ≤ 30 KB gz feature, ≤ 100 KB heavy | bundlephobia.com |
+| **Treeshake (FE)** | ESM with `"sideEffects": false` | `package.json` |
+| **Security** | no high+ `npm audit` advisories | `npm audit` |
+
+A library failing **any** check is rejected. Hard "no" regardless of metrics: contradicts the active stack core; GPL/AGPL/SSPL license; lone-maintainer + idle 12+ months.
+
+## Step 4 — Decide
+
+Present a single short table to the user:
+
+```
+Candidate          Stars   Last commit   License   Bundle (gz)   Verdict
+---------------------------------------------------------------------------
+date-fns           34k     2 weeks ago   MIT       3.2 KB        ✓ pass
+moment             47k     1 year ago    MIT       70 KB         ✗ unmaintained, large
+luxon              15k     3 months ago  MIT       22 KB         ✓ pass
+```
+
+Recommend the lightest passing candidate. State *why* the others were rejected. Wait for user confirmation before installing.
+
+## Step 5 — Install OR escalate to build
+
+### If a candidate passed
+- Install with `pnpm add` (workspace-aware; never `npm i` in a sub-package).
+- Pin the major in `package.json` (`^X.Y.Z` is fine for trusted libs).
+- Note in the commit body: `chose <lib> over <alts>: <reason>`.
+
+### If nothing passed
+- Do **not** silently start writing inline code.
+- Propose a new package: `packages/<name>`.
+- **Write `architecture.md` first** using the template from `rules/common/package-architecture.md`. Do NOT begin implementation until the user has acknowledged the design.
+- After implementation, the package PR must include `architecture.md` from its first commit.
+
+## Don't
+- Don't recommend a library you haven't actually checked the gate for.
+- Don't pick the first npm result without comparing alternatives.
+- Don't skip Step 1 — duplicating existing stack capability is the most common waste.
+- Don't add dev-dependencies (test/lint tooling) without the same gate; they pollute lockfiles too.

@@ -10,6 +10,8 @@
     "./.cursor/rules/common-execution-discipline.mdc",
     "./.cursor/rules/common-security.mdc",
     "./.cursor/rules/common-git.mdc",
+    "./.cursor/rules/common-dependencies.mdc",
+    "./.cursor/rules/common-package-architecture.mdc",
     "./.cursor/rules/core.mdc",
     "./.cursor/rules/react-core.mdc",
     "./.cursor/rules/frontend-accessibility.mdc",
