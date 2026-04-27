@@ -10,7 +10,7 @@ paths:
 
 # PostgreSQL Rules
 
-## Data types
+## Types
 | Use case | Correct | Avoid |
 |---|---|---|
 | IDs | `bigint` / `uuid` | `int` |
@@ -20,24 +20,23 @@ paths:
 | JSON | `jsonb` | `json` |
 
 ## Indexes
-- B-tree default. Composite `(a, b)` with equality columns first.
-- `GIN` for `jsonb @>` and full-text. `BRIN` for wide time-series ranges.
+- B-tree default. Composite `(a, b)` equality-first.
+- `GIN` for `jsonb @>` and full-text. `BRIN` for time-series ranges.
 - Partial: `WHERE deleted_at IS NULL`. Covering: `INCLUDE (...)`.
 
 ## Queries
-- Parameterised only — never string interpolation.
-- Every hot query: `EXPLAIN ANALYZE` shows index usage (no `Seq Scan` on large tables).
-- No `SELECT *` in services. No N+1 — batch with `IN (...)` or JOIN.
+- Parameterised only — no string interpolation.
+- Hot queries must show index usage in `EXPLAIN ANALYZE` (no `Seq Scan` on big tables).
+- No `SELECT *` in services. No N+1 loops.
 
 ## Migrations
-- One concern per migration. Reversible where feasible.
+- One concern per migration; reversible where feasible.
 - Non-null on big table: nullable → backfill in batches → NOT NULL.
 - Drops are two-phase (stop reading → deploy → drop).
 
 ## RLS (multi-tenant)
-- ON for every user-data table. Default-deny. Per-role per-action policies.
-- Never rely on client-side tenant filtering. Test with anon + authed in CI.
+- ON for every user-data table. Default-deny. Per-role per-action policies. Test with anon + authed in CI.
 
 ## Connections
-- Pooler (PgBouncer / Supavisor) in serverless or high-concurrency apps.
+- Use a pooler (PgBouncer / Supavisor) for serverless / high concurrency.
 - Transaction-mode pooling breaks prepared statements — match driver config.

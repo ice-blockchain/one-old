@@ -1,0 +1,77 @@
+---
+paths:
+  - "packages/**"
+  - "**/architecture.md"
+---
+
+# `packages/<name>/architecture.md` — required, always
+
+Every workspace package MUST ship an up-to-date `architecture.md` next to its
+`README.md`. It is consumed by AI agents (and humans) to understand the package
+without reading every file. Treat outdated content as a bug.
+
+## Layout
+
+```
+packages/<name>/
+├── package.json           "name": "@app/<name>", "private": true (unless publishing)
+├── README.md              human-facing quickstart (1 paragraph + install + 1 example)
+├── architecture.md        ← THIS FILE — required
+├── src/
+│   ├── index.ts           public barrel
+│   └── ...
+├── test/                  jest specs
+└── tsconfig.json          extends @app/tsconfig
+```
+
+## architecture.md template
+
+```markdown
+# @app/<name> — Architecture
+
+## Purpose
+One paragraph: what this package does and the user-facing capability it enables.
+
+## Why we built this (instead of a library)
+List the candidates we evaluated and why each failed the quality gate.
+- candidate-a — rejected: <license / maintenance / size / fit reason>
+- candidate-b — rejected: <reason>
+
+## Public API
+| Export | Kind | One-line description |
+|--------|------|----------------------|
+| `useThing` | hook | Subscribes a component to <X> |
+| `Thing` | class | Owns <Y> lifecycle |
+| `ThingSchema` | zod schema | Validates inbound <Z> payloads |
+
+## Internal modules
+- `transport.ts` — opens / reconnects / heartbeats the channel.
+- `protocol.ts` — frame codec + zod validation.
+- `bridge.ts` — dispatches into the consuming app's state container.
+
+## External dependencies
+List only direct deps that show up in the public API or public behaviour.
+- `axios` — HTTP transport.
+- `zod` — schema validation.
+
+## Data flow
+Short prose or ASCII diagram showing the request/response or event lifecycle.
+
+## Usage
+Minimal end-to-end example a consumer can paste.
+
+## Constraints & non-goals
+- What this package does NOT do (and where to look instead).
+- Known limitations.
+- Performance characteristics (rough big-O for hot paths).
+
+## Tests
+- Unit: `test/*.test.ts`.
+- Integration: covered by `apps/web/e2e/*.spec.ts` for the user-facing flows.
+```
+
+## Lifecycle rule
+
+Write `architecture.md` **before** the implementation. It doubles as the design
+doc — the package PR must include it from the first commit. Updates to public
+API, internal modules, or constraints must update this file in the same PR.

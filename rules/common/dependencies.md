@@ -1,0 +1,19 @@
+---
+paths:
+  - "package.json"
+  - "**/package.json"
+  - "pnpm-workspace.yaml"
+---
+
+# Dependencies — library-first, with a quality gate
+
+When you need a capability not covered by the active stack core:
+
+1. **Search** for 2–3 candidates on npm + GitHub.
+2. **Apply the quality gate**: maintained (commit ≤ 6 months old) · adopted (≥ 1k stars OR ≥ 100k weekly downloads) · permissive license (MIT/Apache/BSD/ISC) · ships types · no high+ `npm audit` advisories. Frontend extras: bundle ≤ 30 KB gz feature / 100 KB heavy, ESM treeshakeable.
+3. **If a candidate passes** → install + lock major. Note the decision (chosen + rejected with reason) in the commit body.
+4. **If none pass** → build it under `packages/<name>` and write `architecture.md` **before** code. Full template loads from `rules/common/package-architecture.md` when you touch `packages/**`.
+
+Hard "no" regardless of metrics: anything contradicting the active stack core; GPL/AGPL/SSPL; lone-maintainer libs idle 12+ months.
+
+When in doubt, trigger the **library-pick** skill — it walks the gate against your specific candidates.

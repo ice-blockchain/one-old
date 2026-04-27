@@ -4,45 +4,29 @@
 
 # Clean Code (baseline)
 
-Universal principles that apply regardless of language or framework. For React-specific rules see `rules/react.md`; for backend see `rules/backend/`.
+Universal principles, language-agnostic. Stack rules layer on top in `core.md`
+and `frontend/<flavour>/core.md`.
 
 ## Core principles
-- **KISS** — simplest solution that works; no cleverness for its own sake.
-- **DRY** — extract repeated logic only once repetition is real (2–3 occurrences), not speculative.
-- **YAGNI** — do not build abstractions, config knobs, or extension points until a real caller exists.
-- **Readability first** — code is read far more than written; self-documenting names beat comments.
+- **KISS** — simplest solution that works.
+- **DRY** — extract only after 2–3 real repetitions, never speculative.
+- **YAGNI** — no abstractions, config knobs, or extension points before a real caller exists.
+- **Readability first** — self-documenting names beat comments.
 
 ## Immutability
-- Return new objects/arrays — never mutate inputs.
-- Prefer `const` by default; `let` only when reassignment is the clearest path.
-- Pure functions where possible; isolate side effects.
+- Return new objects/arrays; never mutate inputs.
+- `const` by default. Pure functions where possible; isolate side effects.
 
 ## Naming
-- `camelCase` for variables/functions, `PascalCase` for types/components, `UPPER_SNAKE_CASE` for constants.
-- Booleans start with `is`, `has`, `should`, or `can`.
-- No abbreviations except universally known ones (`id`, `url`, `db`).
-- Names describe intent, not implementation (`fetchUser`, not `getUserFromDb`).
+- `camelCase` vars/functions, `PascalCase` types/components, `UPPER_SNAKE_CASE` constants.
+- Booleans start with `is` / `has` / `should` / `can`.
+- Names describe intent (`fetchUser`), not implementation (`getUserFromDb`).
+- Avoid abbreviations except universal ones (`id`, `url`, `db`).
 
-## File size
-- Target 200–400 lines per file; 800 is the hard ceiling.
-- Many small focused files > few large ones. Split by feature/domain, not by type.
-
-## Functions
-- One responsibility per function. If you need "and" to describe it, split it.
-- Max ~50 lines per function; extract helpers above that.
-- Early returns over nested conditionals.
-- No magic numbers — name every meaningful constant.
-
-## Error handling
-- Handle errors explicitly at every layer — never silently swallow.
-- User-facing errors must be friendly; logs must carry full context.
-- Validate all input at system boundaries (HTTP, DB, file, user).
-- Fail fast with clear messages.
-
-## Types
-- No `any` — use `unknown` and narrow.
-- Infer types from schemas (zod, etc.) rather than duplicating them.
-- Prefer discriminated unions over boolean flags + optional fields.
+## File & function size
+- Files 200–400 lines (800 hard cap). Many small files > few large.
+- Functions one responsibility, ~50 lines max. Extract helpers above that.
+- Early returns over nested conditionals. No magic numbers.
 
 ## Code smells to avoid
 - Deep nesting (>3 levels) — extract or early-return.
