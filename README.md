@@ -14,11 +14,13 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── create-feature.md
 │   ├── create-page.md
 │   ├── create-service.md
+│   ├── execution-discipline.md
 │   ├── security-review.md
 │   └── refactor.md
 │
 ├── rules/                   ← SHARED — single source of truth for all rule content
 │   ├── core.md              always loaded (no path filter)
+│   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
 │   ├── components.md        auto-attached: src/components/**, src/features/**/components/**
 │   ├── services.md          auto-attached: src/services/**, src/features/**/services/**
 │   ├── stores.md            auto-attached: src/stores/**, src/features/**/hooks/**
@@ -56,6 +58,7 @@ automatically invokes the full skill body when your prompt matches:
 | "add a user management feature" | `create-feature` |
 | "I need a /dashboard route" | `create-page` |
 | "add an API call for orders" | `create-service` |
+| "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
 | "refactor this component" | `refactor` |
 
@@ -98,6 +101,7 @@ Or via Cursor Settings → Plugins → Add.
 | What to change | Where |
 |----------------|-------|
 | Library stack, folder structure, core rules | `rules/core.md` (then mirror to `AGENTS.md` + `.cursor/rules/core.mdc`) |
+| Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md` (then mirror to `AGENTS.md` + `.cursor/rules/common-execution-discipline.mdc`) |
 | Component-specific rules | `rules/components.md` → mirror to `.cursor/rules/components.mdc` |
 | Security rules | `rules/security.md` → mirror to `.cursor/rules/security.mdc` + `AGENTS.md` |
 | Add a new skill | Add `skills/your-skill.md` with `description:` trigger phrases |
