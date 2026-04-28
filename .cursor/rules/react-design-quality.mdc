@@ -1,31 +1,46 @@
-<!-- SOURCE OF TRUTH: rules/frontend/react/design-quality.md -->
+<!-- GENERATED FROM: rules/frontend/react/design-quality.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: React web design quality — product-specific UI, usable first screen, polished states, visual QA.
+description: "React Web Design Quality. Generated from rules/frontend/react/design-quality.md."
 globs: ["apps/web/src/**", "packages/ui/**", "src/components/**", "src/features/**/components/**", "src/pages/**"]
+alwaysApply: false
 ---
 
 # React Web Design Quality
 
+Design-quality rules for React web surfaces. Component structure lives in
+`frontend/react/components.md`; styling implementation stays in vanilla-extract
+`.css.ts` files with values from `@app/design-tokens`.
+
 ## Product-specific UI
-- Do not ship generic template-looking UI; make surfaces specific to the product, workflow, and audience.
-- Apps, tools, and games start with the actual usable experience, not a default marketing page.
-- Choose a concrete style direction before coding and express it through tokens, layout, typography, states, and motion.
-- Finish hover, focus, active, loading, empty, and error states intentionally.
+
+- Do not ship generic template-looking UI. The interface should feel specific to the product, workflow, and audience.
+- Build the actual usable experience as the first screen for apps, tools, and games; do not default to a marketing landing page.
+- Choose a concrete style direction before coding, then express it through tokens, layout, typography, interaction states, and motion.
+- Default library styling is a starting point only; finish hover, focus, active, loading, empty, and error states intentionally.
 
 ## Required qualities
+
+Meaningful frontend surfaces should show several of these, chosen for the product:
+
 - Clear hierarchy through scale, density, and spacing contrast.
 - Intentional rhythm instead of uniform padding everywhere.
-- Depth/layering only when it improves comprehension.
-- Deliberate typography and semantic color.
+- Depth or layering through surfaces, overlap, elevation, or motion when it improves comprehension.
+- Typography with a deliberate pairing and readable sizes for the UI density.
+- Color used semantically for state and priority, not only as decoration.
+- Designed hover, focus, active, disabled, loading, empty, and error states.
 - Data visualizations treated as part of the design system.
-- Motion that clarifies state changes and respects reduced motion.
+- Motion that clarifies cause, continuity, or state changes and respects reduced-motion preferences.
 
 ## Must not do
-- No decorative card grids, generic hero sections, or workflow-free dashboards.
-- No hardcoded colors, spacing, font sizes, radii, or shadows; extend shared design tokens first.
-- No page sections inside floating cards.
-- No color-only state or flourishes that hide real product state.
+
+- Do not create decorative card grids, generic hero sections, or dashboard layouts with no workflow point of view.
+- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; extend shared design tokens first.
+- Do not put page sections inside floating cards. Use cards for repeated items, modals, and genuinely framed tools.
+- Do not rely on color alone for state; pair it with text, iconography, or shape.
+- Do not introduce visual flourishes that make text harder to scan, overlap content, or hide real product state.
 
 ## Verification
-- Check desktop/mobile overflow, text clipping, overlap, and visible focus states.
-- Use Playwright screenshots for visual-heavy changes.
+
+- Check desktop and mobile breakpoints for overflow, text clipping, and incoherent overlap.
+- Confirm keyboard focus states are visible and match the visual system.
+- For visual-heavy changes, capture Playwright screenshots at representative breakpoints.

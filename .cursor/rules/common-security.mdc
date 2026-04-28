@@ -1,21 +1,30 @@
-<!-- SOURCE OF TRUTH: rules/common/security.md — update there first, then mirror here -->
+<!-- GENERATED FROM: rules/common/security.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
+description: "Security Baseline. Generated from rules/common/security.md."
 alwaysApply: true
 ---
 
 # Security Baseline
 
-Applies to every change that touches input, auth, storage, or the network.
+Pre-commit checklist — applies to every change that touches input, auth, storage, or the network.
 
-- No hardcoded secrets. All secrets from env vars; presence validated at startup.
-- All user input validated with a schema (zod, pydantic) at the boundary.
-- SQL uses parameterized queries — never string interpolation.
-- HTML output escaped; no `dangerouslySetInnerHTML` without sanitization.
-- Auth AND authorization check on every protected endpoint (not just UI).
-- Rate limiting on public endpoints (auth, search, writes).
-- Error responses do not leak stack traces or internal paths in production.
-- `.env`, `.env.local`, credentials in `.gitignore`.
-- CORS restrictive — no `*` for credentialed endpoints.
+- [ ] No hardcoded secrets (API keys, tokens, passwords, connection strings).
+- [ ] All secrets from environment variables; presence validated at startup.
+- [ ] All user input validated with a schema (zod, pydantic, etc.) at the boundary.
+- [ ] SQL uses parameterized queries — never string interpolation.
+- [ ] HTML output is escaped / auto-escaped by the framework. No `dangerouslySetInnerHTML` without sanitization.
+- [ ] Auth check on every protected endpoint — not just the UI.
+- [ ] Authorization check: is THIS user allowed to access THIS resource?
+- [ ] Rate limiting on public endpoints (auth, search, write operations).
+- [ ] Error responses do not leak stack traces, internal paths, or DB structure in production.
+- [ ] `.env`, `.env.local`, credential files in `.gitignore`.
+- [ ] CORS is restrictive — no `*` for credentialed endpoints.
 
 ## If a secret leaks
-Rotate → invalidate derived tokens → scrub history (after rotation; scrubbing alone is not mitigation).
+1. Rotate it immediately.
+2. Invalidate any derived tokens/sessions.
+3. Scrub git history only after rotation (history scrubbing alone does not help — assume the value is compromised).
+
+## Dependencies
+- Pin exact majors; review transitive updates.
+- Run `npm audit` / `pip-audit` / equivalent in CI; fail on high+ severity.

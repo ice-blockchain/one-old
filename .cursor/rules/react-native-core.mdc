@@ -1,15 +1,46 @@
-<!-- SOURCE OF TRUTH: rules/frontend/react-native/core.md -->
+<!-- GENERATED FROM: rules/frontend/react-native/core.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: Expo-first React Native stack core — forced libraries, folder structure, and absolute rules.
+description: "React Native (Expo) — Stack Core. Generated from rules/frontend/react-native/core.md."
 globs: ["apps/**/app/**", "apps/**/src/**", "packages/ui-native/**", "src/**"]
+alwaysApply: false
 ---
 
 # React Native (Expo) — Stack Core
 
-Use Expo SDK + React Native + TypeScript with Hermes/New Architecture, Expo Router typed routes, Redux Toolkit/RTK Query, zustand for ephemeral UI, axios/RTK Query services, react-hook-form + zod, expo-secure-store, Reanimated/Gesture Handler, Jest/RNTL, MSW, and Maestro.
+Forced library list and absolute rules for Expo-first React Native apps. Detail
+rules live in `rules/frontend/react-native/*`.
 
-- Reusable components use named exports; Expo Router route files may default-export thin route components.
-- Use `StyleSheet.create` in sibling `*.styles.ts`; design values come from `@app/design-tokens`.
-- No NativeWind/Tailwind, styled-components, @emotion, CSS modules, DOM tags, inline object styles, or axios in components.
-- Server state lives in RTK Query/Redux only; WebSocket connections live in service singletons.
-- Monorepo default: `apps/mobile`, `packages/ui-native`, `packages/design-tokens`, `packages/api-client`, `packages/ws-client`, `packages/utils`.
+## Forced library stack — no exceptions
+
+### Runtime
+- **App:** Expo SDK + React Native + TypeScript, Hermes, New Architecture.
+- **Routing:** Expo Router with typed routes.
+- **State:** Redux Toolkit + RTK Query for server/business state; zustand only for ephemeral UI.
+- **I/O:** axios in services or RTK Query; WebSocket/socket.io-client behind service singletons.
+- **Forms/storage:** react-hook-form + zod; expo-secure-store for secrets.
+- **i18n:** i18next + react-i18next; expo-localization for device locale detection; shared typed resources default to `packages/i18n`.
+- **Animation/gestures:** react-native-reanimated + react-native-gesture-handler.
+
+### Build, styling, testing
+- Expo CLI locally, EAS Build/Submit for native builds, Metro bundler.
+- `StyleSheet.create` in sibling `*.styles.ts`; design tokens from `packages/design-tokens`.
+- No NativeWind, Tailwind, styled-components, @emotion, CSS modules, DOM tags, or inline object styles.
+- jest + jest-expo + @testing-library/react-native; msw/fakes for services; Maestro for device E2E.
+
+## Absolute rules
+
+- Function components only. Named exports for reusable components.
+- Expo Router route files may use `export default` because the router requires it; keep them thin and compose named feature components.
+- Explicit `ComponentNameProps`; native primitives or approved shared primitives only.
+- API calls via services/RTK Query; never axios or `new WebSocket()` in components.
+- User-facing text, placeholders, labels, loading/error/empty copy, image accessibility copy, and accessibility labels come from translation keys.
+- Server state in RTK Query/Redux only; never duplicate into zustand/component state.
+- Cross-package imports use workspace names (`@app/ui-native`, `@app/utils`).
+- Monorepo default: `apps/mobile/app`, `apps/mobile/src/features/*`, `packages/ui-native`.
+
+## i18n defaults
+
+- New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
+- React Native apps read the device locale through `expo-localization` and feed it into i18next.
+- Existing apps with a mature i18n package may keep it, but new UI copy still uses `i18next`/`react-i18next`.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.

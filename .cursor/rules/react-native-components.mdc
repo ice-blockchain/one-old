@@ -1,16 +1,45 @@
-<!-- SOURCE OF TRUTH: rules/frontend/react-native/components.md -->
+<!-- GENERATED FROM: rules/frontend/react-native/components.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: React Native component structure, props, primitives, list rendering, and UI boundaries.
+description: "React Native Component Rules. Generated from rules/frontend/react-native/components.md."
 globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
+alwaysApply: false
 ---
 
 # React Native Component Rules
 
-- One component per `ComponentName.tsx`; co-locate `ComponentName.styles.ts`.
-- Explicit `ComponentNameProps`; destructure props in the signature.
-- Named exports for reusable components; default exports only in Expo Router route files.
-- Use RN primitives (`View`, `Text`, `Pressable`, `TextInput`, `Image`, `FlatList`, `SectionList`) or approved shared primitives.
-- Every visible string is inside `Text`; every action is accessible.
-- Handle loading, error, and empty states explicitly.
-- Use `FlatList`/`SectionList` for unbounded data; `@shopify/flash-list` only after measurement.
-- No DOM tags, inline object styles, NativeWind/Tailwind classes, or component-owned sockets.
+Framework-agnostic accessibility rules live in `frontend/accessibility.md`.
+Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
+
+## Structure
+- One component per file, file named `ComponentName.tsx`.
+- Co-locate styles: `ComponentName.tsx` + `ComponentName.styles.ts`.
+- Components stay under 150 lines; split render-only subcomponents when larger.
+- Named exports only for reusable components — no `export default`.
+- Expo Router route files in `app/**` are the only default-export exception.
+
+## Props & types
+- Always declare an explicit `ComponentNameProps` interface above the component.
+- Destructure props at the function signature level.
+- Discriminated unions over boolean flags plus optional fields.
+- Keep route params out of leaf components; parse them in the route/screen and pass typed props down.
+
+## Rendering
+- Use `View`, `Text`, `Pressable`, `TextInput`, `Image`, `FlatList`, `SectionList`, and approved shared primitives.
+- Every user-visible string must be inside `Text` and come from a translation key.
+- Use `react-i18next` for visible copy, placeholders, accessibility labels, loading/error/empty states, and image accessibility copy.
+- Keep translation catalogs in `packages/i18n` by default, using feature-based namespaces.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- Use `Pressable` for actions; set `accessibilityRole` and `accessibilityLabel` when the visible label is not enough.
+- Always handle loading, error, and empty states explicitly.
+- Subscribe to real-time streams via hooks; components never instantiate WebSocket connections.
+
+## Lists
+- Use `FlatList` / `SectionList` for unbounded lists; never `.map()` large network lists in JSX.
+- Provide stable `keyExtractor`, `ListEmptyComponent`, and pagination/loading footers.
+- Use measured `@shopify/flash-list` only for proven list bottlenecks and document the measurement.
+
+## Must not do
+- No DOM tags (`div`, `span`, `button`, `a`, `input`).
+- No inline object styles or ad-hoc arrays created in JSX.
+- No NativeWind/Tailwind class strings.
+- No server data copied into local component state.

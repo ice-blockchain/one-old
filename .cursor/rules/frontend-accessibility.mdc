@@ -1,42 +1,76 @@
-<!-- SOURCE OF TRUTH: rules/frontend/accessibility.md -->
+<!-- GENERATED FROM: rules/frontend/accessibility.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: Accessibility (WCAG 2.1 AA + real-time UI a11y) — framework-agnostic.
+description: "Accessibility — framework-agnostic. Generated from rules/frontend/accessibility.md."
 globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
+alwaysApply: false
 ---
 
 # Accessibility — framework-agnostic
 
+WCAG 2.1 AA is the floor. Real-time UIs add their own pitfalls — handle them.
+React-specific testing helpers live in `frontend/react/testing.md`.
+
 ## Semantic HTML first
-- `<button>` for actions, `<a href>` for navigation, `<dialog>` for modals.
-- Never an interactive `<div>`. Outline pages with `<nav>` / `<main>` / `<header>` / `<footer>`.
+
+- `<button>` for in-page actions; `<a href>` for navigation. Never an interactive `<div>`.
+- `<dialog>` (or a focus-trapping modal primitive) for modals.
+- `<nav>`, `<main>`, `<header>`, `<footer>`, `<section>`, `<article>` — give the page a real outline.
+- `<table>` only for tabular data, with `<caption>` and proper `<th scope>`.
+
+## Localized accessibility copy
+
+- All user-facing text used for accessibility comes from translation keys: visible labels, `aria-label`, `aria-describedby` text, live-region copy, image `alt`, form helper text, errors, and empty states.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- Keep translation values as complete phrases so screen readers announce natural copy; avoid concatenating translated fragments in JSX.
 
 ## Keyboard
+
 - Every interactive element reachable by Tab in document order.
-- Visible focus styles. Match widget role (arrows in menus/tabs, Esc closes dialogs).
-- Skip-link at the top of every layout.
+- Visible focus styles. Never `outline: none` without a replacement.
+- Match widget role: arrow keys for menus/tabs/listboxes, Esc to close dialogs.
+- Skip-link (`Skip to main content`) at the top of every layout.
 
 ## Focus management
-- Modals trap focus; restore to trigger on close.
-- Move focus to `<main>` / new heading after route changes.
-- Live regions: `aria-live="polite"` (chat, score), `"assertive"` only for critical (errors, payment).
-- Don't move focus on real-time updates.
+
+- Modals trap focus; restore to the trigger on close.
+- After route changes, move focus to `<main>` or the new page heading.
+- Live regions: `aria-live="polite"` for non-urgent updates (chat, score ticks); `"assertive"` only for critical (errors, payment confirmations).
+- Don't move focus on real-time data updates — disorienting.
 
 ## Forms
-- `<label htmlFor>` always; placeholder is not a label.
-- `<fieldset>` + `<legend>` for groups.
-- Errors via `aria-describedby` + `role="alert"`.
+
+- Every input has a `<label htmlFor>`; placeholder is not a label.
+- Group related inputs with `<fieldset>` + `<legend>`.
+- Errors: associate via `aria-describedby` and announce with `role="alert"` on first show.
+- Disabled fields convey "not now" — explain why nearby. Prefer hidden over disabled when permanent.
 
 ## Images & media
-- Meaningful `alt`; decorative use `alt=""`. Icon-only buttons → `aria-label`.
-- Captions for video. No auto-play with sound without visible mute.
 
-## Colour & motion
-- Contrast ≥ 4.5:1 (3:1 for large/bold). Never colour alone for state.
-- Respect `prefers-reduced-motion`. Avoid flashes ≥ 3 Hz.
+- All images: meaningful `alt` text. Decorative: `alt=""`.
+- Icon-only buttons: `aria-label` describing the action.
+- Video: captions for prerecorded; live captions where available.
+- Avoid auto-playing media with sound; if you must, give a visible mute control immediately.
 
-## Real-time gotchas
-- Don't yank focus on incoming frames.
-- Score updates: `aria-live="polite"` + `aria-atomic="true"`.
+## Colour & contrast
+
+- Text contrast ≥ 4.5:1 (3:1 for ≥18pt or bold ≥14pt).
+- Never use colour alone to convey state. Pair with icon, text, or pattern.
+- Themes (light/dark): both must pass contrast checks; verify in Storybook.
+
+## Motion
+
+- Respect `prefers-reduced-motion: reduce` — disable parallax, large transforms, looping animations.
+- Avoid flashes ≥ 3 per second (seizure risk).
+- Game animations: provide a "reduced motion" toggle that's discoverable, not buried.
+
+## Real-time UI gotchas
+
+- Don't yank focus when a frame arrives.
+- Live score updates use `aria-live="polite"` with `aria-atomic="true"` so SR users hear the whole new value, not deltas.
+- Disable rapid-fire actions (place bet) under reduced motion / slow input — debounce, don't drop.
 
 ## Testing
-- `@axe-core/playwright` on every E2E spec. Manual smoke with VoiceOver / NVDA.
+
+- `@axe-core/playwright` on every E2E spec for the page under test.
+- Manual smoke with VoiceOver / NVDA on critical journeys before each release.
+- Framework-specific helpers: see `frontend/react/testing.md`.
