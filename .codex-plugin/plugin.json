@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
-  "description": "React + React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow. Rules auto-load via AGENTS.md; skills auto-trigger; hooks block forbidden installs.",
-  "version": "2.0.0",
+  "description": "React + React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Rules auto-load via AGENTS.md; skills auto-trigger; hooks block forbidden installs.",
+  "version": "2.1.0",
   "author": {
     "name": "Traffic-One"
   },
@@ -14,7 +14,7 @@
   "interface": {
     "displayName": "Traffic One",
     "shortDescription": "React and React Native TypeScript workflow rules and scaffolding skills.",
-    "longDescription": "Traffic One adds opinionated React, React Native, TypeScript, Turborepo, testing, security, and Gitflow rules with project-specific Codex skills and hooks.",
+    "longDescription": "Traffic One adds opinionated React, React Native, TypeScript, Turborepo, testing, security, and Gitflow rules with project-specific Codex skills, hooks, and adapted ECC development skills.",
     "developerName": "Traffic-One",
     "category": "Engineering",
     "capabilities": [

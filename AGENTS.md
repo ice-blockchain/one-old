@@ -331,3 +331,4 @@ The rules are layered:
 - `$context-budget` — audit token consumption across loaded rules/skills
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
 - `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification
+- Adapted ECC development skills — broad backend, frontend, mobile, API, testing, security, deployment, and language-specific skills live under `skills/` and auto-trigger from their frontmatter. Each imported skill carries Traffic One precedence metadata; do not inline the full list here to keep context lean.
