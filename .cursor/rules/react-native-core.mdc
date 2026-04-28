@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/core.md -->
+---
+description: Expo-first React Native stack core — forced libraries, folder structure, and absolute rules.
+globs: ["apps/**/app/**", "apps/**/src/**", "packages/ui-native/**", "src/**"]
+---
+
+# React Native (Expo) — Stack Core
+
+Use Expo SDK + React Native + TypeScript with Hermes/New Architecture, Expo Router typed routes, Redux Toolkit/RTK Query, zustand for ephemeral UI, axios/RTK Query services, react-hook-form + zod, expo-secure-store, Reanimated/Gesture Handler, Jest/RNTL, MSW, and Maestro.
+
+- Reusable components use named exports; Expo Router route files may default-export thin route components.
+- Use `StyleSheet.create` in sibling `*.styles.ts`; design values come from `@app/design-tokens`.
+- No NativeWind/Tailwind, styled-components, @emotion, CSS modules, DOM tags, inline object styles, or axios in components.
+- Server state lives in RTK Query/Redux only; WebSocket connections live in service singletons.
+- Monorepo default: `apps/mobile`, `packages/ui-native`, `packages/design-tokens`, `packages/api-client`, `packages/ws-client`, `packages/utils`.

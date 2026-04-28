@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/styles.md -->
+---
+description: React Native StyleSheet/token styling rules.
+globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "apps/**/src/styles/**", "packages/ui-native/**", "**/*.styles.ts"]
+---
+
+# React Native Styling Rules
+
+- Co-locate styles in sibling `*.styles.ts` files.
+- Use `StyleSheet.create`; export named styles.
+- Use `@app/design-tokens` for colors, spacing, typography, radii, shadows, and z-index.
+- Use Safe Area handling at screen boundaries.
+- Respect dynamic type; avoid fixed text containers.
+- No inline object styles except Reanimated hook results.
+- No Tailwind/NativeWind, styled-components, @emotion, CSS modules, or magic numbers when tokens exist.

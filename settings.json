@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "⚛️  Detecting project mode…",
+            "statusMessage": "Detecting project mode...",
             "command": "python3 scripts/detect-project.py 2>/dev/null || python3 -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.'}}))\""
           }
         ]
@@ -16,8 +16,8 @@
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "⚛️  Applying traffic-one rules…",
-            "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'⚛️  traffic-one [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': '⚛️  traffic-one active'}))\n\""
+            "statusMessage": "Applying traffic-one rules...",
+            "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'traffic-one [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': 'traffic-one active'}))\n\""
           }
         ]
       }
@@ -28,8 +28,8 @@
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "⚛️  Validating architecture…",
-            "command": "python3 -c \"\nimport sys, json, re\nd = json.load(sys.stdin)\nfp = d.get('tool_input', {}).get('file_path', '')\ncontent = d.get('tool_input', {}).get('content', '') or d.get('tool_input', {}).get('new_string', '')\n\nviolations = []\n\n# No service/store/hook files directly in pages/\nif re.search(r'(apps/[^/]+/)?src/pages/.*\\.(service|store|hook|query|slice|api)\\.(ts|tsx)$', fp):\n    violations.append('Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.')\n\n# No components dumped directly in src/ or apps/<x>/src/ root\nif re.search(r'(apps/[^/]+/)?src/[A-Z][a-zA-Z]+\\.(tsx|ts)$', fp):\n    violations.append('Components must live in src/components/, src/features/<name>/components/, or packages/ui/* — not directly in src/.')\n\n# No direct cross-feature imports\nfeature_match = re.search(r'src/features/([^/]+)', fp)\nif feature_match:\n    current = feature_match.group(1)\n    cross = [m for m in re.findall(r\\\"from ['\\\\\\\"]@/features/([^/'\\\\\\\"]+)\\\", content) if m != current]\n    if cross:\n        violations.append(f'Cross-feature import detected ({current} → {cross}). Share via packages/ui, packages/utils, or a feature-agnostic store slice.')\n\n# No deep relative imports across packages\nif re.search(r\\\"from ['\\\\\\\"]\\\\.\\\\./\\\\.\\\\./\\\\.\\\\./packages/\\\", content):\n    violations.append('Use the workspace package name (`@app/ui`, `@app/utils`) instead of a deep relative path across packages.')\n\n# No default exports for components\nif fp.endswith('.tsx') and re.search(r'(src|packages/ui)/(components|features|pages)/', fp):\n    if re.search(r'^export default ', content, re.MULTILINE):\n        violations.append('Use named exports only — no default exports for components.')\n\n# No inline styles — vanilla-extract only\nif fp.endswith('.tsx') and 'style={{' in content:\n    violations.append('No inline styles — define styles in a sibling .css.ts file (vanilla-extract).')\n\n# No Tailwind className utilities (rough heuristic: many tw-style classes in one className)\nif fp.endswith('.tsx') and re.search(r'className=\\\"[^\\\"]*\\\\b(bg-|text-|p[xytrbl]?-|m[xytrbl]?-|flex\\\\b|grid\\\\b)[^\\\"]*\\\\s+[^\\\"]*\\\\b(bg-|text-|p[xytrbl]?-|m[xytrbl]?-|flex\\\\b|grid\\\\b)', content):\n    violations.append('Tailwind utility classes detected — this stack uses vanilla-extract. Move styles into a .css.ts file.')\n\n# No `any` type\nif fp.endswith(('.ts', '.tsx')) and re.search(r':\\s*any\\b', content):\n    violations.append('Avoid `any` — use `unknown` and narrow types, or define a discriminated union.')\n\n# No new WebSocket() outside ws-client / services/ws\nif fp.endswith(('.ts', '.tsx')) and 'new WebSocket(' in content and not re.search(r'(packages/ws-client|src/services/ws)/', fp):\n    violations.append('Open WebSocket connections only inside packages/ws-client/ or src/services/ws/. Components must subscribe via hooks.')\n\nif violations:\n    reason = 'traffic-one — architecture violation(s):\\n' + '\\n'.join(f'  • {v}' for v in violations)\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': reason}}))\n\""
+            "statusMessage": "Validating architecture...",
+            "command": "python3 scripts/check-architecture-write.py"
           }
         ]
       },
@@ -38,8 +38,8 @@
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "⚛️  Checking library allowlist…",
-            "command": "python3 -c \"\nimport sys, json, re\nd = json.load(sys.stdin)\ncmd = d.get('tool_input', {}).get('command', '')\n\n# Only check install commands\nif not re.search(r'(npm (install|i|add)|yarn add|pnpm add|bun add)', cmd):\n    sys.exit(0)\n\nforbidden = [\n    ('mobx', 'Use Redux Toolkit for global business state and zustand for ephemeral UI state.'),\n    ('recoil', 'Use Redux Toolkit for global business state and zustand for ephemeral UI state.'),\n    ('jotai', 'Use Redux Toolkit for global business state and zustand for ephemeral UI state.'),\n    ('styled-components', 'Use vanilla-extract for build-time static CSS.'),\n    ('@emotion', 'Use vanilla-extract for build-time static CSS.'),\n    ('tailwindcss', 'Use vanilla-extract — no runtime CSS framework on this stack.'),\n    ('@mui/', 'Build shared primitives in packages/ui on top of vanilla-extract.'),\n    ('antd', 'Build shared primitives in packages/ui on top of vanilla-extract.'),\n    ('material-ui', 'Build shared primitives in packages/ui on top of vanilla-extract.'),\n    ('chakra-ui', 'Build shared primitives in packages/ui on top of vanilla-extract.'),\n    ('bootstrap', 'Build shared primitives in packages/ui on top of vanilla-extract.'),\n    ('swr', 'Use RTK Query for cached server state.'),\n    ('vitest', 'This stack uses Jest for unit/integration and @playwright/test for E2E.'),\n    ('@vitest/', 'This stack uses Jest for unit/integration and @playwright/test for E2E.'),\n    ('next\\\\b', 'This plugin targets Turborepo + Vite apps, not Next.js.'),\n    ('(?<!tanstack/)(?<!\\\\w)react-query(?!-)', 'Use RTK Query, or @tanstack/react-query if you really need it (RTK Query is preferred).'),\n]\n\nhits = [(lib, tip) for lib, tip in forbidden if re.search(lib, cmd)]\nif hits:\n    lines = '\\n'.join(f'  • {lib}: {tip}' for lib, tip in hits)\n    reason = f'Forbidden library detected:\\n{lines}\\n\\nSee rules/core.md for the approved stack.'\n    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'permissionDecision': 'deny', 'permissionDecisionReason': reason}}))\n\""
+            "statusMessage": "Checking library allowlist...",
+            "command": "python3 scripts/check-library-allowlist.py"
           }
         ]
       }

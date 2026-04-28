@@ -1,0 +1,32 @@
+---
+paths:
+  - "apps/**/src/components/**"
+  - "apps/**/src/features/**/components/**"
+  - "apps/**/src/styles/**"
+  - "packages/ui-native/**"
+  - "**/*.styles.ts"
+---
+
+# React Native Styling Rules
+
+## Files
+- Co-locate styles in sibling `*.styles.ts` files.
+- Use `StyleSheet.create({ ... })`; export named style objects only.
+- Keep design tokens in `packages/design-tokens` as plain TS values usable by native and web.
+
+## Tokens
+- Colors, spacing, typography, radii, shadows, and z-index values come from `@app/design-tokens`.
+- Platform-specific tokens live behind a typed adapter, not scattered `Platform.OS` checks.
+- Dark/light themes are selected through a theme provider or typed hook; never hardcode theme branches in components.
+
+## Layout
+- Prefer Flexbox and explicit spacing tokens.
+- Use `SafeAreaView` / `react-native-safe-area-context` at screen boundaries.
+- Respect dynamic type: avoid fixed heights around text; use `numberOfLines` only when truncation is intentional.
+- Use `hitSlop` for small icon-only actions instead of visually inflating icons.
+
+## Prohibited
+- No inline object styles (`style={{ ... }}`) except one-off animated styles returned by Reanimated hooks.
+- No Tailwind/NativeWind, styled-components, @emotion, CSS modules, or web CSS files for native UI.
+- No magic numbers when a token exists.
+- No layout driven by JS media checks unless platform APIs are required.

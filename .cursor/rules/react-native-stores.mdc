@@ -1,0 +1,16 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/stores.md -->
+---
+description: React Native Redux Toolkit, RTK Query, zustand, and persistence boundaries.
+globs: ["apps/**/src/stores/**", "apps/**/src/features/**/stores/**", "apps/**/src/store/**", "src/stores/**", "src/features/**/stores/**", "src/store/**"]
+---
+
+# React Native State Rules
+
+- Server data -> RTK Query or Redux slice fed by WS service.
+- Cross-feature business state -> Redux Toolkit.
+- Ephemeral UI state -> zustand only.
+- Form state -> react-hook-form.
+- Export typed `RootState`, `AppDispatch`, `useAppDispatch`, and `useAppSelector`.
+- Validate RTK Query responses with zod.
+- expo-secure-store for secrets; AsyncStorage only for non-sensitive preferences.
+- Hydration exposes loading/error states.
