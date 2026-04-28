@@ -1,0 +1,39 @@
+---
+paths:
+  - "apps/**/src/services/ws/**"
+  - "apps/**/src/features/**/ws/**"
+  - "packages/ws-client/**"
+  - "**/use*Channel*.ts"
+  - "**/use*Channel*.tsx"
+---
+
+# React Native Real-time Rules
+
+Framework-agnostic WebSocket architecture lives in `frontend/realtime.md`. This
+file covers Expo/React Native integration.
+
+## Ownership
+- One singleton connection per endpoint in `packages/ws-client` or `apps/mobile/src/services/ws`.
+- Components subscribe through hooks; never call `new WebSocket()` in a component.
+- Multiple subscribers to the same channel share the connection.
+
+## Lifecycle
+- Connection states exposed to UI: `idle`, `connecting`, `live`, `reconnecting`, `offline`, `degraded`.
+- Reconnect with exponential backoff and jitter.
+- Heartbeat every 15-30 seconds while foregrounded.
+- Pause or downgrade non-critical streams when the app backgrounds; resume and reconcile on foreground.
+- Always use `wss://` outside local development.
+
+## Validation and privacy
+- Validate inbound frames with zod; malformed frames are dropped and logged without PII.
+- Never log tokens, precise location, contact data, or raw personal payloads.
+- Route frames to Redux actions or a typed external-store adapter.
+
+## Rendering
+- Batch high-rate frames with `requestAnimationFrame`.
+- Cap non-game UI updates at 30 fps.
+- Use `startTransition` for non-urgent updates when supported by the current RN version.
+
+## Testing
+- Use an in-memory WS fake; do not hit a real socket in unit/integration tests.
+- Cover connect, first frame, disconnect, reconnect, malformed frame, and backlog drain.

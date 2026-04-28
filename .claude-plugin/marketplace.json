@@ -8,7 +8,7 @@
       "name": "traffic-one",
       "source": "./",
       "version": "2.0.0",
-      "description": "Real-time React + TypeScript monorepo plugin: Turborepo, RTK + RTK Query, vanilla-extract, Jest + Playwright, WebSocket patterns, accessibility, Gitflow. Compatible with Claude Code, Codex CLI, and Cursor."
+      "description": "React + React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow. Compatible with Claude Code, Codex CLI, and Cursor."
     }
   ]
 }

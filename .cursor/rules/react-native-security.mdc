@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/security.md -->
+---
+description: React Native secrets, auth, deep links, network, and native module security.
+globs: ["apps/**/app/**", "apps/**/src/services/**", "apps/**/src/features/**/api.ts", "apps/**/src/features/**/services/**", "packages/api-client/**", "src/services/**"]
+---
+
+# React Native Security Rules
+
+- No hardcoded secrets in JS, app config, native config, or public EAS env.
+- Tokens and refresh secrets live in expo-secure-store.
+- AsyncStorage is only for non-sensitive preferences.
+- Validate deep links, push payloads, clipboard content, QR scans, and native intents.
+- Allowlist external URL schemes/hosts.
+- Production traffic uses HTTPS/WSS only.
+- Prefer Expo SDK modules; run the dependency gate and Expo Doctor before native dependencies.

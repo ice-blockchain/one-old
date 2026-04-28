@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/performance.md -->
+---
+description: React Native Hermes, New Architecture, rendering, list, media, startup, and realtime performance.
+globs: ["apps/**/app/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
+---
+
+# React Native Performance Rules
+
+- Hermes and New Architecture are the default.
+- Run Expo Doctor before native dependency or SDK/RN changes.
+- Keep state narrow; avoid inline style objects/arrays/callbacks for memoized children.
+- Use memoization after profiling or for stable boundaries.
+- Use `FlatList`/`SectionList`; `@shopify/flash-list` only after measurement.
+- Keep route files thin and isolate platform-specific code behind platform extensions.
+- Batch high-rate real-time updates before they hit React.

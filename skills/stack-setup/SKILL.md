@@ -19,6 +19,8 @@ Triggered when the user asks to change stacks on an existing setup. Read the cur
 
 - `react-realtime-monorepo` — Real-time React monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright. **Recommended for new projects.**
 - `react-frontend-only` — Single React app (no monorepo): Vite + RTK + vanilla-extract.
+- `react-native-expo-monorepo` — Expo React Native monorepo: apps/mobile + shared packages + Expo Router + RTK Query + Jest/RNTL + Maestro.
+- `react-native-expo-app` — Single Expo React Native app: Expo Router + RTK Query + Jest/RNTL + Maestro.
 - `node-backend` — Node + Postgres backend, no frontend.
 - `minimal` — clean-code + security + git baseline, language-agnostic.
 
@@ -36,6 +38,8 @@ Triggered when the user asks to change stacks on an existing setup. Read the cur
 - `heavy` — gameplay / live markets / trading; full WebSocket rules + back-pressure
 - `light` — mostly REST with occasional live updates; WebSocket rules apply
 - `none` — pure REST; skip the WebSocket rule bundle (saves ~1k tokens)
+
+For `react-native-expo-monorepo`, ask the realtime question the same way as the React realtime monorepo. For `react-native-expo-app`, default `backend: "external-api"` and `realtime: "none"` unless the user explicitly asks for realtime.
 
 ## File shape (write exactly this via the Write tool)
 

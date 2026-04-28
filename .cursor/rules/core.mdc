@@ -6,7 +6,7 @@ alwaysApply: true
 # traffic-one — Core (framework-agnostic)
 
 Project-level conventions for any TypeScript project. Stack-specific rules live in
-`react-core.mdc` (React web) or future flavour files.
+`react-core.mdc` (React web) or `react-native-core.mdc` (Expo React Native).
 
 ## Language
 - **TypeScript ^5** — never plain JS for new files.

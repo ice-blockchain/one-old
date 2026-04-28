@@ -1,0 +1,16 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/accessibility.md -->
+---
+description: React Native VoiceOver/TalkBack, touch target, text, motion, form, and E2E accessibility.
+globs: ["apps/**/app/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
+---
+
+# React Native Accessibility Rules
+
+- Support VoiceOver and TalkBack on critical journeys.
+- Controls expose role, label, and state where needed.
+- Icon-only controls need accessible labels.
+- Minimum touch target is 44x44 points; use hitSlop for compact controls.
+- Respect dynamic type and reduced motion.
+- Never use color alone for state.
+- Inputs have visible labels or clear accessibility labels.
+- RNTL and Maestro tests assert important roles/labels.

@@ -1,6 +1,6 @@
 # traffic-one — AI Agent Plugin
 
-Enforces React architecture, security, and clean code **automatically on every prompt**.
+Enforces React, React Native, security, and clean code **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and **Cursor**.
 
 ---
@@ -10,28 +10,31 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 ```
 .
 ├── skills/                  ← SHARED across all agents — auto-trigger on semantic match
-│   ├── create-component.md
-│   ├── create-feature.md
-│   ├── create-page.md
-│   ├── create-service.md
-│   ├── execution-discipline.md
-│   ├── security-review.md
-│   └── refactor.md
+│   ├── create-component/
+│   ├── create-feature/
+│   ├── create-page/
+│   ├── create-service/
+│   ├── create-native-component/
+│   ├── create-native-screen/
+│   ├── create-native-feature/
+│   ├── create-native-service/
+│   ├── execution-discipline/
+│   ├── security-review/
+│   └── refactor/
 │
 ├── rules/                   ← SHARED — single source of truth for all rule content
 │   ├── core.md              always loaded (no path filter)
 │   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
-│   ├── components.md        auto-attached: src/components/**, src/features/**/components/**
-│   ├── services.md          auto-attached: src/services/**, src/features/**/services/**
-│   ├── stores.md            auto-attached: src/stores/**, src/features/**/hooks/**
-│   ├── security.md          auto-attached: src/services/**, src/lib/**
-│   ├── testing.md           auto-attached: **/*.test.*, **/*.spec.*
-│   └── performance.md       auto-attached: src/pages/**, src/components/**
+│   ├── frontend/react/            React web stack rules
+│   ├── frontend/react-native/     Expo React Native stack rules
+│   ├── frontend/services.md       shared frontend service rules
+│   ├── frontend/testing.md        shared frontend testing rules
+│   └── backend/                   Node/Postgres rules
 │
 ├── CLAUDE.md                ← Claude Code   — entry point, @imports rules/core.md
 ├── AGENTS.md                ← Codex CLI     — entry point, inlines rules/ content
 ├── settings.json            ← Claude Code   — hooks (PreToolUse arch + library checks)
-├── hooks/hooks.json         ← Codex CLI     — hooks (PreToolUse Bash library check)
+├── hooks/hooks.json         ← Codex CLI     — hooks (PreToolUse arch + library checks)
 │
 ├── .cursor/rules/*.mdc      ← Cursor        — mirrors rules/ in Cursor's .mdc format
 │
@@ -58,6 +61,10 @@ automatically invokes the full skill body when your prompt matches:
 | "add a user management feature" | `create-feature` |
 | "I need a /dashboard route" | `create-page` |
 | "add an API call for orders" | `create-service` |
+| "create a native component" | `create-native-component` |
+| "add an Expo route" | `create-native-screen` |
+| "create a mobile feature" | `create-native-feature` |
+| "add a mobile API call" | `create-native-service` |
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
 | "refactor this component" | `refactor` |
@@ -101,9 +108,9 @@ Or via Cursor Settings → Plugins → Add.
 | What to change | Where |
 |----------------|-------|
 | Library stack, folder structure, core rules | `rules/core.md` (then mirror to `AGENTS.md` + `.cursor/rules/core.mdc`) |
+| React web stack rules | `rules/frontend/react/*.md` (then mirror to `AGENTS.md` + `.cursor/rules/react-*.mdc`) |
+| React Native stack rules | `rules/frontend/react-native/*.md` (then mirror to `AGENTS.md` + `.cursor/rules/react-native-*.mdc`) |
 | Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md` (then mirror to `AGENTS.md` + `.cursor/rules/common-execution-discipline.mdc`) |
-| Component-specific rules | `rules/components.md` → mirror to `.cursor/rules/components.mdc` |
-| Security rules | `rules/security.md` → mirror to `.cursor/rules/security.mdc` + `AGENTS.md` |
-| Add a new skill | Add `skills/your-skill.md` with `description:` trigger phrases |
+| Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
 | Blocked libraries | Edit the `PreToolUse[Bash]` hook in `settings.json` and `hooks/hooks.json` |
 | Architecture violation checks | Edit the `PreToolUse[Write\|Edit]` hook in `settings.json` |
