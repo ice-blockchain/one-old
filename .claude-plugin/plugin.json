@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
-  "description": "React + React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow. Hooks block forbidden libraries and architecture violations; skills auto-trigger on semantic match.",
-  "version": "2.0.0",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Hooks block forbidden libraries and architecture violations; skills auto-trigger on semantic match.",
+  "version": "2.1.0",
   "author": {
     "name": "Cosmin Turcin"
   },

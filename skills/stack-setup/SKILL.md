@@ -17,15 +17,27 @@ Triggered when the user asks to change stacks on an existing setup. Read the cur
 
 ## Stack ids (only these are valid)
 
-- `react-realtime-monorepo` — Real-time React monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright. **Recommended for new projects.**
+- `react-realtime-monorepo` — React + Supabase monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright. **Recommended/default for new projects.**
 - `react-frontend-only` — Single React app (no monorepo): Vite + RTK + vanilla-extract.
-- `react-native-expo-monorepo` — Expo React Native monorepo: apps/mobile + shared packages + Expo Router + RTK Query + Jest/RNTL + Maestro.
-- `react-native-expo-app` — Single Expo React Native app: Expo Router + RTK Query + Jest/RNTL + Maestro.
-- `node-backend` — Node + Postgres backend, no frontend.
+- `react-native-expo-monorepo` — Expo React Native monorepo: apps/mobile + shared packages + Expo Router + RTK Query + Jest/RNTL + Maestro. Use only when React Native / Expo is explicit.
+- `react-native-expo-app` — Single Expo React Native app: Expo Router + RTK Query + Jest/RNTL + Maestro. Use only when React Native / Expo is explicit.
 - `minimal` — clean-code + security + git baseline, language-agnostic.
+
+`node-backend` is legacy-supported for existing `.traffic-one.json` files, but
+do not offer it during first-run onboarding or normal reconfiguration.
+
+For first-run onboarding, always offer React + Supabase as option A and
+recommend it as the default. Map that choice to `stack: "react-realtime-monorepo"`
+and `backend: "supabase"`.
+
+For a generic mobile app or mobile variant of a React web product, choose the
+matching React stack and then use `ionic-mobile`. Recommend Ionic Framework with
+Capacitor packaging by default; offer full Ionic React as the larger alternative.
+The React stacks load `rules/frontend/ionic/*` for hybrid mobile work.
 
 ## Backend values
 
+- `supabase` — Supabase backend, default for React + Supabase
 - `ours` — our managed Postgres / Supabase-compatible fork
 - `self-hosted` — user runs their own Postgres
 - `managed` — Supabase / Neon / RDS / similar

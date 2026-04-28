@@ -11,6 +11,10 @@ paths:
 Forced library list and absolute rules for Expo-first React Native apps. Detail
 rules in `rules/frontend/react-native/*`.
 
+Use this stack only when the client explicitly asks for React Native, Expo, RN,
+or a fully React Native implementation. Generic mobile variants of React web
+products use Ionic Framework with Capacitor instead.
+
 ## Forced library stack — no exceptions
 
 ### Runtime

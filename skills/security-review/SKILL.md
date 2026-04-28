@@ -6,15 +6,35 @@ description: >
   user data, passwords, secrets, or environment variables.
   Triggers: "review security", "is this secure", "check for vulnerabilities", "auth",
   "JWT", "token", "password", "env var", "API key", "dangerouslySetInnerHTML".
+metadata:
+  origin: ECC
+  source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
+  adapted_for: traffic-one
 ---
+
+Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence. Treat upstream examples that use unapproved frameworks or libraries as conceptual patterns to adapt.
 
 # Skill: Security Review
 
-List findings and confirm before suggesting changes.
+Use a code-review stance: list concrete findings first, with severity and file/line references when possible. For implementation tasks, state the security assumptions and apply the smallest fix that satisfies the local rules.
 
-1. Run through the security checklist (tokens, API, XSS, deps)
-2. List each issue found with severity
-3. State what fixes will be applied
-4. Ask: "Should I go ahead?"
+## Traffic One Checklist
 
-<!-- TODO: full security checklist goes here once structure is validated -->
+1. Secrets: no hardcoded secrets, no frontend secrets in `VITE_`, required env vars checked at startup.
+2. Input: validate request bodies, query params, route params, deep links, and user-supplied data with Zod or the local schema layer.
+3. Auth: protected endpoints enforce authentication and authorization server-side; UI gating never stands alone.
+4. Tokens: never store JWT access tokens in `localStorage`; prefer httpOnly cookies or in-memory state per app rules.
+5. Data access: parameterized SQL only, bounded reads, no N+1 loops, RLS/default-deny policies for user-data tables.
+6. Browser safety: avoid unsafe HTML; if `dangerouslySetInnerHTML` is unavoidable, sanitize and review CSP.
+7. Files and uploads: validate size, type, extension, storage path, and authorization before read/write.
+8. Errors and logs: no stack traces in production responses; strip secrets and PII from client/server logs.
+9. Dependencies: run the local dependency quality gate before adding packages; no high+ audit findings.
+
+## ECC Notes
+
+The upstream ECC review adds broader coverage for API endpoints, third-party integrations, payments, cloud deployment, and CI/CD. Apply those checks only through Traffic One-approved libraries and architecture:
+
+- Treat all external data as `unknown` until schema-validated.
+- Confirm CSRF protection, rate limiting, secure cookies, HSTS/nosniff/frame/referrer/permissions headers, and concrete CSP origins for state-changing or public endpoints.
+- For cloud or deployment reviews, also consult `cloud-infrastructure-security.md`; adapt provider examples to the project’s actual platform and never introduce new SDKs without the dependency gate.
+- For payment or sensitive flows, verify least-privilege access, idempotency, audit logging, webhook signature verification, replay protection, and non-leaky error handling.

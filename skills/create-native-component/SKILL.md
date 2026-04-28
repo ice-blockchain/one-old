@@ -1,15 +1,17 @@
 ---
 name: create-native-component
 description: >
-  Use PROACTIVELY whenever the user asks to create, add, build, make, scaffold, or generate
-  a React Native component, native UI element, card, modal, form, button, list item, or shared
-  mobile primitive. Triggers: "create a native component", "add a React Native component",
-  "make a mobile form", "build a native modal", "scaffold a mobile card", "new RN UI".
+  Use PROACTIVELY only when the user explicitly asks to create, add, build,
+  make, scaffold, or generate a React Native / Expo component, RN UI element,
+  native screen component, card, modal, form, button, list item, or shared
+  React Native primitive. Triggers: "React Native component", "Expo component",
+  "RN UI", "native component in React Native", "React Native form".
 ---
 
 # Skill: Create Native Component
 
-Use this for Expo/React Native UI. Keep React web component work in `create-component`.
+Use this for explicit Expo/React Native UI. Keep generic mobile variants in
+`ionic-mobile` and React web component work in `create-component`.
 
 Before creating files, state:
 1. Placement: `apps/mobile/src/components/`, `apps/mobile/src/features/<name>/components/`, or `packages/ui-native/`.

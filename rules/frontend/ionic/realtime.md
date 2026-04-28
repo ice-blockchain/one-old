@@ -1,0 +1,35 @@
+---
+paths:
+  - "apps/**/src/services/ws/**"
+  - "apps/**/src/features/**/realtime/**"
+  - "packages/ws-client/**"
+  - "src/services/ws/**"
+  - "src/features/**/realtime/**"
+---
+
+# Ionic Real-time Rules
+
+Shared WebSocket rules still apply. Ionic delivery adds app lifecycle and
+WebView-network behavior.
+
+## Connection ownership
+
+- WebSocket connections live in service singletons or `packages/ws-client`.
+- Components subscribe via hooks; no component opens sockets or talks directly
+  to Capacitor network plugins.
+- Production connections use `wss://`.
+
+## App lifecycle
+
+- Pause, resume, background, and foreground transitions are handled by the
+  real-time service.
+- On resume, reconnect or resync stale channels explicitly.
+- Show `idle`, `connecting`, `live`, `reconnecting`, `offline`, and `degraded`
+  states when the feature depends on live data.
+
+## Mobile network behavior
+
+- Validate inbound frames with zod and drop malformed frames.
+- Batch high-rate streams through `requestAnimationFrame` and cap non-game UI
+  render rates at 30 fps.
+- Strip PII from frame logs and disable noisy client logs in production.
