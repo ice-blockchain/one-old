@@ -75,9 +75,16 @@ For `react-native-expo-monorepo`, ask the realtime question the same way as the 
 ## After writing
 
 Reply with ONE short line:
-> "Saved — stack set to `<id>` with backend `<backend>` and realtime `<realtime>`. Restart Claude Code so the full rule bundle loads on SessionStart."
+> "Saved — stack set to `<id>` (backend `<backend>`, realtime `<realtime>`). Continuing with your original request."
 
-Do not try to load the rules yourself or re-run the hook. Only session restart picks up the new bundle.
+A PostToolUse hook (`scripts/post-stack-setup.py`) detects the write and injects the
+full stack rule bundle as `additionalContext` in the same session — you'll see a
+system message like `traffic-one rules loaded for stack: <id>` before your next
+action. The rules are live immediately. **Do NOT tell the user to restart Claude
+Code** — that contradicts the auto-load behaviour and breaks the seamless UX.
+
+If for any reason the auto-load hook didn't fire (rare — e.g. user disabled hooks
+or PostToolUse), only then fall back to mentioning a restart.
 
 ## Must-not-do
 
