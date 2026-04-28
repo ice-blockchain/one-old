@@ -1,16 +1,16 @@
 ---
 name: create-native-service
 description: >
-  Use PROACTIVELY whenever the user asks to add a React Native API call, mobile service,
-  Expo service wrapper, RTK Query endpoint, file upload/download, secure storage access,
-  or native WebSocket bridge. Triggers: "create a native service", "add a mobile API call",
-  "fetch from the API in React Native", "Expo upload service", "secure store token",
-  "mobile websocket".
+  Use PROACTIVELY only when the user explicitly asks to add a React Native /
+  Expo API call, RN service, Expo service wrapper, RTK Query endpoint, file
+  upload/download, secure storage access, or native WebSocket bridge. Triggers:
+  "React Native API call", "Expo service", "fetch from the API in React Native",
+  "Expo upload service", "secure store token", "React Native websocket".
 ---
 
 # Skill: Create Native Service
 
-Use this for Expo/React Native service boundaries.
+Use this for explicit Expo/React Native service boundaries.
 
 Before creating files, state:
 1. Service/API file: `apps/mobile/src/features/<name>/api.ts`, `apps/mobile/src/services/<domain>.ts`, or a shared package.

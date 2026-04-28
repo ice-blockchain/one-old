@@ -1,13 +1,15 @@
 {
   "name": "traffic-one",
   "displayName": "Traffic One",
-  "description": "React + React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
   "version": "2.0.0",
   "author": {
     "name": "Traffic-One"
   },
   "keywords": [
     "react",
+    "ionic",
+    "capacitor",
     "react-native",
     "typescript",
     "turborepo",
@@ -17,6 +19,8 @@
   "category": "engineering",
   "tags": [
     "react",
+    "ionic",
+    "capacitor",
     "react-native",
     "typescript",
     "testing",

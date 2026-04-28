@@ -1,15 +1,15 @@
 ---
 name: create-native-feature
 description: >
-  Use PROACTIVELY whenever the user asks to create, add, build, or scaffold a React Native
-  feature, mobile module, native flow, Redux slice, RTK Query domain, or Expo app capability.
-  Triggers: "create a native feature", "add a mobile feature", "build the RN module",
-  "scaffold native functionality", "add mobile CRUD", "React Native feature".
+  Use PROACTIVELY only when the user explicitly asks to create, add, build, or
+  scaffold a React Native / Expo feature, RN module, native flow, Redux slice,
+  RTK Query domain, or Expo app capability. Triggers: "React Native feature",
+  "Expo feature", "build the RN module", "React Native CRUD", "Expo app capability".
 ---
 
 # Skill: Create Native Feature
 
-Use this for Expo/React Native feature slices.
+Use this for explicit Expo/React Native feature slices.
 
 Before creating files, state:
 1. Feature folder: `apps/mobile/src/features/<name>/`.
