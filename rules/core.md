@@ -39,4 +39,6 @@ Project-level conventions for any TypeScript project. Code-quality basics in
 - Commit scope = ticket id: `feat(PROJ-123): add bet panel`.
 
 ## Stack selection
-`.traffic-one.json` `stack` field selects rules. Future flavours (`react-native`, `vue`) live under `frontend/<flavour>/core.md`.
+`.traffic-one.json` `stack` field selects rules. Frontend flavours live under
+`frontend/<flavour>/core.md` (for example `frontend/react/core.md` and
+`frontend/react-native/core.md`).

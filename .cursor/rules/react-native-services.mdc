@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/services.md -->
+---
+description: React Native service layer, RTK Query, axios, mobile storage, offline, and env boundaries.
+globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "apps/**/src/features/**/api.ts", "packages/api-client/**", "src/services/**", "src/features/**/services/**"]
+---
+
+# React Native Service Layer
+
+- RTK Query for cached/shared server data; axios services for one-off uploads/downloads/commands.
+- Components use generated hooks or typed wrappers only.
+- Validate responses with zod and map failures to `AppError`.
+- Tokens are read from expo-secure-store in api-client, never UI.
+- Retry refresh once on 401; then clear session.
+- Respect offline state and stale data.
+- Public config uses `EXPO_PUBLIC_`; secrets never ship in JS/app config/public EAS env.

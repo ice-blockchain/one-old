@@ -1,0 +1,39 @@
+---
+paths:
+  - "apps/**/app/**"
+  - "apps/**/src/components/**"
+  - "apps/**/src/features/**/components/**"
+  - "packages/ui-native/**"
+  - "src/components/**"
+  - "src/features/**/components/**"
+---
+
+# React Native Accessibility Rules
+
+## Screen readers
+- Support VoiceOver and TalkBack for every critical journey.
+- Interactive controls expose `accessibilityRole`, `accessibilityLabel`, and state where needed.
+- Icon-only controls need accessible labels.
+- Hide decorative images from assistive tech; label meaningful images.
+
+## Touch and focus
+- Minimum touch target: 44x44 points.
+- Use `hitSlop` for compact controls.
+- Preserve logical focus order and avoid moving focus on real-time updates.
+- Manage focus after modals, auth redirects, and destructive confirmations.
+
+## Text and motion
+- Respect dynamic type; do not lock text into fixed-height containers.
+- Never use color alone to communicate state.
+- Respect reduce-motion settings; disable large looping animations when requested.
+- Avoid flashes at or above 3 Hz.
+
+## Forms and errors
+- Every input has a visible label or a clear accessibility label.
+- Validation errors are announced and associated with the field.
+- Disabled controls must make the reason clear nearby.
+
+## Testing
+- RNTL tests assert roles/labels for important controls.
+- Maestro flows prefer accessibility selectors where possible.
+- Release smoke includes manual VoiceOver/TalkBack checks for login and the primary flow.

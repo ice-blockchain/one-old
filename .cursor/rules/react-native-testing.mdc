@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/testing.md -->
+---
+description: React Native Jest, RNTL, MSW, WebSocket fake, and Maestro E2E rules.
+globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/.maestro/**", "apps/**/src/test/**", "packages/**/test/**"]
+---
+
+# React Native Testing
+
+- Use jest + jest-expo and `@testing-library/react-native`.
+- Query order: role -> label -> text -> placeholder -> testID last.
+- Export `renderWithProviders` with Redux, theme, safe area, and router mocks.
+- Use MSW/typed fakes for HTTP and in-memory fake for WS.
+- Unit/integration tests never hit real devices, sockets, or network services.
+- Maestro flows live in `.maestro/*.yml` and cover critical journeys.
+- Aim for >=80% on features and packages.

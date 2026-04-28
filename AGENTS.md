@@ -1,14 +1,14 @@
 # traffic-one — Codex CLI
 <!-- SOURCE OF TRUTH for rules content: rules/*.md — update there first, then mirror here -->
 
-You are working in a real-time React + TypeScript monorepo. Every rule below is mandatory.
+You are working in a React / React Native + TypeScript monorepo. Every rule below is mandatory.
 Never suggest an alternative library to those listed here.
 
 The rules are layered:
 1. **Common baseline** (clean-code, security, git) — applies to any TypeScript project.
 2. **Project core** (TypeScript strict, Turborepo, Gitflow) — `rules/core.md`, framework-agnostic.
-3. **Stack core** (React + Redux + vanilla-extract + Jest) — `rules/frontend/react/core.md`.
-   Replace this layer to target React Native, Vue, etc. — never mix into the framework-agnostic core.
+3. **Stack core** — React web uses `rules/frontend/react/core.md`; Expo React Native uses `rules/frontend/react-native/core.md`.
+   Replace this layer per frontend flavour — never mix stack-specific rules into the framework-agnostic core.
 4. **Path-scoped rules** (components, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
 
 ---
@@ -98,6 +98,48 @@ The rules are layered:
 - WebSocket connections owned by a service singleton; components subscribe via hooks. Never `new WebSocket()` in a component.
 - Cross-package imports use workspace package names (`@app/ui`, `@app/utils`) — never deep relative paths.
 
+## React Native (Expo) stack core (`rules/frontend/react-native/core.md`)
+
+### Forced library stack — no exceptions
+
+### Runtime
+- **App runtime:** Expo SDK + React Native + TypeScript (`.tsx/.ts` only)
+- **Architecture:** Hermes and React Native New Architecture for new apps
+- **Routing:** Expo Router with typed routes enabled
+- **Global state:** Redux Toolkit (slices + RTK Query for server state)
+- **Lightweight UI state:** zustand (only ephemeral, non-server, non-shared-business)
+- **Real-time:** native WebSocket or socket.io-client, wrapped in a service singleton
+- **HTTP:** axios (in service functions) or RTK Query — never axios in a component
+- **Forms:** react-hook-form + zod + @hookform/resolvers
+- **Storage:** expo-secure-store for secrets; AsyncStorage only for non-sensitive preferences
+- **Animations:** react-native-reanimated + react-native-gesture-handler; lottie-react-native as needed
+
+### Build
+- **Native builds:** Expo CLI locally and EAS Build/Submit for release artifacts
+- **Bundler:** Metro; Turborepo orchestrates the workspace
+
+### Styling
+- **React Native StyleSheet** — sibling `*.styles.ts` files with `StyleSheet.create`
+- **Design tokens** in shared `packages/design-tokens` as platform-neutral TS values
+- **No** NativeWind, tailwindcss, styled-components, @emotion, CSS modules, DOM tags, inline object styles
+
+### Testing
+- **Unit + integration:** jest + jest-expo + @testing-library/react-native
+- **E2E:** Maestro flows in `.maestro/*.yml`
+- **Mocks:** msw for HTTP, in-memory WS fake for real-time
+
+## React Native absolute rules
+- Function components only. Named exports for reusable components.
+- Expo Router route files may use `export default`; route files stay thin and compose named feature components.
+- Props always have an explicit `ComponentNameProps` interface.
+- Use React Native primitives (`View`, `Text`, `Pressable`, `TextInput`, `Image`) or approved shared primitives.
+- No DOM tags, NativeWind/Tailwind classes, or inline object styles.
+- All API calls go through `services/` or RTK Query slices — never axios in components.
+- Server state lives in RTK Query or Redux — never duplicated in zustand or component state.
+- WebSocket connections owned by a service singleton; components subscribe via hooks. Never `new WebSocket()` in a component.
+- Route params contain ids/filters only; validate params and deep links with Zod before use.
+- Cross-package imports use workspace package names (`@app/ui-native`, `@app/utils`) — never deep relative paths.
+
 ## Folder structure (Turborepo monorepo)
 ```
 <repo>/
@@ -119,6 +161,29 @@ The rules are layered:
     ├── utils/                     pure utilities (no React imports)
     ├── tsconfig/                  shared TS configs
     └── eslint-config/             shared ESLint config
+```
+
+## React Native folder structure (Expo monorepo)
+```
+<repo>/
+├── apps/
+│   └── mobile/
+│       ├── app/                 Expo Router routes and layouts only
+│       ├── src/
+│       │   ├── store/           redux store + middleware
+│       │   ├── features/<name>/ components/ hooks/ slice.ts api.ts index.ts
+│       │   ├── services/ws/     app-specific WS bridges
+│       │   ├── components/      app-only native components
+│       │   └── styles/          theme.ts, token adapters
+│       └── .maestro/            device E2E flows
+└── packages/
+    ├── ui-native/               shared React Native primitives
+    ├── design-tokens/           platform-neutral design tokens
+    ├── api-client/              axios + RTK Query baseQuery + AppError
+    ├── ws-client/               WebSocket transport + protocol + hooks
+    ├── utils/                   pure utilities
+    ├── tsconfig/
+    └── eslint-config/
 ```
 
 ## Component rules (apps/**/src/components/**, packages/ui/**)
@@ -176,6 +241,13 @@ The rules are layered:
 - Respect `prefers-reduced-motion`. Avoid flashes ≥3 Hz.
 - Run `@axe-core/playwright` on every E2E spec.
 
+## React Native accessibility additions
+- Support VoiceOver and TalkBack on critical journeys.
+- Interactive controls expose role, label, and state when needed.
+- Minimum touch target is 44x44 points; use `hitSlop` for compact controls.
+- Respect dynamic type and reduced motion. Never use colour alone for state.
+- Maestro/RNTL tests should prefer stable accessibility labels for critical controls.
+
 ## Backend rules (when editing SQL, migrations, server/, api/)
 - Postgres types: `timestamptz`, `numeric` (money), `text` (not `varchar(n)`), `jsonb`.
 - Indexes: every hot-path WHERE/JOIN/ORDER BY column; composite indexes equality-first.
@@ -190,6 +262,10 @@ The rules are layered:
 - `$create-feature` — scaffold a full feature slice (Redux + components + api)
 - `$create-page` — scaffold a lazy-loaded page + route entry
 - `$create-service` — scaffold a service function or RTK Query endpoint
+- `$create-native-component` — scaffold a React Native component (with `.styles.ts`)
+- `$create-native-screen` — scaffold an Expo Router screen/route
+- `$create-native-feature` — scaffold a React Native feature slice
+- `$create-native-service` — scaffold a mobile service or RTK Query endpoint
 - `$security-review` — audit code for security issues
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
