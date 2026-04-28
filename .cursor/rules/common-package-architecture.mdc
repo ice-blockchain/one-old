@@ -1,19 +1,23 @@
-<!-- SOURCE OF TRUTH: rules/common/package-architecture.md -->
+<!-- GENERATED FROM: rules/common/package-architecture.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: Required architecture.md template for every workspace package. Loads on packages/** edits.
+description: "`packages/<name>/architecture.md` — required, always. Generated from rules/common/package-architecture.md."
 globs: ["packages/**", "**/architecture.md"]
+alwaysApply: false
 ---
 
 # `packages/<name>/architecture.md` — required, always
 
-Every workspace package MUST ship an `architecture.md` next to its `README.md`. Treat outdated content as a bug.
+Every workspace package MUST ship an up-to-date `architecture.md` next to its
+`README.md`. It is consumed by AI agents (and humans) to understand the package
+without reading every file. Treat outdated content as a bug.
 
 ## Layout
+
 ```
 packages/<name>/
-├── package.json           "name": "@app/<name>", "private": true
-├── README.md              human-facing quickstart
-├── architecture.md        ← REQUIRED — template below
+├── package.json           "name": "@app/<name>", "private": true (unless publishing)
+├── README.md              human-facing quickstart (1 paragraph + install + 1 example)
+├── architecture.md        ← THIS FILE — required
 ├── src/
 │   ├── index.ts           public barrel
 │   └── ...
@@ -30,7 +34,7 @@ packages/<name>/
 One paragraph: what this package does and the user-facing capability it enables.
 
 ## Why we built this (instead of a library)
-List candidates we evaluated and why each failed the quality gate.
+List the candidates we evaluated and why each failed the quality gate.
 - candidate-a — rejected: <license / maintenance / size / fit reason>
 - candidate-b — rejected: <reason>
 
@@ -58,14 +62,17 @@ Short prose or ASCII diagram showing the request/response or event lifecycle.
 Minimal end-to-end example a consumer can paste.
 
 ## Constraints & non-goals
-- What this package does NOT do.
+- What this package does NOT do (and where to look instead).
 - Known limitations.
 - Performance characteristics (rough big-O for hot paths).
 
 ## Tests
 - Unit: `test/*.test.ts`.
-- Integration: covered by `apps/web/e2e/*.spec.ts` for user-facing flows.
+- Integration: covered by `apps/web/e2e/*.spec.ts` for the user-facing flows.
 ```
 
-## Lifecycle
-Write `architecture.md` **before** the implementation. Updates to public API or constraints update this file in the same PR. CI fails any package missing it.
+## Lifecycle rule
+
+Write `architecture.md` **before** the implementation. It doubles as the design
+doc — the package PR must include it from the first commit. Updates to public
+API, internal modules, or constraints must update this file in the same PR.

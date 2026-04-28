@@ -1,5 +1,8 @@
 ---
-# Loaded for React-web stacks (react-realtime-monorepo, react-frontend-only)
+paths:
+  - "apps/**/src/**"
+  - "packages/ui/**"
+  - "src/**"
 ---
 
 # React (web) — Stack Core
