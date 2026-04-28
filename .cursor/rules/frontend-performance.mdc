@@ -1,43 +1,80 @@
-<!-- SOURCE OF TRUTH: rules/frontend/performance.md -->
+<!-- GENERATED FROM: rules/frontend/performance.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: Frontend performance — framework-agnostic Web Vitals, bundles, images, fonts, frame batching.
+description: "Frontend Performance — framework-agnostic. Generated from rules/frontend/performance.md."
 globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
+alwaysApply: false
 ---
 
 # Frontend Performance — framework-agnostic
 
-## Web Vitals targets (4G mid-range)
-LCP ≤ 2.5 s · FCP ≤ 1.5 s · INP ≤ 200 ms · TBT ≤ 200 ms · CLS ≤ 0.1 · TTFB ≤ 800 ms.
+Hard floors that apply to any browser app. React-specific hooks/memoisation rules
+live in `frontend/react/performance.md`.
 
-## Bundle budgets
-Critical path ≤ 180 KB gz · per-route chunk ≤ 80 KB gz. Fail CI when over.
+## Web Vitals targets (4G mid-range device)
+
+| Metric | Target |
+|---|---|
+| LCP — Largest Contentful Paint | ≤ 2.5 s |
+| FCP — First Contentful Paint | ≤ 1.5 s |
+| INP — Interaction to Next Paint | ≤ 200 ms |
+| TBT — Total Blocking Time | ≤ 200 ms |
+| CLS — Cumulative Layout Shift | ≤ 0.1 |
+| TTFB — Time to First Byte | ≤ 800 ms |
+
+Wire `web-vitals` and ship to your observability backend. Alert on regressions per route.
+
+## Bundle budgets (initial, gzipped)
+
+- Critical path: ≤ 180 KB
+- Per-route chunk: ≤ 80 KB
+
+Analyse before every release with a bundle visualiser. Fail CI when over budget.
 
 ## Code splitting & loading
-- Lazy-load routes; dynamic-import heavy libs at usage site.
-- Preload next probable route on hover/focus.
-- `<link rel="modulepreload">` for critical chunks; `<link rel="preconnect">` to API/CDN.
-- Third-party scripts use `async`/`defer` and load only where needed.
+
+- Lazy-load routes; split heavy non-critical libs (3D, video, charts, PDF, editors) at usage site.
+- Preload the next probable route on hover/focus.
+- `<link rel="modulepreload">` for critical chunks identified via Lighthouse.
+- `<link rel="preconnect">` to API and CDN origins.
+- Load third-party scripts with `async`/`defer` and only on pages that actually need them.
 
 ## Tree-shaking
-- Named imports only (`import { x } from "lodash-es"`).
-- `"sideEffects": false` for pure packages. Dedup deps via pnpm + Turborepo.
 
-## Images & fonts
-- Explicit `width` / `height` (CLS).
-- Hero media may use `loading="eager"` + `fetchpriority="high"`; do not apply broadly.
-- `loading="lazy"` + `decoding="async"` below the fold. AVIF/WebP with fallback.
-- SVG icons inlined. Fonts: max two families, `font-display: swap`, preload only critical weight/style, subset glyphs.
+- Always import named exports (`import { debounce } from "lodash-es"`), never default imports of huge libs.
+- Mark side-effect-free packages with `"sideEffects": false`.
+- Dedup deps across the workspace (pnpm + Turborepo).
 
-## Animation
-- Animate `transform`/`opacity` first; avoid layout-bound properties.
-- Use `will-change` narrowly and remove it when animation finishes.
-- CSS for simple transitions; approved animation libs or `requestAnimationFrame` for JS motion.
+## Images & media
+
+- All images have explicit `width` and `height` (prevents CLS).
+- The primary hero image/media may use `loading="eager"` and `fetchpriority="high"`; do not apply that broadly.
+- `loading="lazy"` and `decoding="async"` on below-the-fold images.
+- Modern formats: AVIF/WebP with fallback. Pre-compress at build time.
+- SVG icons: inline as code (no extra HTTP round-trips); larger SVGs as files.
+- Video: `preload="metadata"` unless you need eager playback.
+
+## Fonts
+
+- Use at most two font families unless the product direction clearly requires more.
+- `font-display: swap`. Preload only the primary critical weight/style.
+- Subset to used glyphs.
+- Self-host where possible; otherwise `<link rel="preconnect" crossorigin>` to the CDN.
+
+## Animation performance
+
+- Animate compositor-friendly properties (`transform`, `opacity`, `clip-path`, `filter` sparingly).
+- Avoid animating layout-bound properties (`width`, `height`, `top`, `left`, `margin`, `padding`, `font-size`).
+- Use `will-change` narrowly for active transitions only; remove it when the animation finishes.
+- Prefer CSS for simple transitions; use `requestAnimationFrame` or the approved animation library for JS motion.
 
 ## Real-time render budget
-- ~30 fps non-game UIs, 60 fps for canvases.
-- Batch high-rate updates (>10 Hz) via `requestAnimationFrame`.
-- Drop oldest non-critical frames past buffer threshold.
 
-## Defensive UI
-- "Reconnecting" banner; last-known-good values with `aria-busy="true"`.
-- Queue or fail optimistic actions when socket is down.
+- Cap re-renders triggered by streamed frames: ~30 fps for normal UI, 60 fps only for game canvases.
+- Batch high-rate updates (>10 Hz) via `requestAnimationFrame` or a tick aggregator — never re-render per frame.
+- Drop oldest non-critical frames when the buffer grows past threshold.
+
+## Defensive UI under degraded network
+
+- Show a "reconnecting…" banner when the live channel signals disconnect.
+- Keep last-known-good values rendered; mark them stale with `aria-busy="true"` + reduced opacity.
+- Disable optimistic actions that depend on a live socket; queue them and replay on reconnect (or surface as failed).

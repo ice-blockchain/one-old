@@ -1,39 +1,41 @@
-<!-- SOURCE OF TRUTH: rules/backend/postgres.md — update there first, then mirror here -->
+<!-- GENERATED FROM: rules/backend/postgres.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: PostgreSQL / Supabase rules — applies when editing SQL, migrations, Prisma schema, or DB service files.
+description: "PostgreSQL Rules. Generated from rules/backend/postgres.md."
 globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema.prisma", "src/services/**", "src/lib/db/**"]
+alwaysApply: false
 ---
 
 # PostgreSQL Rules
 
-## Types (use these, not the tempting alternatives)
+## Types
 | Use case | Correct | Avoid |
 |---|---|---|
-| IDs | `bigint` / `uuid` | `int`, random uuid in hot path |
+| IDs | `bigint` / `uuid` | `int` |
 | Strings | `text` | `varchar(n)` |
 | Timestamps | `timestamptz` | `timestamp` |
 | Money | `numeric(12,2)` | `float` |
 | JSON | `jsonb` | `json` |
 
 ## Indexes
-- B-tree default; composite `(a, b)` with equality columns first.
-- `GIN` for `jsonb @>` and full-text.
-- `BRIN` for wide time-series ranges.
-- Partial indexes for soft-delete: `WHERE deleted_at IS NULL`.
+- B-tree default. Composite `(a, b)` equality-first.
+- `GIN` for `jsonb @>` and full-text. `BRIN` for time-series ranges.
+- Partial: `WHERE deleted_at IS NULL`. Covering: `INCLUDE (...)`.
 
 ## Queries
-- Parameterized only — never string interpolation.
+- Parameterised only — no string interpolation.
+- Hot queries must show index usage in `EXPLAIN ANALYZE` (no `Seq Scan` on big tables).
 - No `SELECT *` in services.
 - No N+1 loops — batch related reads with `IN (...)`, joins, or preloaded repository methods.
 - Large reads must be bounded with `LIMIT`, cursor pagination, or a documented hard cap.
-- Every hot query has an `EXPLAIN ANALYZE` showing index use.
 
 ## Migrations
-- One concern per migration; reversible where possible.
-- Non-null on big table: add nullable → backfill in batches → add NOT NULL.
+- One concern per migration; reversible where feasible.
+- Non-null on big table: nullable → backfill in batches → NOT NULL.
 - Drops are two-phase (stop reading → deploy → drop).
 
-## RLS (Supabase / multi-tenant)
-- ON for every user-data table. Default deny.
-- Policies per role per action. Tested with anon + authed roles in CI.
-- Never rely on client-side tenant filtering.
+## RLS (multi-tenant)
+- ON for every user-data table. Default-deny. Per-role per-action policies. Test with anon + authed in CI.
+
+## Connections
+- Use a pooler (PgBouncer / Supavisor) for serverless / high concurrency.
+- Transaction-mode pooling breaks prepared statements — match driver config.

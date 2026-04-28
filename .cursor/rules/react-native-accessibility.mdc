@@ -1,16 +1,38 @@
-<!-- SOURCE OF TRUTH: rules/frontend/react-native/accessibility.md -->
+<!-- GENERATED FROM: rules/frontend/react-native/accessibility.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: React Native VoiceOver/TalkBack, touch target, text, motion, form, and E2E accessibility.
+description: "React Native Accessibility Rules. Generated from rules/frontend/react-native/accessibility.md."
 globs: ["apps/**/app/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
+alwaysApply: false
 ---
 
 # React Native Accessibility Rules
 
-- Support VoiceOver and TalkBack on critical journeys.
-- Controls expose role, label, and state where needed.
+## Screen readers
+- Support VoiceOver and TalkBack for every critical journey.
+- Interactive controls expose `accessibilityRole`, `accessibilityLabel`, and state where needed.
 - Icon-only controls need accessible labels.
-- Minimum touch target is 44x44 points; use hitSlop for compact controls.
-- Respect dynamic type and reduced motion.
-- Never use color alone for state.
-- Inputs have visible labels or clear accessibility labels.
-- RNTL and Maestro tests assert important roles/labels.
+- Hide decorative images from assistive tech; label meaningful images.
+- Accessibility labels, hints, validation errors, and state copy come from translation keys.
+
+## Touch and focus
+- Minimum touch target: 44x44 points.
+- Use `hitSlop` for compact controls.
+- Preserve logical focus order and avoid moving focus on real-time updates.
+- Manage focus after modals, auth redirects, and destructive confirmations.
+
+## Text and motion
+- Respect dynamic type; do not lock text into fixed-height containers.
+- Never use color alone to communicate state.
+- Respect reduce-motion settings; disable large looping animations when requested.
+- Avoid flashes at or above 3 Hz.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+
+## Forms and errors
+- Every input has a visible label or a clear accessibility label.
+- Validation errors are announced and associated with the field.
+- Disabled controls must make the reason clear nearby.
+
+## Testing
+- RNTL tests assert roles/labels for important controls.
+- Maestro flows prefer accessibility selectors where possible.
+- Release smoke includes manual VoiceOver/TalkBack checks for login and the primary flow.

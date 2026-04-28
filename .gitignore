@@ -14,3 +14,7 @@
 # OS
 .DS_Store
 Thumbs.db
+
+# Python tooling
+__pycache__/
+*.pyc

@@ -1,41 +1,51 @@
-<!-- SOURCE OF TRUTH: rules/core.md -->
+<!-- GENERATED FROM: rules/core.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
+description: "Project Core (framework-agnostic). Generated from rules/core.md."
 alwaysApply: true
 ---
 
-# traffic-one — Core (framework-agnostic)
+# Project Core (framework-agnostic)
 
-Project-level conventions for any TypeScript project. Stack-specific rules live in
-`react-core.mdc` (React web) or `react-native-core.mdc` (Expo React Native).
+Project-level conventions for any TypeScript project. Code-quality basics in
+`common/clean-code.md`; commit/PR conventions in `common/git.md`. Stack rules
+(forced libraries) live in `frontend/<flavour>/core.md`.
 
-## Language
-- **TypeScript ^5** — never plain JS for new files.
-- `tsconfig` baseline: `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`.
-- No `any` — `unknown` and narrow.
+## TypeScript baseline
+- TypeScript ^5 only. `tsconfig.json` baseline:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true
+  }
+}
+```
+- No `any` — use `unknown` and narrow. Infer types from zod schemas.
 - Treat caught errors and external/untrusted values as `unknown` until narrowed.
-- Explicit parameter + return types on exported functions, shared utilities, service methods, hooks, and public package APIs.
-- `interface` for extensible object shapes/public DTOs; `type` for unions/intersections/tuples/mapped types.
-- Prefer string literal unions over `enum` unless protocol/generated-code interop requires an enum.
-- Discriminated unions over flag + optional combos.
-- Infer schema-derived types with `z.infer<typeof Schema>`; do not duplicate types beside zod schemas.
+- Exported functions, shared utilities, service methods, hooks, and public package APIs have explicit parameter and return types; let TypeScript infer obvious local variables.
+- Use `interface` for extensible object shapes and public DTOs; use `type` for unions, intersections, tuples, mapped types, and utility types.
+- Prefer string literal unions over `enum` unless interop with a protocol or generated code requires an enum.
+- Schema-derived types come from `z.infer<typeof Schema>`; do not hand-write duplicate input/output types beside a schema.
 
 ## Workspace
 - **Monorepo:** Turborepo + pnpm workspaces.
 - Shared code in `packages/*`; never duplicate utilities across apps.
-- Cross-package imports use workspace package names — never deep relative paths.
-
-## File & function size
-- 200–400 lines per file (800 hard cap). Functions ≤ 50 lines, single responsibility.
+- Cross-package imports use workspace package names (`@app/ui`) — never deep relative paths.
 
 ## Validation & errors
-- Validate every external input at the boundary with a typed schema.
+- Validate every external input with a typed schema at the boundary.
 - Map transport errors to a typed `AppError` discriminated union.
-- Handle errors explicitly at every layer.
 
-## Git — Gitflow
-- Branches: `main` / `develop` / `feature/*` / `release/*` / `hotfix/*`.
-- Conventional commits with ticket id in scope; subject ≤ 72 chars.
+## Branching — Gitflow (overrides `common/git.md`)
+- `main` / `develop` / `feature/*` / `release/*` / `hotfix/*`.
+- PRs target `develop`. Releases merge to `main` via `release/x.y.z`. Hotfixes branch off `main`, merge to both.
+- Commit scope = ticket id: `feat(PROJ-123): add bet panel`.
 
-## Tooling
-- Husky + lint-staged. Commitlint with conventional rules.
-- Lockfile committed; `pnpm audit` in CI.
+## Stack selection
+`.traffic-one.json` `stack` field selects rules. Frontend flavours live under
+`frontend/<flavour>/core.md` (for example `frontend/react/core.md` and
+`frontend/react-native/core.md`).
