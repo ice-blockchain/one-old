@@ -1,15 +1,13 @@
 ---
-# No path filter — always loaded
+# Always loaded
 ---
 
 # Project Core (framework-agnostic)
 
-Project-level conventions for any TypeScript project. Code-quality basics in
-`common/clean-code.md`; commit/PR conventions in `common/git.md`. Stack rules
-(forced libraries) live in `frontend/<flavour>/core.md`.
+For any TypeScript project. Stack rules live in `frontend/<flavour>/core.md`.
 
 ## TypeScript baseline
-- TypeScript ^5 only. `tsconfig.json` baseline:
+- TypeScript ^5 only. `tsconfig.json`:
 
 ```json
 {
@@ -22,28 +20,24 @@ Project-level conventions for any TypeScript project. Code-quality basics in
   }
 }
 ```
-- No `any` — use `unknown` and narrow. Infer types from zod schemas.
-- Treat caught errors and external/untrusted values as `unknown` until narrowed.
-- Exported functions, shared utilities, service methods, hooks, and public package APIs have explicit parameter and return types; let TypeScript infer obvious local variables.
-- Use `interface` for extensible object shapes and public DTOs; use `type` for unions, intersections, tuples, mapped types, and utility types.
-- Prefer string literal unions over `enum` unless interop with a protocol or generated code requires an enum.
-- Schema-derived types come from `z.infer<typeof Schema>`; do not hand-write duplicate input/output types beside a schema.
+- No `any`; treat caught errors and external/untrusted values as `unknown` until narrowed.
+- Exported functions / hooks / public package APIs declare explicit parameter + return types; obvious locals can infer.
+- `interface` for extensible object shapes and public DTOs; `type` for unions / intersections / tuples / mapped / utility types.
+- String literal unions over `enum` (unless protocol or generated-code interop forces it).
+- Schema-derived types via `z.infer<typeof Schema>` — never duplicate beside a schema.
 
 ## Workspace
 - **Monorepo:** Turborepo + pnpm workspaces.
-- Shared code in `packages/*`; never duplicate utilities across apps.
-- Cross-package imports use workspace package names (`@app/ui`) — never deep relative paths.
+- Shared code in `packages/*`; cross-package imports via workspace names (`@app/ui`) — no deep relative paths.
 
 ## Validation & errors
-- Validate every external input with a typed schema at the boundary.
+- zod-validate every external input at the boundary.
 - Map transport errors to a typed `AppError` discriminated union.
 
 ## Branching — Gitflow (overrides `common/git.md`)
-- `main` / `develop` / `feature/*` / `release/*` / `hotfix/*`.
-- PRs target `develop`. Releases merge to `main` via `release/x.y.z`. Hotfixes branch off `main`, merge to both.
+- `main` / `develop` / `feature/*` / `release/*` / `hotfix/*`. PRs target `develop`.
+- Releases merge to `main` via `release/x.y.z`. Hotfixes off `main` merge to both.
 - Commit scope = ticket id: `feat(PROJ-123): add bet panel`.
 
 ## Stack selection
-`.traffic-one.json` `stack` field selects rules. Frontend flavours live under
-`frontend/<flavour>/core.md` (for example `frontend/react/core.md` and
-`frontend/react-native/core.md`).
+`.traffic-one.json` `stack` selects rules. Frontend flavours: `react/core.md`, `react-native/core.md`.
