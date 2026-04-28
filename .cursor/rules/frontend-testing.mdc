@@ -31,6 +31,10 @@ globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/e2
 - `route.fulfill()` for deterministic flows; reserve real back-end for smoke.
 - `trace: "on-first-retry"`. Screenshot on failure.
 - `@axe-core/playwright` on every page-level spec.
+- Visual-heavy work: screenshots at 320, 375, 768, 1024, 1440, and 1920 px where practical.
+- Verify no horizontal overflow, mobile touch interactions, and reduced-motion behavior.
+- Cover Chrome, Firefox, and Safari/WebKit for critical scrolling, motion, and fallback paths.
+- Prefer deterministic waits and role/label assertions over timeout-based assertions.
 
 ## Coverage
 - ≥ 80% on `apps/*/src/features/` and every `packages/*` library.

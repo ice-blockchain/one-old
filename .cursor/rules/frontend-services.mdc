@@ -6,8 +6,8 @@ globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "packa
 
 # Service Layer — framework-agnostic
 
-## REST: pick a data layer or write a plain service
-- **Cache-friendly reads** → typed data-fetching layer (pick one per project).
+## REST: RTK Query or plain service
+- **Cache-friendly reads** → active stack's RTK Query slice.
 - **One-off mutations / uploads** → plain async service function.
 
 ## Plain async services
