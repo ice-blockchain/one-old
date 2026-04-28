@@ -17,6 +17,12 @@ React-specific testing helpers live in `frontend/react/testing.md`.
 - `<nav>`, `<main>`, `<header>`, `<footer>`, `<section>`, `<article>` — give the page a real outline.
 - `<table>` only for tabular data, with `<caption>` and proper `<th scope>`.
 
+## Localized accessibility copy
+
+- All user-facing text used for accessibility comes from translation keys: visible labels, `aria-label`, `aria-describedby` text, live-region copy, image `alt`, form helper text, errors, and empty states.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- Keep translation values as complete phrases so screen readers announce natural copy; avoid concatenating translated fragments in JSX.
+
 ## Keyboard
 
 - Every interactive element reachable by Tab in document order.

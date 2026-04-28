@@ -17,10 +17,14 @@ Before creating files, state:
 3. Style file: `ComponentName.styles.ts` using `StyleSheet.create`.
 4. State/data boundary: presentational only, local state, or hook-backed.
 5. Tests: colocated RNTL test when the component has interaction or state.
+6. i18n namespace/key pattern and catalog location in `packages/i18n`.
+7. Translation consumption: `useTranslation`, `t`, or `<Trans>`.
 
 Scaffold rules:
 - Named export only.
 - Use React Native primitives or approved `@app/ui-native` primitives.
 - No DOM tags, inline object styles, NativeWind/Tailwind, or axios calls.
 - Loading/error/empty states are explicit when rendering async data.
+- Visible copy, placeholders, accessibility labels/hints, image accessibility copy, and loading/error/empty states use translation keys.
 - Accessibility labels/roles are part of the component contract for interactive UI.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
