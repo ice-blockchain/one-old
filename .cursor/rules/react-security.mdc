@@ -37,5 +37,16 @@ globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "apps/
 
 ## CSP
 - Strict CSP in production: `default-src 'self'; script-src 'self'; connect-src 'self' wss://<host>`.
-- No `unsafe-inline`. vanilla-extract emits static CSS — strict-style compatible.
+- Use per-request nonces for required inline scripts. No `unsafe-inline`.
+- Adjust origins to the actual API, asset, and socket hosts.
+- vanilla-extract emits static CSS — strict-style compatible.
 - Report violations to a dedicated endpoint during rollout.
+
+## Third-party scripts and headers
+- Third-party scripts load async and only where needed; use SRI for CDN scripts.
+- Prefer self-hosting critical assets; audit browser-exposed SDKs before release.
+- Production sends HSTS, nosniff, frame denial/frame-ancestors, Referrer-Policy, and restrictive Permissions-Policy.
+
+## Forms and abuse controls
+- State-changing forms require CSRF protection, server validation, and rate limiting.
+- Prefer honeypots/throttling before intrusive challenges.

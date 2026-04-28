@@ -62,6 +62,11 @@ Three test layers, each with a distinct job. Framework-specific testing helpers
 - Stub the back-end via `route.fulfill()` for deterministic flows; reserve real back-end for a small smoke suite.
 - `trace: "on-first-retry"`. Screenshot on failure.
 - `@axe-core/playwright` for a11y assertions on every page-level spec.
+- Visual-heavy work gets screenshots at key breakpoints: 320, 375, 768, 1024, 1440, and 1920 px where practical.
+- Verify responsive layouts have no horizontal overflow and touch targets still work at mobile widths.
+- Cover Chrome, Firefox, and Safari/WebKit for scrolling, motion, and fallback behavior on critical journeys.
+- Verify reduced-motion behavior when the UI includes animation.
+- Prefer deterministic waits and role/label assertions over timeout-based assertions.
 
 ## Coverage
 

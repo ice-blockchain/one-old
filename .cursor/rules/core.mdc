@@ -12,8 +12,12 @@ Project-level conventions for any TypeScript project. Stack-specific rules live 
 - **TypeScript ^5** — never plain JS for new files.
 - `tsconfig` baseline: `strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`.
 - No `any` — `unknown` and narrow.
+- Treat caught errors and external/untrusted values as `unknown` until narrowed.
+- Explicit parameter + return types on exported functions, shared utilities, service methods, hooks, and public package APIs.
+- `interface` for extensible object shapes/public DTOs; `type` for unions/intersections/tuples/mapped types.
+- Prefer string literal unions over `enum` unless protocol/generated-code interop requires an enum.
 - Discriminated unions over flag + optional combos.
-- Infer types from schemas (zod, valibot).
+- Infer schema-derived types with `z.infer<typeof Schema>`; do not duplicate types beside zod schemas.
 
 ## Workspace
 - **Monorepo:** Turborepo + pnpm workspaces.

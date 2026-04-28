@@ -8,7 +8,26 @@
   "policy": {
     "installation": "INSTALLED_BY_DEFAULT"
   },
-  "skills": "./skills",
+  "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
-  "instructions": "./AGENTS.md"
+  "instructions": "./AGENTS.md",
+  "interface": {
+    "displayName": "Traffic One",
+    "shortDescription": "React and React Native TypeScript workflow rules and scaffolding skills.",
+    "longDescription": "Traffic One adds opinionated React, React Native, TypeScript, Turborepo, testing, security, and Gitflow rules with project-specific Codex skills and hooks.",
+    "developerName": "Cosmin Turcin",
+    "category": "Engineering",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Create a React feature",
+      "Review security for this change",
+      "Scaffold an Expo screen"
+    ],
+    "brandColor": "#2563EB",
+    "screenshots": []
+  }
 }

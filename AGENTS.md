@@ -9,7 +9,7 @@ The rules are layered:
 2. **Project core** (TypeScript strict, Turborepo, Gitflow) — `rules/core.md`, framework-agnostic.
 3. **Stack core** — React web uses `rules/frontend/react/core.md`; Expo React Native uses `rules/frontend/react-native/core.md`.
    Replace this layer per frontend flavour — never mix stack-specific rules into the framework-agnostic core.
-4. **Path-scoped rules** (components, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
+4. **Path-scoped rules** (components, design quality, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
 
 ---
 
@@ -53,6 +53,11 @@ The rules are layered:
 ## Project core (framework-agnostic — `rules/core.md`)
 
 - **TypeScript ^5** strict (`strict`, `noUncheckedIndexedAccess`, `noImplicitOverride`, `exactOptionalPropertyTypes`, `verbatimModuleSyntax`).
+- Public TypeScript APIs have explicit parameter and return types; obvious locals may be inferred.
+- Use `interface` for extensible object shapes/public DTOs; use `type` for unions/intersections/tuples/mapped types.
+- Prefer string literal unions over `enum` unless protocol or generated-code interop requires an enum.
+- Treat caught errors and external data as `unknown` until narrowed.
+- Infer schema-backed types with `z.infer<typeof Schema>`; do not duplicate types beside Zod schemas.
 - **Monorepo:** Turborepo with pnpm workspaces (npm/yarn fallback).
 - Shared code in `packages/*`; cross-package imports use workspace package names.
 - Validate every external input with a typed schema; map errors to a typed `AppError`.
@@ -195,6 +200,13 @@ The rules are layered:
 - `React.memo` / `useCallback` / `useMemo` only after profiling — measure, don't guess.
 - All design values from `@app/design-tokens` — never hardcode colours/spacing.
 
+## React web design quality (apps/web/src/**, packages/ui/**)
+- Build the actual usable app/tool/game experience as the first screen; do not default to a marketing page.
+- UI must feel specific to the product, workflow, and audience — no generic template-looking surfaces.
+- Choose a concrete visual direction, then express it with design tokens, layout, typography, states, and motion.
+- Finish hover/focus/active/loading/empty/error states intentionally; verify mobile/desktop overflow, clipping, and overlap.
+- Use vanilla-extract `.css.ts` and `@app/design-tokens`; never hardcode visual values.
+
 ## Real-time rules (services/ws/**, packages/ws-client/**)
 - Singleton connection per endpoint. Components subscribe via hooks.
 - Reconnect with exponential backoff + jitter; heartbeat ping every 15–30 s.
@@ -223,14 +235,24 @@ The rules are layered:
 - Query order: `getByRole` → label → text → placeholder. `getByTestId` last resort.
 - ≥80% coverage on `apps/*/src/features/` and every `packages/*` library.
 - Real-time tests: drive in-memory WS fake; cover connect/first/disconnect/reconnect/malformed/buffer-overflow.
+- Visual-heavy frontend work: Playwright screenshots at key breakpoints, no horizontal overflow, reduced-motion verification, and Chrome/Firefox/Safari coverage for critical paths.
 
 ## Performance rules
 - Lazy-load every page; preload on hover/focus.
 - Bundle budget: critical path ≤180 KB gz, per-route chunk ≤80 KB gz.
-- Web Vitals targets: LCP ≤2.5 s, INP ≤200 ms, CLS ≤0.1.
+- Web Vitals targets: LCP ≤2.5 s, FCP ≤1.5 s, INP ≤200 ms, TBT ≤200 ms, CLS ≤0.1.
 - Tree-shake: named imports only (`import { x } from "lodash-es"`).
+- Hero media may use eager/high-priority loading only for the primary asset; lazy-load below-the-fold media.
+- Third-party scripts load async/defer and only where needed; use `will-change` narrowly and remove it after animation.
 - Real-time render budget: ≤30 fps for non-game UIs; batch via `requestAnimationFrame`.
 - Defensive UI under degraded network: show "reconnecting" banner, mark stale data, queue or fail optimistic actions.
+
+## React web security additions
+- Never store JWT access tokens in `localStorage`; use `httpOnly` cookies or in-memory state.
+- Validate user-supplied data with Zod before sending it to the API; no frontend secrets in `VITE_` vars.
+- CSP uses concrete production origins and per-request nonces for required inline scripts; no `unsafe-inline` scripts.
+- Use SRI for CDN scripts, self-host critical assets when practical, and send HSTS/nosniff/frame/referrer/permissions headers.
+- State-changing forms require CSRF protection, server validation, rate limiting, and lightweight anti-abuse controls.
 
 ## Accessibility rules
 - Semantic HTML first. `<button>` for actions, `<a>` for navigation, `<dialog>` for modals.
@@ -255,6 +277,11 @@ The rules are layered:
 - Migrations: non-null on big tables = nullable → backfill → NOT NULL. Drops two-phase.
 - API layering: route → controller → service → repository → db. No layer-skipping.
 - All handler input validated with Zod; return 400 with flattened errors.
+- Controllers map service results to typed HTTP DTOs; never expose raw DB rows/ORM entities in API responses.
+- Repositories expose small typed contracts; services own business logic and never receive HTTP response objects.
+- Paginated responses include typed metadata matching the endpoint contract.
+- No `console.log` in production server code; use the project logger and strip secrets/PII.
+- Run a focused security review when touching auth/authz, DB queries, filesystem, crypto, external APIs, payments, or user input handling.
 
 ## Available skills (invoke with $skill-name or describe your intent)
 - `$stack-setup` — first-run onboarding Q&A or stack reconfigure
