@@ -1,7 +1,8 @@
-<!-- SOURCE OF TRUTH: rules/backend/php.md — update there first, then mirror here -->
+<!-- GENERATED FROM: rules/backend/php.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: PHP backend rules — applies to PHP apps, Composer, and PHPUnit/Pest projects.
+description: "PHP Backend Rules. Generated from rules/backend/php.md."
 globs: ["**/*.php", "**/composer.json", "**/composer.lock", "**/phpunit.xml", "**/phpunit.xml.dist"]
+alwaysApply: false
 ---
 
 # PHP Backend Rules
