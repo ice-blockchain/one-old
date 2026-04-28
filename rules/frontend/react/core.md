@@ -18,6 +18,7 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 - **Real-time:** native `WebSocket` / `socket.io-client` behind a service singleton
 - **HTTP:** axios in services or RTK Query — never axios directly in components
 - **Forms:** react-hook-form + zod + @hookform/resolvers
+- **i18n:** i18next + react-i18next; shared typed resources default to `packages/i18n`
 - **Animations:** framer-motion + CSS + lottie-react / @react-three/fiber
 
 ### Build
@@ -40,5 +41,12 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 - No inline `style={{}}`, no Tailwind classes — vanilla-extract `.css.ts` only.
 - Props always have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
+- User-facing text, placeholders, labels, loading/error/empty copy, alt text, and ARIA labels come from translation keys.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.
 - WebSocket connections owned by a service singleton; components subscribe via hooks.
+
+## i18n defaults
+
+- New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
+- Existing apps with a mature i18n package may keep it, but new UI copy still uses `i18next`/`react-i18next`.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.

@@ -27,7 +27,10 @@ Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
 
 ## Rendering
 - Use `View`, `Text`, `Pressable`, `TextInput`, `Image`, `FlatList`, `SectionList`, and approved shared primitives.
-- Every user-visible string must be inside `Text`.
+- Every user-visible string must be inside `Text` and come from a translation key.
+- Use `react-i18next` for visible copy, placeholders, accessibility labels, loading/error/empty states, and image accessibility copy.
+- Keep translation catalogs in `packages/i18n` by default, using feature-based namespaces.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - Use `Pressable` for actions; set `accessibilityRole` and `accessibilityLabel` when the visible label is not enough.
 - Always handle loading, error, and empty states explicitly.
 - Subscribe to real-time streams via hooks; components never instantiate WebSocket connections.
