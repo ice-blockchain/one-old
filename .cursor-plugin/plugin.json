@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "description": "Real-time React + TypeScript monorepo plugin: Turborepo, RTK + RTK Query, vanilla-extract, Jest + Playwright, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
+  "description": "React + React Native TypeScript plugin: Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
   "version": "2.0.0",
   "author": {
     "name": "Cosmin Turcin"
@@ -26,6 +26,17 @@
     "./.cursor/rules/react-performance.mdc",
     "./.cursor/rules/react-realtime.mdc",
     "./.cursor/rules/react-security.mdc",
+    "./.cursor/rules/react-native-core.mdc",
+    "./.cursor/rules/react-native-components.mdc",
+    "./.cursor/rules/react-native-styles.mdc",
+    "./.cursor/rules/react-native-stores.mdc",
+    "./.cursor/rules/react-native-services.mdc",
+    "./.cursor/rules/react-native-realtime.mdc",
+    "./.cursor/rules/react-native-navigation.mdc",
+    "./.cursor/rules/react-native-testing.mdc",
+    "./.cursor/rules/react-native-performance.mdc",
+    "./.cursor/rules/react-native-accessibility.mdc",
+    "./.cursor/rules/react-native-security.mdc",
     "./.cursor/rules/backend-postgres.mdc",
     "./.cursor/rules/backend-node.mdc"
   ],

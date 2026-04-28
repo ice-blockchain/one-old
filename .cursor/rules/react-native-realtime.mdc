@@ -1,0 +1,15 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/realtime.md -->
+---
+description: React Native WebSocket singleton, lifecycle, validation, batching, and tests.
+globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/use*Channel*.ts", "**/use*Channel*.tsx"]
+---
+
+# React Native Real-time Rules
+
+- One singleton connection per endpoint in `packages/ws-client` or `apps/mobile/src/services/ws`.
+- Components subscribe through hooks; never open sockets in components.
+- Expose `idle`, `connecting`, `live`, `reconnecting`, `offline`, `degraded`.
+- Backoff with jitter; heartbeat every 15-30 seconds while foregrounded.
+- Pause/downgrade non-critical streams in background; reconcile on foreground.
+- Validate inbound frames with zod and strip PII from logs.
+- Batch high-rate frames and cap non-game UI at 30 fps.

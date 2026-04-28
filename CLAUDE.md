@@ -16,6 +16,9 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 ## Stack-specific core (React web — replace this import for other flavours)
 @rules/frontend/react/core.md
 
+React Native Expo stacks use `@rules/frontend/react-native/core.md` instead,
+selected by `.traffic-one.json` through the SessionStart hook.
+
 Path-scoped rules — load automatically when you touch matching files:
 
 **Framework-agnostic frontend** (`rules/frontend/`):
@@ -33,6 +36,19 @@ Path-scoped rules — load automatically when you touch matching files:
 - `performance.md` — React.lazy, memo/useCallback, useSyncExternalStore
 - `testing.md` — React Testing Library, renderHook, jest config
 - `security.md` — JWT in cookies, DOMPurify, VITE_ env vars, CSP
+
+**React Native-specific** (`rules/frontend/react-native/`):
+- `core.md` — Expo-first stack core, forced libraries, folder structure
+- `components.md` — native primitives, explicit props, list rendering
+- `styles.md` — `StyleSheet.create`, design tokens, no NativeWind/Tailwind
+- `stores.md` — Redux Toolkit + RTK Query + zustand mobile boundaries
+- `services.md` — RTK Query/axios services, SecureStore, offline concerns
+- `realtime.md` — mobile WS lifecycle, foreground/background handling
+- `navigation.md` — Expo Router, typed routes, params, deep links
+- `performance.md` — Hermes, New Architecture, list/media budgets
+- `testing.md` — Jest, RNTL, MSW/fakes, Maestro E2E
+- `accessibility.md` — VoiceOver/TalkBack, touch targets, dynamic type
+- `security.md` — SecureStore, deep-link validation, native dependency checks
 
 **Backend** (`rules/backend/`):
 - `postgres.md` — Postgres types/indexes/migrations/RLS

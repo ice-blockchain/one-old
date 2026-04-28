@@ -1,0 +1,16 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/navigation.md -->
+---
+description: Expo Router route files, typed routes, params, deep links, and screen composition.
+globs: ["apps/**/app/**", "app/**", "**/*Screen.tsx", "**/*Route.tsx"]
+---
+
+# React Native Navigation — Expo Router
+
+- Expo Router is required for Expo apps.
+- Route files live under `app/`; route files stay thin and compose named components.
+- `_layout.tsx` owns stack/tab/drawer structure and providers.
+- Enable typed routes and use absolute hrefs.
+- Route files may default-export; reusable modules use named exports.
+- Validate `useLocalSearchParams` output with zod before use.
+- Deep links/native intents are untrusted input.
+- Route params contain ids/filters, not full server entities.

@@ -1,0 +1,16 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react-native/components.md -->
+---
+description: React Native component structure, props, primitives, list rendering, and UI boundaries.
+globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
+---
+
+# React Native Component Rules
+
+- One component per `ComponentName.tsx`; co-locate `ComponentName.styles.ts`.
+- Explicit `ComponentNameProps`; destructure props in the signature.
+- Named exports for reusable components; default exports only in Expo Router route files.
+- Use RN primitives (`View`, `Text`, `Pressable`, `TextInput`, `Image`, `FlatList`, `SectionList`) or approved shared primitives.
+- Every visible string is inside `Text`; every action is accessible.
+- Handle loading, error, and empty states explicitly.
+- Use `FlatList`/`SectionList` for unbounded data; `@shopify/flash-list` only after measurement.
+- No DOM tags, inline object styles, NativeWind/Tailwind classes, or component-owned sockets.
