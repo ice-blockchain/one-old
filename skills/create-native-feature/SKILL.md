@@ -17,6 +17,8 @@ Before creating files, state:
 3. Route/screen files under `apps/mobile/app/` if the feature needs navigation.
 4. API endpoints, schemas, and state ownership: RTK Query, Redux slice, zustand, or local state.
 5. Tests: reducer/selector/service unit tests, RNTL integration tests, and Maestro flow when critical.
+6. i18n namespace/key pattern and catalog location in `packages/i18n`.
+7. Translation consumption in feature UI: `useTranslation`, `t`, or `<Trans>`.
 
 Scaffold rules:
 - Server state goes in RTK Query or Redux fed by a WS service.
@@ -24,3 +26,5 @@ Scaffold rules:
 - Validate external input and responses with zod.
 - Do not add native dependencies without the dependency quality gate and Expo Doctor compatibility check.
 - Keep route files thin; feature logic lives in the feature folder.
+- Feature UI copy, placeholders, validation errors, accessibility labels/hints, and loading/error/empty states use translation keys.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.

@@ -15,6 +15,7 @@ paths:
 - Interactive controls expose `accessibilityRole`, `accessibilityLabel`, and state where needed.
 - Icon-only controls need accessible labels.
 - Hide decorative images from assistive tech; label meaningful images.
+- Accessibility labels, hints, validation errors, and state copy come from translation keys.
 
 ## Touch and focus
 - Minimum touch target: 44x44 points.
@@ -27,6 +28,7 @@ paths:
 - Never use color alone to communicate state.
 - Respect reduce-motion settings; disable large looping animations when requested.
 - Avoid flashes at or above 3 Hz.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 
 ## Forms and errors
 - Every input has a visible label or a clear accessibility label.

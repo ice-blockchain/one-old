@@ -78,6 +78,7 @@ The rules are layered:
 - **Real-time:** native WebSocket or socket.io-client, wrapped in a service singleton
 - **HTTP:** axios (in service functions) or RTK Query — never axios in a component
 - **Forms:** react-hook-form + zod + @hookform/resolvers
+- **i18n:** i18next + react-i18next; shared typed resources default to `packages/i18n`
 - **Animations:** framer-motion (declarative); CSS for micro; lottie-react / @react-three/fiber as needed
 
 ### Styling
@@ -99,9 +100,13 @@ The rules are layered:
 - No Tailwind utility classes — define styles in `.css.ts`.
 - Props always have an explicit `ComponentNameProps` interface.
 - All API calls go through `services/` or RTK Query slices — never axios in components.
+- User-facing text, placeholders, labels, loading/error/empty copy, alt text, and ARIA labels come from translation keys.
 - Server state lives in RTK Query (or Redux) — never duplicated in zustand or component state.
 - WebSocket connections owned by a service singleton; components subscribe via hooks. Never `new WebSocket()` in a component.
 - Cross-package imports use workspace package names (`@app/ui`, `@app/utils`) — never deep relative paths.
+- New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
+- Existing apps with a mature i18n package may keep it, but new UI copy still uses i18next/react-i18next.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 
 ## React Native (Expo) stack core (`rules/frontend/react-native/core.md`)
 
@@ -117,6 +122,7 @@ The rules are layered:
 - **HTTP:** axios (in service functions) or RTK Query — never axios in a component
 - **Forms:** react-hook-form + zod + @hookform/resolvers
 - **Storage:** expo-secure-store for secrets; AsyncStorage only for non-sensitive preferences
+- **i18n:** i18next + react-i18next; expo-localization for device locale detection; shared typed resources default to `packages/i18n`
 - **Animations:** react-native-reanimated + react-native-gesture-handler; lottie-react-native as needed
 
 ### Build
@@ -140,10 +146,15 @@ The rules are layered:
 - Use React Native primitives (`View`, `Text`, `Pressable`, `TextInput`, `Image`) or approved shared primitives.
 - No DOM tags, NativeWind/Tailwind classes, or inline object styles.
 - All API calls go through `services/` or RTK Query slices — never axios in components.
+- User-facing text, placeholders, labels, loading/error/empty copy, image accessibility copy, and accessibility labels come from translation keys.
 - Server state lives in RTK Query or Redux — never duplicated in zustand or component state.
 - WebSocket connections owned by a service singleton; components subscribe via hooks. Never `new WebSocket()` in a component.
 - Route params contain ids/filters only; validate params and deep links with Zod before use.
 - Cross-package imports use workspace package names (`@app/ui-native`, `@app/utils`) — never deep relative paths.
+- React Native apps read the device locale through `expo-localization` and feed it into i18next.
+- New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
+- Existing apps with a mature i18n package may keep it, but new UI copy still uses i18next/react-i18next.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 
 ## Folder structure (Turborepo monorepo)
 ```
@@ -161,6 +172,7 @@ The rules are layered:
 └── packages/
     ├── ui/                        shared component library + Storybook
     ├── design-tokens/             vanilla-extract themes & tokens
+    ├── i18n/                      shared typed i18next resources & locale config
     ├── api-client/                axios + RTK Query baseQuery + AppError
     ├── ws-client/                 WebSocket transport + protocol + hooks
     ├── utils/                     pure utilities (no React imports)
@@ -184,6 +196,7 @@ The rules are layered:
 └── packages/
     ├── ui-native/               shared React Native primitives
     ├── design-tokens/           platform-neutral design tokens
+    ├── i18n/                    shared typed i18next resources & locale config
     ├── api-client/              axios + RTK Query baseQuery + AppError
     ├── ws-client/               WebSocket transport + protocol + hooks
     ├── utils/                   pure utilities
@@ -199,6 +212,7 @@ The rules are layered:
 - Lazy-load page-level components: `React.lazy` + `Suspense` with skeleton fallback.
 - `React.memo` / `useCallback` / `useMemo` only after profiling — measure, don't guess.
 - All design values from `@app/design-tokens` — never hardcode colours/spacing.
+- All visible copy, placeholders, alt text, ARIA/accessibility labels, and loading/error/empty states use translation keys.
 
 ## React web design quality (apps/web/src/**, packages/ui/**)
 - Build the actual usable app/tool/game experience as the first screen; do not default to a marketing page.
@@ -259,6 +273,7 @@ The rules are layered:
 - Every interactive element keyboard-reachable; visible focus styles.
 - Modals trap focus, restore on close. Skip-link at top of layout.
 - Forms: `<label htmlFor>`; errors via `aria-describedby` + `role="alert"`.
+- Visible labels, helper text, errors, image `alt`, ARIA labels, and live-region copy come from translation keys.
 - Live regions: `aria-live="polite"` for non-urgent (score updates), `"assertive"` only for critical.
 - Respect `prefers-reduced-motion`. Avoid flashes ≥3 Hz.
 - Run `@axe-core/playwright` on every E2E spec.
@@ -268,6 +283,7 @@ The rules are layered:
 - Interactive controls expose role, label, and state when needed.
 - Minimum touch target is 44x44 points; use `hitSlop` for compact controls.
 - Respect dynamic type and reduced motion. Never use colour alone for state.
+- Visible copy, placeholders, accessibility labels/hints, validation errors, and state copy come from translation keys.
 - Maestro/RNTL tests should prefer stable accessibility labels for critical controls.
 
 ## Backend rules (when editing SQL, migrations, server/, api/)
@@ -293,6 +309,7 @@ The rules are layered:
 - `$create-native-screen` — scaffold an Expo Router screen/route
 - `$create-native-feature` — scaffold a React Native feature slice
 - `$create-native-service` — scaffold a mobile service or RTK Query endpoint
+- `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
