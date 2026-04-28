@@ -14,6 +14,12 @@ Confirm the page and route before creating any files.
 2. State the route path
 3. State which feature components it will compose
 4. State that it will be lazy-loaded with Suspense
-5. Ask: "Should I go ahead?"
+5. State the i18n namespace/key pattern and catalog location in `packages/i18n`
+6. State whether page copy uses `useTranslation`, `t`, or `<Trans>`
+7. Ask: "Should I go ahead?"
+
+Scaffold rules:
+- Route titles, headings, empty/loading/error states, navigation labels, and ARIA copy use translation keys.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 
 <!-- TODO: full scaffold template goes here once structure is validated -->
