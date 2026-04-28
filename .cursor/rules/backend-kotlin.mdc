@@ -1,7 +1,8 @@
-<!-- SOURCE OF TRUTH: rules/backend/kotlin.md — update there first, then mirror here -->
+<!-- GENERATED FROM: rules/backend/kotlin.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: Kotlin/JVM backend rules — applies to Kotlin backend services and Gradle projects.
+description: "Kotlin/JVM Backend Rules. Generated from rules/backend/kotlin.md."
 globs: ["**/*.kt", "**/*.kts", "**/build.gradle", "**/build.gradle.kts"]
+alwaysApply: false
 ---
 
 # Kotlin/JVM Backend Rules

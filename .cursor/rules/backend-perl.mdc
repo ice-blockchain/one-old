@@ -1,7 +1,8 @@
-<!-- SOURCE OF TRUTH: rules/backend/perl.md — update there first, then mirror here -->
+<!-- GENERATED FROM: rules/backend/perl.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: Perl backend rules — applies to Perl modules, tests, PSGI, and CGI scripts.
+description: "Perl Backend Rules. Generated from rules/backend/perl.md."
 globs: ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi", "**/*.cgi"]
+alwaysApply: false
 ---
 
 # Perl Backend Rules
