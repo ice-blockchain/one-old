@@ -15,7 +15,9 @@ live in `frontend/react/performance.md`.
 | Metric | Target |
 |---|---|
 | LCP — Largest Contentful Paint | ≤ 2.5 s |
+| FCP — First Contentful Paint | ≤ 1.5 s |
 | INP — Interaction to Next Paint | ≤ 200 ms |
+| TBT — Total Blocking Time | ≤ 200 ms |
 | CLS — Cumulative Layout Shift | ≤ 0.1 |
 | TTFB — Time to First Byte | ≤ 800 ms |
 
@@ -34,6 +36,7 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 - Preload the next probable route on hover/focus.
 - `<link rel="modulepreload">` for critical chunks identified via Lighthouse.
 - `<link rel="preconnect">` to API and CDN origins.
+- Load third-party scripts with `async`/`defer` and only on pages that actually need them.
 
 ## Tree-shaking
 
@@ -44,6 +47,7 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 ## Images & media
 
 - All images have explicit `width` and `height` (prevents CLS).
+- The primary hero image/media may use `loading="eager"` and `fetchpriority="high"`; do not apply that broadly.
 - `loading="lazy"` and `decoding="async"` on below-the-fold images.
 - Modern formats: AVIF/WebP with fallback. Pre-compress at build time.
 - SVG icons: inline as code (no extra HTTP round-trips); larger SVGs as files.
@@ -51,9 +55,17 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 
 ## Fonts
 
-- `font-display: swap`. Preload the primary weight only.
+- Use at most two font families unless the product direction clearly requires more.
+- `font-display: swap`. Preload only the primary critical weight/style.
 - Subset to used glyphs.
 - Self-host where possible; otherwise `<link rel="preconnect" crossorigin>` to the CDN.
+
+## Animation performance
+
+- Animate compositor-friendly properties (`transform`, `opacity`, `clip-path`, `filter` sparingly).
+- Avoid animating layout-bound properties (`width`, `height`, `top`, `left`, `margin`, `padding`, `font-size`).
+- Use `will-change` narrowly for active transitions only; remove it when the animation finishes.
+- Prefer CSS for simple transitions; use `requestAnimationFrame` or the approved animation library for JS motion.
 
 ## Real-time render budget
 

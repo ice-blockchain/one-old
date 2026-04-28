@@ -7,7 +7,7 @@ globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
 # Frontend Performance — framework-agnostic
 
 ## Web Vitals targets (4G mid-range)
-LCP ≤ 2.5 s · INP ≤ 200 ms · CLS ≤ 0.1 · TTFB ≤ 800 ms.
+LCP ≤ 2.5 s · FCP ≤ 1.5 s · INP ≤ 200 ms · TBT ≤ 200 ms · CLS ≤ 0.1 · TTFB ≤ 800 ms.
 
 ## Bundle budgets
 Critical path ≤ 180 KB gz · per-route chunk ≤ 80 KB gz. Fail CI when over.
@@ -16,6 +16,7 @@ Critical path ≤ 180 KB gz · per-route chunk ≤ 80 KB gz. Fail CI when over.
 - Lazy-load routes; dynamic-import heavy libs at usage site.
 - Preload next probable route on hover/focus.
 - `<link rel="modulepreload">` for critical chunks; `<link rel="preconnect">` to API/CDN.
+- Third-party scripts use `async`/`defer` and load only where needed.
 
 ## Tree-shaking
 - Named imports only (`import { x } from "lodash-es"`).
@@ -23,8 +24,14 @@ Critical path ≤ 180 KB gz · per-route chunk ≤ 80 KB gz. Fail CI when over.
 
 ## Images & fonts
 - Explicit `width` / `height` (CLS).
+- Hero media may use `loading="eager"` + `fetchpriority="high"`; do not apply broadly.
 - `loading="lazy"` + `decoding="async"` below the fold. AVIF/WebP with fallback.
-- SVG icons inlined. Fonts: `font-display: swap`, preload primary weight, subset glyphs.
+- SVG icons inlined. Fonts: max two families, `font-display: swap`, preload only critical weight/style, subset glyphs.
+
+## Animation
+- Animate `transform`/`opacity` first; avoid layout-bound properties.
+- Use `will-change` narrowly and remove it when animation finishes.
+- CSS for simple transitions; approved animation libs or `requestAnimationFrame` for JS motion.
 
 ## Real-time render budget
 - ~30 fps non-game UIs, 60 fps for canvases.

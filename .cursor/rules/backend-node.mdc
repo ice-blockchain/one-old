@@ -9,16 +9,24 @@ globs: ["src/services/**", "src/api/**", "server/**", "api/**", "**/*.route.ts",
 ## REST shape
 - Nouns, not verbs: `GET /api/widgets`, `POST /api/widgets`, `PATCH /api/widgets/:id`.
 - Query params for filter/sort/pagination; cursor pagination past ~10k rows.
+- Public response shapes are typed DTOs; never leak raw DB rows or ORM entities.
+- Paginated responses include typed metadata matching the endpoint contract.
 
 ## Layering (never skip)
 `route → controller → service → repository → db`
-- Controller: validate input (zod), call service, map result. No DB access.
-- Service: business logic. No HTTP.
-- Repository: only layer that talks to DB.
+- Route: wire middleware and delegate. No business logic.
+- Controller: zod-validate params/query/body, call service, map to HTTP DTOs. No DB.
+- Service: business logic over typed input/output DTOs. No HTTP response objects.
+- Repository: only layer that talks to DB; expose a small typed contract.
 
 ## Errors
 - One typed error hierarchy; central middleware maps to HTTP.
-- Log with request id. Never log secrets or PII.
+- Treat request/upstream/DB-adjacent data as `unknown` until schema-validated.
+- Log with request id. Never log secrets or PII. No `console.log` in production.
+
+## Security review triggers
+- Focused security pass for auth/authz, DB queries, filesystem, crypto, payments, external APIs, or user input handling.
+- Protected endpoints require auth + authorization in the server path; UI gating never counts.
 
 ## Async & performance
 - Always `await`. Cache read-heavy endpoints. Long jobs → queue, never block requests.

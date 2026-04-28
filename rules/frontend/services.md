@@ -11,13 +11,13 @@ paths:
 # Service Layer — framework-agnostic
 
 Two service flavours: REST and real-time (WebSocket). Both are isolated from UI code.
-Framework-specific data-fetching primitives (RTK Query, generated hooks) live in
-`frontend/react/services.md`.
+Framework-specific RTK Query primitives and generated hooks live in
+`frontend/react/services.md` and `frontend/react-native/services.md`.
 
 ## REST
 
 ### When to wrap responses
-- **Cache-friendly reads** → use a typed data-fetching layer (RTK Query, TanStack Query, SWR — pick one per project).
+- **Cache-friendly reads** → use the active stack's RTK Query slice.
 - **One-off mutations, file uploads, anything where caching adds no value** → plain async service function.
 
 ### Plain async service rules
