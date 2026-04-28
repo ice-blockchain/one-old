@@ -29,7 +29,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── frontend/react-native/     Expo React Native stack rules
 │   ├── frontend/services.md       shared frontend service rules
 │   ├── frontend/testing.md        shared frontend testing rules
-│   └── backend/                   Node/Postgres rules
+│   └── backend/                   Node/Postgres + backend technology rules
 │
 ├── CLAUDE.md                ← Claude Code   — entry point, @imports rules/core.md
 ├── AGENTS.md                ← Codex CLI     — entry point, inlines rules/ content
@@ -110,6 +110,7 @@ Or via Cursor Settings → Plugins → Add.
 | Library stack, folder structure, core rules | `rules/core.md` (then mirror to `AGENTS.md` + `.cursor/rules/core.mdc`) |
 | React web stack rules | `rules/frontend/react/*.md` (then mirror to `AGENTS.md` + `.cursor/rules/react-*.mdc`) |
 | React Native stack rules | `rules/frontend/react-native/*.md` (then mirror to `AGENTS.md` + `.cursor/rules/react-native-*.mdc`) |
+| Backend and backend technology rules | `rules/backend/*.md` (then mirror to `AGENTS.md` + `.cursor/rules/backend-*.mdc`) |
 | Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md` (then mirror to `AGENTS.md` + `.cursor/rules/common-execution-discipline.mdc`) |
 | Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
 | Blocked libraries | Edit the `PreToolUse[Bash]` hook in `settings.json` and `hooks/hooks.json` |
