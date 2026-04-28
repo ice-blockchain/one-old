@@ -27,7 +27,9 @@ paths:
 ## Queries
 - Parameterised only — no string interpolation.
 - Hot queries must show index usage in `EXPLAIN ANALYZE` (no `Seq Scan` on big tables).
-- No `SELECT *` in services. No N+1 loops.
+- No `SELECT *` in services.
+- No N+1 loops — batch related reads with `IN (...)`, joins, or preloaded repository methods.
+- Large reads must be bounded with `LIMIT`, cursor pagination, or a documented hard cap.
 
 ## Migrations
 - One concern per migration; reversible where feasible.

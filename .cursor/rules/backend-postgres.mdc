@@ -23,7 +23,9 @@ globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema
 
 ## Queries
 - Parameterized only — never string interpolation.
-- No `SELECT *` in services. No N+1 loops — batch with `IN (...)` or JOIN.
+- No `SELECT *` in services.
+- No N+1 loops — batch related reads with `IN (...)`, joins, or preloaded repository methods.
+- Large reads must be bounded with `LIMIT`, cursor pagination, or a documented hard cap.
 - Every hot query has an `EXPLAIN ANALYZE` showing index use.
 
 ## Migrations

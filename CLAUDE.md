@@ -54,6 +54,15 @@ Path-scoped rules — load automatically when you touch matching files:
 **Backend** (`rules/backend/`):
 - `postgres.md` — Postgres types/indexes/migrations/RLS
 - `node.md` — Node service layering
+- `cpp.md` — C++ service/native backend rules
+- `csharp.md` — C#/.NET backend rules
+- `golang.md` — Go backend rules
+- `java.md` — Java backend rules
+- `kotlin.md` — Kotlin/JVM backend rules
+- `perl.md` — Perl backend rules
+- `php.md` — PHP backend rules
+- `python.md` — Python backend rules
+- `rust.md` — Rust backend rules
 
 Mode-specific rules (`rules/modes/*.md`) and the saved stack bundle are injected
 by the SessionStart hook based on `.traffic-one.json`.

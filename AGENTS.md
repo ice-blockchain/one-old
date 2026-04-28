@@ -292,12 +292,27 @@ The rules are layered:
 - RLS enabled on every user-data table; default-deny policies; tested with anon + authed roles.
 - Migrations: non-null on big tables = nullable → backfill → NOT NULL. Drops two-phase.
 - API layering: route → controller → service → repository → db. No layer-skipping.
+- Public API responses use typed DTO envelopes (`success`, `data`, `error`, optional `meta`); paginated responses include metadata matching the endpoint contract.
 - All handler input validated with Zod; return 400 with flattened errors.
 - Controllers map service results to typed HTTP DTOs; never expose raw DB rows/ORM entities in API responses.
-- Repositories expose small typed contracts; services own business logic and never receive HTTP response objects.
-- Paginated responses include typed metadata matching the endpoint contract.
+- Repositories expose small typed contracts; services own business logic, depend on repository interfaces, and never receive HTTP response objects.
+- Rate-limit public/auth/search/write endpoints; cookie/session state-changing endpoints require CSRF protection.
+- Large reads must be bounded. Avoid N+1 query loops by batching with `IN (...)`, joins, or bulk repository methods.
+- API and DB integration tests cover routing/middleware, constraints, auth filters, pagination metadata, and failure paths.
 - No `console.log` in production server code; use the project logger and strip secrets/PII.
 - Run a focused security review when touching auth/authz, DB queries, filesystem, crypto, external APIs, payments, or user input handling.
+
+## Backend technology rules
+- TypeScript/JavaScript backend is covered by `rules/core.md` plus `rules/backend/node.md`.
+- C++: modern C++17/20/23, RAII/smart pointers, Rule of Zero/Five, repository interfaces, sanitizers, `clang-tidy`/`cppcheck`, GoogleTest/gMock.
+- C#/.NET: nullable reference types, immutable records/DTOs, async repositories with `CancellationToken`, typed options, constructor DI, parameterized ADO.NET/Dapper/EF, xUnit/Testcontainers/WebApplicationFactory.
+- Go: `gofmt`/`goimports`, small consumer-owned interfaces, constructor DI, contextual errors, `context.Context` timeouts, `gosec`, table-driven tests with race and coverage.
+- Java: records/final fields, repository/service/controller separation, constructor DI, DTO mapping, Bean Validation, parameterized JDBC/JPA, JUnit 5/AssertJ/Mockito/Testcontainers.
+- Kotlin/JVM: ktlint/Detekt, `val`/immutable collections, null safety, sealed error models, structured coroutines, repository `suspend`/`Flow` contracts, Ktor/JUnit/Turbine/Testcontainers.
+- Perl: `v5.36`, subroutine signatures, Moo DTOs, DBI/DBIx::Class repositories, taint mode for web scripts, three-arg `open`, list-form `system`, DBI placeholders, Test2/prove/Devel::Cover.
+- PHP: PSR-12, `strict_types`, typed properties, DTOs/value objects, thin controllers/services, prepared statements, mass-assignment whitelists, `composer audit`, password/session/CSRF safety, PHPUnit/Pest.
+- Python: PEP 8 typed signatures, dataclass/Protocol DTO and repository boundaries, context managers, environment secrets, Bandit, parameterized queries, pytest with unit/integration markers.
+- Rust: `cargo fmt`/Clippy, ownership-first APIs, `Result` and typed errors, trait repositories, service constructors, newtype IDs, audited dependencies, documented `unsafe`, async/integration tests and `cargo llvm-cov`.
 
 ## Available skills (invoke with $skill-name or describe your intent)
 - `$stack-setup` — first-run onboarding Q&A or stack reconfigure
