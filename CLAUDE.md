@@ -1,4 +1,4 @@
-# traffic-one — Real-time React + TypeScript Monorepo Plugin
+# traffic-one — React + Ionic/Capacitor + TypeScript Plugin
 
 You are working inside a project governed by this plugin.
 Every rule below is mandatory. Never suggest an alternative library to those in
@@ -16,8 +16,11 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 ## Stack-specific core (React web — replace this import for other flavours)
 @rules/frontend/react/core.md
 
-React Native Expo stacks use `@rules/frontend/react-native/core.md` instead,
-selected by `.traffic-one.json` through the SessionStart hook.
+Generic mobile variants of React web products stay on the React stack and use
+Ionic Framework with Capacitor packaging. React Native Expo stacks use
+`@rules/frontend/react-native/core.md` only when the client explicitly asks for
+React Native, Expo, RN, or a fully React Native implementation, selected by
+`.traffic-one.json` through the SessionStart hook.
 
 Path-scoped rules — load automatically when you touch matching files:
 
@@ -38,7 +41,21 @@ Path-scoped rules — load automatically when you touch matching files:
 - `testing.md` — React Testing Library, renderHook, jest config
 - `security.md` — JWT in cookies, DOMPurify, VITE_ env vars, CSP
 
-**React Native-specific** (`rules/frontend/react-native/`):
+**Ionic/Capacitor hybrid mobile** (`rules/frontend/ionic/`):
+- `core.md` — Ionic + Capacitor stack defaults and decision rules
+- `capacitor.md` — Capacitor config, native platform folders, plugins, release checks
+- `components.md` — Ionic-aware React components, overlays, mobile states
+- `navigation.md` — React Router wrapper defaults, deep links, Android back behavior
+- `styles.md` — vanilla-extract with Ionic CSS variable bridge
+- `services.md` — API and Capacitor plugin service boundaries
+- `stores.md` — mobile shell state, native capability state, persistence rules
+- `realtime.md` — WebSocket lifecycle across background/resume and mobile networks
+- `performance.md` — WebView startup/runtime budgets and mobile assets
+- `testing.md` — Capacitor plugin mocks, native smoke checks, mobile visual QA
+- `security.md` — native boundary, secrets, permissions, deep-link input
+- `accessibility.md` — touch targets, overlays, focus, screen readers
+
+**React Native-specific, explicit React Native / Expo only** (`rules/frontend/react-native/`):
 - `core.md` — Expo-first stack core, forced libraries, folder structure
 - `components.md` — native primitives, explicit props, list rendering
 - `styles.md` — `StyleSheet.create`, design tokens, no NativeWind/Tailwind

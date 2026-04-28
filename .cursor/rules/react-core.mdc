@@ -9,7 +9,8 @@ alwaysApply: false
 
 Forced library list and absolute rules for React in the browser. For TypeScript /
 monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
-`rules/frontend/*` and `rules/frontend/react/*`.
+`rules/frontend/*`, `rules/frontend/react/*`, and `rules/frontend/ionic/*` when
+delivering mobile with Ionic/Capacitor.
 
 ## Forced library stack — no exceptions
 
@@ -23,6 +24,9 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 - **Forms:** react-hook-form + zod + @hookform/resolvers
 - **i18n:** i18next + react-i18next; shared typed resources default to `packages/i18n`
 - **Animations:** framer-motion + CSS + lottie-react / @react-three/fiber
+- **Hybrid mobile:** Ionic Framework + Capacitor. The recommended path is
+  packaging the existing/generated React app with Capacitor. Detailed hybrid
+  rules live in `rules/frontend/ionic/*`.
 
 ### Build
 - Vite per-app; Turborepo orchestrates the workspace.
@@ -37,6 +41,23 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 - @playwright/test (E2E)
 - msw + in-memory WS fake
 - Storybook (@storybook/react-vite)
+
+## Mobile delivery
+
+- For a mobile variant of a generated or existing React site, recommend Ionic
+  Framework with Capacitor packaging by default.
+- Keep the React app as the source of truth, set Capacitor `webDir` to the Vite
+  build output (`dist` by default), and add iOS/Android platforms as packaging
+  targets.
+- Treat the Capacitor wrapper as the smallest reversible step. Verify responsive
+  mobile UX, safe areas, keyboard behavior, Android back button behavior,
+  permissions, icons/splash screens, and app-store build config.
+- Offer a full Ionic React app only as the alternative when the user wants
+  Ionic-native navigation/components or a mobile-first rewrite; expect route and
+  component migration plus router compatibility checks.
+- Do not switch to React Native / Expo for generic "mobile app" requests. Use
+  React Native rules and skills only when the user explicitly names React Native,
+  Expo, RN, or asks for a fully React Native implementation.
 
 ## Absolute rules
 

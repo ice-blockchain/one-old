@@ -1,0 +1,39 @@
+<!-- GENERATED FROM: rules/frontend/ionic/capacitor.md; run `python3 scripts/sync-cursor.py` to update. -->
+---
+description: "Ionic Capacitor Packaging Rules. Generated from rules/frontend/ionic/capacitor.md."
+globs: ["capacitor.config.*", "ionic.config.json", "apps/**/capacitor.config.*", "apps/**/ionic.config.json", "apps/**/ios/**", "apps/**/android/**", "ios/**", "android/**"]
+alwaysApply: false
+---
+
+# Ionic Capacitor Packaging Rules
+
+## App configuration
+
+- `webDir` points to the Vite build output (`dist` by default).
+- App id uses reverse-DNS format and is stable before native platforms are added.
+- App name, bundle id, version, build number, icon, and splash config are
+  treated as release settings, not incidental defaults.
+- Native platform folders are generated through Capacitor and then kept under
+  review like source code.
+
+## Build flow
+
+- Run the web build before syncing native projects.
+- Use `npx cap sync` after dependency, plugin, or build-output changes.
+- Do not edit generated native files unless the change is required for store,
+  permission, signing, or plugin configuration.
+- Keep iOS and Android changes separate when the platform requirements differ.
+
+## Native plugins
+
+- Add Capacitor plugins only for a concrete user-facing requirement.
+- Wrap plugin calls in `services/` or feature hooks with explicit return types.
+- Validate plugin results with zod when data crosses into app state.
+- Permission prompts are just-in-time and explain the feature value in product
+  copy before the native dialog appears.
+
+## Release readiness
+
+- Check signing, bundle identifiers, version codes, deep links, app icons, splash
+  screens, privacy manifests, and store metadata before calling a mobile build
+  complete.
