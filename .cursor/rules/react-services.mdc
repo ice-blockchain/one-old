@@ -1,18 +1,28 @@
-<!-- SOURCE OF TRUTH: rules/frontend/react/services.md -->
+<!-- GENERATED FROM: rules/frontend/react/services.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: React service layer — RTK Query slice patterns, generated hooks, tag invalidation.
+description: "React Service Layer — RTK Query specifics. Generated from rules/frontend/react/services.md."
 globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "apps/**/src/features/**/api.ts", "packages/api-client/**", "src/services/**", "src/features/**/services/**"]
+alwaysApply: false
 ---
 
-# React Service Layer — RTK Query
+# React Service Layer — RTK Query specifics
+
+Framework-agnostic service rules (REST/WS split, AppError contract, zod validation)
+live in `frontend/services.md`. This file covers React-only patterns.
 
 ## When to use what
-- **RTK Query** for cached/refetched/shared data.
-- **Plain axios service** for one-off mutations / uploads / non-cacheable.
-- **Generated hooks only** in components.
+- **RTK Query** for any data that benefits from caching, refetching, or shared subscriptions across components (most reads).
+- **Plain axios service** for one-off mutations, file uploads, or anything where RTK Query's cache adds no value.
+- **Generated hooks only** in components — never call the underlying api object manually.
 
-## Slice shape
+## RTK Query slice shape
+
 ```ts
+// apps/web/src/features/markets/api.ts
+import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
+import { baseQueryWithAuth } from "@app/api-client";
+import { Market, MarketSchema } from "./types";
+
 export const marketsApi = createApi({
   reducerPath: "marketsApi",
   baseQuery: baseQueryWithAuth,
@@ -20,7 +30,10 @@ export const marketsApi = createApi({
   endpoints: (b) => ({
     getMarkets: b.query<Market[], { status?: string }>({
       query: (params) => ({ url: "/markets", params }),
-      providesTags: (r) => r ? [...r.map(({id}) => ({type: "Market" as const, id})), "Market"] : ["Market"],
+      providesTags: (result) =>
+        result
+          ? [...result.map(({ id }) => ({ type: "Market" as const, id })), "Market"]
+          : ["Market"],
       transformResponse: (raw: unknown) => MarketSchema.array().parse(raw),
       keepUnusedDataFor: 30,
     }),
@@ -30,24 +43,30 @@ export const marketsApi = createApi({
     }),
   }),
 });
+
 export const { useGetMarketsQuery, usePlaceBetMutation } = marketsApi;
 ```
 
 ## Component usage
-- Call generated hooks at the top of the component, not in callbacks/effects.
-- Project narrowly with `selectFromResult`.
-- Branch on the typed `AppError` discriminated union, never `error.status`.
 
-## Tag invalidation
-- Every mutation lists `invalidatesTags` for affected queries.
-- Target by id (`{ type: "Market", id }`) when possible — avoid broad invalidation.
-- Optimistic updates via `onQueryStarted` + `updateQueryData`. Always undo on failure.
+- Call generated hooks at the top of the component, not inside callbacks or effects.
+- Destructure with explicit field selection (`{ data, isLoading, error }`) to keep re-render scope minimal.
+- Pass `selectFromResult` to project only the fields the component needs.
+- Branch on `error` via the typed `AppError` discriminated union — never on `error.status`.
 
-## Auth
-- Token reads in the request interceptor of `packages/api-client`. Never in endpoints/components.
-- Token refresh in a `baseQuery` wrapper that retries once on 401.
+## Tag invalidation discipline
+
+- Every mutation must list `invalidatesTags` for affected queries.
+- Don't invalidate broadly (`invalidatesTags: ["Market"]`) when you can target an id (`{ type: "Market", id }`).
+- Optimistic updates via `onQueryStarted` + `dispatch(api.util.updateQueryData(...))`. Always `try { … } catch { patchResult.undo(); }`.
+
+## Auth token
+
+- Auth token reads happen in the request interceptor of `packages/api-client`, never inside endpoints or components.
+- Token refresh implemented via a `baseQuery` wrapper that retries once on 401 after refresh.
 
 ## File location
-- App-specific: `apps/<n>/src/features/<feature>/api.ts`.
-- Shared: `packages/<n>/src/api.ts`.
-- Plain async services (uploads): `apps/<n>/src/services/<domain>.ts`.
+
+- App-specific endpoints: `apps/<name>/src/features/<feature>/api.ts`.
+- Cross-app shared endpoints: `packages/<name>/src/api.ts` exporting the slice.
+- Plain async services (uploads, one-offs): `apps/<name>/src/services/<domain>.ts`.

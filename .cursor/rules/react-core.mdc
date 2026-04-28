@@ -1,46 +1,55 @@
-<!-- SOURCE OF TRUTH: rules/frontend/react/core.md -->
+<!-- GENERATED FROM: rules/frontend/react/core.md; run `python3 scripts/sync-cursor.py` to update. -->
 ---
-description: React (web) stack core — forced library list and absolute rules. Loaded for React-web stacks; replace with another flavour for React Native / Vue / etc.
+description: "React (web) — Stack Core. Generated from rules/frontend/react/core.md."
 globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
+alwaysApply: false
 ---
 
 # React (web) — Stack Core
 
-Forced library stack and absolute rules for React running in a browser. For shared TypeScript / monorepo / Gitflow conventions see `core.mdc`.
+Forced library list and absolute rules for React in the browser. For TypeScript /
+monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
+`rules/frontend/*` and `rules/frontend/react/*`.
 
-## Forced library stack
+## Forced library stack — no exceptions
 
 ### Runtime
 - **UI:** react ^18 (.tsx/.ts only)
 - **Routing:** react-router-dom v6
 - **Global state:** Redux Toolkit (slices + RTK Query)
-- **Lightweight UI state:** zustand (ephemeral only — never server data)
-- **Real-time:** native WebSocket / socket.io-client behind a service singleton
-- **HTTP:** axios in services or RTK Query — never axios in components
+- **Lightweight UI state:** zustand — ephemeral only, never server data
+- **Real-time:** native `WebSocket` / `socket.io-client` behind a service singleton
+- **HTTP:** axios in services or RTK Query — never axios directly in components
 - **Forms:** react-hook-form + zod + @hookform/resolvers
+- **i18n:** i18next + react-i18next; shared typed resources default to `packages/i18n`
 - **Animations:** framer-motion + CSS + lottie-react / @react-three/fiber
 
 ### Build
-- **Bundler (per app):** Vite. Workspace orchestrated by Turborepo.
+- Vite per-app; Turborepo orchestrates the workspace.
 
 ### Styling
 - **vanilla-extract** — `.css.ts` static CSS at build time.
-- **Design tokens** in `packages/design-tokens` (themeContract + createTheme).
+- Design tokens in `packages/design-tokens` (themeContract + createTheme).
 - No tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`.
 
 ### Testing
 - jest + @testing-library/react + @testing-library/user-event
 - @playwright/test (E2E)
-- msw (HTTP mocks) + in-memory WS fake
+- msw + in-memory WS fake
 - Storybook (@storybook/react-vite)
 
 ## Absolute rules
+
 - Function components only. Named exports only — no `export default` for components.
-- No inline styles, no Tailwind classes — vanilla-extract `.css.ts` only.
+- No inline `style={{}}`, no Tailwind classes — vanilla-extract `.css.ts` only.
 - Props always have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
-- Server state lives in RTK Query/Redux — never duplicated in zustand or component state.
+- User-facing text, placeholders, labels, loading/error/empty copy, alt text, and ARIA labels come from translation keys.
+- Server state in RTK Query/Redux only — never duplicated in zustand or component state.
 - WebSocket connections owned by a service singleton; components subscribe via hooks.
 
-## Accessibility floor
-Detail in `frontend-accessibility.mdc`. Web baseline: semantic HTML first, every interactive element keyboard-reachable with visible focus, ARIA only when semantics don't cover it.
+## i18n defaults
+
+- New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
+- Existing apps with a mature i18n package may keep it, but new UI copy still uses `i18next`/`react-i18next`.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.

@@ -1,5 +1,9 @@
 ---
-# Loaded for React Native Expo stacks (react-native-expo-monorepo, react-native-expo-app)
+paths:
+  - "apps/**/app/**"
+  - "apps/**/src/**"
+  - "packages/ui-native/**"
+  - "src/**"
 ---
 
 # React Native (Expo) — Stack Core
