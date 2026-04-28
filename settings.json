@@ -43,6 +43,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Loading stack rules...",
+            "command": "python3 scripts/post-stack-setup.py"
+          }
+        ]
+      }
     ]
   }
 }
