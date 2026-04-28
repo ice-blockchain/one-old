@@ -1,0 +1,31 @@
+<!-- SOURCE OF TRUTH: rules/frontend/react/design-quality.md -->
+---
+description: React web design quality — product-specific UI, usable first screen, polished states, visual QA.
+globs: ["apps/web/src/**", "packages/ui/**", "src/components/**", "src/features/**/components/**", "src/pages/**"]
+---
+
+# React Web Design Quality
+
+## Product-specific UI
+- Do not ship generic template-looking UI; make surfaces specific to the product, workflow, and audience.
+- Apps, tools, and games start with the actual usable experience, not a default marketing page.
+- Choose a concrete style direction before coding and express it through tokens, layout, typography, states, and motion.
+- Finish hover, focus, active, loading, empty, and error states intentionally.
+
+## Required qualities
+- Clear hierarchy through scale, density, and spacing contrast.
+- Intentional rhythm instead of uniform padding everywhere.
+- Depth/layering only when it improves comprehension.
+- Deliberate typography and semantic color.
+- Data visualizations treated as part of the design system.
+- Motion that clarifies state changes and respects reduced motion.
+
+## Must not do
+- No decorative card grids, generic hero sections, or workflow-free dashboards.
+- No hardcoded colors, spacing, font sizes, radii, or shadows; extend shared design tokens first.
+- No page sections inside floating cards.
+- No color-only state or flourishes that hide real product state.
+
+## Verification
+- Check desktop/mobile overflow, text clipping, overlap, and visible focus states.
+- Use Playwright screenshots for visual-heavy changes.

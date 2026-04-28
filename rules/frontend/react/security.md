@@ -58,5 +58,19 @@ React + Vite + browser-specific concerns.
 ## Content Security Policy
 
 - Ship a strict CSP header in production. At minimum: `default-src 'self'; script-src 'self'; connect-src 'self' wss://<your-ws-host>`.
+- Use a per-request nonce for any required inline script instead of `unsafe-inline`.
 - No `unsafe-inline` for scripts. vanilla-extract emits static CSS, so styles can stay strict too.
+- Adjust allowed origins to the actual API, asset, and socket hosts; do not cargo-cult a sample policy.
 - Report violations to a dedicated endpoint during rollout.
+
+## Third-party scripts and headers
+
+- Load third-party scripts asynchronously and only on routes that need them.
+- Use subresource integrity for CDN-hosted scripts; prefer self-hosting critical assets when practical.
+- Audit third-party scripts and browser-exposed SDKs before each release.
+- Production responses include security headers: HSTS, `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY` or CSP `frame-ancestors`, `Referrer-Policy`, and a restrictive `Permissions-Policy`.
+
+## Forms and abuse controls
+
+- State-changing forms require CSRF protection, server-side validation, and rate limiting.
+- Use lightweight anti-abuse controls such as honeypots or throttling before adding intrusive challenges.

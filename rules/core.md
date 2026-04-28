@@ -22,7 +22,12 @@ Project-level conventions for any TypeScript project. Code-quality basics in
   }
 }
 ```
-- No `any` — use `unknown` and narrow. Infer types from zod / valibot schemas.
+- No `any` — use `unknown` and narrow. Infer types from zod schemas.
+- Treat caught errors and external/untrusted values as `unknown` until narrowed.
+- Exported functions, shared utilities, service methods, hooks, and public package APIs have explicit parameter and return types; let TypeScript infer obvious local variables.
+- Use `interface` for extensible object shapes and public DTOs; use `type` for unions, intersections, tuples, mapped types, and utility types.
+- Prefer string literal unions over `enum` unless interop with a protocol or generated code requires an enum.
+- Schema-derived types come from `z.infer<typeof Schema>`; do not hand-write duplicate input/output types beside a schema.
 
 ## Workspace
 - **Monorepo:** Turborepo + pnpm workspaces.

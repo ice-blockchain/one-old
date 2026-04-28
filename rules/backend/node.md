@@ -13,17 +13,26 @@ paths:
 ## REST shape
 - Resource nouns: `GET/POST/PATCH/DELETE /api/widgets[/:id]`.
 - Query params for filter/sort/pagination. Cursor pagination >10k rows.
+- Public response shapes are typed DTOs. Do not leak raw DB rows, ORM entities, or internal field names.
+- Paginated responses include typed metadata (`cursor`/`nextCursor` or `total`/`page`/`limit`) that matches the endpoint contract.
 
 ## Layering — never skip
 `route → controller → service → repository → db`
-- **Controller**: zod-validate input, call service, map to HTTP. No DB.
-- **Service**: business logic. No HTTP.
-- **Repository**: only layer that talks to DB.
+- **Route**: wires middleware and delegates to the controller. No business logic.
+- **Controller**: zod-validate params/query/body, call service, map service results/errors to HTTP DTOs. No DB.
+- **Service**: business logic over typed input/output DTOs. No HTTP response objects.
+- **Repository**: only layer that talks to DB; expose a small typed contract instead of query-builder details.
 
 ## Validation & errors
 - Validate body / query / params with zod in every handler.
+- Treat request data, upstream API responses, and DB-adjacent parsing as `unknown` until schema-validated.
 - Return 400 with flattened zod errors — never raw stack traces.
 - One typed error hierarchy; central middleware maps to HTTP. Log with request id.
+- No `console.log` in production server code; use the project logger and strip secrets/PII.
+
+## Security review triggers
+- Stop for a focused security pass when touching auth/authz, database queries, filesystem access, crypto, payment/financial flows, external API calls, or user input handling.
+- Protected endpoints require both authentication and authorization checks in the service/controller path; UI gating never counts.
 
 ## Async & performance
 - Always `await`. Cache read-heavy endpoints. Long jobs → queue (BullMQ, pg-boss).
