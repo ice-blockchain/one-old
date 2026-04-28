@@ -7,8 +7,8 @@ paths:
 
 # React (web) — Stack Core
 
-Forced library list and absolute rules for React in the browser. For TypeScript /
-monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
+Forced library list and absolute rules for React in the browser. TypeScript /
+monorepo / Gitflow conventions live in `rules/core.md`. Detail rules in
 `rules/frontend/*` and `rules/frontend/react/*`.
 
 ## Forced library stack — no exceptions
@@ -21,7 +21,7 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 - **Real-time:** native `WebSocket` / `socket.io-client` behind a service singleton
 - **HTTP:** axios in services or RTK Query — never axios directly in components
 - **Forms:** react-hook-form + zod + @hookform/resolvers
-- **i18n:** i18next + react-i18next; shared typed resources default to `packages/i18n`
+- **i18n:** i18next + react-i18next; shared typed resources in `packages/i18n`
 - **Animations:** framer-motion + CSS + lottie-react / @react-three/fiber
 
 ### Build
@@ -29,7 +29,7 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 
 ### Styling
 - **vanilla-extract** — `.css.ts` static CSS at build time.
-- Design tokens in `packages/design-tokens` (themeContract + createTheme).
+- Design tokens in `packages/design-tokens`.
 - No tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`.
 
 ### Testing
@@ -39,17 +39,11 @@ monorepo / Gitflow conventions see `rules/core.md`. Detail rules live in
 - Storybook (@storybook/react-vite)
 
 ## Absolute rules
-
 - Function components only. Named exports only — no `export default` for components.
 - No inline `style={{}}`, no Tailwind classes — vanilla-extract `.css.ts` only.
-- Props always have an explicit `ComponentNameProps` interface.
+- Props have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
-- User-facing text, placeholders, labels, loading/error/empty copy, alt text, and ARIA labels come from translation keys.
+- User-facing text, placeholders, labels, loading/error/empty copy, alt text, ARIA labels come from i18n translation keys. Hardcoded strings only for brand names, user/server-provided content, technical IDs, test fixtures.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.
 - WebSocket connections owned by a service singleton; components subscribe via hooks.
-
-## i18n defaults
-
-- New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
-- Existing apps with a mature i18n package may keep it, but new UI copy still uses `i18next`/`react-i18next`.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- New apps use `packages/i18n`; existing apps with a mature i18n package may keep it but new UI copy still uses `i18next`/`react-i18next`.

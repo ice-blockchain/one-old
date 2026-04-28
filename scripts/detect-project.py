@@ -38,7 +38,6 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/common/git.md",
             "rules/frontend/react/core.md",     # React-web stack core (forced libs + absolute rules)
         ],
         # Filled in priority order until budget is hit; the rest defer to path-scoped attach.
@@ -64,7 +63,6 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/common/git.md",
             "rules/frontend/react/core.md",
         ],
         "optional": [
@@ -87,7 +85,6 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/common/git.md",
             "rules/frontend/react-native/core.md",
         ],
         "optional": [
@@ -113,7 +110,6 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/common/git.md",
             "rules/frontend/react-native/core.md",
         ],
         "optional": [
@@ -137,7 +133,6 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/common/git.md",
             "rules/backend/node.md",
             "rules/backend/postgres.md",
         ],
@@ -149,7 +144,6 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
-            "rules/common/git.md",
         ],
         "optional": [],
     },
@@ -332,9 +326,12 @@ def onboarding_directive(mode: str) -> str:
         "}",
         "```",
         "",
-        "── Then tell the user ──",
-        "One short line: which stack was saved and that they should restart Claude Code",
-        "(or start a new session) so the full rule bundle for their stack loads on SessionStart.",
+        "── Then tell the user (one short line) ──",
+        "Confirm which stack was saved and that you'll continue with their original request.",
+        "DO NOT mention restarting Claude Code — a PostToolUse hook auto-loads the full stack",
+        "rule bundle into the same session immediately after `.traffic-one.json` is written.",
+        "Look for a system message like 'traffic-one rules loaded for stack: <id>' — once you",
+        "see it, the stack rules are active. Use them on the very next action.",
         "",
         "Until onboarding is complete, the minimal baseline rules below are in effect.",
         "Do not invoke scaffolding skills (create-component, create-feature, etc.) until done.",
