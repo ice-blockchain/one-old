@@ -167,6 +167,8 @@ def slug_for_source(source_path: Path) -> str:
         parts = parts[1:]
     elif parts[:2] == ["frontend", "react-native"]:
         parts = parts[1:]
+    elif parts[:2] == ["frontend", "ionic"]:
+        parts = parts[1:]
     elif parts and parts[0] == "modes":
         parts = ["mode", *parts[1:]]
 
@@ -262,7 +264,7 @@ def normalized_cursor_manifest() -> str:
             "description",
             interface_data.get(
                 "shortDescription",
-                "React and React Native TypeScript workflow rules and scaffolding skills.",
+                "React, Ionic/Capacitor, and explicit React Native TypeScript workflow rules.",
             ),
         ),
         "version": existing.get("version", "0.0.0"),
@@ -271,6 +273,8 @@ def normalized_cursor_manifest() -> str:
             "keywords",
             [
                 "react",
+                "ionic",
+                "capacitor",
                 "react-native",
                 "typescript",
                 "turborepo",
@@ -281,7 +285,7 @@ def normalized_cursor_manifest() -> str:
         "category": existing.get("category", "engineering"),
         "tags": existing.get(
             "tags",
-            ["react", "react-native", "typescript", "testing", "security"],
+            ["react", "ionic", "capacitor", "react-native", "typescript", "testing", "security"],
         ),
         "skills": "./skills/",
         "rules": "./.cursor/rules/",

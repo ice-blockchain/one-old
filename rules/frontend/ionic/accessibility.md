@@ -1,0 +1,37 @@
+---
+paths:
+  - "apps/**/src/components/**"
+  - "apps/**/src/features/**/components/**"
+  - "apps/**/src/pages/**"
+  - "packages/ui/**"
+  - "src/components/**"
+  - "src/features/**/components/**"
+  - "src/pages/**"
+---
+
+# Ionic Accessibility Rules
+
+Framework accessibility rules still apply. Ionic delivery must also feel correct
+inside a touch-first mobile shell.
+
+## Touch and focus
+
+- Interactive targets are at least 44x44 CSS pixels or have equivalent hit area.
+- Focus remains visible in WebView and browser contexts.
+- Modal, sheet, and popover focus is trapped and restored on close.
+- Android back and Escape close the topmost dismissible layer before leaving the
+  route.
+
+## Screen readers
+
+- Icon-only buttons have translated accessible labels.
+- Loading, offline, reconnecting, and permission-denied states use live regions
+  only when the update matters.
+- Ionic overlays expose names, roles, and dismissal affordances.
+
+## Motion and input
+
+- Respect `prefers-reduced-motion`.
+- Avoid gesture-only controls without a button/menu alternative.
+- Forms keep visible labels, helper text, and errors tied with
+  `aria-describedby`.

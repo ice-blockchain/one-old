@@ -4,7 +4,9 @@
 
 # Project Core (framework-agnostic)
 
-For any TypeScript project. Stack rules live in `frontend/<flavour>/core.md`.
+Project-level conventions for any TypeScript project. Code-quality basics in
+`common/clean-code.md`; commit/PR conventions in `common/git.md`. Stack rules
+(forced libraries) live in `frontend/<flavour>/core.md`.
 
 ## TypeScript baseline
 - TypeScript ^5 only. `tsconfig.json`:
@@ -40,4 +42,11 @@ For any TypeScript project. Stack rules live in `frontend/<flavour>/core.md`.
 - Commit scope = ticket id: `feat(PROJ-123): add bet panel`.
 
 ## Stack selection
-`.traffic-one.json` `stack` selects rules. Frontend flavours: `react/core.md`, `react-native/core.md`.
+`.traffic-one.json` `stack` field selects rules. Frontend flavours live under
+`frontend/<flavour>/core.md` (for example `frontend/react/core.md` and
+`frontend/ionic/core.md` for hybrid mobile, or `frontend/react-native/core.md`
+for explicit Expo apps).
+- Generic requests for a mobile app or mobile variant of a React web product
+  stay on the React stack and use Ionic Framework with Capacitor packaging.
+- Activate the React Native / Expo stack only when the user explicitly asks for
+  React Native, Expo, RN, or a fully React Native implementation.

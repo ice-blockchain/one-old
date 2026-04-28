@@ -1,6 +1,7 @@
 # traffic-one — AI Agent Plugin
 
-Enforces React, React Native, security, and clean code **automatically on every prompt**.
+Enforces React, Ionic/Capacitor mobile packaging, explicit React Native, security,
+and clean code **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and **Cursor**.
 
 ---
@@ -14,6 +15,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── create-feature/
 │   ├── create-page/
 │   ├── create-service/
+│   ├── ionic-mobile/
 │   ├── create-native-component/
 │   ├── create-native-screen/
 │   ├── create-native-feature/
@@ -26,7 +28,8 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── core.md              always loaded (no path filter)
 │   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
 │   ├── frontend/react/            React web stack rules
-│   ├── frontend/react-native/     Expo React Native stack rules
+│   ├── frontend/ionic/            Ionic Framework + Capacitor hybrid mobile rules
+│   ├── frontend/react-native/     Expo React Native stack rules, explicit only
 │   ├── frontend/services.md       shared frontend service rules
 │   ├── frontend/testing.md        shared frontend testing rules
 │   └── backend/                   Node/Postgres + backend technology rules
@@ -58,19 +61,27 @@ Every skill has a `description:` frontmatter with explicit trigger phrases.
 Claude/Codex/Cursor reads the descriptions at session start (cheap metadata only) and
 automatically invokes the full skill body when your prompt matches:
 
+Traffic One also imports a broad set of adapted ECC development skills under `skills/`.
+Those skills keep source traceability in frontmatter metadata and include a Traffic One
+precedence note so local rules and forced stack choices always win.
+
 | You type… | Auto-invoked skill |
 |-----------|-------------------|
 | "create a product component" | `create-component` |
 | "add a user management feature" | `create-feature` |
 | "I need a /dashboard route" | `create-page` |
 | "add an API call for orders" | `create-service` |
-| "create a native component" | `create-native-component` |
+| "make this React site a mobile app" | `ionic-mobile` |
+| "create a React Native component" | `create-native-component` |
 | "add an Expo route" | `create-native-screen` |
-| "create a mobile feature" | `create-native-feature` |
-| "add a mobile API call" | `create-native-service` |
+| "create a React Native feature" | `create-native-feature` |
+| "add a React Native API call" | `create-native-service` |
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
 | "refactor this component" | `refactor` |
+| "design an API endpoint" | adapted ECC API/backend skills |
+| "review this Go service" | adapted ECC language skills |
+| "audit this UI design system" | adapted ECC frontend/design skills |
 
 ### Rules auto-attach
 Path-scoped rules load only when a matching file is open — zero token cost otherwise:
@@ -131,7 +142,8 @@ Or via Cursor Settings → Plugins → Add.
 |----------------|-------|
 | Library stack, folder structure, core rules | `rules/core.md`, then run `python3 scripts/sync-cursor.py` |
 | React web stack rules | `rules/frontend/react/*.md`, then run `python3 scripts/sync-cursor.py` |
-| React Native stack rules | `rules/frontend/react-native/*.md`, then run `python3 scripts/sync-cursor.py` |
+| Ionic/Capacitor hybrid mobile rules | `rules/frontend/ionic/*.md`, then run `python3 scripts/sync-cursor.py` |
+| React Native stack rules, explicit only | `rules/frontend/react-native/*.md`, then run `python3 scripts/sync-cursor.py` |
 | Backend and backend technology rules | `rules/backend/*.md`, then run `python3 scripts/sync-cursor.py` |
 | Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md`, then run `python3 scripts/sync-cursor.py` |
 | Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |

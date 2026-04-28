@@ -1,14 +1,16 @@
 # traffic-one — Codex CLI
 <!-- SOURCE OF TRUTH for rules content: rules/*.md — update there first, then mirror here -->
 
-You are working in a React / React Native + TypeScript monorepo. Every rule below is mandatory.
+You are working in a React / Ionic/Capacitor / explicit React Native + TypeScript monorepo. Every rule below is mandatory.
 Never suggest an alternative library to those listed here.
 
 The rules are layered:
 1. **Common baseline** (clean-code, security, git) — applies to any TypeScript project.
 2. **Project core** (TypeScript strict, Turborepo, Gitflow) — `rules/core.md`, framework-agnostic.
-3. **Stack core** — React web uses `rules/frontend/react/core.md`; Expo React Native uses `rules/frontend/react-native/core.md`.
+3. **Stack core** — React web uses `rules/frontend/react/core.md`; Ionic hybrid mobile uses `rules/frontend/ionic/core.md`; Expo React Native uses `rules/frontend/react-native/core.md`.
    Replace this layer per frontend flavour — never mix stack-specific rules into the framework-agnostic core.
+   Generic mobile variants of React web products stay on the React stack and use Ionic Framework with Capacitor packaging.
+   Use React Native / Expo only when the client explicitly asks for React Native, Expo, RN, or a fully React Native implementation.
 4. **Path-scoped rules** (components, design quality, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
 
 ---
@@ -80,6 +82,7 @@ The rules are layered:
 - **Forms:** react-hook-form + zod + @hookform/resolvers
 - **i18n:** i18next + react-i18next; shared typed resources default to `packages/i18n`
 - **Animations:** framer-motion (declarative); CSS for micro; lottie-react / @react-three/fiber as needed
+- **Hybrid mobile:** Ionic Framework + Capacitor. The recommended path is packaging the existing/generated React app with Capacitor. Detailed hybrid rules live in `rules/frontend/ionic/*`.
 
 ### Styling
 - **vanilla-extract** — `.css.ts` files generate static CSS at build time
@@ -91,6 +94,23 @@ The rules are layered:
 - **E2E:** @playwright/test
 - **Mocks:** msw for HTTP, in-memory WS fake for real-time
 - **Component dev:** Storybook (@storybook/react-vite)
+
+## React mobile delivery (`rules/frontend/react/core.md`)
+- For a mobile variant of a generated or existing React site, recommend Ionic Framework with Capacitor packaging by default.
+- Keep the React app as the source of truth, set Capacitor `webDir` to the Vite build output (`dist` by default), and add iOS/Android platforms as packaging targets.
+- Treat the Capacitor wrapper as the smallest reversible step. Verify responsive mobile UX, safe areas, keyboard behavior, Android back button behavior, permissions, icons/splash screens, and app-store build config.
+- Offer a full Ionic React app only as the alternative when the user wants Ionic-native navigation/components or a mobile-first rewrite; expect route and component migration plus router compatibility checks.
+- Do not switch to React Native / Expo for generic "mobile app" requests. Use React Native rules and skills only when the user explicitly names React Native, Expo, RN, or asks for a fully React Native implementation.
+
+## Ionic Framework rules (`rules/frontend/ionic/*`)
+- **Core:** Ionic Framework + Capacitor is the approved hybrid-mobile path for React web products; React Native / Expo requires an explicit client request.
+- **Capacitor:** `webDir` points to the Vite build output; app id/name/version, icons/splash, permissions, signing, deep links, and native platform folders are release-critical config.
+- **Components:** React component rules still apply; use Ionic primitives only for full Ionic React flows or thin mobile shell layouts, with all copy from translation keys.
+- **Navigation:** Capacitor wrappers keep `react-router-dom v6`; full Ionic React navigation is a larger migration that requires router compatibility checks.
+- **Styles:** vanilla-extract remains the styling system; bridge Ionic CSS variables from design tokens only at the theme boundary.
+- **Services/state/realtime:** API calls and Capacitor plugins stay behind services/hooks; server data stays in RTK Query/Redux; WebSocket services handle pause/resume, reconnect, stale, offline, and degraded states.
+- **Security:** no secrets in `VITE_`, Capacitor config, native project files, or store metadata; validate deep links, plugin payloads, push data, file paths, and share targets.
+- **Testing/perf/a11y:** verify native smoke flows, Android back behavior, keyboard input, safe areas, WebView startup, touch targets, focus, overlays, and mobile screenshots before release.
 
 ## Absolute rules
 - Function components only. No class components.
@@ -109,6 +129,10 @@ The rules are layered:
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 
 ## React Native (Expo) stack core (`rules/frontend/react-native/core.md`)
+
+Use this stack only when the client explicitly asks for React Native, Expo, RN,
+or a fully React Native implementation. Generic mobile variants of React web
+products use Ionic Framework with Capacitor instead.
 
 ### Forced library stack — no exceptions
 
@@ -320,10 +344,11 @@ The rules are layered:
 - `$create-feature` — scaffold a full feature slice (Redux + components + api)
 - `$create-page` — scaffold a lazy-loaded page + route entry
 - `$create-service` — scaffold a service function or RTK Query endpoint
-- `$create-native-component` — scaffold a React Native component (with `.styles.ts`)
-- `$create-native-screen` — scaffold an Expo Router screen/route
-- `$create-native-feature` — scaffold a React Native feature slice
-- `$create-native-service` — scaffold a mobile service or RTK Query endpoint
+- `$ionic-mobile` — recommend and implement Ionic/Capacitor mobile delivery for React web
+- `$create-native-component` — scaffold a React Native/Expo component (explicit only)
+- `$create-native-screen` — scaffold an Expo Router screen/route (explicit only)
+- `$create-native-feature` — scaffold a React Native feature slice (explicit only)
+- `$create-native-service` — scaffold a React Native/Expo service or RTK Query endpoint (explicit only)
 - `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
 - `$refactor` — clean up and improve existing code
@@ -331,3 +356,4 @@ The rules are layered:
 - `$context-budget` — audit token consumption across loaded rules/skills
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
 - `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification
+- Adapted ECC development skills — broad backend, frontend, mobile, API, testing, security, deployment, and language-specific skills live under `skills/` and auto-trigger from their frontmatter. Each imported skill carries Traffic One precedence metadata; do not inline the full list here to keep context lean.

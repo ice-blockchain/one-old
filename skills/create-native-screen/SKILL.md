@@ -1,15 +1,15 @@
 ---
 name: create-native-screen
 description: >
-  Use PROACTIVELY whenever the user asks to create, add, or build a React Native screen,
-  Expo Router route, mobile view, tab, stack screen, modal route, or deep-linkable native page.
-  Triggers: "create a native screen", "add an Expo route", "new mobile screen",
-  "build the [name] screen", "add a tab", "add a stack route".
+  Use PROACTIVELY only when the user explicitly asks to create, add, or build a
+  React Native / Expo screen, Expo Router route, RN tab, stack screen, modal
+  route, or deep-linkable native page. Triggers: "React Native screen",
+  "Expo route", "Expo Router screen", "RN tab", "React Native stack route".
 ---
 
 # Skill: Create Native Screen
 
-Use this for Expo Router route work.
+Use this for explicit Expo Router route work.
 
 Before creating files, state:
 1. Route file under `apps/mobile/app/` and resulting route path.
