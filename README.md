@@ -55,6 +55,10 @@ Every skill has a `description:` frontmatter with explicit trigger phrases.
 Claude/Codex/Cursor reads the descriptions at session start (cheap metadata only) and
 automatically invokes the full skill body when your prompt matches:
 
+Traffic One also imports a broad set of adapted ECC development skills under `skills/`.
+Those skills keep source traceability in frontmatter metadata and include a Traffic One
+precedence note so local rules and forced stack choices always win.
+
 | You type… | Auto-invoked skill |
 |-----------|-------------------|
 | "create a product component" | `create-component` |
@@ -68,6 +72,9 @@ automatically invokes the full skill body when your prompt matches:
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
 | "refactor this component" | `refactor` |
+| "design an API endpoint" | adapted ECC API/backend skills |
+| "review this Go service" | adapted ECC language skills |
+| "audit this UI design system" | adapted ECC frontend/design skills |
 
 ### Rules auto-attach
 Path-scoped rules load only when a matching file is open — zero token cost otherwise:
