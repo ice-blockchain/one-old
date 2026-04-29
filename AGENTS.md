@@ -354,6 +354,7 @@ products use Ionic Framework with Capacitor instead.
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
+- `$postgres-patterns` — apply PostgreSQL schema, indexing, query, admin, and security best practices
 - `$context-budget` — audit token consumption across loaded rules/skills
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
 - `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification
