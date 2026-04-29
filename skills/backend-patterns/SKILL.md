@@ -350,6 +350,12 @@ const data = await fetchWithRetry(() => fetchFromAPI())
 
 ## Authentication & Authorization
 
+Use provider/framework auth before custom token code. Explicit Next.js projects
+use NextAuth/Auth.js unless an existing provider is already in place. Supabase
+projects use Supabase Auth and RLS-backed authorization. The JWT pattern below
+is only for provider-issued tokens, service-to-service flows, or a documented
+custom token layer that remains necessary after the provider-first check.
+
 ### JWT Token Validation
 
 ```typescript

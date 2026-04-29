@@ -32,6 +32,8 @@ Backend-focused integration from upstream `rules/kotlin/*`.
 - Use parameterized queries with JDBC, Exposed, SQLDelight, Room, or the active database layer.
 - Validate file paths and user input before processing.
 - Do not log tokens, credentials, or PII.
+- Prefer framework/provider auth plugins over custom password, session, or JWT
+  implementations.
 
 ## Testing
 - Use `kotlin.test` or JUnit 5 for backend unit tests.

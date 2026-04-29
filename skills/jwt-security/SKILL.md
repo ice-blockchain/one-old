@@ -16,7 +16,15 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 
 # JWT Security
 
-Use this when implementing, modifying, or reviewing JWT authentication and authorization. Apply it with `security-review` for broader auth, secrets, input validation, logging, CSRF, rate limiting, and endpoint authorization concerns.
+Use this when implementing, modifying, or reviewing JWT validation and token
+security. Apply it with `security-review` for broader auth, secrets, input
+validation, logging, CSRF, rate limiting, and endpoint authorization concerns.
+
+JWT is not the default end-user auth system. For user auth, prefer the active
+stack's provider first: NextAuth/Auth.js for explicit Next.js apps, Supabase
+Auth + RLS for Supabase apps, and official framework/provider auth elsewhere.
+Use this skill for provider-issued tokens, service-to-service JWTs, or cases
+where a custom token layer remains necessary after the provider-first check.
 
 ## Core Principles
 

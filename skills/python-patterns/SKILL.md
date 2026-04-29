@@ -20,6 +20,13 @@ Idiomatic Python patterns and best practices for building robust, efficient, and
 - Refactoring existing Python code
 - Designing Python packages/modules
 
+## FastAPI Backend Defaults
+
+For new Python API work, prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway,
+Redis for shared cache, and Celery for durable jobs. Do not default to
+hand-rolled JWT/password auth; use a framework/provider integration unless the
+user explicitly requires local auth and no maintained provider fits.
+
 ## Core Principles
 
 ### 1. Readability Counts

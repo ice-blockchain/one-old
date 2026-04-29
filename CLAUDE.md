@@ -8,6 +8,8 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 @rules/common/clean-code.md
 @rules/common/execution-discipline.md
 @rules/common/security.md
+@rules/common/stack-recommendations.md
+@rules/common/library-catalog.md
 @rules/common/git.md
 
 ## Framework-agnostic project rules (TypeScript, monorepo, Gitflow)

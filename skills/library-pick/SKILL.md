@@ -9,11 +9,25 @@ When triggered, do the following in this order. Stop and ask the user only if a 
 
 ## Step 1 — Confirm the need is not already covered
 
-Check the active stack core (e.g. `rules/frontend/react/core.md` for React-web). If the capability is already provided by the forced stack (forms → react-hook-form, server state → RTK Query, animations → framer-motion, etc.), use that and stop. **Do not double up.**
+Check `rules/common/stack-recommendations.md`,
+`rules/common/library-catalog.md`, and the active stack core (e.g.
+`rules/frontend/react/core.md` for React-web). If the capability is already
+provided by the forced stack or a catalog/provider-first default, use that and
+stop after verifying it still passes the quality gate.
+
+Examples: signup validation → Zod + react-hook-form; relative dates like "one
+week ago" → date-fns or dayjs; simple date string patterns → date-format only
+after verification; server state → RTK Query; React + Supabase auth → Supabase
+Auth; explicit Next.js auth → NextAuth/Auth.js; email → Resend; payments →
+Stripe; observability → Sentry. **Do not double up.**
 
 ## Step 2 — Surface 2–3 candidates
 
-If the user named a candidate, evaluate it and at least one alternative. If they asked open-endedly, propose 2–3 candidates from npm / GitHub. Show the user the shortlist before evaluating, so they can add or remove.
+If the catalog names a default, evaluate that first. If the user named a
+candidate, evaluate it and at least one catalog or ecosystem alternative. If
+they asked open-endedly, propose 2–3 candidates from the catalog, npm, Packagist,
+PyPI, Go packages, crates.io, Maven, NuGet, CPAN, or GitHub as appropriate.
+Show the user the shortlist before evaluating, so they can add or remove.
 
 ## Step 3 — Apply the quality gate
 

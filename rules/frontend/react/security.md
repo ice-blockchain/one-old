@@ -18,6 +18,8 @@ React + Vite + browser-specific concerns.
 
 ## Authentication & tokens
 
+- If the app uses Supabase, use Supabase Auth and RLS-backed authorization
+  before adding custom JWT/session code.
 - Never store JWT access tokens in `localStorage` — use `httpOnly` cookies or in-memory only.
 - Never log tokens, passwords, or PII to the console.
 - Always validate token expiry client-side before making sensitive requests.

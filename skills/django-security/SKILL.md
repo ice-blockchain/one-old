@@ -77,6 +77,9 @@ AUTH_PASSWORD_VALIDATORS = [
 
 ## Authentication
 
+Use Django's built-in auth, Django REST Framework authentication classes, or a
+managed identity provider before custom password/session/JWT code.
+
 ### Custom User Model
 
 ```python

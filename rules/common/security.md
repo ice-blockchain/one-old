@@ -13,6 +13,8 @@ Pre-commit checklist — applies to every change that touches input, auth, stora
 - [ ] HTML output is escaped / auto-escaped by the framework. No `dangerouslySetInnerHTML` without sanitization.
 - [ ] Auth check on every protected endpoint — not just the UI.
 - [ ] Authorization check: is THIS user allowed to access THIS resource?
+- [ ] Auth uses the stack-native/provider-backed default before custom JWT,
+      sessions, password storage, or token parsing.
 - [ ] Rate limiting on public endpoints (auth, search, write operations).
 - [ ] Error responses do not leak stack traces, internal paths, or DB structure in production.
 - [ ] `.env`, `.env.local`, credential files in `.gitignore`.

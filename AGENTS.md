@@ -5,7 +5,7 @@ You are working in a React / Ionic/Capacitor / explicit React Native + TypeScrip
 Never suggest an alternative library to those listed here.
 
 The rules are layered:
-1. **Common baseline** (clean-code, security, git) — applies to any TypeScript project.
+1. **Common baseline** (clean-code, security, stack recommendations, library catalog, git) — applies to any TypeScript project.
 2. **Project core** (TypeScript strict, Turborepo, Gitflow) — `rules/core.md`, framework-agnostic.
 3. **Stack core** — React web uses `rules/frontend/react/core.md`; Ionic hybrid mobile uses `rules/frontend/ionic/core.md`; Expo React Native uses `rules/frontend/react-native/core.md`.
    Replace this layer per frontend flavour — never mix stack-specific rules into the framework-agnostic core.
@@ -37,11 +37,31 @@ The rules are layered:
 - No stack traces in production responses. `.env*` gitignored.
 
 ## Dependencies (always — applies to any new install)
-- **Library-first**: when a need isn't covered by the active stack core, search 2–3 candidates and apply the quality gate.
+- **Library-first**: when a need isn't covered by the active stack core, check stack-native/provider defaults first, then search 2–3 candidates and apply the quality gate.
 - Quality gate (lib MUST pass all): maintained (commit ≤ 6 mo) · adopted (≥ 1k stars OR ≥ 100k weekly downloads) · permissive license (MIT/Apache/BSD/ISC) · ships types · no high+ `npm audit`. Frontend extras: ≤ 30 KB gz feature / 100 KB heavy, ESM treeshakeable.
 - If nothing passes → build under `packages/<name>` and write `architecture.md` **before** code. CI fails packages missing `architecture.md`.
 - Note the decision (chosen + rejected with reasons) in the commit body.
 - Trigger `library-pick` skill when in doubt.
+
+## Stack recommendations (always)
+- Use stack-native, managed, or dominant ecosystem tools before custom infrastructure; custom code is the last resort after the active stack core, provider/framework defaults, and the dependency quality gate fail.
+- Universal defaults: GitHub Actions for CI/CD, Stripe for payments, Sentry for observability, Resend for email, PostgreSQL for database, pnpm for JavaScript package management.
+- React + Supabase: use Supabase Auth for auth, Supabase Storage for app files, Supabase Realtime when real-time is needed, and RLS-backed authorization. Traffic One's RTK Query/Redux, vanilla-extract, Jest, and React Hook Form + Zod rules remain authoritative.
+- Explicit Next.js: do not add a new Traffic One stack id. If the user explicitly asks for Next.js, accepts it after a pitch, or the repo already has `next`, use NextAuth/Auth.js for auth unless the project already has Supabase Auth, Clerk, Auth0, or another real provider. Prefer App Router route handlers/server actions, Next.js Cache, Vercel, Vercel Blob, and Drizzle + PostgreSQL for new SQL work.
+- Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway, Redis for shared cache, and Celery for durable jobs. Do not default to hand-rolled JWT/password auth.
+- Other stacks: prefer official framework auth/session middleware, managed auth, and maintained SDKs over custom crypto, JWT parsing, session stores, email, file storage, queues, cache, or deployment scripts.
+
+## Library catalog (always)
+- Check `rules/common/library-catalog.md` before writing custom validation, date formatting, auth, HTTP, cache, queue, email, file storage, observability, CLI, or test utilities. Catalog entries are defaults, not pre-approved installs; the quality gate still applies.
+- JavaScript/TypeScript: `zod`, `react-hook-form`, `@hookform/resolvers`, `date-fns`, `dayjs`, `axios`, RTK Query, `i18next`, `framer-motion`, `lucide-react`, MSW, Jest, Playwright.
+- Explicit Next.js: Auth.js/NextAuth, Drizzle + PostgreSQL, Vercel Blob SDK, Next.js Cache, Vitest when no Traffic One forced test stack is active, Playwright.
+- Supabase: Supabase Auth, Storage, Realtime, RLS policies, `@supabase/supabase-js`.
+- React Native/Expo: Expo Router, `expo-secure-store`, `expo-localization`, React Hook Form + Zod, `date-fns`, RTK Query/axios, Reanimated, RNTL, Maestro.
+- Python/FastAPI: FastAPI, Pydantic, SQLModel/SQLAlchemy, Alembic, httpx, pytest, Redis, Celery, structlog/loguru, Sentry SDK.
+- PHP/Laravel: Form Requests, Sanctum/Passport, Carbon, Guzzle, Eloquent, Pest/PHPUnit, PHPStan, Monolog, Spatie Permission/Query Builder/Data, Laravel queues/cache.
+- Go: `chi`, `pgx`, `sqlc`, `go-playground/validator`, `zap`/`zerolog`, `cobra`, `viper`, `testify`, `golang-migrate`, Redis client.
+- Java/Spring, Kotlin/Ktor, C#/.NET, Rust, Perl, C++, and Dart use their framework-standard libraries and provider SDKs listed in the catalog before custom code.
+- Relative dates like "one week ago" use `date-fns` or `dayjs`; reserve `date-format` for simple string-pattern formatting only after verification.
 
 ## Git baseline (Gitflow)
 - Branches: `main` (production), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
@@ -64,6 +84,7 @@ The rules are layered:
 - Shared code in `packages/*`; cross-package imports use workspace package names.
 - Validate every external input with a typed schema; map errors to a typed `AppError`.
 - Husky + lint-staged + commitlint; lockfile committed; `pnpm audit` in CI.
+- `.traffic-one.json` selects the stack. Do not offer Next.js as a first-class Traffic One stack; if the user explicitly chooses Next.js or an existing repo has `next`, record `frontend=nextjs` with `stack=minimal` and apply provider-first recommendations instead of React/Vite stack rules.
 
 ## React (web) stack core (`rules/frontend/react/core.md`)
 
@@ -286,6 +307,7 @@ products use Ionic Framework with Capacitor instead.
 - Defensive UI under degraded network: show "reconnecting" banner, mark stale data, queue or fail optimistic actions.
 
 ## React web security additions
+- Supabase projects use Supabase Auth and RLS-backed authorization before custom JWT/session code.
 - Never store JWT access tokens in `localStorage`; use `httpOnly` cookies or in-memory state.
 - Validate user-supplied data with Zod before sending it to the API; no frontend secrets in `VITE_` vars.
 - CSP uses concrete production origins and per-request nonces for required inline scripts; no `unsafe-inline` scripts.
@@ -325,6 +347,7 @@ products use Ionic Framework with Capacitor instead.
 - API and DB integration tests cover routing/middleware, constraints, auth filters, pagination metadata, and failure paths.
 - No `console.log` in production server code; use the project logger and strip secrets/PII.
 - Run a focused security review when touching auth/authz, DB queries, filesystem, crypto, external APIs, payments, or user input handling.
+- Auth uses framework/provider defaults first: Next.js uses NextAuth/Auth.js unless an existing provider is in place; Supabase uses Supabase Auth + RLS; JWT code validates provider-issued/service tokens instead of becoming default end-user auth.
 
 ## Backend technology rules
 - TypeScript/JavaScript backend is covered by `rules/core.md` plus `rules/backend/node.md`.
@@ -352,6 +375,7 @@ products use Ionic Framework with Capacitor instead.
 - `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
+- `$nextjs-turbopack` — apply Next.js/Turbopack and provider-first Next.js defaults
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
 - `$postgres-patterns` — apply PostgreSQL schema, indexing, query, admin, and security best practices

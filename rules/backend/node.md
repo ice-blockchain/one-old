@@ -46,4 +46,6 @@ paths:
 
 ## Dependencies
 - Parameterised SQL only (`pg`, `drizzle`, `prisma`, `supabase-js`).
-- Auth: battle-tested libs. Never hand-roll crypto.
+- Auth: use the framework/provider default first. Next.js uses NextAuth/Auth.js
+  unless an existing provider is already in place; Supabase projects use
+  Supabase Auth + RLS. Never hand-roll crypto or default to custom JWT auth.

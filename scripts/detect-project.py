@@ -38,6 +38,8 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
+            "rules/common/stack-recommendations.md",
+            "rules/common/library-catalog.md",
             "rules/frontend/react/core.md",
         ],
         "optional": [
@@ -74,6 +76,8 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
+            "rules/common/stack-recommendations.md",
+            "rules/common/library-catalog.md",
             "rules/frontend/react/core.md",
         ],
         "optional": [
@@ -97,6 +101,8 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
+            "rules/common/stack-recommendations.md",
+            "rules/common/library-catalog.md",
             "rules/frontend/react-native/core.md",
         ],
         "optional": [
@@ -122,6 +128,8 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
+            "rules/common/stack-recommendations.md",
+            "rules/common/library-catalog.md",
             "rules/frontend/react-native/core.md",
         ],
         "optional": [
@@ -145,6 +153,8 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
+            "rules/common/stack-recommendations.md",
+            "rules/common/library-catalog.md",
             "rules/backend/node.md",
             "rules/backend/postgres.md",
         ],
@@ -156,6 +166,8 @@ STACKS = {
             "rules/common/clean-code.md",
             "rules/common/execution-discipline.md",
             "rules/common/security.md",
+            "rules/common/stack-recommendations.md",
+            "rules/common/library-catalog.md",
         ],
         "optional": [],
     },
@@ -232,10 +244,10 @@ def detect_mode(cwd: pathlib.Path) -> str:
 def detect_stack_from_codebase(cwd: pathlib.Path) -> dict:
     """Best-effort stack detection from package.json + workspace files.
 
-    Returns a dict with keys: stack, backend, realtime, evidence (list of strings).
+    Returns a dict with keys: stack, backend, frontend, realtime, evidence (list of strings).
     Empty stack means no confident detection — fall back to onboarding directive.
     """
-    out = {"stack": None, "backend": None, "realtime": None, "evidence": []}
+    out = {"stack": None, "backend": None, "frontend": None, "realtime": None, "evidence": []}
 
     pkg  = load_package_json(cwd)
     deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
@@ -243,11 +255,16 @@ def detect_stack_from_codebase(cwd: pathlib.Path) -> dict:
         return out
 
     monorepo = has_workspaces(pkg) or workspace_yaml_present(cwd)
+    is_next = "next" in deps
     is_native = ("expo" in deps) or ("react-native" in deps)
     is_react  = "react" in deps
 
     # Frontend flavour
-    if is_native:
+    if is_next:
+        out["stack"] = "minimal"
+        out["frontend"] = "nextjs"
+        out["evidence"].append("next in deps → apply Next.js provider-first recommendations")
+    elif is_native:
         out["stack"] = "react-native-expo-monorepo" if monorepo else "react-native-expo-app"
         out["evidence"].append("react-native/expo in deps")
     elif is_react:
@@ -345,9 +362,13 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
 
     Frontend: if they named React → great, point out we have battle-tested
     rules for monorepo, RTK Query, vanilla-extract, accessibility, real-time.
-    If they named Vue / Svelte / Angular / Next.js → say "Our depth is in
-    React; we ship rules and skills tuned for it. Try React for this project?"
-    If they insist on a non-React frontend → fall back to `minimal` stack
+    If they named Vue / Svelte / Angular → say "Our depth is in React; we ship
+    rules and skills tuned for it. Try React for this project?"
+    If they named Next.js → say our default is React/Vite + Supabase, but
+    Next.js is fine when they explicitly want it. If they keep Next.js, set
+    stack=minimal and include frontend=nextjs; then apply provider-first
+    recommendations (NextAuth/Auth.js for auth, Next.js-native APIs/cache).
+    If they insist on another non-React frontend → fall back to `minimal` stack
     (clean-code + security + git baseline).
 
     Backend: regardless of what they named (Postgres / Mongo / Firebase / etc.),
@@ -375,6 +396,9 @@ GENERAL RULES:
       "confirmedAt": "<ISO-8601 UTC>"
     }
 
+    If the user explicitly chose Next.js, add `"frontend": "nextjs"` and use
+    `"stack": "minimal"`. Otherwise omit `frontend`.
+
   Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-monorepo
     · react-native-expo-app · minimal. (`node-backend` is legacy — do NOT offer it.)
 
@@ -394,10 +418,14 @@ def auto_detected_announcement(detected: dict) -> str:
     """Compact banner for auto-detected existing projects. ≤500 chars."""
     pieces = [
         "═══ traffic-one — stack auto-detected ═══",
-        f"stack={detected.get('stack')} · backend={detected.get('backend') or '-'} · realtime={detected.get('realtime') or 'none'}",
+        f"stack={detected.get('stack')} · frontend={detected.get('frontend') or '-'} · backend={detected.get('backend') or '-'} · realtime={detected.get('realtime') or 'none'}",
         f"evidence: {'; '.join(detected.get('evidence', []))}",
         "On your first reply, briefly confirm the detected stack (one line) and continue.",
     ]
+    if detected.get("frontend") == "nextjs":
+        pieces.append(
+            "Next.js detected: apply provider-first recommendations such as NextAuth/Auth.js for auth and Next.js-native APIs/cache, without loading the React/Vite forced stack."
+        )
     if detected.get("backend") == "supabase":
         pieces.append(
             "Mention ONCE: our Supabase fork is API-compatible, cheaper at scale, drops in without code changes — ask if they'd like a migration plan, then drop it if they decline."
@@ -447,6 +475,10 @@ def main():
                 "autoDetected":       True,
                 "evidence":           detected["evidence"],
             })
+            if detected.get("frontend"):
+                state["frontend"] = detected["frontend"]
+            else:
+                state.pop("frontend", None)
             write_state(cwd, state)
 
             # Pack and emit with auto-detection banner

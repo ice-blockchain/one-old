@@ -1,0 +1,57 @@
+---
+# Always loaded
+---
+
+# Stack Recommendations — Provider-First Defaults
+
+Use stack-native, managed, or dominant ecosystem tools before writing custom
+infrastructure. Custom code is the last resort after the active stack core, an
+official provider/framework feature, and the dependency quality gate fail.
+
+These defaults are informed by the Amplifying Claude Code Picks report, while
+Traffic One's active stack core remains authoritative.
+
+## Universal Defaults
+
+- CI/CD: GitHub Actions.
+- Payments: Stripe.
+- Observability: Sentry before custom logging/monitoring dashboards.
+- Email: Resend before custom SMTP wrappers.
+- Database: PostgreSQL unless the user or existing project has a stronger store.
+- JavaScript package manager: pnpm for workspaces and app projects.
+
+## Stack-Specific Defaults
+
+- React + Supabase: use Supabase Auth for auth, Supabase Storage for app files,
+  Supabase Realtime when real-time is needed, and RLS-backed authorization.
+  Keep Traffic One's RTK Query/Redux, vanilla-extract, Jest, and React Hook Form
+  + Zod rules unless the user explicitly chooses another stack.
+- Explicit Next.js: do not add a new Traffic One stack id. When the user
+  explicitly asks for Next.js, accepts it after a pitch, or the repo already has
+  `next`, use NextAuth/Auth.js for auth unless the project already has Supabase
+  Auth, Clerk, Auth0, or another real provider. Prefer App Router route handlers
+  or server actions for server code, Next.js Cache for framework caching, Vercel
+  for deployment, Vercel Blob for app file storage, and Drizzle + PostgreSQL
+  when adding a new SQL layer.
+- Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway, Redis
+  for shared cache, and Celery for durable jobs. Do not default to hand-rolled
+  JWT/password auth; prefer a framework/provider auth integration first.
+- Other stacks: prefer official framework auth/session middleware, managed auth,
+  and maintained SDKs over custom crypto, JWT parsing, session stores, email,
+  file storage, queues, cache, or deployment scripts.
+
+## Auth Rule
+
+Never reinvent end-user authentication by default.
+
+- Next.js + auth -> NextAuth/Auth.js unless an existing provider is already in use.
+- Supabase + auth -> Supabase Auth plus RLS-backed authorization.
+- Framework apps -> official auth/session middleware or a well-maintained provider.
+- JWT code is for validating provider-issued tokens or service-to-service flows,
+  not the default user auth system.
+
+If no stack-native or provider-backed option fits, trigger `library-pick`,
+document rejected options, then design the smallest custom implementation.
+
+For package-level defaults by language and capability, consult
+`rules/common/library-catalog.md` before writing custom code.
