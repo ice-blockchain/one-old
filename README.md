@@ -81,6 +81,7 @@ precedence note so local rules and forced stack choices always win.
 | "is this auth code secure?" | `security-review` |
 | "implement JWT auth safely" | `jwt-security` |
 | "refactor this component" | `refactor` |
+| "design a Postgres schema" | `postgres-patterns` |
 | "design an API endpoint" | adapted ECC API/backend skills |
 | "review this Go service" | adapted ECC language skills |
 | "audit this UI design system" | adapted ECC frontend/design skills |
