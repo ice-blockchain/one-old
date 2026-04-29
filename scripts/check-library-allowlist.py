@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse install-command guard for traffic-one stacks."""
 
+from __future__ import annotations  # allow `str | None` on Python 3.9 (macOS system Python)
+
 import json
 import pathlib
 import re

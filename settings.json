@@ -6,7 +6,7 @@
           {
             "type": "command",
             "statusMessage": "Detecting project mode...",
-            "command": "python3 scripts/detect-project.py 2>/dev/null || python3 -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.'}}))\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/detect-project.py\" 2>/dev/null || python3 -c \"import json; print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart', 'additionalContext': '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.'}}))\""
           }
         ]
       }
@@ -17,7 +17,7 @@
           {
             "type": "command",
             "statusMessage": "Applying traffic-one rules...",
-            "command": "python3 -c \"\nimport json, pathlib\nlock = pathlib.Path('.claude-plugin-mode')\nif lock.exists():\n    mode = lock.read_text().strip()\n    print(json.dumps({'systemMessage': f'traffic-one [{mode}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE MODE: {mode}]'}}))\nelse:\n    print(json.dumps({'systemMessage': 'traffic-one active'}))\n\""
+            "command": "python3 -c \"\nimport json, pathlib\nstate = pathlib.Path('.traffic-one.json')\nif state.exists():\n    try:\n        d = json.loads(state.read_text())\n        stack = d.get('stack') or d.get('mode') or 'unknown'\n        print(json.dumps({'systemMessage': f'traffic-one [{stack}]', 'hookSpecificOutput': {'hookEventName': 'UserPromptSubmit', 'additionalContext': f'[ACTIVE STACK: {stack}]'}}))\n    except Exception:\n        print(json.dumps({'systemMessage': 'traffic-one active'}))\nelse:\n    print(json.dumps({'systemMessage': 'traffic-one active'}))\n\""
           }
         ]
       }
@@ -29,7 +29,7 @@
           {
             "type": "command",
             "statusMessage": "Validating architecture...",
-            "command": "python3 scripts/check-architecture-write.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/check-architecture-write.py\""
           }
         ]
       },
@@ -39,7 +39,7 @@
           {
             "type": "command",
             "statusMessage": "Checking library allowlist...",
-            "command": "python3 scripts/check-library-allowlist.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/check-library-allowlist.py\""
           }
         ]
       }
@@ -51,7 +51,7 @@
           {
             "type": "command",
             "statusMessage": "Loading stack rules...",
-            "command": "python3 scripts/post-stack-setup.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/post-stack-setup.py\""
           }
         ]
       }

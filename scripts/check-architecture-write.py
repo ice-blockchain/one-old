@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """PreToolUse write/edit guard for traffic-one architecture constraints."""
 
+from __future__ import annotations  # allow `str | None` on Python 3.9 (macOS system Python)
+
 import json
 import pathlib
 import re

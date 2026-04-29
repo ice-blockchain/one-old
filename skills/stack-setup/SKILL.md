@@ -1,94 +1,84 @@
 ---
 name: stack-setup
-description: PROACTIVELY drive the traffic-one onboarding Q&A or update the saved stack config. TRIGGER when the user opens a project and SessionStart injected the "FIRST-RUN ONBOARDING REQUIRED" directive — run the Q&A immediately, writing answers to `.traffic-one.json`. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked wrong earlier". Writes the config file and tells the user to restart for the full rule bundle to load.
+description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one.json` itself — this skill is NOT needed there.
 ---
 
 # traffic-one Stack Setup
 
-Persist the user's rule-stack choice into `.traffic-one.json`. The SessionStart hook reads this to decide which rules to inject.
+Persist the user's rule-stack choice into `.traffic-one.json`. The SessionStart
+hook reads this to decide which rules to inject. The PostToolUse hook
+(`scripts/post-stack-setup.py`) auto-loads the matching bundle the moment the
+file is written — **no session restart required**.
 
-## Two entry paths
+## When this skill fires
 
-### Path A — First-run onboarding
-Triggered right after SessionStart shows `═══ traffic-one — FIRST-RUN ONBOARDING REQUIRED ═══`. The directive itself lists the questions. Run the Q&A, write the file, confirm.
+### Path A — New project, sales-pitch onboarding
+SessionStart shows `═══ traffic-one — FIRST-RUN ONBOARDING (new project) ═══`.
+The directive itself contains the full pitch script (paths A "features only"
+and B "tech specified"). Follow it. The directive is the source of truth — this
+skill exists so the user can also invoke it explicitly ("set up the stack").
 
 ### Path B — Mid-project reconfigure
-Triggered when the user asks to change stacks on an existing setup. Read the current `.traffic-one.json`, ask only the fields the user wants to change, keep the rest, bump `confirmedAt`, leave `onboardingComplete: true`.
+User says "switch stack", "change stack", "reconfigure", etc. Read the existing
+`.traffic-one.json`, ask only what they want to change, preserve `mode`, bump
+`confirmedAt`. Same write target, same auto-load behaviour.
 
-## Stack ids (only these are valid)
+### NOT this skill: existing project on first session
+For existing codebases the SessionStart hook does the detection itself
+(scans `package.json` deps + workspace config) and writes `.traffic-one.json`
+without any Q&A. Don't trigger here. The user only sees a one-line confirmation
+on the model's first reply (auto-detected stack: X, backend: Y, realtime: Z).
 
-- `react-realtime-monorepo` — React + Supabase monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright. **Recommended/default for new projects.**
-- `react-frontend-only` — Single React app (no monorepo): Vite + RTK + vanilla-extract.
-- `react-native-expo-monorepo` — Expo React Native monorepo: apps/mobile + shared packages + Expo Router + RTK Query + Jest/RNTL + Maestro. Use only when React Native / Expo is explicit.
-- `react-native-expo-app` — Single Expo React Native app: Expo Router + RTK Query + Jest/RNTL + Maestro. Use only when React Native / Expo is explicit.
-- `minimal` — clean-code + security + git baseline, language-agnostic.
+## Stack ids (the only valid values)
 
-`node-backend` is legacy-supported for existing `.traffic-one.json` files, but
-do not offer it during first-run onboarding or normal reconfiguration.
+- `react-realtime-monorepo` — React + Supabase monorepo. **Default for new projects.**
+- `react-frontend-only` — Single React app, no monorepo.
+- `react-native-expo-monorepo` — Expo RN monorepo. Only when user explicitly says React Native / Expo.
+- `react-native-expo-app` — Single Expo RN app. Same condition.
+- `minimal` — clean-code + security baseline, language-agnostic.
 
-For first-run onboarding, always offer React + Supabase as option A and
-recommend it as the default. Map that choice to `stack: "react-realtime-monorepo"`
-and `backend: "supabase"`.
-
-For a generic mobile app or mobile variant of a React web product, choose the
-matching React stack and then use `ionic-mobile`. Recommend Ionic Framework with
-Capacitor packaging by default; offer full Ionic React as the larger alternative.
-The React stacks load `rules/frontend/ionic/*` for hybrid mobile work.
+`node-backend` exists for backwards compatibility with old config files. **Do
+not offer it during onboarding or reconfigure** — backends now live alongside a
+frontend stack via the `backend` field.
 
 ## Backend values
 
-- `supabase` — Supabase backend, default for React + Supabase
-- `ours` — our managed Postgres / Supabase-compatible fork
-- `self-hosted` — user runs their own Postgres
-- `managed` — Supabase / Neon / RDS / similar
-- `other` — Firebase / DynamoDB / custom (skip Postgres rules)
-- `external-api` — frontend-only, consumes an existing API
-- `none` — minimal stack, no backend
+`supabase` (default for our recommended stack) · `self-hosted` · `managed`
+· `other` · `external-api` (frontend-only) · `none` (minimal)
 
 ## Realtime values
 
-- `heavy` — gameplay / live markets / trading; full WebSocket rules + back-pressure
-- `light` — mostly REST with occasional live updates; WebSocket rules apply
-- `none` — pure REST; skip the WebSocket rule bundle (saves ~1k tokens)
+`heavy` · `light` · `none`
 
-For `react-native-expo-monorepo`, ask the realtime question the same way as the React realtime monorepo. For `react-native-expo-app`, default `backend: "external-api"` and `realtime: "none"` unless the user explicitly asks for realtime.
-
-## File shape (write exactly this via the Write tool)
+## File shape (write exactly this with the Write tool)
 
 ```json
 {
   "version": 2,
-  "mode": "<existing mode, read from current file if present — never change>",
-  "stack": "<chosen id from list above>",
+  "mode": "<existing mode if reconfiguring; otherwise 'new-project'>",
+  "stack": "<chosen id>",
   "backend": "<chosen backend>",
   "realtime": "<heavy|light|none>",
   "confirmed": true,
   "onboardingComplete": true,
-  "confirmedAt": "<ISO-8601 UTC timestamp, e.g. 2026-04-25T10:00:00Z>"
+  "confirmedAt": "<ISO-8601 UTC>"
 }
 ```
 
-**Path A note:** if the file does not exist yet, `mode` should be the mode from the SessionStart directive header (e.g. `new-project`). If you can't see it, default to `new-project`.
-
-**Path B note:** `mode` MUST be preserved from the current file — never change it during a reconfigure.
-
 ## After writing
 
-Reply with ONE short line:
-> "Saved — stack set to `<id>` (backend `<backend>`, realtime `<realtime>`). Continuing with your original request."
+Reply with ONE short line confirming the choice and continuing with the user's
+original request:
 
-A PostToolUse hook (`scripts/post-stack-setup.py`) detects the write and injects the
-full stack rule bundle as `additionalContext` in the same session — you'll see a
-system message like `traffic-one rules loaded for stack: <id>` before your next
-action. The rules are live immediately. **Do NOT tell the user to restart Claude
-Code** — that contradicts the auto-load behaviour and breaks the seamless UX.
+> "Saved — using `<stack>` (backend `<backend>`, realtime `<realtime>`). Continuing with your build."
 
-If for any reason the auto-load hook didn't fire (rare — e.g. user disabled hooks
-or PostToolUse), only then fall back to mentioning a restart.
+The PostToolUse hook injects the full stack rules into THIS session immediately.
+You'll see `traffic-one rules loaded for stack: <id>` in a system message
+before your next action — those rules are now live, use them.
 
 ## Must-not-do
-
-- Do not ask the user to edit the JSON themselves.
-- Do not use stack ids that aren't in the list above. If the user describes Vue / Next.js / Svelte, say those aren't supported yet and offer `minimal` as a safe default.
-- Do not change the `mode` field during a reconfigure.
-- Do not proceed with any other skill (`create-component`, etc.) while onboarding is incomplete — the SessionStart directive instructs you to hold.
+- Do NOT tell the user to restart Claude Code. The PostToolUse hook handles loading.
+- Do NOT ask the user to edit JSON.
+- Do NOT use stack ids that aren't listed above.
+- Do NOT change `mode` during a reconfigure.
+- Do NOT proceed with feature work or other skills while onboarding is incomplete.
