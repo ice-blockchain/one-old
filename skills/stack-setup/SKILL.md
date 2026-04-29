@@ -41,6 +41,10 @@ on the model's first reply (auto-detected stack: X, backend: Y, realtime: Z).
 not offer it during onboarding or reconfigure** — backends now live alongside a
 frontend stack via the `backend` field.
 
+Next.js is not a first-class Traffic One stack id. If the user explicitly wants
+Next.js after the React/Vite pitch, use `stack: "minimal"` and add
+`"frontend": "nextjs"` so provider-first Next.js recommendations apply.
+
 ## Backend values
 
 `supabase` (default for our recommended stack) · `self-hosted` · `managed`
@@ -64,6 +68,9 @@ frontend stack via the `backend` field.
   "confirmedAt": "<ISO-8601 UTC>"
 }
 ```
+
+If the user explicitly chose Next.js, add `"frontend": "nextjs"` and use
+`"stack": "minimal"`. Otherwise omit `frontend`.
 
 ## After writing
 

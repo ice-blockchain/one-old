@@ -50,3 +50,7 @@ for explicit Expo apps).
   stay on the React stack and use Ionic Framework with Capacitor packaging.
 - Activate the React Native / Expo stack only when the user explicitly asks for
   React Native, Expo, RN, or a fully React Native implementation.
+- Do not offer Next.js as a first-class Traffic One stack. If the user
+  explicitly chooses Next.js or an existing repo has `next`, record
+  `frontend=nextjs` with `stack=minimal` and apply the provider-first
+  recommendations instead of React/Vite stack rules.

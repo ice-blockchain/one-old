@@ -22,11 +22,14 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── create-native-service/
 │   ├── execution-discipline/
 │   ├── security-review/
+│   ├── jwt-security/
 │   └── refactor/
 │
 ├── rules/                   ← SHARED — single source of truth for all rule content
 │   ├── core.md              always loaded (no path filter)
 │   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
+│   ├── common/stack-recommendations.md always loaded: provider-first stack defaults
+│   ├── common/library-catalog.md always loaded: curated package defaults
 │   ├── frontend/react/            React web stack rules
 │   ├── frontend/ionic/            Ionic Framework + Capacitor hybrid mobile rules
 │   ├── frontend/react-native/     Expo React Native stack rules, explicit only
@@ -78,7 +81,10 @@ precedence note so local rules and forced stack choices always win.
 | "add a React Native API call" | `create-native-service` |
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
+| "implement JWT auth safely" | `jwt-security` |
+| "add auth to a Next.js blog" | `nextjs-turbopack` |
 | "refactor this component" | `refactor` |
+| "design a Postgres schema" | `postgres-patterns` |
 | "design an API endpoint" | adapted ECC API/backend skills |
 | "review this Go service" | adapted ECC language skills |
 | "audit this UI design system" | adapted ECC frontend/design skills |
@@ -141,6 +147,8 @@ Or via Cursor Settings → Plugins → Add.
 | What to change | Where |
 |----------------|-------|
 | Library stack, folder structure, core rules | `rules/core.md`, then run `python3 scripts/sync-cursor.py` |
+| Provider-first stack recommendations | `rules/common/stack-recommendations.md`, then run `python3 scripts/sync-cursor.py` |
+| Curated library catalog | `rules/common/library-catalog.md`, then run `python3 scripts/sync-cursor.py` |
 | React web stack rules | `rules/frontend/react/*.md`, then run `python3 scripts/sync-cursor.py` |
 | Ionic/Capacitor hybrid mobile rules | `rules/frontend/ionic/*.md`, then run `python3 scripts/sync-cursor.py` |
 | React Native stack rules, explicit only | `rules/frontend/react-native/*.md`, then run `python3 scripts/sync-cursor.py` |

@@ -29,6 +29,8 @@ Backend-focused integration from upstream `rules/golang/*`.
 - Use parameterized database APIs; never concatenate user input into SQL.
 - Validate dynamic sort/filter fields before query composition.
 - Never log tokens, secrets, or PII.
+- Prefer framework/provider auth packages over custom password, session, or JWT
+  implementations.
 
 ## Testing
 - Use standard `go test` with table-driven tests.

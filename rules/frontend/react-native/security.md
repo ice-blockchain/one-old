@@ -18,6 +18,8 @@ paths:
 
 ## Auth and authorization
 - UI gating is not authorization; every protected endpoint still checks authz server-side.
+- Prefer the backend/provider auth SDK already chosen for the app, such as
+  Supabase Auth with Expo deep-link handling, before custom token handling.
 - Refresh tokens retry once, then clear session and route to auth.
 - Never log Authorization headers, tokens, cookies, exact location, contacts, or payment data.
 

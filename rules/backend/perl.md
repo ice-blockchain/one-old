@@ -31,6 +31,8 @@ Backend-focused integration from upstream `rules/perl/*`.
 - Prevent path traversal with `Cwd::realpath` and allowed-directory checks.
 - Use list-form `system()` or IPC::Run3; never backticks with variable interpolation.
 - Always use DBI placeholders; never interpolate values into SQL.
+- Prefer framework/provider auth modules over custom password, session, or JWT
+  implementations.
 
 ## Testing
 - Use Test2::V0 for new tests.

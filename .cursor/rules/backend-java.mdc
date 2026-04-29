@@ -30,6 +30,8 @@ Backend-focused integration from upstream `rules/java/*`.
 - Validate input at system boundaries with Bean Validation or explicit guards.
 - Store passwords with bcrypt or Argon2; never MD5/SHA1.
 - Enforce authorization at endpoint/service boundaries.
+- Prefer framework/provider auth modules and authorization policies over custom
+  token parsing or session code.
 - Scan dependencies with OWASP Dependency-Check, Snyk, or equivalent.
 - Map exceptions to safe client messages; never expose stack traces or SQL errors.
 
