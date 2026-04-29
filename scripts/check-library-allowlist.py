@@ -14,29 +14,51 @@ RN_STACKS = {"react-native-expo-monorepo", "react-native-expo-app"}
 WEB_STACKS = {"react-realtime-monorepo", "react-frontend-only"}
 
 
-def read_stack() -> str | None:
+def read_state() -> dict:
     state_path = pathlib.Path(".traffic-one.json")
     if not state_path.exists():
-        return None
+        return {}
     try:
-        state = json.loads(state_path.read_text())
+        return json.loads(state_path.read_text())
     except Exception:
-        return None
+        return {}
+
+
+def read_stack(state: dict) -> str | None:
     stack = state.get("stack")
     return stack if isinstance(stack, str) else None
 
 
-def forbidden_for_stack(stack: str | None) -> list[tuple[str, str]]:
+def package_json_has_next() -> bool:
+    package_path = pathlib.Path("package.json")
+    if not package_path.exists():
+        return False
+    try:
+        package = json.loads(package_path.read_text())
+    except Exception:
+        return False
+    deps = {
+        **package.get("dependencies", {}),
+        **package.get("devDependencies", {}),
+    }
+    return "next" in deps
+
+
+def allows_nextjs(state: dict) -> bool:
+    return state.get("frontend") == "nextjs" or package_json_has_next()
+
+
+def forbidden_for_stack(stack: str | None, *, allow_nextjs: bool) -> list[tuple[str, str]]:
     common = [
         ("mobx", "Use Redux Toolkit for global business state and zustand for ephemeral UI state."),
         ("recoil", "Use Redux Toolkit for global business state and zustand for ephemeral UI state."),
         ("jotai", "Use Redux Toolkit for global business state and zustand for ephemeral UI state."),
         ("swr", "Use RTK Query for cached server state."),
-        ("vitest", "This stack uses Jest for unit/integration tests."),
-        ("@vitest/", "This stack uses Jest for unit/integration tests."),
         (r"(?<!tanstack/)(?<!\w)react-query(?!-)", "Use RTK Query for cached server state."),
     ]
     web = [
+        ("vitest", "This stack uses Jest for unit/integration tests."),
+        ("@vitest/", "This stack uses Jest for unit/integration tests."),
         ("styled-components", "Use vanilla-extract for build-time static CSS."),
         ("@emotion", "Use vanilla-extract for build-time static CSS."),
         ("tailwindcss", "Use vanilla-extract; no runtime CSS framework on this stack."),
@@ -46,9 +68,17 @@ def forbidden_for_stack(stack: str | None) -> list[tuple[str, str]]:
         ("material-ui", "Build shared primitives in packages/ui on top of vanilla-extract."),
         ("chakra-ui", "Build shared primitives in packages/ui on top of vanilla-extract."),
         ("bootstrap", "Build shared primitives in packages/ui on top of vanilla-extract."),
-        (r"next\b", "This plugin targets Turborepo + Vite apps, not Next.js."),
     ]
+    if not allow_nextjs:
+        web.append(
+            (
+                r"(^|\s)(next|next-auth)(@[\w.-]+)?(\s|$)",
+                "Use the React/Vite stack unless the user explicitly chose Next.js; Next.js auth uses NextAuth/Auth.js only in a Next.js project.",
+            )
+        )
     native = [
+        ("vitest", "This stack uses Jest for unit/integration tests."),
+        ("@vitest/", "This stack uses Jest for unit/integration tests."),
         ("styled-components", "Use React Native StyleSheet.create with design tokens."),
         ("@emotion", "Use React Native StyleSheet.create with design tokens."),
         ("tailwindcss", "Use StyleSheet.create and design tokens; no Tailwind on the Expo stack."),
@@ -74,9 +104,10 @@ def main() -> None:
     if not INSTALL_RE.search(command):
         return
 
+    state = read_state()
     hits = [
         (pattern, tip)
-        for pattern, tip in forbidden_for_stack(read_stack())
+        for pattern, tip in forbidden_for_stack(read_stack(state), allow_nextjs=allows_nextjs(state))
         if re.search(pattern, command)
     ]
     if not hits:

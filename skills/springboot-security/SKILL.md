@@ -25,6 +25,8 @@ Use when adding auth, handling input, creating endpoints, or dealing with secret
 
 ## Authentication
 
+- Prefer Spring Security, OAuth2 resource server/client support, or a managed
+  identity provider before custom password/session/JWT code.
 - Prefer stateless JWT or opaque tokens with revocation list
 - Use `httpOnly`, `Secure`, `SameSite=Strict` cookies for sessions
 - Validate tokens with `OncePerRequestFilter` or resource server

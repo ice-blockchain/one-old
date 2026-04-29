@@ -32,6 +32,7 @@ Backend-focused integration from upstream `rules/csharp/*`.
 - Use parameterized queries with ADO.NET, Dapper, or EF Core.
 - Validate DTOs at application boundaries with data annotations, FluentValidation, or explicit guards.
 - Prefer framework auth handlers and authorization policies over custom token parsing.
+- Prefer provider/framework auth packages before custom password, session, or JWT code.
 - Return safe client errors; do not expose stack traces, SQL text, or filesystem paths.
 
 ## Testing

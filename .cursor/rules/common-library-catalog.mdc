@@ -1,0 +1,103 @@
+<!-- GENERATED FROM: rules/common/library-catalog.md; run `python3 scripts/sync-cursor.py` to update. -->
+---
+description: "Library Catalog — Curated Defaults. Generated from rules/common/library-catalog.md."
+alwaysApply: true
+---
+
+# Library Catalog — Curated Defaults
+
+Use this catalog before writing custom utility, integration, validation, auth,
+formatting, queue, cache, or test code. These are preferred starting points, not
+pre-approved installs: the active stack core and `library-pick` quality gate
+still decide whether a package can be added.
+
+## Selection Rules
+
+- If the active stack already mandates a tool, use it and do not add a duplicate.
+- Prefer framework-native helpers and provider SDKs before generic packages.
+- For one-off logic, use the standard library when it is safer than a dependency.
+- Verify maintenance, adoption, license, security, types, and bundle impact
+  before every install.
+- Date-relative copy such as "one week ago": prefer `date-fns` or `dayjs`.
+  Use `date-format` only for simple string-pattern formatting after verification.
+
+## JavaScript and TypeScript
+
+- Validation and forms: `zod`, `react-hook-form`, `@hookform/resolvers`.
+- Dates and relative time: `date-fns` by default; `dayjs` when a compact
+  chainable API fits better; `luxon` for explicit timezone-heavy work.
+- HTTP and server data: `axios` in services, RTK Query for cached server state.
+- UI and motion: `lucide-react`, `framer-motion`, Storybook.
+- i18n: `i18next`, `react-i18next`.
+- Testing and mocks: Jest in Traffic One React/Expo stacks, Playwright for E2E,
+  MSW for HTTP mocks.
+- CLI/config: `commander` or `yargs`, `dotenv`, `envalid` or Zod schemas.
+
+## React, Supabase, and Next.js
+
+- React/Vite: keep Traffic One defaults: RTK Query/Redux, vanilla-extract,
+  React Hook Form + Zod, Jest, Playwright, MSW.
+- Supabase: Supabase Auth, Storage, Realtime, RLS policies, and
+  `@supabase/supabase-js`.
+- Explicit Next.js: Auth.js/NextAuth, App Router route handlers/server actions,
+  Next.js Cache, Drizzle + PostgreSQL, Vercel Blob SDK, Vercel deployment,
+  Vitest only when no Traffic One forced test stack is active, Playwright.
+- React Native/Expo: Expo Router, `expo-secure-store`, `expo-localization`,
+  React Hook Form + Zod, `date-fns`, RTK Query/axios, Reanimated, RNTL, Maestro.
+
+## Python
+
+- API: FastAPI.
+- Validation and settings: Pydantic.
+- Database and migrations: SQLModel or SQLAlchemy, Alembic, PostgreSQL.
+- HTTP: `httpx`.
+- Testing: pytest.
+- Cache and jobs: Redis, Celery.
+- Logging/observability: structlog or loguru, Sentry SDK.
+
+## PHP and Laravel
+
+- Validation and auth: Laravel Form Requests, Sanctum or Passport.
+- Dates: Carbon.
+- HTTP: Guzzle.
+- Database and queues: Eloquent, Laravel queues/cache.
+- Testing and static analysis: Pest or PHPUnit, PHPStan.
+- Logging: Monolog.
+- Common Laravel packages: Spatie Permission, Query Builder, Data, Activitylog.
+
+## Go
+
+- Routing/API: `chi`.
+- Database: `pgx`, `sqlc`, `golang-migrate`.
+- Validation: `go-playground/validator`.
+- Logging: `zap` or `zerolog`.
+- CLI/config: `cobra`, `viper`.
+- Testing: `testify`.
+- Cache: Redis client matching the project.
+
+## JVM and .NET
+
+- Java/Spring: Spring Security, Bean Validation, Spring Data/JPA,
+  Flyway or Liquibase, JUnit 5, AssertJ, Testcontainers, Resilience4j.
+- Kotlin/Ktor: Ktor Authentication and ContentNegotiation,
+  kotlinx.serialization, Exposed or SQLDelight, Koin, Kotest, MockK, Turbine.
+- C#/.NET: ASP.NET auth/authorization, FluentValidation, EF Core or Dapper,
+  Polly, Serilog, xUnit, FluentAssertions, Testcontainers.
+
+## Rust
+
+- Web/API: axum or actix-web.
+- Serialization and validation: serde, validator.
+- Database: sqlx or Diesel.
+- Errors and logging: thiserror, anyhow, tracing.
+- CLI/HTTP/runtime: clap, reqwest, tokio.
+- Testing: proptest plus native Rust tests.
+
+## Other Plugin Stacks
+
+- Perl: prefer CPAN modules already named by the active Perl rules, DBI or
+  DBIx::Class, Test2, Path::Tiny, Moo, and provider SDKs before custom code.
+- C++: prefer standard library, fmt, GoogleTest/gMock, safe framework packages,
+  and provider SDKs before custom parsing, crypto, or networking code.
+- Dart/Flutter: prefer Flutter/Dart ecosystem packages and provider SDKs before
+  custom validators, date helpers, storage, auth, HTTP, or state tooling.
