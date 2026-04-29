@@ -43,21 +43,8 @@ delivering mobile with Ionic/Capacitor.
 - Storybook (@storybook/react-vite)
 
 ## Mobile delivery
-
-- For a mobile variant of a generated or existing React site, recommend Ionic
-  Framework with Capacitor packaging by default.
-- Keep the React app as the source of truth, set Capacitor `webDir` to the Vite
-  build output (`dist` by default), and add iOS/Android platforms as packaging
-  targets.
-- Treat the Capacitor wrapper as the smallest reversible step. Verify responsive
-  mobile UX, safe areas, keyboard behavior, Android back button behavior,
-  permissions, icons/splash screens, and app-store build config.
-- Offer a full Ionic React app only as the alternative when the user wants
-  Ionic-native navigation/components or a mobile-first rewrite; expect route and
-  component migration plus router compatibility checks.
-- Do not switch to React Native / Expo for generic "mobile app" requests. Use
-  React Native rules and skills only when the user explicitly names React Native,
-  Expo, RN, or asks for a fully React Native implementation.
+- Mobile variant of a React web product → Ionic Framework + Capacitor packaging by default. Detail rules in `rules/frontend/ionic/core.md`.
+- Switch to React Native / Expo only when the user explicitly names RN / Expo / fully native — never for generic "mobile app" requests.
 
 ## Absolute rules
 - Function components only. Named exports only — no `export default` for components.

@@ -29,6 +29,8 @@ Backend-focused integration from upstream `rules/python/*`.
 - Use Bandit for static security analysis.
 - Validate request, file, and external API input at the boundary.
 - Use parameterized queries through the active DB library or ORM.
+- Prefer framework/provider auth integrations over custom password, session, or
+  JWT implementations; do not default FastAPI apps to hand-rolled JWT auth.
 - Do not expose stack traces, filesystem paths, SQL text, or internal exception messages to clients.
 
 ## Testing

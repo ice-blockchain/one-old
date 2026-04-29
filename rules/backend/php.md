@@ -37,6 +37,8 @@ Backend-focused integration from upstream `rules/php/*`.
 - Use `password_hash()` / `password_verify()` for password storage.
 - Regenerate session IDs after authentication or privilege changes.
 - Enforce CSRF protection on state-changing web requests.
+- Prefer framework/provider auth packages such as Laravel Sanctum/Passport or
+  Symfony Security before custom token/session code.
 
 ## Testing
 - Use PHPUnit by default; use Pest when it is already configured.

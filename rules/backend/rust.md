@@ -32,6 +32,8 @@ Backend-focused integration from upstream `rules/rust/*`.
 - Run `cargo audit`, `cargo deny check`, and inspect `cargo tree` for dependency risk.
 - Return generic client errors; log details server-side with `tracing` or `log`.
 - Use parameterized queries through SQLx, Diesel, tokio-postgres, or the active DB layer.
+- Prefer framework/provider auth crates or upstream identity providers over
+  custom password, session, or JWT implementations.
 
 ## Testing
 - Use `#[test]` and `#[cfg(test)]` modules for unit tests.

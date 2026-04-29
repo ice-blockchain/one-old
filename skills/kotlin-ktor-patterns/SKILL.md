@@ -228,6 +228,10 @@ object InstantSerializer : KSerializer<Instant> {
 
 ## Authentication
 
+Prefer Ktor's Authentication plugin with OAuth/OIDC or another managed provider
+before custom password/session/JWT code. Use local JWT examples only when the
+provider-first check fails or the project already owns token issuance.
+
 ### JWT Authentication
 
 ```kotlin

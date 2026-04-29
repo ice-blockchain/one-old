@@ -23,12 +23,13 @@ Use a code-review stance: list concrete findings first, with severity and file/l
 1. Secrets: no hardcoded secrets, no frontend secrets in `VITE_`, required env vars checked at startup.
 2. Input: validate request bodies, query params, route params, deep links, and user-supplied data with Zod or the local schema layer.
 3. Auth: protected endpoints enforce authentication and authorization server-side; UI gating never stands alone.
-4. Tokens: never store JWT access tokens in `localStorage`; prefer httpOnly cookies or in-memory state per app rules.
-5. Data access: parameterized SQL only, bounded reads, no N+1 loops, RLS/default-deny policies for user-data tables.
-6. Browser safety: avoid unsafe HTML; if `dangerouslySetInnerHTML` is unavoidable, sanitize and review CSP.
-7. Files and uploads: validate size, type, extension, storage path, and authorization before read/write.
-8. Errors and logs: no stack traces in production responses; strip secrets and PII from client/server logs.
-9. Dependencies: run the local dependency quality gate before adding packages; no high+ audit findings.
+4. Provider-first auth: Next.js uses NextAuth/Auth.js unless an existing provider is present; Supabase uses Supabase Auth + RLS; other stacks use framework/provider auth before custom JWT/session/password code.
+5. Tokens: never store JWT access tokens in `localStorage`; prefer httpOnly cookies or in-memory state per app rules.
+6. Data access: parameterized SQL only, bounded reads, no N+1 loops, RLS/default-deny policies for user-data tables.
+7. Browser safety: avoid unsafe HTML; if `dangerouslySetInnerHTML` is unavoidable, sanitize and review CSP.
+8. Files and uploads: validate size, type, extension, storage path, and authorization before read/write.
+9. Errors and logs: no stack traces in production responses; strip secrets and PII from client/server logs.
+10. Dependencies: run the local dependency quality gate before adding packages; no high+ audit findings.
 
 ## ECC Notes
 

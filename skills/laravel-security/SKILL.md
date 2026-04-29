@@ -45,6 +45,8 @@ Comprehensive security guidance for Laravel applications to protect against comm
 ## Authentication and Tokens
 
 - Use Laravel Sanctum or Passport for API auth
+- Prefer Laravel's first-party auth stack or a managed provider before custom
+  password/session/JWT code
 - Prefer short-lived tokens with refresh flows for sensitive data
 - Revoke tokens on logout and compromised accounts
 
