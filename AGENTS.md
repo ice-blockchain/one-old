@@ -351,6 +351,7 @@ products use Ionic Framework with Capacitor instead.
 - `$create-native-service` — scaffold a React Native/Expo service or RTK Query endpoint (explicit only)
 - `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
+- `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
 - `$context-budget` — audit token consumption across loaded rules/skills

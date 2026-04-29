@@ -22,6 +22,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── create-native-service/
 │   ├── execution-discipline/
 │   ├── security-review/
+│   ├── jwt-security/
 │   └── refactor/
 │
 ├── rules/                   ← SHARED — single source of truth for all rule content
@@ -78,6 +79,7 @@ precedence note so local rules and forced stack choices always win.
 | "add a React Native API call" | `create-native-service` |
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
+| "implement JWT auth safely" | `jwt-security` |
 | "refactor this component" | `refactor` |
 | "design an API endpoint" | adapted ECC API/backend skills |
 | "review this Go service" | adapted ECC language skills |
