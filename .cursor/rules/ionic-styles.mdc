@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/frontend/ionic/styles.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/styles.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Ionic Styling Rules. Generated from rules/frontend/ionic/styles.md."
 globs: ["apps/**/src/styles/**", "apps/**/src/**/*.css.ts", "packages/ui/**", "src/styles/**", "src/**/*.css.ts"]

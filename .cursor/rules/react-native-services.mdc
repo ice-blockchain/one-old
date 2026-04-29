@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/frontend/react-native/services.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/services.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "React Native Service Layer. Generated from rules/frontend/react-native/services.md."
 globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "apps/**/src/features/**/api.ts", "packages/api-client/**", "src/services/**", "src/features/**/services/**"]

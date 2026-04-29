@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/common/security.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/common/security.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Security Baseline. Generated from rules/common/security.md."
 alwaysApply: true
