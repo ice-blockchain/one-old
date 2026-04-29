@@ -13,7 +13,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check Cursor sync
-        run: python3 scripts/sync-cursor.py --check
+        run: node scripts/sync-cursor.cjs --check
 
       - name: Check stack recommendation hooks
-        run: python3 scripts/test-stack-recommendations.py
+        run: node scripts/test-stack-recommendations.cjs

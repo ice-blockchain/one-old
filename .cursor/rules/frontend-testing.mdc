@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/frontend/testing.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/frontend/testing.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Frontend Testing — framework-agnostic. Generated from rules/frontend/testing.md."
 globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/e2e/**", "**/playwright/**", "src/test/**", "apps/**/test/**", "packages/**/test/**"]

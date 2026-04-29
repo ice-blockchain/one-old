@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/frontend/react-native/testing.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/testing.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "React Native Testing — Jest + RNTL + Maestro. Generated from rules/frontend/react-native/testing.md."
 globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/.maestro/**", "apps/**/src/test/**", "packages/**/test/**"]
