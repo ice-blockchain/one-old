@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/modes/new-project.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/modes/new-project.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Mode: New Project — Real-time React Monorepo. Generated from rules/modes/new-project.md."
 alwaysApply: false

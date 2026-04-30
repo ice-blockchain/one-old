@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/frontend/realtime.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/frontend/realtime.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Real-time / WebSocket — framework-agnostic. Generated from rules/frontend/realtime.md."
 globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/*.socket.ts", "**/*.ws.ts"]

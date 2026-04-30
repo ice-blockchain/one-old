@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/backend/java.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/backend/java.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Java Backend Rules. Generated from rules/backend/java.md."
 globs: ["**/*.java", "**/pom.xml", "**/build.gradle", "**/build.gradle.kts"]
