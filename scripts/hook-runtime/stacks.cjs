@@ -1,0 +1,162 @@
+'use strict';
+
+// scripts/hook-runtime/stacks.cjs
+// Per-stack rule manifests. `mandatory` files are always loaded into
+// SessionStart context (within the 10K cap), `optional` files are added in
+// priority order until the budget runs out and the rest defer to path-scoped
+// attach. Adding a new stack = adding an entry here.
+
+// `stack-recommendations.md` and `library-catalog.md` are reference catalogs:
+// useful when the model picks defaults, but ~7KB combined would blow the 10K
+// SessionStart cap if loaded mandatorily on stacks that already have a
+// framework core. We keep them in `optional` (loaded when budget allows) for
+// every framework stack, and `mandatory` only for `minimal` (where they're
+// the primary ruleset). This keeps React / RN bundles within ~10K while
+// minimal still gets the catalogs for cross-language guidance.
+const STACKS = {
+  'react-realtime-monorepo': {
+    label:
+      'React + Supabase monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright (recommended/default; Ionic/Capacitor mobile packaging available)',
+    mandatory: [
+      'rules/core.md',
+      'rules/common/clean-code.md',
+      'rules/common/execution-discipline.md',
+      'rules/common/security.md',
+      'rules/frontend/react/core.md',
+    ],
+    optional: [
+      'rules/common/stack-recommendations.md',
+      'rules/common/library-catalog.md',
+      'rules/frontend/ionic/core.md',
+      'rules/frontend/accessibility.md',
+      'rules/frontend/performance.md',
+      'rules/frontend/realtime.md',
+      'rules/frontend/services.md',
+      'rules/frontend/testing.md',
+      'rules/frontend/react/components.md',
+      'rules/frontend/react/stores.md',
+      'rules/frontend/react/services.md',
+      'rules/frontend/react/realtime.md',
+      'rules/frontend/react/performance.md',
+      'rules/frontend/react/testing.md',
+      'rules/frontend/react/security.md',
+      'rules/frontend/ionic/capacitor.md',
+      'rules/frontend/ionic/navigation.md',
+      'rules/frontend/ionic/components.md',
+      'rules/frontend/ionic/styles.md',
+      'rules/frontend/ionic/services.md',
+      'rules/frontend/ionic/stores.md',
+      'rules/frontend/ionic/realtime.md',
+      'rules/frontend/ionic/performance.md',
+      'rules/frontend/ionic/security.md',
+      'rules/frontend/ionic/testing.md',
+      'rules/frontend/ionic/accessibility.md',
+    ],
+  },
+  'react-frontend-only': {
+    label:
+      'Single-app React: Vite + RTK + vanilla-extract (no backend, no monorepo; Ionic/Capacitor mobile packaging available)',
+    mandatory: [
+      'rules/core.md',
+      'rules/common/clean-code.md',
+      'rules/common/execution-discipline.md',
+      'rules/common/security.md',
+      'rules/frontend/react/core.md',
+    ],
+    optional: [
+      'rules/common/stack-recommendations.md',
+      'rules/common/library-catalog.md',
+      'rules/frontend/ionic/core.md',
+      'rules/frontend/accessibility.md',
+      'rules/frontend/performance.md',
+      'rules/frontend/services.md',
+      'rules/frontend/testing.md',
+      'rules/frontend/react/components.md',
+      'rules/frontend/react/stores.md',
+      'rules/frontend/react/services.md',
+      'rules/frontend/react/performance.md',
+      'rules/frontend/react/testing.md',
+      'rules/frontend/react/security.md',
+    ],
+  },
+  'react-native-expo-monorepo': {
+    label: 'Expo React Native monorepo (explicit React Native / Expo only)',
+    mandatory: [
+      'rules/core.md',
+      'rules/common/clean-code.md',
+      'rules/common/execution-discipline.md',
+      'rules/common/security.md',
+      'rules/frontend/react-native/core.md',
+    ],
+    optional: [
+      'rules/common/stack-recommendations.md',
+      'rules/common/library-catalog.md',
+      'rules/frontend/services.md',
+      'rules/frontend/realtime.md',
+      'rules/frontend/testing.md',
+      'rules/frontend/react-native/navigation.md',
+      'rules/frontend/react-native/components.md',
+      'rules/frontend/react-native/styles.md',
+      'rules/frontend/react-native/stores.md',
+      'rules/frontend/react-native/services.md',
+      'rules/frontend/react-native/realtime.md',
+      'rules/frontend/react-native/performance.md',
+      'rules/frontend/react-native/accessibility.md',
+      'rules/frontend/react-native/testing.md',
+      'rules/frontend/react-native/security.md',
+    ],
+  },
+  'react-native-expo-app': {
+    label: 'Single Expo React Native app (explicit React Native / Expo only)',
+    mandatory: [
+      'rules/core.md',
+      'rules/common/clean-code.md',
+      'rules/common/execution-discipline.md',
+      'rules/common/security.md',
+      'rules/frontend/react-native/core.md',
+    ],
+    optional: [
+      'rules/common/stack-recommendations.md',
+      'rules/common/library-catalog.md',
+      'rules/frontend/services.md',
+      'rules/frontend/testing.md',
+      'rules/frontend/react-native/navigation.md',
+      'rules/frontend/react-native/components.md',
+      'rules/frontend/react-native/styles.md',
+      'rules/frontend/react-native/stores.md',
+      'rules/frontend/react-native/services.md',
+      'rules/frontend/react-native/performance.md',
+      'rules/frontend/react-native/accessibility.md',
+      'rules/frontend/react-native/testing.md',
+      'rules/frontend/react-native/security.md',
+    ],
+  },
+  'node-backend': {
+    label: 'Node + Postgres backend only (legacy — not offered in onboarding)',
+    mandatory: [
+      'rules/core.md',
+      'rules/common/clean-code.md',
+      'rules/common/execution-discipline.md',
+      'rules/common/security.md',
+      'rules/backend/node.md',
+      'rules/backend/postgres.md',
+    ],
+    optional: [
+      'rules/common/stack-recommendations.md',
+      'rules/common/library-catalog.md',
+    ],
+  },
+  minimal: {
+    label: 'Clean-code + security + git baseline (no framework rules)',
+    mandatory: [
+      'rules/common/clean-code.md',
+      'rules/common/execution-discipline.md',
+      'rules/common/security.md',
+      'rules/common/stack-recommendations.md',
+      'rules/common/library-catalog.md',
+    ],
+    optional: [],
+  },
+};
+
+module.exports = { STACKS };
