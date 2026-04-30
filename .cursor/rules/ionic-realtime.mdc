@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/frontend/ionic/realtime.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/realtime.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Ionic Real-time Rules. Generated from rules/frontend/ionic/realtime.md."
 globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/realtime/**", "packages/ws-client/**", "src/services/ws/**", "src/features/**/realtime/**"]

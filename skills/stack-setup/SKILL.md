@@ -7,7 +7,7 @@ description: PROACTIVELY drive the traffic-one onboarding when SessionStart show
 
 Persist the user's rule-stack choice into `.traffic-one.json`. The SessionStart
 hook reads this to decide which rules to inject. The PostToolUse hook
-(`scripts/post-stack-setup.py`) auto-loads the matching bundle the moment the
+(`scripts/hook-runtime.cjs post-stack-setup`) auto-loads the matching bundle the moment the
 file is written — **no session restart required**.
 
 ## When this skill fires

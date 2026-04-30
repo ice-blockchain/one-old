@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/backend/postgres.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/backend/postgres.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "PostgreSQL Rules. Generated from rules/backend/postgres.md."
 globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema.prisma", "src/services/**", "src/lib/db/**"]

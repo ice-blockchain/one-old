@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules/backend/rust.md; run `python3 scripts/sync-cursor.py` to update. -->
+<!-- GENERATED FROM: rules/backend/rust.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
 description: "Rust Backend Rules. Generated from rules/backend/rust.md."
 globs: ["**/*.rs", "**/Cargo.toml", "**/Cargo.lock"]
