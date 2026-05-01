@@ -31,6 +31,8 @@ const SKILL_FILTERS = {
     'coding-standards', 'i18n-text', 'ui-demo', 'design-system',
     'architecture-decision-records', 'deployment-patterns',
     'api-design', 'api-connector-builder',
+    'adaptive-communication',
+    'design-audit',
   ]),
   'react-realtime-monorepo': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',

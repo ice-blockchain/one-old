@@ -1,0 +1,105 @@
+<!-- GENERATED FROM: rules/frontend/ui-quality.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "UI Quality — anti-AI-slop + material honesty. Generated from rules/frontend/ui-quality.md."
+globs: ["**/*.tsx", "**/*.jsx", "**/*.css.ts", "**/*.css", "**/*.scss", "apps/**/src/**", "packages/ui/**", "packages/ui-native/**", "packages/design-tokens/**"]
+alwaysApply: false
+---
+
+# UI Quality — anti-AI-slop + material honesty
+
+Distilled from bencium-marketplace (impact-designer + controlled-ux-designer).
+Rules apply silently when generating any UI; the goal is interfaces that look
+intentionally designed, not machine-generated. Pair with `rules/frontend/typography.md`
+for character-level rules and `rules/frontend/accessibility.md` for WCAG.
+
+## Design decision protocol — ASK first, then COMMIT BOLDLY
+
+Before writing UI code for a new screen / feature:
+
+1. **Purpose** — What problem does this interface solve? Who uses it?
+2. **Tone** — What aesthetic direction fits? (Brutally minimal · editorial · Swiss grid · brutalist · soft-pastel · industrial · monochrome high-contrast · …) Pick one and execute it with conviction.
+3. **Constraints** — Performance budget, a11y level, framework limits.
+4. **Differentiation** — What makes this UNFORGETTABLE? The one thing someone will remember.
+
+For tweaks to existing screens: don't ask — match the established aesthetic.
+
+**Bold maximalism and refined minimalism both work — the key is intentionality, not intensity.**
+
+## Anti-AI-slop — NEVER ship these without a reason you can defend
+
+| Category | Avoid by default |
+|---|---|
+| **Fonts (web)** | Inter, Roboto, Arial as primary; Space Grotesk (overused by AI); system fonts as default body |
+| **Fonts (RN)** | The platform default for everything — pick a real type system |
+| **Colours** | SaaS blue `#3B82F6`; purple-on-white gradients; "AI portfolio" pastel-glass |
+| **Effects** | Glass morphism / Apple mimicry; liquid blob backgrounds; rainbow conic gradients without purpose |
+| **Layout** | Cookie-cutter centered hero + 3-card-grid + CTA; predictable component arrangements |
+| **Vibe** | Anything that looks "Claude-generated" — generic SaaS, lifeless, evenly-spaced palette, timid |
+
+If the user's brand or brief explicitly calls for one of the above (e.g. they ARE building Apple-like polish), commit fully — half-execution looks worse than the rule-break.
+
+## Material honesty — affordance through real digital properties
+
+Digital materials have real properties. Don't fake physical depth.
+
+- **Buttons**: communicate via colour, weight, spacing, hover/focus state — NOT drop shadows imitating relief.
+- **Cards / containers**: use 1px borders, subtle background shifts, generous padding — not heavy elevation shadows by default.
+- **Hierarchy**: scale, weight, spacing — not stacked z-shadows.
+- **Functional depth (allowed)**: modals over content, dropdowns over UI, tooltips over everything. That's purpose, not decoration.
+- **Animations**: follow physics adapted to digital — eased timings, not linear; respect `prefers-reduced-motion`.
+
+## The reduction filter — apply to every element you ship
+
+For each visible element, before commit:
+
+- Can it be removed without losing meaning? → Remove.
+- Would a user need to be told this exists? → Redesign until obvious.
+- Is visual weight proportional to functional importance? → If not, fix hierarchy.
+- Does it feel inevitable? → If not, it's not done.
+
+## Force variety (anti-sameness)
+
+Across multiple screens / pages / sites you generate, vary:
+- Colour temperature (warm vs cool dominance).
+- Type personality (geometric vs humanist; serif vs sans).
+- Density (generous whitespace vs editorial intensity).
+- Accent strategy (one bold accent vs duotone vs grayscale-with-color-pop).
+
+Don't converge on a single safe formula. Each project deserves a distinct fingerprint.
+
+## Concrete techniques that elevate over generic
+
+- **Atmosphere**: photography, patterns, grain, textures over flat solid colours.
+- **Custom cursors / focus rings** that fit the aesthetic.
+- **Dominant + accent colour pairs** instead of evenly-distributed palettes.
+- **Gradient meshes / layered transparencies** — when intentional, not as a "AI portfolio" tell.
+- **Typography pairings** (serif display + sans body, or two contrasting sans) — only when justified, never just to look "designed".
+- **Slow background motion** (CSS / SVG, looping, subtle) — adds life without distraction. Respect reduced-motion.
+
+## Foundational principles (in priority order)
+
+1. **Simplicity through reduction** — start with everything you think you need, then cut until removing more breaks meaning.
+2. **Material honesty** — see above.
+3. **Functional layering, not visual depth** — hierarchy via type scale + colour contrast + spatial relationships, not skeuomorphic shadows.
+4. **Obsessive detail** — every pixel intentional. Excellence is hundreds of small decisions.
+5. **Coherent design language** — every element communicates its function; nothing arbitrary.
+6. **Invisibility of technology** — the best UI disappears into the user's intent.
+
+## Rule-breaking checklist
+
+Guidelines exist to prevent mediocrity, not to limit excellence. Break a rule above when:
+
+1. You can articulate the creative intent in one sentence.
+2. It's a conscious choice, not laziness or a default.
+3. It serves the user / brand / context.
+4. A senior designer could defend it.
+
+If yes to all four → break it confidently. Otherwise keep the rule.
+
+## Don't
+
+- Don't propose Tailwind, NativeWind, styled-components, or @emotion. Use the active stack's styling (vanilla-extract for web, `StyleSheet.create` for RN).
+- Don't hardcode colours, spacing, sizes — pull from `packages/design-tokens`.
+- Don't add motion that delays user actions.
+- Don't ship without states: default, hover, focus, active, disabled, loading, error, empty.
+- Don't validate accessibility as a "constraint that limits creativity" — it's a baseline that enables it.
