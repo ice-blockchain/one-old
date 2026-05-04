@@ -9,6 +9,7 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
+const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
 
 const tests = [];
 
@@ -108,6 +109,18 @@ test('supabase project bundle includes supabase auth default', () => {
     assert.equal(state.backend, 'supabase');
     assert.match(context, /Supabase Auth/);
     assert.match(context, /Library Catalog/);
+  });
+});
+
+test('new project onboarding defaults to supabase backend', () => {
+  withTempDir((cwd) => {
+    const result = runHook(cwd, 'session-start');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.equal(defaultBackendValue(), 'supabase');
+    assert.match(context, /backend=supabase/);
+    assert.match(context, /Supabase \(managed Postgres with Auth, Storage, Realtime, and RLS\)/);
   });
 });
 

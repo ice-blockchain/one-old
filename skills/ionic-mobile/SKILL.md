@@ -36,6 +36,9 @@ or store packaging.
   full Ionic React migration.
 - Follow `rules/frontend/ionic/*` first, then the React, frontend, core,
   security, and dependency rules.
+- Treat mobile UX as a design task, not only packaging. Establish the target
+  user, primary mobile action, first-screen hierarchy, safe-area/keyboard
+  behavior, and visual QA plan before changing shell UI.
 
 ## Prompt to offer
 
@@ -100,7 +103,9 @@ apps/web/
 5. Wrap native APIs behind typed services/hooks with zod validation at the
    boundary.
 6. Implement web fallbacks or clear unavailable states for native-only features.
-7. Verify responsive layouts, safe areas, keyboard behavior, Android back
+7. Apply the design brief to mobile layout: reorder desktop content where needed,
+   keep the primary action thumb-accessible, and avoid copying desktop card grids.
+8. Verify responsive layouts, safe areas, keyboard behavior, Android back
    behavior, permissions, app icons/splash screens, deep links, and production
    build config.
 
@@ -126,6 +131,8 @@ Use only when the user chooses the larger migration.
 - Use Ionic/platform-specific styling only where it solves real safe-area,
   overlay, or platform behavior.
 - Keep all visual values in design tokens and verify mobile breakpoints.
+- Modern mobile UI should be calm, clear, and task-first: tokenized spacing,
+  readable type, clear state styling, and no decorative layers over controls.
 
 ## Performance
 
@@ -164,6 +171,8 @@ Use only when the user chooses the larger migration.
 - Add native smoke checks for requested platforms before release.
 - Cover app launch, auth/session restore, deep links, Android back behavior,
   keyboard input, offline/reconnect, permission prompts, and plugin errors.
+- Capture mobile screenshots for visual-heavy work, including loading, empty,
+  error, disabled, and permission-denied states when applicable.
 
 ## Differences to call out
 

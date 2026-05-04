@@ -16,9 +16,11 @@ Before creating files, state:
 2. Named feature/components the route will compose.
 3. Route params and the zod validation/normalization needed.
 4. Loading/error/empty states owned by the screen.
-5. RNTL or Maestro coverage for the route, if user-facing.
-6. i18n namespace/key pattern and catalog location in `packages/i18n`.
-7. Translation consumption: `useTranslation`, `t`, or `<Trans>`.
+5. Native design brief: target user, primary task, first-screen hierarchy, CTA placement, visual direction, safe-area/keyboard needs, and dynamic type constraints.
+6. RNTL or Maestro coverage for the route, if user-facing.
+7. i18n namespace/key pattern and catalog location in `packages/i18n`.
+8. Translation consumption: `useTranslation`, `t`, or `<Trans>`.
+9. Visual QA plan: small phone and large device screenshots, plus loading/empty/error/focused states where practical.
 
 Scaffold rules:
 - Expo Router route files may use `export default`; reusable components must use named exports.
@@ -28,3 +30,4 @@ Scaffold rules:
 - Validate deep-link/native-intent params before use.
 - Screen titles, tab labels, empty/loading/error copy, accessibility labels, and placeholders use translation keys.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- Screens must feel native and one-handed: primary actions reachable, text readable without fixed-height clipping, and no desktop-first card grids.

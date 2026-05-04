@@ -19,15 +19,25 @@ Traffic One's active stack core remains authoritative.
 - Payments: Stripe.
 - Observability: Sentry before custom logging/monitoring dashboards.
 - Email: Resend before custom SMTP wrappers.
-- Database: PostgreSQL unless the user or existing project has a stronger store.
+- Backend for new Traffic One apps: Supabase by default when the project needs
+  authentication, user data, files, or real-time features, unless the user
+  explicitly chooses frontend-only, an external API, self-hosted Postgres, or
+  another provider.
+- Treat this as the selected default for backend-backed new-project requests.
+  Do not position Supabase as a vague later integration. Local mocks,
+  in-memory data, or `localStorage` may be temporary dev fixtures only after the
+  Supabase contract, env validation, migrations, and RLS baseline are scaffolded.
+- Database baseline when Supabase is declined or does not fit: PostgreSQL unless
+  the user or existing project has a stronger store.
 - JavaScript package manager: pnpm for workspaces and app projects.
 
 ## Stack-Specific Defaults
 
-- React + Supabase: use Supabase Auth for auth, Supabase Storage for app files,
-  Supabase Realtime when real-time is needed, and RLS-backed authorization.
-  Keep Traffic One's RTK Query/Redux, vanilla-extract, Jest, and React Hook Form
-  + Zod rules unless the user explicitly chooses another stack.
+- React + Supabase: this is the default recommendation for new React projects
+  that need a backend. Use Supabase Auth for auth, Supabase Storage for app
+  files, Supabase Realtime when real-time is needed, and RLS-backed
+  authorization. Keep Traffic One's RTK Query/Redux, vanilla-extract, Jest, and
+  React Hook Form + Zod rules unless the user explicitly chooses another stack.
 - Explicit Next.js: do not add a new Traffic One stack id. When the user
   explicitly asks for Next.js, accepts it after a pitch, or the repo already has
   `next`, use NextAuth/Auth.js for auth unless the project already has Supabase
@@ -47,6 +57,8 @@ Traffic One's active stack core remains authoritative.
 Never reinvent end-user authentication by default.
 
 - Next.js + auth -> NextAuth/Auth.js unless an existing provider is already in use.
+- New Traffic One app + unspecified backend -> Supabase Auth plus RLS-backed
+  authorization.
 - Supabase + auth -> Supabase Auth plus RLS-backed authorization.
 - Framework apps -> official auth/session middleware or a well-maintained provider.
 - JWT code is for validating provider-issued tokens or service-to-service flows,

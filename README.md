@@ -1,7 +1,7 @@
 # traffic-one — AI Agent Plugin
 
-Enforces React, Ionic/Capacitor mobile packaging, explicit React Native, security,
-and clean code **automatically on every prompt**.
+Enforces React, Ionic/Capacitor mobile packaging, explicit React Native, modern
+design quality, security, and clean code **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and **Cursor**.
 
 ---
@@ -33,6 +33,8 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── frontend/react/            React web stack rules
 │   ├── frontend/ionic/            Ionic Framework + Capacitor hybrid mobile rules
 │   ├── frontend/react-native/     Expo React Native stack rules, explicit only
+│   ├── frontend/ui-quality.md     modern clean UI gate + visual QA
+│   ├── frontend/typography.md     typography and copy polish rules
 │   ├── frontend/services.md       shared frontend service rules
 │   ├── frontend/testing.md        shared frontend testing rules
 │   └── backend/                   Node/Postgres + backend technology rules
@@ -44,6 +46,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 ├── scripts/hook-runtime.cjs ← Hooks         — dependency-free Node hook runtime
 ├── scripts/sync-cursor.cjs  ← Cursor        — generates .cursor/rules + normalizes manifest
 ├── .githooks/pre-commit     ← Git           — auto-runs Cursor sync and stages generated files
+├── .githooks/prepare-commit-msg ← Git       — appends Traffic One integration trailer
 ├── .github/workflows/       ← CI            — checks Cursor sync stays deterministic
 │
 ├── .cursor/rules/*.mdc      ← Cursor        — mirrors rules/ in Cursor's .mdc format
@@ -85,6 +88,8 @@ precedence note so local rules and forced stack choices always win.
 | "implement JWT auth safely" | `jwt-security` |
 | "add auth to a Next.js blog" | `nextjs-turbopack` |
 | "refactor this component" | `refactor` |
+| "make this UI look modern and clean" | `design-audit` / `frontend-design` |
+| "verify the visual QA for this route" | `browser-qa` |
 | "design a Postgres schema" | `postgres-patterns` |
 | "design an API endpoint" | adapted ECC API/backend skills |
 | "review this Go service" | adapted ECC language skills |
@@ -93,6 +98,7 @@ precedence note so local rules and forced stack choices always win.
 ### Rules auto-attach
 Path-scoped rules load only when a matching file is open — zero token cost otherwise:
 - Open `src/components/Button.tsx` → component rules appear in context
+- Open `src/pages/DashboardPage.tsx` → UI quality, typography, accessibility, and design-quality rules appear
 - Open `src/services/users.ts` → service + security rules appear
 - Open `Button.test.tsx` → testing rules appear
 
@@ -109,7 +115,9 @@ CI verifies determinism without writing files:
 node scripts/sync-cursor.cjs --check
 ```
 
-The tracked `.githooks/pre-commit` hook runs the sync automatically and stages generated `.cursor` changes. Enable it in a clone with:
+The tracked `.githooks/pre-commit` hook runs the sync automatically and stages generated `.cursor` changes.
+The tracked `.githooks/prepare-commit-msg` hook appends `Integrated-With: Traffic One plugin`
+so commits record the active plugin integration alongside agent co-author trailers. Enable them in a clone with:
 
 ```
 git config core.hooksPath .githooks
@@ -153,6 +161,7 @@ Or via Cursor Settings → Plugins → Add.
 | React web stack rules | `rules/frontend/react/*.md`, then run `node scripts/sync-cursor.cjs` |
 | Ionic/Capacitor hybrid mobile rules | `rules/frontend/ionic/*.md`, then run `node scripts/sync-cursor.cjs` |
 | React Native stack rules, explicit only | `rules/frontend/react-native/*.md`, then run `node scripts/sync-cursor.cjs` |
+| UI quality and typography rules | `rules/frontend/ui-quality.md`, `rules/frontend/typography.md`, then run `node scripts/sync-cursor.cjs` |
 | Backend and backend technology rules | `rules/backend/*.md`, then run `node scripts/sync-cursor.cjs` |
 | Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md`, then run `node scripts/sync-cursor.cjs` |
 | Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
