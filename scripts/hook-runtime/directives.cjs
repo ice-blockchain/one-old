@@ -124,6 +124,22 @@ For \`react-native-expo-*\`: see \`rules/modes/new-project.md\` and \`rules/fron
 The full step-by-step is in \`rules/modes/new-project.md\` — that file IS in the bundle
 once onboarding completes. Read it before scaffolding.
 
+── Supabase backend (when backend === "supabase" or "our-fork") ──
+
+If the chosen backend is Supabase, after the scaffold is in place but BEFORE
+writing any code that uses \`@supabase/supabase-js\`:
+  1. Trigger the \`supabase-setup\` skill if \`.env.local\` is missing — it walks
+     the user through the dashboard, copies keys, and writes the env files.
+  2. Use the lazy-client + EnvBanner pattern from \`rules/frontend/react/supabase-client.md\`
+     so the app renders fine even before keys are pasted.
+  3. Treat add-ons (storage / auth / realtime / vector / pg_cron / pg_net) as
+     gated. The \`requireAddon\` helper in \`scripts/hook-runtime/state.cjs\` reads
+     \`.traffic-one.json\` → \`supabaseAddons[<name>]\`. Ask the user once before
+     enabling, then write \`approved\` and proceed silently for that add-on.
+  4. Edge Functions auto-deploy on save when
+     \`.traffic-one.json\` → \`supabaseFunctionsAutoDeploy: true\`. The PostToolUse
+     hook prompts the user the first time and stores their preference.
+
 After the scaffold is in place, address the user's original feature request inside
 the new structure (e.g. \`apps/web/src/features/<name>/\` for the React monorepo).
 

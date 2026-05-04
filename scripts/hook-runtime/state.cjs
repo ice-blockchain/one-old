@@ -4,8 +4,8 @@
 // Low-level JSON / file I/O helpers and the .traffic-one.json read/write API.
 // Every module that needs to touch the state file goes through here.
 
-const fs = require('node:fs');
-const path = require('node:path');
+const fs = require('fs');
+const path = require('path');
 
 const { STATE_FILE, LEGACY_LOCK_FILE, STATE_VERSION } = require('./config.cjs');
 
@@ -111,7 +111,47 @@ function normalizeState(state, defaultMode) {
     changed = true;
   }
 
+  // Supabase-specific bookkeeping. Only seed when this project is using
+  // Supabase as its backend; other backends don't need these flags.
+  if (state.backend === 'supabase' || state.backend === 'our-fork') {
+    if (state.supabaseFunctionsAutoDeploy === undefined) {
+      state.supabaseFunctionsAutoDeploy = 'ask';
+      changed = true;
+    }
+    if (!state.supabaseAddons || typeof state.supabaseAddons !== 'object') {
+      state.supabaseAddons = {};
+      changed = true;
+    }
+  }
+
   return changed;
+}
+
+// ── Supabase add-on approval gate ────────────────────────────────────────────
+// Used by skills (library-pick, create-service) and handlers when generating
+// code that uses a Supabase add-on (storage / auth / realtime / vector / etc.).
+// The first call returns `{approved: false, status: "pending"}`; the model
+// then asks the user once, runs the activation, and writes
+// state.supabaseAddons[name] = "approved". Future calls return approved=true.
+//
+// Statuses: "pending" | "approved" | "skipped".
+const KNOWN_ADDONS = new Set([
+  'storage', 'auth', 'realtime', 'vector', 'pg_cron', 'pg_net', 'edge_functions',
+]);
+
+function requireAddon(state, name) {
+  if (!KNOWN_ADDONS.has(name)) {
+    // Unknown add-on — treat as pending so the model surfaces it explicitly.
+    return { approved: false, skipped: false, status: 'pending', known: false };
+  }
+  const addons = (state && typeof state === 'object' && state.supabaseAddons) || {};
+  const status = addons[name] || 'pending';
+  return {
+    approved: status === 'approved',
+    skipped:  status === 'skipped',
+    status,
+    known: true,
+  };
 }
 
 module.exports = {
@@ -123,4 +163,6 @@ module.exports = {
   readState,
   writeState,
   normalizeState,
+  requireAddon,
+  KNOWN_ADDONS,
 };

@@ -6,8 +6,9 @@
 // The thin entry script (`scripts/hook-runtime.cjs`) wires stdin/stdout
 // around them.
 
-const fs   = require('node:fs');
-const path = require('node:path');
+const fs   = require('fs');
+const path = require('path');
+const { spawn } = require('child_process');
 
 const {
   STATE_FILE,
@@ -436,6 +437,18 @@ function runPostStackSetup(rawInput) {
   const toolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
 
+  // PostToolUse on Write|Edit fires for ALL writes. Dispatch:
+  //   1. supabase/functions/<name>/index.ts  → runPostFunctionEdit (auto-deploy)
+  //   2. .traffic-one.json                  → existing stack-rules auto-load
+  //   3. anything else                      → no-op
+  if (filePath.replace(/\\/g, '/').match(FUNCTION_PATH_RE)) {
+    const result = runPostFunctionEdit(filePath);
+    if (result) {
+      return { stdout: JSON.stringify(result), exitCode: 0 };
+    }
+    return { stdout: '', exitCode: 0 };
+  }
+
   if (!filePath.endsWith(STATE_FILE)) return { stdout: '', exitCode: 0 };
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
@@ -495,11 +508,136 @@ function runPostStackSetup(rawInput) {
   };
 }
 
+// ── Supabase Edge Function auto-deploy ───────────────────────────────────────
+// Fires from the same PostToolUse Write|Edit dispatch as runPostStackSetup.
+// `runPostFunctionEdit` is delegated from `runPostStackSetup` when the written
+// file lives under `supabase/functions/<name>/` — kept in a separate function
+// for clarity and testability.
+//
+// Flow:
+//   - state.supabaseFunctionsAutoDeploy === "ask"   → emit one-time prompt
+//   - state.supabaseFunctionsAutoDeploy === true    → spawn deploy, detached
+//   - state.supabaseFunctionsAutoDeploy === false   → silent no-op
+const FUNCTION_PATH_RE = /\/supabase\/functions\/([^/]+)\/(index|deno)\.(ts|tsx|mts|js)$/;
+
+function findProjectRoot(startDir) {
+  // Walk up to find the directory that owns `.traffic-one.json` or `package.json`
+  let dir = path.resolve(startDir);
+  for (let i = 0; i < 8; i += 1) {
+    if (
+      fs.existsSync(path.join(dir, STATE_FILE)) ||
+      fs.existsSync(path.join(dir, 'package.json'))
+    ) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.resolve(startDir);
+}
+
+function spawnDeployDetached(projectRoot, functionName) {
+  // Spawn `npx supabase functions deploy <name>` detached + unref'd so the
+  // hook returns immediately. Stdout/stderr go to a sidecar log the next
+  // UserPromptSubmit can surface if it wants to.
+  const logPath = path.join(projectRoot, '.traffic-one.deploy.log');
+  let logFd;
+  try {
+    logFd = fs.openSync(logPath, 'a');
+    fs.writeSync(logFd, `\n--- ${nowIso()} deploy ${functionName} ---\n`);
+  } catch {
+    logFd = 'ignore';
+  }
+
+  try {
+    const child = spawn('npx', ['supabase', 'functions', 'deploy', functionName], {
+      cwd: projectRoot,
+      detached: true,
+      stdio: ['ignore', logFd, logFd],
+      env: { ...process.env },
+    });
+    child.unref();
+    return { ok: true, logPath };
+  } catch (error) {
+    return { ok: false, error: error.message, logPath };
+  }
+}
+
+function runPostFunctionEdit(filePath) {
+  const match = filePath.replace(/\\/g, '/').match(FUNCTION_PATH_RE);
+  if (!match) {
+    return null;
+  }
+  const functionName = match[1];
+
+  const projectRoot = findProjectRoot(path.dirname(filePath));
+  const statePath = path.join(projectRoot, STATE_FILE);
+  const state = safeReadJson(statePath, {});
+  if (state.backend !== 'supabase' && state.backend !== 'our-fork') {
+    return null; // not a Supabase project
+  }
+
+  const flag = state.supabaseFunctionsAutoDeploy;
+
+  if (flag === false || flag === 'never') {
+    return null;
+  }
+
+  if (flag === true) {
+    const result = spawnDeployDetached(projectRoot, functionName);
+    if (result.ok) {
+      return {
+        systemMessage: `deploying Supabase function: ${functionName}`,
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext:
+            `[traffic-one] Edge function "${functionName}" auto-deploy started ` +
+            `(\`npx supabase functions deploy ${functionName}\`). Output → ` +
+            `\`${path.relative(projectRoot, result.logPath)}\` once complete.`,
+        },
+      };
+    }
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext:
+          `[traffic-one] Tried to auto-deploy "${functionName}" but spawn failed: ${result.error}. ` +
+          `Run \`pnpm functions:deploy ${functionName}\` manually.`,
+      },
+    };
+  }
+
+  // flag === 'ask' (default for new Supabase projects) → one-time consent prompt
+  return {
+    systemMessage: `Supabase function edited: ${functionName} (auto-deploy off — choose policy)`,
+    hookSpecificOutput: {
+      hookEventName: 'PostToolUse',
+      additionalContext: [
+        `[traffic-one] First edit to a Supabase Edge Function (\`${functionName}\`).`,
+        '',
+        'Choose an auto-deploy policy. Reply with one of:',
+        '  • "yes, auto-deploy"   → I update `.traffic-one.json` to set',
+        '       `supabaseFunctionsAutoDeploy: true` AND deploy this function once now',
+        '       (`pnpm functions:deploy ' + functionName + '`). Future edits deploy silently.',
+        '  • "ask each time"      → I leave the flag as "ask"; I\'ll prompt before',
+        '       every deploy.',
+        '  • "never"              → I set `supabaseFunctionsAutoDeploy: false`. No',
+        '       auto-deploys; you run `pnpm functions:deploy <name>` yourself.',
+        '',
+        'You can change this later by editing `supabaseFunctionsAutoDeploy` in',
+        '`.traffic-one.json`.',
+      ].join('\n'),
+    },
+  };
+}
+
 module.exports = {
   runSessionStart,
   runUserPromptSubmit,
   runCheckArchitectureWrite,
   runCheckLibraryAllowlist,
   runPostStackSetup,
-  forbiddenForStack,  // exported for testing
+  runPostFunctionEdit,  // exported for testing + entrypoint dispatch
+  forbiddenForStack,    // exported for testing
 };

@@ -4,8 +4,8 @@
 // Project mode + stack detection from package.json / workspace files.
 // All read-only, all from the user's project cwd.
 
-const fs   = require('node:fs');
-const path = require('node:path');
+const fs   = require('fs');
+const path = require('path');
 
 const { safeReadJson } = require('./state.cjs');
 

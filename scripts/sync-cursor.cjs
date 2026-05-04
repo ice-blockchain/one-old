@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
-const fs = require('node:fs');
-const path = require('node:path');
+const fs = require('fs');
+const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const RULES_ROOT = path.join(ROOT, 'rules');
