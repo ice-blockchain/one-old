@@ -7,6 +7,17 @@ alwaysApply: false
 # Mode: New Project — Real-time React Monorepo
 
 Clean slate. Scaffold the monorepo before writing any feature code.
+Default backend for new projects that need auth, user data, files, or real-time
+features is Supabase. Only choose frontend-only, an external API, self-hosted
+Postgres, or another provider when the user explicitly asks for it or declines
+Supabase.
+This is a default architecture decision, not a later optional integration. When
+the requested product includes auth, profiles, CRUD records, jobs, applications,
+uploads/files, real-time updates, dashboards backed by user data, or any durable
+user-owned data, scaffold the Supabase baseline before or alongside feature code.
+Do not describe Supabase as something that can merely be added later. Client-side
+mocks, seed data, or `localStorage` may support demos only after the Supabase
+contract, env validation, and migrations/RLS baseline are in place.
 
 ## Target architecture
 
@@ -20,6 +31,8 @@ Clean slate. Scaffold the monorepo before writing any feature code.
 ├── .prettierrc
 ├── .nvmrc                         pin Node major
 ├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
+├── supabase/
+│   └── migrations/                SQL schema + RLS policies for Supabase-backed apps
 │
 ├── apps/
 │   └── web/                       primary React app (Vite)
@@ -69,8 +82,9 @@ Clean slate. Scaffold the monorepo before writing any feature code.
     │       ├── light.css.ts       createTheme(...)
     │       └── dark.css.ts
     │
-    ├── api-client/                axios instance + RTK Query baseQuery
+    ├── api-client/                Supabase client + axios/RTK Query baseQuery
     │   └── src/
+    │       ├── supabase.ts        typed Supabase browser client
     │       ├── instance.ts
     │       ├── errors.ts          AppError discriminated union
     │       └── index.ts
@@ -103,22 +117,33 @@ Clean slate. Scaffold the monorepo before writing any feature code.
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
    - `packages/design-tokens` — themeContract + at least one theme.
    - `packages/utils` — empty barrel; populate as needed.
-   - `packages/api-client` — axios instance, AppError type, RTK Query baseQuery.
+   - `packages/api-client` — Supabase browser client, axios instance, AppError type, RTK Query baseQuery.
    - `packages/ws-client` — transport + protocol scaffolding (per `rules/realtime.md`).
    - `packages/ui` — Button, Input, Modal scaffolds with stories and tests.
 
-3. **App scaffold (`apps/web`)**
+3. **Supabase backend baseline**
+   - Add `@supabase/supabase-js` and validate `VITE_SUPABASE_URL` /
+     `VITE_SUPABASE_ANON_KEY` at startup with Zod.
+   - Create `supabase/migrations/` for schema, indexes, and RLS policies.
+   - For auth/profile/candidate/job/application features, include the first
+     required tables and default-deny RLS policies in the initial migration.
+   - Use Supabase Auth for users, Supabase Storage for app files, Supabase
+     Realtime only when needed, and RLS-backed authorization for every
+     user-data table.
+   - Do not store service-role keys or other secrets in frontend env vars.
+
+4. **App scaffold (`apps/web`)**
    - Vite + React + TS template.
    - Wire Redux store with `api-client` RTK Query and one starter feature slice.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`.
 
-4. **CI/CD pipeline (use Turborepo's caching)**
+5. **CI/CD pipeline (use Turborepo's caching)**
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
    - Remote cache enabled if available; otherwise local.
    - Storybook build artefact uploaded for PR previews.
 
-5. **Tooling guards**
+6. **Tooling guards**
    - Husky + lint-staged for pre-commit format + lint.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
@@ -179,6 +204,8 @@ Clean slate. Scaffold the monorepo before writing any feature code.
 ## What happens when the user asks to build something
 
 - Acknowledge mode: **new project, monorepo not yet scaffolded**.
+- If the request implies backend-backed features, state that Supabase is the
+  selected default backend and include it in the scaffold.
 - Confirm with the user **once**: "I'll scaffold the Turborepo workspace as above before any feature code. Proceed?"
 - On yes: scaffold in the order above. Stop after each step to verify (`pnpm install`, `pnpm -w turbo run lint typecheck`).
 - On no: ask which constraint they want relaxed; do not silently skip steps.

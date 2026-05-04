@@ -27,6 +27,11 @@ theme boundary.
   layouts unless the interaction is intentionally tested.
 - Fixed bottom actions leave room for keyboard, home indicator, and browser-like
   WebView chrome.
+- Mobile density should feel native and calm: large enough tap targets, clear
+  type hierarchy, restrained borders/fills, and no decorative layers that fight
+  the main task.
+- Use tokenized responsive spacing to simplify layouts on narrow screens instead
+  of shrinking text or cramming desktop controls.
 
 ## Must not do
 
@@ -34,3 +39,5 @@ theme boundary.
   `style={{}}`.
 - No hardcoded visual values in components.
 - No decorative UI that obscures tappable controls on small screens.
+- No unverified mobile visual changes. Capture at least one narrow viewport
+  screenshot for visual-heavy Ionic/Capacitor work.

@@ -18,24 +18,18 @@ const WEB_STACKS = new Set(['react-realtime-monorepo', 'react-frontend-only']);
 
 // ── Infrastructure config (end-to-end default) ───────────────────────────────
 // The plugin's recommended stack is end-to-end: React monorepo + Supabase
-// backend + our /deploy infra. Pitch wording and the stored `backend` value
-// adapt to whether our Supabase fork and our deploy infra are operational.
-//
-// Flip these to `true` once each service is wired. The default backend value
-// then automatically advances from "supabase" → "our-fork".
+// backend + our /deploy infra. Supabase is the stable default backend for new
+// projects unless the user explicitly chooses something else.
 const INFRA_CONFIG = {
-  ourForkConfigured:   false,  // our Supabase-compatible fork
   ourDeployConfigured: false,  // /deploy command + hosted infra
 };
 
 function defaultBackendValue() {
-  return INFRA_CONFIG.ourForkConfigured ? 'our-fork' : 'supabase';
+  return 'supabase';
 }
 
 function pitchBackendLabel() {
-  return INFRA_CONFIG.ourForkConfigured
-    ? 'our Supabase-compatible fork (cheaper at scale, ships with `/deploy`)'
-    : "Supabase (we'll auto-migrate to our cheaper, API-compatible fork the moment it ships)";
+  return 'Supabase (managed Postgres with Auth, Storage, Realtime, and RLS)';
 }
 
 function pitchDeployLabel() {

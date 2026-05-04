@@ -50,6 +50,12 @@ Next.js after the React/Vite pitch, use `stack: "minimal"` and add
 `supabase` (default for our recommended stack) · `self-hosted` · `managed`
 · `other` · `external-api` (frontend-only) · `none` (minimal)
 
+When the user describes a new product with auth, profiles, CRUD records, jobs,
+applications, uploads/files, real-time updates, dashboards backed by user data,
+or other durable user-owned data, select `backend: "supabase"` by default. Do
+not present it as something to bolt on later unless the user explicitly asks for
+a frontend-only prototype or rejects Supabase.
+
 ## Realtime values
 
 `heavy` · `light` · `none`

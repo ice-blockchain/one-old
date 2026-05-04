@@ -34,6 +34,11 @@ Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
 - Use `Pressable` for actions; set `accessibilityRole` and `accessibilityLabel` when the visible label is not enough.
 - Always handle loading, error, and empty states explicitly.
 - Subscribe to real-time streams via hooks; components never instantiate WebSocket connections.
+- Follow the design brief for hierarchy, primary action, density, and state
+  treatment. Native UI should feel intentionally mobile, not like web cards
+  translated into `View` wrappers.
+- Use icon-only controls only when the icon is familiar and has a translated
+  accessibility label; otherwise pair icon and text.
 
 ## Lists
 - Use `FlatList` / `SectionList` for unbounded lists; never `.map()` large network lists in JSX.
@@ -45,3 +50,5 @@ Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
 - No inline object styles or ad-hoc arrays created in JSX.
 - No NativeWind/Tailwind class strings.
 - No server data copied into local component state.
+- No desktop-first card grids or cramped controls on phones.
+- No fixed-height text containers that break dynamic type or localization.

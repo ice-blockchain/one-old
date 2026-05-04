@@ -1,29 +1,59 @@
 <!-- GENERATED FROM: rules/frontend/ui-quality.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
-description: "UI Quality — anti-AI-slop + material honesty. Generated from rules/frontend/ui-quality.md."
+description: "UI Quality — design gate + material honesty. Generated from rules/frontend/ui-quality.md."
 globs: ["**/*.tsx", "**/*.jsx", "**/*.css.ts", "**/*.css", "**/*.scss", "apps/**/src/**", "packages/ui/**", "packages/ui-native/**", "packages/design-tokens/**"]
 alwaysApply: false
 ---
 
-# UI Quality — anti-AI-slop + material honesty
+# UI Quality — design gate + material honesty
 
 Distilled from bencium-marketplace (impact-designer + controlled-ux-designer).
 Rules apply silently when generating any UI; the goal is interfaces that look
 intentionally designed, not machine-generated. Pair with `rules/frontend/typography.md`
 for character-level rules and `rules/frontend/accessibility.md` for WCAG.
 
-## Design decision protocol — ASK first, then COMMIT BOLDLY
+## Central design gate
 
-Before writing UI code for a new screen / feature:
+Before writing or changing UI for a new screen, feature, component set, or
+mobile flow, establish a compact design brief. Derive it from the user request,
+existing product, screenshots, and codebase; ask only when a missing answer
+would materially change the design direction.
 
-1. **Purpose** — What problem does this interface solve? Who uses it?
-2. **Tone** — What aesthetic direction fits? (Brutally minimal · editorial · Swiss grid · brutalist · soft-pastel · industrial · monochrome high-contrast · …) Pick one and execute it with conviction.
-3. **Constraints** — Performance budget, a11y level, framework limits.
-4. **Differentiation** — What makes this UNFORGETTABLE? The one thing someone will remember.
+- **Purpose**: the user problem and target audience.
+- **Primary action**: the one action or decision the screen should make easier.
+- **Visual direction**: a concrete tone such as refined minimal, editorial,
+  Swiss grid, industrial, warm utility, playful, or monochrome high-contrast.
+- **Hierarchy plan**: what the eye should read first, second, and third.
+- **Token plan**: the existing or proposed design tokens for colour, type,
+  spacing, radii, border, motion, and state treatment.
+- **Responsive plan**: mobile, tablet, desktop layout behavior and breakpoint
+  risks.
+- **State plan**: default, hover, focus, active, disabled, loading, empty,
+  error, offline/degraded, and permission-denied states where applicable.
+- **Acceptance checks**: screenshots or Storybook states to capture, plus the
+  overflow, clipping, focus, contrast, and reduced-motion checks that must pass.
 
-For tweaks to existing screens: don't ask — match the established aesthetic.
+For tweaks to existing screens, match the established aesthetic first and make
+only scoped improvements. For new products, choose a direction and commit to it.
 
-**Bold maximalism and refined minimalism both work — the key is intentionality, not intensity.**
+## Design-to-code loop
+
+Use AI design work as a loop, not a vague "make it prettier" pass:
+
+1. **Audit**: inspect the existing UI or planned surface and rank design issues
+   by user impact.
+2. **Brief**: convert the critique into an implementation brief with component,
+   token, responsive, state, and accessibility requirements.
+3. **Implement**: make the smallest scoped UI changes that satisfy the brief;
+   preserve product logic and data flow.
+4. **Verify**: capture screenshots at representative breakpoints or Storybook
+   states, then check hierarchy, spacing, text fit, overflow, focus, contrast,
+   loading/empty/error states, and reduced motion.
+5. **Refine**: fix the top remaining visual regressions before delivery.
+
+Never treat "modern" or "clean" as an instruction to add decoration. It means
+clear hierarchy, low visual noise, strong typography/spacing, complete states,
+mobile polish, and a product-specific point of view.
 
 ## Anti-AI-slop — NEVER ship these without a reason you can defend
 
@@ -37,6 +67,22 @@ For tweaks to existing screens: don't ask — match the established aesthetic.
 | **Vibe** | Anything that looks "Claude-generated" — generic SaaS, lifeless, evenly-spaced palette, timid |
 
 If the user's brand or brief explicitly calls for one of the above (e.g. they ARE building Apple-like polish), commit fully — half-execution looks worse than the rule-break.
+
+## Modern clean defaults
+
+- Make the first screen useful: apps, tools, dashboards, and games open on the
+  actual working experience, not a marketing shell.
+- Use fewer, stronger elements: one primary action per region, restrained
+  supporting actions, and enough spacing contrast to make scanning effortless.
+- Prefer crisp surfaces: 1px borders, subtle background shifts, tokenized
+  radius, and honest layering over heavy shadows or decorative glass.
+- Use colour for meaning: priority, status, selection, risk, and affordance.
+  Pair colour with text, iconography, or shape.
+- Keep layouts domain-specific: operational SaaS should be dense and quiet;
+  editorial/product pages may be more expressive; games/tools should show the
+  playable or usable object immediately.
+- Avoid visual monoculture across generated projects. Vary typography, density,
+  colour temperature, and accent strategy to fit the product.
 
 ## Material honesty — affordance through real digital properties
 
@@ -76,6 +122,20 @@ Don't converge on a single safe formula. Each project deserves a distinct finger
 - **Typography pairings** (serif display + sans body, or two contrasting sans) — only when justified, never just to look "designed".
 - **Slow background motion** (CSS / SVG, looping, subtle) — adds life without distraction. Respect reduced-motion.
 
+## Responsive and state completeness
+
+- Design mobile first for generic mobile requests and for any surface where the
+  user is likely to act from a phone.
+- Important content and the primary action must appear before excessive mobile
+  scrolling. Fixed bottom actions must respect safe areas and keyboards.
+- Text must fit inside controls and containers at desktop and mobile sizes.
+  Resize the container or wrap the label; do not let text overlap or clip.
+- Every meaningful UI state must be intentionally styled and localized:
+  loading, empty, error, disabled, selected, stale, offline, reconnecting, and
+  permission-denied where applicable.
+- Visual-heavy work must include screenshot or Storybook verification at
+  mobile, tablet, and desktop breakpoints before delivery.
+
 ## Foundational principles (in priority order)
 
 1. **Simplicity through reduction** — start with everything you think you need, then cut until removing more breaks meaning.
@@ -103,3 +163,7 @@ If yes to all four → break it confidently. Otherwise keep the rule.
 - Don't add motion that delays user actions.
 - Don't ship without states: default, hover, focus, active, disabled, loading, error, empty.
 - Don't validate accessibility as a "constraint that limits creativity" — it's a baseline that enables it.
+- Don't ship generic centered heroes, decorative card grids, or dashboards that
+  do not answer the user's real workflow question.
+- Don't accept a design pass without visual QA artifacts or a clear note about
+  why screenshots could not be captured.
