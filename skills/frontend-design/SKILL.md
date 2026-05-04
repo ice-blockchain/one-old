@@ -24,20 +24,26 @@ This skill is for product pages, dashboards, app shells, components, or visual s
 
 ## Core Principle
 
-Pick a direction and commit to it.
+Use a design-to-code loop: critique or infer the design problem, write a compact
+implementation brief, make scoped changes, verify with screenshots or Storybook
+states, then refine the top remaining visual issues.
 
-Safe-average UI is usually worse than a strong, coherent aesthetic with a few bold choices.
+Pick a direction and commit to it. Safe-average UI is usually worse than a
+strong, coherent aesthetic with a few bold choices.
 
 ## Design Workflow
 
 ### 1. Frame the interface first
 
-Before coding, settle:
+Before coding, settle or infer:
 
 - purpose
 - audience
+- primary action
 - emotional tone
 - visual direction
+- responsive behavior
+- state coverage
 - one thing the user should remember
 
 Possible directions:
@@ -52,20 +58,26 @@ Possible directions:
 - soft and organic
 - maximalist
 
-Do not mix directions casually. Choose one and execute it cleanly.
+Do not mix directions casually. Choose one and execute it cleanly. If the user
+only asks for "modern" or "clean", interpret that as clear hierarchy, low
+visual noise, strong typography/spacing, complete states, mobile polish, and a
+product-specific point of view.
 
 ### 2. Build the visual system
 
 Define:
 
 - type hierarchy
-- color variables
+- color tokens
 - spacing rhythm
 - layout logic
 - motion rules
 - surface / border / shadow treatment
+- state treatment for loading, empty, error, disabled, selected, stale, and offline states
 
-Use CSS variables or the project's token system so the interface stays coherent as it grows.
+Use the project's token system so the interface stays coherent as it grows.
+Traffic One web uses vanilla-extract and `@app/design-tokens`; React Native uses
+`StyleSheet.create` and platform-neutral design tokens.
 
 ### 3. Compose with intention
 
@@ -77,6 +89,8 @@ Prefer:
 - dense layouts only when the product benefits from density
 
 Avoid defaulting to a symmetrical card grid unless it is clearly the right fit.
+Do not put page sections inside floating cards; reserve cards for repeated
+items, modals, and genuinely framed tools.
 
 ### 4. Make motion meaningful
 
@@ -88,6 +102,17 @@ Use animation to:
 - create one or two memorable moments
 
 Do not scatter generic micro-interactions everywhere. One well-directed load sequence is usually stronger than twenty random hover effects.
+
+### 5. Verify visually
+
+Before delivery, capture or request representative screenshots:
+
+- mobile, tablet, and desktop for web/Ionic
+- at least one small phone and one larger device for React Native
+- default, loading, empty, error, disabled, and focused states where relevant
+
+Check against the design brief: primary action clarity, scan order, spacing,
+text fit, overflow, clipping, contrast, focus visibility, and reduced motion.
 
 ## Strong Defaults
 
@@ -138,6 +163,9 @@ Never default to:
 - match technical complexity to the visual idea
 - keep accessibility and responsiveness intact
 - frontends should feel deliberate on desktop and mobile
+- keep product logic, API calls, state ownership, and routing behavior unchanged during visual-only passes
+- implement one scoped design improvement at a time when the requested surface is large
+- use translation keys for visible copy and accessibility text
 
 ## Quality Gate
 
@@ -148,3 +176,4 @@ Before delivering:
 - color and motion support the product instead of decorating it randomly
 - the result does not read like generic AI UI
 - the implementation is production-grade, not just visually interesting
+- screenshot or Storybook verification covers the important breakpoints and states, or the final response explains why it could not be run

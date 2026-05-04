@@ -26,19 +26,21 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 Analyzes your codebase and generates a cohesive design system:
 
 ```
-1. Scan CSS/Tailwind/styled-components for existing patterns
+1. Scan existing styling, tokens, component primitives, and screenshots for patterns
 2. Extract: colors, typography, spacing, border-radius, shadows, breakpoints
-3. Research 3 competitor sites for inspiration (via browser MCP)
-4. Propose a design token set (JSON + CSS custom properties)
-5. Generate DESIGN.md with rationale for each decision
-6. Create an interactive HTML preview page (self-contained, no deps)
+3. Identify product audience, primary workflows, tone, and visual direction
+4. Propose a Traffic One token set for `packages/design-tokens`
+5. Generate a design brief with rationale for each decision
+6. Create or update Storybook/preview states when the repo supports them
 ```
 
-Output: `DESIGN.md` + `design-tokens.json` + `design-preview.html`
+Output should fit the repo: `packages/design-tokens` updates, a concise design
+brief, and component previews/stories. Do not introduce Tailwind,
+styled-components, Emotion, CSS modules, or inline styles.
 
 ### Mode 2: Visual Audit
 
-Scores your UI across 10 dimensions (0-10 each):
+Scores your UI across 12 dimensions (0-10 each):
 
 ```
 1. Color consistency — are you using your palette or random hex values?
@@ -46,14 +48,17 @@ Scores your UI across 10 dimensions (0-10 each):
 3. Spacing rhythm — consistent scale (4px/8px/16px) or arbitrary?
 4. Component consistency — do similar elements look similar?
 5. Responsive behavior — fluid or broken at breakpoints?
-6. Dark mode — complete or half-done?
-7. Animation — purposeful or gratuitous?
-8. Accessibility — contrast ratios, focus states, touch targets
-9. Information density — cluttered or clean?
-10. Polish — hover states, transitions, loading states, empty states
+6. Primary-action clarity — can the target user see what to do next?
+7. State coverage — loading, empty, error, disabled, selected, stale, offline
+8. Dark mode — complete or half-done?
+9. Animation — purposeful or gratuitous?
+10. Accessibility — contrast ratios, focus states, touch targets
+11. Information density — cluttered or clean?
+12. Polish — hover states, transitions, loading states, empty states
 ```
 
 Each dimension gets a score, specific examples, and a fix with exact file:line.
+Rank recommended fixes by user impact, not taste.
 
 ### Mode 3: AI Slop Detection
 
@@ -67,7 +72,20 @@ Identifies generic AI-generated design patterns:
 - Excessive animations on scroll
 - Generic hero with centered text over stock gradient
 - Sans-serif font stack with no personality
+- Decorative card grids with no workflow point of view
+- Dashboard panels that do not answer an operator question
+- Mobile layouts copied directly from desktop
 ```
+
+## Traffic One Requirements
+
+- Web/Ionic tokens live in `packages/design-tokens` and styles use
+  vanilla-extract `.css.ts`.
+- React Native tokens are platform-neutral TS values consumed by
+  `StyleSheet.create` styles.
+- All visible copy and accessibility text comes from translation keys.
+- Design-system changes include screenshot or Storybook acceptance checks for
+  mobile, tablet, desktop, and important UI states.
 
 ## Examples
 

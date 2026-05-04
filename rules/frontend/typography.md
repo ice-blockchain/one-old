@@ -62,7 +62,7 @@ CURLY=$(printf '\xe2\x80\x99'); sed -i '' "s/don't/don${CURLY}t/g" file.tsx
 ## Layout — the 4 baseline decisions for body text
 
 1. **Font** — serif or sans (web is fine either way).
-2. **Size** — web body 15–25px (12pt is a typewriter relic). `clamp()` for fluid sizing.
+2. **Size** — web body 15–25px (12pt is a typewriter relic). Use tokenized sizes and breakpoint-specific steps; do not scale font size directly with viewport width.
 3. **Line height** — 1.2–1.45. Default `single` (~1.17) is too tight; `double` is too loose.
 4. **Line length** — **45–90 characters** per line. The #1 readability bug in responsive layouts. Use `max-width: 65ch` on text containers, not pixel widths.
 

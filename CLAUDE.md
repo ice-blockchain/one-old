@@ -28,6 +28,8 @@ Path-scoped rules — load automatically when you touch matching files:
 
 **Framework-agnostic frontend** (`rules/frontend/`):
 - `accessibility.md` — WCAG 2.1 AA + real-time a11y
+- `ui-quality.md` — design brief, modern clean UI gate, state coverage, visual QA
+- `typography.md` — readable type, character-level copy polish, line length rules
 - `performance.md` — Web Vitals, bundle budgets, code splitting, defensive UI
 - `realtime.md` — WebSocket transport / protocol / bridge architecture
 - `services.md` — REST + WS service split, AppError contract, zod validation
@@ -35,7 +37,7 @@ Path-scoped rules — load automatically when you touch matching files:
 
 **React-specific** (`rules/frontend/react/`):
 - `components.md` — component structure, props, vanilla-extract, Storybook
-- `design-quality.md` — product-specific UI quality, usable first screen, visual QA
+- `design-quality.md` — product-specific UI quality, usable first screen, responsive visual QA
 - `stores.md` — Redux Toolkit + RTK Query + zustand boundaries
 - `services.md` — RTK Query slice patterns, generated hooks, tag invalidation
 - `realtime.md` — subscription hooks, Redux bridge middleware

@@ -17,7 +17,10 @@ description: >
 - No `package.json`, OR
 - Fewer than 5 `.ts` / `.tsx` files outside `node_modules`
 
-→ **MODE: new-project** — stop here, backend check not needed
+→ **MODE: new-project** — stop here for repo detection, then infer backend
+needs from the user request. If the request includes auth, profiles, CRUD,
+jobs, applications, uploads/files, real-time updates, dashboards backed by user
+data, or any durable user-owned data, set `backend=supabase` by default.
 
 ### Step 2 — Existing project: check for Supabase
 Look for `@supabase/supabase-js` or `@supabase/ssr` in `package.json` dependencies.
@@ -30,7 +33,14 @@ Look for `@supabase/supabase-js` or `@supabase/ssr` in `package.json` dependenci
 ## What each mode means
 
 ### new-project
-Full rules active. Set up our backend and deploy on our infrastructure.
+Full rules active. Default to Supabase for backend-backed apps unless the user
+explicitly chooses frontend-only, an external API, self-hosted Postgres, or
+another provider.
+Backend-backed means auth, profiles, CRUD records, uploads/files, applications,
+jobs, dashboards backed by user data, real-time updates, or any durable
+user-owned data. State Supabase as the selected default, not as something to
+possibly add later. Local mocks or `localStorage` may be used only as temporary
+dev fixtures behind the Supabase contract.
 → Apply everything in rules/core.md + rules/modes/new-project.md
 
 ### existing-codebase
@@ -51,4 +61,6 @@ State clearly:
 1. Which mode was detected and the reason (file count / Supabase presence)
 2. What is and isn't allowed in this mode
 3. For existing-with-supabase: mention migration offer once
-4. Ask what they'd like to do next
+4. For new-project with backend-backed needs: state `backend=supabase` as the
+   default and continue scaffolding if the user already asked you to build
+5. Ask what they'd like to do next only when they have not already given a build task

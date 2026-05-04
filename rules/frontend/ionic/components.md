@@ -21,6 +21,8 @@ a real mobile interaction better than the existing shared UI primitive.
   typed props and do not read Capacitor state directly.
 - Components render loading, error, empty, offline, and permission-denied states
   when those states are possible.
+- Mobile UI follows the active design brief: primary action, scan order,
+  state coverage, and safe-area behavior are part of the component contract.
 
 ## Ionic primitives
 
@@ -30,6 +32,8 @@ a real mobile interaction better than the existing shared UI primitive.
   hierarchy remains simple and scroll behavior is verified.
 - Keep forms on `react-hook-form` + zod; Ionic inputs adapt to the form layer,
   not the other way around.
+- Avoid copying desktop card grids into mobile shells. Reorder content, collapse
+  secondary controls, and keep bottom actions reachable without blocking inputs.
 
 ## Copy and accessibility
 
@@ -39,3 +43,5 @@ a real mobile interaction better than the existing shared UI primitive.
   labels and visible focus states.
 - Touch targets meet mobile accessibility requirements without relying on color
   alone for state.
+- Verify small-screen screenshots for clipped text, hidden controls, keyboard
+  overlap, and safe-area collisions before delivery.
