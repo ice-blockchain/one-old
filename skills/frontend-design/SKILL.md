@@ -45,6 +45,7 @@ Before coding, settle or infer:
 - responsive behavior
 - state coverage
 - one thing the user should remember
+- page-speed budget for the first screen: media weight, font choices, motion cost, dependency splits, and Lighthouse mobile Performance optimized toward 100
 
 Possible directions:
 
@@ -162,6 +163,7 @@ Never default to:
 - preserve the established design system when working inside an existing product
 - match technical complexity to the visual idea
 - keep accessibility and responsiveness intact
+- preserve page speed: avoid design choices that require oversized media, blocking font loads, excessive animation, root-bundle bloat, or third-party scripts on the critical path
 - frontends should feel deliberate on desktop and mobile
 - keep product logic, API calls, state ownership, and routing behavior unchanged during visual-only passes
 - implement one scoped design improvement at a time when the requested surface is large
@@ -176,4 +178,5 @@ Before delivering:
 - color and motion support the product instead of decorating it randomly
 - the result does not read like generic AI UI
 - the implementation is production-grade, not just visually interesting
+- page-level web output optimizes Lighthouse mobile Performance on a built preview when runnable, with 100 as ideal; if not runnable, page speed is reported as unverified with concrete risks
 - screenshot or Storybook verification covers the important breakpoints and states, or the final response explains why it could not be run

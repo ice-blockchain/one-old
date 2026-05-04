@@ -19,7 +19,9 @@ Confirm the feature slice structure before creating any files.
 6. State UI state coverage: loading, empty, error, stale/offline, disabled, optimistic/pending, and permission-denied where applicable
 7. State the feature i18n namespace/key pattern and catalog location in `packages/i18n`
 8. State how feature components consume translations with `useTranslation`, `t`, or `<Trans>`
-9. State the visual QA plan: screenshots, Storybook states, and interaction checks
+9. State the page-speed impact plan for every route/surface the feature touches: lazy boundaries, heavy dependency split points, media handling, below-the-fold deferral, and third-party script containment
+10. State the visual QA plan: screenshots, Storybook states, and interaction checks
+11. State the Lighthouse QA plan for page-level feature output: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
 
 Scaffold rules:
 - Feature UI copy, form labels, placeholders, validation errors, alt text, ARIA labels, and loading/error/empty states use translation keys.
@@ -28,5 +30,8 @@ Scaffold rules:
 - Use `@app/design-tokens` and vanilla-extract for all feature UI styling; no hardcoded visual values.
 - Feature surfaces should answer the user's workflow question first, then add polish. Do not scaffold vanity dashboard panels or decorative card grids.
 - Preserve server state ownership in RTK Query/Redux; do not duplicate data into component state for presentation convenience.
+- Keep feature-only heavy UI and dependencies out of root app imports; dynamic-import route-specific charts, maps, 3D, video, editors, and analytics widgets.
+- Optimize and reserve dimensions for feature media, and defer below-the-fold content that is not needed for the first interaction.
+- For page-level feature output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
 
 <!-- TODO: full scaffold template goes here once structure is validated -->

@@ -52,10 +52,11 @@ Use this skill when:
 
 #### Performance
 
+- Optimize Lighthouse Performance on mobile against a built production preview, with 100 as ideal
 - LCP < 2.5s
 - INP < 200ms
 - CLS < 0.1
-- common fixes: preload hero assets, reduce render-blocking work, reserve layout space, trim heavy JS
+- common fixes: preload only critical hero assets, reduce render-blocking work, reserve layout space, trim heavy JS, defer below-the-fold media, and contain third-party scripts
 
 #### Structured data
 

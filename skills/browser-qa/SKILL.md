@@ -1,6 +1,6 @@
 ---
 name: browser-qa
-description: Use this skill to automate visual testing and UI interaction verification using browser automation after deploying features.
+description: Use this skill to automate visual testing, Lighthouse/page speed checks, Core Web Vitals, accessibility, and UI interaction verification using browser automation after deploying or building features. Triggers: "browser QA", "visual QA", "Lighthouse", "page speed", "Core Web Vitals", "performance score", "responsive testing", "accessibility audit".
 metadata:
   origin: ECC
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
@@ -19,6 +19,7 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 - When reviewing PRs that touch frontend code
 - Accessibility audits and responsive testing
 - After visual design work — confirm the implementation matches the design brief
+- Lighthouse, page speed, Core Web Vitals, or best-score performance verification
 
 ## How It Works
 
@@ -35,8 +36,14 @@ the current UI, then state the assumption.
 2. Check for console errors (filter noise: analytics, third-party)
 3. Verify no 4xx/5xx in network requests
 4. Screenshot above-the-fold on desktop + mobile viewport
-5. Check Core Web Vitals: LCP < 2.5s, CLS < 0.1, INP < 200ms
+5. Run Lighthouse against the built production preview with mobile emulation
+6. Record Lighthouse Performance and Core Web Vitals: LCP < 2.5s, CLS < 0.1, INP < 200ms, TBT < 200ms where available
 ```
+
+Do not run Lighthouse against a dev server unless the user explicitly asks for
+a diagnostic-only result. If the built preview is unavailable, report
+"Lighthouse mobile performance: unverified" and list the concrete page-speed
+risks instead of claiming the page-speed standard was verified.
 
 ### Phase 2: Interaction Test
 ```
@@ -80,7 +87,11 @@ the current UI, then state the assumption.
 ### Smoke Test
 - Console errors: 0 critical, 2 warnings (analytics noise)
 - Network: all 200/304, no failures
-- Core Web Vitals: LCP 1.2s ✓, CLS 0.02 ✓, INP 89ms ✓
+- Build mode: production preview
+- Route audited: /dashboard
+- Lighthouse mobile Performance: 98 (100 ideal)
+- Core Web Vitals: LCP 1.2s ✓, CLS 0.02 ✓, INP 89ms ✓, TBT 72ms ✓
+- Page-speed blockers: none
 
 ### Interactions
 - [✓] Nav links: 12/12 working
@@ -96,7 +107,7 @@ the current UI, then state the assumption.
 ### Accessibility
 - 2 AA violations: missing alt text on hero image, low contrast on footer links
 
-### Verdict: SHIP WITH FIXES (2 issues, 0 blockers)
+### Verdict: SHIP WITH FIXES (2 issues, page speed verified with minor opportunities)
 ```
 
 ## Integration
