@@ -6,8 +6,8 @@
 // Optional files fill remaining headroom in declaration order; the rest get
 // listed in `dropped` for the path-scoped attach mechanism to pick up later.
 
-const fs   = require('node:fs');
-const path = require('node:path');
+const fs   = require('fs');
+const path = require('path');
 
 function packBundle(root, mandatory, optional, budget) {
   const bodyParts = [];

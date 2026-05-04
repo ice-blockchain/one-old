@@ -121,6 +121,59 @@ Clean slate. Scaffold the monorepo before writing any feature code.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
+6. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
+
+   a. Add Supabase as a workspace devDependency:
+      ```bash
+      pnpm add -Dw supabase
+      pnpm dlx supabase init        # creates supabase/ folder once
+      ```
+
+   b. Standard scripts in the **root** `package.json`:
+      ```json
+      "scripts": {
+        "supabase":         "supabase",
+        "db:start":         "supabase start",
+        "db:stop":          "supabase stop",
+        "db:reset":         "supabase db reset",
+        "db:push":          "supabase db push --linked",
+        "db:diff":          "supabase db diff -f",
+        "gen:types":        "supabase gen types typescript --linked > packages/api-client/src/database.types.ts",
+        "functions:new":    "supabase functions new",
+        "functions:deploy": "supabase functions deploy",
+        "functions:serve":  "supabase functions serve",
+        "secrets:set":      "supabase secrets set",
+        "link":             "supabase link --project-ref"
+      }
+      ```
+      All commands run via the local devDep — no global install required.
+
+   c. `.env.example` (committed) and `.env.local` (gitignored). Write the example
+      file even before keys exist:
+      ```env
+      VITE_SUPABASE_URL=https://<project-ref>.supabase.co
+      VITE_SUPABASE_ANON_KEY=<anon-key>
+      SUPABASE_SERVICE_ROLE_KEY=<service-role-key>   # server-side only — never VITE_*
+      ```
+      Add `.env.local` to `.gitignore` if not already there.
+
+   d. Lazy Supabase client + EnvBanner per `rules/frontend/react/supabase-client.md` —
+      app must render with the banner BEFORE the user has keys. Never call
+      `createClient` at module top level.
+
+   e. Trigger the **`supabase-setup` skill** for the cloud-first walkthrough
+      (dashboard → Settings → API → keys → paste). Do not walk through Docker
+      unless the user explicitly mentions it.
+
+   f. Add-ons (storage, auth, realtime, vector, pg_cron, pg_net) are gated. The
+      `requireAddon` helper in `scripts/hook-runtime/state.cjs` reads
+      `.traffic-one.json` → `supabaseAddons[<name>]`. Ask the user once before
+      enabling each, then write `approved` and proceed silently for that add-on.
+
+   g. Edge Functions (`supabase/functions/<name>/`) auto-deploy on save when
+      `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
+      PostToolUse hook prompts the user the first time.
+
 ## What happens when the user asks to build something
 
 - Acknowledge mode: **new project, monorepo not yet scaffolded**.

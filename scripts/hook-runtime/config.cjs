@@ -4,7 +4,7 @@
 // Shared constants, infra-config flags, and pitch helpers used by every other
 // hook-runtime module.
 
-const path = require('node:path');
+const path = require('path');
 
 // ── Runtime constants ────────────────────────────────────────────────────────
 const MAX_STDIN          = 1024 * 1024;

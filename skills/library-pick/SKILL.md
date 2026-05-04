@@ -21,6 +21,24 @@ after verification; server state → RTK Query; React + Supabase auth → Supaba
 Auth; explicit Next.js auth → NextAuth/Auth.js; email → Resend; payments →
 Stripe; observability → Sentry. **Do not double up.**
 
+### Supabase add-on shortcut
+If the active backend is `supabase` / `our-fork` and the capability maps to a
+Supabase add-on, prefer the add-on over a separate library — but go through the
+**add-on approval gate** first (`requireAddon` in `scripts/hook-runtime/state.cjs`).
+
+| Capability | Use Supabase | Don't use |
+|---|---|---|
+| File uploads, image storage | **Storage** (`supabase.storage`) | aws-sdk, uppy, multer |
+| Email/password + social auth | **Auth** (`supabase.auth`) | passport, next-auth (in non-Next React apps) |
+| Pub/sub, presence, broadcast | **Realtime** (`supabase.channel`) | pusher, ably (unless feature mismatch) |
+| Vector embeddings, similarity search | **Vector / pgvector** | pinecone, weaviate (only if scale demands it) |
+| Scheduled jobs in DB | **pg_cron** | bree, agenda, BullMQ for app-level cron |
+| Outbound HTTP from DB triggers | **pg_net** | shell out to a separate worker |
+
+For each, check `state.supabaseAddons[<name>]` first. If `pending`, ask the user
+once before proceeding. If `skipped`, ask if they want to revisit before adding
+a third-party library that fills the same gap.
+
 ## Step 2 — Surface 2–3 candidates
 
 If the catalog names a default, evaluate that first. If the user named a

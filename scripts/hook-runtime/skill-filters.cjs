@@ -18,8 +18,8 @@
 //
 // `_common` skills are always active regardless of stack.
 
-const fs   = require('node:fs');
-const path = require('node:path');
+const fs   = require('fs');
+const path = require('path');
 
 const { pluginRoot, isInPluginCache } = require('./config.cjs');
 
@@ -33,6 +33,7 @@ const SKILL_FILTERS = {
     'api-design', 'api-connector-builder',
     'adaptive-communication',
     'design-audit',
+    'supabase-setup',
   ]),
   'react-realtime-monorepo': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',
