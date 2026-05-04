@@ -10,6 +10,13 @@ alwaysApply: false
 Hard floors that apply to any browser app. React-specific hooks/memoisation rules
 live in `frontend/react/performance.md`.
 
+## Lighthouse standard
+
+- Default standard: optimize Lighthouse Performance on mobile against a built production preview for the best practical score, with 100 as the ideal.
+- Run the audit for the primary generated route and any route whose above-the-fold content, media, or third-party scripts changed.
+- Use Lighthouse findings to fix avoidable page-speed regressions before delivery.
+- If Lighthouse cannot be run, report page speed as unverified and list concrete risks such as heavy initial JS, unoptimized media, blocking fonts, third-party scripts, or layout shifts.
+
 ## Web Vitals targets (4G mid-range device)
 
 | Metric | Target |
@@ -27,6 +34,7 @@ Wire `web-vitals` and ship to your observability backend. Alert on regressions p
 
 - Critical path: ≤ 180 KB
 - Per-route chunk: ≤ 80 KB
+- Keep each generated route inside its budget before declaring page-speed work complete.
 
 Analyse before every release with a bundle visualiser. Fail CI when over budget.
 
@@ -36,7 +44,7 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 - Preload the next probable route on hover/focus.
 - `<link rel="modulepreload">` for critical chunks identified via Lighthouse.
 - `<link rel="preconnect">` to API and CDN origins.
-- Load third-party scripts with `async`/`defer` and only on pages that actually need them.
+- Load third-party scripts with `async`/`defer`, only on pages that actually need them, and never in the root bundle for a route-specific feature.
 
 ## Tree-shaking
 
@@ -50,6 +58,7 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 - The primary hero image/media may use `loading="eager"` and `fetchpriority="high"`; do not apply that broadly.
 - `loading="lazy"` and `decoding="async"` on below-the-fold images.
 - Modern formats: AVIF/WebP with fallback. Pre-compress at build time.
+- Do not ship oversized source images; resize to the maximum rendered breakpoint before committing assets.
 - SVG icons: inline as code (no extra HTTP round-trips); larger SVGs as files.
 - Video: `preload="metadata"` unless you need eager playback.
 
@@ -59,6 +68,7 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 - `font-display: swap`. Preload only the primary critical weight/style.
 - Subset to used glyphs.
 - Self-host where possible; otherwise `<link rel="preconnect" crossorigin>` to the CDN.
+- Avoid font choices that require many weights or external blocking requests just to make the first screen work.
 
 ## Animation performance
 

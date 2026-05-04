@@ -19,7 +19,9 @@ Confirm the page and route before creating any files.
 7. State required page states: loading, empty, error, offline/degraded, permission-denied, and reduced-motion behavior when applicable
 8. State the i18n namespace/key pattern and catalog location in `packages/i18n`
 9. State whether page copy uses `useTranslation`, `t`, or `<Trans>`
-10. State the visual QA plan: Playwright screenshots or Storybook/page states at representative breakpoints
+10. State the page-speed impact plan: lazy route boundary, heavy dependency split points, media dimensions/formats, below-the-fold deferral, and third-party script containment
+11. State the visual QA plan: Playwright screenshots or Storybook/page states at representative breakpoints
+12. State the Lighthouse QA plan: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
 
 Scaffold rules:
 - Route titles, headings, empty/loading/error states, navigation labels, and ARIA copy use translation keys.
@@ -27,5 +29,8 @@ Scaffold rules:
 - The first screen is the actual usable app/tool experience unless the user explicitly asks for a landing page.
 - Avoid generic hero + 3-card-grid layouts. Layout must express the product workflow and primary action.
 - Use vanilla-extract and `@app/design-tokens`; no inline styles, Tailwind, hardcoded visual values, or ad hoc decorative shells.
+- Page routes are lazy-loaded with Suspense; do not import route-only heavy components, charts, maps, 3D, video, editors, analytics widgets, or demo data in the app root.
+- All page media reserves dimensions, uses optimized formats where applicable, and defers below-the-fold loading.
+- For page-level output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
 
 <!-- TODO: full scaffold template goes here once structure is validated -->

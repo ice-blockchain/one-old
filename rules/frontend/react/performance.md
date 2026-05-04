@@ -20,6 +20,14 @@ batching) live in `frontend/performance.md`. This file covers React-specific pat
 - Lazy pages wrapped in `<Suspense fallback={<PageSkeleton />}>` at the router level.
 - Heavy third-party libs (3D, video, charts, PDF, editors) are dynamic-imported at the usage site, not at module top.
 - Preload the next probable route on hover/focus: `<Link onPointerEnter={() => preload()}>`.
+- Do not import route-only components, charting, maps, editors, 3D, video, analytics widgets, or demo data in `main.tsx`, `App.tsx`, store setup, or shared layout shells.
+- Keep above-the-fold route data and media lean enough to maximize mobile Lighthouse Performance on a built preview.
+
+## Lighthouse verification (React)
+
+- Run Lighthouse against the built production preview for the primary generated route, using mobile emulation.
+- Use Lighthouse findings to improve the score as much as practical; 100 is the ideal.
+- When a React page cannot be audited, report "Lighthouse mobile performance: unverified" and list the route-level page-speed risks still present.
 
 ## Renders
 
@@ -29,6 +37,7 @@ batching) live in `frontend/performance.md`. This file covers React-specific pat
 - zustand: select slices, not the store object.
 - RTK Query: use `selectFromResult` to project only the fields the component needs.
 - Virtualise lists above ~100 items (`@tanstack/react-virtual`).
+- Keep expensive sorting/filtering/formatting out of render paths; derive it in selectors, RTK Query transforms, or memoized hooks after profiling.
 - Profile with React DevTools Profiler before adding `memo` / `useMemo` — measure, don't guess.
 
 ## Real-time render budget (React-side)
