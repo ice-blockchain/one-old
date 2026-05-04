@@ -97,6 +97,23 @@ GENERAL RULES:
     If the user explicitly chose Next.js, add \`"frontend": "nextjs"\` and use
     \`"stack": "minimal"\`. Otherwise omit \`frontend\`.
 
+  EXAMPLES — non-default backend branches (still write all 7 fields):
+
+    User declined the recommended backend + has own API:
+    { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
+      "backend": "external-api", "realtime": "none",
+      "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
+
+    User declined the recommended backend + no backend planned:
+    { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
+      "backend": "none", "realtime": "none",
+      "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
+
+    User chose Firebase / Mongo / their own Postgres:
+    { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
+      "backend": "other", "realtime": "none",
+      "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
+
   Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-monorepo
     · react-native-expo-app · minimal. (\`node-backend\` is legacy — do NOT offer it.)
 
@@ -158,7 +175,86 @@ function autoDetectedAnnouncement(detected) {
   return pieces.join('\n');
 }
 
+// ── Condensed reminder for UserPromptSubmit while onboarding is incomplete ───
+// SessionStart's full directive can scroll out of context across long onboarding
+// turns or compaction. This short reminder is re-injected on every prompt
+// while `.traffic-one.json` still lacks a valid `stack`.
+function onboardingReminderShort() {
+  return `═══ traffic-one — onboarding still incomplete ═══
+
+Write \`.traffic-one.json\` (use the Write tool) with the full 7-field schema
+before continuing with feature work. The PostToolUse hook will then auto-load
+the matching rule bundle into THIS session — no restart needed.
+
+  {
+    "version": 2,
+    "mode": "new-project",
+    "stack": "<chosen-id>",
+    "backend": "<chosen-backend>",
+    "realtime": "<heavy|light|none>",
+    "confirmed": true,
+    "onboardingComplete": true,
+    "confirmedAt": "<ISO-8601 UTC>"
+  }
+
+Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-monorepo
+  · react-native-expo-app · minimal.
+Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
+Realtime values: heavy · light · none.
+
+If the user explicitly chose Next.js, add \`"frontend": "nextjs"\` and use
+\`"stack": "minimal"\`. See the FIRST-RUN ONBOARDING directive for the full pitch
+script and decline-Supabase examples.
+`;
+}
+
+// ── PostToolUse warning when `.traffic-one.json` is written without a stack ──
+// Returns the additionalContext block paired with a systemMessage when the
+// model writes a partial state file. The PostToolUse hook silently ignored
+// this case before, leaving the user's stack choice unpersisted.
+function postWriteIncompleteWarning({ stack, validStackIds }) {
+  const header = '═══ traffic-one — `.traffic-one.json` write incomplete ═══';
+  const lines = [header, ''];
+
+  if (!stack) {
+    lines.push(
+      'You wrote `.traffic-one.json` without a `stack` field. The PostToolUse',
+      'hook cannot auto-load any rule bundle until `stack` is set.',
+    );
+  } else {
+    lines.push(
+      `Stack id \`${stack}\` is not a valid traffic-one stack. The PostToolUse`,
+      'hook cannot auto-load any rule bundle until a known stack id is set.',
+      '',
+      `Valid stack ids: ${validStackIds.join(' · ')}.`,
+    );
+  }
+
+  lines.push(
+    '',
+    'Re-write the file with the Write tool using the full 7-field schema:',
+    '',
+    '  {',
+    '    "version": 2,',
+    '    "mode": "new-project",',
+    '    "stack": "<chosen-id>",',
+    '    "backend": "<chosen-backend>",',
+    '    "realtime": "<heavy|light|none>",',
+    '    "confirmed": true,',
+    '    "onboardingComplete": true,',
+    '    "confirmedAt": "<ISO-8601 UTC>"',
+    '  }',
+    '',
+    'See the FIRST-RUN ONBOARDING directive for valid backend/realtime values',
+    'and concrete examples for non-default backend branches.',
+  );
+
+  return lines.join('\n');
+}
+
 module.exports = {
   onboardingDirectiveNewProject,
   autoDetectedAnnouncement,
+  onboardingReminderShort,
+  postWriteIncompleteWarning,
 };
