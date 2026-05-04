@@ -18,10 +18,16 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 - Before shipping — confirm layouts, forms, interactions actually work
 - When reviewing PRs that touch frontend code
 - Accessibility audits and responsive testing
+- After visual design work — confirm the implementation matches the design brief
 
 ## How It Works
 
 Uses the browser automation MCP (claude-in-chrome, Playwright, or Puppeteer) to interact with live pages like a real user.
+
+Before running visual QA, identify the design brief or acceptance criteria:
+primary action, intended hierarchy, responsive behavior, state coverage, and
+screenshots required. If no brief exists, infer it from the user request and
+the current UI, then state the assumption.
 
 ### Phase 1: Smoke Test
 ```
@@ -47,6 +53,7 @@ Uses the browser automation MCP (claude-in-chrome, Playwright, or Puppeteer) to 
 2. Compare against baseline screenshots (if stored)
 3. Flag layout shifts > 5px, missing elements, overflow
 4. Check dark mode if applicable
+5. Compare hierarchy, spacing, primary CTA clarity, and state styling against the design brief
 ```
 
 ### Phase 4: Accessibility
@@ -55,6 +62,14 @@ Uses the browser automation MCP (claude-in-chrome, Playwright, or Puppeteer) to 
 2. Flag WCAG AA violations (contrast, labels, focus order)
 3. Verify keyboard navigation works end-to-end
 4. Check screen reader landmarks
+```
+
+### Phase 5: Design State Coverage
+```
+1. Capture loading, empty, error, disabled, focused, and active states where the UI exposes them
+2. Verify text fits in controls and cards at each breakpoint
+3. Verify reduced-motion mode does not hide essential feedback
+4. Verify mobile primary actions are reachable and not hidden by keyboard/safe areas
 ```
 
 ## Output Format
@@ -75,6 +90,8 @@ Uses the browser automation MCP (claude-in-chrome, Playwright, or Puppeteer) to 
 ### Visual
 - [✗] Hero section overflows on 375px viewport
 - [✓] Dark mode: all pages consistent
+- [✓] Primary CTA remains visible and dominant on mobile
+- [✗] Empty state spacing does not match the design brief
 
 ### Accessibility
 - 2 AA violations: missing alt text on hero image, low contrast on footer links

@@ -24,6 +24,12 @@ paths:
 - Use `SafeAreaView` / `react-native-safe-area-context` at screen boundaries.
 - Respect dynamic type: avoid fixed heights around text; use `numberOfLines` only when truncation is intentional.
 - Use `hitSlop` for small icon-only actions instead of visually inflating icons.
+- Use tokenized density tiers for compact, standard, and spacious layouts when a
+  screen must work across small phones and tablets.
+- Primary actions should remain reachable in one-handed use without covering
+  text inputs, system gestures, or safe-area insets.
+- Verify visual-heavy work on at least one small phone and one larger device
+  size, including loading/empty/error states.
 
 ## Prohibited
 - No inline object styles (`style={{ ... }}`) except one-off animated styles returned by Reanimated hooks.

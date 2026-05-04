@@ -20,6 +20,8 @@ Internalise the project's existing design system and constraints:
 3. **Component library** — `packages/ui/` or `packages/ui-native/`. What primitives already exist?
 4. **The path-scoped rules** — `rules/frontend/accessibility.md`, `rules/frontend/typography.md`, `rules/frontend/ui-quality.md`, `rules/frontend/performance.md`. They contain the standards your audit measures against.
 5. **The live app** — walk every screen at mobile → tablet → desktop (or three RN device sizes). Experience it as a user, not as the developer.
+6. **The design intent** — infer or state the target user, primary action,
+   visual direction, responsive plan, and state coverage before judging polish.
 
 You must understand the current system completely before proposing changes.
 
@@ -45,12 +47,17 @@ You must understand the current system completely before proposing changes.
 | **Responsiveness** | Works at every viewport? Touch targets ≥44×44 px? Fluid adaptation, not just breakpoints? |
 | **Accessibility** | Keyboard nav, visible focus rings, ARIA labels, screen-reader flow, contrast ratios. |
 
+Rank issues by user impact, not by taste. A hierarchy or mobile usability issue
+beats a decorative polish issue.
+
 ### Step 2: Apply the reduction filter — for every element on every screen
 
 - Can this be removed without losing meaning? → Remove it.
 - Would a user need to be told this exists? → Redesign until obvious.
 - Does this feel inevitable? → If not, it's not done.
 - Is visual weight proportional to functional importance? → If not, fix hierarchy.
+- Is the primary action easier to find and complete on mobile? → If not, fix
+  layout before decoration.
 
 ### Step 3: Compile the plan
 
@@ -65,6 +72,17 @@ For each finding include:
 - **Issue**: one sentence, observable.
 - **Proposed change**: concrete, references existing tokens / primitives.
 - **Why it matters**: hierarchy / accessibility / consistency / clarity.
+- **Acceptance check**: screenshot, Storybook state, or interaction that proves the fix.
+
+Also include a compact implementation brief:
+
+- Design objective.
+- Components/screens to touch.
+- Token changes needed, if any.
+- Responsive behavior for mobile, tablet, and desktop.
+- States to cover: default, hover/focus/active, disabled, loading, empty, error,
+  offline/degraded, and permission-denied where applicable.
+- What not to change.
 
 ### Step 4: Wait for approval
 
@@ -94,9 +112,14 @@ If a design improvement requires a functional change, flag it explicitly:
 - If a primitive doesn't exist in `packages/ui` / `packages/ui-native`, propose adding it — don't invent ad-hoc styling silently.
 - All proposals must respect the active stack's styling system (vanilla-extract for web, `StyleSheet.create` for RN). Never propose Tailwind or inline styles.
 - The audit is the deliverable on Step 3. Implementation is gated on Step 4 approval.
+- Modern/clean means clear hierarchy, low noise, strong typography and spacing,
+  complete states, mobile polish, and product specificity.
+- Do not recommend generic card grids, decorative heroes, or dashboard panels
+  that do not answer a real workflow question.
 
 ## After implementation
 1. Confirm changes match the approved phase exactly — no scope creep.
 2. Note any tokens added in `packages/design-tokens/architecture.md`.
 3. Flag remaining approved-but-not-implemented phases for follow-up.
-4. Show before/after snapshots (Storybook stories or screenshots) when possible.
+4. Show before/after snapshots (Storybook stories or screenshots) when possible,
+   including mobile and the important UI states.

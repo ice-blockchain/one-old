@@ -11,7 +11,7 @@ The rules are layered:
    Replace this layer per frontend flavour — never mix stack-specific rules into the framework-agnostic core.
    Generic mobile variants of React web products stay on the React stack and use Ionic Framework with Capacitor packaging.
    Use React Native / Expo only when the client explicitly asks for React Native, Expo, RN, or a fully React Native implementation.
-4. **Path-scoped rules** (components, design quality, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
+4. **Path-scoped rules** (components, UI quality, typography, design quality, services, stores, real-time, perf, a11y, testing) — load when matching files are touched.
 
 ---
 
@@ -45,8 +45,9 @@ The rules are layered:
 
 ## Stack recommendations (always)
 - Use stack-native, managed, or dominant ecosystem tools before custom infrastructure; custom code is the last resort after the active stack core, provider/framework defaults, and the dependency quality gate fail.
-- Universal defaults: GitHub Actions for CI/CD, Stripe for payments, Sentry for observability, Resend for email, PostgreSQL for database, pnpm for JavaScript package management.
-- React + Supabase: use Supabase Auth for auth, Supabase Storage for app files, Supabase Realtime when real-time is needed, and RLS-backed authorization. Traffic One's RTK Query/Redux, vanilla-extract, Jest, and React Hook Form + Zod rules remain authoritative.
+- Universal defaults: GitHub Actions for CI/CD, Stripe for payments, Sentry for observability, Resend for email, Supabase for new app backends that need auth/user data/files/realtime unless explicitly declined, PostgreSQL as the database baseline when Supabase does not fit, pnpm for JavaScript package management.
+- Treat Supabase as the selected default for backend-backed new-project requests, not as a vague later integration. Local mocks, in-memory data, or `localStorage` may be temporary dev fixtures only after the Supabase contract, env validation, migrations, and RLS baseline are scaffolded.
+- React + Supabase: default recommendation for new React projects that need a backend. Use Supabase Auth for auth, Supabase Storage for app files, Supabase Realtime when real-time is needed, and RLS-backed authorization. Traffic One's RTK Query/Redux, vanilla-extract, Jest, and React Hook Form + Zod rules remain authoritative.
 - Explicit Next.js: do not add a new Traffic One stack id. If the user explicitly asks for Next.js, accepts it after a pitch, or the repo already has `next`, use NextAuth/Auth.js for auth unless the project already has Supabase Auth, Clerk, Auth0, or another real provider. Prefer App Router route handlers/server actions, Next.js Cache, Vercel, Vercel Blob, and Drizzle + PostgreSQL for new SQL work.
 - Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway, Redis for shared cache, and Celery for durable jobs. Do not default to hand-rolled JWT/password auth.
 - Other stacks: prefer official framework auth/session middleware, managed auth, and maintained SDKs over custom crypto, JWT parsing, session stores, email, file storage, queues, cache, or deployment scripts.
@@ -66,6 +67,9 @@ The rules are layered:
 ## Git baseline (Gitflow)
 - Branches: `main` (production), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
 - Conventional commits: `<type>(scope): <imperative>` — subject ≤72 chars, ticket id in scope where applicable.
+- Agent-created commits include `Integrated-With: Traffic One plugin` in the
+  final trailer block, preserved alongside any AI tool `Co-Authored-By`
+  trailers.
 - PR title ≤70 chars; body = *why* bullets + test-plan checklist + a11y check + Storybook link.
 - Analyze full `git diff <base>...HEAD` when writing PR descriptions.
 - Never force-push `main`/`develop`. Never `--no-verify`.
@@ -259,11 +263,19 @@ products use Ionic Framework with Capacitor instead.
 - All design values from `@app/design-tokens` — never hardcode colours/spacing.
 - All visible copy, placeholders, alt text, ARIA/accessibility labels, and loading/error/empty states use translation keys.
 
+## Frontend UI quality and typography (apps/**/src/**, packages/ui/**, packages/ui-native/**)
+- `rules/frontend/ui-quality.md` is the central UI gate: before meaningful UI work, establish or infer the design brief, target user, primary action, visual direction, token plan, responsive plan, state coverage, and screenshot acceptance checks.
+- Modern/clean means clear hierarchy, low visual noise, strong spacing/typography, complete states, mobile polish, and product-specific character — not generic decoration.
+- Use the design-to-code loop: audit/brief → scoped implementation → visual QA → refine. Keep product logic and data flow unchanged during visual-only work.
+- Do not ship generic centered heroes, decorative card grids, or dashboards that do not answer the user's real workflow question.
+- Typography follows `rules/frontend/typography.md`: readable sizes, controlled line length, tokenized breakpoint steps, tabular numbers for dashboards, and polished UI copy.
+- Visual-heavy work includes screenshots or Storybook states for mobile, tablet, desktop, focus, loading, empty, error, disabled, and reduced-motion states when applicable.
+
 ## React web design quality (apps/web/src/**, packages/ui/**)
 - Build the actual usable app/tool/game experience as the first screen; do not default to a marketing page.
 - UI must feel specific to the product, workflow, and audience — no generic template-looking surfaces.
-- Choose a concrete visual direction, then express it with design tokens, layout, typography, states, and motion.
-- Finish hover/focus/active/loading/empty/error states intentionally; verify mobile/desktop overflow, clipping, and overlap.
+- Choose a concrete visual direction, then express it with design tokens, layout, typography, states, and motion. Record the design brief when the direction is not already documented.
+- Finish hover/focus/active/loading/empty/error states intentionally; verify mobile/tablet/desktop overflow, clipping, and overlap.
 - Use vanilla-extract `.css.ts` and `@app/design-tokens`; never hardcode visual values.
 
 ## Real-time rules (services/ws/**, packages/ws-client/**)
@@ -347,7 +359,7 @@ products use Ionic Framework with Capacitor instead.
 - API and DB integration tests cover routing/middleware, constraints, auth filters, pagination metadata, and failure paths.
 - No `console.log` in production server code; use the project logger and strip secrets/PII.
 - Run a focused security review when touching auth/authz, DB queries, filesystem, crypto, external APIs, payments, or user input handling.
-- Auth uses framework/provider defaults first: Next.js uses NextAuth/Auth.js unless an existing provider is in place; Supabase uses Supabase Auth + RLS; JWT code validates provider-issued/service tokens instead of becoming default end-user auth.
+- Auth uses framework/provider defaults first: new Traffic One apps with unspecified backend use Supabase Auth + RLS by default; Next.js uses NextAuth/Auth.js unless an existing provider is in place; Supabase uses Supabase Auth + RLS; JWT code validates provider-issued/service tokens instead of becoming default end-user auth.
 
 ## Backend technology rules
 - TypeScript/JavaScript backend is covered by `rules/core.md` plus `rules/backend/node.md`.
@@ -368,6 +380,10 @@ products use Ionic Framework with Capacitor instead.
 - `$create-page` — scaffold a lazy-loaded page + route entry
 - `$create-service` — scaffold a service function or RTK Query endpoint
 - `$ionic-mobile` — recommend and implement Ionic/Capacitor mobile delivery for React web
+- `$frontend-design` — create distinctive, production-grade UI with a design brief and visual QA
+- `$design-audit` — rank visual issues and produce a phased, implementation-ready design plan
+- `$design-system` — generate or audit token-driven design systems and UI consistency
+- `$browser-qa` — verify responsive visual QA, interactions, and accessibility in a browser
 - `$create-native-component` — scaffold a React Native/Expo component (explicit only)
 - `$create-native-screen` — scaffold an Expo Router screen/route (explicit only)
 - `$create-native-feature` — scaffold a React Native feature slice (explicit only)
