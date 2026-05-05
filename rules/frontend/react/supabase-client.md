@@ -109,6 +109,71 @@ export function PostsList() {
 
 `ConfigurePromptCard` lives in `packages/ui` and links to the same setup steps.
 
+## RTK Query baseQuery — null-safe (REQUIRED)
+
+The most common crash on a fresh clone is an RTK Query `baseQuery` that
+assumes `getSupabase()` returns a real client. When env vars are missing,
+the queries must surface a typed "not configured" error so components can
+render the empty/banner state — not throw, not return undefined, not call
+methods on null.
+
+`packages/api-client/src/baseQuery.ts`:
+
+```ts
+import type { BaseQueryFn } from "@reduxjs/toolkit/query";
+import type { PostgrestError } from "@supabase/supabase-js";
+import { getSupabase, isSupabaseConfigured } from "./supabase";
+
+export type SupabaseQueryArgs = (client: NonNullable<ReturnType<typeof getSupabase>>) => Promise<unknown>;
+
+export type AppError =
+  | { kind: "not-configured"; message: string }
+  | { kind: "postgrest"; message: string; details?: unknown }
+  | { kind: "unknown"; message: string };
+
+export const supabaseBaseQuery: BaseQueryFn<SupabaseQueryArgs, unknown, AppError> =
+  async (run) => {
+    const client = getSupabase();
+    if (!client) {
+      return {
+        error: {
+          kind: "not-configured",
+          message: "Supabase env vars missing — fill .env.local and restart.",
+        },
+      };
+    }
+    try {
+      const data = await run(client);
+      return { data };
+    } catch (raw) {
+      const err = raw as PostgrestError;
+      return {
+        error: { kind: "postgrest", message: err.message, details: err.details },
+      };
+    }
+  };
+
+// Re-export the configured flag so feature slices can branch on it without
+// a second module-load read of import.meta.env.
+export { isSupabaseConfigured };
+```
+
+Feature slices then receive `{ error: { kind: "not-configured" } }` instead
+of crashing, and can render `<ConfigurePromptCard />` from their `isError`
+branch:
+
+```ts
+const { data, isLoading, error } = useGetJobsQuery();
+if (error?.kind === "not-configured") return <ConfigurePromptCard />;
+if (isLoading) return <Skeleton />;
+if (error) return <ErrorState error={error} />;
+return <JobsList jobs={data ?? []} />;
+```
+
+Auth listeners (`onAuthStateChange`) sit behind the same null check —
+`AuthGate` returns its children unchanged when `!isSupabaseConfigured` so
+public routes (Home, Sign-in form chrome, marketing pages) still render.
+
 ## Don't
 
 - Don't paper over with `createClient(url ?? "", key ?? "")` — Supabase will

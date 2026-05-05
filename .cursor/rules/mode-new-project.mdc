@@ -203,13 +203,23 @@ contract, env validation, and migrations/RLS baseline are in place.
       ```
       Add `.env.local` to `.gitignore` if not already there.
 
-   d. Lazy Supabase client + EnvBanner per `rules/frontend/react/supabase-client.md` —
-      app must render with the banner BEFORE the user has keys. Never call
-      `createClient` at module top level.
+   d. Lazy Supabase client + EnvBanner + **null-safe RTK Query `baseQuery`**
+      per `rules/frontend/react/supabase-client.md` — app must render with the
+      banner BEFORE the user has keys, and every RTK Query feature slice must
+      surface `{ error: { kind: "not-configured" } }` instead of crashing.
+      Never call `createClient` at module top level. Never assume `getSupabase()`
+      is non-null in a service or store.
 
-   e. Trigger the **`supabase-setup` skill** for the cloud-first walkthrough
-      (dashboard → Settings → API → keys → paste). Do not walk through Docker
-      unless the user explicitly mentions it.
+   e. **Invoke the `supabase-setup` skill** to actually link the project and
+      push migrations — do **not** finish the scaffold by writing manual
+      "open SQL editor and paste this" instructions in README. The skill
+      offers two paths and runs one of them: (A) cloud — user provisions a
+      project, you run `pnpm link <ref>` then `pnpm db:push` to apply the
+      migrations you just scaffolded; (B) local auto-run — `pnpm db:start`
+      (Docker required) boots local Postgres + Auth + Storage and applies
+      migrations on boot, printing the keys to paste. Pick with the user;
+      default to cloud. The schema must land before you mark the scaffold
+      "ready to build".
 
    f. Add-ons (storage, auth, realtime, vector, pg_cron, pg_net) are gated. The
       `requireAddon` helper in `scripts/hook-runtime/state.cjs` reads
