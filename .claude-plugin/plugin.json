@@ -5,6 +5,5 @@
   "author": {
     "name": "Cosmin Turcin"
   },
-  "agents": "./agents/",
   "skills": "./skills/"
 }
