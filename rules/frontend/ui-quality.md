@@ -29,6 +29,12 @@ would materially change the design direction.
 
 - **Purpose**: the user problem and target audience.
 - **Primary action**: the one action or decision the screen should make easier.
+- **Competitor reference**: pick **2–3 best-in-class real products** in the same
+  domain (not AI showcases — actual companies users use). Note one specific
+  thing each does well: layout pattern, mobile nav style, type system, motion
+  feel, density, content structure. The goal is "looks like a real product team
+  shipped this", not "looks like an LLM generated this." Keep the references
+  concrete (URL or product name) so the choice is auditable.
 - **Visual direction**: a concrete tone such as refined minimal, editorial,
   Swiss grid, industrial, warm utility, playful, or monochrome high-contrast.
 - **Hierarchy plan**: what the eye should read first, second, and third.
@@ -48,6 +54,11 @@ only scoped improvements. For new products, choose a direction and commit to it.
 
 Use AI design work as a loop, not a vague "make it prettier" pass:
 
+0. **Reference**: before designing anything new, look at 2–3 real competitor /
+   best-in-class products in the same domain. Identify the specific patterns
+   worth borrowing (mobile nav, type pairing, density, motion language) and
+   the AI-tells worth avoiding. Skip this step only when matching an existing
+   in-app aesthetic.
 1. **Audit**: inspect the existing UI or planned surface and rank design issues
    by user impact.
 2. **Brief**: convert the critique into an implementation brief with component,
@@ -134,6 +145,13 @@ Don't converge on a single safe formula. Each project deserves a distinct finger
 
 - Design mobile first for generic mobile requests and for any surface where the
   user is likely to act from a phone.
+- **Mobile navigation must be designed for touch, not auto-shrunk from desktop.**
+  The default pattern is a hamburger / drawer menu using shadcn's `Sheet`
+  primitive on web/Ionic (`npx shadcn@latest add sheet`) and the React Native
+  Reusables `Sheet` / `Drawer` primitive on native (`npx @react-native-reusables/cli@latest add sheet`).
+  Keep top-level nav visible on desktop (`md:flex`) and collapse to the Sheet on
+  mobile (`md:hidden`). Bottom tab bars are an alternative for app-shell flows
+  with ≤5 destinations; do not use both at once.
 - Important content and the primary action must appear before excessive mobile
   scrolling. Fixed bottom actions must respect safe areas and keyboards.
 - Text must fit inside controls and containers at desktop and mobile sizes.
@@ -143,6 +161,30 @@ Don't converge on a single safe formula. Each project deserves a distinct finger
   permission-denied where applicable.
 - Visual-heavy work must include screenshot or Storybook verification at
   mobile, tablet, and desktop breakpoints before delivery.
+
+## Animation and interactivity
+
+UI without motion feels static and AI-generated. Use motion to clarify
+causality and make the surface feel responsive — not to decorate.
+
+- **Default motion library:** `framer-motion` on web/Ionic (already in the
+  forced stack) and `react-native-reanimated` on Expo. `tailwindcss-animate`
+  covers shadcn primitive transitions out of the box.
+- **Where motion is required, not optional:** menu open/close (`Sheet`,
+  `Dialog`, `DropdownMenu`, `Popover`), tab switches, route transitions,
+  optimistic state changes, list item enter/exit, and loading-state shifts.
+  Static `display: none` toggles for these patterns are a code smell.
+- **Eased timings, never linear.** Prefer `ease-out` for enters (180–240ms)
+  and `ease-in` for exits (140–200ms). Spring physics for drag/swipe gestures.
+- **Hover and focus states ship the same energy as the animation system.**
+  Subtle scale / colour / border transitions on interactive elements; never a
+  jolt. Pair with visible focus rings.
+- **Respect `prefers-reduced-motion`** — gate non-essential motion with the
+  CSS media query (or `useReducedMotion()` from framer-motion); essential
+  affordances (a menu opening) stay, decorative parallax/auto-play stops.
+- **Don't animate to decorate.** No gratuitous bouncing logos, scroll-jacked
+  parallax, or full-page reveals on every navigation. Motion that delays the
+  primary action is worse than no motion.
 
 ## Foundational principles (in priority order)
 

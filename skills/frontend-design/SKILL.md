@@ -33,6 +33,23 @@ strong, coherent aesthetic with a few bold choices.
 
 ## Design Workflow
 
+### 0. Reference real products before designing
+
+Before opening the editor, look at **2–3 best-in-class real products** in the
+same domain (Linear, Vercel, Stripe Dashboard, Notion, Arc, Things, Figma,
+Pitch, Raycast, Posthog, Resend, ramp.com, etc. — match the vertical). Note,
+in one or two lines each:
+
+- Mobile nav style (drawer, bottom tabs, segmented).
+- Type pairing and density.
+- Motion language (snappy, restrained, expressive).
+- Surface treatment (borders vs subtle fills vs neon accent).
+- One specific thing each does well that fits this product.
+
+The goal is "looks like a real product team shipped this", not "looks like an
+LLM generated this." Skip this step only when extending an existing in-app
+aesthetic. State the chosen references so the visual direction is auditable.
+
 ### 1. Frame the interface first
 
 Before coding, settle or infer:
@@ -98,14 +115,35 @@ items, modals, and genuinely framed tools.
 
 ### 4. Make motion meaningful
 
+UI without motion feels static and AI-generated. Default motion library:
+`framer-motion` on web/Ionic and `react-native-reanimated` on Expo;
+`tailwindcss-animate` already covers shadcn primitive transitions.
+
 Use animation to:
 
 - reveal hierarchy
 - stage information
-- reinforce user action
+- reinforce user action (button press, optimistic state shift, list item enter)
+- mark route / tab / menu transitions as causally linked
 - create one or two memorable moments
 
-Do not scatter generic micro-interactions everywhere. One well-directed load sequence is usually stronger than twenty random hover effects.
+Eased timings, never linear: ~180–240ms ease-out for enters, ~140–200ms ease-in
+for exits, springs for drag/swipe. Always respect `prefers-reduced-motion` —
+gate non-essential motion behind the media query (or `useReducedMotion()`);
+keep essential affordances (a menu opening) but stop decorative parallax /
+auto-play. Do not scatter generic micro-interactions everywhere. One
+well-directed load sequence is usually stronger than twenty random hover
+effects.
+
+### 4b. Mobile-first navigation
+
+Mobile UI is designed for touch, not auto-shrunk from desktop. The default
+nav pattern is a hamburger / drawer menu using shadcn's `Sheet` primitive on
+web/Ionic (`npx shadcn@latest add sheet`) and the React Native Reusables
+`Sheet` / `Drawer` on native (`npx @react-native-reusables/cli@latest add sheet`).
+Keep top-level nav visible on desktop (`md:flex`) and collapse to the Sheet on
+mobile (`md:hidden`). Bottom tab bars are a valid alternative for app-shell
+flows with ≤5 destinations; do not use both at once.
 
 ### 5. Verify visually
 
