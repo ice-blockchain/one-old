@@ -454,6 +454,48 @@ function runCheckLibraryAllowlist(rawInput) {
   };
 }
 
+// ── PostToolUse: page-speed gate reminder after production builds ───────────
+const BUILD_COMMAND_RE = /(^|[\s;&|])((pnpm|npm|yarn|bun)\s+(run\s+)?build|turbo\s+build|vite\s+build)(\s|$)/;
+
+function runPostBuildPageSpeed(rawInput) {
+  const data = parseJsonText(rawInput, {});
+  const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
+  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  if (!BUILD_COMMAND_RE.test(command)) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+  const stack = typeof state.stack === 'string' ? state.stack : null;
+  const frontend = typeof state.frontend === 'string' ? state.frontend : null;
+  const isWebStack =
+    WEB_STACKS.has(stack) ||
+    frontend === 'react' ||
+    frontend === 'nextjs' ||
+    stack === 'vite';
+  if (!isWebStack) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  return {
+    stdout: JSON.stringify({
+      systemMessage: 'traffic-one page-speed gate pending after build',
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: [
+          '[traffic-one] A production build just ran for a web stack.',
+          'Before final delivery for generated/changed React or Ionic routes, run the Lighthouse mobile gate:',
+          '',
+          '  node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /',
+          '',
+          'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. If the environment blocks Lighthouse, explicitly report page speed as unverified with concrete risks.',
+        ].join('\n'),
+      },
+    }),
+    exitCode: 0,
+  };
+}
+
 // ── PostToolUse: stack-rules auto-load on `.traffic-one.json` write ──────────
 function runPostStackSetup(rawInput) {
   const payload = parseJsonText(rawInput, null);
@@ -689,6 +731,7 @@ module.exports = {
   runUserPromptSubmit,
   runCheckArchitectureWrite,
   runCheckLibraryAllowlist,
+  runPostBuildPageSpeed,
   runPostStackSetup,
   runPostFunctionEdit,  // exported for testing + entrypoint dispatch
   forbiddenForStack,    // exported for testing

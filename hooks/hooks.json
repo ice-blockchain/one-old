@@ -45,6 +45,16 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Checking page-speed gate...",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" post-build-page-speed"
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit",
         "hooks": [
           {

@@ -13,6 +13,11 @@ live in `frontend/react/performance.md`.
 ## Lighthouse standard
 
 - Default standard: optimize Lighthouse Performance on mobile against a built production preview for the best practical score, with 100 as the ideal.
+- Use the Traffic One runner by default for React/Vite and Ionic web routes:
+  `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /`.
+  The runner builds the app, starts production preview, runs Lighthouse mobile,
+  writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
+  non-zero below the default thresholds.
 - Run the audit for the primary generated route and any route whose above-the-fold content, media, or third-party scripts changed.
 - Use Lighthouse findings to fix avoidable page-speed regressions before delivery.
 - If Lighthouse cannot be run, report page speed as unverified and list concrete risks such as heavy initial JS, unoptimized media, blocking fonts, third-party scripts, or layout shifts.

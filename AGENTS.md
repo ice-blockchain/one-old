@@ -124,6 +124,11 @@ The rules are layered:
 
 ### Page speed standard
 - Generated React web pages optimize Lighthouse Performance on mobile against a built production preview, with 100 as the ideal score.
+- Use the Traffic One runner by default for React/Vite and Ionic web routes:
+  `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /`.
+  The runner builds the app, starts production preview, runs Lighthouse mobile,
+  writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
+  non-zero below the default thresholds.
 - Treat route splitting, optimized media, lean fonts, contained third-party scripts, and low main-thread work as default delivery work.
 - If Lighthouse cannot be run, state page speed as unverified and list the likely remaining risks.
 
@@ -328,6 +333,11 @@ products use Ionic Framework with Capacitor instead.
 
 ## Performance rules
 - Optimize Lighthouse Performance on mobile against a built production preview for generated React/Ionic web routes, with 100 as the ideal.
+- Use the Traffic One runner by default for React/Vite and Ionic web routes:
+  `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /`.
+  The runner builds the app, starts production preview, runs Lighthouse mobile,
+  writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
+  non-zero below the default thresholds.
 - Use Lighthouse findings to fix avoidable page-speed regressions; if it cannot be run, report page speed as unverified with concrete risks.
 - Lazy-load every page; preload on hover/focus.
 - Bundle budget: critical path ≤180 KB gz, per-route chunk ≤80 KB gz.
