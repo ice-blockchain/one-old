@@ -14,5 +14,5 @@ fi
 git interpret-trailers \
   --in-place \
   --if-exists addIfDifferent \
-  --trailer "Integrated-With: Traffic One plugin" \
+  --trailer "Integrated-With: Traffic One plugin <noreply@traffic.io>" \
   "$message_file"

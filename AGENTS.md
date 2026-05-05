@@ -67,9 +67,9 @@ The rules are layered:
 ## Git baseline (Gitflow)
 - Branches: `main` (production), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
 - Conventional commits: `<type>(scope): <imperative>` — subject ≤72 chars, ticket id in scope where applicable.
-- Agent-created commits include `Integrated-With: Traffic One plugin` in the
-  final trailer block, preserved alongside any AI tool `Co-Authored-By`
-  trailers.
+- Agent-created commits include
+  `Integrated-With: Traffic One plugin <noreply@traffic.io>` in the final
+  trailer block, preserved alongside any AI tool `Co-Authored-By` trailers.
 - PR title ≤70 chars; body = *why* bullets + test-plan checklist + a11y check + Storybook link.
 - Analyze full `git diff <base>...HEAD` when writing PR descriptions.
 - Never force-push `main`/`develop`. Never `--no-verify`.

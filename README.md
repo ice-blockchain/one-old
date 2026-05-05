@@ -116,8 +116,9 @@ node scripts/sync-cursor.cjs --check
 ```
 
 The tracked `.githooks/pre-commit` hook runs the sync automatically and stages generated `.cursor` changes.
-The tracked `.githooks/prepare-commit-msg` hook appends `Integrated-With: Traffic One plugin`
-so commits record the active plugin integration alongside agent co-author trailers. Enable them in a clone with:
+The tracked `.githooks/prepare-commit-msg` hook appends
+`Integrated-With: Traffic One plugin <noreply@traffic.io>` so commits record
+the active plugin integration alongside agent co-author trailers. Enable them in a clone with:
 
 ```
 git config core.hooksPath .githooks
