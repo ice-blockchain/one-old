@@ -195,6 +195,67 @@ test('library-pick checks catalog before candidates', () => {
   assert.match(skill, /date-fns or dayjs/);
 });
 
+test('web stack denies vanilla-extract installs', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'pnpm add @vanilla-extract/css @vanilla-extract/recipes' },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /vanilla-extract is no longer in the active stack/);
+    assert.match(result.stdout, /Tailwind \+ shadcn/);
+  });
+});
+
+test('web stack allows tailwindcss and shadcn-adjacent installs', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: {
+        command: 'pnpm add tailwindcss class-variance-authority tailwind-merge tailwindcss-animate @radix-ui/react-dialog lucide-react',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('rn stack allows nativewind and denies vanilla-extract', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-native-expo-monorepo' });
+
+    const allow = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'pnpm add nativewind tailwindcss react-native-reanimated' },
+    });
+    assert.equal(allow.stdout, '', 'nativewind/tailwindcss should be allowed on the Expo stack');
+
+    const deny = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'pnpm add @vanilla-extract/css' },
+    });
+    assert.match(deny.stdout, /permissionDecision/);
+    assert.match(deny.stdout, /vanilla-extract is web-only/);
+  });
+});
+
+test('architecture hook blocks vanilla-extract imports on web', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/components/Card.tsx',
+        content: "import { style } from '@vanilla-extract/css';\nexport const Card = () => <div className=\"p-4\" />;\n",
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /vanilla-extract is no longer in the active stack/);
+  });
+});
+
 let failed = 0;
 
 for (const { name, fn } of tests) {

@@ -77,8 +77,11 @@ Define:
 - state treatment for loading, empty, error, disabled, selected, stale, and offline states
 
 Use the project's token system so the interface stays coherent as it grows.
-Traffic One web uses vanilla-extract and `@app/design-tokens`; React Native uses
-`StyleSheet.create` and platform-neutral design tokens.
+Traffic One web (and Ionic) uses **Tailwind v3.4 + shadcn/ui** with HSL CSS
+variables in `globals.css` (themed via the preset in `packages/tailwind-config`);
+React Native uses **NativeWind v4 + React Native Reusables** with the same HSL
+CSS-variable theme block in `global.css`. Reference values via Tailwind tokens
+(`bg-primary`, `text-muted-foreground`, `rounded-lg`, …); never hardcode.
 
 ### 3. Compose with intention
 

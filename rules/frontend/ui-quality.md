@@ -2,13 +2,15 @@
 paths:
   - "**/*.tsx"
   - "**/*.jsx"
-  - "**/*.css.ts"
   - "**/*.css"
   - "**/*.scss"
+  - "**/tailwind.config.*"
+  - "**/globals.css"
+  - "**/global.css"
   - "apps/**/src/**"
   - "packages/ui/**"
   - "packages/ui-native/**"
-  - "packages/design-tokens/**"
+  - "packages/tailwind-config/**"
 ---
 
 # UI Quality — design gate + material honesty
@@ -164,8 +166,8 @@ If yes to all four → break it confidently. Otherwise keep the rule.
 
 ## Don't
 
-- Don't propose Tailwind, NativeWind, styled-components, or @emotion. Use the active stack's styling (vanilla-extract for web, `StyleSheet.create` for RN).
-- Don't hardcode colours, spacing, sizes — pull from `packages/design-tokens`.
+- Don't propose vanilla-extract, styled-components, or `@emotion`. The active stacks use **Tailwind + shadcn/ui** (web + Ionic) or **NativeWind + React Native Reusables** (Expo).
+- Don't hardcode colours, spacing, sizes — use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables (`--background`, `--foreground`, `--primary`, …) defined in `globals.css`.
 - Don't add motion that delays user actions.
 - Don't ship without states: default, hover, focus, active, disabled, loading, error, empty.
 - Don't validate accessibility as a "constraint that limits creativity" — it's a baseline that enables it.

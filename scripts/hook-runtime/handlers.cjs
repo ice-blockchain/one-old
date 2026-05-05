@@ -308,23 +308,26 @@ function runCheckArchitectureWrite(rawInput) {
 
   if (isNative) {
     if (filePath.endsWith('.tsx') && content.includes('style={{')) {
-      violations.push('No inline object styles — define styles in a sibling .styles.ts file with StyleSheet.create.');
+      violations.push('No inline object styles — use NativeWind `className` for static styles. `StyleSheet.create` is reserved for dynamic/animated values.');
     }
     if (filePath.endsWith('.tsx') && /\b(div|span|button|a|input)\b/.test(content)) {
       violations.push('React Native UI must use native primitives (`View`, `Text`, `Pressable`, `TextInput`, etc.), not DOM tags.');
     }
-    if (filePath.endsWith('.tsx') && /className="[^"]*(bg-|text-|p[xytrbl]?-|m[xytrbl]?-|flex\b|grid\b)/.test(content)) {
-      violations.push('NativeWind/Tailwind classes detected — this Expo stack uses StyleSheet.create and design tokens.');
-    }
   } else {
     if (filePath.endsWith('.tsx') && content.includes('style={{')) {
-      violations.push('No inline styles — define styles in a sibling .css.ts file (vanilla-extract).');
+      violations.push('No inline styles — use Tailwind utility `className` and shadcn primitives. Inline `style={{}}` is reserved for dynamic/derived values.');
     }
     if (
-      filePath.endsWith('.tsx') &&
-      /className="[^"]*\b(bg-|text-|p[xytrbl]?-|m[xytrbl]?-|flex\b|grid\b)[^"]*\s+[^"]*\b(bg-|text-|p[xytrbl]?-|m[xytrbl]?-|flex\b|grid\b)/.test(content)
+      (filePath.endsWith('.tsx') || filePath.endsWith('.ts')) &&
+      /from ['"]@vanilla-extract\//.test(content)
     ) {
-      violations.push('Tailwind utility classes detected — this stack uses vanilla-extract. Move styles into a .css.ts file.');
+      violations.push('vanilla-extract is no longer in the active stack. Use Tailwind utility classes and shadcn primitives in `packages/ui/src/components/ui/`.');
+    }
+    if (
+      (filePath.endsWith('.tsx') || filePath.endsWith('.ts')) &&
+      /from ['"][^'"]+\.css\.ts['"]/.test(content)
+    ) {
+      violations.push('`.css.ts` (vanilla-extract) imports are no longer permitted. Use Tailwind utility classes; theme via the HSL CSS variables in `globals.css`.');
     }
   }
 
@@ -378,15 +381,15 @@ function forbiddenForStack(stack, allowNextjs) {
   const web = [
     ['vitest', 'This stack uses Jest for unit/integration tests.'],
     ['@vitest/', 'This stack uses Jest for unit/integration tests.'],
-    ['styled-components', 'Use vanilla-extract for build-time static CSS.'],
-    ['@emotion', 'Use vanilla-extract for build-time static CSS.'],
-    ['tailwindcss', 'Use vanilla-extract; no runtime CSS framework on this stack.'],
-    ['nativewind', 'Use vanilla-extract for React web, not NativeWind.'],
-    ['@mui/', 'Build shared primitives in packages/ui on top of vanilla-extract.'],
-    ['antd', 'Build shared primitives in packages/ui on top of vanilla-extract.'],
-    ['material-ui', 'Build shared primitives in packages/ui on top of vanilla-extract.'],
-    ['chakra-ui', 'Build shared primitives in packages/ui on top of vanilla-extract.'],
-    ['bootstrap', 'Build shared primitives in packages/ui on top of vanilla-extract.'],
+    ['styled-components', 'Use Tailwind utility classes with shadcn primitives in packages/ui.'],
+    ['@emotion', 'Use Tailwind utility classes with shadcn primitives in packages/ui.'],
+    ['@vanilla-extract/', 'vanilla-extract is no longer in the active stack. Use Tailwind + shadcn (run `npx shadcn@latest add <name>`).'],
+    ['nativewind', 'NativeWind is the React Native styling layer; the web stack uses plain Tailwind.'],
+    ['@mui/', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
+    ['antd', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
+    ['material-ui', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
+    ['chakra-ui', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
+    ['bootstrap', 'Build shared primitives in packages/ui by running `npx shadcn@latest add <name>` and composing them.'],
   ];
 
   if (!allowNextjs) {
@@ -399,17 +402,16 @@ function forbiddenForStack(stack, allowNextjs) {
   const native = [
     ['vitest', 'This stack uses Jest for unit/integration tests.'],
     ['@vitest/', 'This stack uses Jest for unit/integration tests.'],
-    ['styled-components', 'Use React Native StyleSheet.create with design tokens.'],
-    ['@emotion', 'Use React Native StyleSheet.create with design tokens.'],
-    ['tailwindcss', 'Use StyleSheet.create and design tokens; no Tailwind on the Expo stack.'],
-    ['nativewind', 'Use StyleSheet.create and design tokens; NativeWind is not in the approved stack.'],
+    ['styled-components', 'Use NativeWind `className` with React Native Reusables primitives in packages/ui-native.'],
+    ['@emotion', 'Use NativeWind `className` with React Native Reusables primitives in packages/ui-native.'],
+    ['@vanilla-extract/', 'vanilla-extract is web-only and no longer used. The Expo stack uses NativeWind + React Native Reusables.'],
     ['react-router-dom', 'Use Expo Router for React Native navigation.'],
     ['framer-motion', 'Use react-native-reanimated for React Native animations.'],
-    ['@mui/', 'Build shared native primitives in packages/ui-native.'],
-    ['antd', 'Build shared native primitives in packages/ui-native.'],
-    ['material-ui', 'Build shared native primitives in packages/ui-native.'],
-    ['chakra-ui', 'Build shared native primitives in packages/ui-native.'],
-    ['bootstrap', 'Build shared native primitives in packages/ui-native.'],
+    ['@mui/', 'Build shared native primitives in packages/ui-native via `npx @react-native-reusables/cli@latest add <name>`.'],
+    ['antd', 'Build shared native primitives in packages/ui-native via `npx @react-native-reusables/cli@latest add <name>`.'],
+    ['material-ui', 'Build shared native primitives in packages/ui-native via `npx @react-native-reusables/cli@latest add <name>`.'],
+    ['chakra-ui', 'Build shared native primitives in packages/ui-native via `npx @react-native-reusables/cli@latest add <name>`.'],
+    ['bootstrap', 'Build shared native primitives in packages/ui-native via `npx @react-native-reusables/cli@latest add <name>`.'],
   ];
 
   if (RN_STACKS.has(stack)) {

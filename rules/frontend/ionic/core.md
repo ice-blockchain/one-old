@@ -21,8 +21,14 @@ Expo, RN, or a fully React Native implementation.
 - **Recommended packaging:** `@capacitor/core`, `@capacitor/cli`, plus
   `@capacitor/ios` and/or `@capacitor/android` for requested targets.
 - **React source app:** React ^18, Vite, react-router-dom v6, Redux Toolkit,
-  RTK Query, zustand, vanilla-extract, i18next, and the React rules remain the
-  source of truth.
+  RTK Query, zustand, **Tailwind v3.4 + shadcn/ui** (Radix + cva + tailwind-merge
+  + tailwindcss-animate + lucide-react), i18next, and the React rules remain
+  the source of truth.
+- **Ionic ↔ shadcn theme bridge:** a small in-repo CSS file
+  (`src/styles/ionic-theme-bridge.css`) maps the shadcn HSL CSS variables onto
+  Ionic's `--ion-color-*` tokens so Ionic primitives match the shadcn theme.
+  See `rules/frontend/ionic/styles.md` for the bridge contract. Tailwind config
+  sets `corePlugins.preflight: false` to avoid colliding with Ionic's reset.
 - **Native APIs:** Capacitor plugins behind services/hooks, never ad hoc calls
   from random components.
 - **Full Ionic React alternative:** `@ionic/react` and Ionic navigation/components

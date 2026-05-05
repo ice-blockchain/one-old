@@ -29,14 +29,17 @@ Analyzes your codebase and generates a cohesive design system:
 1. Scan existing styling, tokens, component primitives, and screenshots for patterns
 2. Extract: colors, typography, spacing, border-radius, shadows, breakpoints
 3. Identify product audience, primary workflows, tone, and visual direction
-4. Propose a Traffic One token set for `packages/design-tokens`
+4. Propose Traffic One token updates for the shadcn HSL theme block in
+   `packages/tailwind-config/src/globals.css` and the Tailwind preset in
+   `packages/tailwind-config/src/preset.ts`
 5. Generate a design brief with rationale for each decision
 6. Create or update Storybook/preview states when the repo supports them
 ```
 
-Output should fit the repo: `packages/design-tokens` updates, a concise design
-brief, and component previews/stories. Do not introduce Tailwind,
-styled-components, Emotion, CSS modules, or inline styles.
+Output should fit the repo: shadcn HSL CSS variable updates, Tailwind preset
+extensions, a concise design brief, and component previews/stories. Do not
+introduce vanilla-extract, styled-components, Emotion, CSS modules, or inline
+`style={{}}` for static styling.
 
 ### Mode 2: Visual Audit
 
@@ -79,10 +82,13 @@ Identifies generic AI-generated design patterns:
 
 ## Traffic One Requirements
 
-- Web/Ionic tokens live in `packages/design-tokens` and styles use
-  vanilla-extract `.css.ts`.
-- React Native tokens are platform-neutral TS values consumed by
-  `StyleSheet.create` styles.
+- Web/Ionic tokens live as shadcn HSL CSS variables in
+  `packages/tailwind-config/src/globals.css` and as Tailwind preset extensions
+  in `packages/tailwind-config/src/preset.ts`. Styles use Tailwind utility
+  classes + shadcn primitives in `packages/ui/src/components/ui/`.
+- React Native tokens live as shadcn HSL CSS variables in `global.css` and are
+  consumed via NativeWind `className`; UI primitives come from React Native
+  Reusables in `packages/ui-native/src/components/ui/`.
 - All visible copy and accessibility text comes from translation keys.
 - Design-system changes include screenshot or Storybook acceptance checks for
   mobile, tablet, desktop, and important UI states.

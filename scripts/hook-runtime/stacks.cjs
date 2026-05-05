@@ -16,7 +16,7 @@
 const STACKS = {
   'react-realtime-monorepo': {
     label:
-      'React + Supabase monorepo: Turborepo + RTK + RTK Query + zustand + vanilla-extract + Jest + Playwright (recommended/default; Ionic/Capacitor mobile packaging available)',
+      'React + Supabase monorepo: Turborepo + RTK + RTK Query + zustand + Tailwind + shadcn/ui + Jest + Playwright (recommended/default; Ionic/Capacitor mobile packaging available)',
     mandatory: [
       'rules/core.md',
       'rules/common/clean-code.md',
@@ -55,7 +55,7 @@ const STACKS = {
   },
   'react-frontend-only': {
     label:
-      'Single-app React: Vite + RTK + vanilla-extract (no backend, no monorepo; Ionic/Capacitor mobile packaging available)',
+      'Single-app React: Vite + RTK + Tailwind + shadcn/ui (no backend, no monorepo; Ionic/Capacitor mobile packaging available)',
     mandatory: [
       'rules/core.md',
       'rules/common/clean-code.md',

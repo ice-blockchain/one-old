@@ -15,7 +15,7 @@ Confirm placement and props before creating any files.
 2. State the props interface name
 3. State whether it needs a data hook
 4. State the component design brief: purpose, target user, primary action, visual direction, density, and required states
-5. State the token plan: typography, spacing, color, radius, border, motion, and responsive behavior from `@app/design-tokens`
+5. State the token plan: typography, spacing, color, radius, border, motion, and responsive behavior using Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`
 6. State the i18n namespace/key pattern and catalog location in `packages/i18n`
 7. State whether copy uses `useTranslation`, `t`, or `<Trans>`
 8. State the page-speed impact plan: render cost, media dimensions/formats, below-the-fold loading, dependency weight, and whether the component can stay out of the route's initial chunk
@@ -24,7 +24,7 @@ Confirm placement and props before creating any files.
 Scaffold rules:
 - All visible copy, placeholders, labels, alt text, ARIA labels, and loading/error/empty states use translation keys.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
-- Use vanilla-extract sibling `.css.ts` files and existing design tokens; extend tokens before introducing ad hoc values.
+- Use Tailwind utility classes (merged with `cn()`); compose shadcn primitives from `packages/ui/src/components/ui/`. Add new primitives via `npx shadcn@latest add <name>` — never hand-roll a button / dialog / dropdown / form control. Extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens.
 - Avoid generic card shells. The component's layout, hierarchy, and state treatment must follow the design brief.
 - Visual-heavy components include Storybook stories for default, hover/focus where practical, disabled, loading, empty, and error states.
 - Components must not pull heavy route-only dependencies into shared/root bundles. Split optional charts, maps, 3D, video, editors, and analytics widgets at the usage site.
