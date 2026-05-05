@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
-  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin: modern clean UI design gates, Turborepo, RTK Query, Expo Router, vanilla-extract/StyleSheet, Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Hooks block forbidden libraries and architecture violations; skills auto-trigger on semantic match.",
-  "version": "2.1.0",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin: modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Hooks block forbidden libraries and architecture violations; skills auto-trigger on semantic match.",
+  "version": "2.3.0",
   "author": {
     "name": "Cosmin Turcin"
   },

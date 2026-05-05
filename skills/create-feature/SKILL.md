@@ -27,7 +27,7 @@ Scaffold rules:
 - Feature UI copy, form labels, placeholders, validation errors, alt text, ARIA labels, and loading/error/empty states use translation keys.
 - Keep server-provided/user-generated content unlocalized unless the UI supplies fallback copy.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
-- Use `@app/design-tokens` and vanilla-extract for all feature UI styling; no hardcoded visual values.
+- Use Tailwind utility classes + shadcn primitives from `packages/ui/src/components/ui/` for all feature UI styling. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`; extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens. No hardcoded visual values.
 - Feature surfaces should answer the user's workflow question first, then add polish. Do not scaffold vanity dashboard panels or decorative card grids.
 - Preserve server state ownership in RTK Query/Redux; do not duplicate data into component state for presentation convenience.
 - Keep feature-only heavy UI and dependencies out of root app imports; dynamic-import route-specific charts, maps, 3D, video, editors, and analytics widgets.

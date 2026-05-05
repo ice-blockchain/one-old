@@ -27,8 +27,19 @@ products use Ionic Framework with Capacitor instead.
 
 ### Build, styling, testing
 - Expo CLI locally, EAS Build/Submit for native builds, Metro bundler.
-- `StyleSheet.create` in sibling `*.styles.ts`; design tokens from `packages/design-tokens`.
-- No NativeWind, Tailwind, styled-components, @emotion, CSS modules, DOM tags, inline object styles.
+- **NativeWind v4** (`tailwindcss@^3.4` + `nativewind@^4`) for styling; pair with
+  `react-native-reanimated` and `react-native-safe-area-context`.
+- **React Native Reusables (RNR)** for UI primitives: `npx @react-native-reusables/cli@latest add <name>`
+  copies components into `packages/ui-native/src/components/ui/` (monorepo) or
+  `src/components/ui/` (single-app). RNR is built on `rn-primitives`
+  (Radix-equivalent for RN). Icons via `lucide-react-native`.
+- Variants via `class-variance-authority` (cva); merge classes with `cn()`
+  (= `clsx` + `tailwind-merge`).
+- Theme: HSL CSS vars in `global.css` (NativeWind reads them on web *and*
+  native). Dark mode via the `dark:` variant.
+- No styled-components, `@emotion`, vanilla-extract, CSS modules, DOM tags,
+  or inline object styles for static styling. `StyleSheet.create` is reserved
+  for dynamic/animated values (e.g. Reanimated derived styles).
 - jest + jest-expo + @testing-library/react-native; msw/fakes for services; Maestro for device E2E.
 
 ## Absolute rules

@@ -16,12 +16,17 @@ it, you've failed. If an element can be removed without losing meaning, it must 
 Internalise the project's existing design system and constraints:
 
 1. **Active stack core** — `rules/frontend/react/core.md` or `rules/frontend/react-native/core.md`. Tokens, primitives, allowed styling system.
-2. **Design tokens** — `packages/design-tokens/` (vanilla-extract themeContract for web; design-tokens for RN).
+2. **Design tokens** — the shadcn HSL CSS variables (`--background`, `--foreground`, `--primary`, …) defined in `packages/tailwind-config/src/globals.css` (web/Ionic) or `global.css` (React Native via NativeWind). Tailwind preset in `packages/tailwind-config/src/preset.ts` exposes them as Tailwind tokens (`bg-primary`, `text-muted-foreground`, …).
 3. **Component library** — `packages/ui/` or `packages/ui-native/`. What primitives already exist?
 4. **The path-scoped rules** — `rules/frontend/accessibility.md`, `rules/frontend/typography.md`, `rules/frontend/ui-quality.md`, `rules/frontend/performance.md`. They contain the standards your audit measures against.
 5. **The live app** — walk every screen at mobile → tablet → desktop (or three RN device sizes). Experience it as a user, not as the developer.
 6. **The design intent** — infer or state the target user, primary action,
    visual direction, responsive plan, and state coverage before judging polish.
+7. **Real-product references** — pick 2–3 best-in-class competitors / products
+   in the same domain and note the specific patterns they get right (mobile
+   nav, type pairing, density, motion). The audit measures the current UI
+   against real shipped products, not against a generic "AI-generated SaaS"
+   baseline.
 
 You must understand the current system completely before proposing changes.
 
@@ -38,7 +43,8 @@ You must understand the current system completely before proposing changes.
 | **Alignment & Grid** | Consistent grid? Anything off by 1–2px? Every element locked in? |
 | **Components** | Identical styling across screens? Interactive elements obvious? All states covered (default, hover, focus, active, disabled, loading)? |
 | **Iconography** | Consistent style, weight, size? One cohesive set or mixed libraries? |
-| **Motion** | Natural and purposeful transitions? Any gratuitous animation? Respects `prefers-reduced-motion`? |
+| **Motion** | Natural and purposeful transitions? Any gratuitous animation? Respects `prefers-reduced-motion`? Menu / dialog / dropdown / route transitions are animated, not toggled with `display: none`? |
+| **Mobile nav** | Is there a real mobile menu (shadcn `Sheet` drawer or bottom tab bar) or a desktop nav auto-shrunk into oblivion? Touch targets ≥44×44 px? Drawer focus-traps and closes on backdrop / Escape? |
 | **Empty States** | Every screen with no data — intentional or broken? User guided to first action? |
 | **Loading States** | Consistent skeletons/spinners? App feels alive while waiting? |
 | **Error States** | Styled consistently? Helpful and clear, not hostile and technical? |
@@ -96,7 +102,7 @@ Also include a compact implementation brief:
 
 ### You touch
 - Visual design, layout, spacing, typography, colour, interaction design, motion, accessibility.
-- Design-token proposals when new values are needed (route them through `packages/design-tokens/`).
+- Design-token proposals when new values are needed (route them through the shadcn HSL theme block + `packages/tailwind-config/src/preset.ts`).
 - Component styling and visual architecture.
 
 ### You do NOT touch
@@ -108,9 +114,9 @@ If a design improvement requires a functional change, flag it explicitly:
 > "This design improvement would require [functional change]. Outside my scope. Flagging for the build agent."
 
 ## Hard rules
-- Every change must reference design tokens — no hardcoded colours, spacing, or sizes.
-- If a primitive doesn't exist in `packages/ui` / `packages/ui-native`, propose adding it — don't invent ad-hoc styling silently.
-- All proposals must respect the active stack's styling system (vanilla-extract for web, `StyleSheet.create` for RN). Never propose Tailwind or inline styles.
+- Every change must reference Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables — no hardcoded colours, spacing, or sizes.
+- If a primitive doesn't exist in `packages/ui` / `packages/ui-native`, install it via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button / dialog / dropdown / form control.
+- All proposals must respect the active stack's styling system: **Tailwind + shadcn/ui** (web + Ionic) or **NativeWind + React Native Reusables** (Expo). Never propose vanilla-extract, styled-components, `@emotion`, or inline `style={{}}` for static styling.
 - The audit is the deliverable on Step 3. Implementation is gated on Step 4 approval.
 - Modern/clean means clear hierarchy, low noise, strong typography and spacing,
   complete states, mobile polish, and product specificity.
@@ -119,7 +125,7 @@ If a design improvement requires a functional change, flag it explicitly:
 
 ## After implementation
 1. Confirm changes match the approved phase exactly — no scope creep.
-2. Note any tokens added in `packages/design-tokens/architecture.md`.
+2. Note any tokens added in `packages/tailwind-config/architecture.md` (or, for app-local tokens, in the app's `tailwind.config.ts`).
 3. Flag remaining approved-but-not-implemented phases for follow-up.
 4. Show before/after snapshots (Storybook stories or screenshots) when possible,
    including mobile and the important UI states.

@@ -35,15 +35,26 @@ still decide whether a package can be added.
 
 ## React, Supabase, and Next.js
 
-- React/Vite: keep Traffic One defaults: RTK Query/Redux, vanilla-extract,
-  React Hook Form + Zod, Jest, Playwright, MSW.
+- React/Vite: keep Traffic One defaults: RTK Query/Redux, **Tailwind v3.4 +
+  shadcn/ui** (Radix primitives, `class-variance-authority`, `clsx`,
+  `tailwind-merge`, `tailwindcss-animate`), `lucide-react`, React Hook Form
+  + Zod, Jest, Playwright, MSW. Add new UI primitives via
+  `npx shadcn@latest add <name>`; do not hand-roll buttons / dialogs / etc.
 - Supabase: Supabase Auth, Storage, Realtime, RLS policies, and
   `@supabase/supabase-js`.
 - Explicit Next.js: Auth.js/NextAuth, App Router route handlers/server actions,
   Next.js Cache, Drizzle + PostgreSQL, Vercel Blob SDK, Vercel deployment,
   Vitest only when no Traffic One forced test stack is active, Playwright.
+  Same Tailwind + shadcn UI layer as the React/Vite stack.
 - React Native/Expo: Expo Router, `expo-secure-store`, `expo-localization`,
   React Hook Form + Zod, `date-fns`, RTK Query/axios, Reanimated, RNTL, Maestro.
+  **Styling: NativeWind v4 + React Native Reusables** (`rn-primitives` +
+  `lucide-react-native`). Add new RN UI primitives via
+  `npx @react-native-reusables/cli@latest add <name>`.
+- Ionic (hybrid mobile shell on top of React/Vite): same Tailwind + shadcn
+  layer as the web stack, plus a small in-repo CSS bridge file mapping shadcn
+  HSL tokens to Ionic `--ion-color-*` variables. Tailwind config sets
+  `corePlugins.preflight: false` to avoid colliding with Ionic's reset.
 
 ## Python
 
