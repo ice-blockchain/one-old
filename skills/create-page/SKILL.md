@@ -28,7 +28,7 @@ Scaffold rules:
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - The first screen is the actual usable app/tool experience unless the user explicitly asks for a landing page.
 - Avoid generic hero + 3-card-grid layouts. Layout must express the product workflow and primary action.
-- Use vanilla-extract and `@app/design-tokens`; no inline styles, Tailwind, hardcoded visual values, or ad hoc decorative shells.
+- Use Tailwind utility classes + shadcn primitives from `packages/ui/src/components/ui/`. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`. No inline `style={{}}` for static styling, no `.css.ts` / vanilla-extract, no hardcoded visual values, no ad hoc decorative shells.
 - Page routes are lazy-loaded with Suspense; do not import route-only heavy components, charts, maps, 3D, video, editors, analytics widgets, or demo data in the app root.
 - All page media reserves dimensions, uses optimized formats where applicable, and defers below-the-fold loading.
 - For page-level output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.

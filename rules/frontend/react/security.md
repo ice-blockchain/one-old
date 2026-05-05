@@ -61,7 +61,7 @@ React + Vite + browser-specific concerns.
 
 - Ship a strict CSP header in production. At minimum: `default-src 'self'; script-src 'self'; connect-src 'self' wss://<your-ws-host>`.
 - Use a per-request nonce for any required inline script instead of `unsafe-inline`.
-- No `unsafe-inline` for scripts. vanilla-extract emits static CSS, so styles can stay strict too.
+- No `unsafe-inline` for scripts. Tailwind generates a static CSS bundle at build time, so `style-src 'self'` covers the app — no runtime-injected styles.
 - Adjust allowed origins to the actual API, asset, and socket hosts; do not cargo-cult a sample policy.
 - Report violations to a dedicated endpoint during rollout.
 

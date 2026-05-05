@@ -10,8 +10,11 @@ paths:
 # React Web Design Quality
 
 Design-quality rules for React web surfaces. Component structure lives in
-`frontend/react/components.md`; styling implementation stays in vanilla-extract
-`.css.ts` files with values from `@app/design-tokens`.
+`frontend/react/components.md`; styling uses Tailwind utility classes composed
+on top of shadcn/ui primitives, with theme values pulled from the shadcn HSL
+CSS variables (`--background`, `--foreground`, `--primary`, `--muted`,
+`--accent`, `--destructive`, `--border`, `--ring`, …) defined in
+`src/styles/globals.css`.
 
 ## Product-specific UI
 
@@ -46,7 +49,7 @@ Meaningful frontend surfaces should show several of these, chosen for the produc
 ## Must not do
 
 - Do not create decorative card grids, generic hero sections, or dashboard layouts with no workflow point of view.
-- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; extend shared design tokens first.
+- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the HSL CSS variables in `globals.css`. Extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens.
 - Do not put page sections inside floating cards. Use cards for repeated items, modals, and genuinely framed tools.
 - Do not rely on color alone for state; pair it with text, iconography, or shape.
 - Do not introduce visual flourishes that make text harder to scan, overlap content, or hide real product state.
