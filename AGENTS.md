@@ -269,6 +269,14 @@ products use Ionic Framework with Capacitor instead.
     └── eslint-config/
 ```
 
+## Supabase setup — auto-run, never "open the SQL editor"
+- Cloud-first by default, local-first with `pnpm db:start` (Docker) when the user prefers no dashboard. Pick one with the user; do not interleave.
+- After scaffolding migrations under `supabase/migrations/`, **invoke the `supabase-setup` skill** to actually link and push. Do not finish a scaffold by listing manual SQL-editor steps in README — the schema must land before "ready to build".
+- Cloud path: user provisions a project → paste keys → write `.env.local` and `.env.example` → `pnpm link <project-ref>` (= `supabase link --project-ref ...`) → **`pnpm db:push`** (= `supabase db push --linked`) → `pnpm gen:types` → restart Vite.
+- Local path: `pnpm db:start` (= `supabase start`) boots Postgres + Auth + Storage in Docker and applies every file in `supabase/migrations/` on boot, printing URL + anon + service_role keys to stdout — paste them into `.env.local`. `pnpm db:reset` re-applies migrations from scratch; `pnpm db:stop` stops without deleting state.
+- Lazy `getSupabase()` returns null when env vars are missing — render `<EnvBanner />` and per-feature `<ConfigurePromptCard />` empty states instead of throwing.
+- **RTK Query `baseQuery` MUST be null-safe.** When `getSupabase()` is null, return `{ error: { kind: "not-configured" } }` so feature slices show the empty state on `isError`. Never call methods on a null Supabase client. See `rules/frontend/react/supabase-client.md` for the canonical baseQuery.
+
 ## Component rules (apps/**/src/components/**, packages/ui/**)
 - ≤150 lines, one per file. Style in-file via Tailwind utility classes; co-locate only `*.stories.tsx` (no sibling style files).
 - Named export. Explicit `ComponentNameProps` interface.
