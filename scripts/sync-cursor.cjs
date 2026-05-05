@@ -6,6 +6,7 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const RULES_ROOT = path.join(ROOT, 'rules');
+const AGENTS_ROOT = path.join(ROOT, 'agents');
 const CURSOR_RULES_ROOT = path.join(ROOT, '.cursor', 'rules');
 const CURSOR_PLUGIN_MANIFEST = path.join(ROOT, '.cursor-plugin', 'plugin.json');
 
@@ -225,6 +226,9 @@ function renderCursorRule(sourcePath) {
 
 function walkMarkdownFiles(root) {
   const files = [];
+  if (!fs.existsSync(root)) {
+    return files;
+  }
 
   function walk(currentDir) {
     const entries = fs.readdirSync(currentDir, { withFileTypes: true });
@@ -243,8 +247,42 @@ function walkMarkdownFiles(root) {
   return files;
 }
 
+// Mirror agents/<role>.md → .cursor/rules/00-agent-<role>.mdc as Always-attached
+// rules. Cursor has no first-class subagents, so role definitions become
+// always-on context. The 00- prefix sorts them ahead of the regular rules so
+// the role directives are read first.
+function renderAgentRule(sourcePath) {
+  const sourceText = readText(sourcePath);
+  const { frontmatterLines, body } = splitFrontmatter(sourceText);
+  const { description: frontmatterDescription } = parseFrontmatter(frontmatterLines);
+  const sourceRelative = relative(sourcePath);
+  const baseName = path.basename(sourcePath, '.md');
+  const fallbackTitle = baseName.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+  const title = titleFromBody(body, fallbackTitle);
+  const description = frontmatterDescription || `${title}. Generated from ${sourceRelative}.`;
+  const outputPath = path.join(CURSOR_RULES_ROOT, `00-agent-${baseName}.mdc`);
+
+  const note = '> Mirrored from ' + sourceRelative + ' — Cursor has no first-class '
+    + 'subagents; treat this as an always-on role context. The orchestrator skill '
+    + '(`senior-eng-orchestrator`) describes how the roles compose.';
+
+  const contentLines = [
+    `<!-- GENERATED FROM: ${sourceRelative}; run \`node scripts/sync-cursor.cjs\` to update. -->`,
+    ...cursorFrontmatter(description, [], true),
+    '',
+    note,
+    '',
+    body.trimEnd(),
+    '',
+  ];
+
+  return { sourcePath, outputPath, content: contentLines.join('\n') };
+}
+
 function generatedRuleDocuments() {
-  return walkMarkdownFiles(RULES_ROOT).map((source) => renderCursorRule(source));
+  const ruleDocs = walkMarkdownFiles(RULES_ROOT).map((source) => renderCursorRule(source));
+  const agentDocs = walkMarkdownFiles(AGENTS_ROOT).map((source) => renderAgentRule(source));
+  return [...ruleDocs, ...agentDocs];
 }
 
 function isManagedCursorRule(filePath) {

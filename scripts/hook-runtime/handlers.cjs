@@ -268,6 +268,35 @@ function runCheckArchitectureWrite(rawInput) {
   const isNative = RN_STACKS.has(stack);
   const violations = [];
 
+  // Plan gate: on a new project, deny feature-source writes until the architect
+  // has produced .traffic-one/plan.md. The plan file itself, ADRs, and docs/
+  // are exempt so the architect can write the plan without self-blocking.
+  const FEATURE_SOURCE_RE = /^(apps\/[^/]+\/(src|app)\/|packages\/[^/]+\/src\/|src\/|services\/[^/]+\/src\/)/;
+  const PLAN_FILE_RE      = /(^|\/)\.traffic-one\/plan\.md$/;
+  const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
+
+  const stateForPlan      = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+  const isNewProject      = stateForPlan.mode === 'new-project';
+  const planAbsPath       = path.join(process.cwd(), '.traffic-one', 'plan.md');
+  const planMissing       = !fs.existsSync(planAbsPath);
+  const writingPlan       = PLAN_FILE_RE.test(filePath);
+  const writingDoc        = ADR_OR_DOC_RE.test(filePath);
+
+  if (
+    isNewProject
+    && planMissing
+    && FEATURE_SOURCE_RE.test(filePath)
+    && !writingPlan
+    && !writingDoc
+  ) {
+    violations.push(
+      'Plan gate: .traffic-one/plan.md is missing on a new project. Run the '
+      + '`senior-architect` subagent (or the `senior-eng-orchestrator` skill) '
+      + 'to produce the plan before writing feature source files. Allowed '
+      + 'without a plan: .traffic-one/plan.md itself, docs/, ADR-*.md, README.'
+    );
+  }
+
   if (/(apps\/[^/]+\/)?src\/pages\/.*\.(service|store|hook|query|slice|api)\.(ts|tsx)$/.test(filePath)) {
     violations.push('Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.');
   }
@@ -423,10 +452,43 @@ function forbiddenForStack(stack, allowNextjs) {
   return common;
 }
 
+// Deploy gate: production-publishing commands need a fresh shipper-approval
+// stamp in .traffic-one.json (written by the senior-shipper subagent during
+// pre-flight). Without the stamp, deny — forces the orchestrator → shipper
+// flow rather than ad-hoc deploys.
+const DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-submit|eas\s+submit|supabase\s+db\s+push\s+--linked|supabase\s+functions\s+deploy\s+\S+\s+--linked|gh\s+release\s+create|fly\s+deploy|wrangler\s+deploy|npm\s+publish|pnpm\s+publish)\b/;
+const SHIPPER_APPROVAL_WINDOW_MS = 10 * 60 * 1000;
+
 function runCheckLibraryAllowlist(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
   const command  = typeof toolInput.command === 'string' ? toolInput.command : '';
+
+  // Deploy gate runs first — production publishes are gated regardless of
+  // whether the command also matches an install regex.
+  if (DEPLOY_RE.test(command)) {
+    const stateForDeploy = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+    const approvedAt = typeof stateForDeploy.lastShipperApprovalAt === 'string'
+      ? Date.parse(stateForDeploy.lastShipperApprovalAt)
+      : 0;
+    const fresh = approvedAt > 0 && (Date.now() - approvedAt) < SHIPPER_APPROVAL_WINDOW_MS;
+    if (!fresh) {
+      const reason = 'Deploy gate: this command publishes to production. Run '
+        + 'the `senior-shipper` subagent first; it stamps `lastShipperApprovalAt` '
+        + 'in .traffic-one.json after pre-flight (reviewer APPROVED, tests green, '
+        + 'user confirmed). The stamp grants a 10-minute deploy window.';
+      return {
+        stdout: JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            permissionDecision: 'deny',
+            permissionDecisionReason: reason,
+          },
+        }),
+        exitCode: 0,
+      };
+    }
+  }
 
   if (!INSTALL_RE.test(command)) {
     return { stdout: '', exitCode: 0 };

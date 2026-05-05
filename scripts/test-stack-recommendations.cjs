@@ -256,6 +256,132 @@ test('architecture hook blocks vanilla-extract imports on web', () => {
   });
 });
 
+// ── Plan gate (senior-architect must run first on new projects) ─────────────
+
+test('plan-gate denies feature write on new-project without plan', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+    });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/billing/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Plan gate/);
+    assert.match(result.stdout, /senior-architect/);
+  });
+});
+
+test('plan-gate allows feature write when plan exists', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/billing/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('plan-gate allows .traffic-one/plan.md write itself', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+    });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: '.traffic-one/plan.md',
+        content: '# Plan\n',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('plan-gate allows docs/ on new-project without plan', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+    });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'docs/architecture.md',
+        content: '# Architecture\n',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+// ── Deploy gate (senior-shipper stamps lastShipperApprovalAt) ───────────────
+
+test('deploy-gate denies vercel deploy without shipper stamp', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'vercel deploy --prod' },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Deploy gate/);
+    assert.match(result.stdout, /senior-shipper/);
+  });
+});
+
+test('deploy-gate allows vercel deploy after fresh shipper stamp', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      lastShipperApprovalAt: new Date().toISOString(),
+    });
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'vercel deploy --prod' },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('deploy-gate denies after stale shipper stamp', () => {
+  withTempDir((cwd) => {
+    const elevenMinAgo = new Date(Date.now() - 11 * 60 * 1000).toISOString();
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      lastShipperApprovalAt: elevenMinAgo,
+    });
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'vercel deploy --prod' },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Deploy gate/);
+  });
+});
+
 let failed = 0;
 
 for (const { name, fn } of tests) {
