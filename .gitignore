@@ -9,6 +9,7 @@
 
 # traffic-one per-project state — written at session start, not committed
 .traffic-one.json
+.traffic-one/
 .claude-plugin-mode
 
 # OS

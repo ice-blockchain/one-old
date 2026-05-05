@@ -56,7 +56,7 @@ Three test layers, each with a distinct job. Framework-specific testing helpers
 - Stub the back-end via `route.fulfill()` for deterministic flows; reserve real back-end for a small smoke suite.
 - `trace: "on-first-retry"`. Screenshot on failure.
 - `@axe-core/playwright` for a11y assertions on every page-level spec.
-- Page-speed verification uses Lighthouse against the built preview with mobile emulation; use findings to optimize the score as much as practical, with 100 as the ideal.
+- Page-speed verification uses Lighthouse against the built preview with mobile emulation; use `scripts/lighthouse-runner.mjs` where available, then use findings to optimize the score as much as practical, with 100 as the ideal.
 - Report the audited route, build mode, Lighthouse Performance score, LCP, CLS, INP/TBT where available, and the top blocking opportunities.
 - If Lighthouse cannot run in the environment, mark page speed unverified and list the likely risks; do not imply the page-speed standard was verified.
 - Visual-heavy work gets screenshots at key breakpoints: 320, 375, 768, 1024, 1440, and 1920 px where practical.

@@ -36,6 +36,7 @@ const HANDLERS = {
   'user-prompt-submit':       ()         => handlers.runUserPromptSubmit(),
   'check-architecture-write': (rawInput) => handlers.runCheckArchitectureWrite(rawInput),
   'check-library-allowlist':  (rawInput) => handlers.runCheckLibraryAllowlist(rawInput),
+  'post-build-page-speed':    (rawInput) => handlers.runPostBuildPageSpeed(rawInput),
   'post-stack-setup':         (rawInput) => handlers.runPostStackSetup(rawInput),
 };
 
@@ -134,6 +135,7 @@ module.exports = {
   forbiddenForStack:        handlers.forbiddenForStack,
   runCheckArchitectureWrite: handlers.runCheckArchitectureWrite,
   runCheckLibraryAllowlist:  handlers.runCheckLibraryAllowlist,
+  runPostBuildPageSpeed:     handlers.runPostBuildPageSpeed,
   runPostStackSetup:         handlers.runPostStackSetup,
   runSessionStart:           handlers.runSessionStart,
   runUserPromptSubmit:       handlers.runUserPromptSubmit,
