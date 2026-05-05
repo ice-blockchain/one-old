@@ -48,6 +48,8 @@ const { packBundle } = require('./packing.cjs');
 const {
   onboardingDirectiveNewProject,
   autoDetectedAnnouncement,
+  onboardingReminderShort,
+  postWriteIncompleteWarning,
 } = require('./directives.cjs');
 
 // ── SessionStart ─────────────────────────────────────────────────────────────
@@ -213,6 +215,27 @@ function runUserPromptSubmit() {
   }
 
   const stack = state.stack || state.mode || 'unknown';
+  const validStack = state.stack && Object.prototype.hasOwnProperty.call(STACKS, state.stack);
+  const isIncomplete = !validStack || state.onboardingComplete !== true;
+
+  // Re-inject the short onboarding reminder while a new project hasn't yet
+  // persisted a valid stack. SessionStart's full directive can scroll out of
+  // context across long onboarding turns or compaction; this keeps the model
+  // pointed at the schema until `.traffic-one.json` is fully populated.
+  if (isIncomplete && state.mode === 'new-project') {
+    const reminder = onboardingReminderShort();
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one [onboarding incomplete]',
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: `[ACTIVE STACK: ${stack}]\n\n${reminder}`,
+        },
+      }),
+      exitCode: 0,
+    };
+  }
+
   return {
     stdout: JSON.stringify({
       systemMessage: `traffic-one [${stack}]`,
@@ -456,7 +479,34 @@ function runPostStackSetup(rawInput) {
   // Accept any state that has a valid `stack` — the model sometimes writes a
   // partial file (no `onboardingComplete`). Normalize and treat it as complete.
   if (!state || !state.stack || !Object.prototype.hasOwnProperty.call(STACKS, state.stack)) {
-    return { stdout: '', exitCode: 0 };
+    // Don't fail silently: when the model edits `.traffic-one.json` but leaves
+    // `stack` missing or invalid, the rule bundle never loads and the user's
+    // choice is never persisted. Emit a system message + reminder so the model
+    // can self-correct in the same turn.
+    if (!state) {
+      return { stdout: '', exitCode: 0 };
+    }
+    const invalidStack = state.stack && !Object.prototype.hasOwnProperty.call(STACKS, state.stack)
+      ? state.stack
+      : null;
+    const validStackIds = Object.keys(STACKS).filter((id) => id !== 'node-backend');
+    const additionalContext = postWriteIncompleteWarning({
+      stack: invalidStack,
+      validStackIds,
+    });
+    const systemMessage = invalidStack
+      ? `traffic-one — \`.traffic-one.json\` has unknown stack id "${invalidStack}"; please re-write with a valid stack`
+      : 'traffic-one — `.traffic-one.json` write incomplete (no `stack` field); please re-write with all 7 fields';
+    return {
+      stdout: JSON.stringify({
+        systemMessage,
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext,
+        },
+      }),
+      exitCode: 0,
+    };
   }
 
   const stateDirEarly = path.dirname(path.resolve(filePath));
