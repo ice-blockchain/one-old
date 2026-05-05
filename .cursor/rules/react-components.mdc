@@ -12,10 +12,10 @@ Performance hooks (`React.memo`, `useCallback`) live in `frontend/react/performa
 
 ## Structure
 - One component per file, file named `ComponentName.tsx`.
-- Co-locate styles: `ComponentName.tsx` + `ComponentName.css.ts` (vanilla-extract).
+- Style in-file via Tailwind utility classes; no sibling style files.
 - Co-locate stories: `ComponentName.stories.tsx` for shared/reusable components in `packages/ui` and key app components.
 - Components <150 lines; split into sub-components if larger.
-- Named exports only — no `export default`.
+- Named exports only — no `export default` (shadcn-generated primitives keep their named exports).
 
 ## Props & types
 - Always declare an explicit `ComponentNameProps` interface above the component.
@@ -32,11 +32,12 @@ Performance hooks (`React.memo`, `useCallback`) live in `frontend/react/performa
 - Subscribe to real-time streams via a hook (e.g. `useGameTick(gameId)`) — components never instantiate WebSocket connections.
 - Lazy-load page-level components: `React.lazy` + `Suspense` with a skeleton fallback.
 
-## Styling (vanilla-extract)
-- Define every style in a sibling `.css.ts` file using `style({})` or `recipe({})`.
-- Pull all design values from `@app/design-tokens` — never hardcode colours, spacing, font sizes, or radii.
-- Themes via `createTheme` + `themeContract`; light/dark expressed as theme variants.
-- Responsive: `@media` queries inside the `.css.ts` — no JS-driven media checks for layout.
+## Styling (Tailwind + shadcn)
+- Compose UI from shadcn primitives in `packages/ui/src/components/ui/`. Add new primitives via `npx shadcn@latest add <name>`; never hand-roll a button / dialog / dropdown / input / form control.
+- Static styles use Tailwind utility classes inline. Merge classes with `cn()` (= `clsx` + `tailwind-merge`); express variants via `class-variance-authority` (`cva`).
+- Pull design values from the shadcn HSL CSS variables (`--background`, `--foreground`, `--primary`, `--muted`, `--accent`, `--destructive`, `--border`, `--ring`, …) defined in `src/styles/globals.css`. Never hardcode hex colours, raw spacing, font sizes, or radii in className strings — use the Tailwind theme tokens (`bg-background`, `text-foreground`, `rounded-md`, etc.).
+- Responsive: Tailwind breakpoints (`sm:` / `md:` / `lg:` / `xl:`) — no JS-driven media checks for layout.
+- Dark mode: shadcn's `class` strategy on `<html>` or `<body>`; the same HSL vars get redefined under `.dark` in `globals.css`.
 
 ## Stories (Storybook)
 - Every shared `packages/ui` component has at minimum: default, all variants, loading, error, empty states.

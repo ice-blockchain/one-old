@@ -57,28 +57,36 @@ contract, env validation, and migrations/RLS baseline are in place.
 │       │   │   ├── ws/            app-specific WS bridges (if not shared in packages)
 │       │   │   └── ...
 │       │   ├── components/        app-only components not promoted to packages/ui yet
+│       │   ├── lib/
+│       │   │   └── utils.ts        cn() helper (= clsx + tailwind-merge)
 │       │   └── styles/
-│       │       ├── theme.css.ts   themeContract + light/dark via createTheme
-│       │       └── global.css.ts
-│       └── e2e/                   Playwright specs
+│       │       └── globals.css     Tailwind directives + shadcn HSL theme block
+│       ├── tailwind.config.ts      extends @app/tailwind-config preset
+│       ├── postcss.config.cjs
+│       ├── components.json         shadcn/ui CLI config
+│       └── e2e/                    Playwright specs
 │
 └── packages/
-    ├── ui/                        shared component library (Storybook)
+    ├── ui/                        shadcn/ui primitives (Storybook)
     │   ├── package.json           "exports": { ... }
     │   ├── src/
-    │   │   ├── Button/
-    │   │   │   ├── Button.tsx
-    │   │   │   ├── Button.css.ts
-    │   │   │   ├── Button.test.tsx
-    │   │   │   └── Button.stories.tsx
-    │   │   └── index.ts           barrel: re-export public components
+    │   │   ├── components/
+    │   │   │   └── ui/             shadcn-installed primitives (button, input,
+    │   │   │       │               card, dialog, dropdown-menu, form, sheet,
+    │   │   │       │               tabs, select, sonner, badge, separator, …)
+    │   │   │       └── button.tsx
+    │   │   ├── lib/
+    │   │   │   └── utils.ts        cn() helper (re-exported by app)
+    │   │   └── index.ts            barrel: re-export public components
+    │   ├── components.json         shadcn config (root for monorepo init)
     │   └── tsconfig.json
     │
-    ├── design-tokens/             vanilla-extract themes + tokens
+    ├── tailwind-config/            shared Tailwind preset + globals.css
+    │   ├── package.json
     │   └── src/
-    │       ├── contract.css.ts    themeContract — the public type
-    │       ├── light.css.ts       createTheme(...)
-    │       └── dark.css.ts
+    │       ├── preset.ts           tailwind preset (theme.extend.colors via HSL vars,
+    │       │                       borderRadius, animation, plugins)
+    │       └── globals.css         shadcn HSL theme block (light + .dark)
     │
     ├── api-client/                Supabase client + axios/RTK Query baseQuery
     │   └── src/
@@ -113,11 +121,16 @@ contract, env validation, and migrations/RLS baseline are in place.
 
 2. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
-   - `packages/design-tokens` — themeContract + at least one theme.
+   - `packages/tailwind-config` — shared Tailwind preset + `globals.css`
+     containing the shadcn HSL theme block (light + `.dark`). This is the only
+     home for design tokens; do **not** create a `packages/design-tokens`.
    - `packages/utils` — empty barrel; populate as needed.
    - `packages/api-client` — Supabase browser client, axios instance, AppError type, RTK Query baseQuery.
    - `packages/ws-client` — transport + protocol scaffolding (per `rules/realtime.md`).
-   - `packages/ui` — Button, Input, Modal scaffolds with stories and tests.
+   - `packages/ui` — run `npx shadcn@latest init` here, then add the first batch:
+     `npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator`.
+     The CLI populates `src/components/ui/` and `src/lib/utils.ts` (`cn()`).
+     Storybook stories cover the primitives.
 
 3. **Supabase backend baseline**
    - Add `@supabase/supabase-js` and validate `VITE_SUPABASE_URL` /
@@ -132,6 +145,12 @@ contract, env validation, and migrations/RLS baseline are in place.
 
 4. **App scaffold (`apps/web`)**
    - Vite + React + TS template.
+   - Tailwind v3.4 + PostCSS: `tailwind.config.ts` extends
+     `@app/tailwind-config/preset`; `postcss.config.cjs` wires `tailwindcss`
+     and `autoprefixer`; `src/main.tsx` imports `@app/tailwind-config/globals.css`.
+   - `components.json` (shadcn CLI config) points the alias `ui` at
+     `@app/ui/components/ui` so future `npx shadcn add` calls in the app land
+     in the shared package.
    - Wire Redux store with `api-client` RTK Query and one starter feature slice.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`.

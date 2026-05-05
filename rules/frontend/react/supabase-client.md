@@ -91,8 +91,7 @@ export function EnvBanner() {
 }
 ```
 
-Style it via vanilla-extract (`EnvBanner.css.ts`) — one `.css.ts` per primitive.
-The banner is visible on every screen until env vars are filled in.
+Style it with Tailwind utility classes (`bg-destructive text-destructive-foreground p-3 ...`); promote to a shared `Banner` shadcn primitive once a second consumer appears. The banner is visible on every screen until env vars are filled in.
 
 ## Components — graceful empty-state pattern
 

@@ -36,8 +36,12 @@ Traffic One's active stack core remains authoritative.
 - React + Supabase: this is the default recommendation for new React projects
   that need a backend. Use Supabase Auth for auth, Supabase Storage for app
   files, Supabase Realtime when real-time is needed, and RLS-backed
-  authorization. Keep Traffic One's RTK Query/Redux, vanilla-extract, Jest, and
-  React Hook Form + Zod rules unless the user explicitly chooses another stack.
+  authorization. Keep Traffic One's RTK Query/Redux, **Tailwind v3.4 + shadcn/ui**
+  (Radix + CVA + tailwind-merge + lucide-react), Jest, and React Hook Form + Zod
+  rules unless the user explicitly chooses another stack. Add new UI primitives
+  via `npx shadcn@latest add <name>` — never hand-roll a button/dialog/input.
+- React Native + Expo: NativeWind v4 + React Native Reusables (`rn-primitives`)
+  for UI; add primitives via `npx @react-native-reusables/cli@latest add <name>`.
 - Explicit Next.js: do not add a new Traffic One stack id. When the user
   explicitly asks for Next.js, accepts it after a pitch, or the repo already has
   `next`, use NextAuth/Auth.js for auth unless the project already has Supabase

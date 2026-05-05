@@ -36,8 +36,8 @@ PATH A — User mentioned only FEATURES (no specific tech stack):
   Pitch the end-to-end default in one short, friendly paragraph:
 
     "I'd suggest our standard stack: React + TypeScript end-to-end —
-    Turborepo monorepo (typed state with RTK + RTK Query, vanilla-extract
-    for static CSS, Jest + Playwright for tests) backed by ${backendLabel};
+    Turborepo monorepo (typed state with RTK + RTK Query, Tailwind + shadcn/ui
+    for the UI layer, Jest + Playwright for tests) backed by ${backendLabel};
     ${deployLabel}. Want to use this stack?"
 
   If yes (or no objection) → write \`.traffic-one.json\` with
@@ -50,7 +50,7 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
 
     Frontend:
       • React → great, point out battle-tested rules for monorepo, RTK Query,
-        vanilla-extract, accessibility, real-time.
+        Tailwind + shadcn/ui, accessibility, real-time.
       • Vue / Svelte / Angular → say "Our depth is in React; we ship rules
         and skills tuned for it. Try React for this project?" If they insist
         → fall back to \`minimal\` stack (clean-code + security + git baseline).
@@ -130,13 +130,26 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
   1. Workspace skeleton: \`turbo.json\`, \`pnpm-workspace.yaml\`, \`tsconfig.base.json\`,
      \`.gitignore\`, root \`package.json\` (private, workspaces declared, packageManager: pnpm).
   2. \`apps/web/\`: package.json, vite.config.ts, tsconfig.json, index.html,
-     src/main.tsx, src/App.tsx, src/routes.tsx, src/store/index.ts, src/styles/theme.css.ts.
-  3. \`packages/\`: ui/, design-tokens/, api-client/, ws-client/, utils/, tsconfig/,
+     src/main.tsx, src/App.tsx, src/routes.tsx, src/store/index.ts,
+     \`src/styles/globals.css\` (Tailwind directives + shadcn HSL theme block),
+     \`tailwind.config.ts\` (extends \`@app/tailwind-config\` preset), \`postcss.config.cjs\`.
+     Run \`npx shadcn@latest init\` here, then add the first batch:
+     \`npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator\`.
+  3. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
+     Tailwind preset + \`globals.css\`), api-client/, ws-client/, utils/, tsconfig/,
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).
+     Do NOT create a \`packages/design-tokens\` package — design tokens live in the
+     Tailwind preset and the HSL CSS variables in \`globals.css\`.
   4. Initialise git with Gitflow branches (\`main\`, \`develop\`).
 
 For \`react-frontend-only\`: a single Vite app under root \`src/\` (no apps/, no packages/).
+\`src/styles/globals.css\` + \`tailwind.config.ts\` + \`npx shadcn@latest init\` + the
+same first-batch components under \`src/components/ui/\`.
+
 For \`react-native-expo-*\`: see \`rules/modes/new-project.md\` and \`rules/frontend/react-native/core.md\`.
+Scaffold uses NativeWind v4 (metro/babel/global.css/nativewind-env.d.ts) and
+React Native Reusables (\`npx @react-native-reusables/cli@latest init\` + first-batch
+components under \`packages/ui-native/src/components/ui/\`).
 
 The full step-by-step is in \`rules/modes/new-project.md\` — that file IS in the bundle
 once onboarding completes. Read it before scaffolding.

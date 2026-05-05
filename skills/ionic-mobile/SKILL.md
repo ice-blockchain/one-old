@@ -17,7 +17,8 @@ use it for explicit React Native / Expo requests.
 This skill merges the Mindrally Ionic guidance into Traffic One. Mindrally's
 source skill is Angular/Cordova/Firebase-oriented; adapt its Ionic concepts to
 this repo's forced stack: React, Capacitor, Supabase, Redux Toolkit/RTK Query,
-vanilla-extract, i18next, Jest, and Playwright.
+**Tailwind v3.4 + shadcn/ui** (with the Ionic CSS-variable bridge from
+`rules/frontend/ionic/styles.md`), i18next, Jest, and Playwright.
 
 Apply `rules/frontend/ionic/*` together with the active React rules whenever
 the work touches Capacitor config, native platform folders, mobile navigation,
@@ -88,8 +89,9 @@ apps/web/
 
 - Put Capacitor/native integration in `services/mobile/` or feature services.
 - Keep Ionic shell components thin and feature logic in hooks/services.
-- Use `packages/i18n`, `packages/design-tokens`, `packages/api-client`, and
-  `packages/ws-client` for shared concerns.
+- Use `packages/i18n`, `packages/tailwind-config`, `packages/ui` (shadcn
+  primitives), `packages/api-client`, and `packages/ws-client` for shared
+  concerns.
 
 ## Capacitor wrapper checklist
 
@@ -124,13 +126,27 @@ Use only when the user chooses the larger migration.
 
 ## Styling and theming
 
-- Traffic One uses vanilla-extract, not SCSS. Do not add SCSS just because the
-  source Ionic skill mentions it.
-- Bridge Ionic CSS variables from `@app/design-tokens` at a single theme/global
-  boundary.
+The Ionic stack styles app content with **Tailwind v3.4 + shadcn/ui** and
+bridges Ionic's `--ion-color-*` tokens to the shadcn HSL CSS variables. Full
+recipe lives in `rules/frontend/ionic/styles.md` — apply it verbatim.
+
+- `tailwindcss@^3.4` with `corePlugins.preflight: false` (Tailwind's reset
+  collides with the styling Ionic primitives rely on).
+- Single bridge file `src/styles/ionic-theme-bridge.css` defines the shadcn
+  HSL vars (`--background`, `--foreground`, `--primary`, …) and maps them to
+  `--ion-color-*` tokens. Imported once in `src/main.tsx` after Ionic core CSS.
+- Add new shadcn primitives via `npx shadcn@latest add <name>` into
+  `packages/ui/src/components/ui/` — never hand-roll a button / dialog /
+  dropdown / form control.
+- Compose shadcn primitives inside `IonContent`. Inside `IonHeader` /
+  `IonToolbar` prefer Ionic's tap states over shadcn buttons — the OS-feel is
+  better.
+- Do not add SCSS just because the source Ionic skill mentions it. Do not
+  install `@aparajita/tailwind-ionic` (upstream is stale; we own the bridge).
 - Use Ionic/platform-specific styling only where it solves real safe-area,
-  overlay, or platform behavior.
-- Keep all visual values in design tokens and verify mobile breakpoints.
+  overlay, or platform behavior. Keep all visual values in Tailwind tokens
+  (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the
+  shadcn HSL CSS variables, and verify mobile breakpoints.
 - Modern mobile UI should be calm, clear, and task-first: tokenized spacing,
   readable type, clear state styling, and no decorative layers over controls.
 
