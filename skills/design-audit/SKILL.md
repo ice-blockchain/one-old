@@ -22,6 +22,11 @@ Internalise the project's existing design system and constraints:
 5. **The live app** — walk every screen at mobile → tablet → desktop (or three RN device sizes). Experience it as a user, not as the developer.
 6. **The design intent** — infer or state the target user, primary action,
    visual direction, responsive plan, and state coverage before judging polish.
+7. **Real-product references** — pick 2–3 best-in-class competitors / products
+   in the same domain and note the specific patterns they get right (mobile
+   nav, type pairing, density, motion). The audit measures the current UI
+   against real shipped products, not against a generic "AI-generated SaaS"
+   baseline.
 
 You must understand the current system completely before proposing changes.
 
@@ -38,7 +43,8 @@ You must understand the current system completely before proposing changes.
 | **Alignment & Grid** | Consistent grid? Anything off by 1–2px? Every element locked in? |
 | **Components** | Identical styling across screens? Interactive elements obvious? All states covered (default, hover, focus, active, disabled, loading)? |
 | **Iconography** | Consistent style, weight, size? One cohesive set or mixed libraries? |
-| **Motion** | Natural and purposeful transitions? Any gratuitous animation? Respects `prefers-reduced-motion`? |
+| **Motion** | Natural and purposeful transitions? Any gratuitous animation? Respects `prefers-reduced-motion`? Menu / dialog / dropdown / route transitions are animated, not toggled with `display: none`? |
+| **Mobile nav** | Is there a real mobile menu (shadcn `Sheet` drawer or bottom tab bar) or a desktop nav auto-shrunk into oblivion? Touch targets ≥44×44 px? Drawer focus-traps and closes on backdrop / Escape? |
 | **Empty States** | Every screen with no data — intentional or broken? User guided to first action? |
 | **Loading States** | Consistent skeletons/spinners? App feels alive while waiting? |
 | **Error States** | Styled consistently? Helpful and clear, not hostile and technical? |
