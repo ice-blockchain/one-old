@@ -14,13 +14,28 @@ a real mobile interaction better than the existing shared UI primitive.
 ## Structure
 
 - One component per file, named export, explicit `ComponentNameProps`.
-- Co-locate vanilla-extract styles in `ComponentName.css.ts`.
+- Style with Tailwind utility classes; compose shadcn primitives from
+  `packages/ui/src/components/ui/`. No sibling style files.
 - Keep platform concerns at the screen/layout boundary; leaf components receive
   typed props and do not read Capacitor state directly.
 - Components render loading, error, empty, offline, and permission-denied states
   when those states are possible.
 - Mobile UI follows the active design brief: primary action, scan order,
   state coverage, and safe-area behavior are part of the component contract.
+
+## Composing shadcn inside Ionic chrome
+
+- shadcn primitives (button, dialog, dropdown, form controls, sheet, tabs,
+  popover, …) compose inside `IonContent`. They get the same shadcn HSL theme
+  via the bridge file.
+- Keep Ionic's own primitives for mobile-shell concerns where they earn their
+  weight: `IonPage`, `IonContent`, `IonHeader`, `IonToolbar`, `IonTabs`, and
+  modals/sheets that need native-feeling presentation. Inside `IonHeader` /
+  `IonToolbar` prefer Ionic's tap states over a shadcn button — the OS-feel is
+  better than what we can match with utility classes.
+- Forms always use `react-hook-form` + zod; the shadcn `<Form>` primitive wraps
+  Ionic-friendly inputs (or shadcn's own `Input` / `Textarea` / `Select`) inside
+  `IonContent`.
 
 ## Ionic primitives
 

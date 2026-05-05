@@ -32,9 +32,19 @@ delivering mobile with Ionic/Capacitor.
 - Vite per-app; Turborepo orchestrates the workspace.
 
 ### Styling
-- **vanilla-extract** — `.css.ts` static CSS at build time.
-- Design tokens in `packages/design-tokens`.
-- No tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`.
+- **Tailwind CSS v3.4** (pin `^3.4`; v4 is still settling) + **shadcn/ui**.
+- shadcn primitives live in `packages/ui/src/components/ui/` (monorepo) or
+  `src/components/ui/` (single-app). Add via `npx shadcn@latest add <name>`;
+  never hand-roll a button, dialog, dropdown, input, etc.
+- Variants via `class-variance-authority` (cva). Merge classes with
+  `cn()` (= `clsx` + `tailwind-merge`).
+- Theme: HSL CSS variables (`--background`, `--foreground`, `--primary`, …)
+  defined in `src/styles/globals.css`; the Tailwind preset in
+  `packages/tailwind-config` references them via `theme.extend.colors`.
+- Animation utilities: `tailwindcss-animate`. Icons: `lucide-react`.
+- No `.css.ts`, no vanilla-extract, no styled-components, no `@emotion`,
+  no CSS modules. Inline `style={{}}` is reserved for dynamic/derived values
+  (animation, computed positioning) — never for static styling.
 
 ### Testing
 - jest + @testing-library/react + @testing-library/user-event
@@ -53,7 +63,7 @@ delivering mobile with Ionic/Capacitor.
 
 ## Absolute rules
 - Function components only. Named exports only — no `export default` for components.
-- No inline `style={{}}`, no Tailwind classes — vanilla-extract `.css.ts` only.
+- Style with Tailwind utility classes; compose shadcn primitives from `packages/ui/src/components/ui/`. No inline `style={{}}` for static styling, no `.css.ts` files, no styled-components / `@emotion`.
 - Props have an explicit `ComponentNameProps` interface.
 - All API calls via `services/` or RTK Query — never axios in components.
 - User-facing text, placeholders, labels, loading/error/empty copy, alt text, ARIA labels come from i18n translation keys. Hardcoded strings only for brand names, user/server-provided content, technical IDs, test fixtures.

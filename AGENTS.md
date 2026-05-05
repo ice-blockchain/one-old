@@ -47,7 +47,7 @@ The rules are layered:
 - Use stack-native, managed, or dominant ecosystem tools before custom infrastructure; custom code is the last resort after the active stack core, provider/framework defaults, and the dependency quality gate fail.
 - Universal defaults: GitHub Actions for CI/CD, Stripe for payments, Sentry for observability, Resend for email, Supabase for new app backends that need auth/user data/files/realtime unless explicitly declined, PostgreSQL as the database baseline when Supabase does not fit, pnpm for JavaScript package management.
 - Treat Supabase as the selected default for backend-backed new-project requests, not as a vague later integration. Local mocks, in-memory data, or `localStorage` may be temporary dev fixtures only after the Supabase contract, env validation, migrations, and RLS baseline are scaffolded.
-- React + Supabase: default recommendation for new React projects that need a backend. Use Supabase Auth for auth, Supabase Storage for app files, Supabase Realtime when real-time is needed, and RLS-backed authorization. Traffic One's RTK Query/Redux, vanilla-extract, Jest, and React Hook Form + Zod rules remain authoritative.
+- React + Supabase: default recommendation for new React projects that need a backend. Use Supabase Auth for auth, Supabase Storage for app files, Supabase Realtime when real-time is needed, and RLS-backed authorization. Traffic One's RTK Query/Redux, **Tailwind v3.4 + shadcn/ui** (Radix + CVA + tailwind-merge + lucide-react), Jest, and React Hook Form + Zod rules remain authoritative. Add new UI primitives via `npx shadcn@latest add <name>` — never hand-roll a button/dialog/input.
 - Explicit Next.js: do not add a new Traffic One stack id. If the user explicitly asks for Next.js, accepts it after a pitch, or the repo already has `next`, use NextAuth/Auth.js for auth unless the project already has Supabase Auth, Clerk, Auth0, or another real provider. Prefer App Router route handlers/server actions, Next.js Cache, Vercel, Vercel Blob, and Drizzle + PostgreSQL for new SQL work.
 - Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway, Redis for shared cache, and Celery for durable jobs. Do not default to hand-rolled JWT/password auth.
 - Other stacks: prefer official framework auth/session middleware, managed auth, and maintained SDKs over custom crypto, JWT parsing, session stores, email, file storage, queues, cache, or deployment scripts.
@@ -110,9 +110,11 @@ The rules are layered:
 - **Hybrid mobile:** Ionic Framework + Capacitor. The recommended path is packaging the existing/generated React app with Capacitor. Detailed hybrid rules live in `rules/frontend/ionic/*`.
 
 ### Styling
-- **vanilla-extract** — `.css.ts` files generate static CSS at build time
-- **Design tokens** in a shared `packages/design-tokens` (themeContract + createTheme)
-- **No** tailwindcss, styled-components, @emotion, CSS modules, inline `style={{}}`
+- **Tailwind CSS v3.4** (pin `^3.4`; v4 still settling) + **shadcn/ui** (Radix primitives, `class-variance-authority`, `clsx`, `tailwind-merge`, `tailwindcss-animate`, `lucide-react`)
+- shadcn primitives live in `packages/ui/src/components/ui/` (monorepo) or `src/components/ui/` (single-app). Add via `npx shadcn@latest add <name>`; never hand-roll a button, dialog, dropdown, input, etc.
+- **Theme** via HSL CSS variables (`--background`, `--foreground`, `--primary`, …) defined in `src/styles/globals.css`; the Tailwind preset in `packages/tailwind-config` references them through `theme.extend.colors`
+- Variants via `class-variance-authority` (cva). Merge classes with `cn()` (= `clsx` + `tailwind-merge`)
+- **No** vanilla-extract, `.css.ts`, styled-components, `@emotion`, CSS modules, MUI/AntD/Chakra/Bootstrap. Inline `style={{}}` is reserved for dynamic/derived values (animation, computed positioning) — never for static styling
 
 ### Testing
 - **Unit + integration:** jest + @testing-library/react + @testing-library/user-event
@@ -137,7 +139,7 @@ The rules are layered:
 - **Capacitor:** `webDir` points to the Vite build output; app id/name/version, icons/splash, permissions, signing, deep links, and native platform folders are release-critical config.
 - **Components:** React component rules still apply; use Ionic primitives only for full Ionic React flows or thin mobile shell layouts, with all copy from translation keys.
 - **Navigation:** Capacitor wrappers keep `react-router-dom v6`; full Ionic React navigation is a larger migration that requires router compatibility checks.
-- **Styles:** vanilla-extract remains the styling system; bridge Ionic CSS variables from design tokens only at the theme boundary.
+- **Styles:** Tailwind v3.4 + shadcn/ui with `corePlugins.preflight: false` to avoid colliding with Ionic's reset. A single in-repo bridge file (`src/styles/ionic-theme-bridge.css`) maps the shadcn HSL CSS variables onto Ionic's `--ion-color-*` tokens so Ionic primitives match the shadcn theme — see `rules/frontend/ionic/styles.md` for the full bridge contract.
 - **Services/state/realtime:** API calls and Capacitor plugins stay behind services/hooks; server data stays in RTK Query/Redux; WebSocket services handle pause/resume, reconnect, stale, offline, and degraded states.
 - **Security:** no secrets in `VITE_`, Capacitor config, native project files, or store metadata; validate deep links, plugin payloads, push data, file paths, and share targets.
 - **Testing/perf/a11y:** verify native smoke flows, Android back behavior, keyboard input, safe areas, WebView startup, touch targets, focus, overlays, and mobile screenshots before release.
@@ -146,8 +148,7 @@ The rules are layered:
 - Function components only. No class components.
 - Named exports only. No `export default` for components.
 - No `any` — use `unknown` and narrow.
-- No inline `style={{}}` — vanilla-extract `.css.ts` only.
-- No Tailwind utility classes — define styles in `.css.ts`.
+- Style with Tailwind utility classes; compose shadcn primitives from `packages/ui/src/components/ui/`. No inline `style={{}}` for static styling, no `.css.ts` files, no styled-components / `@emotion`.
 - Props always have an explicit `ComponentNameProps` interface.
 - All API calls go through `services/` or RTK Query slices — never axios in components.
 - User-facing text, placeholders, labels, loading/error/empty copy, alt text, and ARIA labels come from translation keys.
@@ -184,9 +185,11 @@ products use Ionic Framework with Capacitor instead.
 - **Bundler:** Metro; Turborepo orchestrates the workspace
 
 ### Styling
-- **React Native StyleSheet** — sibling `*.styles.ts` files with `StyleSheet.create`
-- **Design tokens** in shared `packages/design-tokens` as platform-neutral TS values
-- **No** NativeWind, tailwindcss, styled-components, @emotion, CSS modules, DOM tags, inline object styles
+- **NativeWind v4** (`tailwindcss@^3.4` + `nativewind@^4`) for styling; pair with `react-native-reanimated` and `react-native-safe-area-context`
+- **React Native Reusables (RNR)** for UI primitives: `npx @react-native-reusables/cli@latest add <name>` copies components into `packages/ui-native/src/components/ui/` (monorepo) or `src/components/ui/` (single-app). RNR is built on `rn-primitives` (Radix-equivalent for RN). Icons via `lucide-react-native`
+- Variants via `class-variance-authority` (cva); merge classes with `cn()` (= `clsx` + `tailwind-merge`)
+- **Theme** via HSL CSS variables defined in `global.css` (NativeWind reads them on web *and* native); dark mode via the `dark:` variant
+- **No** vanilla-extract / `.css.ts`, styled-components, `@emotion`, CSS modules, DOM tags, or inline object styles for static styling. `StyleSheet.create` is reserved for dynamic/animated values (Reanimated worklets, computed positioning)
 
 ### Testing
 - **Unit + integration:** jest + jest-expo + @testing-library/react-native
@@ -198,7 +201,7 @@ products use Ionic Framework with Capacitor instead.
 - Expo Router route files may use `export default`; route files stay thin and compose named feature components.
 - Props always have an explicit `ComponentNameProps` interface.
 - Use React Native primitives (`View`, `Text`, `Pressable`, `TextInput`, `Image`) or approved shared primitives.
-- No DOM tags, NativeWind/Tailwind classes, or inline object styles.
+- No DOM tags. Use NativeWind `className` for static styles. No inline object styles for static styling — Tailwind className only. Inline `style` is reserved for dynamic/animated values.
 - All API calls go through `services/` or RTK Query slices — never axios in components.
 - User-facing text, placeholders, labels, loading/error/empty copy, image accessibility copy, and accessibility labels come from translation keys.
 - Server state lives in RTK Query or Redux — never duplicated in zustand or component state.
@@ -221,11 +224,15 @@ products use Ionic Framework with Capacitor instead.
 │       │   ├── pages/             thin route wrappers, no business logic
 │       │   ├── services/ws/       app-specific WS bridges (if not shared)
 │       │   ├── components/        app-only components
-│       │   └── styles/            theme.css.ts, global.css.ts
+│       │   ├── lib/utils.ts       cn() helper (clsx + tailwind-merge)
+│       │   └── styles/globals.css Tailwind directives + shadcn HSL theme block
+│       ├── tailwind.config.ts     extends @app/tailwind-config preset
+│       ├── postcss.config.cjs
+│       ├── components.json        shadcn/ui CLI config
 │       └── e2e/                   Playwright specs
 └── packages/
-    ├── ui/                        shared component library + Storybook
-    ├── design-tokens/             vanilla-extract themes & tokens
+    ├── ui/                        shadcn/ui primitives (Storybook)
+    ├── tailwind-config/           shared Tailwind preset + globals.css (HSL theme block)
     ├── i18n/                      shared typed i18next resources & locale config
     ├── api-client/                axios + RTK Query baseQuery + AppError
     ├── ws-client/                 WebSocket transport + protocol + hooks
@@ -245,11 +252,15 @@ products use Ionic Framework with Capacitor instead.
 │       │   ├── features/<name>/ components/ hooks/ slice.ts api.ts index.ts
 │       │   ├── services/ws/     app-specific WS bridges
 │       │   ├── components/      app-only native components
-│       │   └── styles/          theme.ts, token adapters
-│       └── .maestro/            device E2E flows
+│       │   └── styles/global.css Tailwind directives + shadcn HSL theme block
+│       ├── tailwind.config.js    extends nativewind/preset
+│       ├── babel.config.js       jsxImportSource: "nativewind" + nativewind/babel
+│       ├── metro.config.js       withNativeWind wrapper
+│       ├── nativewind-env.d.ts
+│       └── .maestro/             device E2E flows
 └── packages/
-    ├── ui-native/               shared React Native primitives
-    ├── design-tokens/           platform-neutral design tokens
+    ├── ui-native/                React Native Reusables primitives (cva + cn())
+    ├── tailwind-config/          shared NativeWind preset + global.css (HSL theme block)
     ├── i18n/                    shared typed i18next resources & locale config
     ├── api-client/              axios + RTK Query baseQuery + AppError
     ├── ws-client/               WebSocket transport + protocol + hooks
@@ -259,13 +270,13 @@ products use Ionic Framework with Capacitor instead.
 ```
 
 ## Component rules (apps/**/src/components/**, packages/ui/**)
-- ≤150 lines, one per file. Co-locate `*.css.ts` and `*.stories.tsx`.
+- ≤150 lines, one per file. Style in-file via Tailwind utility classes; co-locate only `*.stories.tsx` (no sibling style files).
 - Named export. Explicit `ComponentNameProps` interface.
 - Discriminated unions over flag+optional combos for state shapes.
 - Always handle isLoading / isError / empty states explicitly.
 - Lazy-load page-level components: `React.lazy` + `Suspense` with skeleton fallback.
 - `React.memo` / `useCallback` / `useMemo` only after profiling — measure, don't guess.
-- All design values from `@app/design-tokens` — never hardcode colours/spacing.
+- Compose UI from shadcn primitives in `packages/ui/src/components/ui/`; add new primitives via `npx shadcn@latest add <name>`. Pull design values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css` — never hardcode colours/spacing.
 - All visible copy, placeholders, alt text, ARIA/accessibility labels, and loading/error/empty states use translation keys.
 
 ## Frontend UI quality and typography (apps/**/src/**, packages/ui/**, packages/ui-native/**)
@@ -281,7 +292,7 @@ products use Ionic Framework with Capacitor instead.
 - UI must feel specific to the product, workflow, and audience — no generic template-looking surfaces.
 - Choose a concrete visual direction, then express it with design tokens, layout, typography, states, and motion. Record the design brief when the direction is not already documented.
 - Finish hover/focus/active/loading/empty/error states intentionally; verify mobile/tablet/desktop overflow, clipping, and overlap.
-- Use vanilla-extract `.css.ts` and `@app/design-tokens`; never hardcode visual values.
+- Use Tailwind utility classes + shadcn primitives in `packages/ui/src/components/ui/`. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`; extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens. Never hardcode visual values.
 
 ## Real-time rules (services/ws/**, packages/ws-client/**)
 - Singleton connection per endpoint. Components subscribe via hooks.
