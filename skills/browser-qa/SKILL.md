@@ -30,14 +30,45 @@ primary action, intended hierarchy, responsive behavior, state coverage, and
 screenshots required. If no brief exists, infer it from the user request and
 the current UI, then state the assumption.
 
+### Preferred Lighthouse Runner
+
+For React/Vite and Ionic web routes, use the Traffic One Lighthouse runner before
+declaring page-speed work complete:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /
+```
+
+When working from the plugin source checkout, run it from the app/repo root with:
+
+```bash
+node /path/to/traffic-one/scripts/lighthouse-runner.mjs --route /
+```
+
+The runner builds the project, starts a production preview on a free local port,
+runs Lighthouse mobile Performance, writes JSON and HTML reports to
+`.traffic-one/reports/lighthouse/`, extracts FCP/LCP/TBT/CLS, and fails when
+the route misses the default Traffic One thresholds:
+
+- Lighthouse Performance ≥ 90, with 100 as the ideal
+- FCP ≤ 1.5 s
+- LCP ≤ 2.5 s
+- TBT ≤ 200 ms
+- CLS ≤ 0.1
+
+If Lighthouse reports avoidable opportunities, apply targeted fixes and rerun
+the runner once or twice before final delivery. Prefer route splitting, dynamic
+imports for form/schema/chart/editor code, optimized media dimensions/formats,
+and removing render-blocking or unused first-route JS.
+
 ### Phase 1: Smoke Test
 ```
 1. Navigate to target URL
 2. Check for console errors (filter noise: analytics, third-party)
 3. Verify no 4xx/5xx in network requests
 4. Screenshot above-the-fold on desktop + mobile viewport
-5. Run Lighthouse against the built production preview with mobile emulation
-6. Record Lighthouse Performance and Core Web Vitals: LCP < 2.5s, CLS < 0.1, INP < 200ms, TBT < 200ms where available
+5. Run `scripts/lighthouse-runner.mjs` against the built production preview with mobile emulation
+6. Record Lighthouse Performance and Core Web Vitals: LCP < 2.5s, CLS < 0.1, INP < 200ms where available, TBT < 200ms
 ```
 
 Do not run Lighthouse against a dev server unless the user explicitly asks for

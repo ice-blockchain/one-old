@@ -32,13 +32,13 @@ const SKILL_FILTERS = {
     'architecture-decision-records', 'deployment-patterns',
     'api-design', 'api-connector-builder',
     'adaptive-communication',
-    'design-audit',
+    'design-audit', 'browser-qa',
     'supabase-setup',
   ]),
   'react-realtime-monorepo': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',
     'frontend-design', 'frontend-patterns',
-    'accessibility', 'browser-qa', 'ionic-mobile',
+    'accessibility', 'ionic-mobile',
     'e2e-testing', 'ai-regression-testing',
     'postgres-review', 'postgres-patterns', 'database-migrations',
     'nextjs-turbopack',
@@ -46,7 +46,7 @@ const SKILL_FILTERS = {
   'react-frontend-only': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',
     'frontend-design', 'frontend-patterns',
-    'accessibility', 'browser-qa', 'ionic-mobile',
+    'accessibility', 'ionic-mobile',
     'e2e-testing',
   ]),
   'react-native-expo-monorepo': new Set([
