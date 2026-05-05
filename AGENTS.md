@@ -67,9 +67,9 @@ The rules are layered:
 ## Git baseline (Gitflow)
 - Branches: `main` (production), `develop` (integration), `feature/*`, `release/*`, `hotfix/*`.
 - Conventional commits: `<type>(scope): <imperative>` — subject ≤72 chars, ticket id in scope where applicable.
-- Agent-created commits include `Integrated-With: Traffic One plugin` in the
-  final trailer block, preserved alongside any AI tool `Co-Authored-By`
-  trailers.
+- Agent-created commits include
+  `Integrated-With: Traffic One plugin <noreply@traffic.io>` in the final
+  trailer block, preserved alongside any AI tool `Co-Authored-By` trailers.
 - PR title ≤70 chars; body = *why* bullets + test-plan checklist + a11y check + Storybook link.
 - Analyze full `git diff <base>...HEAD` when writing PR descriptions.
 - Never force-push `main`/`develop`. Never `--no-verify`.
@@ -119,6 +119,11 @@ The rules are layered:
 - **E2E:** @playwright/test
 - **Mocks:** msw for HTTP, in-memory WS fake for real-time
 - **Component dev:** Storybook (@storybook/react-vite)
+
+### Page speed standard
+- Generated React web pages optimize Lighthouse Performance on mobile against a built production preview, with 100 as the ideal score.
+- Treat route splitting, optimized media, lean fonts, contained third-party scripts, and low main-thread work as default delivery work.
+- If Lighthouse cannot be run, state page speed as unverified and list the likely remaining risks.
 
 ## React mobile delivery (`rules/frontend/react/core.md`)
 - For a mobile variant of a generated or existing React site, recommend Ionic Framework with Capacitor packaging by default.
@@ -309,6 +314,8 @@ products use Ionic Framework with Capacitor instead.
 - Visual-heavy frontend work: Playwright screenshots at key breakpoints, no horizontal overflow, reduced-motion verification, and Chrome/Firefox/Safari coverage for critical paths.
 
 ## Performance rules
+- Optimize Lighthouse Performance on mobile against a built production preview for generated React/Ionic web routes, with 100 as the ideal.
+- Use Lighthouse findings to fix avoidable page-speed regressions; if it cannot be run, report page speed as unverified with concrete risks.
 - Lazy-load every page; preload on hover/focus.
 - Bundle budget: critical path ≤180 KB gz, per-route chunk ≤80 KB gz.
 - Web Vitals targets: LCP ≤2.5 s, FCP ≤1.5 s, INP ≤200 ms, TBT ≤200 ms, CLS ≤0.1.

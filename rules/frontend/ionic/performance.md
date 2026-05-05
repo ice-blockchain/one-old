@@ -11,6 +11,12 @@ paths:
 React and frontend performance budgets still apply. Capacitor adds WebView and
 native-startup constraints.
 
+## Lighthouse and WebView standard
+
+- React/Ionic web output still optimizes Lighthouse Performance on mobile against a built production preview, with 100 as the ideal score.
+- Use Lighthouse findings to fix avoidable web page-speed issues before treating the Capacitor package as ready.
+- Native smoke checks supplement Lighthouse, but they do not replace the mobile web performance standard.
+
 ## Startup
 
 - Keep the initial route lean; lazy-load page-level code and heavy plugins.
@@ -31,3 +37,4 @@ native-startup constraints.
 - Size splash, icon, and primary media for target densities.
 - Lazy-load below-the-fold images and media.
 - Do not ship desktop-only assets into the mobile critical path.
+- Reserve image/video dimensions and defer non-critical media so WebView startup and mobile Lighthouse stay within target.
