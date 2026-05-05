@@ -17,9 +17,10 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`.
 - Subject line ≤ 72 chars, imperative mood ("add", not "added").
 - One logical change per commit — no mixed refactor + feature.
 - Body answers *why*; the diff already shows *what*.
-- Agent-created commits include `Integrated-With: Traffic One plugin` in
-  the final trailer block. Preserve tool-authorship trailers such as
-  `Co-Authored-By`; Traffic One is the active integration, not an author.
+- Agent-created commits include
+  `Integrated-With: Traffic One plugin <noreply@traffic.io>` in the final
+  trailer block. Preserve tool-authorship trailers such as `Co-Authored-By`;
+  Traffic One is the active integration, not an author.
 
 ## Pull requests
 - Title ≤ 70 chars; use the body for detail.

@@ -42,6 +42,11 @@ delivering mobile with Ionic/Capacitor.
 - msw + in-memory WS fake
 - Storybook (@storybook/react-vite)
 
+## Page speed standard
+- Generated React web pages optimize Lighthouse Performance on mobile against a built production preview, with 100 as the ideal score.
+- Treat route splitting, optimized media, lean fonts, contained third-party scripts, and low main-thread work as default delivery work.
+- If Lighthouse cannot be run, state page speed as unverified and list the likely remaining risks.
+
 ## Mobile delivery
 - Mobile variant of a React web product → Ionic Framework + Capacitor packaging by default. Detail rules in `rules/frontend/ionic/core.md`.
 - Switch to React Native / Expo only when the user explicitly names RN / Expo / fully native — never for generic "mobile app" requests.
