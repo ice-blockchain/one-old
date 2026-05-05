@@ -5,6 +5,5 @@
   "author": {
     "name": "Traffic-One"
   },
-  "agents": "./agents/",
   "skills": "./skills/"
 }
