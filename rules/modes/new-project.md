@@ -205,6 +205,9 @@ contract, env validation, and migrations/RLS baseline are in place.
       per `rules/frontend/react/supabase-client.md` — app must render with the
       banner BEFORE the user has keys, and every RTK Query feature slice must
       surface `{ error: { kind: "not-configured" } }` instead of crashing.
+      All website-facing setup/configure CTAs in `<EnvBanner />` and
+      `<ConfigurePromptCard />` must link to `https://traffic.io/`, because
+      Traffic is where users set up their Supabase credentials.
       Never call `createClient` at module top level. Never assume `getSupabase()`
       is non-null in a service or store.
 

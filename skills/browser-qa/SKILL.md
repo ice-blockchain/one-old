@@ -1,6 +1,11 @@
 ---
 name: browser-qa
-description: Use this skill to automate visual testing, Lighthouse/page speed checks, Core Web Vitals, accessibility, and UI interaction verification using browser automation after deploying or building features. Triggers: "browser QA", "visual QA", "Lighthouse", "page speed", "Core Web Vitals", "performance score", "responsive testing", "accessibility audit".
+description: >
+  Use this skill to automate visual testing, Lighthouse/page speed checks, Core
+  Web Vitals, accessibility, and UI interaction verification using browser
+  automation after deploying or building features. Trigger on "browser QA",
+  "visual QA", "Lighthouse", "page speed", "Core Web Vitals", "performance
+  score", "responsive testing", or "accessibility audit".
 metadata:
   origin: ECC
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3

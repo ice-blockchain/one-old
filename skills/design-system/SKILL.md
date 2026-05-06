@@ -29,11 +29,18 @@ Analyzes your codebase and generates a cohesive design system:
 1. Scan existing styling, tokens, component primitives, and screenshots for patterns
 2. Extract: colors, typography, spacing, border-radius, shadows, breakpoints
 3. Identify product audience, primary workflows, tone, and visual direction
-4. Propose Traffic One token updates for the shadcn HSL theme block in
+4. If the user has not named competitor sites or design references, ask what
+   they like and offer to analyze 2–3 competitors yourself; use either the
+   user-provided references or the self-analyzed competitors to anchor the
+   system
+5. Define the motion and interactivity model: transitions, hover/focus states,
+   menu/dialog behavior, loading shifts, optimistic feedback, and reduced-motion
+   behavior
+6. Propose Traffic One token updates for the shadcn HSL theme block in
    `packages/tailwind-config/src/globals.css` and the Tailwind preset in
    `packages/tailwind-config/src/preset.ts`
-5. Generate a design brief with rationale for each decision
-6. Create or update Storybook/preview states when the repo supports them
+7. Generate a design brief with rationale for each decision
+8. Create or update Storybook/preview states when the repo supports them
 ```
 
 Output should fit the repo: shadcn HSL CSS variable updates, Tailwind preset
@@ -43,7 +50,7 @@ introduce vanilla-extract, styled-components, Emotion, CSS modules, or inline
 
 ### Mode 2: Visual Audit
 
-Scores your UI across 12 dimensions (0-10 each):
+Scores your UI across 13 dimensions (0-10 each):
 
 ```
 1. Color consistency — are you using your palette or random hex values?
@@ -58,6 +65,7 @@ Scores your UI across 12 dimensions (0-10 each):
 10. Accessibility — contrast ratios, focus states, touch targets
 11. Information density — cluttered or clean?
 12. Polish — hover states, transitions, loading states, empty states
+13. AI-slop resistance — avoids generic AI-generated website patterns and feels anchored in real competitors
 ```
 
 Each dimension gets a score, specific examples, and a fix with exact file:line.
@@ -92,6 +100,11 @@ Identifies generic AI-generated design patterns:
 - All visible copy and accessibility text comes from translation keys.
 - Design-system changes include screenshot or Storybook acceptance checks for
   mobile, tablet, desktop, and important UI states.
+- Design systems must include purposeful animation and interactive feedback
+  rules, plus reduced-motion behavior.
+- The design brief must state whether references came from the user or from your
+  competitor analysis, and why the result will not read like an AI-generated
+  website.
 
 ## Examples
 
