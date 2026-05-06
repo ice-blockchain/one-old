@@ -29,20 +29,25 @@ implementation brief, make scoped changes, verify with screenshots or Storybook
 states, then refine the top remaining visual issues.
 
 Pick a direction and commit to it. Safe-average UI is usually worse than a
-strong, coherent aesthetic with a few bold choices.
+strong, coherent aesthetic with a few bold choices. Design-led UI should feel
+clean, modern, interactive, and intentionally animated without becoming noisy.
 
 ## Design Workflow
 
 ### 0. Reference real products before designing
 
-Before opening the editor, look at **2–3 best-in-class real products** in the
-same domain (Linear, Vercel, Stripe Dashboard, Notion, Arc, Things, Figma,
-Pitch, Raycast, Posthog, Resend, ramp.com, etc. — match the vertical). Note,
-in one or two lines each:
+Before opening the editor, if the user has not already named websites,
+competitors, or design references, ask which websites/designs they want to
+emulate and explicitly offer to analyze 2–3 competitors yourself. If the user
+chooses self-analysis or has already delegated visual direction, pick
+**2–3 best-in-class real products** in the same domain (Linear, Vercel, Stripe
+Dashboard, Notion, Arc, Things, Figma, Pitch, Raycast, Posthog, Resend,
+ramp.com, etc. — match the vertical). Note, in one or two lines each:
 
 - Mobile nav style (drawer, bottom tabs, segmented).
 - Type pairing and density.
 - Motion language (snappy, restrained, expressive).
+- Interaction model (filters, command menus, inline editing, optimistic states).
 - Surface treatment (borders vs subtle fills vs neon accent).
 - One specific thing each does well that fits this product.
 
@@ -79,7 +84,8 @@ Possible directions:
 Do not mix directions casually. Choose one and execute it cleanly. If the user
 only asks for "modern" or "clean", interpret that as clear hierarchy, low
 visual noise, strong typography/spacing, complete states, mobile polish, and a
-product-specific point of view.
+product-specific point of view. It also means the interface responds to input
+with purposeful motion instead of feeling like a static mockup.
 
 ### 2. Build the visual system
 
@@ -119,6 +125,11 @@ UI without motion feels static and AI-generated. Default motion library:
 `framer-motion` on web/Ionic and `react-native-reanimated` on Expo;
 `tailwindcss-animate` already covers shadcn primitive transitions.
 
+Every design-led surface needs an interactivity and motion plan. At minimum,
+menus, dialogs, tabs, route transitions, list/filter changes, loading shifts,
+hover/focus states, and optimistic actions should feel responsive and animated
+where the platform supports it.
+
 Use animation to:
 
 - reveal hierarchy
@@ -137,10 +148,11 @@ effects.
 
 ### 4b. Mobile-first navigation
 
-Mobile UI is designed for touch, not auto-shrunk from desktop. The default
-nav pattern is a hamburger / drawer menu using shadcn's `Sheet` primitive on
-web/Ionic (`npx shadcn@latest add sheet`) and the React Native Reusables
-`Sheet` / `Drawer` on native (`npx @react-native-reusables/cli@latest add sheet`).
+Mobile UI is designed for touch, not auto-shrunk from desktop. For responsive
+web/Ionic work, integrate a hamburger / drawer menu by default unless the user
+explicitly opts out. Use shadcn's `Sheet` primitive (`npx shadcn@latest add sheet`)
+for the mobile menu; for React Native, use the React Native Reusables
+`Sheet` / `Drawer` primitive (`npx @react-native-reusables/cli@latest add sheet`).
 Keep top-level nav visible on desktop (`md:flex`) and collapse to the Sheet on
 mobile (`md:hidden`). Bottom tab bars are a valid alternative for app-shell
 flows with ≤5 destinations; do not use both at once.
@@ -217,7 +229,9 @@ Before delivering:
 - the interface has a clear visual point of view
 - typography and spacing feel intentional
 - color and motion support the product instead of decorating it randomly
-- the result does not read like generic AI UI
+- the user either supplied design references or you stated the competitors you analyzed yourself
+- the result does not read like generic AI UI or an AI-generated website
+- the UI has purposeful interactivity and animation, with reduced-motion support
 - the implementation is production-grade, not just visually interesting
 - page-level web output optimizes Lighthouse mobile Performance on a built preview when runnable, with 100 as ideal; if not runnable, page speed is reported as unverified with concrete risks
 - screenshot or Storybook verification covers the important breakpoints and states, or the final response explains why it could not be run

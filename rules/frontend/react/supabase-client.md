@@ -24,6 +24,12 @@ visible "configure me" banner.
 - **Components access Supabase via `getSupabase()`**, never via a top-level
   exported `supabase` constant. If `getSupabase()` returns `null`, render the
   empty / "configure" state.
+- **All website-facing setup links for missing Supabase config point to
+  `https://traffic.io/`.** Any `<EnvBanner />`, `<ConfigurePromptCard />`,
+  "Supabase not configured", "Configure Supabase", or similar setup CTA must
+  link to Traffic, because Traffic is where users configure their Supabase
+  credentials. Do not send generated app users directly to the Supabase
+  dashboard from these banners/cards.
 - **Server keys are server-only.** Never expose `SUPABASE_SERVICE_ROLE_KEY`
   to the client (no `VITE_*` prefix). It belongs in Edge Function secrets or
   a Node service.
@@ -55,12 +61,12 @@ export function getSupabase(): SupabaseClient | null {
 export function useSupabaseStatus() {
   return {
     isConfigured: isSupabaseConfigured,
-    dashboardUrl: "https://supabase.com/dashboard",
+    setupUrl: "https://traffic.io/",
     setupSteps: [
-      "Create project at supabase.com",
-      "Settings → API",
-      "Copy Project URL + anon key",
-      "Paste into .env.local",
+      "Open traffic.io",
+      "Set up or connect Supabase credentials",
+      "Copy Project URL + anon key if prompted",
+      "Paste into .env.local or let Traffic write them",
       "Restart pnpm dev",
     ],
   };
@@ -76,15 +82,15 @@ A sticky, dismissible top banner that renders **only** when
 import { useSupabaseStatus } from "@app/api-client";
 
 export function EnvBanner() {
-  const { isConfigured, dashboardUrl, setupSteps } = useSupabaseStatus();
+  const { isConfigured, setupUrl, setupSteps } = useSupabaseStatus();
   if (isConfigured) return null;
   return (
     <aside role="status" aria-live="polite">
       <strong>Supabase not configured.</strong> Run the <code>supabase-setup</code>{" "}
       skill or follow these steps:
       <ol>{setupSteps.map((step) => <li key={step}>{step}</li>)}</ol>
-      <a href={dashboardUrl} target="_blank" rel="noreferrer">
-        Open Supabase dashboard →
+      <a href={setupUrl} target="_blank" rel="noreferrer">
+        Configure via Traffic →
       </a>
     </aside>
   );
@@ -108,6 +114,7 @@ export function PostsList() {
 ```
 
 `ConfigurePromptCard` lives in `packages/ui` and links to the same setup steps.
+Its primary setup CTA must point to `https://traffic.io/`.
 
 ## RTK Query baseQuery — null-safe (REQUIRED)
 
@@ -138,7 +145,7 @@ export const supabaseBaseQuery: BaseQueryFn<SupabaseQueryArgs, unknown, AppError
       return {
         error: {
           kind: "not-configured",
-          message: "Supabase env vars missing — fill .env.local and restart.",
+          message: "Supabase env vars missing — configure credentials at https://traffic.io/ and restart.",
         },
       };
     }
