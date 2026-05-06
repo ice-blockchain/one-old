@@ -15,6 +15,25 @@ The rules are layered:
 
 ---
 
+## Senior-engineer team (Codex CLI mirror — no native subagents)
+
+Codex has no first-class subagents. When a request fits one of the roles below, follow that role's discipline yourself before moving on. On Claude Code these roles are real subagents under `agents/*.md`; on Cursor they appear as Always-attached rules.
+
+- **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list. Skills: `library-pick`, `architecture-decision-records`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
+- **Frontend** — only after the plan exists. Implement UI in `apps/*/src/**`, `packages/ui*`, `src/**`. Skills: `create-component`, `create-page`, `create-feature`, `frontend-patterns`, `frontend-design`, `design-system`, `design-audit`, `accessibility`, `i18n-text`; native variants for RN; `ionic-mobile` for Capacitor.
+- **Backend** — in parallel with frontend, server-side only (`apps/*/server/**`, `packages/api*`, `services/*`, `supabase/`). Skills: `backend-patterns`, `api-design`, `postgres-patterns`/`postgres-review`, `database-migrations`, plus the active stack's `*-patterns` + `*-tdd`.
+- **Reviewer** — read-only, before commit/push/deploy. Skills: `security-review`, `security-scan`, `repo-scan`, `context-budget`, the active stack's `*-verification` and `*-coding-standards`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`.
+- **Tester** — alongside reviewer. Restricted to test files / test infra. Skills: `tdd-workflow`, `e2e-testing`, `ai-regression-testing`, `verification-loop`, the active stack's `*-testing`. Emit `TESTS_GREEN` or `TESTS_FAILING <numbered list>`.
+- **Shipper** — only on explicit "deploy / ship / release / publish / to prod" intent. Pre-flight: reviewer `APPROVED` + tester `TESTS_GREEN` + user confirmation in the same turn. Stamp `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) before running `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`. Run `seo` + `ui-demo` post-deploy.
+
+**Plan gate** (enforced by hook): on `mode === "new-project"` and missing `.traffic-one/plan.md`, writes to `apps/*/src/**`, `packages/*/src/**`, `src/**`, `services/*/src/**` are denied. The plan file itself, ADRs, `docs/`, and `README*` are exempt.
+
+**Deploy gate** (enforced by hook): the deploy commands listed above are denied unless `lastShipperApprovalAt` is fresh (≤10 min). Only the shipper writes that stamp.
+
+**Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper). On Codex/Cursor, follow the same order yourself.
+
+---
+
 ## Clean-code baseline (always)
 - KISS, DRY (only after 2–3 real repetitions), YAGNI.
 - Immutability: return new objects/arrays, never mutate inputs. `const` by default.
