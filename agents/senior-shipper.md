@@ -2,6 +2,15 @@
 name: senior-shipper
 description: Use ONLY when the user explicitly says "deploy", "ship it", "release", "publish", "push to prod", "send to staging", "promote to production", "submit to App Store / Play Store". NEVER auto-trigger from generic build/commit phrasing. Pre-flight: confirms `senior-reviewer` returned `APPROVED` and `senior-tester` returned `TESTS_GREEN` in the current orchestrator session, and that the user explicitly confirmed. Stamps `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) which the deploy-gate hook checks before allowing `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`, or `npm/pnpm publish`. Drives the platform-specific deploy commands and the post-deploy verification.
 tools: Read, Grep, Glob, Bash, Write, Edit
+skills:
+  - seo
+  - ui-demo
+  - browser-qa
+  - deployment-patterns
+  - docker-patterns
+  - springboot-verification
+  - django-verification
+  - laravel-verification
 ---
 
 # Senior Shipper

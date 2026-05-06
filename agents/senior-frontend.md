@@ -2,6 +2,23 @@
 name: senior-frontend
 description: Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the UI layer — pages, components, features, design system, accessibility, i18n. Triggers on "build the UI", "scaffold the screens", "wire the pages", "make the frontend", or any feature implementation that touches `apps/*/src/`, `packages/ui*`, or `src/components/`. Spawned in parallel with `senior-backend`. Reads `.traffic-one.json` to dispatch to the right stack-specific skills (web React, React Native, Ionic).
 tools: Read, Grep, Glob, Bash, Write, Edit
+skills:
+  - create-component
+  - create-page
+  - create-feature
+  - frontend-patterns
+  - frontend-design
+  - design-system
+  - design-audit
+  - accessibility
+  - i18n-text
+  - browser-qa
+  - ui-demo
+  - ionic-mobile
+  - create-native-component
+  - create-native-feature
+  - create-native-screen
+  - create-native-service
 ---
 
 # Senior Frontend

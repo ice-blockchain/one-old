@@ -2,6 +2,21 @@
 name: senior-tester
 description: Use PROACTIVELY after `senior-frontend` or `senior-backend` reports completion, in parallel with `senior-reviewer`. Triggers on "add tests", "write the test plan", "verify with tests", "TDD this", "run the tests", "make sure it works". Adds or updates unit + integration + E2E tests via `tdd-workflow`, `e2e-testing`, `ai-regression-testing`, `verification-loop`, plus stack-specific `*-testing` skills. Restricted to test files and test directories — never modifies feature source. Ends with `TESTS_GREEN` or `TESTS_FAILING <numbered list>`.
 tools: Read, Grep, Glob, Bash, Write, Edit
+skills:
+  - tdd-workflow
+  - e2e-testing
+  - ai-regression-testing
+  - verification-loop
+  - cpp-testing
+  - csharp-testing
+  - django-tdd
+  - golang-testing
+  - kotlin-testing
+  - laravel-tdd
+  - perl-testing
+  - python-testing
+  - rust-testing
+  - springboot-tdd
 ---
 
 # Senior Tester
