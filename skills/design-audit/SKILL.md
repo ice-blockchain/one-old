@@ -22,11 +22,13 @@ Internalise the project's existing design system and constraints:
 5. **The live app** — walk every screen at mobile → tablet → desktop (or three RN device sizes). Experience it as a user, not as the developer.
 6. **The design intent** — infer or state the target user, primary action,
    visual direction, responsive plan, and state coverage before judging polish.
-7. **Real-product references** — pick 2–3 best-in-class competitors / products
-   in the same domain and note the specific patterns they get right (mobile
-   nav, type pairing, density, motion). The audit measures the current UI
-   against real shipped products, not against a generic "AI-generated SaaS"
-   baseline.
+7. **Real-product references** — if the user has not already named competitors,
+   websites, or design references, ask what they like and explicitly offer to
+   analyze 2–3 competitors yourself. Then pick the user-provided references or
+   2–3 best-in-class competitors / products in the same domain and note the
+   specific patterns they get right (mobile nav, type pairing, density, motion,
+   interaction model). The audit measures the current UI against real shipped
+   products, not against a generic "AI-generated SaaS" baseline.
 
 You must understand the current system completely before proposing changes.
 
@@ -44,6 +46,7 @@ You must understand the current system completely before proposing changes.
 | **Components** | Identical styling across screens? Interactive elements obvious? All states covered (default, hover, focus, active, disabled, loading)? |
 | **Iconography** | Consistent style, weight, size? One cohesive set or mixed libraries? |
 | **Motion** | Natural and purposeful transitions? Any gratuitous animation? Respects `prefers-reduced-motion`? Menu / dialog / dropdown / route transitions are animated, not toggled with `display: none`? |
+| **Interactivity** | Do menus, filters, tabs, selections, optimistic actions, and loading shifts respond with clear feedback? Does the UI feel alive without becoming busy? |
 | **Mobile nav** | Is there a real mobile menu (shadcn `Sheet` drawer or bottom tab bar) or a desktop nav auto-shrunk into oblivion? Touch targets ≥44×44 px? Drawer focus-traps and closes on backdrop / Escape? |
 | **Empty States** | Every screen with no data — intentional or broken? User guided to first action? |
 | **Loading States** | Consistent skeletons/spinners? App feels alive while waiting? |
@@ -52,6 +55,7 @@ You must understand the current system completely before proposing changes.
 | **Density** | Can anything be removed? Redundant elements? Every element earning its place? |
 | **Responsiveness** | Works at every viewport? Touch targets ≥44×44 px? Fluid adaptation, not just breakpoints? |
 | **Accessibility** | Keyboard nav, visible focus rings, ARIA labels, screen-reader flow, contrast ratios. |
+| **AI-slop resistance** | Does the design avoid generic AI-generated website tells: centered stock-gradient hero, decorative card pile, purple-blue defaults, timid type, and workflow-free dashboard panels? |
 
 Rank issues by user impact, not by taste. A hierarchy or mobile usability issue
 beats a decorative polish issue.
@@ -119,7 +123,8 @@ If a design improvement requires a functional change, flag it explicitly:
 - All proposals must respect the active stack's styling system: **Tailwind + shadcn/ui** (web + Ionic) or **NativeWind + React Native Reusables** (Expo). Never propose vanilla-extract, styled-components, `@emotion`, or inline `style={{}}` for static styling.
 - The audit is the deliverable on Step 3. Implementation is gated on Step 4 approval.
 - Modern/clean means clear hierarchy, low noise, strong typography and spacing,
-  complete states, mobile polish, and product specificity.
+  complete states, mobile polish, purposeful motion, interactive feedback, and
+  product specificity.
 - Do not recommend generic card grids, decorative heroes, or dashboard panels
   that do not answer a real workflow question.
 

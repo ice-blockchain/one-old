@@ -2,6 +2,34 @@
 name: senior-backend
 description: Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the server layer — APIs, persistence, auth, jobs, migrations. Triggers on "build the API", "scaffold the backend", "wire the database", "add auth", "make the server", or any feature implementation that touches `apps/*/server/`, `packages/api*`, `services/*`, `supabase/`, `prisma/`, or `db/`. Spawned in parallel with `senior-frontend`. Reads `.traffic-one.json` to dispatch to the right stack-specific skills (Node/TS, Java/Spring, Kotlin, .NET, Go, Rust, Python/Django, PHP/Laravel, Perl).
 tools: Read, Grep, Glob, Bash, Write, Edit
+skills:
+  - backend-patterns
+  - api-design
+  - api-connector-builder
+  - nestjs-patterns
+  - mcp-server-patterns
+  - postgres-patterns
+  - postgres-review
+  - database-migrations
+  - supabase-setup
+  - jwt-security
+  - deployment-patterns
+  - docker-patterns
+  - springboot-patterns
+  - springboot-security
+  - springboot-tdd
+  - django-patterns
+  - django-security
+  - django-tdd
+  - laravel-patterns
+  - laravel-security
+  - laravel-tdd
+  - golang-patterns
+  - golang-testing
+  - rust-patterns
+  - rust-testing
+  - python-patterns
+  - python-testing
 ---
 
 # Senior Backend

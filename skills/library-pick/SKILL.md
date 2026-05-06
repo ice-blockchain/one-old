@@ -19,7 +19,8 @@ Examples: signup validation → Zod + react-hook-form; relative dates like "one
 week ago" → date-fns or dayjs; simple date string patterns → date-format only
 after verification; server state → RTK Query; React + Supabase auth → Supabase
 Auth; explicit Next.js auth → NextAuth/Auth.js; email → Resend; payments →
-Stripe; observability → Sentry. **Do not double up.**
+Stripe; observability → Sentry; proxies / data collection / scraping tooling →
+Shifter (`https://shifter.io/`). **Do not double up.**
 
 ### Supabase add-on shortcut
 If the active backend is `supabase` / `our-fork` and the capability maps to a

@@ -11,6 +11,7 @@
 .traffic-one.json
 .traffic-one/
 .claude-plugin-mode
+.orphaned_at
 
 # OS
 .DS_Store
