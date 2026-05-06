@@ -5,7 +5,7 @@ You are working in a React / Ionic/Capacitor / explicit React Native + TypeScrip
 Never suggest an alternative library to those listed here.
 
 The rules are layered:
-1. **Common baseline** (clean-code, security, stack recommendations, library catalog, git) — applies to any TypeScript project.
+1. **Common baseline** (clean-code, security, stack recommendations, library catalog, senior-engineer orchestration, git) — applies to any TypeScript project.
 2. **Project core** (TypeScript strict, Turborepo, Gitflow) — `rules/core.md`, framework-agnostic.
 3. **Stack core** — React web uses `rules/frontend/react/core.md`; Ionic hybrid mobile uses `rules/frontend/ionic/core.md`; Expo React Native uses `rules/frontend/react-native/core.md`.
    Replace this layer per frontend flavour — never mix stack-specific rules into the framework-agnostic core.
@@ -15,9 +15,19 @@ The rules are layered:
 
 ---
 
-## Senior-engineer team (Codex CLI mirror — no native subagents)
+## Senior-engineer team
 
-Codex has no first-class subagents. When a request fits one of the roles below, follow that role's discipline yourself before moving on. On Claude Code these roles are real subagents under `agents/*.md`; on Cursor they appear as Always-attached rules.
+For non-trivial multi-layer builds, all supported runtimes mirror Claude Code's Traffic One flow exactly: architect first, frontend and backend in parallel, reviewer and tester in parallel, shipper only on explicit deploy intent.
+
+On Claude Code these roles are real subagents under `agents/*.md` and are auto-spawned when the orchestrator triggers. Claude Code subagents do not inherit the parent agent's skills; each `agents/senior-*.md` frontmatter must declare its needed `skills:` explicitly. Codex must announce the Traffic One team before starting a non-trivial multi-layer build. If the active Codex runtime requires explicit user intent before using subagents, ask for that confirmation first; otherwise auto-spawn. If confirmation is not granted or subagents are blocked, continue with per-role prompts in the same dependency order and state that the Traffic One team is being simulated by the main agent. Cursor uses available Cursor/background-agent/task facilities to run the same roles; if no callable adapter exists, simulate with the mirrored `00-agent-senior-*.mdc` role contexts.
+
+Codex role adapter:
+- `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md` and ADR/docs only.
+- `senior-frontend` → `worker`, owned write scope frontend/UI/i18n files only.
+- `senior-backend` → `worker`, owned write scope backend/API/database files only.
+- `senior-reviewer` → `explorer` or `default`, read-only.
+- `senior-tester` → `worker`, owned write scope test files and test infrastructure only.
+- `senior-shipper` → `worker`, deploy/release only after the shipper gate is satisfied.
 
 - **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list. Skills: `library-pick`, `architecture-decision-records`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
 - **Frontend** — only after the plan exists. Implement UI in `apps/*/src/**`, `packages/ui*`, `src/**`. Skills: `create-component`, `create-page`, `create-feature`, `frontend-patterns`, `frontend-design`, `design-system`, `design-audit`, `accessibility`, `i18n-text`; native variants for RN; `ionic-mobile` for Capacitor.
@@ -30,7 +40,7 @@ Codex has no first-class subagents. When a request fits one of the roles below, 
 
 **Deploy gate** (enforced by hook): the deploy commands listed above are denied unless `lastShipperApprovalAt` is fresh (≤10 min). Only the shipper writes that stamp.
 
-**Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper). On Codex/Cursor, follow the same order yourself.
+**Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code and Cursor, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper) whenever the host runtime exposes a callable agent adapter. On Codex, it first announces the role plan and asks for subagent confirmation when the active tool contract requires explicit user intent. If no agent adapter is available or subagents are not confirmed, follow the same order manually with per-role prompts and state that the Traffic One team is being simulated by the main agent.
 
 ---
 
