@@ -2,6 +2,19 @@
 name: senior-reviewer
 description: Use PROACTIVELY after `senior-frontend` or `senior-backend` reports completion, and ALWAYS before any commit, push, or deploy. Triggers on "review the changes", "before I commit", "check this PR", "is this safe to ship", "audit the diff". READ-ONLY by design — never writes or edits files. Emits `APPROVED` or `CHANGES_REQUESTED <numbered list>`. The orchestrator loops back to the implementer subagent on `CHANGES_REQUESTED` with a 2-cycle cap.
 tools: Read, Grep, Glob, Bash
+skills:
+  - security-review
+  - security-scan
+  - repo-scan
+  - context-budget
+  - postgres-review
+  - flutter-dart-code-review
+  - coding-standards
+  - cpp-coding-standards
+  - java-coding-standards
+  - springboot-verification
+  - django-verification
+  - laravel-verification
 ---
 
 # Senior Reviewer

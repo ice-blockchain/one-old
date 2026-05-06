@@ -159,6 +159,7 @@ Or via Cursor Settings → Plugins → Add.
 | Library stack, folder structure, core rules | `rules/core.md`, then run `node scripts/sync-cursor.cjs` |
 | Provider-first stack recommendations | `rules/common/stack-recommendations.md`, then run `node scripts/sync-cursor.cjs` |
 | Curated library catalog | `rules/common/library-catalog.md`, then run `node scripts/sync-cursor.cjs` |
+| Senior-engineer orchestration workflow | `rules/common/senior-engineer-team.md`, `skills/senior-eng-orchestrator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | React web stack rules | `rules/frontend/react/*.md`, then run `node scripts/sync-cursor.cjs` |
 | Ionic/Capacitor hybrid mobile rules | `rules/frontend/ionic/*.md`, then run `node scripts/sync-cursor.cjs` |
 | React Native stack rules, explicit only | `rules/frontend/react-native/*.md`, then run `node scripts/sync-cursor.cjs` |

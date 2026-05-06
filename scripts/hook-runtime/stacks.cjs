@@ -22,6 +22,7 @@ const STACKS = {
       'rules/common/clean-code.md',
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
+      'rules/common/senior-engineer-team.md',
       'rules/frontend/react/core.md',
     ],
     optional: [
@@ -61,6 +62,7 @@ const STACKS = {
       'rules/common/clean-code.md',
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
+      'rules/common/senior-engineer-team.md',
       'rules/frontend/react/core.md',
     ],
     optional: [
@@ -86,6 +88,7 @@ const STACKS = {
       'rules/common/clean-code.md',
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
+      'rules/common/senior-engineer-team.md',
       'rules/frontend/react-native/core.md',
     ],
     optional: [
@@ -113,6 +116,7 @@ const STACKS = {
       'rules/common/clean-code.md',
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
+      'rules/common/senior-engineer-team.md',
       'rules/frontend/react-native/core.md',
     ],
     optional: [
@@ -138,6 +142,7 @@ const STACKS = {
       'rules/common/clean-code.md',
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
+      'rules/common/senior-engineer-team.md',
       'rules/backend/node.md',
       'rules/backend/postgres.md',
     ],
@@ -152,6 +157,7 @@ const STACKS = {
       'rules/common/clean-code.md',
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
+      'rules/common/senior-engineer-team.md',
       'rules/common/stack-recommendations.md',
       'rules/common/library-catalog.md',
     ],
