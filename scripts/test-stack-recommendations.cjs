@@ -382,6 +382,136 @@ test('deploy-gate denies after stale shipper stamp', () => {
   });
 });
 
+// ── Token-economy: graphify hooks + handoff-digests rule loading ────────────
+
+test('pre-graphify-hint emits hint when GRAPH_REPORT.md exists', () => {
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# Graph\n', 'utf8');
+
+    const result = runHook(cwd, 'pre-graphify-hint', '');
+    assert.notEqual(result.stdout.trim(), '', 'expected hint payload');
+    assert.match(result.stdout, /\[graphify\]/);
+    assert.match(result.stdout, /GRAPH_REPORT\.md/);
+  });
+});
+
+test('pre-graphify-hint silent when GRAPH_REPORT.md missing', () => {
+  withTempDir((cwd) => {
+    const result = runHook(cwd, 'pre-graphify-hint', '');
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('post-build-graphify hints on first new-project build without report', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      mode: 'new-project',
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'post-build-graphify', {
+      tool_input: { command: 'pnpm build' },
+    });
+
+    assert.match(result.stdout, /\[graphify\]/);
+    assert.match(result.stdout, /pipx install graphifyy/);
+  });
+});
+
+test('post-build-graphify silent when GRAPH_REPORT.md is fresh', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      mode: 'new-project',
+      onboardingComplete: true,
+    });
+    fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# Graph\n', 'utf8');
+
+    const result = runHook(cwd, 'post-build-graphify', {
+      tool_input: { command: 'pnpm build' },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('post-build-graphify silent on existing-codebase mode', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      mode: 'existing-codebase',
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'post-build-graphify', {
+      tool_input: { command: 'pnpm build' },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('post-build-graphify silent within cooldown after recent hint', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      mode: 'new-project',
+      onboardingComplete: true,
+      graphifyLastHintedAt: new Date().toISOString(),
+    });
+
+    const result = runHook(cwd, 'post-build-graphify', {
+      tool_input: { command: 'pnpm build' },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('SessionStart bundle includes codebase-graph + handoff-digests rules', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-07T14:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const ctx = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(ctx, /codebase-graph\.md/);
+    assert.match(ctx, /agent-handoff-digests\.md/);
+  });
+});
+
+test('plan-gate exempts .traffic-one/digests/ writes', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+    });
+
+    // No plan.md but the digest write should be allowed (sibling under .traffic-one/).
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: '.traffic-one/digests/2026-05-07T14-23-05Z/architect.md',
+        content: '# architect digest\n',
+      },
+    });
+
+    assert.equal(result.stdout, '', 'digest writes must not be blocked by the plan gate');
+  });
+});
+
 let failed = 0;
 
 for (const { name, fn } of tests) {

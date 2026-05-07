@@ -38,6 +38,8 @@ const HANDLERS = {
   'check-library-allowlist':  (rawInput) => handlers.runCheckLibraryAllowlist(rawInput),
   'post-build-page-speed':    (rawInput) => handlers.runPostBuildPageSpeed(rawInput),
   'post-stack-setup':         (rawInput) => handlers.runPostStackSetup(rawInput),
+  'pre-graphify-hint':        (rawInput) => handlers.runPreGraphifyHint(rawInput),
+  'post-build-graphify':      (rawInput) => handlers.runPostBuildGraphifyHint(rawInput),
 };
 
 // ── stdin → string (capped at MAX_STDIN) ─────────────────────────────────────
@@ -139,4 +141,6 @@ module.exports = {
   runPostStackSetup:         handlers.runPostStackSetup,
   runSessionStart:           handlers.runSessionStart,
   runUserPromptSubmit:       handlers.runUserPromptSubmit,
+  runPreGraphifyHint:        handlers.runPreGraphifyHint,
+  runPostBuildGraphifyHint:  handlers.runPostBuildGraphifyHint,
 };

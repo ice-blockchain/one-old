@@ -72,24 +72,29 @@ Skip if:
 
 ## Phases (run in order)
 
-### Phase 0 — Detect
+### Phase 0 — Detect + run-id
 
 Read `.traffic-one.json` and `.traffic-one/plan.md`.
 
 - If `.traffic-one.json` is missing or `mode` / `stack` is unset → invoke the `stack-setup` skill first. The user must commit to a stack before architect can plan.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
 
+**Generate a run-id** (UTC, second precision, filesystem-safe):
+
+```bash
+RUN_ID=$(node -e "console.log(new Date().toISOString().replace(/[:.]/g,'-').replace(/-\d{3}Z$/,'Z'))")
+mkdir -p ".traffic-one/digests/$RUN_ID"
+```
+
+Expected shape: `2026-05-07T14-23-05Z`. Pass this run-id verbatim to every subagent in the synthetic prompt. The full per-phase prompt templates live in `resources/prompt-templates.md`; reference them rather than inlining their full text in this skill body.
+
+Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones.
+
 ### Phase 1 — Architect (sequential, blocking)
 
 Spawn `senior-architect` via the available subagent tool. On Claude Code, use `Task` with `subagent_type: "senior-architect"`. On Codex, after the required confirmation step, use a `worker` subagent with the senior-architect role instructions, owned write scope `.traffic-one/plan.md` plus ADR/docs only. On Cursor, use the closest available background-agent/task adapter with the same role instructions and write scope. Block on its return.
 
-Synthetic prompt body:
-
-> You are running for orchestrator session `<utc-timestamp>`. The user's request is:
->
-> > <user request quoted verbatim>
->
-> Read `.traffic-one.json` and produce `.traffic-one/plan.md` with the six-section template. Cite skills by name. End with `PLAN_READY`.
+Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + (graph if exists), produce `.traffic-one/plan.md`, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
 
 Architect must end its reply with the literal token `PLAN_READY`. If it doesn't, surface to the user and do not proceed to Phase 2.
 
@@ -97,9 +102,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 Single message with TWO subagent calls in the same turn (`senior-frontend` + `senior-backend`). On Codex, use `worker` subagents with disjoint write scopes and tell each worker they are not alone in the codebase.
 
-Synthetic prompts (each):
-
-> Read `.traffic-one/plan.md` Module map and Public contracts. Implement only your layer. The other implementer is running in parallel — assume their public contract from the plan; do not invent it. Surface contract gaps to the orchestrator. End with a one-line status of what you produced and what's pending.
+Synthetic prompts — use the **Phase 2 — Frontend** and **Phase 2 — Backend** templates from `resources/prompt-templates.md`. Each template instructs the implementer to read the architect digest first, then the relevant plan section, then graph nodes, raw files only as last resort. Each writes its own digest (`.traffic-one/digests/<run-id>/{frontend,backend}.md`) before reporting.
 
 Wait for both to return before Phase 3.
 
@@ -107,10 +110,7 @@ Wait for both to return before Phase 3.
 
 Single message with TWO subagent calls (`senior-reviewer` + `senior-tester`). On Codex, use a read-only `explorer` or `default` subagent for reviewer, and a `worker` subagent for tester restricted to test files and test infrastructure.
 
-Synthetic prompts:
-
-- Reviewer: "Run `git diff --name-only HEAD` and review against `.traffic-one/plan.md`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`."
-- Tester: "Add or update tests for the changed surface. Run them. Emit `TESTS_GREEN` or `TESTS_FAILING <numbered list>`."
+Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Both templates instruct the verifier to read the implementer digests first (`.traffic-one/digests/<run-id>/{frontend,backend}.md`), then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool); tester writes `tester.md` directly.
 
 If reviewer returns `CHANGES_REQUESTED` → Phase 3a (loop, max 2 cycles).
 If tester returns `TESTS_FAILING` → Phase 3b (loop, max 2 cycles).
@@ -132,9 +132,19 @@ After 2 cycles, escalate to the user.
 
 Spawn `senior-shipper` ONLY if the user prompt matches `/\b(ship|deploy|release|publish|to prod|to production|to staging|app store|play store)\b/i`.
 
-Pass the reviewer's `APPROVED` summary and tester's `TESTS_GREEN` summary in the synthetic prompt. Shipper handles the `lastShipperApprovalAt` stamp and the platform-specific deploy.
+Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/prompt-templates.md`. The template tells the shipper to read `.traffic-one/digests/<run-id>/{reviewer,tester}.md` first (verifying APPROVED + TESTS_GREEN), then plan § Risks/Cut-list. Shipper handles the `lastShipperApprovalAt` stamp and the platform-specific deploy, then writes `shipper.md` digest.
 
 If no deploy intent in the user message → end with a "next step: say 'ship it' to deploy" line, do NOT spawn shipper.
+
+### Phase 5 — Cleanup (orchestrator only, no subagent)
+
+After Phase 4 (or after Phase 3 if no shipper), rotate the digest history:
+
+```bash
+ls -t .traffic-one/digests | tail -n +4 | xargs -I{} rm -rf ".traffic-one/digests/{}"
+```
+
+Keeps the last 3 run folders for audit; removes older ones. The whole `.traffic-one/digests/` tree is gitignored.
 
 ## In-session bookkeeping
 

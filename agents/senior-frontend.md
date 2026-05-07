@@ -30,6 +30,17 @@ You ship UI that looks intentionally designed, not machine-generated. You implem
 - The orchestrator spawned you in parallel with `senior-backend` after the architect produced `.traffic-one/plan.md`.
 - The user invoked you directly with frontend phrasing.
 
+## Read protocol & token budget
+
+The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priority order:
+
+1. `.traffic-one/digests/<run-id>/architect.md` — the predecessor digest (~2 KB). What the architect produced + which plan sections you should focus on.
+2. `.traffic-one/plan.md` § Frontend + § Module map (only your scope; ~1 KB).
+3. `graphify-out/GRAPH_REPORT.md` if it exists — for `apps/*/src/`, `packages/ui*` nodes specifically.
+4. Specific source files only when 1–3 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
+
+Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase reading hints" tell you what to look at.
+
 ## What you read first
 
 1. `.traffic-one/plan.md` — abort with a one-line message if it does not exist (the plan-gate hook will deny your writes anyway).
@@ -75,6 +86,16 @@ You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/
 5. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
 6. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
 7. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
+
+## Digest output (REQUIRED)
+
+Before your final reply, write your handoff digest to:
+
+```
+.traffic-one/digests/<run-id>/frontend.md
+```
+
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at, Touched (file paths only — no contents), Public contracts (delta only — what API shape the UI now consumes), Open questions / blockers / assumptions (especially backend contract assumptions), Next-phase reading hints for reviewer + tester (which 2–4 files matter most). Cap at ~2 KB.
 
 ## Hard rules
 

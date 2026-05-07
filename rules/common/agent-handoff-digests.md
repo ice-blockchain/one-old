@@ -1,0 +1,75 @@
+---
+# Always loaded. The handoff contract between subagents in the
+# senior-eng-orchestrator flow. Cuts redundant codebase reads across phases.
+---
+
+# Agent handoff digests — token-cheap phase-to-phase contract
+
+Each subagent in the senior-engineer orchestrator flow (`senior-architect`,
+`senior-frontend`, `senior-backend`, `senior-reviewer`, `senior-tester`,
+`senior-shipper`) writes a small digest file at the end of its run. Downstream
+subagents **read the digest first** instead of re-reading the diff or
+re-grepping the repo.
+
+## Digest path
+
+`.traffic-one/digests/<run-id>/<role>.md`
+
+- `<run-id>` — orchestrator's session timestamp, format `YYYY-MM-DDTHH-MM-SSZ`.
+  The orchestrator generates it once in Phase 0 and passes it to every
+  subagent in their synthetic prompt.
+- `<role>` — one of `architect`, `frontend`, `backend`, `reviewer`, `tester`,
+  `shipper`. One file per role, overwritten on re-spawn within the same run
+  (e.g. when reviewer requests changes and the implementer runs again).
+
+## Digest shape (target ≤2 KB / ~500 tokens)
+
+```markdown
+# <role> digest — run <run-id>
+
+verdict: PLAN_READY | APPROVED | CHANGES_REQUESTED | TESTS_GREEN | TESTS_FAILING | SHIPPED
+finished_at: <ISO-8601 UTC>
+
+## Touched
+- path/to/file.ts        # one-line note on what changed
+- path/to/other.tsx      # …
+
+## Public contracts (delta only)
+- `getJobs(filter)` → `Promise<Job[]>` — added `filter.status?: JobStatus`.
+
+## Open questions / blockers / assumptions
+- Backend assumed `Job.status` is a string union; if it's an enum, frontend hook breaks.
+
+## Next-phase reading hints
+- reviewer: focus on `apps/web/src/features/jobs/api.ts` and `supabase/migrations/0002_jobs.sql`.
+- tester: cover the four new endpoints; existing fixtures at `tests/fixtures/jobs.ts`.
+```
+
+Sections are markdown headers; the verdict + finished_at lines at the top are
+machine-readable. **No prose preambles, no full-file dumps.** If you want to
+explain something at length, link out to a doc — don't inline it.
+
+## Read protocol (every downstream subagent follows this order)
+
+1. **Predecessor digest(s)** — `.traffic-one/digests/<run-id>/<predecessor>.md`.
+   Architect-frontend-backend → reviewer reads `frontend.md` + `backend.md`.
+   Reviewer-tester → shipper reads both.
+2. **The plan section** the digest pointed at (`.traffic-one/plan.md` § X).
+3. **graphify report** (`graphify-out/GRAPH_REPORT.md` if it exists).
+4. **Raw `git diff`, `Glob`, `Grep`, `Read`** — only when 1–3 don't answer it.
+
+The orchestrator passes digest paths in synthetic prompts; subagents read the
+digest themselves rather than receiving content inline.
+
+## Hard rules
+
+- Write your digest **before** emitting the terminal status token (PLAN_READY,
+  APPROVED, etc.) — the orchestrator reads the digest after the spawn returns.
+- Cap your digest at ~2 KB. If you have more to say, it belongs in the plan
+  file or in a sibling doc, not in the digest.
+- Overwrite, don't append. Re-spawned implementers replace their previous
+  digest entirely.
+- Never put credentials, env values, or full file contents in a digest.
+- The digest path is exempt from the plan-gate hook (it's under
+  `.traffic-one/`); architect can write `digests/<run-id>/architect.md`
+  before `plan.md` exists if needed, but normal order is plan first.
