@@ -19,7 +19,11 @@ The rules are layered:
 
 For non-trivial multi-layer builds, all supported runtimes mirror Claude Code's Traffic One flow exactly: architect first, frontend and backend in parallel, reviewer and tester in parallel, shipper only on explicit deploy intent.
 
-On Claude Code these roles are real subagents under `agents/*.md` and are auto-spawned when the orchestrator triggers. Claude Code subagents do not inherit the parent agent's skills; each `agents/senior-*.md` frontmatter must declare its needed `skills:` explicitly. Codex must announce the Traffic One team before starting a non-trivial multi-layer build. If the active Codex runtime requires explicit user intent before using subagents, ask for that confirmation first; otherwise auto-spawn. If confirmation is not granted or subagents are blocked, continue with per-role prompts in the same dependency order and state that the Traffic One team is being simulated by the main agent. Cursor uses available Cursor/background-agent/task facilities to run the same roles; if no callable adapter exists, simulate with the mirrored `00-agent-senior-*.mdc` role contexts.
+On Claude Code these roles are real subagents under `agents/*.md` and are auto-spawned when the orchestrator triggers. Claude Code subagents do not inherit the parent agent's skills; each `agents/senior-*.md` frontmatter must declare its needed `skills:` explicitly. Codex must announce the Traffic One team before starting a non-trivial multi-layer build and automatically ask the user whether to run the role subagents, without waiting for the user to mention subagents. Because Codex requires explicit user intent before `spawn_agent`, this is a blocking preflight gate: ask first, then stop and wait for the user's answer before writing a plan, creating files, editing code, or simulating the roles manually. Do not silently simulate the team before asking. If the user declines, subagents are unavailable, or subagents are blocked, continue with per-role prompts in the same dependency order and state that the Traffic One team is being simulated by the main agent. Cursor uses available Cursor/background-agent/task facilities to run the same roles; if no callable adapter exists, simulate with the mirrored `00-agent-senior-*.mdc` role contexts.
+
+Codex preflight wording for matching builds: "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?" Use this wording in English; do not translate this confirmation question based on the user's language.
+
+If a Codex agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.
 
 Codex role adapter:
 - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md` and ADR/docs only.
@@ -40,7 +44,7 @@ Codex role adapter:
 
 **Deploy gate** (enforced by hook): the deploy commands listed above are denied unless `lastShipperApprovalAt` is fresh (≤10 min). Only the shipper writes that stamp.
 
-**Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code and Cursor, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper) whenever the host runtime exposes a callable agent adapter. On Codex, it first announces the role plan and asks for subagent confirmation when the active tool contract requires explicit user intent. If no agent adapter is available or subagents are not confirmed, follow the same order manually with per-role prompts and state that the Traffic One team is being simulated by the main agent.
+**Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code and Cursor, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper) whenever the host runtime exposes a callable agent adapter. On Codex, it first announces the role plan and automatically asks for subagent confirmation for matching multi-layer builds, then stops until the user answers. If no agent adapter is available, the user declines, or subagents are not confirmed, follow the same order manually with per-role prompts and state that the Traffic One team is being simulated by the main agent.
 
 ---
 

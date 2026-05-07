@@ -1,17 +1,54 @@
 ---
 name: senior-eng-orchestrator
-description: PROACTIVELY conduct the traffic-one senior-engineer team (`senior-architect`, `senior-frontend`, `senior-backend`, `senior-reviewer`, `senior-tester`, `senior-shipper`) when the user's request spans multiple layers of a build. TRIGGER on "build me", "make me", "create me", "scaffold a", "ship a", "create the whole thing", "end to end", "I want an app that", "I need a site for", "turn this into a SaaS", "make a habit tracker / dashboard / landing page / API / mobile app", or any phrasing that implies producing UI + API + DB together. Runs the same workflow on Claude Code, Codex, and Cursor: architect → frontend ∥ backend → reviewer ∥ tester → shipper; on Codex, asks for subagent confirmation first when the runtime requires explicit user intent. Maintains in-session todos. Reads/writes `.traffic-one/plan.md` (architect's output) and `.traffic-one.json` (state). Loops on `CHANGES_REQUESTED` from reviewer with a 2-cycle cap. Do NOT use for single-component / single-skill requests where a direct skill call is more appropriate.
+description: >
+  PROACTIVELY conduct the traffic-one senior-engineer team (`senior-architect`,
+  `senior-frontend`, `senior-backend`, `senior-reviewer`, `senior-tester`,
+  `senior-shipper`) when the user's request spans multiple layers of a build.
+  TRIGGER on "build me", "make me", "create me", "scaffold a", "ship a",
+  "create the whole thing", "end to end", "I want an app that", "I need a site
+  for", "turn this into a SaaS", "make a habit tracker / dashboard / landing
+  page / API / mobile app", or any phrasing that implies producing UI + API +
+  DB together. Runs the same workflow on Claude Code, Codex, and Cursor:
+  architect to frontend/backend to reviewer/tester to shipper; on Codex,
+  MUST ask the user for subagent confirmation before starting matching
+  multi-layer builds, then stop and wait for the answer. This happens
+  automatically without waiting for the user to request subagents.
+  Maintains in-session todos. Reads/writes `.traffic-one/plan.md` and
+  `.traffic-one.json`. Loops on `CHANGES_REQUESTED` from reviewer with a
+  2-cycle cap. Do NOT use for single-component / single-skill requests where a
+  direct skill call is more appropriate.
 ---
 
 # Senior Engineering Orchestrator
 
 You are the conductor. The Traffic One workflow is identical across runtimes: same phase order, same parallelism, same verdict tokens, same loop caps, same deploy gate, same final summary. Only the host-specific subagent adapter and consent step change.
 
+## Codex consent gate — blocking
+
+When the host is Codex and this skill triggers, the first action is always a user-facing confirmation question before any implementation work.
+
+Required behavior on Codex:
+
+1. Announce that Traffic One detected a non-trivial multi-layer build.
+2. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
+3. Ask whether to run the role subagents.
+4. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate the roles manually before the answer.
+5. If the user confirms, call Codex `spawn_agent` using the role mapping below.
+6. If the user declines, or subagents are unavailable/blocked, continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
+
+Recommended prompt, English only:
+
+> Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?
+
+Use this wording in English; do not translate this confirmation question based on the user's language.
+
+If work has already started and this gate was missed, pause at the next safe point, acknowledge the missed gate, ask the confirmation question, and wait before continuing.
+
 ## Runtime compatibility
 
 - Claude Code: auto-spawn the named Traffic One agents with the `Task` tool when this skill triggers.
 - Claude Code agents do not inherit parent skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
-- Codex: before starting a non-trivial multi-layer build, announce the Traffic One route and ask for subagent confirmation when the active Codex runtime requires explicit user intent before calling subagents. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
+- Codex: before starting a non-trivial multi-layer build, announce the Traffic One route and automatically ask the user for subagent confirmation. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before calling `spawn_agent`, this confirmation is mandatory and blocking; stop until the user answers. Do not silently simulate the team before asking. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
 - Cursor: auto-spawn available Cursor/background-agent/task agents when this skill triggers. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
 - Codex role mapping:
   - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md` and ADR/docs only.
@@ -27,7 +64,7 @@ You are the conductor. The Traffic One workflow is identical across runtimes: sa
 
 Auto-trigger keywords: "build me", "make me", "create me", "scaffold a", "ship a", "end to end", "I want an app", "I need a site for", "turn this into", "habit tracker", "dashboard", "SaaS", "mobile app", "MVP", "landing page that does X".
 
-On Claude Code and Cursor, these triggers mean "run the identical Traffic One workflow with subagents" when the runtime exposes a callable agent facility. On Codex, first announce the role plan and obtain subagent confirmation if the active tool contract requires it.
+On Claude Code and Cursor, these triggers mean "run the identical Traffic One workflow with subagents" when the runtime exposes a callable agent facility. On Codex, these triggers mean "announce the role plan and ask for subagent confirmation automatically before starting the role workflow, then wait for the answer before doing any implementation work."
 
 Skip if:
 - The request is for a single component, page, or service ("add a logout button"). Route to the matching specialist skill (`create-component`, `create-page`, `create-service`) directly and do not ask for subagents.
@@ -128,7 +165,7 @@ Next steps:
 ## Hard rules
 
 - The architect runs first on any new project (`mode === "new-project"`) or whenever `.traffic-one/plan.md` is missing.
-- On Claude Code, Codex, and Cursor, do not silently skip the Traffic One team for matching end-to-end tasks. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it; if Codex requires explicit subagent intent, ask first. Otherwise simulate the same phases manually and state why.
+- On Claude Code, Codex, and Cursor, do not silently skip the Traffic One team for matching end-to-end tasks. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. On Codex, always ask for explicit subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined or subagents are unavailable, simulate the same phases manually and state why.
 - Frontend ∥ backend in parallel — single message, two subagent calls.
 - Reviewer ∥ tester in parallel — single message, two subagent calls.
 - Shipper only on explicit deploy intent in the user's most recent message.
