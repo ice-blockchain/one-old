@@ -78,29 +78,29 @@ What becomes easier or more difficult to do because of this change?
 
 When a decision moment is detected:
 
-1. **Initialize (first time only)** — if `docs/adr/` does not exist, ask the user for confirmation before creating the directory, a `README.md` seeded with the index table header (see ADR Index Format below), and a blank `template.md` for manual use. Do not create files without explicit consent.
+1. **Initialize (first time only)** — if `.traffic-one/decisions/` does not exist, ask the user for confirmation before creating the directory, a `README.md` seeded with the index table header (see ADR Index Format below), and a blank `template.md` for manual use. Do not create files without explicit consent.
 2. **Identify the decision** — extract the core architectural choice being made
 3. **Gather context** — what problem prompted this? What constraints exist?
 4. **Document alternatives** — what other options were considered? Why were they rejected?
 5. **State consequences** — what are the trade-offs? What becomes easier/harder?
-6. **Assign a number** — scan existing ADRs in `docs/adr/` and increment
-7. **Confirm and write** — present the draft ADR to the user for review. Only write to `docs/adr/NNNN-decision-title.md` after explicit approval. If the user declines, discard the draft without writing any files.
-8. **Update the index** — append to `docs/adr/README.md`
+6. **Assign a number** — scan existing ADRs in `.traffic-one/decisions/` and increment
+7. **Confirm and write** — present the draft ADR to the user for review. Only write to `.traffic-one/decisions/NNNN-decision-title.md` after explicit approval. If the user declines, discard the draft without writing any files.
+8. **Update the index** — append to `.traffic-one/decisions/README.md`
 
 ### Reading Existing ADRs
 
 When a user asks "why did we choose X?":
 
-1. Check if `docs/adr/` exists — if not, respond: "No ADRs found in this project. Would you like to start recording architectural decisions?"
-2. If it exists, scan `docs/adr/README.md` index for relevant entries
+1. Check if `.traffic-one/decisions/` exists — if not, respond: "No ADRs found in this project. Would you like to start recording architectural decisions?"
+2. If it exists, scan `.traffic-one/decisions/README.md` index for relevant entries
 3. Read matching ADR files and present the Context and Decision sections
 4. If no match is found, respond: "No ADR found for that decision. Would you like to record one now?"
 
 ### ADR Directory Structure
 
 ```
-docs/
-└── adr/
+.traffic-one/
+└── decisions/
     ├── README.md              ← index of all ADRs
     ├── 0001-use-nextjs.md
     ├── 0002-postgres-over-mongo.md
@@ -183,7 +183,7 @@ proposed → accepted → [deprecated | superseded by ADR-NNNN]
 - **Planner agent**: when the planner proposes architecture changes, suggest creating an ADR
 - **Code reviewer agent**: flag PRs that introduce architectural changes without a corresponding ADR
 - **Auto-Documentation Generator**: when the user explicitly asks to generate or
-  refresh project docs, use this skill for `docs/adr/` rather than inventing a
+  refresh project docs, use this skill for `.traffic-one/decisions/` rather than inventing a
   second ADR format. That explicit docs request counts as approval to scaffold a
-  missing `docs/adr/` index/template; implicit decision moments still require
+  missing `.traffic-one/decisions/` index/template; implicit decision moments still require
   confirmation before writing ADR files.

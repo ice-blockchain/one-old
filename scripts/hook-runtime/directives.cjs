@@ -146,12 +146,21 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      \`tailwind.config.ts\` (extends \`@app/tailwind-config\` preset), \`postcss.config.cjs\`.
      Run \`npx shadcn@latest init\` here, then add the first batch:
      \`npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator\`.
-  3. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
+  3. Project memory baseline: create \`.traffic-one/\` and run
+     \`project-memory\`. Verify the root companion state file
+     \`.traffic-one.json\` exists with the full onboarding schema, then write
+     product.md, stack.md, rules/coding.md, rules/security.md, rules/AGENTS.md,
+     known-issues.md, agent-log.md, .agentignore, mcp.json, deployments.jsonl,
+     schema.sql, decisions/, and skills/ when reusable team commands are
+     needed. Root AGENTS.md should symlink to
+     \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate it from the
+     same source. Generate root CLAUDE.md from the same source.
+  4. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
      Tailwind preset + \`globals.css\`), api-client/, ws-client/, utils/, tsconfig/,
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).
      Do NOT create a \`packages/design-tokens\` package — design tokens live in the
      Tailwind preset and the HSL CSS variables in \`globals.css\`.
-  4. Mandatory design gate: before writing any generated UI, invoke
+  5. Mandatory design gate: before writing any generated UI, invoke
      \`frontend-design\` and apply \`rules/frontend/ui-quality.md\`,
      \`rules/frontend/typography.md\`, and the active stack's design rules.
      State 2–3 real product references when the user did not provide any,
@@ -159,15 +168,15 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      and content-rich. Missing Supabase/env config may show one shared setup
      banner, but never ship only duplicated config banners, empty filters, or
      blank placeholder panels.
-  5. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
+  6. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
-     relevant canonical docs from \`rules/common/documentation.md\`:
+     relevant root-level canonical docs from \`rules/common/documentation.md\`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
-     architecture.md/docs/architecture.md, docs/adr/, api.md, database.md,
+     architecture.md, .traffic-one/decisions/, api.md, database.md,
      deployment.md, security.md, CHANGELOG.md, environment-setup.md,
      CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
      as Unverified; do not leave only a lightweight README.
-  6. Initialise git with Gitflow branches (\`main\`, \`develop\`).
+  7. Initialise git with Gitflow branches (\`main\`, \`develop\`).
 
 For \`react-frontend-only\`: a single Vite app under root \`src/\` (no apps/, no packages/).
 \`src/styles/globals.css\` + \`tailwind.config.ts\` + \`npx shadcn@latest init\` + the
@@ -224,7 +233,8 @@ function autoDetectedAnnouncement(detected) {
     `stack=${detected.stack} · frontend=${detected.frontend || '-'} · backend=${detected.backend || '-'} · realtime=${detected.realtime || 'none'}`,
     `evidence: ${detected.evidence.join('; ')}`,
     'On your first reply, briefly confirm the detected stack (one line) and continue.',
-    'Before normal feature work, run the auto-documentation baseline reconciliation: create missing canonical docs and update existing docs in place per rules/common/documentation.md. Preserve the project docs layout and mark unknown facts as Unverified.',
+    'Before normal feature work, run the project-memory baseline reconciliation: create or update `.traffic-one/` memory from verified repo facts, migrate legacy ADRs into `.traffic-one/decisions/` when safe, and never include secrets.',
+    'Then run the auto-documentation baseline reconciliation: create missing canonical docs at the repo root and update existing docs in place per rules/common/documentation.md. Migrate legacy docs/ canonical files to root when safe and mark unknown facts as Unverified.',
     'For any frontend UI work, the mandatory design gate applies: use frontend-design/UI-quality rules, state real-product references or match the existing aesthetic, avoid sparse config-banner-dominated screens, and verify responsive states.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];

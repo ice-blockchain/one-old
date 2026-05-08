@@ -29,6 +29,18 @@ contract, env validation, and migrations/RLS baseline are in place.
 ├── .prettierrc
 ├── .nvmrc                         pin Node major
 ├── .env.example                   documented env var names only, no secrets
+├── .traffic-one/
+│   ├── product.md                 one-page PRD and success metric
+│   ├── stack.md                   selected stack and version pins
+│   ├── known-issues.md            open bugs and intentional deferrals
+│   ├── schema.sql                 current DB schema snapshot
+│   ├── deployments.jsonl          append-only deploy log, no secrets
+│   ├── agent-log.md               short session summaries
+│   ├── mcp.json                   MCP server inventory, env var names only
+│   ├── .agentignore               paths agents avoid unless explicitly asked
+│   ├── decisions/                 ADRs
+│   ├── rules/                     coding/security rules + AGENTS.md source
+│   └── skills/                    reusable local team commands when needed
 ├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
 ├── .github/
 │   └── workflows/                 CI/CD: verify, preview deploy, production deploy
@@ -124,7 +136,28 @@ contract, env validation, and migrations/RLS baseline are in place.
    - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`.
    - Initialise git, set Gitflow branches: `main`, `develop`.
 
-2. **Shared packages first**
+2. **Project memory baseline**
+   - Create `.traffic-one/` before feature work and invoke `project-memory`.
+   - Confirm root `.traffic-one.json` exists with the full Traffic One state
+     schema. `.traffic-one/` is memory; `.traffic-one.json` is stack/state.
+   - Write `.traffic-one/product.md`, `.traffic-one/stack.md`,
+     `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
+     `.traffic-one/rules/AGENTS.md`, `.traffic-one/known-issues.md`,
+     `.traffic-one/agent-log.md`, `.traffic-one/.agentignore`,
+     `.traffic-one/mcp.json`, `.traffic-one/deployments.jsonl`,
+     `.traffic-one/schema.sql`, `.traffic-one/decisions/`, and
+     `.traffic-one/skills/` when reusable commands are needed.
+   - Root `AGENTS.md` should symlink to `.traffic-one/rules/AGENTS.md` when
+     safe; otherwise generate root `AGENTS.md` from the same source. Root
+     `CLAUDE.md` is generated from the same source for Claude Code
+     compatibility.
+   - If the project has no DB yet, `.traffic-one/schema.sql` says
+     `Not applicable` with the reason. Once migrations exist, refresh it after
+     every migration.
+   - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`
+     gitignored as local caches; the memory baseline files above are source.
+
+3. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
    - `packages/tailwind-config` — shared Tailwind preset + `globals.css`
      containing the shadcn HSL theme block (light + `.dark`). This is the only
@@ -137,7 +170,7 @@ contract, env validation, and migrations/RLS baseline are in place.
      The CLI populates `src/components/ui/` and `src/lib/utils.ts` (`cn()`).
      Storybook stories cover the primitives.
 
-3. **Supabase backend baseline**
+4. **Supabase backend baseline**
    - Add `@supabase/supabase-js` and validate `VITE_SUPABASE_URL` /
      `VITE_SUPABASE_ANON_KEY` at startup with Zod.
    - Create `supabase/migrations/` for schema, indexes, and RLS policies.
@@ -148,7 +181,7 @@ contract, env validation, and migrations/RLS baseline are in place.
      user-data table.
    - Do not store service-role keys or other secrets in frontend env vars.
 
-4. **Mandatory frontend design gate**
+5. **Mandatory frontend design gate**
    - Invoke `frontend-design` and apply `rules/frontend/ui-quality.md` plus
      `rules/frontend/typography.md` before writing any generated app, site,
      page, screen, or feature UI. React web also applies
@@ -176,7 +209,7 @@ contract, env validation, and migrations/RLS baseline are in place.
      hierarchy, text fit, overflow, focus, loading, empty, error, disabled, and
      reduced-motion states.
 
-5. **App scaffold (`apps/web`)**
+6. **App scaffold (`apps/web`)**
    - Vite + React + TS template.
    - Tailwind v3.4 + PostCSS: `tailwind.config.ts` extends
      `@app/tailwind-config/preset`; `postcss.config.cjs` wires `tailwindcss`
@@ -188,7 +221,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`.
 
-6. **CI/CD pipeline (use Turborepo's caching)**
+7. **CI/CD pipeline (use Turborepo's caching)**
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
    - Remote cache enabled if available; otherwise local.
    - Storybook build artefact uploaded for PR previews.
@@ -197,7 +230,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Supabase migration jobs use `supabase/setup-cli`, encrypted
      `SUPABASE_ACCESS_TOKEN`, and per-environment project/db-password secrets.
 
-7. **Deployment artifact baseline (smallest production set)**
+8. **Deployment artifact baseline (smallest production set)**
    - Choose one static host target for the SPA: Vercel, Netlify, or Cloudflare
      Pages. Commit that host's manifest/fallback files and do not add a
      Dockerfile unless the plan explicitly selects self-hosting, BYOC,
@@ -222,28 +255,28 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Configure the custom domain, automatic TLS, security headers, and an HSTS
      preload readiness check before calling production complete.
 
-8. **Tooling guards**
+9. **Tooling guards**
    - Husky + lint-staged for pre-commit format + lint.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-9. **Mandatory auto-documentation baseline**
+10. **Mandatory auto-documentation baseline**
    - Invoke `auto-documentation-generator` for every generated project before
      calling the scaffold complete, even if the user did not explicitly request
      docs.
-   - Create or refresh the relevant canonical docs from
+   - Create or refresh the relevant root-level canonical docs from
      `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
-     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md` or
-     `docs/architecture.md`, `docs/adr/`, `api.md`, `database.md`,
-     `deployment.md`, `security.md`, `CHANGELOG.md`, `environment-setup.md`,
-     `CONTRIBUTING.md`, and served `/llms.txt` for web surfaces.
+     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md`,
+     `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
+     `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`,
+     and served `/llms.txt` for web surfaces.
    - Mark facts as `Unverified` with the exact needed command/input instead of
      inventing deploy URLs, database output, secret values, or production
      configuration.
    - Do not leave the project with only a README. The reviewer must treat a
      missing mandatory docs baseline as `CHANGES_REQUESTED`.
 
-10. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
+11. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
    a. Add Supabase as a workspace devDependency:
       ```bash
@@ -312,7 +345,7 @@ contract, env validation, and migrations/RLS baseline are in place.
       `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
-11. **Codebase graph (after first successful build, optional but recommended)**
+12. **Codebase graph (after first successful build, optional but recommended)**
 
    Once the workspace scaffolds and `pnpm build` passes once, install graphify
    and generate `graphify-out/GRAPH_REPORT.md`. Subagents (`senior-architect`,
@@ -345,6 +378,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    ```
    graphify-out/
    .traffic-one/digests/
+   .traffic-one/reports/
    ```
 
 ## What happens when the user asks to build something

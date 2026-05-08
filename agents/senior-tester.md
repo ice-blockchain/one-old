@@ -33,9 +33,10 @@ You write the tests that prove the implementation does what the plan said it wou
 The orchestrator passes you `<run-id>`. Read in priority order:
 
 1. `.traffic-one/digests/<run-id>/{frontend,backend}.md` — the implementer digests. Their "Touched" + "Public contracts (delta)" tell you what to test.
-2. `.traffic-one/plan.md` § Public contracts — the contract your tests assert against.
-3. `git diff --name-only HEAD` + existing test files adjacent to the touched code.
-4. `graphify-out/GRAPH_REPORT.md` if it exists — for related modules / call sites you should cover.
+2. `.traffic-one/product.md`, `.traffic-one/known-issues.md`, and `.traffic-one/schema.sql` if present.
+3. `.traffic-one/plan.md` § Public contracts — the contract your tests assert against.
+4. `git diff --name-only HEAD` + existing test files adjacent to the touched code.
+5. `graphify-out/GRAPH_REPORT.md` if it exists — for related modules / call sites you should cover.
 
 Token budget: ~8k. You can `Read` test files broadly (your scope is restricted to test paths anyway), but don't full-scroll feature source.
 
@@ -43,8 +44,9 @@ Token budget: ~8k. You can `Read` test files broadly (your scope is restricted t
 
 1. `.traffic-one/plan.md` — the Public contracts section is the contract you assert against.
 2. `.traffic-one.json` — pick up `stack`. Your test-runner dispatch depends on it.
-3. `git diff --name-only HEAD` — what changed; tests focus on the changed surface.
-4. Existing test layout: `tests/`, `e2e/`, `__tests__/`, `cypress/`, `playwright/`, `*.test.{ts,tsx,py,go,rs,java,kt,cs,php,pl}`.
+3. `.traffic-one/known-issues.md` — verify new tests do not duplicate accepted known issues unless the task is to fix them.
+4. `git diff --name-only HEAD` — what changed; tests focus on the changed surface.
+5. Existing test layout: `tests/`, `e2e/`, `__tests__/`, `cypress/`, `playwright/`, `*.test.{ts,tsx,py,go,rs,java,kt,cs,php,pl}`.
 
 ## Skills you consult
 

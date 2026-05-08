@@ -119,8 +119,11 @@ test('new project onboarding defaults to supabase backend', () => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(defaultBackendValue(), 'supabase');
+    assert.equal(state.version, 2);
+    assert.equal(state.mode, 'new-project');
     assert.match(context, /backend=supabase/);
     assert.match(context, /Supabase \(managed Postgres with Auth, Storage, Realtime, and RLS\)/);
   });
@@ -230,11 +233,85 @@ test('new projects must include the auto-documentation baseline', () => {
   assert.match(architect, /mandatory for every `mode: new-project`/);
   assert.match(architect, /do not leave only a README/);
   assert.match(reviewer, /Missing facts are\s+explicitly `Unverified`/);
-  assert.match(promptTemplates, /run `auto-documentation-generator` after the plan even\s+when the user did not ask for docs/);
+  assert.match(promptTemplates, /run `project-memory` and\s+`auto-documentation-generator` after the plan even/);
   assert.match(agentsMirror, /auto-documentation is mandatory/);
   assert.match(claude, /@rules\/common\/documentation\.md/);
   assert.match(cursorDocumentation, /For `mode: new-project`, this is mandatory/);
   assert.match(cursorNewProject, /Mandatory auto-documentation baseline/);
+});
+
+test('project memory baseline is integrated across runtimes', () => {
+  const memoryRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'project-memory.md'), 'utf8');
+  const memorySkill = fs.readFileSync(path.join(ROOT, 'skills', 'project-memory', 'SKILL.md'), 'utf8');
+  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
+  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const stacks = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8');
+  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
+  const backend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-backend.md'), 'utf8');
+  const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const cursorMemory = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-project-memory.mdc'), 'utf8');
+  const cursorNewProject = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8');
+
+  assert.match(memoryRules, /\.traffic-one\/product\.md/);
+  assert.match(memoryRules, /Root `\.traffic-one\.json`/);
+  assert.match(memoryRules, /\.traffic-one\/decisions\//);
+  assert.match(memoryRules, /\.traffic-one\/rules\/coding\.md/);
+  assert.match(memoryRules, /\.traffic-one\/deployments\.jsonl/);
+  assert.match(memoryRules, /\.traffic-one\/mcp\.json/);
+  assert.match(memoryRules, /Root `AGENTS\.md` should symlink/);
+  assert.match(memorySkill, /Create, refresh, or audit the Traffic One `.traffic-one\/` project memory/);
+  assert.match(memorySkill, /root `\.traffic-one\.json`/);
+  assert.match(newProjectRule, /Project memory baseline/);
+  assert.match(newProjectRule, /root `\.traffic-one\.json` exists/);
+  assert.match(existingRule, /run the `project-memory` baseline reconciliation/);
+  assert.match(existingRule, /root `\.traffic-one\.json` exists/);
+  assert.match(directives, /Project memory baseline: create/);
+  assert.match(directives, /Verify the root companion state file/);
+  assert.match(directives, /project-memory/);
+  assert.match(stacks, /rules\/common\/project-memory\.md/);
+  assert.match(skillFilters, /'project-memory'/);
+  assert.match(architect, /project-memory/);
+  assert.match(backend, /refresh `.traffic-one\/schema\.sql`/);
+  assert.match(shipper, /Append one JSON line to `.traffic-one\/deployments\.jsonl`/);
+  assert.match(promptTemplates, /Read .traffic-one.json plus existing project memory/);
+  assert.match(agentsMirror, /Project memory — `.traffic-one\/`/);
+  assert.match(claude, /@rules\/common\/project-memory\.md/);
+  assert.match(cursorMemory, /\.traffic-one\/agent-log\.md/);
+  assert.match(cursorNewProject, /Project memory baseline/);
+});
+
+test('SessionStart bundle includes project-memory guidance and banner', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T12:00:00Z',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'product.md'), '# Product\n', 'utf8');
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /\[memory\] \.traffic-one\/ project memory present/);
+    assert.match(context, /rules\/common\/project-memory\.md/);
+    assert.match(context, /\.traffic-one\/product\.md/);
+    assert.match(context, /\.traffic-one\/deployments\.jsonl/);
+  });
 });
 
 test('SessionStart bundle includes mandatory auto-docs guidance', () => {
@@ -276,17 +353,18 @@ test('existing projects must reconcile the auto-documentation baseline', () => {
   const cursorExisting = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-existing-codebase.mdc'), 'utf8');
 
   assert.match(documentationRules, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
-  assert.match(documentationRules, /If a canonical doc does not\s+exist, create it/);
-  assert.match(documentationRules, /If it already exists, update it in\s+place/);
+  assert.match(documentationRules, /If a canonical doc does not\s+exist, create it from verified repo facts at the repo root/);
+  assert.match(documentationRules, /If it already\s+exists, update it in place/);
+  assert.match(documentationRules, /legacy canonical docs exist under `docs\/`, migrate/);
   assert.match(existingRule, /Before normal feature work/);
-  assert.match(existingRule, /If a canonical doc does not exist, create it/);
+  assert.match(existingRule, /If a canonical doc does not exist, create it from verified repo facts at the\s+repo root/);
   assert.match(existingRule, /If a canonical doc already exists, update it in place/);
-  assert.match(directives, /create missing canonical docs and update existing docs in place/);
+  assert.match(directives, /create missing canonical docs at the repo root and update existing docs in place/);
   assert.match(architect, /every `mode: existing-codebase` \/ `existing-with-supabase`/);
   assert.match(reviewer, /Existing projects have had the same docs baseline reconciled/);
   assert.match(autoDocs, /In existing projects, reconcile the docs baseline/);
-  assert.match(promptTemplates, /existing-with-supabase`, run it before normal feature work/);
-  assert.match(agentsMirror, /if a canonical doc does not exist, create it/);
+  assert.match(promptTemplates, /`existing-with-supabase`, run them before normal feature work/);
+  assert.match(agentsMirror, /if a canonical doc does not exist, create it from verified repo facts at the repo root/);
   assert.match(cursorDocumentation, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
   assert.match(cursorExisting, /If a canonical doc already exists, update it in place/);
 });
@@ -307,7 +385,7 @@ test('existing project SessionStart includes docs reconciliation guidance', () =
     assert.equal(state.mode, 'existing-codebase');
     assert.match(context, /rules\/modes\/existing-codebase\.md/);
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
     assert.match(context, /Before normal feature work/);
   });
 });
@@ -318,6 +396,16 @@ test('all stack bundles include documentation defaults', () => {
       spec.mandatory.includes('rules/common/documentation.md'),
       true,
       `${stackId} must load documentation defaults mandatorily`,
+    );
+  }
+});
+
+test('all stack bundles include project-memory defaults', () => {
+  for (const [stackId, spec] of Object.entries(STACKS)) {
+    assert.equal(
+      spec.mandatory.includes('rules/common/project-memory.md'),
+      true,
+      `${stackId} must load project-memory defaults mandatorily`,
     );
   }
 });
@@ -453,7 +541,7 @@ test('existing React Native project SessionStart includes docs reconciliation gu
     assert.equal(state.mode, 'existing-codebase');
     assert.equal(state.stack, 'react-native-expo-app');
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
   });
 });
 
@@ -477,7 +565,7 @@ test('existing Go project SessionStart includes docs reconciliation guidance', (
     assert.equal(state.stack, 'minimal');
     assert.match(context, /go\.mod detected/);
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
     assert.match(context, /Before normal feature work/);
   });
 });
@@ -501,7 +589,7 @@ test('existing unknown stack falls back to minimal with docs reconciliation guid
     assert.equal(state.stack, 'minimal');
     assert.match(context, /existing codebase detected/);
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
   });
 });
 
@@ -659,6 +747,25 @@ test('plan-gate denies feature write on new-project without plan', () => {
   });
 });
 
+test('state-gate denies feature write when project memory exists without state', () => {
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'stack.md'), '# Stack\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/jobs/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /State gate/);
+    assert.match(result.stdout, /\.traffic-one\.json/);
+  });
+});
+
 test('plan-gate allows feature write when plan exists', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
@@ -697,7 +804,7 @@ test('plan-gate allows .traffic-one/plan.md write itself', () => {
   });
 });
 
-test('plan-gate allows docs/ on new-project without plan', () => {
+test('plan-gate allows root architecture docs on new-project without plan', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
       mode: 'new-project',
@@ -706,7 +813,7 @@ test('plan-gate allows docs/ on new-project without plan', () => {
 
     const result = runHook(cwd, 'check-architecture-write', {
       tool_input: {
-        file_path: 'docs/architecture.md',
+        file_path: 'architecture.md',
         content: '# Architecture\n',
       },
     });
