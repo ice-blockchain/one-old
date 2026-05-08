@@ -603,6 +603,35 @@ test('database architect guidance is merged, not duplicated', () => {
   assert.match(migrationSkill, /ALTER COLUMN TYPE/);
 });
 
+test('production readiness score guidance is merged, not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const verificationLoop = fs.readFileSync(path.join(skillsRoot, 'verification-loop', 'SKILL.md'), 'utf8');
+  const stackRecommendations = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'stack-recommendations.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+
+  assert.equal(skillNames.includes('production-readiness-score'), false);
+  assert.equal(skillNames.includes('readiness-score'), false);
+  assert.equal(skillNames.includes('ai-production-readiness-score'), false);
+  assert.match(verificationLoop, /Production-Readiness Score/);
+  assert.match(verificationLoop, /8 weighted dimensions/);
+  assert.match(verificationLoop, /OWASP ASVS \/ OWASP Top 10:2025/);
+  assert.match(verificationLoop, /AWS Well-Architected/);
+  assert.match(verificationLoop, /build\/release\/run/);
+  assert.match(verificationLoop, /CrUX/);
+  assert.match(verificationLoop, /idempotency keys/);
+  assert.match(verificationLoop, /service_role` key in client/);
+  assert.match(stackRecommendations, /Production-Readiness Score/);
+  assert.match(stackRecommendations, /LCP <= 2\.5s, INP <= 200ms/);
+  assert.match(reviewer, /Production-Readiness\s+Score/);
+  assert.match(shipper, /Production-Readiness Score/);
+  assert.match(agentsMirror, /Production-readiness score/);
+});
+
 test('plan-gate exempts .traffic-one/digests/ writes', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
