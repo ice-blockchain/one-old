@@ -36,6 +36,25 @@ Traffic One's active stack core remains authoritative.
   the user or existing project has a stronger store.
 - JavaScript package manager: pnpm for workspaces and app projects.
 
+## Deployment Artifact Defaults
+
+- Generate one static-host manifest for React SPA + Supabase deployments before
+  considering containers. Vercel, Netlify, or Cloudflare Pages config is enough
+  for the SPA; Docker is reserved for self-hosted, BYOC, SSR/server-runtime, or
+  container-only plans.
+- Check in `.env.example`, `.nvmrc`, `packageManager`/`engines`, lockfile, and
+  a GitHub Actions workflow that runs install -> typecheck -> test -> build ->
+  preview deploy on PR -> production deploy on `main`/release merge.
+- Real secrets live only in `.env.local`, encrypted host variables, or GitHub
+  Actions secrets. CI uses frozen lockfile install and fails on lockfile drift.
+- Add a monitorable `/health` path via Supabase Edge Function, host function, or
+  hosted heartbeat. Capacitor apps also ship a force-update/version check.
+- Rollback plan = previous immutable frontend deployment plus a forward-only
+  undo migration for DB changes; do not rely on `pg_restore` as the normal
+  rollback path.
+- Configure custom domain, automatic TLS, security headers, and HSTS preload
+  readiness before calling production complete.
+
 ## Stack-Specific Defaults
 
 - React + Supabase: this is the default recommendation for new React projects
