@@ -340,6 +340,68 @@ function hasAllowComment(text, index, token) {
   return context.includes(token.toLowerCase());
 }
 
+function isDocumentationOrFixturePath(filePath) {
+  const normalized = toPosix(filePath);
+  const base = path.basename(normalized).toLowerCase();
+  return (
+    normalized.endsWith('.md') ||
+    normalized.endsWith('.mdc') ||
+    normalized.startsWith('skills/') ||
+    normalized.startsWith('rules/') ||
+    normalized.startsWith('agents/') ||
+    normalized.startsWith('docs/') ||
+    normalized.startsWith('.cursor/rules/') ||
+    normalized.startsWith('test/') ||
+    normalized.startsWith('tests/') ||
+    normalized.includes('/test/') ||
+    normalized.includes('/tests/') ||
+    normalized.includes('/__tests__/') ||
+    normalized.includes('/fixtures/') ||
+    normalized.includes('/__fixtures__/') ||
+    normalized.includes('/mocks/') ||
+    normalized.includes('/__mocks__/') ||
+    /\.(test|spec)\.[cm]?[jt]sx?$/.test(normalized) ||
+    /^test-.*\.[cm]?js$/.test(base) ||
+    ['agents.md', 'claude.md', 'readme.md'].includes(base)
+  );
+}
+
+function isRuntimeAppSecurityPath(filePath) {
+  const normalized = toPosix(filePath);
+  if (isDocumentationOrFixturePath(normalized)) {
+    return false;
+  }
+  return (
+    normalized.startsWith('apps/') ||
+    normalized.startsWith('src/') ||
+    normalized.startsWith('server/') ||
+    normalized.startsWith('api/') ||
+    normalized.startsWith('services/') ||
+    normalized.startsWith('supabase/functions/') ||
+    normalized.startsWith('packages/api') ||
+    normalized.startsWith('packages/ws-client/') ||
+    normalized.startsWith('packages/ui/') ||
+    normalized.startsWith('packages/ui-native/') ||
+    /\.(route|controller)\.[cm]?[jt]s$/.test(normalized)
+  );
+}
+
+function isSecurityHeaderConfigPath(filePath) {
+  const normalized = toPosix(filePath);
+  const base = path.basename(normalized).toLowerCase();
+  return (
+    base === '_headers' ||
+    base === 'vercel.json' ||
+    base === 'netlify.toml' ||
+    base === 'wrangler.toml' ||
+    base === 'next.config.js' ||
+    base === 'next.config.mjs' ||
+    base === 'next.config.ts' ||
+    normalized.includes('/nginx') ||
+    normalized.includes('/caddyfile')
+  );
+}
+
 function scanExternalTools(cwd, reportDir, report) {
   const gitleaks = hasCommand('gitleaks', cwd, process.env);
   const trufflehog = hasCommand('trufflehog', cwd, process.env);
@@ -480,15 +542,18 @@ function scanSecrets(cwd, textFiles, report) {
   const hardcodedFallback = /(?:process\.env|import\.meta\.env|Deno\.env\.get\([^)]+\))[\s\S]{0,80}(?:\|\||\?\?)[\s\S]{0,30}['"][^'"]*(?:sk-|service_role|sb_secret_|postgres(?:ql)?:\/\/|JWT_SECRET|SUPABASE_SERVICE_ROLE)/g;
 
   for (const { filePath, text } of textFiles) {
+    const isExample = isDocumentationOrFixturePath(filePath);
     const isClientSurface = /(^|\/)(src|app|components|pages|packages\/ui|packages\/ui-native)\//.test(filePath)
       && !/(server|api|supabase\/functions|\.test\.|\.spec\.)/.test(filePath);
-    for (const match of text.matchAll(clientSecretName)) {
-      report.addIssue('high', 'secrets', 'Client-prefixed environment variable appears to contain a secret.', {
-        file: filePath,
-        line: lineForIndex(text, match.index || 0),
-        evidence: match[0],
-        remediation: 'Move this value to server-only env or Supabase Edge Function secrets.',
-      });
+    if (!isExample) {
+      for (const match of text.matchAll(clientSecretName)) {
+        report.addIssue('high', 'secrets', 'Client-prefixed environment variable appears to contain a secret.', {
+          file: filePath,
+          line: lineForIndex(text, match.index || 0),
+          evidence: match[0],
+          remediation: 'Move this value to server-only env or Supabase Edge Function secrets.',
+        });
+      }
     }
     for (const match of text.matchAll(secretValue)) {
       if (isClientSurface || /capacitor\.config|app\.json|app\.config|eas\.json/.test(filePath)) {
@@ -500,12 +565,14 @@ function scanSecrets(cwd, textFiles, report) {
         });
       }
     }
-    for (const match of text.matchAll(hardcodedFallback)) {
-      report.addIssue('high', 'secrets', 'Environment variable has a hardcoded secret fallback.', {
-        file: filePath,
-        line: lineForIndex(text, match.index || 0),
-        remediation: 'Fail fast on missing env vars instead of shipping fallback credentials.',
-      });
+    if (!isExample) {
+      for (const match of text.matchAll(hardcodedFallback)) {
+        report.addIssue('high', 'secrets', 'Environment variable has a hardcoded secret fallback.', {
+          file: filePath,
+          line: lineForIndex(text, match.index || 0),
+          remediation: 'Fail fast on missing env vars instead of shipping fallback credentials.',
+        });
+      }
     }
     if (/localStorage\.(?:setItem|getItem)\([^)]*(?:token|jwt|session|refresh)/i.test(text)) {
       report.addIssue('high', 'auth', 'JWT/session token appears to be stored in localStorage.', {
@@ -653,7 +720,10 @@ function scanSupabaseSql(textFiles, report) {
 }
 
 function scanAppSecurity(cwd, textFiles, report) {
-  const allText = textFiles.map(({ text }) => text).join('\n');
+  const appTextFiles = textFiles.filter(({ filePath }) => isRuntimeAppSecurityPath(filePath));
+  const headerTextFiles = textFiles.filter(({ filePath }) =>
+    isRuntimeAppSecurityPath(filePath) || isSecurityHeaderConfigPath(filePath));
+  const allText = headerTextFiles.map(({ text }) => text).join('\n');
   const hasHeaderEvidence = /content-security-policy|frame-ancestors|strict-transport-security|permissions-policy|referrer-policy/i.test(allText);
   const packageJson = readPackageJson(cwd);
   const deps = packageJson ? { ...(packageJson.dependencies || {}), ...(packageJson.devDependencies || {}) } : {};
@@ -663,7 +733,7 @@ function scanAppSecurity(cwd, textFiles, report) {
     });
   }
 
-  for (const { filePath, text } of textFiles) {
+  for (const { filePath, text } of appTextFiles) {
     const lowerPath = filePath.toLowerCase();
     const isServer = /(^|\/)(server|api|routes?|controllers?|supabase\/functions)(\/|$)|\.(route|controller)\.(ts|js)$/.test(lowerPath);
     const isStateChanging = /\b(POST|PUT|PATCH|DELETE)\b|export\s+async\s+function\s+(POST|PUT|PATCH|DELETE)|Deno\.serve|app\.(post|put|patch|delete)\(/.test(text);

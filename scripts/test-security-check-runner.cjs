@@ -165,6 +165,33 @@ test('secret-like values in client source fail', () => {
   });
 });
 
+test('documented dangerous patterns and test fixtures do not fail app heuristics', () => {
+  withTempDir((cwd) => {
+    writeFile(cwd, 'package.json', JSON.stringify({ dependencies: {} }, null, 2));
+    writeFile(cwd, 'package-lock.json', '{}\n');
+    writeFile(cwd, 'rules/common/security.md', [
+      '# Security docs',
+      'Never use dangerouslySetInnerHTML without sanitization.',
+      'Admin access must not be gated only in client/UI code.',
+      '',
+    ].join('\n'));
+    writeFile(cwd, 'skills/create-service/SKILL.md', [
+      '# Upload docs',
+      'When using storage.from().upload(), validate MIME type and size.',
+      '',
+    ].join('\n'));
+    writeFile(cwd, 'scripts/test-security-check-runner.cjs', [
+      'export const fixture = "import.meta.env.VITE_SUPABASE_SERVICE_ROLE_KEY";',
+      '',
+    ].join('\n'));
+
+    const result = runWithFakeTools(cwd);
+
+    assert.equal(result.report.status, 'passed');
+    assert.equal(result.report.issues.length, 0);
+  });
+});
+
 test('public table without RLS fails', () => {
   withTempDir((cwd) => {
     writeFile(cwd, 'supabase/migrations/001.sql', 'create table public.todos (id uuid primary key);\n');
