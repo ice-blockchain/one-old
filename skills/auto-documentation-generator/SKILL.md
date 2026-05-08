@@ -38,6 +38,10 @@ Use this skill when the user asks to:
 
 - Update existing docs first. Create a new file only when the information has no
   better existing home.
+- In existing projects, reconcile the docs baseline: if a canonical doc is
+  missing, create it from verified repo facts; if it exists, update it in place.
+  Preserve a coherent existing docs layout instead of moving files to satisfy a
+  template.
 - Prefer pointers to duplicated prose. Link from README/AGENTS/CLAUDE to deeper
   docs instead of copying the same commands everywhere.
 - Do not generate empty boilerplate. Omit sections that cannot be filled with

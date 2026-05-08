@@ -6,13 +6,11 @@
 // priority order until the budget runs out and the rest defer to path-scoped
 // attach. Adding a new stack = adding an entry here.
 
-// `stack-recommendations.md`, `documentation.md`, and `library-catalog.md` are
-// reference catalogs: useful when the model picks defaults or writes handoff
-// docs, but too large to load mandatorily on stacks that already have a
-// framework core. We keep them in `optional` (loaded when budget allows) for
-// every framework stack, and `mandatory` only for `minimal` (where they're the
-// primary ruleset). This keeps React / RN bundles within ~10K while minimal
-// still gets the catalogs for cross-language guidance.
+// `stack-recommendations.md` and `library-catalog.md` are reference catalogs:
+// useful when the model picks defaults or writes handoff docs, but too large to
+// load mandatorily on stacks that already have a framework core. Documentation
+// defaults stay mandatory because new generated projects must always ship the
+// human/agent docs baseline.
 const STACKS = {
   'react-realtime-monorepo': {
     label:
@@ -23,6 +21,7 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/documentation.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
@@ -30,7 +29,6 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
-      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/ionic/core.md',
       'rules/frontend/accessibility.md',
@@ -67,6 +65,7 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/documentation.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
@@ -74,7 +73,6 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
-      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/ionic/core.md',
       'rules/frontend/accessibility.md',
@@ -97,13 +95,13 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/documentation.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react-native/core.md',
     ],
     optional: [
       'rules/common/stack-recommendations.md',
-      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/services.md',
       'rules/frontend/realtime.md',
@@ -128,13 +126,13 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/documentation.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react-native/core.md',
     ],
     optional: [
       'rules/common/stack-recommendations.md',
-      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/services.md',
       'rules/frontend/testing.md',
@@ -157,6 +155,7 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/documentation.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/backend/node.md',
@@ -164,7 +163,6 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
-      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
     ],
   },

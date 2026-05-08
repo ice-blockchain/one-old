@@ -10,6 +10,7 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 @rules/common/security.md
 @rules/common/stack-recommendations.md
 @rules/common/library-catalog.md
+@rules/common/documentation.md
 @rules/common/senior-engineer-team.md
 @rules/common/git.md
 
