@@ -119,8 +119,11 @@ test('new project onboarding defaults to supabase backend', () => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(defaultBackendValue(), 'supabase');
+    assert.equal(state.version, 2);
+    assert.equal(state.mode, 'new-project');
     assert.match(context, /backend=supabase/);
     assert.match(context, /Supabase \(managed Postgres with Auth, Storage, Realtime, and RLS\)/);
   });
@@ -258,15 +261,20 @@ test('project memory baseline is integrated across runtimes', () => {
   const cursorNewProject = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8');
 
   assert.match(memoryRules, /\.traffic-one\/product\.md/);
+  assert.match(memoryRules, /Root `\.traffic-one\.json`/);
   assert.match(memoryRules, /\.traffic-one\/decisions\//);
   assert.match(memoryRules, /\.traffic-one\/rules\/coding\.md/);
   assert.match(memoryRules, /\.traffic-one\/deployments\.jsonl/);
   assert.match(memoryRules, /\.traffic-one\/mcp\.json/);
   assert.match(memoryRules, /Root `AGENTS\.md` should symlink/);
   assert.match(memorySkill, /Create, refresh, or audit the Traffic One `.traffic-one\/` project memory/);
+  assert.match(memorySkill, /root `\.traffic-one\.json`/);
   assert.match(newProjectRule, /Project memory baseline/);
+  assert.match(newProjectRule, /root `\.traffic-one\.json` exists/);
   assert.match(existingRule, /run the `project-memory` baseline reconciliation/);
+  assert.match(existingRule, /root `\.traffic-one\.json` exists/);
   assert.match(directives, /Project memory baseline: create/);
+  assert.match(directives, /Verify the root companion state file/);
   assert.match(directives, /project-memory/);
   assert.match(stacks, /rules\/common\/project-memory\.md/);
   assert.match(skillFilters, /'project-memory'/);
@@ -736,6 +744,25 @@ test('plan-gate denies feature write on new-project without plan', () => {
     assert.match(result.stdout, /permissionDecision/);
     assert.match(result.stdout, /Plan gate/);
     assert.match(result.stdout, /senior-architect/);
+  });
+});
+
+test('state-gate denies feature write when project memory exists without state', () => {
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'stack.md'), '# Stack\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/jobs/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /State gate/);
+    assert.match(result.stdout, /\.traffic-one\.json/);
   });
 });
 

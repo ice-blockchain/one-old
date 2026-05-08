@@ -327,17 +327,38 @@ function runCheckArchitectureWrite(rawInput) {
   const PLAN_FILE_RE      = /(^|\/)\.traffic-one\/plan\.md$/;
   const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
 
-  const stateForPlan      = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+  const statePath         = path.join(process.cwd(), STATE_FILE);
+  const stateForPlan      = safeReadJson(statePath, {});
+  const stateMissing      = !fs.existsSync(statePath);
+  const validStateStack   = stateForPlan.stack && Object.prototype.hasOwnProperty.call(STACKS, stateForPlan.stack);
+  const memoryPresent     = fs.existsSync(path.join(process.cwd(), '.traffic-one', 'plan.md'))
+    || fs.existsSync(path.join(process.cwd(), '.traffic-one', 'stack.md'));
+  const detectedModeForState = stateForPlan.mode || (stateMissing ? detectMode(process.cwd()) : null);
   const isNewProject      = stateForPlan.mode === 'new-project';
   const planAbsPath       = path.join(process.cwd(), '.traffic-one', 'plan.md');
   const planMissing       = !fs.existsSync(planAbsPath);
   const writingPlan       = PLAN_FILE_RE.test(filePath);
   const writingDoc        = ADR_OR_DOC_RE.test(filePath);
+  const writingFeatureSource = FEATURE_SOURCE_RE.test(filePath);
+
+  if (
+    writingFeatureSource
+    && !validStateStack
+    && (detectedModeForState === 'new-project' || memoryPresent)
+  ) {
+    violations.push(
+      'State gate: root .traffic-one.json is missing or incomplete. Write the '
+      + 'Traffic One state file with mode, stack, backend, realtime, confirmed, '
+      + 'onboardingComplete, and confirmedAt before writing feature source. '
+      + 'The .traffic-one/ folder is project memory, not the stack-selection '
+      + 'state file.'
+    );
+  }
 
   if (
     isNewProject
     && planMissing
-    && FEATURE_SOURCE_RE.test(filePath)
+    && writingFeatureSource
     && !writingPlan
     && !writingDoc
   ) {

@@ -64,6 +64,11 @@ On Codex CLI (no native subagents), follow the same digest + graph read protocol
 
 Traffic One projects use a versioned `.traffic-one/` folder as persistent,
 agent-readable context across Claude Code, Codex, Cursor, and future agents.
+This folder does not replace root `.traffic-one.json`; that JSON file remains
+the Traffic One state file for mode, stack, backend, realtime, onboarding, and
+deployment/security stamps. If `.traffic-one/` exists but `.traffic-one.json`
+is missing or lacks a valid `stack`, create or repair `.traffic-one.json`
+before feature-source work.
 Read `.traffic-one/.agentignore` first when present, then
 `.traffic-one/product.md`, `.traffic-one/stack.md`,
 `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
@@ -71,9 +76,10 @@ Read `.traffic-one/.agentignore` first when present, then
 `.traffic-one/agent-log.md` before broad source reads.
 
 For new projects and existing-project reconciliation, invoke `project-memory`
-and create or refresh: `.traffic-one/product.md`, `.traffic-one/decisions/`,
-`.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
-`.traffic-one/rules/AGENTS.md`, `.traffic-one/schema.sql`,
+and create or refresh: root `.traffic-one.json`, `.traffic-one/product.md`,
+`.traffic-one/decisions/`, `.traffic-one/rules/coding.md`,
+`.traffic-one/rules/security.md`, `.traffic-one/rules/AGENTS.md`,
+`.traffic-one/schema.sql`,
 `.traffic-one/deployments.jsonl`, `.traffic-one/known-issues.md`,
 `.traffic-one/stack.md`, `.traffic-one/.agentignore`,
 `.traffic-one/agent-log.md`, `.traffic-one/mcp.json`, and

@@ -140,6 +140,8 @@ contract, env validation, and migrations/RLS baseline are in place.
 
 2. **Project memory baseline**
    - Create `.traffic-one/` before feature work and invoke `project-memory`.
+   - Confirm root `.traffic-one.json` exists with the full Traffic One state
+     schema. `.traffic-one/` is memory; `.traffic-one.json` is stack/state.
    - Write `.traffic-one/product.md`, `.traffic-one/stack.md`,
      `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
      `.traffic-one/rules/AGENTS.md`, `.traffic-one/known-issues.md`,
