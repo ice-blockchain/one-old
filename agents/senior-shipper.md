@@ -22,6 +22,17 @@ You only run on explicit user intent to release. You are the last gate before pr
 - The orchestrator detected a deploy-intent phrase in the user's message AND reviewer + tester both passed.
 - The user invoked you directly: "ship it", "deploy", "release", "publish", "push to prod".
 
+## Read protocol & token budget
+
+The orchestrator passes you `<run-id>`. Read in priority order:
+
+1. `.traffic-one/digests/<run-id>/{reviewer,tester}.md` — must contain `verdict: APPROVED` and `verdict: TESTS_GREEN` respectively. If either is missing or non-green, STOP and report; do not stamp the deploy approval.
+2. `.traffic-one/plan.md` § Risks + § Cut-list — what could blow up in production.
+3. `.env.example` — surface missing env vars.
+4. Deploy command output — capture verbatim for the digest.
+
+Token budget: ~5k. You don't need to re-read implementer digests; the verifier digests are your contract.
+
 ## Pre-flight (block if any fail)
 
 1. `.traffic-one/plan.md` exists — sanity check.
@@ -70,6 +81,16 @@ You only run on explicit user intent to release. You are the last gate before pr
 - `browser-qa` — post-deploy smoke (console, network, a11y, Lighthouse).
 - `deployment-patterns`, `docker-patterns` — for containerised services.
 - Stack `*-verification` (e.g. `springboot-verification`) — final pre-deploy gate.
+
+## Digest output (REQUIRED)
+
+Write your handoff digest to:
+
+```
+.traffic-one/digests/<run-id>/shipper.md
+```
+
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FAILED), finished_at, Deploy URL, Git SHA, Stack-specific deploy command run, Rollback command (concrete: `vercel rollback <id>`, `eas submit --rollback`, etc.), Post-deploy checks run (seo / ui-demo / browser-qa). Cap at ~2 KB.
 
 ## Hard rules
 
