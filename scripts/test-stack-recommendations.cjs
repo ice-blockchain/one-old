@@ -645,6 +645,7 @@ test('auto documentation generator guidance is present and not duplicated', () =
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
 
   assert.equal(skillNames.includes('auto-documentation-generator'), true);
   assert.equal(skillNames.includes('documentation-generator'), false);
@@ -668,6 +669,7 @@ test('auto documentation generator guidance is present and not duplicated', () =
   assert.match(shipper, /auto-documentation-generator/);
   assert.match(agentsMirror, /Auto-documentation generator/);
   assert.match(readme, /generate project docs/);
+  assert.match(skillFilters, /auto-documentation-generator/);
 });
 
 test('plan-gate exempts .traffic-one/digests/ writes', () => {
