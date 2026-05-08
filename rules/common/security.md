@@ -28,3 +28,41 @@ Pre-commit checklist — applies to every change that touches input, auth, stora
 ## Dependencies
 - Pin exact majors; review transitive updates.
 - Run `npm audit` / `pip-audit` / equivalent in CI; fail on high+ severity.
+
+## Traffic One pre-deployment security check
+
+Before deploy, release, publish, production promotion, app-store submission,
+`supabase db push --linked`, or Edge Function deploy, run:
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp
+```
+
+CI uses `--strict --no-stamp` with pinned `gitleaks@v8.30.1` and
+`trufflehog@v3.94.3`. Local runs require installed `gitleaks` and
+`trufflehog` binaries; missing scanners block deployment.
+
+If local scanners are missing, explicitly ask the user to install them before
+continuing. Explain the benefit: `gitleaks` scans the working tree and full git
+history for committed API keys, Supabase service-role keys, tokens, and `.env`
+secrets; `trufflehog` verifies and flags known/unknown secrets across git
+history; together they make the local deploy gate match CI and catch credential
+leaks before push/deploy. On macOS with Homebrew, ask approval to run
+`brew install gitleaks trufflehog`. If Homebrew is missing, ask the user to
+install Homebrew first, then install the scanners. Do not deploy using weaker
+fallback checks.
+
+The scanner blocks exposed secrets, Supabase service-role/JWT/admin DB secrets
+in browser/mobile code, weak auth/session patterns, broken access control,
+missing rate limits on sensitive or expensive endpoints, insecure Supabase RLS
+and Storage policies, unsafe views/functions/RPC, unsafe uploads, CORS/security
+header misconfiguration (OWASP A02:2025), SQLi/XSS injection (OWASP A05:2025),
+admin routes gated only in the UI, hardcoded env fallbacks, high+ production
+dependency vulnerabilities, suspicious npm supply-chain indicators, weak
+crypto, missing security logging, and Ionic/Capacitor/Expo bundled secrets or
+non-PKCE mobile auth.
+
+Passing `--stamp` writes `lastSecurityCheckAt`, `lastSecurityCheckStatus`,
+`lastSecurityCheckFingerprint`, and `lastSecurityCheckReport` to
+`.traffic-one.json`. The deploy hook denies production commands if the stamp is
+missing, stale, failed, or its fingerprint no longer matches the worktree.

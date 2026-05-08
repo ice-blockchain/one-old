@@ -45,6 +45,8 @@ Path-scoped rules — load automatically when you touch matching files:
 - `performance.md` — React.lazy, memo/useCallback, useSyncExternalStore
 - `testing.md` — React Testing Library, renderHook, jest config
 - `security.md` — JWT in cookies, DOMPurify, VITE_ env vars, CSP
+- `predeploy-security-check` skill — hard pre-deployment scanner and stamp for deploy gate
+  Ask to install `gitleaks` and `trufflehog` when missing; if Homebrew is missing on macOS, ask the user to install Homebrew first.
 
 **Ionic/Capacitor hybrid mobile** (`rules/frontend/ionic/`):
 - `core.md` — Ionic + Capacitor stack defaults and decision rules

@@ -132,7 +132,7 @@ After 2 cycles, escalate to the user.
 
 Spawn `senior-shipper` ONLY if the user prompt matches `/\b(ship|deploy|release|publish|to prod|to production|to staging|app store|play store)\b/i`.
 
-Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/prompt-templates.md`. The template tells the shipper to read `.traffic-one/digests/<run-id>/{reviewer,tester}.md` first (verifying APPROVED + TESTS_GREEN), then plan § Risks/Cut-list. Shipper handles the `lastShipperApprovalAt` stamp and the platform-specific deploy, then writes `shipper.md` digest.
+Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/prompt-templates.md`. The template tells the shipper to read `.traffic-one/digests/<run-id>/{reviewer,tester}.md` first (verifying APPROVED + TESTS_GREEN), then plan § Risks/Cut-list. Shipper runs `predeploy-security-check` with `--strict --stamp`, handles the `lastSecurityCheck*` and `lastShipperApprovalAt` stamps, performs the platform-specific deploy, then writes `shipper.md` digest.
 
 If no deploy intent in the user message → end with a "next step: say 'ship it' to deploy" line, do NOT spawn shipper.
 
@@ -181,7 +181,7 @@ Next steps:
 - Shipper only on explicit deploy intent in the user's most recent message.
 - Cycle cap = 2 for both reviewer and tester loops; after that, escalate.
 - The plan-gate hook (`runCheckArchitectureWrite`) will deny feature writes if `.traffic-one/plan.md` is missing — even if you skipped Phase 1, the implementers will fail fast. Do not try to bypass.
-- The deploy-gate hook (`runCheckLibraryAllowlist`) will deny `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, etc. without a fresh `lastShipperApprovalAt` stamp. Only `senior-shipper` writes that stamp.
+- The deploy-gate hook (`runCheckLibraryAllowlist`) will deny `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, etc. without both a fresh `lastShipperApprovalAt` stamp and a fresh passing `lastSecurityCheck*` stamp whose fingerprint matches the current worktree. Only `senior-shipper` writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 - When subagents are available and permitted, you do NOT write feature source files. You do NOT run deploy commands. You only spawn subagents and summarise. If subagents are unavailable, unconfirmed, or blocked, execute the same phases manually with the role prompts and clearly say so.
 
 ## When NOT to use this orchestrator

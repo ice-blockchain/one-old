@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
   "version": "2.6.0",
-  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with token-economy: per-phase handoff digests + graphify codebase-graph cache cut redundant reads across the senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) mirrored into AGENTS.md, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Rules auto-load via AGENTS.md; skills auto-trigger; hooks enforce plan gate, deploy gate, forbidden installs.",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with token-economy: per-phase handoff digests + graphify codebase-graph cache cut redundant reads across the senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) mirrored into AGENTS.md, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Rules auto-load via AGENTS.md; skills auto-trigger; hooks enforce plan gate, security-gated deploys, forbidden installs.",
   "author": {
     "name": "Cosmin Turcin"
   },
@@ -10,8 +10,8 @@
   "instructions": "./AGENTS.md",
   "interface": {
     "displayName": "Traffic One",
-    "shortDescription": "React, Ionic/Capacitor, RN, TypeScript, and modern UI quality rules.",
-    "longDescription": "Traffic One adds opinionated React, Ionic/Capacitor mobile packaging, explicit React Native, TypeScript, Turborepo, modern clean UI design gates, visual QA, testing, security, and Gitflow rules with project-specific Codex skills, hooks, and adapted ECC development skills.",
+    "shortDescription": "React, Ionic/Capacitor, RN, TypeScript, modern UI, and security-gated deploys.",
+    "longDescription": "Traffic One adds opinionated React, Ionic/Capacitor mobile packaging, explicit React Native, TypeScript, Turborepo, modern clean UI design gates, visual QA, testing, pre-deployment security scanning, and Gitflow rules with project-specific Codex skills, hooks, and adapted ECC development skills.",
     "developerName": "Cosmin Turcin",
     "category": "Engineering",
     "capabilities": [
@@ -22,7 +22,8 @@
     "defaultPrompt": [
       "Create a React feature",
       "Make this UI modern and clean",
-      "Run visual QA for this route"
+      "Run visual QA for this route",
+      "Run the Traffic One Security Check"
     ],
     "brandColor": "#2563EB",
     "screenshots": []
