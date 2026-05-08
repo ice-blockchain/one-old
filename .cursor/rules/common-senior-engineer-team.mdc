@@ -23,4 +23,4 @@ alwaysApply: true
 - If subagents are unavailable or blocked in any runtime, continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
 - Do not ask for subagents on single-component, single-page, single-service, read-only audit, or small refactor tasks; route those directly to the matching specialist skill.
 - If a Codex agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.
-- Shipper remains gated: deploy/release/publish actions require explicit deploy intent, reviewer `APPROVED`, tester `TESTS_GREEN`, and user confirmation in the same turn.
+- Shipper remains gated: deploy/release/publish actions require explicit deploy intent, reviewer `APPROVED`, tester `TESTS_GREEN`, a passing `predeploy-security-check` stamp for the current worktree, and user confirmation in the same turn. The deploy hook denies production commands unless `lastShipperApprovalAt` is fresh (≤10 min) and `lastSecurityCheckStatus: "passed"` is fresh with a matching fingerprint.

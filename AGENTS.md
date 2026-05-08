@@ -36,13 +36,13 @@ Codex role adapter:
 - **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list. Skills: `library-pick`, `architecture-decision-records`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
 - **Frontend** — only after the plan exists. Implement UI in `apps/*/src/**`, `packages/ui*`, `src/**`. Skills: `create-component`, `create-page`, `create-feature`, `frontend-patterns`, `frontend-design`, `design-system`, `design-audit`, `accessibility`, `i18n-text`; native variants for RN; `ionic-mobile` for Capacitor.
 - **Backend** — in parallel with frontend, server-side only (`apps/*/server/**`, `packages/api*`, `services/*`, `supabase/`). Skills: `backend-patterns`, `api-design`, `postgres-patterns`/`postgres-review`, `database-migrations`, plus the active stack's `*-patterns` + `*-tdd`.
-- **Reviewer** — read-only, before commit/push/deploy. Skills: `security-review`, `security-scan`, `repo-scan`, `context-budget`, the active stack's `*-verification` and `*-coding-standards`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`.
+- **Reviewer** — read-only, before commit/push/deploy. Skills: `security-review`, `security-scan`, `predeploy-security-check`, `repo-scan`, `context-budget`, the active stack's `*-verification` and `*-coding-standards`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`.
 - **Tester** — alongside reviewer. Restricted to test files / test infra. Skills: `tdd-workflow`, `e2e-testing`, `ai-regression-testing`, `verification-loop`, the active stack's `*-testing`. Emit `TESTS_GREEN` or `TESTS_FAILING <numbered list>`.
-- **Shipper** — only on explicit "deploy / ship / release / publish / to prod" intent. Pre-flight: reviewer `APPROVED` + tester `TESTS_GREEN` + user confirmation in the same turn. Stamp `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) before running `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`. Run `seo` + `ui-demo` post-deploy.
+- **Shipper** — only on explicit "deploy / ship / release / publish / to prod" intent. Pre-flight: reviewer `APPROVED` + tester `TESTS_GREEN` + `predeploy-security-check` passing with `--strict --stamp` + user confirmation in the same turn. Stamp `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) before running `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`. Run `seo` + `ui-demo` post-deploy.
 
 **Plan gate** (enforced by hook): on `mode === "new-project"` and missing `.traffic-one/plan.md`, writes to `apps/*/src/**`, `packages/*/src/**`, `src/**`, `services/*/src/**` are denied. The plan file itself, ADRs, `docs/`, and `README*` are exempt.
 
-**Deploy gate** (enforced by hook): the deploy commands listed above are denied unless `lastShipperApprovalAt` is fresh (≤10 min). Only the shipper writes that stamp.
+**Deploy gate** (enforced by hook): the deploy commands listed above are denied unless `lastShipperApprovalAt` is fresh (≤10 min) and `lastSecurityCheckStatus: "passed"` is fresh with a fingerprint matching the current worktree. Only the shipper writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 
 **Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code and Cursor, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper) whenever the host runtime exposes a callable agent adapter. On Codex, it first announces the role plan and automatically asks for subagent confirmation for matching multi-layer builds, then stops until the user answers. If no agent adapter is available, the user declines, or subagents are not confirmed, follow the same order manually with per-role prompts and state that the Traffic One team is being simulated by the main agent.
 
@@ -82,6 +82,8 @@ On Codex CLI (no native subagents), follow the same digest + graph read protocol
 - Parameterized SQL only. Validate every request body/query/params with Zod.
 - Auth AND authorization checks on every protected endpoint — UI gating is not enough.
 - No stack traces in production responses. `.env*` gitignored.
+- Before deploy/release/publish/production promotion, run `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp`. The scanner blocks exposed secrets, Supabase service-role/JWT/admin DB secrets in browser/mobile code, weak auth/session patterns, broken access control, missing rate limits, insecure Supabase RLS/Storage, unsafe views/functions/RPC, unsafe uploads, CORS/security-header misconfiguration (OWASP A02:2025), SQLi/XSS injection (OWASP A05:2025), UI-only admin gates, hardcoded env fallbacks, high+ production dependency vulnerabilities, suspicious npm supply-chain indicators, weak crypto, missing security logging, and Ionic/Capacitor/Expo bundled secrets or non-PKCE mobile auth.
+- If `gitleaks` or `trufflehog` is missing locally, ask the user to install them and explain the benefit: `gitleaks` scans the working tree and full git history for committed keys/tokens, while `trufflehog` verifies and flags known or unknown secrets. On macOS with Homebrew, ask approval for `brew install gitleaks trufflehog`; if Homebrew is missing, ask the user to install Homebrew first. Do not deploy using weaker fallback checks.
 
 ## Dependencies (always — applies to any new install)
 - **Library-first**: when a need isn't covered by the active stack core, check stack-native/provider defaults first, then search 2–3 candidates and apply the quality gate.
@@ -478,6 +480,7 @@ products use Ionic Framework with Capacitor instead.
 - `$create-native-service` — scaffold a React Native/Expo service or RTK Query endpoint (explicit only)
 - `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
+- `$predeploy-security-check` — run the hard pre-deployment security scanner and stamp the deploy gate
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
 - `$nextjs-turbopack` — apply Next.js/Turbopack and provider-first Next.js defaults
 - `$refactor` — clean up and improve existing code

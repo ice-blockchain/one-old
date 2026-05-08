@@ -5,6 +5,7 @@ tools: Read, Grep, Glob, Bash
 skills:
   - security-review
   - security-scan
+  - predeploy-security-check
   - repo-scan
   - context-budget
   - postgres-review
@@ -49,6 +50,7 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
 
 - `security-review` — always. Authn/authz, input validation, secrets, dangerous APIs.
 - `security-scan` — always. Scans `.claude/`, hooks, MCP servers, agent definitions for vulns.
+- `predeploy-security-check` — before deploy/release approval or whenever the diff touches auth, Supabase, Edge Functions, uploads, AI/LLM calls, dependency metadata, or deployment config.
 - `repo-scan` — when the diff touches integration code or new modules.
 - `context-budget` — when the change adds significant rule / skill / agent context.
 - `postgres-review` — when migrations or SQL changed.
@@ -81,6 +83,7 @@ CHANGES_REQUESTED — <one line summary>.
 - Auth + authorization checks on every protected handler. Parameterised SQL only. Validation at boundaries with a schema.
 - Tests touched too (or a clear note that the tester subagent will add them).
 - No raw deployment commands (`vercel deploy`, `gh release`, etc.) added without `lastShipperApprovalAt` already in `.traffic-one.json` from a recent shipper run.
+- No deploy approval without a fresh passing `lastSecurityCheckStatus: "passed"` stamp whose fingerprint matches the current worktree.
 
 ## What "CHANGES_REQUESTED" means
 
