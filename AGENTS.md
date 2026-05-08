@@ -48,6 +48,20 @@ Codex role adapter:
 
 ---
 
+## Token economy — graphify cache + per-phase digests
+
+Two on-disk caches reduce token usage across the orchestrator flow:
+
+- **`.traffic-one/digests/<run-id>/<role>.md`** — every subagent writes a ≤2 KB handoff digest at the end of its run (verdict, Touched, Public contracts delta, blockers, Next-phase reading hints). Downstream subagents READ the digest INSTEAD of re-reading the full diff. `<run-id>` is the orchestrator's UTC second-precision timestamp (`2026-05-07T14-23-05Z`). Format spec: `rules/common/agent-handoff-digests.md`. Read protocol: predecessor digest → plan section → graph report → raw files (last resort).
+
+- **`graphify-out/GRAPH_REPORT.md`** — once-per-project cached codebase structure summary built via `graphify .` after the first successful build. Read it BEFORE answering "where does X live / what calls Y / what's in module Z" — it replaces dozens of `Glob`/`Grep` calls with one file Read. Format / install: `rules/common/codebase-graph.md`. The plugin's PostToolUse hook emits a one-time install hint after the first successful build on `mode: new-project + onboardingComplete: true`.
+
+Both `.traffic-one/digests/` and `graphify-out/` are gitignored — they are local, ephemeral caches, not source.
+
+On Codex CLI (no native subagents), follow the same digest + graph read protocol manually as you simulate the role flow.
+
+---
+
 ## Clean-code baseline (always)
 - KISS, DRY (only after 2–3 real repetitions), YAGNI.
 - Immutability: return new objects/arrays, never mutate inputs. `const` by default.

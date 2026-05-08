@@ -1,0 +1,46 @@
+---
+# Always loaded. Tells every agent / skill / subagent to consult the
+# graphify-built codebase report before falling back to broad Glob/Grep.
+---
+
+# Codebase graph — token-cheap structure cache
+
+When the user's repo has `graphify-out/GRAPH_REPORT.md` (built once via
+`graphify .` after the project scaffolds), **read it before answering any
+"where does X live / what calls Y / what's in module Z" question.** It is a
+one-shot file-read that replaces dozens of `Glob` / `Grep` calls.
+
+## Read protocol (priority order)
+
+1. **`graphify-out/GRAPH_REPORT.md`** — module map, file inventory, dependency
+   summary, public-API surface per package. Few-thousand-tokens, single Read.
+2. **`graphify-out/graph.json`** — full structured graph. Reach for this only
+   when the report doesn't have the answer (e.g. "what calls function X").
+3. **`Glob`/`Grep`/raw `Read`** — last resort, scoped to the area the graph
+   pointed at.
+
+If the report is missing or older than ~7 days, recommend rebuilding:
+
+```bash
+pipx install graphifyy   # one-time install (Python tool)
+graphify . --no-viz --code-only --quiet
+graphify hook install    # optional: regenerate on every git commit
+```
+
+The post-build hook in `scripts/hook-runtime/handlers.cjs` emits a one-time
+hint after the first successful build on `mode: 'new-project'`; you don't
+need to nag the user every session.
+
+## Skip when
+
+- The user is asking a non-structural question (a feature change, a UI tweak,
+  a styling decision). The graph is for *where things live*, not *what should
+  they look like*.
+- You only need the contents of one specific file the user already named.
+
+## Power-user opt-in (not auto-wired)
+
+`graphify --mcp` runs as a stdio MCP server with richer queries (shortest path
+between functions, neighbors of a node). When the user wants that, document
+the install in their repo; this plugin's hooks do not consume the MCP server
+yet.

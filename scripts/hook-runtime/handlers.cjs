@@ -55,6 +55,34 @@ const {
   postWriteIncompleteWarning,
 } = require('./directives.cjs');
 
+// ── Token-economy banner: surface graphify report + recent digests ─────────
+// Single-line hints appended to the SessionStart header when these on-disk
+// artefacts exist. They tell the agent "you have a cache; consult it before
+// grep/glob" without inflating the bundle.
+function tokenEconomyBanner(cwd) {
+  const lines = [];
+  const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+  if (fs.existsSync(graphPath)) {
+    lines.push('[graphify] graphify-out/GRAPH_REPORT.md present — consult before grep/glob for module/structure questions.');
+  }
+  try {
+    const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
+    if (fs.existsSync(digestsRoot)) {
+      const runs = fs.readdirSync(digestsRoot, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .reverse();
+      if (runs.length > 0) {
+        lines.push(`[digests] Latest orchestrator run: .traffic-one/digests/${runs[0]}/ — read predecessor digests before re-reading the diff.`);
+      }
+    }
+  } catch {
+    // best-effort; banner is informational
+  }
+  return lines.length ? `${lines.join('\n')}\n` : '';
+}
+
 // ── SessionStart ─────────────────────────────────────────────────────────────
 function runSessionStart() {
   const cwd  = process.cwd();
@@ -104,6 +132,7 @@ function runSessionStart() {
     if (dropped.length > 0) {
       header += `[${dropped.length} rule file(s) deferred to path-scoped attach]\n`;
     }
+    header += tokenEconomyBanner(cwd);
     if (skillDirective) {
       header += skillDirective;
     }
@@ -166,6 +195,7 @@ function runSessionStart() {
       if (dropped.length > 0) {
         header += `[${dropped.length} rule file(s) deferred]\n`;
       }
+      header += tokenEconomyBanner(cwd);
       if (skillDirective) {
         header += skillDirective;
       }
@@ -608,6 +638,101 @@ function runPostBuildPageSpeed(rawInput) {
   };
 }
 
+// ── PreToolUse(Glob|Grep): hint that the codebase graph exists ──────────────
+// Non-blocking. Tells the agent to read `graphify-out/GRAPH_REPORT.md` first
+// for codebase-structure questions before falling back to grep/glob.
+function runPreGraphifyHint(_rawInput) {
+  const cwd = process.cwd();
+  const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+  if (!fs.existsSync(graphPath)) {
+    return { stdout: '', exitCode: 0 };
+  }
+  const state = safeReadJson(path.join(cwd, STATE_FILE), {});
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
+  const digestHint = runId
+    ? ` Predecessor digests (if any) live under \`.traffic-one/digests/${runId}/\`.`
+    : '';
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext: '[graphify] Codebase graph at `graphify-out/GRAPH_REPORT.md` — '
+          + 'read it FIRST for module / file / call-site questions before grep/glob.'
+          + digestHint,
+      },
+    }),
+    exitCode: 0,
+  };
+}
+
+// ── PostToolUse(Bash): post-build hint to install + run graphify once ───────
+// Soft hint; never blocks. Fires on the first successful build of a
+// new-project (post-onboarding) when no fresh graph exists yet. Stamps a
+// 1-day cooldown so we never nag on every build.
+const GRAPHIFY_FRESH_MS  = 7 * 24 * 60 * 60 * 1000;
+const GRAPHIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+function runPostBuildGraphifyHint(rawInput) {
+  const data = parseJsonText(rawInput, {});
+  const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
+  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  if (!BUILD_COMMAND_RE.test(command)) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const cwd = process.cwd();
+  const state = safeReadJson(path.join(cwd, STATE_FILE), {});
+  if (state.mode !== 'new-project' || state.onboardingComplete !== true) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+  const graphExists = fs.existsSync(graphPath);
+  const graphFresh = graphExists
+    ? (Date.now() - fs.statSync(graphPath).mtimeMs) < GRAPHIFY_FRESH_MS
+    : false;
+  if (graphFresh) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const lastHinted = typeof state.graphifyLastHintedAt === 'string'
+    ? Date.parse(state.graphifyLastHintedAt)
+    : 0;
+  if (lastHinted > 0 && (Date.now() - lastHinted) < GRAPHIFY_COOLDOWN_MS) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  // Stamp the cooldown immediately so a flurry of builds doesn't replay this.
+  try {
+    state.graphifyLastHintedAt = nowIso();
+    writeState(cwd, state);
+  } catch {
+    // best-effort; the hint still fires even if the stamp can't persist
+  }
+
+  const message = graphExists
+    ? 'Build succeeded. Your codebase graph at `graphify-out/GRAPH_REPORT.md` is older than 7 days — refresh it to keep next-session token usage low:'
+    : 'Build succeeded. Build the codebase graph once so future sessions can answer "where does X live" cheaply (read a single ~few-KB file instead of spray-grepping):';
+
+  const additionalContext = `[graphify] ${message}\n`
+    + '  pipx install graphifyy   # one-time install (Python tool; pip install --user graphifyy also works)\n'
+    + '  graphify . --no-viz --code-only --quiet\n'
+    + '  graphify hook install    # optional: regenerate on every git commit\n'
+    + 'Skills (repo-scan, refactor, simplify, security-review) and the '
+    + 'senior-architect / senior-reviewer / senior-tester subagents will '
+    + 'consult the report. Add `graphify-out/` to .gitignore if not already.';
+
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext,
+      },
+    }),
+    exitCode: 0,
+  };
+}
+
 // ── PostToolUse: stack-rules auto-load on `.traffic-one.json` write ──────────
 function runPostStackSetup(rawInput) {
   const payload = parseJsonText(rawInput, null);
@@ -845,6 +970,8 @@ module.exports = {
   runCheckLibraryAllowlist,
   runPostBuildPageSpeed,
   runPostStackSetup,
-  runPostFunctionEdit,  // exported for testing + entrypoint dispatch
-  forbiddenForStack,    // exported for testing
+  runPostFunctionEdit,      // exported for testing + entrypoint dispatch
+  runPreGraphifyHint,        // PreToolUse(Glob|Grep) → graph hint
+  runPostBuildGraphifyHint,  // PostToolUse(Bash) → post-build install/build hint
+  forbiddenForStack,         // exported for testing
 };
