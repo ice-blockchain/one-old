@@ -67,7 +67,11 @@ Token budget: ~12k total. The `senior-frontend` is running in parallel and will 
 - `mcp-server-patterns` — when building an MCP server.
 
 ### SQL / Supabase
-- `postgres-patterns`, `postgres-review`, `database-migrations`.
+- `postgres-review` — run as the AI Database Architect gate before migrations
+  land: PKs, typed columns, FK delete behavior, RLS, indexes, tenancy, PII,
+  query/realtime performance, backups/advisors.
+- `postgres-patterns`, `database-migrations` — use for schema examples and
+  safe forward-only migration sequencing.
 - `supabase-setup` — if `backend === "supabase"` and migrations are not yet applied. Do NOT finish your work by listing manual SQL-editor steps in README.
 
 ### JVM (Java / Kotlin)

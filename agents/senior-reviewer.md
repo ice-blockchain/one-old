@@ -53,7 +53,9 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
 - `predeploy-security-check` — before deploy/release approval or whenever the diff touches auth, Supabase, Edge Functions, uploads, AI/LLM calls, dependency metadata, or deployment config.
 - `repo-scan` — when the diff touches integration code or new modules.
 - `context-budget` — when the change adds significant rule / skill / agent context.
-- `postgres-review` — when migrations or SQL changed.
+- `postgres-review` — when migrations or SQL changed; treat it as the AI
+  Database Architect gate for schema shape, RLS, indexes, tenancy, PII,
+  migration safety, backups, and advisor findings.
 - `flutter-dart-code-review` — when Flutter / Dart changed.
 - Active-stack `*-verification` (e.g. `springboot-verification`, `django-verification`, `laravel-verification`).
 - Active-stack `*-coding-standards` (e.g. `java-coding-standards`, `cpp-coding-standards`, baseline `coding-standards`).
