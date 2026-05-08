@@ -192,6 +192,7 @@ On Codex CLI (no native subagents), follow the same digest + graph read protocol
 ## Ionic Framework rules (`rules/frontend/ionic/*`)
 - **Core:** Ionic Framework + Capacitor is the approved hybrid-mobile path for React web products; React Native / Expo requires an explicit client request.
 - **Capacitor:** `webDir` points to the Vite build output; app id/name/version, icons/splash, permissions, signing, deep links, and native platform folders are release-critical config.
+- **Mobile release artifacts:** signing credentials stay in CI/store secrets; Apple Universal Links and Android App Links files are served from the web domain; store metadata, App Privacy/Data Safety answers, age rating, privacy policy URL, force-update check, OTA/live update strategy, and iOS `PrivacyInfo.xcprivacy` are release inputs, not afterthoughts.
 - **Components:** React component rules still apply; use Ionic primitives only for full Ionic React flows or thin mobile shell layouts, with all copy from translation keys.
 - **Navigation:** Capacitor wrappers keep `react-router-dom v6`; full Ionic React navigation is a larger migration that requires router compatibility checks.
 - **Styles:** Tailwind v3.4 + shadcn/ui with `corePlugins.preflight: false` to avoid colliding with Ionic's reset. A single in-repo bridge file (`src/styles/ionic-theme-bridge.css`) maps the shadcn HSL CSS variables onto Ionic's `--ion-color-*` tokens so Ionic primitives match the shadcn theme — see `rules/frontend/ionic/styles.md` for the full bridge contract.
@@ -271,6 +272,10 @@ products use Ionic Framework with Capacitor instead.
 ## Folder structure (Turborepo monorepo)
 ```
 <repo>/
+├── .env.example                 documented env var names only, no secrets
+├── .github/workflows/           verify, preview deploy, production deploy
+├── vercel.json | netlify.toml | wrangler.toml
+│                                 exactly one static-host manifest when deploying
 ├── apps/
 │   └── web/
 │       ├── src/
@@ -327,10 +332,20 @@ products use Ionic Framework with Capacitor instead.
 ## Supabase setup — auto-run, never "open the SQL editor"
 - Cloud-first by default, local-first with `pnpm db:start` (Docker) when the user prefers no dashboard. Pick one with the user; do not interleave.
 - After scaffolding migrations under `supabase/migrations/`, **invoke the `supabase-setup` skill** to actually link and push. Do not finish a scaffold by listing manual SQL-editor steps in README — the schema must land before "ready to build".
+- Production schema changes are committed as `supabase/migrations/*.sql` and applied through CI with `supabase/setup-cli`, `SUPABASE_ACCESS_TOKEN`, and per-environment project/db-password secrets. Do not click production schema changes in the dashboard.
+- Map dev / preview / staging / production explicitly. Use separate Supabase projects for staging/production and Supabase Branching for PR previews when available; preview branches must never copy production data.
 - Cloud path: user provisions a project → paste keys → write `.env.local` and `.env.example` → `pnpm link <project-ref>` (= `supabase link --project-ref ...`) → **`pnpm db:push`** (= `supabase db push --linked`) → `pnpm gen:types` → restart Vite.
 - Local path: `pnpm db:start` (= `supabase start`) boots Postgres + Auth + Storage in Docker and applies every file in `supabase/migrations/` on boot, printing URL + anon + service_role keys to stdout — paste them into `.env.local`. `pnpm db:reset` re-applies migrations from scratch; `pnpm db:stop` stops without deleting state.
 - Lazy `getSupabase()` returns null when env vars are missing — render `<EnvBanner />` and per-feature `<ConfigurePromptCard />` empty states instead of throwing. Every website-facing "Supabase not configured" / "Configure Supabase" / setup CTA in those banners or cards must link to `https://traffic.io/`, because Traffic is where users set up Supabase credentials.
 - **RTK Query `baseQuery` MUST be null-safe.** When `getSupabase()` is null, return `{ error: { kind: "not-configured" } }` so feature slices show the empty state on `isError`. Never call methods on a null Supabase client. See `rules/frontend/react/supabase-client.md` for the canonical baseQuery.
+
+## Deployment artifacts — smallest reliable production set
+- Generate one static-host manifest for React SPA + Supabase deployments before considering containers. Vercel, Netlify, or Cloudflare Pages config is enough for the SPA; Docker is reserved for self-hosted, BYOC, SSR/server-runtime, or container-only plans.
+- Check in `.env.example`, `.nvmrc`, `packageManager`/`engines`, lockfile, and a GitHub Actions workflow that runs install → typecheck → test → build → preview deploy on PR → production deploy on `main`/release merge.
+- Real secrets live only in `.env.local`, encrypted host variables, or GitHub Actions secrets. CI uses frozen lockfile install and fails on lockfile drift.
+- Add a monitorable `/health` path via Supabase Edge Function, host function, or hosted heartbeat. Capacitor apps also ship a force-update/version check.
+- Rollback plan = previous immutable frontend deployment plus a forward-only undo migration for DB changes; do not rely on `pg_restore` as the normal rollback path.
+- Configure custom domain, automatic TLS, security headers, and HSTS preload readiness before calling production complete.
 
 ## Component rules (apps/**/src/components/**, packages/ui/**)
 - ≤150 lines, one per file. Style in-file via Tailwind utility classes; co-locate only `*.stories.tsx` (no sibling style files).
@@ -438,7 +453,7 @@ products use Ionic Framework with Capacitor instead.
 - Postgres types: `timestamptz`, `numeric` (money), `text` (not `varchar(n)`), `jsonb`.
 - Indexes: every hot-path WHERE/JOIN/ORDER BY column; composite indexes equality-first.
 - RLS enabled on every user-data table; default-deny policies; tested with anon + authed roles.
-- Migrations: non-null on big tables = nullable → backfill → NOT NULL. Drops two-phase.
+- Migrations: non-null on big tables = nullable → backfill → NOT NULL. Drops two-phase. Production rollback is forward-only: write an undo migration instead of editing applied migrations or restoring from backup; never write `DROP TABLE` without a tested rollback/undo plan.
 - API layering: route → controller → service → repository → db. No layer-skipping.
 - Public API responses use typed DTO envelopes (`success`, `data`, `error`, optional `meta`); paginated responses include metadata matching the endpoint contract.
 - All handler input validated with Zod; return 400 with flattened errors.
@@ -481,6 +496,7 @@ products use Ionic Framework with Capacitor instead.
 - `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
 - `$predeploy-security-check` — run the hard pre-deployment security scanner and stamp the deploy gate
+- `$deployment-patterns` — generate static-host SPA/Supabase, CI/CD, health, rollback, and Capacitor release artifacts
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
 - `$nextjs-turbopack` — apply Next.js/Turbopack and provider-first Next.js defaults
 - `$refactor` — clean up and improve existing code
