@@ -25,9 +25,11 @@ Produce .traffic-one/plan.md (≤250 lines, six sections: Goal, Stack & rational
 Module map, Public contracts, Risks, Cut-list). Cite skills by name; do not
 inline their content.
 
-If the request includes documentation, handoff, onboarding, or launch-readiness
-docs, run `auto-documentation-generator` after the plan and update only the
-canonical docs needed for the request.
+For `mode: new-project`, run `auto-documentation-generator` after the plan even
+when the user did not ask for docs, and create/update the canonical docs needed
+for the generated scaffold. For `mode: existing-codebase` or
+`existing-with-supabase`, run it before normal feature work to create missing
+canonical docs and update existing docs in place.
 
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md

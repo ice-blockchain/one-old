@@ -104,6 +104,15 @@ CHANGES_REQUESTED — <one line summary>.
   leaked browser/mobile secret, missing Supabase RLS, unsafe destructive
   migration, missing payment idempotency, or missing app-store privacy/account
   deletion requirements when mobile submission is in scope.
+- New generated projects include the mandatory auto-documentation baseline:
+  README, AGENTS/CLAUDE, Cursor rules when applicable, architecture/ADR,
+  API/database, deployment, security, changelog, environment setup,
+  contributing, and served `llms.txt` for web surfaces. Missing facts are
+  explicitly `Unverified`; only having a lightweight README is not acceptable.
+- Existing projects have had the same docs baseline reconciled before feature
+  work: missing canonical docs are created, existing docs are updated in place,
+  the existing docs layout is preserved when coherent, and unknown facts are
+  marked `Unverified`.
 - New or changed public architecture, API, database, deployment, security, env,
   or agent behavior is reflected in the canonical docs without duplicating
   boilerplate.

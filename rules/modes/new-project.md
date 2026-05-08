@@ -199,7 +199,23 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-8. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
+8. **Mandatory auto-documentation baseline**
+   - Invoke `auto-documentation-generator` for every generated project before
+     calling the scaffold complete, even if the user did not explicitly request
+     docs.
+   - Create or refresh the relevant canonical docs from
+     `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
+     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md` or
+     `docs/architecture.md`, `docs/adr/`, `api.md`, `database.md`,
+     `deployment.md`, `security.md`, `CHANGELOG.md`, `environment-setup.md`,
+     `CONTRIBUTING.md`, and served `/llms.txt` for web surfaces.
+   - Mark facts as `Unverified` with the exact needed command/input instead of
+     inventing deploy URLs, database output, secret values, or production
+     configuration.
+   - Do not leave the project with only a README. The reviewer must treat a
+     missing mandatory docs baseline as `CHANGES_REQUESTED`.
+
+9. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
    a. Add Supabase as a workspace devDependency:
       ```bash
@@ -268,7 +284,7 @@ contract, env validation, and migrations/RLS baseline are in place.
       `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
-9. **Codebase graph (after first successful build, optional but recommended)**
+10. **Codebase graph (after first successful build, optional but recommended)**
 
    Once the workspace scaffolds and `pnpm build` passes once, install graphify
    and generate `graphify-out/GRAPH_REPORT.md`. Subagents (`senior-architect`,

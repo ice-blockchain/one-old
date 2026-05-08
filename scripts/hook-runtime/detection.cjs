@@ -35,7 +35,11 @@ function workspaceYamlPresent(cwd) {
 // ── Source-file count (rough "is this a new project?" heuristic) ────────────
 function countSourceFiles(cwd) {
   let count = 0;
-  const sourceExts = new Set(['.tsx', '.ts', '.jsx', '.js']);
+  const sourceExts = new Set([
+    '.tsx', '.ts', '.jsx', '.js',
+    '.go', '.rs', '.py', '.java', '.kt', '.kts', '.cs', '.php', '.rb',
+    '.swift', '.dart', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp',
+  ]);
 
   function walk(currentDir) {
     let entries;
@@ -90,6 +94,14 @@ function detectStackFromCodebase(cwd) {
 
   const pkg = loadPackageJson(cwd);
   const deps = dependenciesFromPackage(pkg);
+  const hasGoMod = fs.existsSync(path.join(cwd, 'go.mod'));
+
+  if (hasGoMod) {
+    out.stack = 'minimal';
+    out.backend = 'other';
+    out.evidence.push('go.mod detected → apply minimal stack + Go skills as needed');
+  }
+
   if (Object.keys(deps).length === 0) {
     return out;
   }

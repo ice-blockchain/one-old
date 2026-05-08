@@ -140,11 +140,20 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).
      Do NOT create a \`packages/design-tokens\` package — design tokens live in the
      Tailwind preset and the HSL CSS variables in \`globals.css\`.
-  4. Initialise git with Gitflow branches (\`main\`, \`develop\`).
+  4. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
+     the scaffold complete. New generated sites/apps/services MUST include the
+     relevant canonical docs from \`rules/common/documentation.md\`:
+     README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
+     architecture.md/docs/architecture.md, docs/adr/, api.md, database.md,
+     deployment.md, security.md, CHANGELOG.md, environment-setup.md,
+     CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
+     as Unverified; do not leave only a lightweight README.
+  5. Initialise git with Gitflow branches (\`main\`, \`develop\`).
 
 For \`react-frontend-only\`: a single Vite app under root \`src/\` (no apps/, no packages/).
 \`src/styles/globals.css\` + \`tailwind.config.ts\` + \`npx shadcn@latest init\` + the
-same first-batch components under \`src/components/ui/\`.
+same first-batch components under \`src/components/ui/\`. The mandatory docs
+baseline still applies.
 
 For \`react-native-expo-*\`: see \`rules/modes/new-project.md\` and \`rules/frontend/react-native/core.md\`.
 Scaffold uses NativeWind v4 (metro/babel/global.css/nativewind-env.d.ts) and
@@ -194,6 +203,7 @@ function autoDetectedAnnouncement(detected) {
     `stack=${detected.stack} · frontend=${detected.frontend || '-'} · backend=${detected.backend || '-'} · realtime=${detected.realtime || 'none'}`,
     `evidence: ${detected.evidence.join('; ')}`,
     'On your first reply, briefly confirm the detected stack (one line) and continue.',
+    'Before normal feature work, run the auto-documentation baseline reconciliation: create missing canonical docs and update existing docs in place per rules/common/documentation.md. Preserve the project docs layout and mark unknown facts as Unverified.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];
 

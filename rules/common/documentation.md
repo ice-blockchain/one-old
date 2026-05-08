@@ -8,6 +8,18 @@ When the user asks to generate, refresh, or audit project documentation, invoke
 `auto-documentation-generator`. The goal is useful docs that humans and agents
 actually read, not a wall of generated boilerplate.
 
+For `mode: new-project`, this is mandatory even when the user does not ask for
+docs explicitly. Every generated site/app/service must finish with the
+canonical docs that apply to the scaffold, or an `Unverified`/`Skipped` entry
+explaining the exact missing fact. Do not call a new project complete with only
+a lightweight README.
+
+For `mode: existing-codebase` and `mode: existing-with-supabase`, reconcile the
+documentation baseline before normal feature work when docs are missing or
+stale. If a canonical doc does not exist, create it from verified repo facts. If
+it already exists, update it in place. Keep edits scoped and preserve the
+project's existing documentation structure when it is already coherent.
+
 ## Canonical docs
 
 - `README.md`: human-first overview, audience, one-command local setup, live
