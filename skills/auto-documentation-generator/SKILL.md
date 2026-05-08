@@ -30,7 +30,7 @@ Use this skill when the user asks to:
 - Generate, refresh, audit, or repair project documentation.
 - Prepare launch, handoff, onboarding, or production-readiness docs.
 - Create or update `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
-  `architecture.md`, `docs/adr/`, `api.md`, `database.md`, `deployment.md`,
+  `architecture.md`, `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
   `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`, or
   `llms.txt`.
 
@@ -39,9 +39,9 @@ Use this skill when the user asks to:
 - Update existing docs first. Create a new file only when the information has no
   better existing home.
 - In existing projects, reconcile the docs baseline: if a canonical doc is
-  missing, create it from verified repo facts; if it exists, update it in place.
-  Preserve a coherent existing docs layout instead of moving files to satisfy a
-  template.
+  missing, create it from verified repo facts at the repo root; if it exists,
+  update it in place. If legacy canonical docs exist under `docs/`, migrate them
+  to the root path when that can be done without overwriting a newer root file.
 - Prefer pointers to duplicated prose. Link from README/AGENTS/CLAUDE to deeper
   docs instead of copying the same commands everywhere.
 - Do not generate empty boilerplate. Omit sections that cannot be filled with
@@ -58,7 +58,9 @@ Use this skill when the user asks to:
 
 Read only what is needed:
 
-1. `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, existing `docs/`.
+1. `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
+   `.traffic-one/` project memory, root docs, and legacy `docs/` only when
+   present.
 2. `package.json`, workspace config, lockfile, `.nvmrc`, `.tool-versions`,
    `mise.toml`, `turbo.json`, `vite.config.*`, `capacitor.config.*`,
    `eas.json`, CI workflows, deploy manifests.
@@ -77,8 +79,8 @@ Create or refresh these files when relevant:
 | `AGENTS.md` | Agent entry point | Build/test commands, code-style rules, gotchas, repo map, security/deploy warnings. Root file first; nested files only for large subprojects. |
 | `CLAUDE.md` | Claude-specific memory | Symlink to `AGENTS.md` or keep under ~300 lines; include only project-specific traps and pointers. Do not duplicate linter rules. |
 | `.cursor/rules/*.mdc` | Cursor-specific guidance | Short scoped rules with `description`, `globs`, and `alwaysApply`; split large rules by domain. |
-| `architecture.md` or `docs/architecture.md` | System map | Folder map, data flow diagram in text or Mermaid, key dependencies, and why major choices were made. Link ADRs. Package-level `packages/*/architecture.md` still follows `rules/common/package-architecture.md`. |
-| `docs/adr/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
+| `architecture.md` | System map | Root-level folder map, data flow diagram in text or Mermaid, key dependencies, and why major choices were made. Link ADRs. Package-level `packages/*/architecture.md` still follows `rules/common/package-architecture.md`. |
+| `.traffic-one/decisions/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
 | `api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
 | `database.md` | Schema/RLS reference | Generate from migrations or `pg_dump --schema-only --no-owner --no-privileges`; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
 | `deployment.md` | Release/runbook | Preview/staging/prod URLs, deploy commands, secrets list without values, rollback, "build failing", and "DB down" runbooks. |
@@ -86,7 +88,7 @@ Create or refresh these files when relevant:
 | `CHANGELOG.md` | Release history | Keep a Changelog structure with `Unreleased`, generated from Conventional Commits and edited for humans. |
 | `environment-setup.md` | Reproducible local setup | Exact Node/Bun/pnpm versions, Supabase CLI version, env setup, seed/reset commands, local DB flow. |
 | `CONTRIBUTING.md` | Contributor path | Branch naming, PR template/checklist, commit conventions, review checklist, test expectations. |
-| `public/llms.txt` or site root `llms.txt` | LLM docs index | Markdown index for AI crawlers/assistants pointing to canonical docs. For web apps, serve it at `/llms.txt`. |
+| `public/llms.txt` or root `llms.txt` | LLM docs index | Markdown index for AI crawlers/assistants pointing to canonical docs. For web apps, serve it at `/llms.txt`. |
 
 ## Generation Details
 
@@ -97,7 +99,7 @@ Keep it human-first:
 - One paragraph explaining what the product does and who it serves.
 - One-command local setup when possible, such as `pnpm install && pnpm dev`.
 - Link to live deploy or write `Live deploy: not configured yet`.
-- Link to `AGENTS.md`, `docs/architecture.md`, `deployment.md`, and
+- Link to `AGENTS.md`, `architecture.md`, `deployment.md`, and
   `environment-setup.md` instead of repeating their full content.
 
 ### AGENTS.md and CLAUDE.md
@@ -114,7 +116,8 @@ Keep it human-first:
 - Include a folder map and one data-flow diagram. Mermaid is fine.
 - Use the `architecture-decision-records` skill for significant choices. If the
   user explicitly requested docs generation, that counts as approval to create
-  a missing `docs/adr/` scaffold; otherwise ask before initializing ADR files.
+  a missing `.traffic-one/decisions/` scaffold; otherwise ask before
+  initializing ADR files.
 
 ### API and Database Docs
 
@@ -144,8 +147,8 @@ Create a concise Markdown file with:
 
 ## Canonical docs
 - [README](https://example.com/README.md): human overview and setup.
-- [Architecture](https://example.com/docs/architecture.md): system map.
-- [API](https://example.com/docs/api.md): endpoints and auth.
+- [Architecture](https://example.com/architecture.md): system map.
+- [API](https://example.com/api.md): endpoints and auth.
 
 ## Optional
 - [Changelog](https://example.com/CHANGELOG.md): release history.

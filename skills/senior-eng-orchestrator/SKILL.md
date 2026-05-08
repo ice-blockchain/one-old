@@ -13,10 +13,11 @@ description: >
   MUST ask the user for subagent confirmation before starting matching
   multi-layer builds, then stop and wait for the answer. This happens
   automatically without waiting for the user to request subagents.
-  Maintains in-session todos. Reads/writes `.traffic-one/plan.md` and
-  `.traffic-one.json`. Loops on `CHANGES_REQUESTED` from reviewer with a
-  2-cycle cap. Do NOT use for single-component / single-skill requests where a
-  direct skill call is more appropriate.
+  Maintains in-session todos. Reads/writes `.traffic-one/plan.md`,
+  `.traffic-one.json`, and the `.traffic-one/` project-memory baseline. Loops on
+  `CHANGES_REQUESTED` from reviewer with a 2-cycle cap. Do NOT use for
+  single-component / single-skill requests where a direct skill call is more
+  appropriate.
 ---
 
 # Senior Engineering Orchestrator
@@ -51,7 +52,7 @@ If work has already started and this gate was missed, pause at the next safe poi
 - Codex: before starting a non-trivial multi-layer build, announce the Traffic One route and automatically ask the user for subagent confirmation. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before calling `spawn_agent`, this confirmation is mandatory and blocking; stop until the user answers. Do not silently simulate the team before asking. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
 - Cursor: auto-spawn available Cursor/background-agent/task agents when this skill triggers. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
 - Codex role mapping:
-  - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md` and ADR/docs only.
+  - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
   - `senior-frontend` → `worker`, owned write scope frontend/UI/i18n files only.
   - `senior-backend` → `worker`, owned write scope backend/API/database files only.
   - `senior-reviewer` → `explorer` or `default`, read-only.
@@ -74,7 +75,9 @@ Skip if:
 
 ### Phase 0 — Detect + run-id
 
-Read `.traffic-one.json` and `.traffic-one/plan.md`.
+Read `.traffic-one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md`,
+`.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
+`.traffic-one/plan.md` when they exist.
 
 - If `.traffic-one.json` is missing or `mode` / `stack` is unset → invoke the `stack-setup` skill first. The user must commit to a stack before architect can plan.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
@@ -94,7 +97,7 @@ Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/di
 
 Spawn `senior-architect` via the available subagent tool. On Claude Code, use `Task` with `subagent_type: "senior-architect"`. On Codex, after the required confirmation step, use a `worker` subagent with the senior-architect role instructions, owned write scope `.traffic-one/plan.md` plus ADR/docs only. On Cursor, use the closest available background-agent/task adapter with the same role instructions and write scope. Block on its return.
 
-Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + (graph if exists), produce `.traffic-one/plan.md`, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
+Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
 
 Architect must end its reply with the literal token `PLAN_READY`. If it doesn't, surface to the user and do not proceed to Phase 2.
 
@@ -160,6 +163,7 @@ After Phase 3 (or Phase 4 if shipped), reply with:
 Senior Engineering Orchestrator — summary
 
 Plan:        .traffic-one/plan.md
+Memory:      .traffic-one/product.md · .traffic-one/stack.md · .traffic-one/agent-log.md
 Architect:   PLAN_READY
 Frontend:    <one-line status>
 Backend:     <one-line status>

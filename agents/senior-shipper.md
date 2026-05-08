@@ -8,6 +8,7 @@ skills:
   - browser-qa
   - predeploy-security-check
   - verification-loop
+  - project-memory
   - auto-documentation-generator
   - deployment-patterns
   - docker-patterns
@@ -31,8 +32,9 @@ The orchestrator passes you `<run-id>`. Read in priority order:
 
 1. `.traffic-one/digests/<run-id>/{reviewer,tester}.md` — must contain `verdict: APPROVED` and `verdict: TESTS_GREEN` respectively. If either is missing or non-green, STOP and report; do not stamp the deploy approval.
 2. `.traffic-one/plan.md` § Risks + § Cut-list — what could blow up in production.
-3. `.env.example` — surface missing env vars.
-4. Deploy command output — capture verbatim for the digest.
+3. `.traffic-one/deployments.jsonl`, `.traffic-one/stack.md`, `.traffic-one/mcp.json`, and `.traffic-one/known-issues.md` if present.
+4. `.env.example` — surface missing env vars.
+5. Deploy command output — capture verbatim for the digest.
 
 Token budget: ~5k. You don't need to re-read implementer digests; the verifier digests are your contract.
 
@@ -49,9 +51,10 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    `READY_WITH_RISKS` with no hard blockers. Production deploys below 80/100
    are blocked; staging/preview deploys may proceed only if the user explicitly
    accepts the listed risks.
-9. Release-facing docs are current: README live URL, deployment runbook,
-   security reporting, environment setup, changelog, and `llms.txt` when the app
-   has a public web surface.
+9. Release-facing docs and memory are current: README live URL, deployment
+   runbook, security reporting, environment setup, changelog, `.traffic-one/stack.md`,
+   `.traffic-one/known-issues.md`, `.traffic-one/agent-log.md`, and `llms.txt`
+   when the app has a public web surface.
 
 ## What you do
 
@@ -99,6 +102,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    - Run `seo` (skill) for the deployed URL: confirm canonical URLs, sitemap, robots, structured data.
    - Run `ui-demo` (skill) to record a 30–60s walkthrough of the live deploy.
    - Run `browser-qa` against the live URL to confirm no console errors / 404s on critical paths.
+   - Append one JSON line to `.traffic-one/deployments.jsonl` with timestamp,
+     commit, environment, actor, trigger, result, deploy URL, and rollback id.
+   - Append a short release summary to `.traffic-one/agent-log.md`.
    - Capture the deploy URL, the released git SHA, and the run logs in your final reply.
 
 6. Roll-back plan: emit it as the last paragraph of your reply. One concrete command per platform.
@@ -113,6 +119,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
   logging, crypto, and mobile bundle security.
 - `verification-loop` — compute the Production-Readiness Score and identify
   hard blockers before production deployment.
+- `project-memory` — update `.traffic-one/deployments.jsonl`,
+  `.traffic-one/agent-log.md`, `.traffic-one/known-issues.md`, and stack/deploy
+  memory without logging secrets.
 - `auto-documentation-generator` — refresh release-facing docs before deploy
   when URLs, env vars, security posture, changelog entries, or agent docs changed.
 - `deployment-patterns` — for static-host SPA/Supabase, Capacitor, health,

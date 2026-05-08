@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
   "displayName": "Traffic One",
-  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with token-economy: per-phase handoff digests + graphify codebase-graph cache cut redundant reads across the senior-engineer role rules (architect / frontend / backend / reviewer / tester / shipper) auto-attached, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with persistent .traffic-one project memory, token-economy handoff digests + graphify codebase-graph cache, senior-engineer role rules (architect / frontend / backend / reviewer / tester / shipper) auto-attached, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
   "version": "2.6.0",
   "author": {
     "name": "Cosmin Turcin"

@@ -26,21 +26,21 @@ Codex preflight wording for matching builds: "Traffic One sees this as a multi-l
 If a Codex agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.
 
 Codex role adapter:
-- `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md` and ADR/docs only.
+- `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
 - `senior-frontend` → `worker`, owned write scope frontend/UI/i18n files only.
 - `senior-backend` → `worker`, owned write scope backend/API/database files only.
 - `senior-reviewer` → `explorer` or `default`, read-only.
 - `senior-tester` → `worker`, owned write scope test files and test infrastructure only.
 - `senior-shipper` → `worker`, deploy/release only after the shipper gate is satisfied.
 
-- **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list. Skills: `library-pick`, `architecture-decision-records`, `auto-documentation-generator`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
+- **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list, then update `.traffic-one/` project memory and docs. Skills: `library-pick`, `project-memory`, `architecture-decision-records`, `auto-documentation-generator`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
 - **Frontend** — only after the plan exists. Implement UI in `apps/*/src/**`, `packages/ui*`, `src/**`. Skills: `create-component`, `create-page`, `create-feature`, `frontend-patterns`, `frontend-design`, `design-system`, `design-audit`, `accessibility`, `i18n-text`; native variants for RN; `ionic-mobile` for Capacitor.
 - **Backend** — in parallel with frontend, server-side only (`apps/*/server/**`, `packages/api*`, `services/*`, `supabase/`). Skills: `backend-patterns`, `api-design`, `postgres-patterns`/`postgres-review`, `database-migrations`, plus the active stack's `*-patterns` + `*-tdd`.
 - **Reviewer** — read-only, before commit/push/deploy. Skills: `security-review`, `security-scan`, `predeploy-security-check`, `auto-documentation-generator`, `repo-scan`, `context-budget`, the active stack's `*-verification` and `*-coding-standards`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`.
 - **Tester** — alongside reviewer. Restricted to test files / test infra. Skills: `tdd-workflow`, `e2e-testing`, `ai-regression-testing`, `verification-loop`, the active stack's `*-testing`. Emit `TESTS_GREEN` or `TESTS_FAILING <numbered list>`.
 - **Shipper** — only on explicit "deploy / ship / release / publish / to prod" intent. Pre-flight: reviewer `APPROVED` + tester `TESTS_GREEN` + `predeploy-security-check` passing with `--strict --stamp` + release-facing docs current + user confirmation in the same turn. Stamp `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) before running `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`. Run `seo` + `ui-demo` post-deploy.
 
-**Plan gate** (enforced by hook): on `mode === "new-project"` and missing `.traffic-one/plan.md`, writes to `apps/*/src/**`, `packages/*/src/**`, `src/**`, `services/*/src/**` are denied. The plan file itself, ADRs, `docs/`, and `README*` are exempt.
+**Plan gate** (enforced by hook): on `mode === "new-project"` and missing `.traffic-one/plan.md`, writes to `apps/*/src/**`, `packages/*/src/**`, `src/**`, `services/*/src/**` are denied. The plan file itself, `.traffic-one/` project memory, root docs, legacy `docs/`, and `README*` are exempt.
 
 **Deploy gate** (enforced by hook): the deploy commands listed above are denied unless `lastShipperApprovalAt` is fresh (≤10 min) and `lastSecurityCheckStatus: "passed"` is fresh with a fingerprint matching the current worktree. Only the shipper writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 
@@ -59,6 +59,40 @@ Two on-disk caches reduce token usage across the orchestrator flow:
 Both `.traffic-one/digests/` and `graphify-out/` are gitignored — they are local, ephemeral caches, not source.
 
 On Codex CLI (no native subagents), follow the same digest + graph read protocol manually as you simulate the role flow.
+
+## Project memory — `.traffic-one/`
+
+Traffic One projects use a versioned `.traffic-one/` folder as persistent,
+agent-readable context across Claude Code, Codex, Cursor, and future agents.
+This folder does not replace root `.traffic-one.json`; that JSON file remains
+the Traffic One state file for mode, stack, backend, realtime, onboarding, and
+deployment/security stamps. If `.traffic-one/` exists but `.traffic-one.json`
+is missing or lacks a valid `stack`, create or repair `.traffic-one.json`
+before feature-source work.
+Read `.traffic-one/.agentignore` first when present, then
+`.traffic-one/product.md`, `.traffic-one/stack.md`,
+`.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
+`.traffic-one/known-issues.md`, `.traffic-one/schema.sql`, and the tail of
+`.traffic-one/agent-log.md` before broad source reads.
+
+For new projects and existing-project reconciliation, invoke `project-memory`
+and create or refresh: root `.traffic-one.json`, `.traffic-one/product.md`,
+`.traffic-one/decisions/`, `.traffic-one/rules/coding.md`,
+`.traffic-one/rules/security.md`, `.traffic-one/rules/AGENTS.md`,
+`.traffic-one/schema.sql`,
+`.traffic-one/deployments.jsonl`, `.traffic-one/known-issues.md`,
+`.traffic-one/stack.md`, `.traffic-one/.agentignore`,
+`.traffic-one/agent-log.md`, `.traffic-one/mcp.json`, and
+`.traffic-one/skills/` when reusable team commands are needed. Root `AGENTS.md`
+should symlink to `.traffic-one/rules/AGENTS.md` when safe, otherwise it is
+generated from the same source; root `CLAUDE.md` is generated from that same
+source for Claude Code compatibility.
+
+Project memory must never contain secret values, service-role keys, production
+connection strings, raw customer data, or fake MCP/deploy credentials. Append to
+`agent-log.md` and `deployments.jsonl`; do not rewrite history except to redact
+an accidentally logged secret. Refresh `.traffic-one/schema.sql` after every
+database migration.
 
 ---
 
@@ -356,8 +390,8 @@ products use Ionic Framework with Capacitor instead.
 ## Auto-documentation generator
 - When the user asks to generate, refresh, or audit docs, invoke `auto-documentation-generator`; update existing docs before creating new files and avoid boilerplate or placeholder sections.
 - For `mode: new-project`, auto-documentation is mandatory across every stack even if the user does not ask for docs. Do not call a generated site/app/service complete with only a lightweight README.
-- For `mode: existing-codebase` and `mode: existing-with-supabase`, reconcile auto-documentation across every detected or fallback stack before normal feature work: if a canonical doc does not exist, create it from verified repo facts; if it already exists, update it in place while preserving a coherent existing docs layout.
-- Canonical docs: `README.md`, `AGENTS.md`, concise `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md`/`docs/architecture.md`, `docs/adr/`, `api.md`, `database.md`, `deployment.md`, `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`, and served `/llms.txt` when the app has a web surface.
+- For `mode: existing-codebase` and `mode: existing-with-supabase`, reconcile auto-documentation across every detected or fallback stack before normal feature work: if a canonical doc does not exist, create it from verified repo facts at the repo root; if it already exists, update it in place; if legacy canonical docs exist under `docs/`, migrate them to root when safe.
+- Canonical docs: root `README.md`, `AGENTS.md`, concise `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, root `architecture.md`, `.traffic-one/decisions/`, root `api.md`, root `database.md`, root `deployment.md`, root `security.md`, root `CHANGELOG.md`, root `environment-setup.md`, root `CONTRIBUTING.md`, and served `/llms.txt` when the app has a web surface.
 - `README.md` is for humans first: what it is, who it is for, one-command local setup, live deploy link or "not configured", and links to deeper docs.
 - `AGENTS.md` is for agents: build/test commands, code-style rules, repo map, gotchas, security constraints, and deploy warnings. `CLAUDE.md` stays under ~300 lines and targeted at Claude-specific traps; do not duplicate linter rules.
 - `api.md` comes from OpenAPI or source routes; `database.md` comes from migrations or `pg_dump --schema-only --no-owner --no-privileges` with RLS policies inline. Never include table data, connection strings, or secret values.
@@ -519,6 +553,7 @@ products use Ionic Framework with Capacitor instead.
 - `$security-review` — audit code for security issues
 - `$predeploy-security-check` — run the hard pre-deployment security scanner and stamp the deploy gate
 - `$verification-loop` — run build/typecheck/lint/test/security/diff checks and score production readiness
+- `$project-memory` — create or refresh `.traffic-one/` persistent agent memory
 - `$auto-documentation-generator` — generate or refresh README, agent docs, architecture/ADR, API/database, deployment, security, changelog, environment, contributing, and llms.txt docs
 - `$deployment-patterns` — generate static-host SPA/Supabase, CI/CD, health, rollback, and Capacitor release artifacts
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
