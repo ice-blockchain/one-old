@@ -25,6 +25,12 @@ Produce .traffic-one/plan.md (≤250 lines, six sections: Goal, Stack & rational
 Module map, Public contracts, Risks, Cut-list). Cite skills by name; do not
 inline their content.
 
+For `mode: new-project`, run `auto-documentation-generator` after the plan even
+when the user did not ask for docs, and create/update the canonical docs needed
+for the generated scaffold. For `mode: existing-codebase` or
+`existing-with-supabase`, run it before normal feature work to create missing
+canonical docs and update existing docs in place.
+
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
 Format and read protocol: rules/common/agent-handoff-digests.md.
@@ -158,6 +164,9 @@ Read in priority order:
 Run `predeploy-security-check --strict --stamp`, then run the `verification-loop`
 Production-Readiness Score. If the score has hard blockers or is below 80/100
 for a production deploy, STOP and route fixes back to the orchestrator.
+
+If release-facing docs changed or are missing, run `auto-documentation-generator`
+before stamping shipper approval.
 
 Stamp .traffic-one.json's `lastShipperApprovalAt` field with `nowIso()` BEFORE
 running any deploy command (the deploy-gate hook reads this stamp; 10-min

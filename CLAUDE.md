@@ -10,6 +10,7 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 @rules/common/security.md
 @rules/common/stack-recommendations.md
 @rules/common/library-catalog.md
+@rules/common/documentation.md
 @rules/common/senior-engineer-team.md
 @rules/common/git.md
 
@@ -29,8 +30,8 @@ Path-scoped rules — load automatically when you touch matching files:
 
 **Framework-agnostic frontend** (`rules/frontend/`):
 - `accessibility.md` — WCAG 2.1 AA + real-time a11y
-- `ui-quality.md` — design brief, modern clean UI gate, state coverage, visual QA
-- `typography.md` — readable type, character-level copy polish, line length rules
+- `ui-quality.md` — mandatory frontend-stack design brief, modern clean UI gate, state coverage, visual QA
+- `typography.md` — mandatory frontend-stack readable type, character-level copy polish, line length rules
 - `performance.md` — Web Vitals, bundle budgets, code splitting, defensive UI
 - `realtime.md` — WebSocket transport / protocol / bridge architecture
 - `services.md` — REST + WS service split, AppError contract, zod validation
@@ -38,9 +39,10 @@ Path-scoped rules — load automatically when you touch matching files:
 
 **React-specific** (`rules/frontend/react/`):
 - `components.md` — component structure, props, vanilla-extract, Storybook
-- `design-quality.md` — product-specific UI quality, usable first screen, responsive visual QA
+- `design-quality.md` — mandatory React-stack product-specific UI quality, usable first screen, responsive visual QA
 - `stores.md` — Redux Toolkit + RTK Query + zustand boundaries
 - `services.md` — RTK Query slice patterns, generated hooks, tag invalidation
+- `supabase-client.md` — lazy Supabase client, EnvBanner/ConfigurePromptCard, Traffic setup CTA to `https://traffic.io/`
 - `realtime.md` — subscription hooks, Redux bridge middleware
 - `performance.md` — React.lazy, memo/useCallback, useSyncExternalStore
 - `testing.md` — React Testing Library, renderHook, jest config

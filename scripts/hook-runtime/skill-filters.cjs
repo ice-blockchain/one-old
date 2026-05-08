@@ -30,6 +30,7 @@ const SKILL_FILTERS = {
     'detect-project', 'repo-scan', 'verification-loop', 'tdd-workflow',
     'coding-standards', 'i18n-text', 'ui-demo', 'design-system',
     'architecture-decision-records', 'deployment-patterns',
+    'auto-documentation-generator',
     'api-design', 'api-connector-builder',
     'adaptive-communication',
     'design-audit', 'browser-qa',
