@@ -233,6 +233,41 @@ contract, env validation, and migrations/RLS baseline are in place.
       `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
+7. **Codebase graph (after first successful build, optional but recommended)**
+
+   Once the workspace scaffolds and `pnpm build` passes once, install graphify
+   and generate `graphify-out/GRAPH_REPORT.md`. Subagents (`senior-architect`,
+   `senior-frontend`, `senior-backend`, `senior-reviewer`, `senior-tester`) and
+   skills (`repo-scan`, `refactor`, `simplify`, `security-review`,
+   `context-budget`) consult this report **before** falling back to
+   `Glob`/`Grep` — a one-shot file Read replaces dozens of grep calls.
+
+   ```bash
+   # one-time install (Python tool)
+   pipx install graphifyy           # or: pip install --user graphifyy
+
+   # generate the report
+   graphify . --no-viz --code-only --quiet
+
+   # optional: regenerate on every git commit
+   graphify hook install
+   ```
+
+   The plugin's PostToolUse hook emits this hint automatically after the first
+   successful build on `mode: new-project` + `onboardingComplete: true`. You
+   don't have to remember to nag the user.
+
+   **Power-user opt-in (not auto-wired):** `graphify --mcp` runs as a stdio
+   MCP server with richer queries (shortest path, neighbors). Document its
+   install in the user's repo if they want it; the plugin's hooks consume the
+   file `GRAPH_REPORT.md` only.
+
+   **Add to `.gitignore`:**
+   ```
+   graphify-out/
+   .traffic-one/digests/
+   ```
+
 ## What happens when the user asks to build something
 
 - Acknowledge mode: **new project, monorepo not yet scaffolded**.
