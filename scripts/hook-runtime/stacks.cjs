@@ -6,13 +6,13 @@
 // priority order until the budget runs out and the rest defer to path-scoped
 // attach. Adding a new stack = adding an entry here.
 
-// `stack-recommendations.md` and `library-catalog.md` are reference catalogs:
-// useful when the model picks defaults, but ~7KB combined would blow the 10K
-// SessionStart cap if loaded mandatorily on stacks that already have a
+// `stack-recommendations.md`, `documentation.md`, and `library-catalog.md` are
+// reference catalogs: useful when the model picks defaults or writes handoff
+// docs, but too large to load mandatorily on stacks that already have a
 // framework core. We keep them in `optional` (loaded when budget allows) for
-// every framework stack, and `mandatory` only for `minimal` (where they're
-// the primary ruleset). This keeps React / RN bundles within ~10K while
-// minimal still gets the catalogs for cross-language guidance.
+// every framework stack, and `mandatory` only for `minimal` (where they're the
+// primary ruleset). This keeps React / RN bundles within ~10K while minimal
+// still gets the catalogs for cross-language guidance.
 const STACKS = {
   'react-realtime-monorepo': {
     label:
@@ -29,6 +29,7 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
+      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/ionic/core.md',
       'rules/frontend/accessibility.md',
@@ -71,6 +72,7 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
+      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/ionic/core.md',
       'rules/frontend/accessibility.md',
@@ -99,6 +101,7 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
+      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/services.md',
       'rules/frontend/realtime.md',
@@ -129,6 +132,7 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
+      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
       'rules/frontend/services.md',
       'rules/frontend/testing.md',
@@ -158,6 +162,7 @@ const STACKS = {
     ],
     optional: [
       'rules/common/stack-recommendations.md',
+      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
     ],
   },
@@ -171,6 +176,7 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/common/stack-recommendations.md',
+      'rules/common/documentation.md',
       'rules/common/library-catalog.md',
     ],
     optional: [],

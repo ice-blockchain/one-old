@@ -8,6 +8,7 @@ skills:
   - browser-qa
   - predeploy-security-check
   - verification-loop
+  - auto-documentation-generator
   - deployment-patterns
   - docker-patterns
   - springboot-verification
@@ -48,6 +49,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    `READY_WITH_RISKS` with no hard blockers. Production deploys below 80/100
    are blocked; staging/preview deploys may proceed only if the user explicitly
    accepts the listed risks.
+9. Release-facing docs are current: README live URL, deployment runbook,
+   security reporting, environment setup, changelog, and `llms.txt` when the app
+   has a public web surface.
 
 ## What you do
 
@@ -109,6 +113,8 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
   logging, crypto, and mobile bundle security.
 - `verification-loop` — compute the Production-Readiness Score and identify
   hard blockers before production deployment.
+- `auto-documentation-generator` — refresh release-facing docs before deploy
+  when URLs, env vars, security posture, changelog entries, or agent docs changed.
 - `deployment-patterns` — for static-host SPA/Supabase, Capacitor, health,
   rollback, and environment artifacts. Use `docker-patterns` only for
   self-hosted, BYOC, server-runtime, or containerised services.

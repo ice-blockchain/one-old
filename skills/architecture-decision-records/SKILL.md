@@ -182,3 +182,8 @@ proposed → accepted → [deprecated | superseded by ADR-NNNN]
 
 - **Planner agent**: when the planner proposes architecture changes, suggest creating an ADR
 - **Code reviewer agent**: flag PRs that introduce architectural changes without a corresponding ADR
+- **Auto-Documentation Generator**: when the user explicitly asks to generate or
+  refresh project docs, use this skill for `docs/adr/` rather than inventing a
+  second ADR format. That explicit docs request counts as approval to scaffold a
+  missing `docs/adr/` index/template; implicit decision moments still require
+  confirmation before writing ADR files.
