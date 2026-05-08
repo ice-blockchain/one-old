@@ -148,7 +148,35 @@ contract, env validation, and migrations/RLS baseline are in place.
      user-data table.
    - Do not store service-role keys or other secrets in frontend env vars.
 
-4. **App scaffold (`apps/web`)**
+4. **Mandatory frontend design gate**
+   - Invoke `frontend-design` and apply `rules/frontend/ui-quality.md` plus
+     `rules/frontend/typography.md` before writing any generated app, site,
+     page, screen, or feature UI. React web also applies
+     `rules/frontend/react/design-quality.md`; Expo/RN applies the native UI
+     rules together with the shared UI-quality gate. This applies to every
+     frontend stack, including explicit Next.js or fallback/minimal projects
+     when they have a UI.
+   - If the user did not provide references, pick and state 2–3 real
+     best-in-class products in the same domain before implementation. Record a
+     compact design brief in `.traffic-one/plan.md` or the architecture docs:
+     target user, primary action, first-screen hierarchy, chosen references,
+     visual direction, token plan, motion/interactivity plan, responsive
+     behavior, state coverage, and screenshot acceptance checks.
+   - The first runnable screen must be product-specific and useful, even before
+     live backend credentials exist. Missing Supabase or other env config may
+     render one shared setup banner/alert, but never ship a sparse shell whose
+     visible product surface is only config banners, empty filters, or blank
+     placeholder panels. Use polished local demo/seed/empty states only after
+     the backend contract, env validation, migrations, and RLS baseline are in
+     place.
+   - Do not duplicate missing-config banners on the same page. Mount the shared
+     app-level banner once and use smaller feature-level empty states only when
+     they add workflow context.
+   - Visual-heavy work captures or documents mobile, tablet, and desktop QA for
+     hierarchy, text fit, overflow, focus, loading, empty, error, disabled, and
+     reduced-motion states.
+
+5. **App scaffold (`apps/web`)**
    - Vite + React + TS template.
    - Tailwind v3.4 + PostCSS: `tailwind.config.ts` extends
      `@app/tailwind-config/preset`; `postcss.config.cjs` wires `tailwindcss`
@@ -160,7 +188,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`.
 
-5. **CI/CD pipeline (use Turborepo's caching)**
+6. **CI/CD pipeline (use Turborepo's caching)**
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
    - Remote cache enabled if available; otherwise local.
    - Storybook build artefact uploaded for PR previews.
@@ -169,7 +197,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Supabase migration jobs use `supabase/setup-cli`, encrypted
      `SUPABASE_ACCESS_TOKEN`, and per-environment project/db-password secrets.
 
-6. **Deployment artifact baseline (smallest production set)**
+7. **Deployment artifact baseline (smallest production set)**
    - Choose one static host target for the SPA: Vercel, Netlify, or Cloudflare
      Pages. Commit that host's manifest/fallback files and do not add a
      Dockerfile unless the plan explicitly selects self-hosting, BYOC,
@@ -194,12 +222,28 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Configure the custom domain, automatic TLS, security headers, and an HSTS
      preload readiness check before calling production complete.
 
-7. **Tooling guards**
+8. **Tooling guards**
    - Husky + lint-staged for pre-commit format + lint.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-8. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
+9. **Mandatory auto-documentation baseline**
+   - Invoke `auto-documentation-generator` for every generated project before
+     calling the scaffold complete, even if the user did not explicitly request
+     docs.
+   - Create or refresh the relevant canonical docs from
+     `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
+     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md` or
+     `docs/architecture.md`, `docs/adr/`, `api.md`, `database.md`,
+     `deployment.md`, `security.md`, `CHANGELOG.md`, `environment-setup.md`,
+     `CONTRIBUTING.md`, and served `/llms.txt` for web surfaces.
+   - Mark facts as `Unverified` with the exact needed command/input instead of
+     inventing deploy URLs, database output, secret values, or production
+     configuration.
+   - Do not leave the project with only a README. The reviewer must treat a
+     missing mandatory docs baseline as `CHANGES_REQUESTED`.
+
+10. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
    a. Add Supabase as a workspace devDependency:
       ```bash
@@ -239,9 +283,12 @@ contract, env validation, and migrations/RLS baseline are in place.
       per `rules/frontend/react/supabase-client.md` — app must render with the
       banner BEFORE the user has keys, and every RTK Query feature slice must
       surface `{ error: { kind: "not-configured" } }` instead of crashing.
-      All website-facing setup/configure CTAs in `<EnvBanner />` and
-      `<ConfigurePromptCard />` must link to `https://traffic.io/`, because
-      Traffic is where users set up their Supabase credentials.
+      All website-facing setup/configure CTAs in `<EnvBanner />`,
+      `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, protected-route
+      fallbacks, auth/profile/job empty states, and similar missing-config
+      surfaces must link to `https://traffic.io/`, because Traffic is where
+      users set up their Supabase credentials. Add a unit/component or E2E
+      regression test that asserts the setup link has that exact `href`.
       Never call `createClient` at module top level. Never assume `getSupabase()`
       is non-null in a service or store.
 
@@ -265,7 +312,7 @@ contract, env validation, and migrations/RLS baseline are in place.
       `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
-9. **Codebase graph (after first successful build, optional but recommended)**
+11. **Codebase graph (after first successful build, optional but recommended)**
 
    Once the workspace scaffolds and `pnpm build` passes once, install graphify
    and generate `graphify-out/GRAPH_REPORT.md`. Subagents (`senior-architect`,

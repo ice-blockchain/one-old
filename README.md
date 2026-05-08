@@ -23,6 +23,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── execution-discipline/
 │   ├── security-review/
 │   ├── predeploy-security-check/
+│   ├── auto-documentation-generator/
 │   ├── jwt-security/
 │   └── refactor/
 │
@@ -30,6 +31,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── core.md              always loaded (no path filter)
 │   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
 │   ├── common/stack-recommendations.md always loaded: provider-first stack defaults
+│   ├── common/documentation.md always loaded: human + agent docs defaults
 │   ├── common/library-catalog.md always loaded: curated package defaults
 │   ├── frontend/react/            React web stack rules
 │   ├── frontend/ionic/            Ionic Framework + Capacitor hybrid mobile rules
@@ -88,6 +90,7 @@ precedence note so local rules and forced stack choices always win.
 | "is this auth code secure?" | `security-review` |
 | "run the Traffic One Security Check" | `predeploy-security-check` |
 | "score production readiness" | `verification-loop` |
+| "generate project docs" | `auto-documentation-generator` |
 | "generate deployment artifacts" | `deployment-patterns` |
 | "implement JWT auth safely" | `jwt-security` |
 | "add auth to a Next.js blog" | `nextjs-turbopack` |
@@ -189,6 +192,7 @@ Or via Cursor Settings → Plugins → Add.
 | Library stack, folder structure, core rules | `rules/core.md`, then run `node scripts/sync-cursor.cjs` |
 | Provider-first stack recommendations | `rules/common/stack-recommendations.md`, then run `node scripts/sync-cursor.cjs` |
 | Curated library catalog | `rules/common/library-catalog.md`, then run `node scripts/sync-cursor.cjs` |
+| Documentation defaults | `rules/common/documentation.md`, `skills/auto-documentation-generator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Senior-engineer orchestration workflow | `rules/common/senior-engineer-team.md`, `skills/senior-eng-orchestrator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | React web stack rules | `rules/frontend/react/*.md`, then run `node scripts/sync-cursor.cjs` |
 | Ionic/Capacitor hybrid mobile rules | `rules/frontend/ionic/*.md`, then run `node scripts/sync-cursor.cjs` |

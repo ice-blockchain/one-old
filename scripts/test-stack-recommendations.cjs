@@ -10,6 +10,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
 const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
+const { STACKS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
 const { computeProjectFingerprint } = require(path.join(ROOT, 'scripts', 'security-check-runner.cjs'));
 
 const tests = [];
@@ -122,6 +123,385 @@ test('new project onboarding defaults to supabase backend', () => {
     assert.equal(defaultBackendValue(), 'supabase');
     assert.match(context, /backend=supabase/);
     assert.match(context, /Supabase \(managed Postgres with Auth, Storage, Realtime, and RLS\)/);
+  });
+});
+
+test('new project onboarding includes Codex subagent preflight', () => {
+  const detectProject = fs.readFileSync(path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+
+  assert.match(detectProject, /Codex subagent preflight for new projects/);
+  assert.match(detectProject, /blocking preflight gate on Codex/);
+  assert.match(directives, /CODEX SUBAGENT PREFLIGHT/);
+  assert.match(orchestrator, /Codex consent gate — blocking/);
+
+  withTempDir((cwd) => {
+    const result = runHook(cwd, 'session-start');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /Traffic One sees this as a multi-layer build/);
+    assert.match(context, /architect → frontend\/backend → reviewer\/tester/);
+  });
+});
+
+test('Supabase missing-config setup CTAs must route through Traffic', () => {
+  const sources = {
+    supabaseRule: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'supabase-client.md'), 'utf8'),
+    newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
+    stacks: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8'),
+    directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
+    createService: fs.readFileSync(path.join(ROOT, 'skills', 'create-service', 'SKILL.md'), 'utf8'),
+    frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
+    reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
+    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
+    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
+    cursorSupabaseRule: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'react-supabase-client.mdc'), 'utf8'),
+    cursorNewProjectRule: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8'),
+    cursorFrontendAgent: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', '00-agent-senior-frontend.mdc'), 'utf8'),
+    cursorReviewerAgent: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', '00-agent-senior-reviewer.mdc'), 'utf8'),
+  };
+
+  for (const [name, content] of Object.entries(sources).filter(([name]) => name !== 'stacks')) {
+    assert.match(content, /https:\/\/traffic\.io\//, `${name} must mention the Traffic setup URL`);
+  }
+
+  assert.match(sources.supabaseRule, /href` is exactly `https:\/\/traffic\.io\/`/);
+  assert.match(sources.supabaseRule, /Add a regression test for the Traffic CTA/);
+  assert.match(sources.newProjectRule, /protected-route\s+fallbacks/);
+  assert.match(sources.stacks, /rules\/frontend\/react\/supabase-client\.md/);
+  assert.match(sources.directives, /MUST link to[\s\S]*https:\/\/traffic\.io\//);
+  assert.match(sources.frontendAgent, /protected-route fallbacks/);
+  assert.match(sources.reviewerAgent, /not directly to the Supabase\s+dashboard/);
+  assert.match(sources.agentsMirror, /SupabaseConfigAlert/);
+  assert.match(sources.claudeManifest, /supabase-client\.md/);
+  assert.match(sources.cursorSupabaseRule, /href` is exactly `https:\/\/traffic\.io\/`/);
+  assert.match(sources.cursorNewProjectRule, /protected-route\s+fallbacks/);
+});
+
+test('SessionStart bundle includes Supabase Traffic setup CTA rule', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/react\/supabase-client\.md/);
+    assert.match(context, /https:\/\/traffic\.io\//);
+    assert.match(context, /Add a regression test for the Traffic CTA/);
+  });
+});
+
+test('new projects must include the auto-documentation baseline', () => {
+  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
+  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const stacks = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8');
+  const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const cursorDocumentation = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-documentation.mdc'), 'utf8');
+  const cursorNewProject = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8');
+
+  assert.match(documentationRules, /For `mode: new-project`, this is mandatory/);
+  assert.match(newProjectRule, /Mandatory auto-documentation baseline/);
+  assert.match(newProjectRule, /Do not leave the project with only a README/);
+  assert.match(directives, /Mandatory docs baseline/);
+  assert.match(directives, /do not leave only a lightweight README/);
+  assert.match(stacks, /rules\/common\/documentation\.md/);
+  assert.match(architect, /mandatory for every `mode: new-project`/);
+  assert.match(architect, /do not leave only a README/);
+  assert.match(reviewer, /Missing facts are\s+explicitly `Unverified`/);
+  assert.match(promptTemplates, /run `auto-documentation-generator` after the plan even\s+when the user did not ask for docs/);
+  assert.match(agentsMirror, /auto-documentation is mandatory/);
+  assert.match(claude, /@rules\/common\/documentation\.md/);
+  assert.match(cursorDocumentation, /For `mode: new-project`, this is mandatory/);
+  assert.match(cursorNewProject, /Mandatory auto-documentation baseline/);
+});
+
+test('SessionStart bundle includes mandatory auto-docs guidance', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T12:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/common\/documentation\.md/);
+    assert.match(context, /For `mode: new-project`, this is mandatory across every stack/);
+    assert.match(context, /new project complete with only a lightweight README/);
+  });
+});
+
+test('existing projects must reconcile the auto-documentation baseline', () => {
+  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
+  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const autoDocs = fs.readFileSync(path.join(ROOT, 'skills', 'auto-documentation-generator', 'SKILL.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const cursorDocumentation = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-documentation.mdc'), 'utf8');
+  const cursorExisting = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-existing-codebase.mdc'), 'utf8');
+
+  assert.match(documentationRules, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
+  assert.match(documentationRules, /If a canonical doc does not\s+exist, create it/);
+  assert.match(documentationRules, /If it already exists, update it in\s+place/);
+  assert.match(existingRule, /Before normal feature work/);
+  assert.match(existingRule, /If a canonical doc does not exist, create it/);
+  assert.match(existingRule, /If a canonical doc already exists, update it in place/);
+  assert.match(directives, /create missing canonical docs and update existing docs in place/);
+  assert.match(architect, /every `mode: existing-codebase` \/ `existing-with-supabase`/);
+  assert.match(reviewer, /Existing projects have had the same docs baseline reconciled/);
+  assert.match(autoDocs, /In existing projects, reconcile the docs baseline/);
+  assert.match(promptTemplates, /existing-with-supabase`, run it before normal feature work/);
+  assert.match(agentsMirror, /if a canonical doc does not exist, create it/);
+  assert.match(cursorDocumentation, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
+  assert.match(cursorExisting, /If a canonical doc already exists, update it in place/);
+});
+
+test('existing project SessionStart includes docs reconciliation guidance', () => {
+  withTempDir((cwd) => {
+    makeExistingProject(cwd, {
+      react: '^18.0.0',
+      '@vitejs/plugin-react': '^4.0.0',
+      vite: '^6.0.0',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(state.mode, 'existing-codebase');
+    assert.match(context, /rules\/modes\/existing-codebase\.md/);
+    assert.match(context, /rules\/common\/documentation\.md/);
+    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /Before normal feature work/);
+  });
+});
+
+test('all stack bundles include documentation defaults', () => {
+  for (const [stackId, spec] of Object.entries(STACKS)) {
+    assert.equal(
+      spec.mandatory.includes('rules/common/documentation.md'),
+      true,
+      `${stackId} must load documentation defaults mandatorily`,
+    );
+  }
+});
+
+test('frontend stack bundles load design quality rules mandatorily', () => {
+  const frontendStacks = [
+    'react-realtime-monorepo',
+    'react-frontend-only',
+    'react-native-expo-monorepo',
+    'react-native-expo-app',
+  ];
+
+  for (const stackId of frontendStacks) {
+    const mandatory = STACKS[stackId].mandatory;
+    assert.equal(
+      mandatory.includes('rules/frontend/ui-quality.md'),
+      true,
+      `${stackId} must always load the shared UI quality gate`,
+    );
+    assert.equal(
+      mandatory.includes('rules/frontend/typography.md'),
+      true,
+      `${stackId} must always load typography rules`,
+    );
+  }
+
+  for (const stackId of ['react-realtime-monorepo', 'react-frontend-only']) {
+    assert.equal(
+      STACKS[stackId].mandatory.includes('rules/frontend/react/design-quality.md'),
+      true,
+      `${stackId} must always load React design quality rules`,
+    );
+  }
+});
+
+test('SessionStart bundle includes mandatory frontend design gate', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T13:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/ui-quality\.md/);
+    assert.match(context, /Central design gate/);
+    assert.match(context, /rules\/frontend\/typography\.md/);
+    assert.match(context, /rules\/frontend\/react\/design-quality\.md/);
+    assert.match(context, /Mandatory frontend design gate/);
+    assert.match(context, /sparse shell whose\s+visible product surface is only config banners/);
+  });
+});
+
+test('React Native SessionStart bundle includes shared design gate', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-native-expo-app',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T13:05:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/ui-quality\.md/);
+    assert.match(context, /Central design gate/);
+    assert.match(context, /rules\/frontend\/typography\.md/);
+    assert.match(context, /Mandatory frontend design gate/);
+  });
+});
+
+test('frontend design gate rejects sparse config-banner-dominated generated UI', () => {
+  const sources = {
+    uiQuality: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ui-quality.md'), 'utf8'),
+    reactDesign: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'design-quality.md'), 'utf8'),
+    newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
+    directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    frontendSkill: fs.readFileSync(path.join(ROOT, 'skills', 'frontend-design', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
+    frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
+    reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
+    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
+    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
+  };
+
+  assert.match(sources.uiQuality, /Generated app\/site prompts must produce a product-specific/);
+  assert.match(sources.uiQuality, /Do not duplicate missing-config banners/);
+  assert.match(sources.reactDesign, /Never ship a page whose main visible surface is duplicated/);
+  assert.match(sources.newProjectRule, /Mandatory frontend design gate/);
+  assert.match(sources.newProjectRule, /This applies to every\s+frontend stack/);
+  assert.match(sources.directives, /Mandatory design gate/);
+  assert.match(sources.directives, /duplicated config banners/);
+  assert.match(sources.frontendSkill, /mandatory pre-code gate/);
+  assert.match(sources.frontendSkill, /one shared setup banner/);
+  assert.match(sources.createPage, /product-specific demo/);
+  assert.match(sources.createFeature, /product-specific demo/);
+  assert.match(sources.frontendAgent, /2–3 real products/);
+  assert.match(sources.frontendAgent, /do not ship only banners plus inactive filters/);
+  assert.match(sources.reviewerAgent, /mandatory design gate/);
+  assert.match(sources.reviewerAgent, /duplicated setup UI/);
+  assert.match(sources.agentsMirror, /Do not rely on path-scoped attach/);
+  assert.match(sources.claudeManifest, /mandatory frontend-stack design brief/);
+});
+
+test('existing React Native project SessionStart includes docs reconciliation guidance', () => {
+  withTempDir((cwd) => {
+    makeExistingProject(cwd, {
+      expo: '^52.0.0',
+      react: '^18.0.0',
+      'react-native': '^0.76.0',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(state.mode, 'existing-codebase');
+    assert.equal(state.stack, 'react-native-expo-app');
+    assert.match(context, /rules\/common\/documentation\.md/);
+    assert.match(context, /create missing canonical docs and update existing docs in place/);
+  });
+});
+
+test('existing Go project SessionStart includes docs reconciliation guidance', () => {
+  withTempDir((cwd) => {
+    fs.writeFileSync(path.join(cwd, 'go.mod'), 'module example.com/jobs\n\ngo 1.22\n', 'utf8');
+    for (let index = 0; index < 6; index += 1) {
+      fs.writeFileSync(
+        path.join(cwd, `file${index}.go`),
+        `package main\n\nfunc value${index}() int { return ${index} }\n`,
+        'utf8',
+      );
+    }
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(state.mode, 'existing-codebase');
+    assert.equal(state.stack, 'minimal');
+    assert.match(context, /go\.mod detected/);
+    assert.match(context, /rules\/common\/documentation\.md/);
+    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /Before normal feature work/);
+  });
+});
+
+test('existing unknown stack falls back to minimal with docs reconciliation guidance', () => {
+  withTempDir((cwd) => {
+    for (let index = 0; index < 6; index += 1) {
+      fs.writeFileSync(
+        path.join(cwd, `module${index}.py`),
+        `def value_${index}():\n    return ${index}\n`,
+        'utf8',
+      );
+    }
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(state.mode, 'existing-codebase');
+    assert.equal(state.stack, 'minimal');
+    assert.match(context, /existing codebase detected/);
+    assert.match(context, /rules\/common\/documentation\.md/);
+    assert.match(context, /create missing canonical docs and update existing docs in place/);
   });
 });
 
@@ -630,6 +1010,50 @@ test('production readiness score guidance is merged, not duplicated', () => {
   assert.match(reviewer, /Production-Readiness\s+Score/);
   assert.match(shipper, /Production-Readiness Score/);
   assert.match(agentsMirror, /Production-readiness score/);
+});
+
+test('auto documentation generator guidance is present and not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const autoDocs = fs.readFileSync(path.join(skillsRoot, 'auto-documentation-generator', 'SKILL.md'), 'utf8');
+  const adrSkill = fs.readFileSync(path.join(skillsRoot, 'architecture-decision-records', 'SKILL.md'), 'utf8');
+  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
+  const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+
+  assert.equal(skillNames.includes('auto-documentation-generator'), true);
+  assert.equal(skillNames.includes('documentation-generator'), false);
+  assert.equal(skillNames.includes('docs-generator'), false);
+  assert.equal(skillNames.includes('auto-docs'), false);
+  assert.match(autoDocs, /Auto-Documentation Generator/);
+  assert.match(autoDocs, /In existing projects, reconcile the docs baseline/);
+  assert.match(autoDocs, /README\.md/);
+  assert.match(autoDocs, /AGENTS\.md/);
+  assert.match(autoDocs, /CLAUDE\.md/);
+  assert.match(autoDocs, /\.cursor\/rules\/\*\.mdc/);
+  assert.match(autoDocs, /pg_dump --schema-only --no-owner --no-privileges/);
+  assert.match(autoDocs, /RLS policies/);
+  assert.match(autoDocs, /Keep a Changelog/);
+  assert.match(autoDocs, /Conventional Commits/);
+  assert.match(autoDocs, /llms\.txt/);
+  assert.match(adrSkill, /Auto-Documentation Generator/);
+  assert.match(documentationRules, /Auto-Documentation Defaults/);
+  assert.match(documentationRules, /For `mode: new-project`, this is mandatory/);
+  assert.match(documentationRules, /Context, Decision, Status, and Consequences/);
+  assert.match(architect, /auto-documentation-generator/);
+  assert.match(reviewer, /auto-documentation-generator/);
+  assert.match(shipper, /auto-documentation-generator/);
+  assert.match(agentsMirror, /Auto-documentation generator/);
+  assert.match(claude, /@rules\/common\/documentation\.md/);
+  assert.match(readme, /generate project docs/);
+  assert.match(skillFilters, /auto-documentation-generator/);
 });
 
 test('plan-gate exempts .traffic-one/digests/ writes', () => {

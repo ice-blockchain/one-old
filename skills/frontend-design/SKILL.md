@@ -15,6 +15,11 @@ Use this when the task is not just "make it work" but "make it look designed."
 
 This skill is for product pages, dashboards, app shells, components, or visual systems that need a clear point of view instead of generic AI-looking UI.
 
+For generated apps/sites, this is a mandatory pre-code gate whenever the user
+asks for "modern", "polished", "UX optimized", "complete", "beautiful", or a
+new user-facing product. The output must not stop at a technically correct app
+shell; it needs a product-specific first screen, complete states, and visual QA.
+
 ## When To Use
 
 - building a landing page, dashboard, or app surface from scratch
@@ -105,6 +110,12 @@ variables in `globals.css` (themed via the preset in `packages/tailwind-config`)
 React Native uses **NativeWind v4 + React Native Reusables** with the same HSL
 CSS-variable theme block in `global.css`. Reference values via Tailwind tokens
 (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …); never hardcode.
+
+When live backend credentials are missing, keep the first screen useful: render
+one shared setup banner at the app boundary, then show polished demo/seeded or
+empty/degraded states for the actual workflow. Do not repeat the same
+configuration CTA in multiple banners/cards on one page, and do not leave the
+screen as only filters, blank panels, or "not configured" alerts.
 
 ### 3. Compose with intention
 
@@ -233,5 +244,7 @@ Before delivering:
 - the result does not read like generic AI UI or an AI-generated website
 - the UI has purposeful interactivity and animation, with reduced-motion support
 - the implementation is production-grade, not just visually interesting
+- missing backend/env config still leaves a credible app surface, with at most
+  one repeated setup banner pattern per page
 - page-level web output optimizes Lighthouse mobile Performance on a built preview when runnable, with 100 as ideal; if not runnable, page speed is reported as unverified with concrete risks
 - screenshot or Storybook verification covers the important breakpoints and states, or the final response explains why it could not be run
