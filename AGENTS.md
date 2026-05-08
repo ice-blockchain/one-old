@@ -450,10 +450,14 @@ products use Ionic Framework with Capacitor instead.
 - Maestro/RNTL tests should prefer stable accessibility labels for critical controls.
 
 ## Backend rules (when editing SQL, migrations, server/, api/)
-- Postgres types: `timestamptz`, `numeric` (money), `text` (not `varchar(n)`), `jsonb`.
-- Indexes: every hot-path WHERE/JOIN/ORDER BY column; composite indexes equality-first.
-- RLS enabled on every user-data table; default-deny policies; tested with anon + authed roles.
-- Migrations: non-null on big tables = nullable → backfill → NOT NULL. Drops two-phase. Production rollback is forward-only: write an undo migration instead of editing applied migrations or restoring from backup; never write `DROP TABLE` without a tested rollback/undo plan.
+- Postgres schema: every table has a PK; IDs are `bigint generated always as identity` or `uuid default gen_random_uuid()` by need; plural `snake_case` tables; audit columns on user-mutable tables.
+- Postgres types: `timestamptz`, `numeric` (money), `text` (not `varchar(n)`), `citext` or normalized lower-case text for email identity, `jsonb` only for sparse attributes, `vector(n)` with model/version metadata for embeddings.
+- Indexes: every hot-path WHERE/JOIN/ORDER BY/FK/pagination column; composite indexes equality-first; RLS policy columns (`user_id`, `tenant_id`) indexed; partial indexes for `deleted_at IS NULL`; GIN for JSONB/full-text.
+- RLS enabled on every user-data table; default-deny, operation-specific SELECT/INSERT/UPDATE/DELETE policies, explicit `TO authenticated`, `WITH CHECK` for writes, and tests with anon/authed/owner/non-owner/tenant-boundary cases.
+- Migrations: non-null on big tables = nullable → backfill → NOT NULL; FKs on large tables use `NOT VALID` then `VALIDATE CONSTRAINT`; avoid one-shot `ALTER COLUMN TYPE` and large-table `NOT NULL DEFAULT`. Drops two-phase. Production rollback is forward-only: write an undo migration instead of editing applied migrations or restoring from backup; never write `DROP TABLE` without a tested rollback/undo plan.
+- Data modeling: foreign keys declare explicit `ON DELETE` behavior; Supabase SaaS tenancy defaults to shared tables with `tenant_id` + RLS unless documented otherwise; PII columns are identified and restricted with column-level grants when needed; soft delete uses `deleted_at`, not only `is_deleted`.
+- Performance: no N+1 queries, unbounded `select('*')`, missing pagination, or broad Realtime subscriptions without filters. Prefer Postgres `tsvector` + GIN for ordinary full-text search before external search.
+- Operations: Supabase Security Advisor / Performance Advisor clean or documented, and backups have a tested restore path before production data lands.
 - API layering: route → controller → service → repository → db. No layer-skipping.
 - Public API responses use typed DTO envelopes (`success`, `data`, `error`, optional `meta`); paginated responses include metadata matching the endpoint contract.
 - All handler input validated with Zod; return 400 with flattened errors.
@@ -502,6 +506,7 @@ products use Ionic Framework with Capacitor instead.
 - `$refactor` — clean up and improve existing code
 - `$postgres-review` — review SQL, migrations, indexes, RLS
 - `$postgres-patterns` — apply PostgreSQL schema, indexing, query, admin, and security best practices
+- `$database-migrations` — plan safe forward-only production migration sequencing
 - `$context-budget` — audit token consumption across loaded rules/skills
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
 - `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification

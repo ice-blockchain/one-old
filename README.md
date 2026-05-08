@@ -94,6 +94,7 @@ precedence note so local rules and forced stack choices always win.
 | "make this UI look modern and clean" | `design-audit` / `frontend-design` |
 | "verify the visual QA for this route" | `browser-qa` |
 | "design a Postgres schema" | `postgres-patterns` |
+| "review this Supabase schema" | `postgres-review` |
 | "design an API endpoint" | adapted ECC API/backend skills |
 | "review this Go service" | adapted ECC language skills |
 | "audit this UI design system" | adapted ECC frontend/design skills |
