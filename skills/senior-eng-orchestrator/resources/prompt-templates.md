@@ -107,6 +107,10 @@ Verdict format: end with one of
     1. <file:line> — <issue> — <suggested fix>.
     2. …
 
+If the user asked "safe to ship", production readiness, launch score, or release
+approval, also run the `verification-loop` Production-Readiness Score and include
+the score, hard blockers, and 12-factor / AWS Well-Architected / OWASP mapping.
+
 Write your digest to:
   .traffic-one/digests/<run-id>/reviewer.md
 
@@ -151,12 +155,16 @@ Read in priority order:
   2. .traffic-one/plan.md § Risks + § Cut-list.
   3. .env.example to surface missing env vars.
 
+Run `predeploy-security-check --strict --stamp`, then run the `verification-loop`
+Production-Readiness Score. If the score has hard blockers or is below 80/100
+for a production deploy, STOP and route fixes back to the orchestrator.
+
 Stamp .traffic-one.json's `lastShipperApprovalAt` field with `nowIso()` BEFORE
 running any deploy command (the deploy-gate hook reads this stamp; 10-min
 window).
 
 Run the active-stack deploy command. Capture the URL, git SHA, and rollback
-command in your digest.
+command in your digest. Include the Production-Readiness Score in the digest.
 
 Write your digest to:
   .traffic-one/digests/<run-id>/shipper.md

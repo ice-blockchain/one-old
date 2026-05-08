@@ -87,6 +87,7 @@ precedence note so local rules and forced stack choices always win.
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
 | "run the Traffic One Security Check" | `predeploy-security-check` |
+| "score production readiness" | `verification-loop` |
 | "generate deployment artifacts" | `deployment-patterns` |
 | "implement JWT auth safely" | `jwt-security` |
 | "add auth to a Next.js blog" | `nextjs-turbopack` |

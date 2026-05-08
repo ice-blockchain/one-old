@@ -347,6 +347,12 @@ products use Ionic Framework with Capacitor instead.
 - Rollback plan = previous immutable frontend deployment plus a forward-only undo migration for DB changes; do not rely on `pg_restore` as the normal rollback path.
 - Configure custom domain, automatic TLS, security headers, and HSTS preload readiness before calling production complete.
 
+## Production-readiness score
+- When the user asks if an SPA + Supabase, React/Ionic, or Capacitor release is ready to ship, invoke `verification-loop` and produce a single 100-point Production-Readiness Score across 8 weighted dimensions mapped to 12-factor, AWS Well-Architected, and OWASP ASVS / OWASP Top 10:2025.
+- Weights: Security/privacy 18; code quality 12; architecture/config 12; performance 12; deployment readiness 12; database safety 12; reliability/observability 12; docs/accessibility/mobile/cost 10.
+- Hard blockers force `NOT_READY`: failing production build/typecheck/tests/security scanner; exposed service-role/JWT/admin DB/payment/LLM secrets in browser/mobile code; public Supabase tables without RLS or write policies without `WITH CHECK`; destructive production migrations without tested forward-only undo; payment mutations without idempotency keys; app-store submissions missing account deletion, privacy manifest/data-safety requirements, or required review metadata.
+- Performance evidence uses current Core Web Vitals: LCP ≤ 2.5s, INP ≤ 200ms, and CLS ≤ 0.1 at the 75th percentile. Prefer Lighthouse mobile plus CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
+
 ## Component rules (apps/**/src/components/**, packages/ui/**)
 - ≤150 lines, one per file. Style in-file via Tailwind utility classes; co-locate only `*.stories.tsx` (no sibling style files).
 - Named export. Explicit `ComponentNameProps` interface.
@@ -500,6 +506,7 @@ products use Ionic Framework with Capacitor instead.
 - `$i18n-text` — add, extract, review, or localize user-facing UI copy
 - `$security-review` — audit code for security issues
 - `$predeploy-security-check` — run the hard pre-deployment security scanner and stamp the deploy gate
+- `$verification-loop` — run build/typecheck/lint/test/security/diff checks and score production readiness
 - `$deployment-patterns` — generate static-host SPA/Supabase, CI/CD, health, rollback, and Capacitor release artifacts
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
 - `$nextjs-turbopack` — apply Next.js/Turbopack and provider-first Next.js defaults
