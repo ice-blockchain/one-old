@@ -543,6 +543,43 @@ test('SessionStart bundle includes codebase-graph + handoff-digests rules', () =
   });
 });
 
+test('SessionStart bundle includes deployment artifact defaults', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-07T14:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const ctx = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(ctx, /Deployment artifact baseline/);
+    assert.match(ctx, /static-host manifest/);
+    assert.match(ctx, /Supabase\s+Branching/);
+    assert.match(ctx, /force-update\s+version check/);
+  });
+});
+
+test('deployment assistant guidance is merged, not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const deploymentSkill = fs.readFileSync(path.join(skillsRoot, 'deployment-patterns', 'SKILL.md'), 'utf8');
+
+  assert.equal(skillNames.includes('ai-deployment-assistant'), false);
+  assert.equal(skillNames.includes('deployment-assistant'), false);
+  assert.match(deploymentSkill, /static-host SPA\/Supabase deployment artifacts/);
+  assert.match(deploymentSkill, /Traffic One Deployment Artifact Default/);
+});
+
 test('plan-gate exempts .traffic-one/digests/ writes', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
