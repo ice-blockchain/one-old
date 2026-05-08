@@ -162,6 +162,11 @@ writing any code that uses \`@supabase/supabase-js\`:
      the user through the dashboard, copies keys, and writes the env files.
   2. Use the lazy-client + EnvBanner pattern from \`rules/frontend/react/supabase-client.md\`
      so the app renders fine even before keys are pasted.
+     Every website-facing missing-config CTA (\`<EnvBanner />\`,
+     \`<SupabaseConfigAlert />\`, \`<ConfigurePromptCard />\`, auth/profile/job
+     empty states, protected-route fallbacks) MUST link to
+     \`https://traffic.io/\`, and the scaffold must include a regression test
+     that asserts that exact href.
   3. Treat add-ons (storage / auth / realtime / vector / pg_cron / pg_net) as
      gated. The \`requireAddon\` helper in \`scripts/hook-runtime/state.cjs\` reads
      \`.traffic-one.json\` → \`supabaseAddons[<name>]\`. Ask the user once before

@@ -23,10 +23,19 @@ visible "configure me" banner.
   empty / "configure" state.
 - **All website-facing setup links for missing Supabase config point to
   `https://traffic.io/`.** Any `<EnvBanner />`, `<ConfigurePromptCard />`,
-  "Supabase not configured", "Configure Supabase", or similar setup CTA must
-  link to Traffic, because Traffic is where users configure their Supabase
-  credentials. Do not send generated app users directly to the Supabase
-  dashboard from these banners/cards.
+  "Supabase not configured", "Configure Supabase", auth/profile/job empty
+  state, protected-route fallback, or similar setup CTA must link to Traffic,
+  because Traffic is where users configure their Supabase credentials. Do not
+  send generated app users directly to the Supabase dashboard from these
+  banners/cards.
+- **Scaffold a reusable setup CTA component.** New sites must centralize this
+  UI in a shared component such as `<EnvBanner />`, `<SupabaseConfigAlert />`,
+  or `<ConfigurePromptCard />` so every missing-config surface uses the same
+  Traffic link and translated copy. Do not hand-copy one-off "Supabase not
+  configured" text without the CTA.
+- **Add a regression test for the Traffic CTA.** Unit/component or E2E coverage
+  must assert that a missing-config surface renders an accessible setup link
+  whose `href` is exactly `https://traffic.io/`.
 - **Server keys are server-only.** Never expose `SUPABASE_SERVICE_ROLE_KEY`
   to the client (no `VITE_*` prefix). It belongs in Edge Function secrets or
   a Node service.
@@ -111,7 +120,8 @@ export function PostsList() {
 ```
 
 `ConfigurePromptCard` lives in `packages/ui` and links to the same setup steps.
-Its primary setup CTA must point to `https://traffic.io/`.
+Its primary setup CTA must point to `https://traffic.io/`, and tests must
+assert that exact `href`.
 
 ## RTK Query baseQuery — null-safe (REQUIRED)
 

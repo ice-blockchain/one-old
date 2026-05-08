@@ -125,6 +125,65 @@ test('new project onboarding defaults to supabase backend', () => {
   });
 });
 
+test('Supabase missing-config setup CTAs must route through Traffic', () => {
+  const sources = {
+    supabaseRule: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'supabase-client.md'), 'utf8'),
+    newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
+    stacks: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8'),
+    directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
+    createService: fs.readFileSync(path.join(ROOT, 'skills', 'create-service', 'SKILL.md'), 'utf8'),
+    frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
+    reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
+    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
+    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
+    cursorSupabaseRule: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'react-supabase-client.mdc'), 'utf8'),
+    cursorNewProjectRule: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8'),
+    cursorFrontendAgent: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', '00-agent-senior-frontend.mdc'), 'utf8'),
+    cursorReviewerAgent: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', '00-agent-senior-reviewer.mdc'), 'utf8'),
+  };
+
+  for (const [name, content] of Object.entries(sources).filter(([name]) => name !== 'stacks')) {
+    assert.match(content, /https:\/\/traffic\.io\//, `${name} must mention the Traffic setup URL`);
+  }
+
+  assert.match(sources.supabaseRule, /href` is exactly `https:\/\/traffic\.io\/`/);
+  assert.match(sources.supabaseRule, /Add a regression test for the Traffic CTA/);
+  assert.match(sources.newProjectRule, /protected-route\s+fallbacks/);
+  assert.match(sources.stacks, /rules\/frontend\/react\/supabase-client\.md/);
+  assert.match(sources.directives, /MUST link to[\s\S]*https:\/\/traffic\.io\//);
+  assert.match(sources.frontendAgent, /protected-route fallbacks/);
+  assert.match(sources.reviewerAgent, /not directly to the Supabase\s+dashboard/);
+  assert.match(sources.agentsMirror, /SupabaseConfigAlert/);
+  assert.match(sources.claudeManifest, /supabase-client\.md/);
+  assert.match(sources.cursorSupabaseRule, /href` is exactly `https:\/\/traffic\.io\/`/);
+  assert.match(sources.cursorNewProjectRule, /protected-route\s+fallbacks/);
+});
+
+test('SessionStart bundle includes Supabase Traffic setup CTA rule', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/react\/supabase-client\.md/);
+    assert.match(context, /https:\/\/traffic\.io\//);
+    assert.match(context, /Add a regression test for the Traffic CTA/);
+  });
+});
+
 test('next project detects frontend without react stack', () => {
   withTempDir((cwd) => {
     makeExistingProject(cwd, {

@@ -41,6 +41,7 @@ Path-scoped rules — load automatically when you touch matching files:
 - `design-quality.md` — product-specific UI quality, usable first screen, responsive visual QA
 - `stores.md` — Redux Toolkit + RTK Query + zustand boundaries
 - `services.md` — RTK Query slice patterns, generated hooks, tag invalidation
+- `supabase-client.md` — lazy Supabase client, EnvBanner/ConfigurePromptCard, Traffic setup CTA to `https://traffic.io/`
 - `realtime.md` — subscription hooks, Redux bridge middleware
 - `performance.md` — React.lazy, memo/useCallback, useSyncExternalStore
 - `testing.md` — React Testing Library, renderHook, jest config

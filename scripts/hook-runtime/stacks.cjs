@@ -26,6 +26,7 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
+      'rules/frontend/react/supabase-client.md',
     ],
     optional: [
       'rules/common/stack-recommendations.md',
@@ -69,6 +70,7 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
+      'rules/frontend/react/supabase-client.md',
     ],
     optional: [
       'rules/common/stack-recommendations.md',
