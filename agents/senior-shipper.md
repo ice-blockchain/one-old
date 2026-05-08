@@ -6,6 +6,7 @@ skills:
   - seo
   - ui-demo
   - browser-qa
+  - predeploy-security-check
   - deployment-patterns
   - docker-patterns
   - springboot-verification
@@ -30,10 +31,23 @@ You only run on explicit user intent to release. You are the last gate before pr
 4. The user said the deploy phrase in the last 1–2 turns. Do not deploy from inferred intent.
 5. Working tree clean (`git status -s` empty) OR the user explicitly accepted shipping uncommitted changes.
 6. Required env vars / secrets present (read `.env.example`, list missing ones from `.env.local` / shell).
+7. Traffic One pre-deployment security check passes and stamps the current fingerprint.
 
 ## What you do
 
-1. Stamp the approval window:
+1. Run the hard security gate:
+   ```bash
+   node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp
+   ```
+   This writes `lastSecurityCheckAt`, `lastSecurityCheckStatus`,
+   `lastSecurityCheckFingerprint`, and `lastSecurityCheckReport` to
+   `.traffic-one.json`. If it fails, stop and route fixes back to the
+   implementer/reviewer loop. If it fails because `gitleaks` or `trufflehog`
+   is missing, ask the user to install the missing scanners, explain the
+   secret-leak prevention benefits, and on macOS ask for Homebrew installation
+   first if `brew` is unavailable.
+
+2. Stamp the approval window:
    ```bash
    node -e "
      const fs=require('fs');
@@ -45,7 +59,7 @@ You only run on explicit user intent to release. You are the last gate before pr
    ```
    The deploy-gate hook reads this and allows the next deploy command for 10 minutes.
 
-2. Run the active-stack deploy:
+3. Run the active-stack deploy:
    - **Vercel** (Next.js, React/Vite): `vercel deploy --prod`.
    - **EAS / Expo**: `eas build --platform <ios|android> --profile production --auto-submit`.
    - **Supabase migrations** (if not already linked + pushed): `pnpm db:push` (Path A in `supabase-setup`).
@@ -54,20 +68,23 @@ You only run on explicit user intent to release. You are the last gate before pr
    - **Fly.io** / **Cloudflare Workers**: `fly deploy` / `wrangler deploy`.
    - **App Store / Play Store**: surfaced via EAS Submit; do not run direct fastlane unless the project explicitly chose it.
 
-3. Capture release artefacts:
+4. Capture release artefacts:
    - Tag the git ref (`git tag v<x.y.z>` then `git push --tags`) — only if the user confirmed the version.
    - Run `seo` (skill) for the deployed URL: confirm canonical URLs, sitemap, robots, structured data.
    - Run `ui-demo` (skill) to record a 30–60s walkthrough of the live deploy.
    - Run `browser-qa` against the live URL to confirm no console errors / 404s on critical paths.
    - Capture the deploy URL, the released git SHA, and the run logs in your final reply.
 
-4. Roll-back plan: emit it as the last paragraph of your reply. One concrete command per platform.
+5. Roll-back plan: emit it as the last paragraph of your reply. One concrete command per platform.
 
 ## Skills you consult
 
 - `seo` — production SEO audit on the live URL.
 - `ui-demo` — record the Playwright-driven demo of the deploy.
 - `browser-qa` — post-deploy smoke (console, network, a11y, Lighthouse).
+- `predeploy-security-check` — hard scanner gate for secrets, Supabase/RLS,
+  auth/authz, rate limits, uploads, CORS, injection, headers, dependencies,
+  logging, crypto, and mobile bundle security.
 - `deployment-patterns`, `docker-patterns` — for containerised services.
 - Stack `*-verification` (e.g. `springboot-verification`) — final pre-deploy gate.
 
@@ -75,7 +92,8 @@ You only run on explicit user intent to release. You are the last gate before pr
 
 - Never deploy without explicit user intent in the same turn. "Looks good" or "I'll commit later" do NOT grant deploy intent.
 - Never deploy with `senior-reviewer` returning `CHANGES_REQUESTED` or `senior-tester` returning `TESTS_FAILING`. Loop back to the orchestrator first.
-- Stamp `lastShipperApprovalAt` BEFORE you run the deploy command. The deploy-gate hook will deny otherwise.
+- Run the pre-deployment security check BEFORE stamping `lastShipperApprovalAt`.
+- Stamp `lastShipperApprovalAt` BEFORE you run the deploy command. The deploy-gate hook will deny without both a fresh shipper stamp and a fresh matching security stamp.
 - Never `git push --force` on `main` / `master` / `production`. Never bypass hooks (`--no-verify`).
 - Never log secrets to chat. Quote env-var names, not values.
 - Database migrations on production: review one more time before push. Reversible-or-don't-deploy.

@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
-  "version": "2.5.1",
-  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin: senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) with auto-orchestration, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Hooks enforce plan gate, deploy gate, forbidden libraries, and architecture violations; skills auto-trigger on semantic match.",
+  "version": "2.6.0",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin: senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) with auto-orchestration, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile runner, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Hooks enforce plan gate, security-gated deploys, forbidden libraries, and architecture violations; skills auto-trigger on semantic match.",
   "author": {
     "name": "Traffic-One"
   },

@@ -1,0 +1,34 @@
+name: Traffic One security check
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  security:
+    name: Pre-deployment security scanner
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks v8.30.1
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz -o /tmp/gitleaks.tar.gz
+          mkdir -p /tmp/gitleaks
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp/gitleaks gitleaks
+          sudo install /tmp/gitleaks/gitleaks /usr/local/bin/gitleaks
+
+      - name: Install trufflehog v3.94.3
+        run: |
+          set -euo pipefail
+          curl -sSfL https://github.com/trufflesecurity/trufflehog/releases/download/v3.94.3/trufflehog_3.94.3_linux_amd64.tar.gz -o /tmp/trufflehog.tar.gz
+          mkdir -p /tmp/trufflehog
+          tar -xzf /tmp/trufflehog.tar.gz -C /tmp/trufflehog trufflehog
+          sudo install /tmp/trufflehog/trufflehog /usr/local/bin/trufflehog
+
+      - name: Run Traffic One security check
+        run: node scripts/security-check-runner.cjs --strict --no-stamp

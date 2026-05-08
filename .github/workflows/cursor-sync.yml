@@ -17,3 +17,6 @@ jobs:
 
       - name: Check stack recommendation hooks
         run: node scripts/test-stack-recommendations.cjs
+
+      - name: Check security runner fixtures
+        run: node scripts/test-security-check-runner.cjs

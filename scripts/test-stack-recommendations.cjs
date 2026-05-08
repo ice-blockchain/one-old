@@ -10,6 +10,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
 const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
+const { computeProjectFingerprint } = require(path.join(ROOT, 'scripts', 'security-check-runner.cjs'));
 
 const tests = [];
 
@@ -334,7 +335,7 @@ test('plan-gate allows docs/ on new-project without plan', () => {
   });
 });
 
-// ── Deploy gate (senior-shipper stamps lastShipperApprovalAt) ───────────────
+// ── Deploy gate (senior-shipper + security check stamps) ───────────────────
 
 test('deploy-gate denies vercel deploy without shipper stamp', () => {
   withTempDir((cwd) => {
@@ -350,11 +351,35 @@ test('deploy-gate denies vercel deploy without shipper stamp', () => {
   });
 });
 
-test('deploy-gate allows vercel deploy after fresh shipper stamp', () => {
+test('deploy-gate denies vercel deploy without security stamp', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
       stack: 'react-realtime-monorepo',
       lastShipperApprovalAt: new Date().toISOString(),
+    });
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'vercel deploy --prod' },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /pre-deployment security check/);
+  });
+});
+
+test('deploy-gate allows vercel deploy after fresh shipper and security stamps', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+    });
+    const fingerprint = computeProjectFingerprint(cwd).fingerprint;
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      lastShipperApprovalAt: new Date().toISOString(),
+      lastSecurityCheckAt: new Date().toISOString(),
+      lastSecurityCheckStatus: 'passed',
+      lastSecurityCheckFingerprint: fingerprint,
+      lastSecurityCheckReport: '.traffic-one/reports/security/security-check-test.json',
     });
 
     const result = runHook(cwd, 'check-library-allowlist', {
@@ -379,6 +404,31 @@ test('deploy-gate denies after stale shipper stamp', () => {
 
     assert.match(result.stdout, /permissionDecision/);
     assert.match(result.stdout, /Deploy gate/);
+  });
+});
+
+test('deploy-gate denies when worktree fingerprint changed after security check', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+    });
+    const fingerprint = computeProjectFingerprint(cwd).fingerprint;
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      lastShipperApprovalAt: new Date().toISOString(),
+      lastSecurityCheckAt: new Date().toISOString(),
+      lastSecurityCheckStatus: 'passed',
+      lastSecurityCheckFingerprint: fingerprint,
+      lastSecurityCheckReport: '.traffic-one/reports/security/security-check-test.json',
+    });
+    fs.writeFileSync(path.join(cwd, 'changed.ts'), 'export const changed = true;\n', 'utf8');
+
+    const result = runHook(cwd, 'check-library-allowlist', {
+      tool_input: { command: 'vercel deploy --prod' },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /worktree changed/);
   });
 });
 

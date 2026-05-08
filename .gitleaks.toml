@@ -1,0 +1,16 @@
+[allowlist]
+description = "Traffic One documentation and scanner regex examples use inert placeholder credentials."
+paths = [
+  '''scripts/security-check-runner\.cjs''',
+  '''skills/docker-patterns/SKILL\.md''',
+  '''skills/django-security/SKILL\.md''',
+  '''skills/python-testing/SKILL\.md''',
+  '''skills/supabase-setup/SKILL\.md''',
+  '''skills/deployment-patterns/SKILL\.md''',
+  '''skills/django-verification/SKILL\.md''',
+  '''skills/kotlin-patterns/SKILL\.md''',
+]
+regexes = [
+  '''sk-proj-xxxxx''',
+  '''postgres(?:ql)?://(?:user:password|postgres:postgres|localhost|user:pass|postgres@)[^[:space:]'"]*''',
+]
