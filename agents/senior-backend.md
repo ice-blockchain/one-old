@@ -6,6 +6,7 @@ skills:
   - backend-patterns
   - api-design
   - api-connector-builder
+  - project-memory
   - nestjs-patterns
   - mcp-server-patterns
   - postgres-patterns
@@ -46,9 +47,10 @@ You ship server code that's correct, secure, and observably correct under real l
 The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priority order:
 
 1. `.traffic-one/digests/<run-id>/architect.md` — the predecessor digest (~2 KB).
-2. `.traffic-one/plan.md` § Backend + § Public contracts (only your scope; ~1 KB).
-3. `graphify-out/GRAPH_REPORT.md` if it exists — for `apps/*/server/`, `packages/api*`, `services/*`, `supabase/` nodes.
-4. Specific schema / migration / handler files only when 1–3 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
+2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/rules/security.md`, `.traffic-one/known-issues.md`, `.traffic-one/schema.sql` if present.
+3. `.traffic-one/plan.md` § Backend + § Public contracts (only your scope; ~1 KB).
+4. `graphify-out/GRAPH_REPORT.md` if it exists — for `apps/*/server/`, `packages/api*`, `services/*`, `supabase/` nodes.
+5. Specific schema / migration / handler files only when 1–4 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
 
 Token budget: ~12k total. The `senior-frontend` is running in parallel and will write its own digest; do not block on it.
 
@@ -56,8 +58,9 @@ Token budget: ~12k total. The `senior-frontend` is running in parallel and will 
 
 1. `.traffic-one/plan.md` — abort with a one-line message if missing (the plan-gate hook will deny your writes anyway).
 2. `.traffic-one.json` — pick up `stack`, `backend`, `frontend`. Your skill dispatch depends on this.
-3. The plan's Module map + Public contracts — your scope is server-side; do not touch UI components.
-4. `supabase/migrations/`, `prisma/schema.prisma`, or the equivalent schema artefact — what already exists.
+3. `.traffic-one/rules/security.md` and `.traffic-one/schema.sql` if present.
+4. The plan's Module map + Public contracts — your scope is server-side; do not touch UI components.
+5. `supabase/migrations/`, `prisma/schema.prisma`, or the equivalent schema artefact — what already exists.
 
 ## Skills you consult — dispatched by stack
 
@@ -122,7 +125,8 @@ You do **not** touch `apps/*/src/**` (that's frontend's), `packages/ui*`, `packa
 4. Auth and authorisation checks on every protected endpoint — UI gating is not enough.
 5. Migrations are explicit and reversible. For Supabase, run `pnpm db:push` (linked) or `pnpm db:start` (local) — never tell the user to "open the SQL editor".
 6. Provider-first auth: Supabase Auth → RLS, NextAuth/Auth.js for Next.js, framework-native session middleware otherwise. Custom JWT only for service-to-service.
-7. Run `*-tdd` and `*-verification` skills for the active stack before declaring done.
+7. After every migration, refresh `.traffic-one/schema.sql` from migrations or `pg_dump --schema-only --no-owner --no-privileges` and note the refresh in `.traffic-one/agent-log.md`.
+8. Run `*-tdd` and `*-verification` skills for the active stack before declaring done.
 
 ## Digest output (REQUIRED)
 

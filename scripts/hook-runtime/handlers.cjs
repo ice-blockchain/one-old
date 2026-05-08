@@ -61,6 +61,17 @@ const {
 // grep/glob" without inflating the bundle.
 function tokenEconomyBanner(cwd) {
   const lines = [];
+  const memoryPaths = [
+    '.traffic-one/product.md',
+    '.traffic-one/stack.md',
+    '.traffic-one/rules/coding.md',
+    '.traffic-one/rules/security.md',
+    '.traffic-one/known-issues.md',
+    '.traffic-one/agent-log.md',
+  ];
+  if (memoryPaths.some((relPath) => fs.existsSync(path.join(cwd, relPath)))) {
+    lines.push('[memory] .traffic-one/ project memory present — read product/stack/rules/known-issues before broad source reads.');
+  }
   const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
   if (fs.existsSync(graphPath)) {
     lines.push('[graphify] graphify-out/GRAPH_REPORT.md present — consult before grep/glob for module/structure questions.');
@@ -309,9 +320,9 @@ function runCheckArchitectureWrite(rawInput) {
   const violations = [];
 
   // Plan gate: on a new project, deny feature-source writes until the architect
-  // has produced .traffic-one/plan.md. The plan file itself, root docs, ADRs,
-  // and legacy docs/ are exempt so the architect can write the plan without
-  // self-blocking.
+  // has produced .traffic-one/plan.md. The plan file itself, .traffic-one/
+  // project memory, root docs, ADRs, and legacy docs/ are exempt so the
+  // architect can write the plan without self-blocking.
   const FEATURE_SOURCE_RE = /^(apps\/[^/]+\/(src|app)\/|packages\/[^/]+\/src\/|src\/|services\/[^/]+\/src\/)/;
   const PLAN_FILE_RE      = /(^|\/)\.traffic-one\/plan\.md$/;
   const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
@@ -334,7 +345,7 @@ function runCheckArchitectureWrite(rawInput) {
       'Plan gate: .traffic-one/plan.md is missing on a new project. Run the '
       + '`senior-architect` subagent (or the `senior-eng-orchestrator` skill) '
       + 'to produce the plan before writing feature source files. Allowed '
-      + 'without a plan: .traffic-one/plan.md itself, root docs, adr/, legacy docs/, README.'
+      + 'without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'
     );
   }
 

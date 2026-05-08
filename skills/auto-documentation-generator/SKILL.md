@@ -30,7 +30,7 @@ Use this skill when the user asks to:
 - Generate, refresh, audit, or repair project documentation.
 - Prepare launch, handoff, onboarding, or production-readiness docs.
 - Create or update `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
-  `architecture.md`, `adr/`, `api.md`, `database.md`, `deployment.md`,
+  `architecture.md`, `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
   `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`, or
   `llms.txt`.
 
@@ -58,8 +58,9 @@ Use this skill when the user asks to:
 
 Read only what is needed:
 
-1. `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`, root docs, and
-   legacy `docs/` only when present.
+1. `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
+   `.traffic-one/` project memory, root docs, and legacy `docs/` only when
+   present.
 2. `package.json`, workspace config, lockfile, `.nvmrc`, `.tool-versions`,
    `mise.toml`, `turbo.json`, `vite.config.*`, `capacitor.config.*`,
    `eas.json`, CI workflows, deploy manifests.
@@ -79,7 +80,7 @@ Create or refresh these files when relevant:
 | `CLAUDE.md` | Claude-specific memory | Symlink to `AGENTS.md` or keep under ~300 lines; include only project-specific traps and pointers. Do not duplicate linter rules. |
 | `.cursor/rules/*.mdc` | Cursor-specific guidance | Short scoped rules with `description`, `globs`, and `alwaysApply`; split large rules by domain. |
 | `architecture.md` | System map | Root-level folder map, data flow diagram in text or Mermaid, key dependencies, and why major choices were made. Link ADRs. Package-level `packages/*/architecture.md` still follows `rules/common/package-architecture.md`. |
-| `adr/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short root-level Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
+| `.traffic-one/decisions/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
 | `api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
 | `database.md` | Schema/RLS reference | Generate from migrations or `pg_dump --schema-only --no-owner --no-privileges`; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
 | `deployment.md` | Release/runbook | Preview/staging/prod URLs, deploy commands, secrets list without values, rollback, "build failing", and "DB down" runbooks. |
@@ -115,7 +116,8 @@ Keep it human-first:
 - Include a folder map and one data-flow diagram. Mermaid is fine.
 - Use the `architecture-decision-records` skill for significant choices. If the
   user explicitly requested docs generation, that counts as approval to create
-  a missing root `adr/` scaffold; otherwise ask before initializing ADR files.
+  a missing `.traffic-one/decisions/` scaffold; otherwise ask before
+  initializing ADR files.
 
 ### API and Database Docs
 

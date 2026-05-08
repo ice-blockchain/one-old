@@ -12,6 +12,12 @@ Preserve all existing structure. New code only.
 - Max component length: 150 lines on new code
 - No `any`, no inline styles, named exports only — on new code
 - No backend or infrastructure suggestions
+- Before normal feature work, run the `project-memory` baseline reconciliation:
+  - If `.traffic-one/` is missing, create it from verified repo facts.
+  - If memory files already exist, update them in place.
+  - If legacy ADRs exist in root `adr/`, migrate or mirror them to
+    `.traffic-one/decisions/` when safe.
+  - Do not include secrets, production data, or fake MCP/deploy configuration.
 - Before normal feature work, run the `auto-documentation-generator` baseline
   reconciliation from `rules/common/documentation.md`:
   - If a canonical doc does not exist, create it from verified repo facts at the

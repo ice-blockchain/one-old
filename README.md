@@ -31,6 +31,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── core.md              always loaded (no path filter)
 │   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
 │   ├── common/stack-recommendations.md always loaded: provider-first stack defaults
+│   ├── common/project-memory.md always loaded: .traffic-one persistent agent memory
 │   ├── common/documentation.md always loaded: human + agent docs defaults
 │   ├── common/library-catalog.md always loaded: curated package defaults
 │   ├── frontend/react/            React web stack rules
@@ -90,6 +91,7 @@ precedence note so local rules and forced stack choices always win.
 | "is this auth code secure?" | `security-review` |
 | "run the Traffic One Security Check" | `predeploy-security-check` |
 | "score production readiness" | `verification-loop` |
+| "create project memory" | `project-memory` |
 | "generate project docs" | `auto-documentation-generator` |
 | "generate deployment artifacts" | `deployment-patterns` |
 | "implement JWT auth safely" | `jwt-security` |
@@ -192,6 +194,7 @@ Or via Cursor Settings → Plugins → Add.
 | Library stack, folder structure, core rules | `rules/core.md`, then run `node scripts/sync-cursor.cjs` |
 | Provider-first stack recommendations | `rules/common/stack-recommendations.md`, then run `node scripts/sync-cursor.cjs` |
 | Curated library catalog | `rules/common/library-catalog.md`, then run `node scripts/sync-cursor.cjs` |
+| Project memory defaults | `rules/common/project-memory.md`, `skills/project-memory/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Documentation defaults | `rules/common/documentation.md`, `skills/auto-documentation-generator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Senior-engineer orchestration workflow | `rules/common/senior-engineer-team.md`, `skills/senior-eng-orchestrator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | React web stack rules | `rules/frontend/react/*.md`, then run `node scripts/sync-cursor.cjs` |
