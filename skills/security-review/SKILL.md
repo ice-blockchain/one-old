@@ -30,6 +30,7 @@ Use a code-review stance: list concrete findings first, with severity and file/l
 8. Files and uploads: validate size, type, extension, storage path, and authorization before read/write.
 9. Errors and logs: no stack traces in production responses; strip secrets and PII from client/server logs.
 10. Dependencies: run the local dependency quality gate before adding packages; no high+ audit findings.
+11. Pre-deploy: before release/publish/deploy approval, run `predeploy-security-check` and require a fresh passing `lastSecurityCheck*` stamp matching the current worktree.
 
 ## ECC Notes
 

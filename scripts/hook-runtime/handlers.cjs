@@ -44,6 +44,9 @@ const {
 } = require('./detection.cjs');
 
 const { packBundle } = require('./packing.cjs');
+const {
+  computeProjectFingerprint,
+} = require('../security-check-runner.cjs');
 
 const {
   onboardingDirectiveNewProject,
@@ -458,6 +461,57 @@ function forbiddenForStack(stack, allowNextjs) {
 // flow rather than ad-hoc deploys.
 const DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-submit|eas\s+submit|supabase\s+db\s+push\s+--linked|supabase\s+functions\s+deploy\s+\S+\s+--linked|gh\s+release\s+create|fly\s+deploy|wrangler\s+deploy|npm\s+publish|pnpm\s+publish)\b/;
 const SHIPPER_APPROVAL_WINDOW_MS = 10 * 60 * 1000;
+const SECURITY_CHECK_WINDOW_MS = 10 * 60 * 1000;
+
+function denyPreToolUse(reason) {
+  return {
+    stdout: JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: reason,
+      },
+    }),
+    exitCode: 0,
+  };
+}
+
+function checkSecurityDeployStamp(stateForDeploy, cwd) {
+  const status = stateForDeploy.lastSecurityCheckStatus;
+  const checkedAt = typeof stateForDeploy.lastSecurityCheckAt === 'string'
+    ? Date.parse(stateForDeploy.lastSecurityCheckAt)
+    : 0;
+  const fresh = checkedAt > 0 && (Date.now() - checkedAt) < SECURITY_CHECK_WINDOW_MS;
+  if (status !== 'passed' || !fresh) {
+    return {
+      ok: false,
+      reason: 'Deploy gate: the Traffic One pre-deployment security check has not passed in the last 10 minutes. Run '
+        + '`node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp` '
+        + 'from the project root, address any findings, then deploy through `senior-shipper`.',
+    };
+  }
+
+  let current;
+  try {
+    current = computeProjectFingerprint(cwd).fingerprint;
+  } catch (error) {
+    return {
+      ok: false,
+      reason: `Deploy gate: could not compute the current security fingerprint: ${error.message}`,
+    };
+  }
+
+  if (stateForDeploy.lastSecurityCheckFingerprint !== current) {
+    return {
+      ok: false,
+      reason: 'Deploy gate: the worktree changed after the last passing security check. Rerun '
+        + '`node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp` '
+        + 'so the security fingerprint matches the code being deployed.',
+    };
+  }
+
+  return { ok: true };
+}
 
 function runCheckLibraryAllowlist(rawInput) {
   const data = parseJsonText(rawInput, {});
@@ -477,16 +531,12 @@ function runCheckLibraryAllowlist(rawInput) {
         + 'the `senior-shipper` subagent first; it stamps `lastShipperApprovalAt` '
         + 'in .traffic-one.json after pre-flight (reviewer APPROVED, tests green, '
         + 'user confirmed). The stamp grants a 10-minute deploy window.';
-      return {
-        stdout: JSON.stringify({
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse',
-            permissionDecision: 'deny',
-            permissionDecisionReason: reason,
-          },
-        }),
-        exitCode: 0,
-      };
+      return denyPreToolUse(reason);
+    }
+
+    const securityCheck = checkSecurityDeployStamp(stateForDeploy, process.cwd());
+    if (!securityCheck.ok) {
+      return denyPreToolUse(securityCheck.reason);
     }
   }
 

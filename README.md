@@ -22,6 +22,7 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │   ├── create-native-service/
 │   ├── execution-discipline/
 │   ├── security-review/
+│   ├── predeploy-security-check/
 │   ├── jwt-security/
 │   └── refactor/
 │
@@ -85,6 +86,7 @@ precedence note so local rules and forced stack choices always win.
 | "add a React Native API call" | `create-native-service` |
 | "use Karpathy-style surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
+| "run the Traffic One Security Check" | `predeploy-security-check` |
 | "implement JWT auth safely" | `jwt-security` |
 | "add auth to a Next.js blog" | `nextjs-turbopack` |
 | "refactor this component" | `refactor` |
@@ -127,6 +129,31 @@ git config core.hooksPath .githooks
 ### Hooks enforce at write time
 Hooks run through dependency-free Node.js scripts before files are written or packages installed — violations are blocked
 with an explanation before any code is changed.
+
+### Pre-deployment security check
+Traffic One blocks production deploy commands unless the shipper approval stamp
+and the security-check stamp are both fresh and match the current worktree.
+
+Run the scanner before release work:
+
+```
+node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp
+```
+
+CI uses `--strict --no-stamp` with pinned `gitleaks@v8.30.1` and
+`trufflehog@v3.94.3`. Local runs require installed `gitleaks` and `trufflehog`
+binaries. Reports are written to `.traffic-one/reports/security/`.
+
+If those tools are missing locally, Traffic One asks before installing them and
+explains why: `gitleaks` scans the worktree and full git history for leaked
+keys/tokens, while `trufflehog` verifies and flags known or unknown secrets.
+On macOS the recommended install path is:
+
+```
+brew install gitleaks trufflehog
+```
+
+If Homebrew is missing, Traffic One asks the user to install Homebrew first.
 
 ---
 

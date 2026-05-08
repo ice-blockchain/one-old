@@ -33,7 +33,7 @@ const SKILL_FILTERS = {
     'api-design', 'api-connector-builder',
     'adaptive-communication',
     'design-audit', 'browser-qa',
-    'supabase-setup',
+    'supabase-setup', 'predeploy-security-check',
   ]),
   'react-realtime-monorepo': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',
