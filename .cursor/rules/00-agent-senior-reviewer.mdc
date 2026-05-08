@@ -39,6 +39,10 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
 - `security-review` — always. Authn/authz, input validation, secrets, dangerous APIs.
 - `security-scan` — always. Scans `.claude/`, hooks, MCP servers, agent definitions for vulns.
 - `predeploy-security-check` — before deploy/release approval or whenever the diff touches auth, Supabase, Edge Functions, uploads, AI/LLM calls, dependency metadata, or deployment config.
+- `verification-loop` — when the user asks "safe to ship", production
+  readiness, launch score, or release approval; include the Production-Readiness
+  Score, hard blockers, and 12-factor / AWS Well-Architected / OWASP ASVS
+  mapping instead of only a code-review verdict.
 - `repo-scan` — when the diff touches integration code or new modules.
 - `context-budget` — when the change adds significant rule / skill / agent context.
 - `postgres-review` — when migrations or SQL changed; treat it as the AI
@@ -74,6 +78,10 @@ CHANGES_REQUESTED — <one line summary>.
 - Tests touched too (or a clear note that the tester subagent will add them).
 - No raw deployment commands (`vercel deploy`, `gh release`, etc.) added without `lastShipperApprovalAt` already in `.traffic-one.json` from a recent shipper run.
 - No deploy approval without a fresh passing `lastSecurityCheckStatus: "passed"` stamp whose fingerprint matches the current worktree.
+- No production-readiness hard blocker remains: failing production build,
+  leaked browser/mobile secret, missing Supabase RLS, unsafe destructive
+  migration, missing payment idempotency, or missing app-store privacy/account
+  deletion requirements when mobile submission is in scope.
 
 ## What "CHANGES_REQUESTED" means
 
