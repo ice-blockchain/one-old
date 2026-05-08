@@ -33,12 +33,12 @@ Codex role adapter:
 - `senior-tester` → `worker`, owned write scope test files and test infrastructure only.
 - `senior-shipper` → `worker`, deploy/release only after the shipper gate is satisfied.
 
-- **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list. Skills: `library-pick`, `architecture-decision-records`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
+- **Architect** — on new projects (or when `.traffic-one/plan.md` is missing), write the plan **first** with sections Goal · Stack · Module map · Public contracts · Risks · Cut-list. Skills: `library-pick`, `architecture-decision-records`, `auto-documentation-generator`, `hexagonal-architecture`, `api-design`, `supabase-setup`, `deployment-patterns`, `docker-patterns`. End with a `PLAN_READY` marker.
 - **Frontend** — only after the plan exists. Implement UI in `apps/*/src/**`, `packages/ui*`, `src/**`. Skills: `create-component`, `create-page`, `create-feature`, `frontend-patterns`, `frontend-design`, `design-system`, `design-audit`, `accessibility`, `i18n-text`; native variants for RN; `ionic-mobile` for Capacitor.
 - **Backend** — in parallel with frontend, server-side only (`apps/*/server/**`, `packages/api*`, `services/*`, `supabase/`). Skills: `backend-patterns`, `api-design`, `postgres-patterns`/`postgres-review`, `database-migrations`, plus the active stack's `*-patterns` + `*-tdd`.
-- **Reviewer** — read-only, before commit/push/deploy. Skills: `security-review`, `security-scan`, `predeploy-security-check`, `repo-scan`, `context-budget`, the active stack's `*-verification` and `*-coding-standards`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`.
+- **Reviewer** — read-only, before commit/push/deploy. Skills: `security-review`, `security-scan`, `predeploy-security-check`, `auto-documentation-generator`, `repo-scan`, `context-budget`, the active stack's `*-verification` and `*-coding-standards`. Emit `APPROVED` or `CHANGES_REQUESTED <numbered list>`.
 - **Tester** — alongside reviewer. Restricted to test files / test infra. Skills: `tdd-workflow`, `e2e-testing`, `ai-regression-testing`, `verification-loop`, the active stack's `*-testing`. Emit `TESTS_GREEN` or `TESTS_FAILING <numbered list>`.
-- **Shipper** — only on explicit "deploy / ship / release / publish / to prod" intent. Pre-flight: reviewer `APPROVED` + tester `TESTS_GREEN` + `predeploy-security-check` passing with `--strict --stamp` + user confirmation in the same turn. Stamp `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) before running `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`. Run `seo` + `ui-demo` post-deploy.
+- **Shipper** — only on explicit "deploy / ship / release / publish / to prod" intent. Pre-flight: reviewer `APPROVED` + tester `TESTS_GREEN` + `predeploy-security-check` passing with `--strict --stamp` + release-facing docs current + user confirmation in the same turn. Stamp `lastShipperApprovalAt` in `.traffic-one.json` (10-minute window) before running `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`. Run `seo` + `ui-demo` post-deploy.
 
 **Plan gate** (enforced by hook): on `mode === "new-project"` and missing `.traffic-one/plan.md`, writes to `apps/*/src/**`, `packages/*/src/**`, `src/**`, `services/*/src/**` are denied. The plan file itself, ADRs, `docs/`, and `README*` are exempt.
 
@@ -353,6 +353,14 @@ products use Ionic Framework with Capacitor instead.
 - Hard blockers force `NOT_READY`: failing production build/typecheck/tests/security scanner; exposed service-role/JWT/admin DB/payment/LLM secrets in browser/mobile code; public Supabase tables without RLS or write policies without `WITH CHECK`; destructive production migrations without tested forward-only undo; payment mutations without idempotency keys; app-store submissions missing account deletion, privacy manifest/data-safety requirements, or required review metadata.
 - Performance evidence uses current Core Web Vitals: LCP ≤ 2.5s, INP ≤ 200ms, and CLS ≤ 0.1 at the 75th percentile. Prefer Lighthouse mobile plus CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
 
+## Auto-documentation generator
+- When the user asks to generate, refresh, or audit docs, invoke `auto-documentation-generator`; update existing docs before creating new files and avoid boilerplate or placeholder sections.
+- Canonical docs: `README.md`, `AGENTS.md`, concise `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md`/`docs/architecture.md`, `docs/adr/`, `api.md`, `database.md`, `deployment.md`, `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`, and served `/llms.txt` when the app has a web surface.
+- `README.md` is for humans first: what it is, who it is for, one-command local setup, live deploy link or "not configured", and links to deeper docs.
+- `AGENTS.md` is for agents: build/test commands, code-style rules, repo map, gotchas, security constraints, and deploy warnings. `CLAUDE.md` stays under ~300 lines and targeted at Claude-specific traps; do not duplicate linter rules.
+- `api.md` comes from OpenAPI or source routes; `database.md` comes from migrations or `pg_dump --schema-only --no-owner --no-privileges` with RLS policies inline. Never include table data, connection strings, or secret values.
+- `CHANGELOG.md` follows Keep a Changelog and is generated from Conventional Commits, then edited for humans. `llms.txt` is a concise Markdown index pointing AI tools to canonical docs.
+
 ## Component rules (apps/**/src/components/**, packages/ui/**)
 - ≤150 lines, one per file. Style in-file via Tailwind utility classes; co-locate only `*.stories.tsx` (no sibling style files).
 - Named export. Explicit `ComponentNameProps` interface.
@@ -507,6 +515,7 @@ products use Ionic Framework with Capacitor instead.
 - `$security-review` — audit code for security issues
 - `$predeploy-security-check` — run the hard pre-deployment security scanner and stamp the deploy gate
 - `$verification-loop` — run build/typecheck/lint/test/security/diff checks and score production readiness
+- `$auto-documentation-generator` — generate or refresh README, agent docs, architecture/ADR, API/database, deployment, security, changelog, environment, contributing, and llms.txt docs
 - `$deployment-patterns` — generate static-host SPA/Supabase, CI/CD, health, rollback, and Capacitor release artifacts
 - `$jwt-security` — implement or review JWT auth, validation, storage, rotation, and revocation
 - `$nextjs-turbopack` — apply Next.js/Turbopack and provider-first Next.js defaults

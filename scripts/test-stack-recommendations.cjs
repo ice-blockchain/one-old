@@ -632,6 +632,44 @@ test('production readiness score guidance is merged, not duplicated', () => {
   assert.match(agentsMirror, /Production-readiness score/);
 });
 
+test('auto documentation generator guidance is present and not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const autoDocs = fs.readFileSync(path.join(skillsRoot, 'auto-documentation-generator', 'SKILL.md'), 'utf8');
+  const adrSkill = fs.readFileSync(path.join(skillsRoot, 'architecture-decision-records', 'SKILL.md'), 'utf8');
+  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
+  const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+
+  assert.equal(skillNames.includes('auto-documentation-generator'), true);
+  assert.equal(skillNames.includes('documentation-generator'), false);
+  assert.equal(skillNames.includes('docs-generator'), false);
+  assert.equal(skillNames.includes('auto-docs'), false);
+  assert.match(autoDocs, /Auto-Documentation Generator/);
+  assert.match(autoDocs, /README\.md/);
+  assert.match(autoDocs, /AGENTS\.md/);
+  assert.match(autoDocs, /CLAUDE\.md/);
+  assert.match(autoDocs, /\.cursor\/rules\/\*\.mdc/);
+  assert.match(autoDocs, /pg_dump --schema-only --no-owner --no-privileges/);
+  assert.match(autoDocs, /RLS policies/);
+  assert.match(autoDocs, /Keep a Changelog/);
+  assert.match(autoDocs, /Conventional Commits/);
+  assert.match(autoDocs, /llms\.txt/);
+  assert.match(adrSkill, /Auto-Documentation Generator/);
+  assert.match(documentationRules, /Auto-Documentation Defaults/);
+  assert.match(documentationRules, /Context, Decision, Status, and Consequences/);
+  assert.match(architect, /auto-documentation-generator/);
+  assert.match(reviewer, /auto-documentation-generator/);
+  assert.match(shipper, /auto-documentation-generator/);
+  assert.match(agentsMirror, /Auto-documentation generator/);
+  assert.match(readme, /generate project docs/);
+});
+
 test('plan-gate exempts .traffic-one/digests/ writes', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {

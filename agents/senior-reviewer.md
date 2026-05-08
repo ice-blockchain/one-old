@@ -7,6 +7,7 @@ skills:
   - security-scan
   - predeploy-security-check
   - verification-loop
+  - auto-documentation-generator
   - repo-scan
   - context-budget
   - postgres-review
@@ -56,6 +57,10 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
   readiness, launch score, or release approval; include the Production-Readiness
   Score, hard blockers, and 12-factor / AWS Well-Architected / OWASP ASVS
   mapping instead of only a code-review verdict.
+- `auto-documentation-generator` — when docs changed or production handoff is in
+  scope; check README, AGENTS/CLAUDE, Cursor rules, architecture/ADR,
+  api/database, deployment, security, changelog, environment, contributing, and
+  `llms.txt` for source-backed content without placeholders or secrets.
 - `repo-scan` — when the diff touches integration code or new modules.
 - `context-budget` — when the change adds significant rule / skill / agent context.
 - `postgres-review` — when migrations or SQL changed; treat it as the AI
@@ -95,6 +100,9 @@ CHANGES_REQUESTED — <one line summary>.
   leaked browser/mobile secret, missing Supabase RLS, unsafe destructive
   migration, missing payment idempotency, or missing app-store privacy/account
   deletion requirements when mobile submission is in scope.
+- New or changed public architecture, API, database, deployment, security, env,
+  or agent behavior is reflected in the canonical docs without duplicating
+  boilerplate.
 
 ## What "CHANGES_REQUESTED" means
 
