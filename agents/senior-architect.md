@@ -49,7 +49,10 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 - `hexagonal-architecture` — if the system has multiple integrations or the user expects testability/swappable adapters.
 - `api-design` — for any service that exposes a public API surface (REST/GraphQL/RPC).
 - `supabase-setup` — if `backend === "supabase"` and migrations are not yet linked. Walk the user through Path A or B; do not finish your plan with "open the SQL editor".
-- `deployment-patterns`, `docker-patterns` — only if the plan explicitly involves multi-service deployment.
+- `deployment-patterns` — whenever the plan needs production deployment
+  artifacts. For React SPA + Supabase, prefer static-host manifests and CI
+  wiring; consult `docker-patterns` only for self-hosted, BYOC, server-runtime,
+  or containerised services.
 - Stack-conditional architecture skills: `dart-flutter-patterns`, `compose-multiplatform-patterns`, `android-clean-architecture`.
 
 ## What you write
@@ -67,7 +70,7 @@ Single artifact: `.traffic-one/plan.md`. Run `mkdir -p .traffic-one` via Bash be
 - Backend: <id> — <same>.
 - Storage / auth: <id>.
 - Real-time: heavy / light / none.
-- Deploy: <target>.
+- Deploy: <target> — static-host manifest / CI / env / migration artifacts.
 Reference the Traffic One stack id from `.traffic-one.json`. Note any deviation explicitly.
 
 ## Module map
