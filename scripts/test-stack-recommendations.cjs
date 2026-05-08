@@ -235,8 +235,8 @@ test('SessionStart bundle includes mandatory auto-docs guidance', () => {
     const context = payload.hookSpecificOutput.additionalContext;
 
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /For `mode: new-project`, this is mandatory/);
-    assert.match(context, /Do not call a new project complete with only/);
+    assert.match(context, /For `mode: new-project`, this is mandatory across every stack/);
+    assert.match(context, /new project complete with only a lightweight README/);
   });
 });
 
@@ -256,8 +256,8 @@ test('existing projects must reconcile the auto-documentation baseline', () => {
   const cursorExisting = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-existing-codebase.mdc'), 'utf8');
 
   assert.match(documentationRules, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
-  assert.match(documentationRules, /If\s+a canonical doc does not exist, create it/);
-  assert.match(documentationRules, /If\s+it already exists, update it in place/);
+  assert.match(documentationRules, /If a canonical doc does not\s+exist, create it/);
+  assert.match(documentationRules, /If it already exists, update it in\s+place/);
   assert.match(existingRule, /Before normal feature work/);
   assert.match(existingRule, /If a canonical doc does not exist, create it/);
   assert.match(existingRule, /If a canonical doc already exists, update it in place/);
@@ -344,6 +344,29 @@ test('existing Go project SessionStart includes docs reconciliation guidance', (
     assert.match(context, /rules\/common\/documentation\.md/);
     assert.match(context, /create missing canonical docs and update existing docs in place/);
     assert.match(context, /Before normal feature work/);
+  });
+});
+
+test('existing unknown stack falls back to minimal with docs reconciliation guidance', () => {
+  withTempDir((cwd) => {
+    for (let index = 0; index < 6; index += 1) {
+      fs.writeFileSync(
+        path.join(cwd, `module${index}.py`),
+        `def value_${index}():\n    return ${index}\n`,
+        'utf8',
+      );
+    }
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(state.mode, 'existing-codebase');
+    assert.equal(state.stack, 'minimal');
+    assert.match(context, /existing codebase detected/);
+    assert.match(context, /rules\/common\/documentation\.md/);
+    assert.match(context, /create missing canonical docs and update existing docs in place/);
   });
 });
 

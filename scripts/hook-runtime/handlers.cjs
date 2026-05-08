@@ -152,6 +152,13 @@ function runSessionStart() {
   // Flow 2 — existing project with detectable stack → auto-write + prune
   if (mode === 'existing-codebase' || mode === 'existing-with-supabase') {
     const detected = detectStackFromCodebase(cwd);
+    if (!detected.stack) {
+      detected.stack = 'minimal';
+      detected.backend = detected.backend || 'other';
+      detected.realtime = detected.realtime || 'none';
+      detected.evidence.push('existing codebase detected → apply minimal stack baseline');
+    }
+
     if (detected.stack) {
       Object.assign(state, {
         mode,
