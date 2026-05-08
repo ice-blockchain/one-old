@@ -580,6 +580,29 @@ test('deployment assistant guidance is merged, not duplicated', () => {
   assert.match(deploymentSkill, /Traffic One Deployment Artifact Default/);
 });
 
+test('database architect guidance is merged, not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const postgresReview = fs.readFileSync(path.join(skillsRoot, 'postgres-review', 'SKILL.md'), 'utf8');
+  const postgresRules = fs.readFileSync(path.join(ROOT, 'rules', 'backend', 'postgres.md'), 'utf8');
+  const migrationSkill = fs.readFileSync(path.join(skillsRoot, 'database-migrations', 'SKILL.md'), 'utf8');
+
+  assert.equal(skillNames.includes('ai-database-architect'), false);
+  assert.equal(skillNames.includes('database-architect'), false);
+  assert.equal(skillNames.includes('db-architect'), false);
+  assert.match(postgresReview, /AI Database Architect/);
+  assert.match(postgresReview, /WITH CHECK/);
+  assert.match(postgresReview, /Supabase Security Advisor/);
+  assert.match(postgresReview, /PII\/sensitive columns/);
+  assert.match(postgresRules, /Index every non-PK column referenced in RLS policies/);
+  assert.match(postgresRules, /column-level grants/);
+  assert.match(postgresRules, /Realtime subscriptions include filters/);
+  assert.match(migrationSkill, /NOT VALID/);
+  assert.match(migrationSkill, /ALTER COLUMN TYPE/);
+});
+
 test('plan-gate exempts .traffic-one/digests/ writes', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
