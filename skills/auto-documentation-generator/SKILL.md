@@ -1,6 +1,14 @@
 ---
 name: auto-documentation-generator
-description: Generate or refresh the documentation humans and agents actually read: README.md, AGENTS.md, CLAUDE.md, Cursor .mdc rules, architecture.md, ADRs, api.md, database.md, deployment.md, security.md, CHANGELOG.md, environment-setup.md, CONTRIBUTING.md, and llms.txt for SPA + Supabase, Ionic/Capacitor, React Native, and backend projects. Trigger on "generate docs", "auto-documentation", "document this project", "write project docs", "create AGENTS.md", "create llms.txt", "update architecture docs", or release-readiness documentation requests.
+description: >
+  Generate or refresh the documentation humans and agents actually read:
+  README.md, AGENTS.md, CLAUDE.md, Cursor .mdc rules, architecture.md, ADRs,
+  api.md, database.md, deployment.md, security.md, CHANGELOG.md,
+  environment-setup.md, CONTRIBUTING.md, and llms.txt for SPA + Supabase,
+  Ionic/Capacitor, React Native, and backend projects. Trigger on "generate
+  docs", "auto-documentation", "document this project", "write project docs",
+  "create AGENTS.md", "create llms.txt", "update architecture docs", or
+  release-readiness documentation requests.
 metadata:
   adapted_for: traffic-one
 ---
