@@ -126,6 +126,26 @@ test('new project onboarding defaults to supabase backend', () => {
   });
 });
 
+test('new project onboarding includes Codex subagent preflight', () => {
+  const detectProject = fs.readFileSync(path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+
+  assert.match(detectProject, /Codex subagent preflight for new projects/);
+  assert.match(detectProject, /blocking preflight gate on Codex/);
+  assert.match(directives, /CODEX SUBAGENT PREFLIGHT/);
+  assert.match(orchestrator, /Codex consent gate — blocking/);
+
+  withTempDir((cwd) => {
+    const result = runHook(cwd, 'session-start');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /Traffic One sees this as a multi-layer build/);
+    assert.match(context, /architect → frontend\/backend → reviewer\/tester/);
+  });
+});
+
 test('Supabase missing-config setup CTAs must route through Traffic', () => {
   const sources = {
     supabaseRule: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'supabase-client.md'), 'utf8'),
@@ -300,6 +320,121 @@ test('all stack bundles include documentation defaults', () => {
       `${stackId} must load documentation defaults mandatorily`,
     );
   }
+});
+
+test('frontend stack bundles load design quality rules mandatorily', () => {
+  const frontendStacks = [
+    'react-realtime-monorepo',
+    'react-frontend-only',
+    'react-native-expo-monorepo',
+    'react-native-expo-app',
+  ];
+
+  for (const stackId of frontendStacks) {
+    const mandatory = STACKS[stackId].mandatory;
+    assert.equal(
+      mandatory.includes('rules/frontend/ui-quality.md'),
+      true,
+      `${stackId} must always load the shared UI quality gate`,
+    );
+    assert.equal(
+      mandatory.includes('rules/frontend/typography.md'),
+      true,
+      `${stackId} must always load typography rules`,
+    );
+  }
+
+  for (const stackId of ['react-realtime-monorepo', 'react-frontend-only']) {
+    assert.equal(
+      STACKS[stackId].mandatory.includes('rules/frontend/react/design-quality.md'),
+      true,
+      `${stackId} must always load React design quality rules`,
+    );
+  }
+});
+
+test('SessionStart bundle includes mandatory frontend design gate', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T13:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/ui-quality\.md/);
+    assert.match(context, /Central design gate/);
+    assert.match(context, /rules\/frontend\/typography\.md/);
+    assert.match(context, /rules\/frontend\/react\/design-quality\.md/);
+    assert.match(context, /Mandatory frontend design gate/);
+    assert.match(context, /sparse shell whose\s+visible product surface is only config banners/);
+  });
+});
+
+test('React Native SessionStart bundle includes shared design gate', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-native-expo-app',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-08T13:05:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/ui-quality\.md/);
+    assert.match(context, /Central design gate/);
+    assert.match(context, /rules\/frontend\/typography\.md/);
+    assert.match(context, /Mandatory frontend design gate/);
+  });
+});
+
+test('frontend design gate rejects sparse config-banner-dominated generated UI', () => {
+  const sources = {
+    uiQuality: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ui-quality.md'), 'utf8'),
+    reactDesign: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'design-quality.md'), 'utf8'),
+    newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
+    directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    frontendSkill: fs.readFileSync(path.join(ROOT, 'skills', 'frontend-design', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
+    frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
+    reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
+    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
+    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
+  };
+
+  assert.match(sources.uiQuality, /Generated app\/site prompts must produce a product-specific/);
+  assert.match(sources.uiQuality, /Do not duplicate missing-config banners/);
+  assert.match(sources.reactDesign, /Never ship a page whose main visible surface is duplicated/);
+  assert.match(sources.newProjectRule, /Mandatory frontend design gate/);
+  assert.match(sources.newProjectRule, /This applies to every\s+frontend stack/);
+  assert.match(sources.directives, /Mandatory design gate/);
+  assert.match(sources.directives, /duplicated config banners/);
+  assert.match(sources.frontendSkill, /mandatory pre-code gate/);
+  assert.match(sources.frontendSkill, /one shared setup banner/);
+  assert.match(sources.createPage, /product-specific demo/);
+  assert.match(sources.createFeature, /product-specific demo/);
+  assert.match(sources.frontendAgent, /2–3 real products/);
+  assert.match(sources.frontendAgent, /do not ship only banners plus inactive filters/);
+  assert.match(sources.reviewerAgent, /mandatory design gate/);
+  assert.match(sources.reviewerAgent, /duplicated setup UI/);
+  assert.match(sources.agentsMirror, /Do not rely on path-scoped attach/);
+  assert.match(sources.claudeManifest, /mandatory frontend-stack design brief/);
 });
 
 test('existing React Native project SessionStart includes docs reconciliation guidance', () => {

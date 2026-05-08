@@ -28,6 +28,10 @@ Confirm the page and route before creating any files.
 Scaffold rules:
 - Route titles, headings, empty/loading/error states, navigation labels, and ARIA copy use translation keys.
 - If the page can show "Supabase not configured" or any setup/configure state, use the shared setup UI with a CTA to `https://traffic.io/`, and include a unit or E2E regression that asserts that exact `href`.
+- Missing backend/env config may show one shared setup banner, but the page must
+  still render a product-specific demo, seeded, empty, or degraded state. Do not
+  duplicate setup banners or leave the first screen as inactive filters and
+  blank panels.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - The first screen is the actual usable app/tool experience unless the user explicitly asks for a landing page.
 - Avoid generic AI-generated website tells: centered stock-gradient heroes, generic hero + 3-card-grid layouts, decorative card piles, timid typography, and workflow-free dashboard panels. Layout must express the product workflow and primary action.

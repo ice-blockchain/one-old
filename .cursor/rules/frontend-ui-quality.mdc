@@ -96,6 +96,14 @@ If the user's brand or brief explicitly calls for one of the above (e.g. they AR
 
 - Make the first screen useful: apps, tools, dashboards, and games open on the
   actual working experience, not a marketing shell.
+- Generated app/site prompts must produce a product-specific, content-rich first
+  screen. Missing backend/env configuration is not a reason to ship a blank or
+  nearly blank UI: show one shared setup banner at the app boundary, then render
+  polished demo, seed, empty, loading, and error states that demonstrate the
+  real workflow after the backend contract and security baseline exist.
+- Do not duplicate missing-config banners or cards on the same page. If an
+  app-level `<EnvBanner />` is visible, feature surfaces should use lighter
+  contextual empty states rather than repeating the same setup CTA.
 - Make the UI interactive by default: menus, filters, tabs, selection, loading,
   optimistic actions, and route changes should respond with purposeful motion
   and visible state feedback instead of static swaps.
