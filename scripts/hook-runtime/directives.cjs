@@ -161,9 +161,9 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      blank placeholder panels.
   5. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
-     relevant canonical docs from \`rules/common/documentation.md\`:
+     relevant root-level canonical docs from \`rules/common/documentation.md\`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
-     architecture.md/docs/architecture.md, docs/adr/, api.md, database.md,
+     architecture.md, adr/, api.md, database.md,
      deployment.md, security.md, CHANGELOG.md, environment-setup.md,
      CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
      as Unverified; do not leave only a lightweight README.
@@ -224,7 +224,7 @@ function autoDetectedAnnouncement(detected) {
     `stack=${detected.stack} · frontend=${detected.frontend || '-'} · backend=${detected.backend || '-'} · realtime=${detected.realtime || 'none'}`,
     `evidence: ${detected.evidence.join('; ')}`,
     'On your first reply, briefly confirm the detected stack (one line) and continue.',
-    'Before normal feature work, run the auto-documentation baseline reconciliation: create missing canonical docs and update existing docs in place per rules/common/documentation.md. Preserve the project docs layout and mark unknown facts as Unverified.',
+    'Before normal feature work, run the auto-documentation baseline reconciliation: create missing canonical docs at the repo root and update existing docs in place per rules/common/documentation.md. Migrate legacy docs/ canonical files to root when safe and mark unknown facts as Unverified.',
     'For any frontend UI work, the mandatory design gate applies: use frontend-design/UI-quality rules, state real-product references or match the existing aesthetic, avoid sparse config-banner-dominated screens, and verify responsive states.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];

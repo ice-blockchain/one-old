@@ -17,9 +17,10 @@ new project complete with only a lightweight README.
 For `mode: existing-codebase` and `mode: existing-with-supabase`, reconcile the
 documentation baseline before normal feature work across every detected or
 fallback stack when docs are missing or stale. If a canonical doc does not
-exist, create it from verified repo facts. If it already exists, update it in
-place. Keep edits scoped and preserve the project's existing documentation
-structure when it is already coherent.
+exist, create it from verified repo facts at the repo root. If it already
+exists, update it in place. If legacy canonical docs exist under `docs/`, migrate
+them to the root path when that can be done without overwriting a newer root
+file.
 
 ## Canonical docs
 
@@ -33,9 +34,9 @@ structure when it is already coherent.
   linter or full style guide.
 - `.cursor/rules/*.mdc`: Cursor-specific project rules; keep each rule short,
   scoped, and version-controlled with `description`, `globs`, and `alwaysApply`.
-- `architecture.md` / `docs/architecture.md`: folder map, data flow diagram,
-  key dependencies, and why major choices were made. Link ADRs.
-- `docs/adr/`: one short Nygard-style ADR per significant decision. Use
+- `architecture.md`: root-level folder map, data flow diagram, key
+  dependencies, and why major choices were made. Link ADRs.
+- `adr/`: one short root-level Nygard-style ADR per significant decision. Use
   Context, Decision, Status, and Consequences.
 - `api.md`: generated from OpenAPI or source routes/Edge Functions; include
   auth, request/response schemas, errors, and examples.
@@ -52,7 +53,7 @@ structure when it is already coherent.
   env setup, DB seed/reset commands, and local workflow.
 - `CONTRIBUTING.md`: branch naming, PR checklist, commit conventions, review
   checklist, and test expectations.
-- `public/llms.txt` or site-root `/llms.txt`: concise Markdown index pointing
+- `public/llms.txt` or root `llms.txt`: concise Markdown index pointing
   LLMs and AI crawlers to canonical docs.
 
 ## Guardrails
