@@ -6,7 +6,7 @@
 - Codex must announce the Traffic One team before starting a non-trivial multi-layer build and automatically ask the user whether to run the role subagents. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before `spawn_agent`, this is a blocking preflight gate: ask first, then stop and wait for the user's answer before writing a plan, creating files, editing code, or simulating the roles manually. Do not silently simulate the team before asking. If the user declines, subagents are unavailable, or subagents are blocked, continue with per-role prompts in the same thread and state that the Traffic One team is being simulated by the main agent.
 - Codex preflight wording for matching builds: "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?" Use this wording in English; do not translate this confirmation question based on the user's language.
 - Codex uses available Codex subagents to emulate the Traffic One roles after confirmation/runtime approval:
-  - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md` and ADR/docs only.
+  - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
   - `senior-frontend` → `worker`, owned write scope frontend/UI/i18n files only.
   - `senior-backend` → `worker`, owned write scope backend/API/database files only.
   - `senior-reviewer` → `explorer` or `default`, read-only.
@@ -18,7 +18,12 @@
 - Do not ask for subagents on single-component, single-page, single-service, read-only audit, or small refactor tasks; route those directly to the matching specialist skill.
 - If a Codex agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.
 - Shipper remains gated: deploy/release/publish actions require explicit deploy intent, reviewer `APPROVED`, tester `TESTS_GREEN`, a passing `predeploy-security-check` stamp for the current worktree, and user confirmation in the same turn. The deploy hook denies production commands unless `lastShipperApprovalAt` is fresh (≤10 min) and `lastSecurityCheckStatus: "passed"` is fresh with a matching fingerprint.
+- Project memory requests route through `project-memory`; architect owns
+  `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/decisions/`,
+  and `.traffic-one/rules/*`, backend refreshes `.traffic-one/schema.sql` after
+  migrations, every role appends concise session notes to
+  `.traffic-one/agent-log.md`, and shipper appends `.traffic-one/deployments.jsonl`.
 - Documentation requests route through `auto-documentation-generator`; architect
-  owns plan/architecture/ADR/docs, reviewer checks docs for accuracy and
-  placeholder/secrets risk, and shipper verifies release-facing docs before
-  production deploy.
+  owns plan/architecture/docs, reviewer checks docs and memory for accuracy and
+  placeholder/secrets risk, and shipper verifies release-facing docs and memory
+  before production deploy.

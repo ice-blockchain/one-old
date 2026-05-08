@@ -36,8 +36,8 @@ file.
   scoped, and version-controlled with `description`, `globs`, and `alwaysApply`.
 - `architecture.md`: root-level folder map, data flow diagram, key
   dependencies, and why major choices were made. Link ADRs.
-- `adr/`: one short root-level Nygard-style ADR per significant decision. Use
-  Context, Decision, Status, and Consequences.
+- `.traffic-one/decisions/`: one short Nygard-style ADR per significant
+  decision. Use Context, Decision, Status, and Consequences.
 - `api.md`: generated from OpenAPI or source routes/Edge Functions; include
   auth, request/response schemas, errors, and examples.
 - `database.md`: generated from migrations or `pg_dump --schema-only

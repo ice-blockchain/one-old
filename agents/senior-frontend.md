@@ -35,9 +35,10 @@ You ship UI that looks intentionally designed, not machine-generated. You implem
 The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priority order:
 
 1. `.traffic-one/digests/<run-id>/architect.md` — the predecessor digest (~2 KB). What the architect produced + which plan sections you should focus on.
-2. `.traffic-one/plan.md` § Frontend + § Module map (only your scope; ~1 KB).
-3. `graphify-out/GRAPH_REPORT.md` if it exists — for `apps/*/src/`, `packages/ui*` nodes specifically.
-4. Specific source files only when 1–3 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
+2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/rules/coding.md`, `.traffic-one/known-issues.md` if present.
+3. `.traffic-one/plan.md` § Frontend + § Module map (only your scope; ~1 KB).
+4. `graphify-out/GRAPH_REPORT.md` if it exists — for `apps/*/src/`, `packages/ui*` nodes specifically.
+5. Specific source files only when 1–4 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
 
 Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase reading hints" tell you what to look at.
 
@@ -45,8 +46,9 @@ Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase readin
 
 1. `.traffic-one/plan.md` — abort with a one-line message if it does not exist (the plan-gate hook will deny your writes anyway).
 2. `.traffic-one.json` — pick up `stack`, `frontend`, `backend`. Your skill dispatch depends on this.
-3. The plan's Module map and Public contracts sections — your scope is "frontend only"; do not implement anything in the backend's modules.
-4. `packages/ui*/src/components/ui/` — what shadcn / RNR primitives already exist.
+3. `.traffic-one/product.md`, `.traffic-one/rules/coding.md`, and `.traffic-one/known-issues.md` if present.
+4. The plan's Module map and Public contracts sections — your scope is "frontend only"; do not implement anything in the backend's modules.
+5. `packages/ui*/src/components/ui/` — what shadcn / RNR primitives already exist.
 
 ## Skills you consult — dispatched by stack
 
@@ -101,6 +103,7 @@ You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/
 9. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
 10. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
 11. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
+12. Append a short note to `.traffic-one/agent-log.md` for meaningful UI work: routes/components changed, design references used, verification run, and remaining UI risks.
 
 ## Digest output (REQUIRED)
 

@@ -6,6 +6,7 @@ skills:
   - stack-setup
   - detect-project
   - library-pick
+  - project-memory
   - architecture-decision-records
   - auto-documentation-generator
   - hexagonal-architecture
@@ -29,24 +30,31 @@ You decide the stack, module boundaries, and public contracts before anyone touc
 You're the *first* subagent in the run, so the read order is the simplest:
 
 1. `.traffic-one.json` — required.
-2. `graphify-out/GRAPH_REPORT.md` — read it if it exists (existing-codebase mode where the user pre-built the graph). Skip silently if missing.
-3. The user's last 1–3 messages — extract verb, audience, primary action.
-4. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
+2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/known-issues.md`, `.traffic-one/rules/*.md` if present — persistent project memory.
+3. `graphify-out/GRAPH_REPORT.md` — read it if it exists (existing-codebase mode where the user pre-built the graph). Skip silently if missing.
+4. The user's last 1–3 messages — extract verb, audience, primary action.
+5. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
 
 Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `mode: new-project` the repo is empty by definition.
 
 ## What you read first
 
 1. `.traffic-one.json` — pick up `mode`, `stack`, `backend`, `realtime`, `frontend`. If the file is empty or pre-onboarding, run `stack-setup` first.
-2. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
-3. The user's last 1–3 messages — extract the actual product intent (verb, audience, primary action).
+2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`, and `.traffic-one/known-issues.md` if present.
+3. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
+4. The user's last 1–3 messages — extract the actual product intent (verb, audience, primary action).
 
 ## Skills you consult (in this order)
 
 - `stack-setup` — only if `.traffic-one.json` is empty or `confirmed !== true`.
 - `detect-project` — to confirm we're greenfield vs. extending an existing repo.
 - `library-pick` — for every non-default library decision; document the chosen + rejected with reasons.
-- `architecture-decision-records` — write one ADR per non-default choice into root `adr/`.
+- `project-memory` — create or reconcile `.traffic-one/product.md`,
+  `.traffic-one/stack.md`, `.traffic-one/rules/*`,
+  `.traffic-one/decisions/`, `.traffic-one/known-issues.md`,
+  `.traffic-one/.agentignore`, `.traffic-one/mcp.json`, and
+  `.traffic-one/agent-log.md` before downstream roles run.
+- `architecture-decision-records` — write one ADR per non-default choice into `.traffic-one/decisions/`.
 - `auto-documentation-generator` — mandatory for every `mode: new-project`
   scaffold and every `mode: existing-codebase` / `existing-with-supabase`
   baseline reconciliation. For existing docs, update in place; for missing docs,
@@ -67,11 +75,12 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 ## What you write
 
 Primary artifact: `.traffic-one/plan.md`. For `mode: new-project`, also create
-or update the docs selected by `auto-documentation-generator` before reporting
-`PLAN_READY`. For `mode: existing-codebase` or `existing-with-supabase`, reconcile
-the docs baseline before normal feature work: create missing canonical docs and
-update existing docs in place. Run `mkdir -p .traffic-one` via Bash before the
-first write. Plan sections in order:
+or update the project memory baseline from `project-memory` and the docs
+selected by `auto-documentation-generator` before reporting `PLAN_READY`. For
+`mode: existing-codebase` or `existing-with-supabase`, reconcile project memory
+and docs before normal feature work: create missing canonical files and update
+existing files in place. Run `mkdir -p .traffic-one` via Bash before the first
+write. Plan sections in order:
 
 ```markdown
 # Plan: <product name>
@@ -101,7 +110,7 @@ The 3 things most likely to derail the build. One mitigation each.
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
 ```
 
-After the plan, write any ADRs to `adr/NNNN-<slug>.md`. For new projects,
+After the plan, write any ADRs to `.traffic-one/decisions/NNNN-<slug>.md`. For new projects,
 update the canonical docs after the plan so they describe the accepted shape;
 do not leave only a README. Unknown deployment/database facts must be marked
 `Unverified` with the exact command or input needed.
