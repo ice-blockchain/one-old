@@ -28,7 +28,12 @@ contract, env validation, and migrations/RLS baseline are in place.
 ├── .eslintrc.cjs                  shared rules; package overrides allowed
 ├── .prettierrc
 ├── .nvmrc                         pin Node major
+├── .env.example                   documented env var names only, no secrets
 ├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
+├── .github/
+│   └── workflows/                 CI/CD: verify, preview deploy, production deploy
+├── vercel.json | netlify.toml | wrangler.toml
+│                                    exactly one static-host manifest when deploying
 ├── supabase/
 │   └── migrations/                SQL schema + RLS policies for Supabase-backed apps
 │
@@ -159,13 +164,42 @@ contract, env validation, and migrations/RLS baseline are in place.
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
    - Remote cache enabled if available; otherwise local.
    - Storybook build artefact uploaded for PR previews.
+   - Preview deploy runs on PRs; production deploy runs only from `main` or a
+     release merge after reviewer/tester/shipper gates.
+   - Supabase migration jobs use `supabase/setup-cli`, encrypted
+     `SUPABASE_ACCESS_TOKEN`, and per-environment project/db-password secrets.
 
-6. **Tooling guards**
+6. **Deployment artifact baseline (smallest production set)**
+   - Choose one static host target for the SPA: Vercel, Netlify, or Cloudflare
+     Pages. Commit that host's manifest/fallback files and do not add a
+     Dockerfile unless the plan explicitly selects self-hosting, BYOC,
+     SSR/server runtime, or another container-only target.
+   - Pin runtime and install determinism: `engines`, `packageManager`, `.nvmrc`,
+     and the lockfile. CI uses frozen lockfile install and fails on drift.
+   - Extend the `.env.example` from the Supabase setup with every required
+     variable name. Real values live only in `.env.local`, the static host's
+     encrypted environment variables, or GitHub Actions secrets.
+   - Map environments explicitly: development, preview, staging, production.
+     Use separate Supabase projects for staging/production and Supabase
+     Branching for PR previews when available; never point previews at
+     production data.
+   - Route schema changes through committed `supabase/migrations/*.sql` and
+     `pnpm db:push` in CI. Do not ask production operators to click changes in
+     the Supabase dashboard.
+   - Add a monitorable `/health` path via an Edge Function, host function, or
+     hosted heartbeat endpoint. If Capacitor is requested, add a force-update
+     version check for mobile clients.
+   - Document rollback as previous immutable frontend deployment plus a
+     forward-only undo migration for database changes.
+   - Configure the custom domain, automatic TLS, security headers, and an HSTS
+     preload readiness check before calling production complete.
+
+7. **Tooling guards**
    - Husky + lint-staged for pre-commit format + lint.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-6. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
+8. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
    a. Add Supabase as a workspace devDependency:
       ```bash
@@ -231,7 +265,7 @@ contract, env validation, and migrations/RLS baseline are in place.
       `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
-7. **Codebase graph (after first successful build, optional but recommended)**
+9. **Codebase graph (after first successful build, optional but recommended)**
 
    Once the workspace scaffolds and `pnpm build` passes once, install graphify
    and generate `graphify-out/GRAPH_REPORT.md`. Subagents (`senior-architect`,

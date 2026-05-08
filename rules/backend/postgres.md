@@ -35,6 +35,9 @@ paths:
 - One concern per migration; reversible where feasible.
 - Non-null on big table: nullable → backfill in batches → NOT NULL.
 - Drops are two-phase (stop reading → deploy → drop).
+- Production rollback is forward-only: write an undo migration instead of
+  editing applied migrations or restoring from backup. Never write `DROP TABLE`
+  without a tested rollback/undo plan.
 
 ## RLS (multi-tenant)
 - ON for every user-data table. Default-deny. Per-role per-action policies. Test with anon + authed in CI.

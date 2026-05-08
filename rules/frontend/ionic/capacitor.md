@@ -18,6 +18,7 @@ paths:
 - App id uses reverse-DNS format and is stable before native platforms are added.
 - App name, bundle id, version, build number, icon, and splash config are
   treated as release settings, not incidental defaults.
+- Deep-link scheme and production web domain are decided before store builds.
 - Native platform folders are generated through Capacitor and then kept under
   review like source code.
 
@@ -42,3 +43,14 @@ paths:
 - Check signing, bundle identifiers, version codes, deep links, app icons, splash
   screens, privacy manifests, and store metadata before calling a mobile build
   complete.
+- iOS provisioning profile/signing identity and Android keystore/alias/passwords
+  live in CI/store secrets, not in git or `VITE_` env vars.
+- Serve Apple Universal Links and Android App Links from the production web
+  domain: `/.well-known/apple-app-site-association` and
+  `/.well-known/assetlinks.json`.
+- Store submission metadata includes bundle/application id, version/build bump,
+  required screenshots, App Privacy/Data Safety answers, age rating, privacy
+  policy URL, and iOS `PrivacyInfo.xcprivacy` when required by Apple policy or
+  required-reason API usage.
+- Ship a force-update/version check before release and document the OTA/live
+  update provider or explain why store review is required for every fix.

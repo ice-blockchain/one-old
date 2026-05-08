@@ -1,6 +1,6 @@
 ---
 name: deployment-patterns
-description: Deployment workflows, CI/CD pipeline patterns, Docker containerization, health checks, rollback strategies, and production readiness checklists for web applications.
+description: Deployment workflows, static-host SPA/Supabase deployment artifacts, CI/CD pipeline patterns, Docker containerization, health checks, rollback strategies, and production readiness checklists for web and Capacitor applications.
 metadata:
   origin: ECC
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
@@ -11,7 +11,11 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 
 # Deployment Patterns
 
-Production deployment workflows and CI/CD best practices.
+Production deployment workflows and CI/CD best practices. For Traffic One
+React SPA + Supabase projects, the default output is the smallest set of
+production artifacts that can ship reliably: one static-host manifest, one
+CI/CD workflow, environment documentation, Supabase migrations, and a concrete
+rollback path. Docker is only for self-hosted, BYOC, or server-runtime targets.
 
 ## When to Activate
 
@@ -21,6 +25,162 @@ Production deployment workflows and CI/CD best practices.
 - Implementing health checks and readiness probes
 - Preparing for a production release
 - Configuring environment-specific settings
+- Generating Vercel/Netlify/Cloudflare Pages + Supabase deployment artifacts
+- Preparing Capacitor/Ionic app-store build and submission artifacts
+
+## Traffic One Deployment Artifact Default
+
+Generate deployment artifacts in this order:
+
+1. **Static host manifest first for SPA + Supabase.** A Vite React SPA backed by
+   Supabase ships as static assets plus Supabase services. Create exactly one
+   host manifest for the selected target (`vercel.json`, `netlify.toml`,
+   Cloudflare Pages `_redirects` / `_headers` / `wrangler.toml`). Do not add a
+   Dockerfile unless the plan chooses self-hosting, BYOC, SSR/server runtime, or
+   another container-only path.
+2. **Environment map.** Keep `.env.example` committed and secrets in encrypted
+   host/CI variables. Use separate Supabase projects for development, preview,
+   staging, and production when those environments exist; never point PR
+   previews at production data.
+3. **Committed Supabase migrations.** Schema changes live in
+   `supabase/migrations/*.sql` and are applied through CI or Supabase Branching.
+   Do not instruct production operators to click changes in the dashboard.
+4. **CI/CD by default.** GitHub Actions is the baseline: install -> typecheck ->
+   test -> build -> preview deploy on PR -> production deploy on `main`/release
+   merge. Use `supabase/setup-cli` for migration/function jobs.
+5. **Pinned runtime.** Check in `engines`, `packageManager`, `.nvmrc`, and the
+   package-manager lockfile. CI uses frozen lockfile install and fails on drift.
+6. **Health/status.** For static SPAs, add a `/health` route through a Supabase
+   Edge Function, static-host function, or hosted heartbeat endpoint for uptime
+   monitors. Capacitor apps also need a simple force-update/version check.
+7. **Rollback.** Frontend rollback means redeploying the previous immutable
+   build/deployment. Database rollback is a forward-only undo migration, not
+   `pg_restore` and not editing an already-applied migration.
+8. **Domain hardening.** Configure the custom domain, automatic TLS, security
+   headers, and an HSTS preload readiness check before calling production done.
+
+### Static Host SPA Manifests
+
+Pick one target and create only that target's files.
+
+**Vercel (`apps/web/vercel.json` or root `vercel.json`):**
+
+```json
+{
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "headers": [
+    {
+      "source": "/(.*)",
+      "headers": [
+        { "key": "X-Content-Type-Options", "value": "nosniff" },
+        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
+        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
+      ]
+    }
+  ]
+}
+```
+
+**Netlify (`netlify.toml`):**
+
+```toml
+[build]
+command = "pnpm build"
+publish = "dist"
+
+[[redirects]]
+from = "/*"
+to = "/index.html"
+status = 200
+```
+
+**Cloudflare Pages (`public/_redirects` plus `_headers`, or `wrangler.toml` when selected):**
+
+```text
+/* /index.html 200
+```
+
+```toml
+pages_build_output_dir = "dist"
+```
+
+### Supabase Environment + Migration Workflow
+
+- Environment secrets in CI/host: `SUPABASE_ACCESS_TOKEN`,
+  `<ENV>_SUPABASE_PROJECT_ID`, `<ENV>_SUPABASE_DB_PASSWORD`, plus app-facing
+  `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` per host environment.
+- Local commands are idempotent and documented:
+  `supabase migration new <name>`, `supabase db diff -f <name>`,
+  `supabase db push --linked`, `supabase migration list`.
+- Production applies only committed migrations. Never write `DROP TABLE` or
+  destructive `DROP COLUMN` without a tested forward undo migration and a
+  two-phase rollout plan.
+- Supabase Branching should be enabled for PR previews when available. Preview
+  branches get isolated project credentials and no copied production data.
+
+### GitHub Actions (React SPA + Supabase default)
+
+```yaml
+name: Deploy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+
+  supabase:
+    needs: verify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    environment: production
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+      SUPABASE_DB_PASSWORD: ${{ secrets.PRODUCTION_SUPABASE_DB_PASSWORD }}
+      SUPABASE_PROJECT_ID: ${{ secrets.PRODUCTION_SUPABASE_PROJECT_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: supabase/setup-cli@v1
+      - run: supabase link --project-ref "$SUPABASE_PROJECT_ID"
+      - run: supabase db push
+```
+
+Let the chosen static host handle the actual preview/production deploy when its
+GitHub integration is enabled. Add CLI deploy steps only when the host requires
+them or the project deliberately avoids provider Git integrations.
+
+### Capacitor / Ionic Release Artifacts
+
+When the project includes Capacitor delivery, generate or verify:
+
+- `capacitor.config.ts` with stable reverse-DNS `appId`, correct `appName`,
+  `webDir` pointing at the Vite build output, and the production deep-link
+  scheme/domain.
+- iOS signing identity and provisioning profile references stored in CI secrets.
+- Android keystore, alias, and passwords stored as CI secrets, never committed.
+- Apple Universal Links and Android App Links files served from the web domain:
+  `/.well-known/apple-app-site-association` and
+  `/.well-known/assetlinks.json`.
+- Store submission metadata: bundle ID/application ID, version/build number
+  bump, screenshots, age rating, App Privacy/Data Safety answers, privacy
+  policy URL, and iOS `PrivacyInfo.xcprivacy` when required by Apple policy or
+  required-reason API usage.
+- OTA/live update strategy for web-only fixes, such as Capgo or Capacitor Live
+  Updates, with a release-channel rollback plan.
 
 ## Deployment Strategies
 
@@ -84,6 +244,11 @@ v2: 100% of traffic
 **Use when:** High-traffic services, risky changes, feature flags
 
 ## Docker
+
+Use this section only when the selected deployment target needs a container
+(self-hosted Node service, BYOC, worker/runtime that cannot be static-hosted,
+or a multi-service backend). For a React/Vite SPA plus Supabase, generate the
+static-host artifacts above instead of a Dockerfile.
 
 ### Multi-Stage Dockerfile (Node.js)
 
@@ -192,7 +357,10 @@ CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers
 
 ## CI/CD Pipeline
 
-### GitHub Actions (Standard Pipeline)
+### GitHub Actions (Container Pipeline)
+
+Use this instead of the React SPA + Supabase default only when the deployment
+target actually builds and ships a container image.
 
 ```yaml
 name: CI/CD
@@ -263,7 +431,7 @@ PR opened:
   lint → typecheck → unit tests → integration tests → preview deploy
 
 Merged to main:
-  lint → typecheck → unit tests → integration tests → build image → deploy staging → smoke tests → deploy production
+  lint → typecheck → unit tests → integration tests → build static artifact or image → deploy staging → smoke tests → deploy production
 ```
 
 ## Health Checks
@@ -382,14 +550,14 @@ vercel rollback
 # Railway: redeploy previous commit
 railway up --commit <previous-sha>
 
-# Database: rollback migration (if reversible)
-npx prisma migrate resolve --rolled-back <migration-name>
+# Database: apply a new forward-only undo migration
+pnpm db:push
 ```
 
 ### Rollback Checklist
 
 - [ ] Previous image/artifact is available and tagged
-- [ ] Database migrations are backward-compatible (no destructive changes)
+- [ ] Database migrations are backward-compatible or have a tested forward undo migration
 - [ ] Feature flags can disable new features without deploy
 - [ ] Monitoring alerts configured for error rate spikes
 - [ ] Rollback tested in staging before production release
@@ -406,7 +574,7 @@ Before any production deployment:
 - [ ] Health check endpoint returns meaningful status
 
 ### Infrastructure
-- [ ] Docker image builds reproducibly (pinned versions)
+- [ ] Static artifact or Docker image builds reproducibly (pinned versions)
 - [ ] Environment variables documented and validated at startup
 - [ ] Resource limits set (CPU, memory)
 - [ ] Horizontal scaling configured (min/max instances)

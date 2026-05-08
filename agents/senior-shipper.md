@@ -71,7 +71,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    The deploy-gate hook reads this and allows the next deploy command for 10 minutes.
 
 3. Run the active-stack deploy:
-   - **Vercel** (Next.js, React/Vite): `vercel deploy --prod`.
+   - **Vercel** (Next.js, React/Vite static SPA): `vercel deploy --prod`.
+   - **Netlify** (React/Vite static SPA): `netlify deploy --prod --dir <dist>`.
+   - **Cloudflare Pages** (React/Vite static SPA): `wrangler pages deploy <dist> --project-name <name>`.
    - **EAS / Expo**: `eas build --platform <ios|android> --profile production --auto-submit`.
    - **Supabase migrations** (if not already linked + pushed): `pnpm db:push` (Path A in `supabase-setup`).
    - **Supabase Edge Functions**: `supabase functions deploy <name> --linked`.
@@ -96,7 +98,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
 - `predeploy-security-check` — hard scanner gate for secrets, Supabase/RLS,
   auth/authz, rate limits, uploads, CORS, injection, headers, dependencies,
   logging, crypto, and mobile bundle security.
-- `deployment-patterns`, `docker-patterns` — for containerised services.
+- `deployment-patterns` — for static-host SPA/Supabase, Capacitor, health,
+  rollback, and environment artifacts. Use `docker-patterns` only for
+  self-hosted, BYOC, server-runtime, or containerised services.
 - Stack `*-verification` (e.g. `springboot-verification`) — final pre-deploy gate.
 
 ## Digest output (REQUIRED)
@@ -118,4 +122,6 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FA
 - Never `git push --force` on `main` / `master` / `production`. Never bypass hooks (`--no-verify`).
 - Never log secrets to chat. Quote env-var names, not values.
 - Database migrations on production: review one more time before push. Reversible-or-don't-deploy.
+- Do not create or run a Docker deployment for a React SPA + Supabase release
+  unless the plan explicitly chose a self-hosted/BYOC/container path.
 - After successful deploy: announce the URL, the git SHA, the rollback command, and which post-deploy skills you ran.

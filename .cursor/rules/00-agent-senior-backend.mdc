@@ -70,7 +70,9 @@ Token budget: ~12k total. The `senior-frontend` is running in parallel and will 
 
 ### Cross-cutting
 - `jwt-security` — only when validating provider-issued tokens or building service-to-service flows. Do NOT use for end-user auth (that goes through Supabase Auth / NextAuth / Clerk / framework-native middleware).
-- `deployment-patterns`, `docker-patterns` — when the plan involves containerised services.
+- `deployment-patterns` — when backend work changes Supabase migrations, Edge
+  Functions, health/status endpoints, or release CI. Use `docker-patterns` only
+  when the plan involves containerised services.
 
 ## Your scope
 
