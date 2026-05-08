@@ -30,6 +30,17 @@ once the file is written — no restart needed.
 DEFAULT (end-to-end): stack=react-realtime-monorepo, backend=${defaultBackend}, realtime=none.
 Only deviate when the user EXPLICITLY asks for something else.
 
+CODEX SUBAGENT PREFLIGHT (blocking for non-trivial multi-layer builds):
+  Before writing a plan, creating files, editing code, scaffolding the repo, or
+  simulating Traffic One roles manually, recommend the Traffic One parallel
+  workflow and ask exactly:
+
+    "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"
+
+  Stop and wait for the user's answer. If they confirm, use available Codex
+  subagents with the Traffic One role route. If they decline or subagents are
+  unavailable, continue manually in the same role order and say so.
+
 ── Branch on the user's first message ──
 
 PATH A — User mentioned only FEATURES (no specific tech stack):
@@ -140,7 +151,15 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).
      Do NOT create a \`packages/design-tokens\` package — design tokens live in the
      Tailwind preset and the HSL CSS variables in \`globals.css\`.
-  4. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
+  4. Mandatory design gate: before writing any generated UI, invoke
+     \`frontend-design\` and apply \`rules/frontend/ui-quality.md\`,
+     \`rules/frontend/typography.md\`, and the active stack's design rules.
+     State 2–3 real product references when the user did not provide any,
+     record a compact design brief, and make the first screen product-specific
+     and content-rich. Missing Supabase/env config may show one shared setup
+     banner, but never ship only duplicated config banners, empty filters, or
+     blank placeholder panels.
+  5. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
      relevant canonical docs from \`rules/common/documentation.md\`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
@@ -148,17 +167,19 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      deployment.md, security.md, CHANGELOG.md, environment-setup.md,
      CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
      as Unverified; do not leave only a lightweight README.
-  5. Initialise git with Gitflow branches (\`main\`, \`develop\`).
+  6. Initialise git with Gitflow branches (\`main\`, \`develop\`).
 
 For \`react-frontend-only\`: a single Vite app under root \`src/\` (no apps/, no packages/).
 \`src/styles/globals.css\` + \`tailwind.config.ts\` + \`npx shadcn@latest init\` + the
 same first-batch components under \`src/components/ui/\`. The mandatory docs
-baseline still applies.
+baseline and mandatory design gate still apply.
 
 For \`react-native-expo-*\`: see \`rules/modes/new-project.md\` and \`rules/frontend/react-native/core.md\`.
 Scaffold uses NativeWind v4 (metro/babel/global.css/nativewind-env.d.ts) and
 React Native Reusables (\`npx @react-native-reusables/cli@latest init\` + first-batch
-components under \`packages/ui-native/src/components/ui/\`).
+components under \`packages/ui-native/src/components/ui/\`). The mandatory
+design gate still applies with native-first layout, touch targets, device
+states, and real product references.
 
 The full step-by-step is in \`rules/modes/new-project.md\` — that file IS in the bundle
 once onboarding completes. Read it before scaffolding.
@@ -204,6 +225,7 @@ function autoDetectedAnnouncement(detected) {
     `evidence: ${detected.evidence.join('; ')}`,
     'On your first reply, briefly confirm the detected stack (one line) and continue.',
     'Before normal feature work, run the auto-documentation baseline reconciliation: create missing canonical docs and update existing docs in place per rules/common/documentation.md. Preserve the project docs layout and mark unknown facts as Unverified.',
+    'For any frontend UI work, the mandatory design gate applies: use frontend-design/UI-quality rules, state real-product references or match the existing aesthetic, avoid sparse config-banner-dominated screens, and verify responsive states.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];
 

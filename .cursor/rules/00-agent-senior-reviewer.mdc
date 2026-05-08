@@ -77,6 +77,15 @@ CHANGES_REQUESTED — <one line summary>.
 
 - Diff matches the plan; no scope creep.
 - Every touched file passes the relevant rule subset (architecture, naming, accessibility, security, performance).
+- New or changed UI passes the mandatory design gate: the diff reflects a
+  design brief or selected real-product references, uses the active frontend
+  design rules, has a product-specific first screen, and covers meaningful
+  loading, empty, error, disabled, focus, hover/press, responsive, and
+  reduced-motion states.
+- Missing backend/env config does not leave a sparse or duplicated setup UI:
+  at most one shared missing-config banner pattern is visible per page, and the
+  actual workflow still renders a credible demo, seeded, empty, or degraded
+  state.
 - No hardcoded secrets, no `any` slipping in, no inline styles for static styling, no DOM tags in RN, no vanilla-extract imports, no `dangerouslySetInnerHTML` without DOMPurify, no `eval` / `new Function` with user input.
 - Auth + authorization checks on every protected handler. Parameterised SQL only. Validation at boundaries with a schema.
 - Supabase missing-config UI (`<EnvBanner />`, `<SupabaseConfigAlert />`,
@@ -84,6 +93,9 @@ CHANGES_REQUESTED — <one line summary>.
   states) links users to `https://traffic.io/`, not directly to the Supabase
   dashboard, and a regression test asserts that exact `href`.
 - Tests touched too (or a clear note that the tester subagent will add them).
+- Visual-heavy UI has screenshot or Storybook verification, or a concrete note
+  explaining why visual QA could not run and which breakpoints/states remain
+  unverified.
 - No raw deployment commands (`vercel deploy`, `gh release`, etc.) added without `lastShipperApprovalAt` already in `.traffic-one.json` from a recent shipper run.
 - No deploy approval without a fresh passing `lastSecurityCheckStatus: "passed"` stamp whose fingerprint matches the current worktree.
 - No production-readiness hard blocker remains: failing production build,

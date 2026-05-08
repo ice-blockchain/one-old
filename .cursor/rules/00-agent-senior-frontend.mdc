@@ -65,13 +65,27 @@ You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/
 ## How you work
 
 1. Read the plan section for your scope.
-2. Pick the right scaffolder skill (`create-component` / `create-page` / `create-feature`) based on the artefact type.
-3. Compose existing shadcn / RNR primitives; add new primitives via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button, dialog, dropdown, or form control.
-4. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, …) backed by the shadcn HSL CSS variables. No hardcoded hex/rgb/px.
-5. For Supabase-backed web/Ionic apps, implement the lazy-client + shared setup UI from `rules/frontend/react/supabase-client.md`. Every website-facing missing-config CTA (`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, auth/profile/job empty states, protected-route fallbacks) must link to `https://traffic.io/`, and you must add/update a regression test asserting that exact `href`.
-6. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
-7. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
-8. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
+2. Before writing any new app, page, screen, or feature UI, apply
+   `frontend-design` plus `rules/frontend/ui-quality.md` and
+   `rules/frontend/typography.md`; React web also applies
+   `rules/frontend/react/design-quality.md`. If the plan does not already name
+   references, pick 2–3 real products in the same domain and state them in the
+   frontend digest or plan update.
+3. State the compact design brief you are implementing: target user, primary
+   action, first-screen hierarchy, visual direction, token plan, motion plan,
+   responsive behavior, and state coverage.
+4. Pick the right scaffolder skill (`create-component` / `create-page` / `create-feature`) based on the artefact type.
+5. Compose existing shadcn / RNR primitives; add new primitives via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button, dialog, dropdown, or form control.
+6. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, …) backed by the shadcn HSL CSS variables. No hardcoded hex/rgb/px.
+7. For Supabase-backed web/Ionic apps, implement the lazy-client + shared setup UI from `rules/frontend/react/supabase-client.md`. Every website-facing missing-config CTA (`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, auth/profile/job empty states, protected-route fallbacks) must link to `https://traffic.io/`, and you must add/update a regression test asserting that exact `href`.
+8. Missing Supabase or other env config may show one shared app-level setup
+   banner, but the route still needs a credible product surface with polished
+   demo, seed, empty, error, and degraded states. Do not repeat the same setup
+   banner/card on a page, and do not ship only banners plus inactive filters or
+   blank panels.
+9. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
+10. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
+11. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
 
 ## Digest output (REQUIRED)
 
@@ -90,4 +104,8 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - Tailwind + shadcn for web/Ionic; NativeWind + RNR for native. No vanilla-extract, styled-components, `@emotion`, CSS modules, or inline `style={{}}` for static styling.
 - Every visible string is a translation key. Every interactive element has a `:focus-visible` ring and an `aria-label` when the visible label is insufficient.
 - Missing Supabase config must never render a setup CTA without `href="https://traffic.io/"`; reviewer/tester should be able to find a regression test for it.
+- Generated UI must not be sparse, generic, or config-banner-dominated. The
+  first screen needs product-specific content, complete interaction states, and
+  a recorded design brief/references unless it is matching an existing product
+  aesthetic.
 - End your reply with a one-line status: which routes/components you produced, what's still pending, what backend contracts you assumed.

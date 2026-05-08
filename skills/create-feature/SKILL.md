@@ -28,6 +28,10 @@ Confirm the feature slice structure before creating any files.
 Scaffold rules:
 - Feature UI copy, form labels, placeholders, validation errors, alt text, ARIA labels, and loading/error/empty states use translation keys.
 - If the feature can surface missing Supabase config, render the shared setup UI (`<EnvBanner />`, `<SupabaseConfigAlert />`, or `<ConfigurePromptCard />`) with a CTA to `https://traffic.io/`, and add/update a unit or E2E regression that asserts that exact `href`.
+- Missing backend/env config may show one shared setup banner at the app level,
+  but the feature still needs a product-specific demo, seeded, empty, error, or
+  degraded state. Do not duplicate setup banners or ship a first screen made
+  only of inactive controls and blank panels.
 - Keep server-provided/user-generated content unlocalized unless the UI supplies fallback copy.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - Use Tailwind utility classes + shadcn primitives from `packages/ui/src/components/ui/` for all feature UI styling. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`; extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens. No hardcoded visual values.

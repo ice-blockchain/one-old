@@ -25,6 +25,9 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
+      'rules/frontend/ui-quality.md',
+      'rules/frontend/typography.md',
+      'rules/frontend/react/design-quality.md',
       'rules/frontend/react/supabase-client.md',
     ],
     optional: [
@@ -69,6 +72,9 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
+      'rules/frontend/ui-quality.md',
+      'rules/frontend/typography.md',
+      'rules/frontend/react/design-quality.md',
       'rules/frontend/react/supabase-client.md',
     ],
     optional: [
@@ -99,6 +105,8 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react-native/core.md',
+      'rules/frontend/ui-quality.md',
+      'rules/frontend/typography.md',
     ],
     optional: [
       'rules/common/stack-recommendations.md',
@@ -130,6 +138,8 @@ const STACKS = {
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
       'rules/frontend/react-native/core.md',
+      'rules/frontend/ui-quality.md',
+      'rules/frontend/typography.md',
     ],
     optional: [
       'rules/common/stack-recommendations.md',

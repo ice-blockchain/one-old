@@ -20,6 +20,11 @@ CSS variables (`--background`, `--foreground`, `--primary`, `--muted`,
 
 - Do not ship generic template-looking UI. The interface should feel specific to the product, workflow, and audience.
 - Build the actual usable experience as the first screen for apps, tools, and games; do not default to a marketing landing page.
+- Missing Supabase or other environment configuration may show one shared
+  setup banner, but it must not dominate or replace the product experience.
+  Continue rendering a credible demo, seeded, empty, or degraded state for the
+  actual workflow. Never ship a page whose main visible surface is duplicated
+  "not configured" banners plus inactive filters or blank panels.
 - Before coding design-led UI, ask for preferred competitor websites / design
   references if the user has not supplied them, and explicitly offer to analyze
   2–3 competitors yourself. State the selected references before implementation.

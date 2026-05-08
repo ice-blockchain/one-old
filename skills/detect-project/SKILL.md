@@ -43,6 +43,17 @@ possibly add later. Local mocks or `localStorage` may be used only as temporary
 dev fixtures behind the Supabase contract.
 → Apply everything in rules/core.md + rules/modes/new-project.md
 
+Codex subagent preflight for new projects:
+- If the user's request is a non-trivial multi-layer build (UI + API/backend +
+  database/auth/profile/data, or a full site/app/MVP), recommend Traffic One's
+  parallel role workflow before scaffolding or editing files.
+- Ask exactly: "Traffic One sees this as a multi-layer build. Do you want me to
+  run the Traffic One subagent team: architect → frontend/backend →
+  reviewer/tester?"
+- This is a blocking preflight gate on Codex: stop and wait for the user's
+  answer before writing a plan, creating files, editing code, or simulating the
+  roles manually.
+
 ### existing-codebase
 Preserve all existing structure. Improve new code only.
 → Apply rules/modes/existing-codebase.md to new files only
@@ -62,5 +73,9 @@ State clearly:
 2. What is and isn't allowed in this mode
 3. For existing-with-supabase: mention migration offer once
 4. For new-project with backend-backed needs: state `backend=supabase` as the
-   default and continue scaffolding if the user already asked you to build
-5. Ask what they'd like to do next only when they have not already given a build task
+   default.
+5. For new-project non-trivial multi-layer builds on Codex: recommend the
+   Traffic One subagent team, ask the exact preflight question above, and stop
+   until the user answers before scaffolding.
+6. Ask what they'd like to do next only when they have not already given a build
+   task and the subagent preflight gate does not apply.
