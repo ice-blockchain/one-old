@@ -46,7 +46,7 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 - `stack-setup` — only if `.traffic-one.json` is empty or `confirmed !== true`.
 - `detect-project` — to confirm we're greenfield vs. extending an existing repo.
 - `library-pick` — for every non-default library decision; document the chosen + rejected with reasons.
-- `architecture-decision-records` — write one ADR per non-default choice into `docs/adr/`.
+- `architecture-decision-records` — write one ADR per non-default choice into root `adr/`.
 - `auto-documentation-generator` — mandatory for every `mode: new-project`
   scaffold and every `mode: existing-codebase` / `existing-with-supabase`
   baseline reconciliation. For existing docs, update in place; for missing docs,
@@ -101,7 +101,7 @@ The 3 things most likely to derail the build. One mitigation each.
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
 ```
 
-After the plan, write any ADRs to `docs/adr/NNNN-<slug>.md`. For new projects,
+After the plan, write any ADRs to `adr/NNNN-<slug>.md`. For new projects,
 update the canonical docs after the plan so they describe the accepted shape;
 do not leave only a README. Unknown deployment/database facts must be marked
 `Unverified` with the exact command or input needed.
@@ -121,5 +121,5 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 - You do **not** write feature source files (no `apps/*/src/**`, `packages/*/src/**` other than empty package skeletons that are part of scaffolding the workspace itself).
 - You do not skip the plan to "save time". The plan-gate hook will deny feature writes until `.traffic-one/plan.md` exists.
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.
-- The plan stays under ~250 lines. If a section is bigger, link out to a sibling doc in `docs/`.
+- The plan stays under ~250 lines. If a section is bigger, link out to the relevant root doc.
 - End your final reply with the literal token `PLAN_READY` on its own line so the orchestrator can detect completion.

@@ -276,17 +276,18 @@ test('existing projects must reconcile the auto-documentation baseline', () => {
   const cursorExisting = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-existing-codebase.mdc'), 'utf8');
 
   assert.match(documentationRules, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
-  assert.match(documentationRules, /If a canonical doc does not\s+exist, create it/);
-  assert.match(documentationRules, /If it already exists, update it in\s+place/);
+  assert.match(documentationRules, /If a canonical doc does not\s+exist, create it from verified repo facts at the repo root/);
+  assert.match(documentationRules, /If it already\s+exists, update it in place/);
+  assert.match(documentationRules, /legacy canonical docs exist under `docs\/`, migrate/);
   assert.match(existingRule, /Before normal feature work/);
-  assert.match(existingRule, /If a canonical doc does not exist, create it/);
+  assert.match(existingRule, /If a canonical doc does not exist, create it from verified repo facts at the\s+repo root/);
   assert.match(existingRule, /If a canonical doc already exists, update it in place/);
-  assert.match(directives, /create missing canonical docs and update existing docs in place/);
+  assert.match(directives, /create missing canonical docs at the repo root and update existing docs in place/);
   assert.match(architect, /every `mode: existing-codebase` \/ `existing-with-supabase`/);
   assert.match(reviewer, /Existing projects have had the same docs baseline reconciled/);
   assert.match(autoDocs, /In existing projects, reconcile the docs baseline/);
   assert.match(promptTemplates, /existing-with-supabase`, run it before normal feature work/);
-  assert.match(agentsMirror, /if a canonical doc does not exist, create it/);
+  assert.match(agentsMirror, /if a canonical doc does not exist, create it from verified repo facts at the repo root/);
   assert.match(cursorDocumentation, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
   assert.match(cursorExisting, /If a canonical doc already exists, update it in place/);
 });
@@ -307,7 +308,7 @@ test('existing project SessionStart includes docs reconciliation guidance', () =
     assert.equal(state.mode, 'existing-codebase');
     assert.match(context, /rules\/modes\/existing-codebase\.md/);
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
     assert.match(context, /Before normal feature work/);
   });
 });
@@ -453,7 +454,7 @@ test('existing React Native project SessionStart includes docs reconciliation gu
     assert.equal(state.mode, 'existing-codebase');
     assert.equal(state.stack, 'react-native-expo-app');
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
   });
 });
 
@@ -477,7 +478,7 @@ test('existing Go project SessionStart includes docs reconciliation guidance', (
     assert.equal(state.stack, 'minimal');
     assert.match(context, /go\.mod detected/);
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
     assert.match(context, /Before normal feature work/);
   });
 });
@@ -501,7 +502,7 @@ test('existing unknown stack falls back to minimal with docs reconciliation guid
     assert.equal(state.stack, 'minimal');
     assert.match(context, /existing codebase detected/);
     assert.match(context, /rules\/common\/documentation\.md/);
-    assert.match(context, /create missing canonical docs and update existing docs in place/);
+    assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
   });
 });
 
@@ -697,7 +698,7 @@ test('plan-gate allows .traffic-one/plan.md write itself', () => {
   });
 });
 
-test('plan-gate allows docs/ on new-project without plan', () => {
+test('plan-gate allows root architecture docs on new-project without plan', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
       mode: 'new-project',
@@ -706,7 +707,7 @@ test('plan-gate allows docs/ on new-project without plan', () => {
 
     const result = runHook(cwd, 'check-architecture-write', {
       tool_input: {
-        file_path: 'docs/architecture.md',
+        file_path: 'architecture.md',
         content: '# Architecture\n',
       },
     });

@@ -309,8 +309,9 @@ function runCheckArchitectureWrite(rawInput) {
   const violations = [];
 
   // Plan gate: on a new project, deny feature-source writes until the architect
-  // has produced .traffic-one/plan.md. The plan file itself, ADRs, and docs/
-  // are exempt so the architect can write the plan without self-blocking.
+  // has produced .traffic-one/plan.md. The plan file itself, root docs, ADRs,
+  // and legacy docs/ are exempt so the architect can write the plan without
+  // self-blocking.
   const FEATURE_SOURCE_RE = /^(apps\/[^/]+\/(src|app)\/|packages\/[^/]+\/src\/|src\/|services\/[^/]+\/src\/)/;
   const PLAN_FILE_RE      = /(^|\/)\.traffic-one\/plan\.md$/;
   const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
@@ -333,7 +334,7 @@ function runCheckArchitectureWrite(rawInput) {
       'Plan gate: .traffic-one/plan.md is missing on a new project. Run the '
       + '`senior-architect` subagent (or the `senior-eng-orchestrator` skill) '
       + 'to produce the plan before writing feature source files. Allowed '
-      + 'without a plan: .traffic-one/plan.md itself, docs/, ADR-*.md, README.'
+      + 'without a plan: .traffic-one/plan.md itself, root docs, adr/, legacy docs/, README.'
     );
   }
 
