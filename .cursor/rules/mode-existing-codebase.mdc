@@ -15,6 +15,8 @@ Preserve all existing structure. New code only.
 - No `any`, no inline styles, named exports only — on new code
 - No backend or infrastructure suggestions
 - Before normal feature work, run the `project-memory` baseline reconciliation:
+  - Confirm root `.traffic-one.json` exists and has a valid `mode` and `stack`;
+    `.traffic-one/` memory does not replace stack/state selection.
   - If `.traffic-one/` is missing, create it from verified repo facts.
   - If memory files already exist, update them in place.
   - If legacy ADRs exist in root `adr/`, migrate or mirror them to

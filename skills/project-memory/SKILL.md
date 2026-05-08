@@ -35,6 +35,8 @@ another long docs tree.
 
 Create or refresh:
 
+- root `.traffic-one.json` with the Traffic One state schema when it is missing
+  or incomplete
 - `.traffic-one/product.md`
 - `.traffic-one/decisions/README.md` and ADR files as needed
 - `.traffic-one/rules/coding.md`
@@ -55,6 +57,9 @@ Create or refresh:
 ## Guardrails
 
 - Keep files concise and source-backed. Mark unknown facts `Unverified`.
+- `.traffic-one/` does not replace root `.traffic-one.json`; create or repair
+  the root state file before feature-source work so hooks and agents know the
+  project mode, stack, backend, and deploy/security stamps.
 - Never write secret values, service-role keys, DB passwords, production
   connection strings, or raw customer data.
 - Append to `agent-log.md` and `deployments.jsonl`; do not rewrite history

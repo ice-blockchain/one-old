@@ -147,12 +147,14 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      Run \`npx shadcn@latest init\` here, then add the first batch:
      \`npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator\`.
   3. Project memory baseline: create \`.traffic-one/\` and run
-     \`project-memory\`. Write product.md, stack.md, rules/coding.md,
-     rules/security.md, rules/AGENTS.md, known-issues.md, agent-log.md,
-     .agentignore, mcp.json, deployments.jsonl, schema.sql, decisions/, and
-     skills/ when reusable team commands are needed. Root AGENTS.md should
-     symlink to \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate
-     it from the same source. Generate root CLAUDE.md from the same source.
+     \`project-memory\`. Verify the root companion state file
+     \`.traffic-one.json\` exists with the full onboarding schema, then write
+     product.md, stack.md, rules/coding.md, rules/security.md, rules/AGENTS.md,
+     known-issues.md, agent-log.md, .agentignore, mcp.json, deployments.jsonl,
+     schema.sql, decisions/, and skills/ when reusable team commands are
+     needed. Root AGENTS.md should symlink to
+     \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate it from the
+     same source. Generate root CLAUDE.md from the same source.
   4. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
      Tailwind preset + \`globals.css\`), api-client/, ws-client/, utils/, tsconfig/,
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).

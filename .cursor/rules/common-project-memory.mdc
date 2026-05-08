@@ -10,6 +10,12 @@ Every Traffic One project keeps a small, versioned `.traffic-one/` folder for
 agent-readable context that survives across sessions, tools, and subagents. It
 is not a dumping ground; keep each file short, current, and source-backed.
 
+The folder does not replace root `.traffic-one.json`. That JSON file is the
+Traffic One state file for mode, stack, backend, realtime, onboarding, and
+deployment/security stamps. If project memory exists but `.traffic-one.json` is
+missing or lacks a valid `stack`, create or repair `.traffic-one.json` before
+writing feature source.
+
 ## Read Protocol
 
 At session start or before non-trivial work, read memory in this order when the
@@ -33,6 +39,9 @@ source as needed.
 Create or reconcile these files for new projects and existing projects before
 normal feature work:
 
+- Root `.traffic-one.json`: companion state file with `version`, `mode`, `stack`,
+  `backend`, `realtime`, `confirmed`, `onboardingComplete`, and `confirmedAt`.
+  Keep deploy/security stamps here, not in `.traffic-one/`.
 - `.traffic-one/product.md`: one-page PRD with user, job-to-be-done, core
   workflow, non-goals, and success metric.
 - `.traffic-one/decisions/`: canonical ADR directory. Append new ADRs; never
