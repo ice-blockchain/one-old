@@ -23,6 +23,8 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/agent-handoff-digests.md',
+      'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
     ],
     optional: [
@@ -63,6 +65,8 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/agent-handoff-digests.md',
+      'rules/common/codebase-graph.md',
       'rules/frontend/react/core.md',
     ],
     optional: [
@@ -89,6 +93,8 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/agent-handoff-digests.md',
+      'rules/common/codebase-graph.md',
       'rules/frontend/react-native/core.md',
     ],
     optional: [
@@ -117,6 +123,8 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/agent-handoff-digests.md',
+      'rules/common/codebase-graph.md',
       'rules/frontend/react-native/core.md',
     ],
     optional: [
@@ -143,6 +151,8 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/agent-handoff-digests.md',
+      'rules/common/codebase-graph.md',
       'rules/backend/node.md',
       'rules/backend/postgres.md',
     ],
@@ -158,6 +168,8 @@ const STACKS = {
       'rules/common/execution-discipline.md',
       'rules/common/security.md',
       'rules/common/senior-engineer-team.md',
+      'rules/common/agent-handoff-digests.md',
+      'rules/common/codebase-graph.md',
       'rules/common/stack-recommendations.md',
       'rules/common/library-catalog.md',
     ],

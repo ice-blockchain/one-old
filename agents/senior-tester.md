@@ -28,6 +28,17 @@ You write the tests that prove the implementation does what the plan said it wou
 - The orchestrator spawned you (in parallel with `senior-reviewer`) after the implementers reported done.
 - The user invoked you directly with testing phrasing.
 
+## Read protocol & token budget
+
+The orchestrator passes you `<run-id>`. Read in priority order:
+
+1. `.traffic-one/digests/<run-id>/{frontend,backend}.md` — the implementer digests. Their "Touched" + "Public contracts (delta)" tell you what to test.
+2. `.traffic-one/plan.md` § Public contracts — the contract your tests assert against.
+3. `git diff --name-only HEAD` + existing test files adjacent to the touched code.
+4. `graphify-out/GRAPH_REPORT.md` if it exists — for related modules / call sites you should cover.
+
+Token budget: ~8k. You can `Read` test files broadly (your scope is restricted to test paths anyway), but don't full-scroll feature source.
+
 ## What you read first
 
 1. `.traffic-one/plan.md` — the Public contracts section is the contract you assert against.
@@ -86,6 +97,16 @@ TESTS_FAILING — <count> failing.
 1. <test name> — <file:line> — <error message excerpt>.
 2. …
 ```
+
+## Digest output (REQUIRED)
+
+Before your final reply, write your handoff digest to:
+
+```
+.traffic-one/digests/<run-id>/tester.md
+```
+
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (TESTS_GREEN / TESTS_FAILING), finished_at, Touched (test files added/changed), Coverage (% on changed surface), Open questions / blockers, Next-phase reading hints for shipper (e.g. "smoke E2E covers /signup, /jobs, /apply; production smoke can rerun those"). Cap at ~2 KB.
 
 ## Hard rules
 
