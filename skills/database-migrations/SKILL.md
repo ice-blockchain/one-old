@@ -35,11 +35,14 @@ Before applying any migration:
 
 - [ ] Migration has both UP and DOWN (or is explicitly marked irreversible)
 - [ ] No full table locks on large tables (use concurrent operations)
-- [ ] New columns have defaults or are nullable (never add NOT NULL without default)
+- [ ] Large-table columns are added nullable first; backfill and validate before
+      enforcing `NOT NULL` or defaults.
 - [ ] Indexes created concurrently (not inline with CREATE TABLE for existing tables)
+- [ ] Foreign keys on large tables are added `NOT VALID`, then validated in a
+      separate migration/window.
 - [ ] Data backfill is a separate migration from schema change
 - [ ] Tested against a copy of production data
-- [ ] Rollback plan documented
+- [ ] Forward-only undo migration / rollback plan documented
 
 ## PostgreSQL Patterns
 
@@ -57,6 +60,27 @@ ALTER TABLE users ADD COLUMN role TEXT NOT NULL;
 -- This locks the table and rewrites every row
 ```
 
+For large production tables, be stricter than the minimum Postgres behavior:
+
+```sql
+-- Migration 1: expand
+ALTER TABLE users ADD COLUMN role text;
+
+-- Migration 2: backfill in batches outside one giant transaction
+UPDATE users
+SET role = 'member'
+WHERE role IS NULL
+  AND id IN (
+    SELECT id FROM users WHERE role IS NULL LIMIT 10000
+  );
+
+-- Migration 3: validate then enforce after the backfill is complete
+ALTER TABLE users
+  ADD CONSTRAINT users_role_not_null CHECK (role IS NOT NULL) NOT VALID;
+ALTER TABLE users VALIDATE CONSTRAINT users_role_not_null;
+ALTER TABLE users ALTER COLUMN role SET NOT NULL;
+```
+
 ### Adding an Index Without Downtime
 
 ```sql
@@ -68,6 +92,45 @@ CREATE INDEX CONCURRENTLY idx_users_email ON users (email);
 
 -- Note: CONCURRENTLY cannot run inside a transaction block
 -- Most migration tools need special handling for this
+```
+
+### Adding a Foreign Key Safely
+
+```sql
+-- GOOD on large existing tables: enforce new rows now, validate old rows later
+ALTER TABLE invoices
+  ADD CONSTRAINT invoices_customer_id_fkey
+  FOREIGN KEY (customer_id)
+  REFERENCES customers(id)
+  ON DELETE RESTRICT
+  NOT VALID;
+
+ALTER TABLE invoices VALIDATE CONSTRAINT invoices_customer_id_fkey;
+```
+
+Index the referencing column first when it participates in joins, deletes, or
+RLS policies:
+
+```sql
+CREATE INDEX CONCURRENTLY idx_invoices_customer_id ON invoices (customer_id);
+```
+
+### Changing a Column Type Safely
+
+Avoid one-shot `ALTER COLUMN TYPE` on production-sized tables. Use a staged
+expand-contract migration instead:
+
+```sql
+-- 1. Add new typed column
+ALTER TABLE accounts ADD COLUMN balance_cents_new bigint;
+
+-- 2. Backfill in batches
+UPDATE accounts
+SET balance_cents_new = balance_cents::bigint
+WHERE balance_cents_new IS NULL;
+
+-- 3. Dual-write in app code, verify parity, then swap reads.
+-- 4. Drop old column in a later contract migration.
 ```
 
 ### Renaming a Column (Zero-Downtime)
@@ -428,7 +491,9 @@ Day 7: Migration drops old status column
 |-------------|-------------|-----------------|
 | Manual SQL in production | No audit trail, unrepeatable | Always use migration files |
 | Editing deployed migrations | Causes drift between environments | Create new migration instead |
-| NOT NULL without default | Locks table, rewrites all rows | Add nullable, backfill, then add constraint |
+| One-shot `ALTER COLUMN TYPE` | Rewrites/locks large tables | Add new column, backfill, dual-write, contract |
+| `NOT NULL DEFAULT` on large hot table | Can lock or surprise production writes | Add nullable, backfill, validate, then enforce |
+| Foreign key on large table without `NOT VALID` | Long validation blocks release windows | Add `NOT VALID`, then `VALIDATE CONSTRAINT` |
 | Inline index on large table | Blocks writes during build | CREATE INDEX CONCURRENTLY |
 | Schema + data in one migration | Hard to rollback, long transactions | Separate migrations |
 | Dropping column before removing code | Application errors on missing column | Remove code first, drop column next deploy |
