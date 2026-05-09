@@ -62,12 +62,82 @@ explain something at length, link out to a doc — don't inline it.
 The orchestrator passes digest paths in synthetic prompts; subagents read the
 digest themselves rather than receiving content inline.
 
+## Size cap — STRICT
+
+**Target ≤ 2 KB. Hard cap 3 KB.** A PostToolUse hook (`runPostStackSetup` →
+digest branch) emits a `systemMessage` reminder when a digest write exceeds 3 KB
+and instructs the subagent to re-write before completing its turn.
+
+Write less. The downstream subagent reads this digest INSTEAD of the diff;
+bloat directly defeats the token-economy layer.
+
+## Touched section — paths only, no commentary
+
+**BAD** (counted: ~280 chars per line, parenthetical bloat):
+
+```
+- /Users/cosminturcin/Documents/projects/job-site-v9/packages/ui/{package.json,tsconfig.json,src/globals.css,src/lib/utils.ts,src/index.ts,src/components/ui/*.tsx} (24 shadcn primitives + Toaster + Spinner + EmptyState + Form helpers)
+```
+
+**GOOD** (~70 chars; repo-relative; no annotation):
+
+```
+- packages/ui/{components/ui/*.tsx,lib/utils.ts,index.ts}
+- packages/ui/src/globals.css
+```
+
+Rules for this section:
+
+- **Repo-relative paths only.** Drop `/Users/...`, `/Volumes/...`, `~/`. The
+  reader is looking at the same repo.
+- **No parenthetical descriptions** ("4-step + framer-motion stepper",
+  "real Supabase helpers when env present, mock fallback otherwise").
+  If a fact matters that much, put it in "Public contracts (delta only)".
+- **Glob-collapse siblings.** `packages/ui/components/ui/*.tsx` is enough;
+  don't enumerate 24 file names.
+
+## Public contracts — delta only
+
+**BAD** (lists every existing hook):
+
+```
+- `useGetMyProfileQuery`, `useUpdateMyProfileMutation`, `useSetMockRoleMutation`,
+  `useListJobsQuery(filters)`, `useListFeaturedJobsQuery()`, `useGetJobBySlugQuery(slug)`,
+  `useGetRelatedJobsQuery(slug)`, `useListMyJobsQuery()`, `useListCategoriesQuery()`,
+  `useCreateJobMutation`, …
+```
+
+**GOOD** (only what changed vs the plan, with a one-liner for context):
+
+```
+- All RTK Query hooks per plan § Frontend — no signature changes.
+- Added: `useUpdateApplicationStatusMutation({id, status, jobId})`.
+  `jobId` is consumed by tag invalidation only; not part of the URL.
+- Removed: `useDeleteJobMutation` — moved server-side via Edge Function.
+```
+
+If nothing in your scope changed the public surface, write
+"No contract delta vs plan." — that's the entire section. Don't pad.
+
+## Open questions / blockers / assumptions
+
+≤3 bullets. Each ≤2 lines. Link to the plan section by name (`§ Public
+contracts`, `§ Risks`) instead of restating it.
+
+## Next-phase reading hints
+
+≤4 bullets. Tell the next subagent which **2–4 files** are most important.
+Do not list everything.
+
 ## Hard rules
 
 - Write your digest **before** emitting the terminal status token (PLAN_READY,
   APPROVED, etc.) — the orchestrator reads the digest after the spawn returns.
-- Cap your digest at ~2 KB. If you have more to say, it belongs in the plan
-  file or in a sibling doc, not in the digest.
+- **Repo-relative paths.** Absolute paths cost ~60 chars per line for nothing.
+- **No parenthetical annotations on Touched.** Use "Public contracts (delta only)"
+  for facts that matter.
+- **Cap your digest at 2 KB target / 3 KB hard.** If you exceed 3 KB the hook
+  will warn — re-write before completing the turn.
 - Overwrite, don't append. Re-spawned implementers replace their previous
   digest entirely.
 - Never put credentials, env values, or full file contents in a digest.
