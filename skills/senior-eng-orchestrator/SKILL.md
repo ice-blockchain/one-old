@@ -139,15 +139,46 @@ Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/pr
 
 If no deploy intent in the user message → end with a "next step: say 'ship it' to deploy" line, do NOT spawn shipper.
 
-### Phase 5 — Cleanup (orchestrator only, no subagent)
+### Phase 5 — Cleanup + sanity check (orchestrator only, no subagent)
 
-After Phase 4 (or after Phase 3 if no shipper), rotate the digest history:
+**Sanity check first.** Before rotating, verify the expected digests landed
+for this run. Each phase that ran must have produced its digest; a missing
+digest means a subagent skipped its handoff write and downstream phases lost
+the token-savings benefit.
+
+```bash
+RUN_DIR=".traffic-one/digests/${RUN_ID}"
+expected=("architect.md" "frontend.md" "backend.md")
+[ "$REVIEWED" = "true" ] && expected+=("reviewer.md")
+[ "$TESTED"   = "true" ] && expected+=("tester.md")
+[ "$SHIPPED"  = "true" ] && expected+=("shipper.md")
+missing=()
+for f in "${expected[@]}"; do
+  [ -f "$RUN_DIR/$f" ] || missing+=("$f")
+done
+```
+
+If `missing` is non-empty, surface a one-line warning in the run summary:
+
+```
+⚠ Digest sanity: <comma-separated missing files> not produced this run.
+  Re-spawn the relevant subagent or instruct it to write the digest before
+  emitting its terminal status token.
+```
+
+This catches the most common regression: a subagent emits its verdict (e.g.
+`TESTS_GREEN`) but forgets to write `tester.md`, so the next run's reviewer /
+shipper can't read the predecessor digest and falls back to re-reading the
+diff.
+
+**Then rotate.** Keep the last 3 run folders under `.traffic-one/digests/`,
+remove older ones:
 
 ```bash
 ls -t .traffic-one/digests | tail -n +4 | xargs -I{} rm -rf ".traffic-one/digests/{}"
 ```
 
-Keeps the last 3 run folders for audit; removes older ones. The whole `.traffic-one/digests/` tree is gitignored.
+The whole `.traffic-one/digests/` tree is gitignored.
 
 ## In-session bookkeeping
 

@@ -1182,6 +1182,84 @@ test('plan-gate exempts .traffic-one/digests/ writes', () => {
   });
 });
 
+// ── Graphify foreground bootstrap runner ────────────────────────────────────
+
+test('graphify-runner gracefully reports skip when graphify+pipx+python3 absent', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'graphify-runner.cjs'));
+  withTempDir((cwd) => {
+    // Force every which() probe to miss by stripping PATH.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd, { skipInstall: true });
+      assert.equal(result.ok, false);
+      assert.equal(result.action, 'install-skipped');
+      assert.match(result.error || '', /not on PATH/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('graphify-runner respects graphifyAutoRun: false opt-out', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'graphify-runner.cjs'));
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      graphifyAutoRun: false,
+    });
+    const result = bootstrap(cwd);
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'install-skipped');
+    assert.match(result.error || '', /graphifyAutoRun is false/);
+  });
+});
+
+// ── Digest-size warning on .traffic-one/digests/<run>/<role>.md writes ──────
+
+test('post-stack-setup warns on bloated digest write (> 3 KB)', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+    const runDir = path.join(cwd, '.traffic-one', 'digests', '2026-05-07T14-23-05Z');
+    fs.mkdirSync(runDir, { recursive: true });
+    const digestPath = path.join(runDir, 'frontend.md');
+    fs.writeFileSync(digestPath, '# frontend digest\n' + 'x'.repeat(4 * 1024), 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: digestPath },
+    });
+
+    assert.match(result.stdout, /\[digest-size\]/);
+    assert.match(result.stdout, /frontend\.md/);
+    assert.match(result.stdout, /trim to/);
+    assert.match(result.stdout, /Repo-relative paths|repo-relative paths/i);
+  });
+});
+
+test('post-stack-setup silent on small digest write (< 3 KB)', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+    const runDir = path.join(cwd, '.traffic-one', 'digests', '2026-05-07T14-23-05Z');
+    fs.mkdirSync(runDir, { recursive: true });
+    const digestPath = path.join(runDir, 'architect.md');
+    fs.writeFileSync(digestPath, '# architect digest\n\nverdict: PLAN_READY\n', 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: digestPath },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+// ── Phase 5 sanity check is documented in the orchestrator ─────────────────
+
+test('orchestrator Phase 5 documents the missing-digest sanity check', () => {
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  assert.match(orchestrator, /Phase 5 — Cleanup \+ sanity check/);
+  assert.match(orchestrator, /Digest sanity:/);
+});
+
 let failed = 0;
 
 for (const { name, fn } of tests) {
