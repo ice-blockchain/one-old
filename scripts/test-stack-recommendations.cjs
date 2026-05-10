@@ -1215,6 +1215,39 @@ test('graphify-runner respects graphifyAutoRun: false opt-out', () => {
   });
 });
 
+test('graphify-runner short-circuits when GRAPH_REPORT.md is fresh (lets Phase 5 invoke unconditionally)', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'graphify-runner.cjs'));
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# Graph\n', 'utf8');
+    // Force every which() probe to miss so the runner would otherwise fail.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd);
+      assert.equal(result.ok, true);
+      assert.equal(result.action, 'fresh');
+      assert.match(result.report || '', /GRAPH_REPORT\.md$/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('orchestrator Phase 5 invokes graphify-runner so every run produces the cache', () => {
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  assert.match(orchestrator, /graphify-runner\.cjs/);
+  // Whitespace-tolerant: text wraps across two lines.
+  assert.match(orchestrator.replace(/\s+/g, ' '), /every completed orchestrator session is a strong/i);
+});
+
+test('digest rule documents reviewer spillover-note pattern', () => {
+  const rule = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'agent-handoff-digests.md'), 'utf8');
+  assert.match(rule, /Reviewer findings/);
+  assert.match(rule, /reviewer-detail-<n>\.md/);
+  assert.match(rule, /≤3 sentences per blocker/);
+});
+
 // ── Digest-size warning on .traffic-one/digests/<run>/<role>.md writes ──────
 
 test('post-stack-setup warns on bloated digest write (> 3 KB)', () => {
