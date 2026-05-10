@@ -129,6 +129,39 @@ contracts`, `§ Risks`) instead of restating it.
 ≤4 bullets. Tell the next subagent which **2–4 files** are most important.
 Do not list everything.
 
+## Reviewer findings — ≤3 sentences per blocker, link out for depth
+
+The reviewer digest tends to bloat: deep audits naturally want full
+reproduction steps, line-by-line analysis, and three-paragraph remediation
+plans per blocker. **The digest is not the place for that.** Implementer
+subagents read the verdict + the file:line + the one-sentence fix and act
+on it; they do not re-read the entire reviewer reasoning.
+
+**BAD** (one blocker = ~40 lines of prose):
+
+```
+1. supabase/migrations/0002_rls.sql:46-52 (RLS policy) ↔ apps/web/src/features/auth/useSession.ts:35-45 (`applyPendingSignUpProfile()`) — **role-self-promotion via authenticated profiles.update**. The `profiles_update_own` policy permits the owner to update ANY column on their own row, including `role`. The new auth flow stashes `{ email, role, fullName, companyName }` in sessionStorage and, on the first authenticated session, runs `client.from('profiles').update({ role: pending.role, ... }).eq('id', userId)`. A user can sign up as `candidate`, tamper with `sessionStorage[...]` to set `"role":"employer"`, sign in, and the update succeeds (RLS allows owner-writes on every column). … [continues for 30 more lines with three fix alternatives]
+```
+
+**GOOD** (one blocker = ≤3 sentences; depth in a sibling note):
+
+```
+1. supabase/migrations/0002_rls.sql:46 — `profiles_update_own` allows
+   role self-promotion. Combined with `useSession.ts:38`
+   (`applyPendingSignUpProfile` writing `pending.role`), any candidate can
+   become employer by tampering with sessionStorage. Fix:
+   `with check (… and role = (select p.role from profiles p where p.id =
+   auth.uid()))`. **Detail:** see `.traffic-one/digests/<run-id>/reviewer-detail-1.md`.
+```
+
+The **spillover note** (`.traffic-one/digests/<run-id>/reviewer-detail-<n>.md`)
+is the place for full reproduction steps, three alternative fixes,
+threat-model context, and ADR cross-references. Implementer subagents read
+the spillover note ONLY when the one-sentence fix is ambiguous; the
+orchestrator's read protocol still puts the digest first. The hard cap
+(3 KB) applies to the digest, not to spillover notes — those can be as long
+as the audit needs.
+
 ## Hard rules
 
 - Write your digest **before** emitting the terminal status token (PLAN_READY,

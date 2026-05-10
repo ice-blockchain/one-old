@@ -139,7 +139,7 @@ Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/pr
 
 If no deploy intent in the user message → end with a "next step: say 'ship it' to deploy" line, do NOT spawn shipper.
 
-### Phase 5 — Cleanup + sanity check (orchestrator only, no subagent)
+### Phase 5 — Cleanup + sanity check + graphify bootstrap (orchestrator only, no subagent)
 
 **Sanity check first.** Before rotating, verify the expected digests landed
 for this run. Each phase that ran must have produced its digest; a missing
@@ -170,6 +170,23 @@ This catches the most common regression: a subagent emits its verdict (e.g.
 `TESTS_GREEN`) but forgets to write `tester.md`, so the next run's reviewer /
 shipper can't read the predecessor digest and falls back to re-reading the
 diff.
+
+**Then bootstrap graphify** so the cross-run codebase-graph cache lands
+even when this orchestrator run never invoked a build command. Every
+completed orchestrator session is a strong "the project is in a meaningful
+state, index it now" signal — don't rely on the post-build hook to fire,
+because most orchestrator runs end at `APPROVED` / `TESTS_GREEN` without
+the user typing `pnpm build`.
+
+```bash
+node "${CLAUDE_PLUGIN_ROOT}/scripts/graphify-runner.cjs"
+```
+
+Same cooldown / freshness logic as the post-build hook applies (the runner
+checks `graphifyLastRunAt` itself and is a no-op when the report is fresh).
+Opt out per-project with `"graphifyAutoRun": false` in `.traffic-one.json`.
+This step never blocks the run summary — the runner returns a structured
+result and the orchestrator notes the outcome in one line of the summary.
 
 **Then rotate.** Keep the last 3 run folders under `.traffic-one/digests/`,
 remove older ones:

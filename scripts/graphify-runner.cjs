@@ -120,6 +120,8 @@ function runGraphify(cwd) {
   };
 }
 
+const REPORT_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
+
 function bootstrap(cwd = process.cwd(), opts = {}) {
   const startedAt = Date.now();
   const reportRel = path.join('graphify-out', 'GRAPH_REPORT.md');
@@ -130,6 +132,17 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   const state = readState(cwd);
   if (state.graphifyAutoRun === false) {
     return { ok: false, action: 'install-skipped', report: null, error: 'graphifyAutoRun is false in .traffic-one.json', durationMs: 0 };
+  }
+
+  // Fresh-report short-circuit. Lets the orchestrator's Phase 5 invoke the
+  // runner unconditionally without paying install/scan cost on every run.
+  // Skip the short-circuit when opts.force === true.
+  if (!opts.force && fs.existsSync(reportAbs)) {
+    let mtimeMs = 0;
+    try { mtimeMs = fs.statSync(reportAbs).mtimeMs; } catch { mtimeMs = 0; }
+    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS) {
+      return { ok: true, action: 'fresh', report: reportAbs, error: null, durationMs: 0 };
+    }
   }
 
   let action = 'used-existing';
