@@ -107,7 +107,12 @@ function tryInstall() {
 }
 
 function runGraphify(cwd) {
-  const result = spawnSync('graphify', ['.', '--no-viz', '--code-only', '--quiet'], {
+  // graphify's CLI requires a subcommand. `update <path>` is the right one
+  // for "(re-)extract code files and write graphify-out/{GRAPH_REPORT.md,
+  // graph.json, graph.html}". Works on a fresh directory too — no separate
+  // init step. Bare `graphify .` was wrong (the CLI treats `.` as an unknown
+  // command); the previous spec we'd been following was outdated.
+  const result = spawnSync('graphify', ['update', '.'], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
