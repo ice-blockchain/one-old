@@ -151,7 +151,7 @@ finished_at: <ISO>
 EOF
 ```
 
-Format spec: `rules/common/agent-handoff-digests.md`. Cap at ~2 KB. The shipper reads this digest as part of its pre-flight.
+Format spec: `rules/common/agent-handoff-digests.md`. **Cap at ~2 KB hard.** Reviewer findings tend to bloat — full reproduction steps, three alternative fixes, threat-model cross-references. Don't inline them. **Each blocker = ≤3 sentences in the digest** (file:line, what's wrong, the one-sentence fix). For deep audits, write a sibling spillover note at `.traffic-one/digests/<run-id>/reviewer-detail-<n>.md` (no size cap) and link to it from the digest with `**Detail:** see ...`. The implementer reads the spillover only when the one-sentence fix is ambiguous; the orchestrator's read protocol still puts the digest first. The shipper reads this digest as part of its pre-flight.
 
 ## Hard rules
 
