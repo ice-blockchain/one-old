@@ -1248,6 +1248,30 @@ test('digest rule documents reviewer spillover-note pattern', () => {
   assert.match(rule, /≤3 sentences per blocker/);
 });
 
+test('graphify-runner uses `graphify update .` (not the outdated `graphify .`)', () => {
+  // Regression: cached 2.7.0 stamped `"error: unknown command '.'"` because
+  // the runner invoked the wrong subcommand. The fix is `graphify update .`.
+  const runnerSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'graphify-runner.cjs'), 'utf8');
+  // The exact spawn args must include 'update' as the subcommand and '.' as the path.
+  assert.match(runnerSrc, /spawnSync\('graphify',\s*\[\s*'update',\s*'\.'\s*\]/);
+  // And must NOT contain the outdated invocation.
+  assert.doesNotMatch(runnerSrc, /spawnSync\('graphify',\s*\[\s*'\.'\s*,/);
+});
+
+test('writeState stamps pluginVersion in .traffic-one.json (diagnostic)', () => {
+  const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  withTempDir((cwd) => {
+    writeState(cwd, { stack: 'react-realtime-monorepo', mode: 'new-project' });
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    const pluginVersion = getPluginVersion();
+    // The plugin version helper reads from .claude-plugin/plugin.json.
+    assert.match(pluginVersion, /^\d+\.\d+\.\d+$/);
+    assert.equal(state.pluginVersion, pluginVersion);
+    // The cache-mismatch diagnostic relies on this exact field name.
+    assert.ok(state.pluginVersion, 'pluginVersion must be set');
+  });
+});
+
 test('post-build-graphify fires for monorepo build flag forms (pnpm --filter, turbo run)', () => {
   const cases = [
     'pnpm build',
