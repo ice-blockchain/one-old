@@ -841,11 +841,25 @@ function runPostBuildGraphifyHint(rawInput) {
     }
   } else {
     if (provider === 'gitnexus') {
-      additionalContext = `[gitnexus] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
-        + 'Falling back to a manual hint — install + build once when convenient:\n'
-        + '  npm install -g gitnexus   # or: npx gitnexus@latest analyze .\n'
-        + '  gitnexus analyze\n'
-        + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in `.traffic-one.json`.';
+      // Beginner-friendly Node-version-mismatch branch: emit the upgrade
+      // command verbatim instead of the generic "install + build" hint
+      // (the generic hint asks the user to run `npm install -g gitnexus`
+      // which would just fail again with the same EBADENGINE error).
+      if (bootstrapResult.action === 'node-version-mismatch') {
+        additionalContext = '[gitnexus] Auto-bootstrap blocked — Node version too old.\n'
+          + `${bootstrapResult.error}\n`
+          + 'Relay this upgrade sequence to the user verbatim. After the '
+          + '`nvm` commands, they MUST fully quit + relaunch Claude Code so '
+          + 'the hook process picks up the new default Node. If they prefer '
+          + 'not to upgrade Node, edit `.traffic-one.json` → '
+          + '`codeGraphProvider: "graphify"` (Python; works on any Node).';
+      } else {
+        additionalContext = `[gitnexus] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
+          + 'Falling back to a manual hint — install + build once when convenient:\n'
+          + '  npm install -g gitnexus   # or: npx gitnexus@latest analyze .\n'
+          + '  gitnexus analyze\n'
+          + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in `.traffic-one.json`.';
+      }
     } else {
       additionalContext = `[graphify] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
         + 'Falling back to a manual hint — install + build once when convenient:\n'
@@ -1003,7 +1017,30 @@ function runPostStackSetup(rawInput) {
   const bundle = parsed?.hookSpecificOutput?.additionalContext;
   if (typeof bundle !== 'string') return { stdout: '', exitCode: 0 };
 
-  const banner = `═══ traffic-one — stack rules now active (${stack}) ═══\nContinue with the user's request applying these rules. No restart needed.\n\n`;
+  // Early Node-22 warning for the gitnexus provider. If the user just wrote
+  // `codeGraphProvider: "gitnexus"` AND the current hook process is on a
+  // Node major < 22, surface the upgrade command BEFORE the post-build
+  // hook ever fires — beginners shouldn't waste a 3-minute doomed npm
+  // install to find out they're on the wrong Node.
+  let nodeWarning = '';
+  if (state.codeGraphProvider === 'gitnexus') {
+    try {
+      const { currentNodeMajor, GITNEXUS_MIN_NODE_MAJOR, nodeVersionMismatchMessage } =
+        require(path.resolve(__dirname, '..', 'gitnexus-runner.cjs'));
+      const major = currentNodeMajor();
+      if (major !== null && major < GITNEXUS_MIN_NODE_MAJOR) {
+        nodeWarning = '\n\n═══ traffic-one — gitnexus needs Node ≥22 ═══\n'
+          + nodeVersionMismatchMessage(major)
+          + '\n\nAfter the `nvm` commands, fully quit + relaunch Claude Code '
+          + 'so the hook process picks up the new default Node binary.\n';
+      }
+    } catch {
+      // best-effort; never block stack-rule loading because the version
+      // probe couldn't be required.
+    }
+  }
+
+  const banner = `═══ traffic-one — stack rules now active (${stack}) ═══\nContinue with the user's request applying these rules. No restart needed.${nodeWarning}\n\n`;
   const lines  = bundle.split(/\r?\n/);
   const firstRuleIndex = lines.findIndex((line) => line.startsWith('# ── rules/'));
   const bundleBody = firstRuleIndex >= 0 ? lines.slice(firstRuleIndex).join('\n') : bundle;

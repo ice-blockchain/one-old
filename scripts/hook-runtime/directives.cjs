@@ -97,6 +97,10 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
       • \`gitnexus\` — Node CLI (\`npm install -g gitnexus\`); writes a
         knowledge graph + auto-generated context to \`.gitnexus/\`. Optional
         MCP server (\`gitnexus mcp\`) for richer queries.
+        **Requires Node >=22.** The plugin auto-detects the current Node and
+        refuses to install on older versions with a one-line \`nvm\` upgrade
+        command (\`nvm install 22 && nvm alias default 22\`). If the user is
+        on Node <22 and doesn't want to upgrade, recommend \`graphify\`.
         **License: PolyForm Noncommercial — only usable on non-commercial
         projects. The plugin surfaces this again at install time.**
       • \`graphify\` — Python CLI (\`pipx install graphifyy\`); writes

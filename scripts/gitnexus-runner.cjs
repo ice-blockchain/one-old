@@ -41,6 +41,11 @@ const TRAFFIC_ONE = '.traffic-one.json';
 const GITNEXUS_DIR = '.gitnexus';
 const REPORT_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 const CONFLICT_PATHS = ['AGENTS.md', 'CLAUDE.md', '.claude/skills'];
+// GitNexus's package.json declares `engines.node: ">=22"`. Running
+// `npm install -g gitnexus` on a lower Node prints a noisy EBADENGINE error
+// that beginners can't decode. We pre-flight here and refuse with a clean,
+// actionable banner BEFORE wasting ~3 minutes on a doomed npm install.
+const GITNEXUS_MIN_NODE_MAJOR = 22;
 
 function nowIso() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -162,6 +167,32 @@ function restoreIfOverwritten(cwd, backups) {
   return restored;
 }
 
+// Returns the current Node major (e.g. 20 for v20.18.3). Pure read; never
+// throws. Used by both bootstrap() and the post-stack-setup hook so we
+// surface the upgrade hint at the earliest possible moment.
+function currentNodeMajor() {
+  const raw = process.versions && process.versions.node;
+  if (typeof raw !== 'string') return null;
+  const major = Number(raw.split('.')[0]);
+  return Number.isFinite(major) ? major : null;
+}
+
+// Beginner-friendly upgrade message. Single source of truth so the runner,
+// the post-build banner, and the post-stack-setup warning all use the same
+// wording.
+function nodeVersionMismatchMessage(major) {
+  const have = major === null ? 'an unknown Node version' : `Node ${major}`;
+  return (
+    `GitNexus requires Node >=${GITNEXUS_MIN_NODE_MAJOR} (you have ${have}). `
+    + 'Upgrade once, then relaunch Claude Code:\n'
+    + `  nvm install ${GITNEXUS_MIN_NODE_MAJOR}\n`
+    + `  nvm alias default ${GITNEXUS_MIN_NODE_MAJOR}\n`
+    + `  nvm use default\n`
+    + 'Or pick the `graphify` provider instead (Python; works on any Node) '
+    + 'by editing `.traffic-one.json` -> `codeGraphProvider: "graphify"`.'
+  );
+}
+
 function tryInstall() {
   if (!which('npm')) {
     return {
@@ -236,6 +267,26 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     if (opts.skipInstall) {
       return { ok: false, action: 'install-skipped', report: null, error: 'gitnexus not on PATH and skipInstall=true', durationMs: 0 };
     }
+    // Node version pre-flight. `npm install -g gitnexus` on Node <22 fails
+    // with an EBADENGINE that's hidden under npm's deprecation warnings —
+    // unhelpful for beginners. Refuse here with the upgrade command.
+    // `opts.nodeMajor` lets tests inject a fake major without mucking with
+    // process.versions (which is read-only on some Node releases).
+    const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
+    if (major !== null && major < GITNEXUS_MIN_NODE_MAJOR) {
+      const error = nodeVersionMismatchMessage(major);
+      writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
+      return {
+        ok: false,
+        action: 'node-version-mismatch',
+        report: null,
+        error,
+        durationMs: Date.now() - startedAt,
+        license: 'PolyForm Noncommercial',
+        nodeMajor: major,
+        requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
+      };
+    }
     const installResult = tryInstall();
     action = installResult.action;
     if (installResult.fallback === 'npx' && which('npx')) {
@@ -283,7 +334,15 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   };
 }
 
-module.exports = { bootstrap, which, nowIso, CONFLICT_PATHS };
+module.exports = {
+  bootstrap,
+  which,
+  nowIso,
+  CONFLICT_PATHS,
+  GITNEXUS_MIN_NODE_MAJOR,
+  currentNodeMajor,
+  nodeVersionMismatchMessage,
+};
 
 if (require.main === module) {
   const result = bootstrap(process.cwd());

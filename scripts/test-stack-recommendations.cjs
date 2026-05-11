@@ -1569,10 +1569,16 @@ test('post-build-graphify dispatches to the gitnexus runner when codeGraphProvid
       const result = runHook(cwd, 'post-build-graphify', {
         tool_input: { command: 'pnpm build' },
       });
-      // Banner must be gitnexus-flavoured: license reminder OR install hint.
+      // Banner must be gitnexus-flavoured. Two valid outcomes depending on
+      // the host Node version: Node >=22 hits the npm-install path (license
+      // reminder + install command); Node <22 hits the version-mismatch
+      // pre-flight (upgrade command). Both are gitnexus-specific.
       assert.notEqual(result.stdout, '', 'expected post-build hint with gitnexus provider');
       assert.match(result.stdout, /gitnexus/i);
-      assert.match(result.stdout, /PolyForm Noncommercial|npm install -g gitnexus|npx gitnexus/i);
+      assert.match(
+        result.stdout,
+        /PolyForm Noncommercial|npm install -g gitnexus|npx gitnexus|Node >=22|nvm install 22/i,
+      );
       // Must NOT mention the graphify pipx install hint.
       assert.doesNotMatch(result.stdout, /pipx install graphifyy/);
     } finally {
@@ -1608,7 +1614,11 @@ test('gitnexus-runner reports install-skipped when both gitnexus and npm are off
     const prevPath = process.env.PATH;
     process.env.PATH = '/nonexistent-path-that-does-not-exist';
     try {
-      const result = bootstrap(cwd);
+      // Inject `nodeMajor: 22` so this test focuses on the
+      // npm-not-on-PATH branch regardless of the test runner's host Node
+      // version (the Node-version-mismatch branch has its own dedicated
+      // test below).
+      const result = bootstrap(cwd, { nodeMajor: 22 });
       assert.equal(result.ok, false);
       assert.equal(result.action, 'install-skipped');
       assert.match(result.error || '', /npm.*not on PATH|graphify/i);
@@ -1630,6 +1640,45 @@ test('gitnexus-runner respects codeGraphAutoRun: false (provider-agnostic opt-ou
     assert.equal(result.ok, false);
     assert.equal(result.action, 'install-skipped');
     assert.match(result.error || '', /codeGraphAutoRun is false/);
+  });
+});
+
+test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', () => {
+  const runner = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  const { bootstrap, GITNEXUS_MIN_NODE_MAJOR, currentNodeMajor } = runner;
+  // Sanity-check the helpers exist + behave as documented.
+  assert.equal(GITNEXUS_MIN_NODE_MAJOR, 22);
+  assert.ok(typeof currentNodeMajor() === 'number' || currentNodeMajor() === null);
+
+  withTempDir((cwd) => {
+    // Force the install probe to miss so the runner falls into the install
+    // branch where the Node-major pre-flight lives. Inject `nodeMajor: 20`
+    // so the test is deterministic regardless of which Node runs the suite.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd, { nodeMajor: 20 });
+      assert.equal(result.ok, false);
+      assert.equal(result.action, 'node-version-mismatch');
+      assert.equal(result.nodeMajor, 20);
+      assert.equal(result.requiredNodeMajor, 22);
+      // Banner must contain the exact upgrade sequence so the agent can
+      // relay it verbatim to beginner users.
+      assert.match(result.error, /Node >=22/);
+      assert.match(result.error, /nvm install 22/);
+      assert.match(result.error, /nvm alias default 22/);
+      // Must offer the graphify fallback so users on locked Node can switch.
+      assert.match(result.error, /graphify/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+
+    // The runner must stamp `.traffic-one.json` so subsequent runs surface
+    // the error in the orchestrator summary (and the cooldown is reset on
+    // next user retry).
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    assert.match(state.gitnexusLastError, /Node >=22/);
+    assert.match(state.gitnexusLastErrorAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 
