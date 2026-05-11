@@ -37,7 +37,7 @@ The orchestrator passes you `<run-id>`. Read in priority order:
 1. `.traffic-one/digests/<run-id>/{frontend,backend}.md` — the implementer digests (~4 KB total). Their "Touched" + "Next-phase reading hints" sections tell you exactly which files matter.
 2. `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`, `.traffic-one/known-issues.md`, and `.traffic-one/.agentignore` if present.
 3. `git diff --name-only HEAD`, then `git diff HEAD <file>` ONLY for files those digests flagged. Do not full-scroll files.
-4. `graphify-out/GRAPH_REPORT.md` if it exists — neighbors of changed nodes (cross-module impact).
+4. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.gitnexus/` for gitnexus, `graphify-out/GRAPH_REPORT.md` for graphify. Use it to find neighbors of changed nodes (cross-module impact).
 5. Full file `Read` only when a violation requires the broader context.
 
 Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdict is the only artefact.

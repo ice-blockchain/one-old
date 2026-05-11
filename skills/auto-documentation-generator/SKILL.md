@@ -71,7 +71,9 @@ Read only what is needed:
    `eas.json`, CI workflows, deploy manifests.
 3. `.env.example`, Supabase config, `supabase/migrations/*.sql`,
    `supabase/functions/**`, OpenAPI specs, route handlers, Edge Functions.
-4. `graphify-out/GRAPH_REPORT.md` if available, then targeted source files.
+4. The codebase-graph artefact at the active provider's location (per
+   `rules/common/codebase-graph.md`): `.gitnexus/` for gitnexus,
+   `graphify-out/GRAPH_REPORT.md` for graphify. Then targeted source files.
 5. `git log --oneline --decorate --max-count=50` for changelog candidates.
 
 ## Codebase Onboarding Artifacts
