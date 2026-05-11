@@ -61,12 +61,115 @@ explain something at length, link out to a doc — don't inline it.
 The orchestrator passes digest paths in synthetic prompts; subagents read the
 digest themselves rather than receiving content inline.
 
+## Size cap — STRICT
+
+**Target ≤ 2 KB. Hard cap 3 KB.** A PostToolUse hook (`runPostStackSetup` →
+digest branch) emits a `systemMessage` reminder when a digest write exceeds 3 KB
+and instructs the subagent to re-write before completing its turn.
+
+Write less. The downstream subagent reads this digest INSTEAD of the diff;
+bloat directly defeats the token-economy layer.
+
+## Touched section — paths only, no commentary
+
+**BAD** (counted: ~280 chars per line, parenthetical bloat):
+
+```
+- /Users/cosminturcin/Documents/projects/job-site-v9/packages/ui/{package.json,tsconfig.json,src/globals.css,src/lib/utils.ts,src/index.ts,src/components/ui/*.tsx} (24 shadcn primitives + Toaster + Spinner + EmptyState + Form helpers)
+```
+
+**GOOD** (~70 chars; repo-relative; no annotation):
+
+```
+- packages/ui/{components/ui/*.tsx,lib/utils.ts,index.ts}
+- packages/ui/src/globals.css
+```
+
+Rules for this section:
+
+- **Repo-relative paths only.** Drop `/Users/...`, `/Volumes/...`, `~/`. The
+  reader is looking at the same repo.
+- **No parenthetical descriptions** ("4-step + framer-motion stepper",
+  "real Supabase helpers when env present, mock fallback otherwise").
+  If a fact matters that much, put it in "Public contracts (delta only)".
+- **Glob-collapse siblings.** `packages/ui/components/ui/*.tsx` is enough;
+  don't enumerate 24 file names.
+
+## Public contracts — delta only
+
+**BAD** (lists every existing hook):
+
+```
+- `useGetMyProfileQuery`, `useUpdateMyProfileMutation`, `useSetMockRoleMutation`,
+  `useListJobsQuery(filters)`, `useListFeaturedJobsQuery()`, `useGetJobBySlugQuery(slug)`,
+  `useGetRelatedJobsQuery(slug)`, `useListMyJobsQuery()`, `useListCategoriesQuery()`,
+  `useCreateJobMutation`, …
+```
+
+**GOOD** (only what changed vs the plan, with a one-liner for context):
+
+```
+- All RTK Query hooks per plan § Frontend — no signature changes.
+- Added: `useUpdateApplicationStatusMutation({id, status, jobId})`.
+  `jobId` is consumed by tag invalidation only; not part of the URL.
+- Removed: `useDeleteJobMutation` — moved server-side via Edge Function.
+```
+
+If nothing in your scope changed the public surface, write
+"No contract delta vs plan." — that's the entire section. Don't pad.
+
+## Open questions / blockers / assumptions
+
+≤3 bullets. Each ≤2 lines. Link to the plan section by name (`§ Public
+contracts`, `§ Risks`) instead of restating it.
+
+## Next-phase reading hints
+
+≤4 bullets. Tell the next subagent which **2–4 files** are most important.
+Do not list everything.
+
+## Reviewer findings — ≤3 sentences per blocker, link out for depth
+
+The reviewer digest tends to bloat: deep audits naturally want full
+reproduction steps, line-by-line analysis, and three-paragraph remediation
+plans per blocker. **The digest is not the place for that.** Implementer
+subagents read the verdict + the file:line + the one-sentence fix and act
+on it; they do not re-read the entire reviewer reasoning.
+
+**BAD** (one blocker = ~40 lines of prose):
+
+```
+1. supabase/migrations/0002_rls.sql:46-52 (RLS policy) ↔ apps/web/src/features/auth/useSession.ts:35-45 (`applyPendingSignUpProfile()`) — **role-self-promotion via authenticated profiles.update**. The `profiles_update_own` policy permits the owner to update ANY column on their own row, including `role`. The new auth flow stashes `{ email, role, fullName, companyName }` in sessionStorage and, on the first authenticated session, runs `client.from('profiles').update({ role: pending.role, ... }).eq('id', userId)`. A user can sign up as `candidate`, tamper with `sessionStorage[...]` to set `"role":"employer"`, sign in, and the update succeeds (RLS allows owner-writes on every column). … [continues for 30 more lines with three fix alternatives]
+```
+
+**GOOD** (one blocker = ≤3 sentences; depth in a sibling note):
+
+```
+1. supabase/migrations/0002_rls.sql:46 — `profiles_update_own` allows
+   role self-promotion. Combined with `useSession.ts:38`
+   (`applyPendingSignUpProfile` writing `pending.role`), any candidate can
+   become employer by tampering with sessionStorage. Fix:
+   `with check (… and role = (select p.role from profiles p where p.id =
+   auth.uid()))`. **Detail:** see `.traffic-one/digests/<run-id>/reviewer-detail-1.md`.
+```
+
+The **spillover note** (`.traffic-one/digests/<run-id>/reviewer-detail-<n>.md`)
+is the place for full reproduction steps, three alternative fixes,
+threat-model context, and ADR cross-references. Implementer subagents read
+the spillover note ONLY when the one-sentence fix is ambiguous; the
+orchestrator's read protocol still puts the digest first. The hard cap
+(3 KB) applies to the digest, not to spillover notes — those can be as long
+as the audit needs.
+
 ## Hard rules
 
 - Write your digest **before** emitting the terminal status token (PLAN_READY,
   APPROVED, etc.) — the orchestrator reads the digest after the spawn returns.
-- Cap your digest at ~2 KB. If you have more to say, it belongs in the plan
-  file or in a sibling doc, not in the digest.
+- **Repo-relative paths.** Absolute paths cost ~60 chars per line for nothing.
+- **No parenthetical annotations on Touched.** Use "Public contracts (delta only)"
+  for facts that matter.
+- **Cap your digest at 2 KB target / 3 KB hard.** If you exceed 3 KB the hook
+  will warn — re-write before completing the turn.
 - Overwrite, don't append. Re-spawned implementers replace their previous
   digest entirely.
 - Never put credentials, env values, or full file contents in a digest.

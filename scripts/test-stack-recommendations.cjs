@@ -1182,6 +1182,198 @@ test('plan-gate exempts .traffic-one/digests/ writes', () => {
   });
 });
 
+// ── Graphify foreground bootstrap runner ────────────────────────────────────
+
+test('graphify-runner gracefully reports skip when graphify+pipx+python3 absent', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'graphify-runner.cjs'));
+  withTempDir((cwd) => {
+    // Force every which() probe to miss by stripping PATH.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd, { skipInstall: true });
+      assert.equal(result.ok, false);
+      assert.equal(result.action, 'install-skipped');
+      assert.match(result.error || '', /not on PATH/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('graphify-runner respects graphifyAutoRun: false opt-out', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'graphify-runner.cjs'));
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      graphifyAutoRun: false,
+    });
+    const result = bootstrap(cwd);
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'install-skipped');
+    assert.match(result.error || '', /graphifyAutoRun is false/);
+  });
+});
+
+test('graphify-runner short-circuits when GRAPH_REPORT.md is fresh (lets Phase 5 invoke unconditionally)', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'graphify-runner.cjs'));
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# Graph\n', 'utf8');
+    // Force every which() probe to miss so the runner would otherwise fail.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd);
+      assert.equal(result.ok, true);
+      assert.equal(result.action, 'fresh');
+      assert.match(result.report || '', /GRAPH_REPORT\.md$/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('orchestrator Phase 5 invokes graphify-runner so every run produces the cache', () => {
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  assert.match(orchestrator, /graphify-runner\.cjs/);
+  // Whitespace-tolerant: text wraps across two lines.
+  assert.match(orchestrator.replace(/\s+/g, ' '), /every completed orchestrator session is a strong/i);
+});
+
+test('digest rule documents reviewer spillover-note pattern', () => {
+  const rule = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'agent-handoff-digests.md'), 'utf8');
+  assert.match(rule, /Reviewer findings/);
+  assert.match(rule, /reviewer-detail-<n>\.md/);
+  assert.match(rule, /≤3 sentences per blocker/);
+});
+
+test('graphify-runner uses `graphify update .` (not the outdated `graphify .`)', () => {
+  // Regression: cached 2.7.0 stamped `"error: unknown command '.'"` because
+  // the runner invoked the wrong subcommand. The fix is `graphify update .`.
+  const runnerSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'graphify-runner.cjs'), 'utf8');
+  // The exact spawn args must include 'update' as the subcommand and '.' as the path.
+  assert.match(runnerSrc, /spawnSync\('graphify',\s*\[\s*'update',\s*'\.'\s*\]/);
+  // And must NOT contain the outdated invocation.
+  assert.doesNotMatch(runnerSrc, /spawnSync\('graphify',\s*\[\s*'\.'\s*,/);
+});
+
+test('writeState stamps pluginVersion in .traffic-one.json (diagnostic)', () => {
+  const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  withTempDir((cwd) => {
+    writeState(cwd, { stack: 'react-realtime-monorepo', mode: 'new-project' });
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    const pluginVersion = getPluginVersion();
+    // The plugin version helper reads from .claude-plugin/plugin.json.
+    assert.match(pluginVersion, /^\d+\.\d+\.\d+$/);
+    assert.equal(state.pluginVersion, pluginVersion);
+    // The cache-mismatch diagnostic relies on this exact field name.
+    assert.ok(state.pluginVersion, 'pluginVersion must be set');
+  });
+});
+
+test('post-build-graphify fires for monorepo build flag forms (pnpm --filter, turbo run)', () => {
+  const cases = [
+    'pnpm build',
+    'pnpm run build',
+    'pnpm -w build',
+    'pnpm -F web build',
+    'pnpm --filter web build',
+    'pnpm --filter=web build',
+    'pnpm --filter web build --mode production',
+    'turbo build',
+    'turbo run build',
+    'turbo run build --filter web',
+    'npm run build',
+    'yarn build',
+    'bun run build',
+    'vite build --mode production',
+  ];
+  for (const command of cases) {
+    withTempDir((cwd) => {
+      writeJson(path.join(cwd, '.traffic-one.json'), {
+        stack: 'react-realtime-monorepo',
+        mode: 'new-project',
+        onboardingComplete: true,
+      });
+      const result = runHook(cwd, 'post-build-graphify', {
+        tool_input: { command },
+      });
+      assert.notEqual(result.stdout, '', `expected build regex to match: ${command}`);
+    });
+  }
+});
+
+test('post-build-graphify does not fire on install / typecheck / non-build commands', () => {
+  const cases = [
+    'pnpm install',
+    'pnpm install build-tools',          // `build-tools` is an arg, not the script
+    'pnpm run typecheck',
+    'pnpm run dev',
+    'turbo run typecheck',
+    'echo build && pnpm install',         // `&&` breaks the run
+    'git status',
+  ];
+  for (const command of cases) {
+    withTempDir((cwd) => {
+      writeJson(path.join(cwd, '.traffic-one.json'), {
+        stack: 'react-realtime-monorepo',
+        mode: 'new-project',
+        onboardingComplete: true,
+      });
+      const result = runHook(cwd, 'post-build-graphify', {
+        tool_input: { command },
+      });
+      assert.equal(result.stdout, '', `expected build regex NOT to match: ${command}`);
+    });
+  }
+});
+
+// ── Digest-size warning on .traffic-one/digests/<run>/<role>.md writes ──────
+
+test('post-stack-setup warns on bloated digest write (> 3 KB)', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+    const runDir = path.join(cwd, '.traffic-one', 'digests', '2026-05-07T14-23-05Z');
+    fs.mkdirSync(runDir, { recursive: true });
+    const digestPath = path.join(runDir, 'frontend.md');
+    fs.writeFileSync(digestPath, '# frontend digest\n' + 'x'.repeat(4 * 1024), 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: digestPath },
+    });
+
+    assert.match(result.stdout, /\[digest-size\]/);
+    assert.match(result.stdout, /frontend\.md/);
+    assert.match(result.stdout, /trim to/);
+    assert.match(result.stdout, /Repo-relative paths|repo-relative paths/i);
+  });
+});
+
+test('post-stack-setup silent on small digest write (< 3 KB)', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-realtime-monorepo' });
+    const runDir = path.join(cwd, '.traffic-one', 'digests', '2026-05-07T14-23-05Z');
+    fs.mkdirSync(runDir, { recursive: true });
+    const digestPath = path.join(runDir, 'architect.md');
+    fs.writeFileSync(digestPath, '# architect digest\n\nverdict: PLAN_READY\n', 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: digestPath },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+// ── Phase 5 sanity check is documented in the orchestrator ─────────────────
+
+test('orchestrator Phase 5 documents the missing-digest sanity check', () => {
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  assert.match(orchestrator, /Phase 5 — Cleanup \+ sanity check/);
+  assert.match(orchestrator, /Digest sanity:/);
+});
+
 let failed = 0;
 
 for (const { name, fn } of tests) {

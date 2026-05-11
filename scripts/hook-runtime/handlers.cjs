@@ -637,7 +637,16 @@ function runCheckLibraryAllowlist(rawInput) {
 }
 
 // ── PostToolUse: page-speed gate reminder after production builds ───────────
-const BUILD_COMMAND_RE = /(^|[\s;&|])((pnpm|npm|yarn|bun)\s+(run\s+)?build|turbo\s+build|vite\s+build)(\s|$)/;
+// Match build commands, including monorepo flag forms:
+//   pnpm build · pnpm run build · pnpm -w build · pnpm -F web build
+//   pnpm --filter web build · pnpm --filter=web build · pnpm --recursive build
+//   turbo build · turbo run build · turbo run build --filter web
+//   vite build · vite build --mode production
+//   npm/yarn/bun analogues
+// The optional `(\s[^;&|]*?)?` group is lazy so a command like
+// `pnpm install build-tools` (which lacks a trailing whitespace before `build`)
+// stays unmatched. Command separators (;&|) break the run.
+const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
 
 function runPostBuildPageSpeed(rawInput) {
   const data = parseJsonText(rawInput, {});
@@ -705,10 +714,12 @@ function runPreGraphifyHint(_rawInput) {
   };
 }
 
-// ── PostToolUse(Bash): post-build hint to install + run graphify once ───────
-// Soft hint; never blocks. Fires on the first successful build of a
-// new-project (post-onboarding) when no fresh graph exists yet. Stamps a
-// 1-day cooldown so we never nag on every build.
+// ── PostToolUse(Bash): post-build foreground graphify bootstrap ─────────────
+// Fires on the first successful build of a new-project (post-onboarding) when
+// no fresh graph exists yet. Synchronously installs graphify (pipx | pip
+// --user) if missing, then runs `graphify .` so `graphify-out/GRAPH_REPORT.md`
+// actually lands. The 1-day cooldown stamp prevents re-entry on subsequent
+// builds; opt out by setting `graphifyAutoRun: false` in `.traffic-one.json`.
 const GRAPHIFY_FRESH_MS  = 7 * 24 * 60 * 60 * 1000;
 const GRAPHIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -742,25 +753,52 @@ function runPostBuildGraphifyHint(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  // Stamp the cooldown immediately so a flurry of builds doesn't replay this.
+  // Stamp the cooldown immediately so a flurry of builds doesn't re-enter
+  // the bootstrap (which can take ~30–60s). The bootstrap itself stamps
+  // `graphifyLastRunAt` / `graphifyLastErrorAt` separately.
   try {
     state.graphifyLastHintedAt = nowIso();
     writeState(cwd, state);
   } catch {
-    // best-effort; the hint still fires even if the stamp can't persist
+    // best-effort; the bootstrap still runs even if the stamp can't persist
   }
 
-  const message = graphExists
-    ? 'Build succeeded. Your codebase graph at `graphify-out/GRAPH_REPORT.md` is older than 7 days — refresh it to keep next-session token usage low:'
-    : 'Build succeeded. Build the codebase graph once so future sessions can answer "where does X live" cheaply (read a single ~few-KB file instead of spray-grepping):';
+  // Run the foreground bootstrap. Never throws; returns a structured result.
+  let bootstrapResult;
+  try {
+    const { bootstrap } = require(path.resolve(__dirname, '..', 'graphify-runner.cjs'));
+    bootstrapResult = bootstrap(cwd);
+  } catch (err) {
+    bootstrapResult = {
+      ok: false,
+      action: 'install-skipped',
+      report: null,
+      error: `graphify runner crashed: ${(err && err.message) || String(err)}`,
+      durationMs: 0,
+    };
+  }
 
-  const additionalContext = `[graphify] ${message}\n`
-    + '  pipx install graphifyy   # one-time install (Python tool; pip install --user graphifyy also works)\n'
-    + '  graphify . --no-viz --code-only --quiet\n'
-    + '  graphify hook install    # optional: regenerate on every git commit\n'
-    + 'Skills (repo-scan, refactor, simplify, security-review) and the '
-    + 'senior-architect / senior-reviewer / senior-tester subagents will '
-    + 'consult the report. Add `graphify-out/` to .gitignore if not already.';
+  // Build the context message based on the result. Always non-blocking.
+  const seconds = Math.round((bootstrapResult.durationMs || 0) / 100) / 10;
+  let additionalContext;
+  if (bootstrapResult.ok) {
+    const actionLabel = bootstrapResult.action === 'used-existing'
+      ? 'used existing `graphify` install'
+      : (bootstrapResult.action === 'installed-pipx'
+        ? 'installed `graphifyy` via pipx'
+        : 'installed `graphifyy` via `pip --user`');
+    additionalContext = `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
+      + `Report at \`graphify-out/GRAPH_REPORT.md\`. Subagents and skills will consult it `
+      + `before grep/glob for module/structure questions. To auto-rebuild on each git commit: `
+      + '`graphify hook install`. Add `graphify-out/` to .gitignore if not already.';
+  } else {
+    additionalContext = `[graphify] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
+      + 'Falling back to a manual hint — install + build once when convenient:\n'
+      + '  pipx install graphifyy   # or: python3 -m pip install --user graphifyy\n'
+      + '  graphify . --no-viz --code-only --quiet\n'
+      + '  graphify hook install    # optional: regenerate on every git commit\n'
+      + 'To disable auto-bootstrap entirely, set `"graphifyAutoRun": false` in `.traffic-one.json`.';
+  }
 
   return {
     stdout: JSON.stringify({
@@ -782,13 +820,46 @@ function runPostStackSetup(rawInput) {
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
 
   // PostToolUse on Write|Edit fires for ALL writes. Dispatch:
-  //   1. supabase/functions/<name>/index.ts  → runPostFunctionEdit (auto-deploy)
-  //   2. .traffic-one.json                  → existing stack-rules auto-load
-  //   3. anything else                      → no-op
+  //   1. supabase/functions/<name>/index.ts            → runPostFunctionEdit (auto-deploy)
+  //   2. .traffic-one/digests/<run-id>/<role>.md       → digest-size warning
+  //   3. .traffic-one.json                             → existing stack-rules auto-load
+  //   4. anything else                                 → no-op
   if (filePath.replace(/\\/g, '/').match(FUNCTION_PATH_RE)) {
     const result = runPostFunctionEdit(filePath);
     if (result) {
       return { stdout: JSON.stringify(result), exitCode: 0 };
+    }
+    return { stdout: '', exitCode: 0 };
+  }
+
+  // Soft digest-size warning. Implementer subagents (frontend / backend) tend
+  // to bloat their handoff digests with verbose Touched annotations and
+  // exhaustive Public-contract surfaces, defeating the token-savings layer.
+  // Cap target is 2 KB; we warn over 3 KB. Never blocks the write.
+  const digestMatch = filePath.replace(/\\/g, '/').match(DIGEST_PATH_RE);
+  if (digestMatch && fs.existsSync(filePath)) {
+    let bytes = 0;
+    try { bytes = fs.statSync(filePath).size; } catch { bytes = 0; }
+    if (bytes > DIGEST_HARD_BYTES) {
+      const role = digestMatch[1];
+      const kb = Math.round((bytes / 1024) * 10) / 10;
+      const reason = `[digest-size] Your \`${role}.md\` digest is ${kb} KB; the spec target is ≤2 KB (`
+        + 'see `rules/common/agent-handoff-digests.md`). Re-write before completing your turn:\n'
+        + '  1. Use repo-relative paths, never absolute (drop `/Users/.../` prefixes).\n'
+        + '  2. Touched: file paths only, no parenthetical annotations.\n'
+        + '  3. Public contracts: delta-only — what changed vs the plan, not the full surface.\n'
+        + '  4. Open questions: at most 3 bullets; link to plan §, do not inline rationale.\n'
+        + 'Reviewer / tester / shipper read this digest INSTEAD of the diff; bloated digests defeat the token-economy layer.';
+      return {
+        stdout: JSON.stringify({
+          systemMessage: `traffic-one — digest ${role}.md is ${kb} KB; trim to ≤2 KB`,
+          hookSpecificOutput: {
+            hookEventName: 'PostToolUse',
+            additionalContext: reason,
+          },
+        }),
+        exitCode: 0,
+      };
     }
     return { stdout: '', exitCode: 0 };
   }
@@ -890,6 +961,11 @@ function runPostStackSetup(rawInput) {
 //   - state.supabaseFunctionsAutoDeploy === true    → spawn deploy, detached
 //   - state.supabaseFunctionsAutoDeploy === false   → silent no-op
 const FUNCTION_PATH_RE = /\/supabase\/functions\/([^/]+)\/(index|deno)\.(ts|tsx|mts|js)$/;
+
+// Per-phase handoff digests written by the senior-* subagents — soft size cap.
+// Captures the role name in group 1 for the warning message.
+const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(architect|frontend|backend|reviewer|tester|shipper)\.md$/;
+const DIGEST_HARD_BYTES = 3 * 1024;  // warn over 3 KB; target is ≤2 KB
 
 function findProjectRoot(startDir) {
   // Walk up to find the directory that owns `.traffic-one.json` or `package.json`
