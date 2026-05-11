@@ -1248,6 +1248,63 @@ test('digest rule documents reviewer spillover-note pattern', () => {
   assert.match(rule, /≤3 sentences per blocker/);
 });
 
+test('post-build-graphify fires for monorepo build flag forms (pnpm --filter, turbo run)', () => {
+  const cases = [
+    'pnpm build',
+    'pnpm run build',
+    'pnpm -w build',
+    'pnpm -F web build',
+    'pnpm --filter web build',
+    'pnpm --filter=web build',
+    'pnpm --filter web build --mode production',
+    'turbo build',
+    'turbo run build',
+    'turbo run build --filter web',
+    'npm run build',
+    'yarn build',
+    'bun run build',
+    'vite build --mode production',
+  ];
+  for (const command of cases) {
+    withTempDir((cwd) => {
+      writeJson(path.join(cwd, '.traffic-one.json'), {
+        stack: 'react-realtime-monorepo',
+        mode: 'new-project',
+        onboardingComplete: true,
+      });
+      const result = runHook(cwd, 'post-build-graphify', {
+        tool_input: { command },
+      });
+      assert.notEqual(result.stdout, '', `expected build regex to match: ${command}`);
+    });
+  }
+});
+
+test('post-build-graphify does not fire on install / typecheck / non-build commands', () => {
+  const cases = [
+    'pnpm install',
+    'pnpm install build-tools',          // `build-tools` is an arg, not the script
+    'pnpm run typecheck',
+    'pnpm run dev',
+    'turbo run typecheck',
+    'echo build && pnpm install',         // `&&` breaks the run
+    'git status',
+  ];
+  for (const command of cases) {
+    withTempDir((cwd) => {
+      writeJson(path.join(cwd, '.traffic-one.json'), {
+        stack: 'react-realtime-monorepo',
+        mode: 'new-project',
+        onboardingComplete: true,
+      });
+      const result = runHook(cwd, 'post-build-graphify', {
+        tool_input: { command },
+      });
+      assert.equal(result.stdout, '', `expected build regex NOT to match: ${command}`);
+    });
+  }
+});
+
 // ── Digest-size warning on .traffic-one/digests/<run>/<role>.md writes ──────
 
 test('post-stack-setup warns on bloated digest write (> 3 KB)', () => {

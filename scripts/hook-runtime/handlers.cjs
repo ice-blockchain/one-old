@@ -637,7 +637,16 @@ function runCheckLibraryAllowlist(rawInput) {
 }
 
 // ── PostToolUse: page-speed gate reminder after production builds ───────────
-const BUILD_COMMAND_RE = /(^|[\s;&|])((pnpm|npm|yarn|bun)\s+(run\s+)?build|turbo\s+build|vite\s+build)(\s|$)/;
+// Match build commands, including monorepo flag forms:
+//   pnpm build · pnpm run build · pnpm -w build · pnpm -F web build
+//   pnpm --filter web build · pnpm --filter=web build · pnpm --recursive build
+//   turbo build · turbo run build · turbo run build --filter web
+//   vite build · vite build --mode production
+//   npm/yarn/bun analogues
+// The optional `(\s[^;&|]*?)?` group is lazy so a command like
+// `pnpm install build-tools` (which lacks a trailing whitespace before `build`)
+// stays unmatched. Command separators (;&|) break the run.
+const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
 
 function runPostBuildPageSpeed(rawInput) {
   const data = parseJsonText(rawInput, {});
