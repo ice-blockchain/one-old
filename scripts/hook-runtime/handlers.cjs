@@ -72,9 +72,16 @@ function tokenEconomyBanner(cwd) {
   if (memoryPaths.some((relPath) => fs.existsSync(path.join(cwd, relPath)))) {
     lines.push('[memory] .traffic-one/ project memory present — read product/stack/rules/known-issues before broad source reads.');
   }
-  const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
-  if (fs.existsSync(graphPath)) {
-    lines.push('[graphify] graphify-out/GRAPH_REPORT.md present — consult before grep/glob for module/structure questions.');
+  // Codebase-graph banner. Both providers can show simultaneously if both
+  // artefacts exist on disk (e.g. user switched provider mid-project); the
+  // active one per `.traffic-one.json` is what subagents will read.
+  const graphifyPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+  if (fs.existsSync(graphifyPath)) {
+    lines.push('[graph: graphify] graphify-out/GRAPH_REPORT.md present — consult before grep/glob for module/structure questions.');
+  }
+  const gitnexusPath = path.join(cwd, '.gitnexus');
+  if (fs.existsSync(gitnexusPath)) {
+    lines.push('[graph: gitnexus] .gitnexus/ present — consult before grep/glob for module/structure questions.');
   }
   try {
     const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
@@ -688,15 +695,35 @@ function runPostBuildPageSpeed(rawInput) {
 }
 
 // ── PreToolUse(Glob|Grep): hint that the codebase graph exists ──────────────
-// Non-blocking. Tells the agent to read `graphify-out/GRAPH_REPORT.md` first
-// for codebase-structure questions before falling back to grep/glob.
+// Non-blocking. Tells the agent to read the active provider's codebase graph
+// first for codebase-structure questions before falling back to grep/glob.
+//
+// Provider-aware: `state.codeGraphProvider` (gitnexus | graphify) picks the
+// artefact path. If the provider's artefact doesn't exist yet, return silent.
 function runPreGraphifyHint(_rawInput) {
   const cwd = process.cwd();
-  const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
-  if (!fs.existsSync(graphPath)) {
+  const state = safeReadJson(path.join(cwd, STATE_FILE), {});
+  const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+
+  // Dispatch by provider. Both branches are silent when the on-disk artefact
+  // doesn't exist yet — the post-build hook will produce it after first build.
+  let label;
+  let artefactPath;
+  let exists = false;
+  if (provider === 'gitnexus') {
+    artefactPath = path.join(cwd, '.gitnexus');
+    exists = fs.existsSync(artefactPath);
+    label = '[graph: gitnexus] `.gitnexus/` knowledge graph present';
+  } else {
+    // Default + 'graphify' branch share the same artefact path.
+    artefactPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+    exists = fs.existsSync(artefactPath);
+    label = '[graph: graphify] `graphify-out/GRAPH_REPORT.md` present';
+  }
+  if (!exists) {
     return { stdout: '', exitCode: 0 };
   }
-  const state = safeReadJson(path.join(cwd, STATE_FILE), {});
+
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
   const digestHint = runId
     ? ` Predecessor digests (if any) live under \`.traffic-one/digests/${runId}/\`.`
@@ -705,9 +732,8 @@ function runPreGraphifyHint(_rawInput) {
     stdout: JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
-        additionalContext: '[graphify] Codebase graph at `graphify-out/GRAPH_REPORT.md` — '
-          + 'read it FIRST for module / file / call-site questions before grep/glob.'
-          + digestHint,
+        additionalContext: `${label} — read it FIRST for module / file / `
+          + 'call-site questions before grep/glob.' + digestHint,
       },
     }),
     exitCode: 0,
@@ -737,12 +763,23 @@ function runPostBuildGraphifyHint(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const graphPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
-  const graphExists = fs.existsSync(graphPath);
-  const graphFresh = graphExists
-    ? (Date.now() - fs.statSync(graphPath).mtimeMs) < GRAPHIFY_FRESH_MS
+  // Dispatch by codeGraphProvider. Without a provider, the
+  // postWriteIncompleteWarning surface already nags; this hook stays silent
+  // rather than picking a default.
+  const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  if (provider !== 'gitnexus' && provider !== 'graphify') {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  // Provider-specific artefact path for freshness check.
+  const artefactPath = provider === 'gitnexus'
+    ? path.join(cwd, '.gitnexus')
+    : path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+  const artefactExists = fs.existsSync(artefactPath);
+  const artefactFresh = artefactExists
+    ? (Date.now() - fs.statSync(artefactPath).mtimeMs) < GRAPHIFY_FRESH_MS
     : false;
-  if (graphFresh) {
+  if (artefactFresh) {
     return { stdout: '', exitCode: 0 };
   }
 
@@ -754,8 +791,8 @@ function runPostBuildGraphifyHint(rawInput) {
   }
 
   // Stamp the cooldown immediately so a flurry of builds doesn't re-enter
-  // the bootstrap (which can take ~30–60s). The bootstrap itself stamps
-  // `graphifyLastRunAt` / `graphifyLastErrorAt` separately.
+  // the bootstrap (which can take ~30–60s). The runner itself stamps
+  // `<provider>LastRunAt` / `<provider>LastErrorAt` separately.
   try {
     state.graphifyLastHintedAt = nowIso();
     writeState(cwd, state);
@@ -764,40 +801,59 @@ function runPostBuildGraphifyHint(rawInput) {
   }
 
   // Run the foreground bootstrap. Never throws; returns a structured result.
+  const runnerFile = provider === 'gitnexus' ? 'gitnexus-runner.cjs' : 'graphify-runner.cjs';
   let bootstrapResult;
   try {
-    const { bootstrap } = require(path.resolve(__dirname, '..', 'graphify-runner.cjs'));
+    const { bootstrap } = require(path.resolve(__dirname, '..', runnerFile));
     bootstrapResult = bootstrap(cwd);
   } catch (err) {
     bootstrapResult = {
       ok: false,
       action: 'install-skipped',
       report: null,
-      error: `graphify runner crashed: ${(err && err.message) || String(err)}`,
+      error: `${provider} runner crashed: ${(err && err.message) || String(err)}`,
       durationMs: 0,
     };
   }
 
-  // Build the context message based on the result. Always non-blocking.
+  // Build the context message based on the result + provider. Always non-blocking.
   const seconds = Math.round((bootstrapResult.durationMs || 0) / 100) / 10;
   let additionalContext;
   if (bootstrapResult.ok) {
-    const actionLabel = bootstrapResult.action === 'used-existing'
-      ? 'used existing `graphify` install'
-      : (bootstrapResult.action === 'installed-pipx'
-        ? 'installed `graphifyy` via pipx'
-        : 'installed `graphifyy` via `pip --user`');
-    additionalContext = `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
-      + `Report at \`graphify-out/GRAPH_REPORT.md\`. Subagents and skills will consult it `
-      + `before grep/glob for module/structure questions. To auto-rebuild on each git commit: `
-      + '`graphify hook install`. Add `graphify-out/` to .gitignore if not already.';
+    if (provider === 'gitnexus') {
+      const restored = Array.isArray(bootstrapResult.restored) && bootstrapResult.restored.length > 0
+        ? ` Restored traffic-one's ${bootstrapResult.restored.join(', ')} (GitNexus auto-write conflicted).`
+        : '';
+      additionalContext = `[gitnexus] Codebase graph built (${seconds}s, ${bootstrapResult.action}). `
+        + `Index at \`.gitnexus/\`. License reminder: PolyForm Noncommercial — only legal on non-commercial projects.${restored} `
+        + 'Subagents and skills will consult `.gitnexus/` before grep/glob for module/structure questions. '
+        + 'Add `.gitnexus/` and `.traffic-one/backups/` to .gitignore if not already.';
+    } else {
+      const actionLabel = bootstrapResult.action === 'used-existing'
+        ? 'used existing `graphify` install'
+        : (bootstrapResult.action === 'installed-pipx'
+          ? 'installed `graphifyy` via pipx'
+          : 'installed `graphifyy` via `pip --user`');
+      additionalContext = `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
+        + `Report at \`graphify-out/GRAPH_REPORT.md\`. Subagents and skills will consult it `
+        + `before grep/glob for module/structure questions. To auto-rebuild on each git commit: `
+        + '`graphify hook install`. Add `graphify-out/` to .gitignore if not already.';
+    }
   } else {
-    additionalContext = `[graphify] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
-      + 'Falling back to a manual hint — install + build once when convenient:\n'
-      + '  pipx install graphifyy   # or: python3 -m pip install --user graphifyy\n'
-      + '  graphify . --no-viz --code-only --quiet\n'
-      + '  graphify hook install    # optional: regenerate on every git commit\n'
-      + 'To disable auto-bootstrap entirely, set `"graphifyAutoRun": false` in `.traffic-one.json`.';
+    if (provider === 'gitnexus') {
+      additionalContext = `[gitnexus] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
+        + 'Falling back to a manual hint — install + build once when convenient:\n'
+        + '  npm install -g gitnexus   # or: npx gitnexus@latest analyze .\n'
+        + '  gitnexus analyze\n'
+        + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in `.traffic-one.json`.';
+    } else {
+      additionalContext = `[graphify] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
+        + 'Falling back to a manual hint — install + build once when convenient:\n'
+        + '  pipx install graphifyy   # or: python3 -m pip install --user graphifyy\n'
+        + '  graphify update .\n'
+        + '  graphify hook install    # optional: regenerate on every git commit\n'
+        + 'To disable auto-bootstrap entirely, set `"codeGraphAutoRun": false` in `.traffic-one.json`.';
+    }
   }
 
   return {
@@ -868,27 +924,42 @@ function runPostStackSetup(rawInput) {
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
   const state = safeReadJson(filePath, null);
-  // Accept any state that has a valid `stack` — the model sometimes writes a
-  // partial file (no `onboardingComplete`). Normalize and treat it as complete.
-  if (!state || !state.stack || !Object.prototype.hasOwnProperty.call(STACKS, state.stack)) {
-    // Don't fail silently: when the model edits `.traffic-one.json` but leaves
-    // `stack` missing or invalid, the rule bundle never loads and the user's
-    // choice is never persisted. Emit a system message + reminder so the model
-    // can self-correct in the same turn.
+  // Accept any state that has a valid `stack` AND `codeGraphProvider`. The
+  // model sometimes writes a partial file (no `onboardingComplete`, no
+  // `codeGraphProvider`). Normalize and treat it as complete only when both
+  // required fields are present + valid.
+  const validStackIds = Object.keys(STACKS).filter((id) => id !== 'node-backend');
+  const validCodeGraphProviders = ['gitnexus', 'graphify'];
+  const stackOk = state && state.stack && Object.prototype.hasOwnProperty.call(STACKS, state.stack);
+  const cgProvider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
+
+  if (!state || !stackOk || !cgOk) {
+    // Don't fail silently: emit a system message + reminder so the model can
+    // self-correct in the same turn. The warning covers both missing/invalid
+    // stack AND missing/invalid codeGraphProvider.
     if (!state) {
       return { stdout: '', exitCode: 0 };
     }
     const invalidStack = state.stack && !Object.prototype.hasOwnProperty.call(STACKS, state.stack)
       ? state.stack
       : null;
-    const validStackIds = Object.keys(STACKS).filter((id) => id !== 'node-backend');
     const additionalContext = postWriteIncompleteWarning({
       stack: invalidStack,
       validStackIds,
+      codeGraphProvider: cgProvider,
+      validCodeGraphProviders,
     });
-    const systemMessage = invalidStack
-      ? `traffic-one — \`.traffic-one.json\` has unknown stack id "${invalidStack}"; please re-write with a valid stack`
-      : 'traffic-one — `.traffic-one.json` write incomplete (no `stack` field); please re-write with all 7 fields';
+    let systemMessage;
+    if (invalidStack) {
+      systemMessage = `traffic-one — \`.traffic-one.json\` has unknown stack id "${invalidStack}"; please re-write with a valid stack`;
+    } else if (!state.stack) {
+      systemMessage = 'traffic-one — `.traffic-one.json` write incomplete (no `stack` field); please re-write with all 8 fields';
+    } else if (cgProvider && !cgOk) {
+      systemMessage = `traffic-one — \`.traffic-one.json\` has unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
+    } else {
+      systemMessage = 'traffic-one — `.traffic-one.json` missing required `codeGraphProvider` field; ask the user (gitnexus or graphify) and re-write';
+    }
     return {
       stdout: JSON.stringify({
         systemMessage,

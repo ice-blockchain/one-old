@@ -159,7 +159,7 @@ Synthetic prompt — use the **Phase 4 — Shipper** template from `resources/pr
 
 If no deploy intent in the user message → end with a "next step: say 'ship it' to deploy" line, do NOT spawn shipper.
 
-### Phase 5 — Cleanup + sanity check + graphify bootstrap (orchestrator only, no subagent)
+### Phase 5 — Cleanup + sanity check + codebase-graph bootstrap (orchestrator only, no subagent)
 
 **Sanity check first.** Before rotating, verify the expected digests landed
 for this run. Each phase that ran must have produced its digest; a missing
@@ -191,22 +191,39 @@ This catches the most common regression: a subagent emits its verdict (e.g.
 shipper can't read the predecessor digest and falls back to re-reading the
 diff.
 
-**Then bootstrap graphify** so the cross-run codebase-graph cache lands
+**Then bootstrap the codebase-graph provider** so the cross-run cache lands
 even when this orchestrator run never invoked a build command. Every
 completed orchestrator session is a strong "the project is in a meaningful
 state, index it now" signal — don't rely on the post-build hook to fire,
 because most orchestrator runs end at `APPROVED` / `TESTS_GREEN` without
 the user typing `pnpm build`.
 
+Dispatch on `codeGraphProvider` from `.traffic-one.json`:
+
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/graphify-runner.cjs"
+PROVIDER=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('.traffic-one.json','utf8')).codeGraphProvider||'')}catch{}")
+case "$PROVIDER" in
+  gitnexus)
+    node "${CLAUDE_PLUGIN_ROOT}/scripts/gitnexus-runner.cjs"
+    ;;
+  graphify)
+    node "${CLAUDE_PLUGIN_ROOT}/scripts/graphify-runner.cjs"
+    ;;
+  *)
+    # Provider missing/unknown — the postWriteIncompleteWarning hook will
+    # nag the user on the next state write. Skip silently here.
+    ;;
+esac
 ```
 
-Same cooldown / freshness logic as the post-build hook applies (the runner
-checks `graphifyLastRunAt` itself and is a no-op when the report is fresh).
-Opt out per-project with `"graphifyAutoRun": false` in `.traffic-one.json`.
-This step never blocks the run summary — the runner returns a structured
-result and the orchestrator notes the outcome in one line of the summary.
+Same cooldown / freshness logic as the post-build hook applies for either
+provider (each runner checks its own `*LastRunAt` field and is a no-op when
+the artefact is fresh). Opt out per-project with `"codeGraphAutoRun": false`
+(provider-agnostic; legacy `"graphifyAutoRun": false` honoured for one
+version). This step never blocks the run summary — the runner returns a
+structured result and the orchestrator notes the outcome in one line of the
+summary, including the PolyForm Noncommercial license reminder when the
+provider is gitnexus.
 
 **Then rotate.** Keep the last 3 run folders under `.traffic-one/digests/`,
 remove older ones:

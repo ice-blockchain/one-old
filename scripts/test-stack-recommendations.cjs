@@ -928,7 +928,8 @@ test('pre-graphify-hint emits hint when GRAPH_REPORT.md exists', () => {
 
     const result = runHook(cwd, 'pre-graphify-hint', '');
     assert.notEqual(result.stdout.trim(), '', 'expected hint payload');
-    assert.match(result.stdout, /\[graphify\]/);
+    // Provider-aware label: '[graph: graphify]' for the graphify branch.
+    assert.match(result.stdout, /\[graph:\s*graphify\]/);
     assert.match(result.stdout, /GRAPH_REPORT\.md/);
   });
 });
@@ -946,6 +947,7 @@ test('post-build-graphify hints on first new-project build without report', () =
       stack: 'react-realtime-monorepo',
       mode: 'new-project',
       onboardingComplete: true,
+      codeGraphProvider: 'graphify',
     });
 
     const result = runHook(cwd, 'post-build-graphify', {
@@ -963,6 +965,7 @@ test('post-build-graphify silent when GRAPH_REPORT.md is fresh', () => {
       stack: 'react-realtime-monorepo',
       mode: 'new-project',
       onboardingComplete: true,
+      codeGraphProvider: 'graphify',
     });
     fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
     fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# Graph\n', 'utf8');
@@ -997,6 +1000,7 @@ test('post-build-graphify silent within cooldown after recent hint', () => {
       stack: 'react-realtime-monorepo',
       mode: 'new-project',
       onboardingComplete: true,
+      codeGraphProvider: 'graphify',
       graphifyLastHintedAt: new Date().toISOString(),
     });
 
@@ -1323,9 +1327,16 @@ test('graphify-runner short-circuits when GRAPH_REPORT.md is fresh (lets Phase 5
   });
 });
 
-test('orchestrator Phase 5 invokes graphify-runner so every run produces the cache', () => {
+test('orchestrator Phase 5 dispatches to the chosen codebase-graph runner per provider', () => {
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  // Both runners must be referenced by the dispatch (case statement) so the
+  // post-build hook + Phase 5 stay symmetric.
   assert.match(orchestrator, /graphify-runner\.cjs/);
+  assert.match(orchestrator, /gitnexus-runner\.cjs/);
+  // The dispatch is a `case "$PROVIDER" in ... esac` block keyed on
+  // codeGraphProvider, mirroring the post-build hook's behaviour.
+  assert.match(orchestrator, /case\s+"\$PROVIDER"\s+in/);
+  assert.match(orchestrator, /codeGraphProvider/);
   // Whitespace-tolerant: text wraps across two lines.
   assert.match(orchestrator.replace(/\s+/g, ' '), /every completed orchestrator session is a strong/i);
 });
@@ -1384,6 +1395,7 @@ test('post-build-graphify fires for monorepo build flag forms (pnpm --filter, tu
         stack: 'react-realtime-monorepo',
         mode: 'new-project',
         onboardingComplete: true,
+        codeGraphProvider: 'graphify',
       });
       const result = runHook(cwd, 'post-build-graphify', {
         tool_input: { command },
@@ -1461,6 +1473,164 @@ test('orchestrator Phase 5 documents the missing-digest sanity check', () => {
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   assert.match(orchestrator, /Phase 5 — Cleanup \+ sanity check/);
   assert.match(orchestrator, /Digest sanity:/);
+});
+
+// ── codeGraphProvider onboarding question + state-shape enforcement ────────
+
+test('onboarding directive contains the codeGraphProvider question with gitnexus listed first', () => {
+  const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'));
+  const directive = onboardingDirectiveNewProject();
+  // The question must exist as a required onboarding field.
+  assert.match(directive, /codeGraphProvider/);
+  assert.match(directive, /REQUIRED/i);
+  // gitnexus listed first (per user instruction; no "Recommended" tag).
+  const gIdx = directive.indexOf('gitnexus');
+  const fIdx = directive.indexOf('graphify');
+  assert.ok(gIdx >= 0 && fIdx >= 0, 'both providers must appear in directive');
+  assert.ok(gIdx < fIdx, 'gitnexus must be listed before graphify');
+  // Explicit no-default + no-skip framing.
+  assert.match(directive.replace(/\s+/g, ' '), /no skip|do not (?:default|skip|silently)/i);
+});
+
+test('onboarding directive surfaces the PolyForm Noncommercial license for gitnexus', () => {
+  const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'));
+  const directive = onboardingDirectiveNewProject();
+  assert.match(directive, /PolyForm Noncommercial/);
+  // graphify license also mentioned so the user can compare.
+  assert.match(directive, /MIT/);
+});
+
+test('runPostStackSetup warns when codeGraphProvider is missing', () => {
+  withTempDir((cwd) => {
+    const filePath = path.join(cwd, '.traffic-one.json');
+    writeJson(filePath, {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      // codeGraphProvider intentionally omitted
+      confirmed: true,
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: filePath },
+    });
+    const parsed = parseStdoutJson(result);
+    assert.match(parsed.systemMessage, /codeGraphProvider/);
+    assert.match(parsed.systemMessage, /gitnexus|graphify/);
+    assert.match(parsed.hookSpecificOutput.additionalContext, /codeGraphProvider/);
+  });
+});
+
+test('runPostStackSetup warns when codeGraphProvider is set to an unknown value', () => {
+  withTempDir((cwd) => {
+    const filePath = path.join(cwd, '.traffic-one.json');
+    writeJson(filePath, {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      codeGraphProvider: 'bogus-provider',
+      confirmed: true,
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: filePath },
+    });
+    const parsed = parseStdoutJson(result);
+    assert.match(parsed.systemMessage, /unknown codeGraphProvider/);
+    assert.match(parsed.systemMessage, /bogus-provider/);
+    assert.match(parsed.systemMessage, /gitnexus, graphify/);
+  });
+});
+
+test('post-build-graphify dispatches to the gitnexus runner when codeGraphProvider is "gitnexus"', () => {
+  // We can't easily run the real gitnexus runner from the test (it would
+  // probe `which gitnexus` and try to install). Instead, assert the dispatch
+  // surface: with `codeGraphProvider: "gitnexus"` and no fresh `.gitnexus/`,
+  // the hook must produce a gitnexus-flavoured banner (license reminder /
+  // npm install hint), not the graphify one.
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      mode: 'new-project',
+      onboardingComplete: true,
+      codeGraphProvider: 'gitnexus',
+    });
+    // Force the runner's install probe to miss so it returns install-skipped
+    // without trying to install npm packages in CI.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = runHook(cwd, 'post-build-graphify', {
+        tool_input: { command: 'pnpm build' },
+      });
+      // Banner must be gitnexus-flavoured: license reminder OR install hint.
+      assert.notEqual(result.stdout, '', 'expected post-build hint with gitnexus provider');
+      assert.match(result.stdout, /gitnexus/i);
+      assert.match(result.stdout, /PolyForm Noncommercial|npm install -g gitnexus|npx gitnexus/i);
+      // Must NOT mention the graphify pipx install hint.
+      assert.doesNotMatch(result.stdout, /pipx install graphifyy/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('gitnexus-runner short-circuits when .gitnexus/ is fresh', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.gitnexus', 'index.json'), '{}\n', 'utf8');
+    // Force every which() probe to miss so the runner would otherwise fail.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd);
+      assert.equal(result.ok, true);
+      assert.equal(result.action, 'fresh');
+      assert.match(result.report || '', /\.gitnexus$/);
+      // License notice surfaced even on the fresh-cache path.
+      assert.equal(result.license, 'PolyForm Noncommercial');
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('gitnexus-runner reports install-skipped when both gitnexus and npm are off PATH', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  withTempDir((cwd) => {
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd);
+      assert.equal(result.ok, false);
+      assert.equal(result.action, 'install-skipped');
+      assert.match(result.error || '', /npm.*not on PATH|graphify/i);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('gitnexus-runner respects codeGraphAutoRun: false (provider-agnostic opt-out)', () => {
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      stack: 'react-realtime-monorepo',
+      codeGraphProvider: 'gitnexus',
+      codeGraphAutoRun: false,
+    });
+    const result = bootstrap(cwd);
+    assert.equal(result.ok, false);
+    assert.equal(result.action, 'install-skipped');
+    assert.match(result.error || '', /codeGraphAutoRun is false/);
+  });
 });
 
 let failed = 0;

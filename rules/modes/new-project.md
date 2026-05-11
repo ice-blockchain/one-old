@@ -154,8 +154,9 @@ contract, env validation, and migrations/RLS baseline are in place.
    - If the project has no DB yet, `.traffic-one/schema.sql` says
      `Not applicable` with the reason. Once migrations exist, refresh it after
      every migration.
-   - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`
-     gitignored as local caches; the memory baseline files above are source.
+   - Keep `.traffic-one/digests/`, `.traffic-one/reports/`,
+     `.traffic-one/backups/`, `graphify-out/`, and `.gitnexus/` gitignored
+     as local caches; the memory baseline files above are source.
 
 3. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
@@ -351,40 +352,51 @@ contract, env validation, and migrations/RLS baseline are in place.
       `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
-12. **Codebase graph (after first successful build, optional but recommended)**
+12. **Codebase graph (after first successful build, REQUIRED at onboarding)**
 
-   Once the workspace scaffolds and `pnpm build` passes once, install graphify
-   and generate `graphify-out/GRAPH_REPORT.md`. Subagents (`senior-architect`,
-   `senior-frontend`, `senior-backend`, `senior-reviewer`, `senior-tester`) and
-   skills (`repo-scan`, `refactor`, `simplify`, `security-review`,
-   `context-budget`) consult this report **before** falling back to
-   `Glob`/`Grep` — a one-shot file Read replaces dozens of grep calls.
+   The user picks `codeGraphProvider: "gitnexus" | "graphify"` during
+   onboarding (8th required field in `.traffic-one.json`). After the
+   workspace scaffolds and the first `pnpm build` passes, the post-build
+   hook auto-installs and runs the chosen provider. Subagents
+   (`senior-architect`, `senior-frontend`, `senior-backend`,
+   `senior-reviewer`, `senior-tester`) and skills (`repo-scan`, `refactor`,
+   `simplify`, `security-review`, `context-budget`) consult the resulting
+   on-disk artefact **before** falling back to `Glob`/`Grep` — a one-shot
+   Read replaces dozens of grep calls and cuts cross-session token usage by
+   an estimated 50–70% on multi-file work.
 
+   **When `codeGraphProvider: "gitnexus"`** (PolyForm Noncommercial license):
    ```bash
-   # one-time install (Python tool)
-   pipx install graphifyy           # or: pip install --user graphifyy
+   npm install -g gitnexus    # one-time install (Node CLI)
+   gitnexus analyze .         # produces .gitnexus/ index + auto-context
+   ```
+   GitNexus auto-writes `AGENTS.md`, `CLAUDE.md`, and `.claude/skills/`,
+   which conflict with traffic-one's own. The runner
+   (`scripts/gitnexus-runner.cjs`) backs those three up to
+   `.traffic-one/backups/<run-stamp>/` before each run and restores
+   traffic-one's versions if changed.
 
-   # generate the report
-   graphify . --no-viz --code-only --quiet
-
-   # optional: regenerate on every git commit
-   graphify hook install
+   **When `codeGraphProvider: "graphify"`** (MIT license):
+   ```bash
+   pipx install graphifyy     # one-time install (Python tool)
+   graphify update .          # produces graphify-out/GRAPH_REPORT.md + graph.json
+   graphify hook install      # optional: regenerate on every git commit
    ```
 
    The plugin's PostToolUse hook emits this hint automatically after the first
-   successful build on `mode: new-project` + `onboardingComplete: true`. You
-   don't have to remember to nag the user.
-
-   **Power-user opt-in (not auto-wired):** `graphify --mcp` runs as a stdio
-   MCP server with richer queries (shortest path, neighbors). Document its
-   install in the user's repo if they want it; the plugin's hooks consume the
-   file `GRAPH_REPORT.md` only.
+   successful build on `mode: new-project` + `onboardingComplete: true` and
+   dispatches to the right runner. You don't have to remember to nag the
+   user. Opt out per-project with `"codeGraphAutoRun": false` in
+   `.traffic-one.json` (provider-agnostic; legacy `"graphifyAutoRun": false`
+   honoured for one version).
 
    **Add to `.gitignore`:**
    ```
    graphify-out/
+   .gitnexus/
    .traffic-one/digests/
    .traffic-one/reports/
+   .traffic-one/backups/
    ```
 
 ## What happens when the user asks to build something
