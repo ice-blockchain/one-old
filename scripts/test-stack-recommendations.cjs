@@ -1643,6 +1643,34 @@ test('gitnexus-runner respects codeGraphAutoRun: false (provider-agnostic opt-ou
   });
 });
 
+test('gitnexus-runner auto-passes --skip-git when project has no .git directory + surfaces stdout in error', () => {
+  // Regression for trading-game: fresh scaffolds typically have no `.git/`
+  // yet. GitNexus refuses non-git folders by default and writes the tip
+  //   "Tip: pass --skip-git to index any folder without a .git directory."
+  // to STDOUT (not stderr). The runner used to only surface `run.stderr`,
+  // so users saw an opaque "gitnexus exited non-zero" with no clue why.
+  // Two fixes: auto-pass `--skip-git` when `.git/` is absent, AND fall back
+  // to `run.stdout` in the error message when stderr is empty.
+  const runnerSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'), 'utf8');
+
+  // The runner must conditionally append `--skip-git` based on a `.git/`
+  // existence check at the project root. Match flexibly to keep the assert
+  // resilient to small refactors.
+  assert.match(runnerSrc, /existsSync\([^)]*'\.git'[^)]*\)/);
+  assert.match(runnerSrc, /['"]--skip-git['"]/);
+
+  // The non-zero-exit branch must include `run.stdout` in the error fallback
+  // chain so stdout-only tips (like the --skip-git hint) reach the user.
+  assert.match(
+    runnerSrc.replace(/\s+/g, ' '),
+    /run\.stderr\s*\|\|\s*run\.stdout/,
+  );
+
+  // Sanity: the runGitnexus helper exposes a `skippedGit` flag downstream
+  // diagnostics can use (kept stable so future hook banners can surface it).
+  assert.match(runnerSrc, /skippedGit/);
+});
+
 test('gitnexus-runner pre-flights Node version BEFORE the `which(gitnexus)` check', () => {
   // Regression for trading-game: a user can have `gitnexus` already on
   // PATH (installed during an earlier session with `--force`, or via a
