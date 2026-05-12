@@ -453,6 +453,36 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     };
   }
 
+  if (
+    !hasAbsoluteGitnexus
+    && !hasGitnexusOnPath
+    && !canInstallOnV22
+    && !which('npm')
+    && nvmPresent()
+  ) {
+    const command = nvmInstallCommand();
+    const error = (
+      `GitNexus needs Node >=${GITNEXUS_MIN_NODE_MAJOR}. `
+      + `nvm is installed but has no v${GITNEXUS_MIN_NODE_MAJOR} version yet.\n`
+      + `One bash command sets it all up (install + default + gitnexus). `
+      + `Run it via the Bash tool — the user's permission prompt is the consent gate:\n\n`
+      + `  ${command}\n\n`
+      + `After it succeeds, re-invoke the runner (or wait for the next post-build hook).`
+    );
+    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
+    return {
+      ok: false,
+      action: 'nvm-install-needed',
+      report: null,
+      error,
+      durationMs: Date.now() - startedAt,
+      license: 'PolyForm Noncommercial',
+      nodeMajor: major,
+      requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
+      recommendedCommand: command,
+    };
+  }
+
   let action = 'used-existing';
   let useNpx = false;
   let gitnexusBin = hasAbsoluteGitnexus ? nvm22.gitnexus : null;

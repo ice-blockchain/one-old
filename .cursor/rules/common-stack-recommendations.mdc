@@ -80,6 +80,10 @@ complete them.
 - Crawl surface: `robots.txt` and `sitemap.xml` reflect the intended public
   routes. For SPA-critical SEO pages, add prerendering/static generation or host
   support before claiming search parity.
+- Generation default: new generated websites and existing web reconciliations
+  invoke the `seo` skill and satisfy `rules/common/seo.md` before the work is
+  complete, including route-aware metadata, public crawl/share assets, a site-url
+  env var, and regression coverage for metadata.
 - Performance budget: launch routes need Lighthouse Performance >= 90 on mobile
   and Core Web Vitals green in field data when available: LCP <= 2.5s,
   INP <= 200ms, and CLS <= 0.1 at p75. Mark CrUX/RUM evidence `UNVERIFIED`

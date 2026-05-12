@@ -12,6 +12,7 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 @rules/common/library-catalog.md
 @rules/common/project-memory.md
 @rules/common/documentation.md
+@rules/common/seo.md
 @rules/common/senior-engineer-team.md
 @rules/common/quality-tooling.md
 @rules/common/git.md

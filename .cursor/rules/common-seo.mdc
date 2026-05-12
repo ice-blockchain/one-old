@@ -1,0 +1,71 @@
+<!-- GENERATED FROM: rules/common/seo.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "SEO Baseline. Generated from rules/common/seo.md."
+alwaysApply: true
+---
+
+# SEO Baseline
+
+SEO is not a launch-only cleanup task. For every generated website, public web
+app, marketing route, content route, docs surface, or public SPA shell, invoke
+the `seo` skill and ship the technical SEO baseline before calling the work
+complete.
+
+For projects with no web surface, record `SEO baseline: Not applicable` in the
+handoff or docs and state the reason. For private authenticated routes and admin
+surfaces, apply `noindex,nofollow` while still keeping share and title metadata
+correct for browser tabs and internal previews.
+
+## Generated Web Baseline
+
+New generated React/Vite, Ionic web, explicit Next.js, or other public web
+projects must include:
+
+- A route-aware SEO layer:
+  - React/Vite or Ionic SPA: `Seo.tsx` plus `src/lib/seo.ts` or the local
+    equivalent. It updates `document.title`, description, robots, canonical,
+    Open Graph, Twitter Card, and JSON-LD per route.
+  - Next.js or another metadata-aware framework: use the framework-native
+    metadata API, but still satisfy the same fields and structured-data rules.
+- Route metadata for every public route: unique title, description, canonical
+  URL, robots value, Open Graph/Twitter image, and JSON-LD for the primary
+  entity visible on that route.
+- Fallback metadata in the HTML/app shell: title, description, canonical,
+  `og:*`, `twitter:*`, favicon links, and manifest link.
+- Public crawl/share assets: `robots.txt`, `sitemap.xml`,
+  `manifest.webmanifest`, `favicon.ico`, `apple-touch-icon`, app icons
+  (`192x192` and `512x512` where applicable), and a default
+  `1200x630` PNG/JPG Open Graph image.
+- A public site URL env var in the committed example env file:
+  `VITE_SITE_URL` for Vite/Ionic or the framework's public site-url equivalent.
+  Real production domains are user/host inputs; mark them `Unverified` until
+  supplied and never invent a deploy URL.
+- Regression coverage that proves at least one public route has the expected
+  title, canonical URL, Open Graph image, and JSON-LD, and that private/admin
+  routes emit `noindex,nofollow`.
+- A note in `deployment.md` or `.traffic-one/known-issues.md` when an SPA route
+  must rank but lacks prerendering/static rendering or equivalent host support.
+  Do not claim full SEO parity for client-rendered shells alone.
+
+## Existing Project Reconciliation
+
+Before normal feature work in `existing-codebase` or `existing-with-supabase`
+mode, inspect the current web surface:
+
+- Locate route definitions, app shell HTML, public assets, metadata helpers,
+  sitemap/robots generation, and existing SEO tests before adding anything.
+- Preserve mature framework-native metadata systems; extend them instead of
+  replacing them with a parallel helper.
+- If the baseline is missing or partial, add the smallest compatible SEO layer
+  and assets listed above.
+- If the baseline exists, update route metadata, sitemap/robots, structured
+  data, and tests for the changed routes.
+- Never overwrite brand/domain metadata blindly; keep existing verified values
+  and mark unknown production domains as `Unverified`.
+
+## Review And Test Gate
+
+Reviewers request changes when public web work lacks route-level title,
+description, canonical, Open Graph/Twitter image, JSON-LD, sitemap/robots,
+favicon/PWA basics, or SEO regression coverage. Testers add or update
+Playwright/unit coverage for metadata when routes are created or changed.
