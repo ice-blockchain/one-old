@@ -72,9 +72,11 @@ Every skill has a `description:` frontmatter with explicit trigger phrases.
 Claude/Codex/Cursor reads the descriptions at session start (cheap metadata only) and
 automatically invokes the full skill body when your prompt matches:
 
-Traffic One also imports a broad set of adapted ECC development skills under `skills/`.
-Those skills keep source traceability in frontmatter metadata and include a Traffic One
-precedence note so local rules and forced stack choices always win.
+Traffic One also includes a broad set of development skills under `skills/`.
+Those skills keep runtime instructions focused on behavior and include a Traffic One
+precedence note so local rules and forced stack choices always win. Structured
+source metadata lives in skill frontmatter; the readable source map lives in
+`ref.md`.
 
 | You type… | Auto-invoked skill |
 |-----------|-------------------|
@@ -87,7 +89,7 @@ precedence note so local rules and forced stack choices always win.
 | "add an Expo route" | `create-native-screen` |
 | "create a React Native feature" | `create-native-feature` |
 | "add a React Native API call" | `create-native-service` |
-| "use Karpathy-style surgical changes" | `execution-discipline` |
+| "use surgical changes" | `execution-discipline` |
 | "is this auth code secure?" | `security-review` |
 | "run the Traffic One Security Check" | `predeploy-security-check` |
 | "score production readiness" | `verification-loop` |
@@ -101,9 +103,9 @@ precedence note so local rules and forced stack choices always win.
 | "verify the visual QA for this route" | `browser-qa` |
 | "design a Postgres schema" | `postgres-patterns` |
 | "review this Supabase schema" | `postgres-review` |
-| "design an API endpoint" | adapted ECC API/backend skills |
-| "review this Go service" | adapted ECC language skills |
-| "audit this UI design system" | adapted ECC frontend/design skills |
+| "design an API endpoint" | API/backend skills |
+| "review this Go service" | language skills |
+| "audit this UI design system" | frontend/design skills |
 
 ### Rules auto-attach
 Path-scoped rules load only when a matching file is open — zero token cost otherwise:

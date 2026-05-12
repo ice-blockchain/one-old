@@ -2,7 +2,9 @@
 name: design-audit
 description: PROACTIVELY run a structured visual UI/UX audit when the user asks for "design review", "audit the UI", "make it look better", "polish", "design pass", "make this feel premium", "fix visual hierarchy", "refine spacing/typography/color", or any phrasing that implies elevating an existing UI without changing its functionality. Produces a phased, implementation-ready plan and waits for approval before touching code. Purely visual — never edits logic, state, or features.
 metadata:
-  origin: bencium-marketplace (design-audit), distilled
+  source: bencium-marketplace
+  source_path: design-audit
+  adapted_for: traffic-one
 ---
 
 # Design Audit

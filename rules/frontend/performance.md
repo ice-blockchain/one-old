@@ -39,6 +39,13 @@ Wire `web-vitals` and ship to your observability backend. Alert on regressions p
 
 - Critical path: ≤ 180 KB
 - Per-route chunk: ≤ 80 KB
+- Page-type ceilings are upper bounds, and the stricter route budget wins:
+  - Marketing / landing / brochure page: ≤ 160 KB initial JS
+  - Content microsite or SEO page: ≤ 120 KB initial JS
+  - Authenticated app shell / dashboard: ≤ 220 KB initial JS, with heavy tools
+    split into route-level chunks
+  - Specialist heavy routes (charts, maps, editors, 3D, video) must lazy-load
+    the heavy library at the usage site and document the reason if over budget
 - Keep each generated route inside its budget before declaring page-speed work complete.
 
 Analyse before every release with a bundle visualiser. Fail CI when over budget.

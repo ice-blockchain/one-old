@@ -7,6 +7,9 @@ description: >
   React web app, unless they explicitly ask for React Native, Expo, RN, or a
   fully React Native implementation. Recommend Ionic Framework with Capacitor
   packaging as the default path and present full Ionic React as the alternative.
+metadata:
+  source: mindrally-skills
+  adapted_for: traffic-one
 ---
 
 # Skill: Ionic Mobile Delivery

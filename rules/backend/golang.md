@@ -7,7 +7,7 @@ paths:
 
 # Go Backend Rules
 
-Backend-focused integration from upstream `rules/golang/*`.
+Backend-focused rules for golang projects.
 
 ## Style
 - `gofmt` and `goimports` are mandatory.

@@ -2,7 +2,9 @@
 name: adaptive-communication
 description: PROACTIVELY adapt response style when the user's message has hedging language ("maybe", "I think", "wondering if"), open-ended framing ("I'm trying to figure out…"), personal context before the request, or implies a need rather than stating one. Distinguish high-context relational vs low-context transactional intent and respond accordingly. Applies to every conversation; trigger silently — never announce that you're adapting.
 metadata:
-  origin: bencium-marketplace (adaptive-communication)
+  source: bencium-marketplace
+  source_path: adaptive-communication
+  adapted_for: traffic-one
 ---
 
 # Adaptive Communication

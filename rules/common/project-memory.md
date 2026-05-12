@@ -32,6 +32,28 @@ files exist:
 Then read `.traffic-one/plan.md`, handoff digests, graphify reports, and raw
 source as needed.
 
+## Codebase Reconnaissance
+
+Before creating or refreshing memory for an existing project, map the repo with
+local evidence instead of guessing:
+
+- Package/workspace manifests, lockfiles, runtime pins, and package-manager
+  scripts.
+- Framework fingerprints: Vite, Next.js, Expo, Ionic, backend framework, ORM,
+  database, deploy target, and CI provider.
+- Entrypoints: app roots, route definitions, API handlers, Edge Functions,
+  background jobs, WebSocket services, and native packaging config.
+- Config/tooling: TypeScript, ESLint, Prettier, test runners, Storybook,
+  Playwright/Maestro, Docker, Turborepo, and environment examples.
+- Test structure and the commands that prove the main capability still works.
+- Data flow and integration surfaces: auth, payments, storage, email,
+  analytics, external APIs, queues, cron, and realtime.
+
+Record only concise, durable facts in `.traffic-one/stack.md`,
+`.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
+`.traffic-one/agent-log.md`. Leave file-by-file inventories to graphify or
+dedicated repo-scan outputs.
+
 ## Baseline Files
 
 Create or reconcile these files for new projects and existing projects before
@@ -70,6 +92,24 @@ normal feature work:
   commands, scopes, and required env var names; never store token values.
 - `.traffic-one/skills/`: reusable local skills or commands such as
   `security-check` and `deploy-staging` when the project needs them.
+
+## Memory Shape
+
+Keep persistent memory useful, not encyclopedic:
+
+- `product.md` records the stable "who / goal / audience / tone / avoid" context
+  so each new session does not re-infer the product from scratch.
+- `stack.md` is the locked tech-stack source: language, framework, package
+  manager, database, testing, linting, deploy target, and version pins.
+- `rules/coding.md` holds durable conventions and "always true" project facts.
+  If a request conflicts with one, flag it before proceeding.
+- `decisions/` records significant choices, rejected alternatives, and why they
+  were rejected. Do not contradict a logged decision silently.
+- `known-issues.md` doubles as the failure log: when an approach takes multiple
+  attempts or a workaround is accepted, record what failed and what finally
+  worked so agents do not solve the same problem twice.
+- `agent-log.md` receives end-of-session summaries: worked on, completed,
+  in-progress, decisions made, verification, and the first next step.
 
 ## Write Rules
 

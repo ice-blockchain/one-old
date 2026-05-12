@@ -10,7 +10,12 @@ description: >
   to make agent context survive across Claude Code, Codex, Cursor, or future
   agents.
 metadata:
+  source: everything-claude-code
+  source_path: skills/codebase-onboarding/SKILL.md
+  source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
+  merged_source_paths:
+    - skills/codebase-onboarding/SKILL.md
 ---
 
 Traffic One precedence: follow this skill only where it does not conflict with
@@ -30,6 +35,22 @@ another long docs tree.
 - Reconciling an existing project before normal feature work.
 - A migration, deployment, significant decision, known bug, stack change, or MCP
   setup changes project context.
+
+## Reconnaissance Workflow
+
+For an existing project, build memory from verified local facts:
+
+1. Respect `.traffic-one/.agentignore` if it already exists.
+2. Use `rg --files` plus targeted reads of manifests and configs before broad
+   source inspection.
+3. Identify package manager, workspace layout, runtime pins, framework,
+   backend/database, deploy target, CI, test runners, and lint/format scripts.
+4. Locate app entrypoints, routes, API handlers, native packaging config,
+   migrations/schema, realtime services, and integration boundaries.
+5. Note the commands that verify the main path: build, typecheck, lint, unit,
+   integration, E2E, security scan, and deploy dry run where available.
+6. Write concise onboarding artifacts. Do not paste directory trees, full
+   command output, source excerpts, or chat history into memory.
 
 ## Required Baseline
 
@@ -70,6 +91,12 @@ Create or refresh:
   `pg_dump --schema-only --no-owner --no-privileges`; never dump table data.
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`
   local/ephemeral unless the user explicitly asks to preserve a report.
+- Treat memory as continuity, not a transcript. Store stable facts, decisions,
+  failed approaches, current work state, and "next session" handoffs; do not
+  paste chat history or bulky generated output.
+- For user-facing/product work, capture audience, tone, voice, words to avoid,
+  and permanent facts only when the user or codebase provides them. Mark guesses
+  `Unverified`.
 
 ## Minimal File Templates
 
@@ -91,6 +118,12 @@ Create or refresh:
 - Unverified:
 
 ## Non-Goals
+- Unverified:
+
+## Voice And Tone
+- Unverified:
+
+## Permanent Facts
 - Unverified:
 ```
 
@@ -131,6 +164,35 @@ Create the file empty. Append one line per deploy:
 
 ```json
 {"timestamp":"2026-05-08T00:00:00Z","commit":"<sha>","environment":"staging","actor":"<user-or-agent>","trigger":"manual","result":"success","url":"https://example.com","rollbackId":"<id>"}
+```
+
+### `.traffic-one/known-issues.md`
+
+```markdown
+# Known Issues And Failed Approaches
+
+## Open Issues
+- Unverified:
+
+## Failed Approaches
+- Task:
+- What did not work:
+- What worked:
+- Note for next time:
+```
+
+### `.traffic-one/agent-log.md`
+
+Append entries in this shape:
+
+```markdown
+## Session Summary, <ISO date>
+**Worked on:** <focus>
+**Completed:** <done>
+**In progress:** <started but not done>
+**Decisions made:** <key choices>
+**Verification:** <commands/checks or unverified>
+**Next session:** <first thing to pick up>
 ```
 
 ## Output Format

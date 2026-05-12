@@ -8,7 +8,7 @@ paths:
 
 # Java Backend Rules
 
-Backend-focused integration from upstream `rules/java/*`.
+Backend-focused rules for java projects.
 
 ## Style & models
 - Use google-java-format or Checkstyle; keep one public top-level type per file.

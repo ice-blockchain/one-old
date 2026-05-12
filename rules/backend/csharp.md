@@ -8,7 +8,7 @@ paths:
 
 # C#/.NET Backend Rules
 
-Backend-focused integration from upstream `rules/csharp/*`.
+Backend-focused rules for csharp projects.
 
 ## Style & models
 - Follow current .NET conventions and enable nullable reference types.

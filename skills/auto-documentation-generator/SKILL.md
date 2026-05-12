@@ -10,7 +10,12 @@ description: >
   "create AGENTS.md", "create llms.txt", "update architecture docs", or
   release-readiness documentation requests.
 metadata:
+  source: everything-claude-code
+  source_path: skills/codebase-onboarding/SKILL.md
+  source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
+  merged_source_paths:
+    - skills/codebase-onboarding/SKILL.md
 ---
 
 Traffic One precedence: follow this skill only where it does not conflict with
@@ -68,6 +73,25 @@ Read only what is needed:
    `supabase/functions/**`, OpenAPI specs, route handlers, Edge Functions.
 4. `graphify-out/GRAPH_REPORT.md` if available, then targeted source files.
 5. `git log --oneline --decorate --max-count=50` for changelog candidates.
+
+## Codebase Onboarding Artifacts
+
+When creating onboarding or agent docs, derive the short repo map from verified
+signals:
+
+- Package/workspace manifest, lockfile, runtime pins, and package-manager
+  scripts.
+- Framework/build fingerprints such as Vite, Next.js, Expo, Ionic, backend
+  framework, ORM, database, deploy target, CI provider, and Docker config.
+- Entrypoints and ownership boundaries: app roots, route files, API handlers,
+  Edge Functions, jobs, migrations, WebSocket services, and native config.
+- Test/lint/typecheck commands and the confidence each command provides.
+- Known hazards: env requirements, generated files, vendor folders, risky
+  migrations, external side effects, and protected deploy paths.
+
+Keep the artifact navigational. Link to graph reports, architecture docs, ADRs,
+and project memory for detail instead of copying large inventories into
+README/AGENTS/CLAUDE.
 
 ## Documentation Set
 
