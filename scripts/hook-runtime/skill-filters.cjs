@@ -33,6 +33,7 @@ const SKILL_FILTERS = {
     'auto-documentation-generator', 'project-memory',
     'api-design', 'api-connector-builder',
     'adaptive-communication',
+    'documentation-lookup',
     'design-audit', 'browser-qa',
     'supabase-setup', 'predeploy-security-check',
   ]),
@@ -40,6 +41,7 @@ const SKILL_FILTERS = {
     'create-component', 'create-feature', 'create-page', 'create-service',
     'frontend-design', 'frontend-patterns',
     'accessibility', 'ionic-mobile',
+    'vite-patterns', 'click-path-audit', 'seo',
     'e2e-testing', 'ai-regression-testing',
     'postgres-review', 'postgres-patterns', 'database-migrations',
     'nextjs-turbopack',
@@ -48,6 +50,7 @@ const SKILL_FILTERS = {
     'create-component', 'create-feature', 'create-page', 'create-service',
     'frontend-design', 'frontend-patterns',
     'accessibility', 'ionic-mobile',
+    'vite-patterns', 'click-path-audit', 'seo',
     'e2e-testing',
   ]),
   'react-native-expo-monorepo': new Set([

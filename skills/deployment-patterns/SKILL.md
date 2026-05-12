@@ -2,12 +2,13 @@
 name: deployment-patterns
 description: Deployment workflows, static-host SPA/Supabase deployment artifacts, CI/CD pipeline patterns, Docker containerization, health checks, rollback strategies, and production readiness checklists for web and Capacitor applications.
 metadata:
-  origin: ECC
+  source: everything-claude-code
+  source_path: skills/deployment-patterns/SKILL.md
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
 ---
 
-Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence. Treat upstream examples that use unapproved frameworks or libraries as conceptual patterns to adapt.
+Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
 
 # Deployment Patterns
 

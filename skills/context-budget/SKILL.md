@@ -26,6 +26,9 @@ Estimate how much of the context window is consumed by plugin components and pro
    - MCP servers × tool count
    - Conversation length and stale tool output from earlier exploration
    - Extended-thinking / high-reasoning mode on tasks that do not need it
+   - Subagent fan-out, duplicate role prompts, repeated waits, and missing
+     handoff digests that force later agents to re-read full diffs
+   - Model/reasoning tier choices and retry loops that exceed the task's risk
 2. **Classify** each into:
    - **Always needed** — keep
    - **Sometimes needed** — narrow its `paths:` / `description:` so it loads only when relevant
@@ -56,7 +59,8 @@ harnesses:
 6. **Always-on tool schema tax** — keep MCP servers/connectors opt-in unless
    they are used in most sessions.
 7. **Unneeded deep reasoning** — default to normal reasoning for simple edits;
-   increase effort only for architecture, security, debugging, and ambiguity.
+   increase effort only for architecture, security, debugging, ambiguity, and
+   cross-file invariants.
 8. **Wrong-direction generation** — stop early when a response or edit direction
    is clearly wrong; redirect before producing hundreds of wasted lines.
 9. **Plugin startup noise** — avoid "loaded successfully" context and redundant
@@ -69,6 +73,10 @@ harnesses:
 - Remove MCP servers that just wrap a CLI the agent can call via Bash.
 - Keep 3-5 frequently used skills active in a given harness; archive or disable
   rarely used skills until needed.
+- Keep subagent fan-out for work that can run in parallel with disjoint context;
+  avoid spawning multiple agents that will all read the same broad diff.
+- Reserve high reasoning/model effort for high-risk judgment work. Use local
+  tools, deterministic scripts, and normal effort for mechanical edits.
 - Target always-on instruction files below roughly 1,200 words combined where
   the host runtime allows it. Use progressive disclosure for everything else.
 

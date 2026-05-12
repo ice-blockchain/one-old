@@ -2,16 +2,17 @@
 name: security-scan
 description: Scan your Claude Code configuration (.claude/ directory) for security vulnerabilities, misconfigurations, and injection risks using AgentShield. Checks CLAUDE.md, settings.json, MCP servers, hooks, and agent definitions.
 metadata:
-  origin: ECC
+  source: everything-claude-code
+  source_path: skills/security-scan/SKILL.md
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
 ---
 
-Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence. Treat upstream examples that use unapproved frameworks or libraries as conceptual patterns to adapt.
+Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
 
 # Security Scan Skill
 
-Audit your Claude Code configuration for security issues using [AgentShield](https://github.com/affaan-m/agentshield).
+Audit your Claude Code configuration for security issues using AgentShield.
 
 ## When to Activate
 
@@ -120,16 +121,12 @@ Creates:
 - `CLAUDE.md` with security best practices
 - `mcp.json` placeholder
 
-### GitHub Action
+### CI
 
 Add to your CI pipeline:
 
 ```yaml
-- uses: affaan-m/agentshield@v1
-  with:
-    path: '.'
-    min-severity: 'medium'
-    fail-on-findings: true
+npx ecc-agentshield scan --path . --min-severity medium --format json
 ```
 
 ## Severity Levels
@@ -164,7 +161,6 @@ Add to your CI pipeline:
 - Missing descriptions on MCP servers
 - Prohibitive instructions correctly flagged as good practice
 
-## Links
+## Package
 
-- **GitHub**: [github.com/affaan-m/agentshield](https://github.com/affaan-m/agentshield)
-- **npm**: [npmjs.com/package/ecc-agentshield](https://www.npmjs.com/package/ecc-agentshield)
+- npm package: `ecc-agentshield`

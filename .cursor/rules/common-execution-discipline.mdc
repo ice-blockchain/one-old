@@ -24,6 +24,9 @@ drift, and invisible failure.
   verify it.
 - For significant tasks, name the plausible approach before acting when the
   direction materially changes architecture, content, data, permissions, or UX.
+- For new utilities, integrations, patterns, or libraries, search the repo first
+  for existing helpers, then check approved stack defaults and current docs
+  before writing custom code.
 
 ## Simplicity first
 - Implement the smallest code that satisfies the current requirement.
@@ -53,6 +56,9 @@ drift, and invisible failure.
 
 ## Goal-driven execution
 - Convert non-trivial work into verifiable success criteria before implementing.
+- For AI-assisted implementation, define the capability check and regression
+  check before editing. Capture the baseline failure when practical, then compare
+  after the change.
 - For bugs, reproduce the failure first when practical, then make the smallest fix.
 - For refactors, preserve behavior and run before/after checks where possible.
 - Keep looping until the chosen verification passes, or report the blocker clearly.
@@ -65,6 +71,12 @@ drift, and invisible failure.
 - Keep long-running tasks checkpointed. After each significant step, be able to
   state what changed, what was verified, what remains, and what risk is still
   open before continuing.
+- Decompose agentic work into units that are independently verifiable, have one
+  dominant risk, and expose a clear done condition. Split work that cannot meet
+  that bar before assigning it to an agent or subtask.
+- Match reasoning/model effort to risk: routine transforms and boilerplate stay
+  on normal effort; architecture, security, root-cause debugging, and cross-file
+  invariants justify deeper reasoning.
 - Respect token and attention budgets. When a task is growing beyond the current
   context, summarize decisions and next steps instead of silently pushing through
   a degraded session.

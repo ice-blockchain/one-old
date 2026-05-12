@@ -1,11 +1,30 @@
 ---
 name: library-pick
 description: PROACTIVELY guide the library-vs-build decision when the user asks to add a library, integrate a new capability, or wonders whether a candidate package is acceptable. TRIGGER when the user says "add a library for X", "should I use Y", "I need a date picker / drag-drop / chart / fuzzy search / state machine / [any feature]", "find a lib for", "is package X any good", "evaluate this dependency", "what library should I use", or describes a need that suggests installing a new dependency. Walks through the quality gate from rules/common/dependencies.md and decides install-vs-build.
+metadata:
+  source: everything-claude-code
+  source_path: skills/search-first/SKILL.md
+  source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
+  adapted_for: traffic-one
+  merged_source_paths:
+    - skills/search-first/SKILL.md
 ---
 
 # Library Pick — quality-gated decision
 
 When triggered, do the following in this order. Stop and ask the user only if a step needs information you don't have.
+
+## Step 0 — Research before candidates
+
+Before proposing a package, search the current repo for existing utilities,
+services, hooks, components, schemas, and tests that already cover the need.
+Then check whether the active stack, provider defaults, or catalog already owns
+the capability.
+
+If external research is needed, use the channels available in this environment:
+npm/package metadata, GitHub or web search, official docs, MCP docs connectors,
+and local skills. If one channel is unavailable, report that honestly and do not
+claim it was checked.
 
 ## Step 1 — Confirm the need is not already covered
 
@@ -96,4 +115,6 @@ Recommend the lightest passing candidate. State *why* the others were rejected. 
 - Don't recommend a library you haven't actually checked the gate for.
 - Don't pick the first npm result without comparing alternatives.
 - Don't skip Step 1 — duplicating existing stack capability is the most common waste.
+- Don't write a custom helper before checking local code, approved stack
+  defaults, official docs, and at least a small candidate set.
 - Don't add dev-dependencies (test/lint tooling) without the same gate; they pollute lockfiles too.

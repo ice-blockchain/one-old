@@ -2,12 +2,13 @@
 name: coding-standards
 description: Baseline cross-project coding conventions for naming, readability, immutability, and code-quality review. Use detailed frontend or backend skills for framework-specific patterns.
 metadata:
-  origin: ECC
+  source: everything-claude-code
+  source_path: skills/coding-standards/SKILL.md
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
 ---
 
-Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence. Treat upstream examples that use unapproved frameworks or libraries as conceptual patterns to adapt.
+Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
 
 # Coding Standards & Best Practices
 
@@ -39,7 +40,7 @@ Activate this skill for:
 Do not use this skill as the primary source for:
 - React composition, hooks, or rendering patterns
 - backend architecture, API design, or database layering
-- domain-specific framework guidance when a narrower ECC skill already exists
+- domain-specific framework guidance when a narrower stack skill already exists
 
 ## Code Quality Principles
 

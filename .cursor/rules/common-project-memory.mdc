@@ -34,6 +34,28 @@ files exist:
 Then read `.traffic-one/plan.md`, handoff digests, graphify reports, and raw
 source as needed.
 
+## Codebase Reconnaissance
+
+Before creating or refreshing memory for an existing project, map the repo with
+local evidence instead of guessing:
+
+- Package/workspace manifests, lockfiles, runtime pins, and package-manager
+  scripts.
+- Framework fingerprints: Vite, Next.js, Expo, Ionic, backend framework, ORM,
+  database, deploy target, and CI provider.
+- Entrypoints: app roots, route definitions, API handlers, Edge Functions,
+  background jobs, WebSocket services, and native packaging config.
+- Config/tooling: TypeScript, ESLint, Prettier, test runners, Storybook,
+  Playwright/Maestro, Docker, Turborepo, and environment examples.
+- Test structure and the commands that prove the main capability still works.
+- Data flow and integration surfaces: auth, payments, storage, email,
+  analytics, external APIs, queues, cron, and realtime.
+
+Record only concise, durable facts in `.traffic-one/stack.md`,
+`.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
+`.traffic-one/agent-log.md`. Leave file-by-file inventories to graphify or
+dedicated repo-scan outputs.
+
 ## Baseline Files
 
 Create or reconcile these files for new projects and existing projects before

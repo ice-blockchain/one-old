@@ -7,12 +7,13 @@ description: >
   Triggers: "review security", "is this secure", "check for vulnerabilities", "auth",
   "JWT", "token", "password", "env var", "API key", "dangerouslySetInnerHTML".
 metadata:
-  origin: ECC
+  source: everything-claude-code
+  source_path: skills/security-review/SKILL.md
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
 ---
 
-Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence. Treat upstream examples that use unapproved frameworks or libraries as conceptual patterns to adapt.
+Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
 
 # Skill: Security Review
 
@@ -32,9 +33,11 @@ Use a code-review stance: list concrete findings first, with severity and file/l
 10. Dependencies: run the local dependency quality gate before adding packages; no high+ audit findings.
 11. Pre-deploy: before release/publish/deploy approval, run `predeploy-security-check` and require a fresh passing `lastSecurityCheck*` stamp matching the current worktree.
 
-## ECC Notes
+## Additional Review Coverage
 
-The upstream ECC review adds broader coverage for API endpoints, third-party integrations, payments, cloud deployment, and CI/CD. Apply those checks only through Traffic One-approved libraries and architecture:
+For broader reviews, cover API endpoints, third-party integrations, payments,
+cloud deployment, and CI/CD through Traffic One-approved libraries and
+architecture:
 
 - Treat all external data as `unknown` until schema-validated.
 - Confirm CSRF protection, rate limiting, secure cookies, HSTS/nosniff/frame/referrer/permissions headers, and concrete CSP origins for state-changing or public endpoints.

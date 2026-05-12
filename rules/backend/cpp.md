@@ -11,7 +11,7 @@ paths:
 
 # C++ Backend Rules
 
-Backend-focused integration from upstream `rules/cpp/*`.
+Backend-focused rules for cpp projects.
 
 ## Style & resource ownership
 - Prefer modern C++17/20/23 features over C-style constructs.
