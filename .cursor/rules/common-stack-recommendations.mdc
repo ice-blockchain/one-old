@@ -64,6 +64,58 @@ Traffic One's active stack core remains authoritative.
 - Configure custom domain, automatic TLS, security headers, and HSTS preload
   readiness before calling production complete.
 
+## App Launch Checklist Defaults
+
+Treat launch readiness as a first-class plugin output for public web,
+React/Ionic, Capacitor, and Supabase-backed releases. Generate artifacts and
+verification prompts for the app surface; list store-console, legal, payment,
+provider, and human-owner tasks separately instead of pretending the plugin can
+complete them.
+
+- Web SEO and metadata: every public route needs a unique title, meta
+  description, canonical URL, and JSON-LD for the primary visible entity. Ship a
+  1200x630 PNG/JPG Open Graph + Twitter Card image for the default share card
+  and for dynamic routes where needed, plus `favicon.ico`,
+  `apple-touch-icon`, and `manifest.webmanifest` when PWA install is offered.
+- Crawl surface: `robots.txt` and `sitemap.xml` reflect the intended public
+  routes. For SPA-critical SEO pages, add prerendering/static generation or host
+  support before claiming search parity.
+- Performance budget: launch routes need Lighthouse Performance >= 90 on mobile
+  and Core Web Vitals green in field data when available: LCP <= 2.5s,
+  INP <= 200ms, and CLS <= 0.1 at p75. Mark CrUX/RUM evidence `UNVERIFIED`
+  when the property has no field data yet.
+- Analytics and monitoring: PostHog, Plausible, or GA4 is explicit and consent
+  gated in EU/UK/CA when non-essential. Error tracking follows the
+  post-deploy observability defaults.
+- Consent and privacy: Privacy Policy and Terms of Service are linked in footer
+  and signup. Cookie consent has Accept, Reject, and Manage choices, honors
+  Global Privacy Control where applicable, and blocks non-essential cookies,
+  analytics, replay, and marketing scripts before consent.
+- Accessibility: critical flows meet WCAG 2.2 Level AA, including keyboard
+  navigation, 4.5:1 text contrast, focus not obscured by sticky/floating UI,
+  accessible forms, and manual screen-reader smoke before release. EU-facing
+  covered services treat the European Accessibility Act's June 28, 2025
+  applicability as a launch risk.
+- User rights: account-creation products expose in-product account deletion and
+  a data export/right-to-access flow, with retention/deletion wording in the
+  privacy policy and release checklist evidence.
+- Operations: support/contact form reaches a monitored inbox; admin panels have
+  MFA, audit logging, and optional IP allowlist; backups have a documented test
+  restore; production env vars live only in encrypted host/CI stores; a staging
+  soft-launch runs 24-72 hours when risk warrants it; and a public status page
+  exists or is explicitly deferred.
+- Payments: production-mode payment testing covers success, refund, failed
+  card, 3-D Secure, and webhook idempotency. Mobile digital goods use Apple IAP
+  and Google Play Billing unless a documented store-policy exception applies.
+- Mobile store launch: Ionic/Capacitor releases need App Store Connect App
+  Privacy answers, `PrivacyInfo.xcprivacy` plus required third-party SDK
+  privacy manifests/required-reason API declarations, Google Play Data Safety,
+  current target API compliance, Play App Signing, ASO assets, age/content
+  rating, in-context permission prompts, verified Universal Links/App Links,
+  physical-device deep-link auth testing, and TestFlight/Play Internal Testing
+  evidence from at least five external testers unless the user accepts a smaller
+  private-launch risk.
+
 ## Post-Deploy Observability Defaults
 
 Post-deploy observability must produce founder-actionable evidence, not just
@@ -131,8 +183,11 @@ build/typecheck/tests/security scanner; exposed service-role/JWT/admin DB or
 payment/LLM secrets in browser/mobile code; public Supabase tables without RLS
 or write policies without `WITH CHECK`; destructive production migrations
 without a tested forward-only undo; payment mutations without idempotency keys;
-or app-store submissions missing account deletion, privacy manifest/data-safety
-requirements, or required review metadata.
+app-store submissions missing account deletion, privacy manifest/data-safety
+requirements, current target API compliance, required review metadata, or launch
+checklist blockers for consent, support, account deletion, data export,
+accessibility, production payment testing, backup restore evidence, or status
+page/incident ownership.
 
 Performance evidence uses current Core Web Vitals: LCP <= 2.5s, INP <= 200ms,
 and CLS <= 0.1 at the 75th percentile. Prefer both Lighthouse mobile lab data

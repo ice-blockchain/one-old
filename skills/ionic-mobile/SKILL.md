@@ -114,6 +114,33 @@ apps/web/
    behavior, permissions, app icons/splash screens, deep links, and production
    build config.
 
+## Store launch checklist
+
+- Verify App Store Connect App Privacy answers, privacy policy/support URLs,
+  age rating, review notes/demo access, and in-app account deletion when account
+  creation exists.
+- Include a valid iOS `PrivacyInfo.xcprivacy` for the app target and verify
+  third-party SDK privacy manifests/signatures plus required-reason API
+  declarations before submission.
+- Verify Google Play Data Safety answers, Play App Signing, Android App Bundle
+  readiness, and current target API compliance from official Google Play docs
+  immediately before release.
+- Prepare ASO assets: app name, subtitle/keywords for iOS, short/long Android
+  descriptions, localized screenshots for required device sizes, content rating,
+  app icon, and release notes.
+- Use Apple In-App Purchase and Google Play Billing for digital goods unless a
+  documented store-policy exception applies; do not ship Stripe in-app for
+  digital goods.
+- Ask camera, mic, location, notifications, contacts, files, and similar
+  permissions in context after explaining the feature value; never batch native
+  prompts on launch.
+- Serve and verify `/.well-known/apple-app-site-association` and
+  `/.well-known/assetlinks.json`; test auth callback deep links on a physical
+  device.
+- Run TestFlight and Play Internal Testing with at least five external testers
+  before public release unless the user explicitly accepts a smaller private
+  launch risk.
+
 ## Full Ionic React alternative
 
 Use only when the user chooses the larger migration.

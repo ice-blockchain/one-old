@@ -29,7 +29,7 @@ line-verifiable source files.
 ## Inventory Summary
 
 - Source rules: 70 files under `rules/`.
-- Skills: 100 `skills/*/SKILL.md` files.
+- Skills: 101 `skills/*/SKILL.md` files.
 - Skill support files: `skills/security-review/cloud-infrastructure-security.md` and `skills/senior-eng-orchestrator/resources/prompt-templates.md`.
 - Senior-agent role files: 6 files under `agents/`.
 - Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `scripts/sync-cursor.cjs`.
@@ -132,6 +132,7 @@ line-verifiable source files.
 | `android-clean-architecture` | `skills/android-clean-architecture/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/android-clean-architecture/SKILL.md |
 | `api-connector-builder` | `skills/api-connector-builder/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/api-connector-builder/SKILL.md |
 | `api-design` | `skills/api-design/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/api-design/SKILL.md |
+| `app-launch-checklist` | `skills/app-launch-checklist/SKILL.md` | Traffic One local web/mobile launch readiness and compliance checklist workflow |
 | `architecture-decision-records` | `skills/architecture-decision-records/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/architecture-decision-records/SKILL.md |
 | `auto-documentation-generator` | `skills/auto-documentation-generator/SKILL.md` | Traffic One local docs skill, topped up from ECC codebase onboarding: https://github.com/affaan-m/everything-claude-code/blob/main/skills/codebase-onboarding/SKILL.md |
 | `backend-patterns` | `skills/backend-patterns/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/backend-patterns/SKILL.md |

@@ -35,6 +35,7 @@ const SKILL_FILTERS = {
     'adaptive-communication',
     'documentation-lookup',
     'observability',
+    'app-launch-checklist',
     'design-audit', 'browser-qa',
     'supabase-setup', 'predeploy-security-check',
   ]),
