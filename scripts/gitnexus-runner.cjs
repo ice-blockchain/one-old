@@ -261,31 +261,35 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     }
   }
 
+  // Node version pre-flight. GitNexus needs Node >=22 to BOTH install AND
+  // run — `npm install -g gitnexus` on Node <22 hits EBADENGINE, and a
+  // gitnexus binary previously installed on a wrong Node (via `--force` or
+  // a permissive npm config) crashes with `SyntaxError: Cannot use import
+  // statement outside a module`. So check version BEFORE `which(gitnexus)`,
+  // not inside the install branch. Refuse early with an actionable banner.
+  // `opts.nodeMajor` lets tests inject a fake major without mucking with
+  // process.versions (which is read-only on some Node releases).
+  const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
+  if (major !== null && major < GITNEXUS_MIN_NODE_MAJOR) {
+    const error = nodeVersionMismatchMessage(major);
+    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
+    return {
+      ok: false,
+      action: 'node-version-mismatch',
+      report: null,
+      error,
+      durationMs: Date.now() - startedAt,
+      license: 'PolyForm Noncommercial',
+      nodeMajor: major,
+      requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
+    };
+  }
+
   let action = 'used-existing';
   let useNpx = false;
   if (!which('gitnexus')) {
     if (opts.skipInstall) {
       return { ok: false, action: 'install-skipped', report: null, error: 'gitnexus not on PATH and skipInstall=true', durationMs: 0 };
-    }
-    // Node version pre-flight. `npm install -g gitnexus` on Node <22 fails
-    // with an EBADENGINE that's hidden under npm's deprecation warnings —
-    // unhelpful for beginners. Refuse here with the upgrade command.
-    // `opts.nodeMajor` lets tests inject a fake major without mucking with
-    // process.versions (which is read-only on some Node releases).
-    const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
-    if (major !== null && major < GITNEXUS_MIN_NODE_MAJOR) {
-      const error = nodeVersionMismatchMessage(major);
-      writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
-      return {
-        ok: false,
-        action: 'node-version-mismatch',
-        report: null,
-        error,
-        durationMs: Date.now() - startedAt,
-        license: 'PolyForm Noncommercial',
-        nodeMajor: major,
-        requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
-      };
     }
     const installResult = tryInstall();
     action = installResult.action;
