@@ -12,7 +12,8 @@ live in `frontend/react/performance.md`.
 
 ## Lighthouse standard
 
-- Default standard: optimize Lighthouse Performance on mobile against a built production preview for the best practical score, with 100 as the ideal.
+- Default launch standard: Lighthouse Performance >= 90 on mobile against a
+  built production preview, with 100 as the ideal.
 - Use the Traffic One runner by default for React/Vite and Ionic web routes:
   `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
@@ -33,7 +34,10 @@ live in `frontend/react/performance.md`.
 | CLS — Cumulative Layout Shift | ≤ 0.1 |
 | TTFB — Time to First Byte | ≤ 800 ms |
 
-Wire `web-vitals` and ship to your observability backend. Alert on regressions per route.
+Wire `web-vitals` and ship to your observability backend. Alert on regressions
+per route. Prefer CrUX/RUM field data for launch decisions; if the property has
+no field data yet, mark Core Web Vitals field evidence `UNVERIFIED` instead of
+claiming it passed.
 
 ## Bundle budgets (initial, gzipped)
 

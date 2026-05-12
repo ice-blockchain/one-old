@@ -7,8 +7,13 @@ alwaysApply: false
 
 # Accessibility — framework-agnostic
 
-WCAG 2.1 AA is the floor. Real-time UIs add their own pitfalls — handle them.
-React-specific testing helpers live in `frontend/react/testing.md`.
+WCAG 2.2 Level AA is the floor for new and launch-critical work. Real-time UIs
+add their own pitfalls — handle them. React-specific testing helpers live in
+`frontend/react/testing.md`.
+Covered EU-facing services must treat the European Accessibility Act's
+June 28, 2025 applicability as a launch risk, especially for e-commerce,
+banking/payment, transport, e-books, communications, and consumer mobile app
+surfaces.
 
 ## Semantic HTML first
 
@@ -39,6 +44,8 @@ React-specific testing helpers live in `frontend/react/testing.md`.
 
 - Modals trap focus; restore to the trigger on close.
 - After route changes, move focus to `<main>` or the new page heading.
+- Focus is not obscured by sticky headers, cookie banners, chat widgets,
+  bottom navs, floating action buttons, or modal overlays.
 - Live regions: `aria-live="polite"` for non-urgent updates (chat, score ticks); `"assertive"` only for critical (errors, payment confirmations).
 - Don't move focus on real-time data updates — disorienting.
 
@@ -77,5 +84,6 @@ React-specific testing helpers live in `frontend/react/testing.md`.
 ## Testing
 
 - `@axe-core/playwright` on every E2E spec for the page under test.
-- Manual smoke with VoiceOver / NVDA on critical journeys before each release.
+- Manual smoke with VoiceOver / NVDA on critical journeys before each release,
+  including keyboard-only navigation and focus-not-obscured checks.
 - Framework-specific helpers: see `frontend/react/testing.md`.
