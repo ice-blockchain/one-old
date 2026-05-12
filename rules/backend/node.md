@@ -28,6 +28,10 @@ paths:
 - zod-validate every handler input. Treat upstream/DB data as `unknown` until validated.
 - Return 400 with flattened zod errors. One typed error hierarchy; central middleware maps to HTTP.
 - Log with request id; never log secrets/PII. No `console.log` in production.
+- Emit scrubbed request metrics for endpoint, method, status family, duration,
+  user/tenant id hash, and role when available. Dashboards and alerts track
+  non-2xx rate by endpoint and role; never log raw tokens, emails, request
+  bodies, or payment fields.
 
 ## Security & abuse
 - Rate-limit public endpoints, auth, search, state-changing routes.

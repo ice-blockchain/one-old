@@ -250,6 +250,12 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Add a monitorable `/health` path via an Edge Function, host function, or
      hosted heartbeat endpoint. If Capacitor is requested, add a force-update
      version check for mobile clients.
+   - Add the post-deploy observability baseline from
+     `rules/common/stack-recommendations.md`: Sentry release/source-map upload,
+     Supabase Logs visibility, PostHog or explicitly chosen LogRocket replay
+     with privacy masking, `/` and `/health` synthetic uptime checks, email plus
+     chat alert routing, SLO burn-rate alerts, failed-deploy log analysis, and
+     AI fix suggestions that require approval before PR/deploy actions.
    - Document rollback as previous immutable frontend deployment plus a
      forward-only undo migration for database changes.
    - Configure the custom domain, automatic TLS, security headers, and an HSTS

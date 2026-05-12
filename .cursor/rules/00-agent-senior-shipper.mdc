@@ -91,12 +91,24 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    - Run `seo` (skill) for the deployed URL: confirm canonical URLs, sitemap, robots, structured data.
    - Run `ui-demo` (skill) to record a 30–60s walkthrough of the live deploy.
    - Run `browser-qa` against the live URL to confirm no console errors / 404s on critical paths.
+   - Confirm post-deploy observability: Sentry release is tied to the git SHA,
+     source maps uploaded, Supabase Logs are available for Supabase services,
+     replay/analytics privacy masking is documented, synthetic `/` and `/health`
+     checks exist, and email plus one chat alert route is configured or marked
+     `Unverified`.
    - Append one JSON line to `.traffic-one/deployments.jsonl` with timestamp,
      commit, environment, actor, trigger, result, deploy URL, and rollback id.
    - Append a short release summary to `.traffic-one/agent-log.md`.
    - Capture the deploy URL, the released git SHA, and the run logs in your final reply.
 
-6. Roll-back plan: emit it as the last paragraph of your reply. One concrete command per platform.
+6. If the deploy fails, pull provider build logs, identify the failing step, and
+   classify common causes: lockfile mismatch, missing env var, Sentry source-map
+   auth/upload failure, migration conflict, failed test/typecheck/build, missing
+   Supabase link/project secret, or provider quota. Propose one minimal fix and
+   ask for approval before opening a PR, pushing, changing provider settings, or
+   rerunning production deploys.
+
+7. Roll-back plan: emit it as the last paragraph of your reply. One concrete command per platform.
 
 ## Skills you consult
 
@@ -114,8 +126,9 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
 - `auto-documentation-generator` — refresh release-facing docs before deploy
   when URLs, env vars, security posture, changelog entries, or agent docs changed.
 - `deployment-patterns` — for static-host SPA/Supabase, Capacitor, health,
-  rollback, and environment artifacts. Use `docker-patterns` only for
-  self-hosted, BYOC, server-runtime, or containerised services.
+  post-deploy observability, failed-deploy log analysis, rollback, and
+  environment artifacts. Use `docker-patterns` only for self-hosted, BYOC,
+  server-runtime, or containerised services.
 - Stack `*-verification` (e.g. `springboot-verification`) — final pre-deploy gate.
 
 ## Digest output (REQUIRED)
@@ -126,7 +139,7 @@ Write your handoff digest to:
 .traffic-one/digests/<run-id>/shipper.md
 ```
 
-Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FAILED), finished_at, Production-Readiness Score, Deploy URL, Git SHA, Stack-specific deploy command run, Rollback command (concrete: `vercel rollback <id>`, `eas submit --rollback`, etc.), Post-deploy checks run (seo / ui-demo / browser-qa). Cap at ~2 KB.
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FAILED), finished_at, Production-Readiness Score, Deploy URL, Git SHA, Stack-specific deploy command run, Rollback command (concrete: `vercel rollback <id>`, `eas submit --rollback`, etc.), Observability evidence (Sentry release/source maps, Supabase Logs, uptime monitors, alert routes, replay privacy), Post-deploy checks run (seo / ui-demo / browser-qa). Cap at ~2 KB.
 
 ## Hard rules
 
@@ -139,4 +152,6 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FA
 - Database migrations on production: review one more time before push. Reversible-or-don't-deploy.
 - Do not create or run a Docker deployment for a React SPA + Supabase release
   unless the plan explicitly chose a self-hosted/BYOC/container path.
-- After successful deploy: announce the URL, the git SHA, the rollback command, and which post-deploy skills you ran.
+- After successful deploy: announce the URL, the git SHA, the rollback command,
+  which post-deploy skills you ran, and any observability evidence that remains
+  `Unverified`.
