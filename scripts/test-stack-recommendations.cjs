@@ -1609,11 +1609,17 @@ test('gitnexus-runner short-circuits when .gitnexus/ is fresh', () => {
 });
 
 test('gitnexus-runner reports install-skipped when both gitnexus and npm are off PATH', () => {
-  const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  // Reload the runner module with a stubbed HOME so its `findNvmNode22()`
+  // returns null (no nvm-v22 fallback path). This test pins the
+  // npm-not-on-PATH branch.
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'))];
   withTempDir((cwd) => {
     const prevPath = process.env.PATH;
+    const prevHome = process.env.HOME;
     process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    process.env.HOME = cwd;  // no `.nvm/` in here
     try {
+      const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
       // Inject `nodeMajor: 22` so this test focuses on the
       // npm-not-on-PATH branch regardless of the test runner's host Node
       // version (the Node-version-mismatch branch has its own dedicated
@@ -1624,7 +1630,140 @@ test('gitnexus-runner reports install-skipped when both gitnexus and npm are off
       assert.match(result.error || '', /npm.*not on PATH|graphify/i);
     } finally {
       process.env.PATH = prevPath;
+      process.env.HOME = prevHome;
+      delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'))];
     }
+  });
+});
+
+test('findNvmNode22 returns absolute paths for an nvm v22.x.y install when present', () => {
+  // This test does NOT mock HOME — it just verifies the helper returns a
+  // sensible shape on the current machine. If the test machine has no
+  // `~/.nvm/versions/node/v22.*`, the helper returns null, which is also
+  // a valid result we assert.
+  const { findNvmNode22 } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  const result = findNvmNode22();
+  if (result === null) {
+    // CI/sandbox without nvm — nothing more to assert.
+    return;
+  }
+  // Shape check + absolute paths.
+  assert.match(result.version, /^v22\.\d+\.\d+$/);
+  assert.ok(path.isAbsolute(result.root));
+  for (const key of ['node', 'npm', 'gitnexus']) {
+    if (result[key] !== null) {
+      assert.ok(path.isAbsolute(result[key]), `${key} should be absolute`);
+    }
+  }
+});
+
+test('gitnexus-runner uses absolute nvm-v22 gitnexus binary even when injected nodeMajor is <22', () => {
+  // Seamless behaviour: if the host machine has `~/.nvm/versions/node/v22.*/
+  // bin/gitnexus`, the runner must NOT refuse with node-version-mismatch
+  // even when the current process is on an older Node. It should resolve
+  // the absolute v22 binary path and try to run it. This is the change
+  // that lets the v2.8.1 runner work without a Claude Code relaunch.
+  const runner = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  const { bootstrap, findNvmNode22 } = runner;
+  const nvm22 = findNvmNode22();
+  if (!nvm22 || !nvm22.gitnexus) {
+    // No usable v22 install on the test machine — skip; the dedicated
+    // node-version-mismatch test still pins refusal in that scenario.
+    return;
+  }
+  withTempDir((cwd) => {
+    // Make `which gitnexus` miss so the only resolvable path is the
+    // absolute nvm-v22 one. We can't easily run gitnexus here without git
+    // (the runner adds --skip-git when no .git/) — accept either ok:true
+    // or ok:false with a non-version-mismatch action.
+    const prevPath = process.env.PATH;
+    process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    try {
+      const result = bootstrap(cwd, { nodeMajor: 20 });
+      assert.notEqual(
+        result.action,
+        'node-version-mismatch',
+        'runner must NOT refuse when nvm v22 is present, even on Node 20',
+      );
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
+test('runPostStackSetup auto-writes .nvmrc with `22` when codeGraphProvider is gitnexus on new-project', () => {
+  withTempDir((cwd) => {
+    const filePath = path.join(cwd, '.traffic-one.json');
+    writeJson(filePath, {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      codeGraphProvider: 'gitnexus',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-12T00:00:00Z',
+    });
+    // Sanity: .nvmrc does not exist yet.
+    assert.equal(fs.existsSync(path.join(cwd, '.nvmrc')), false);
+
+    runHook(cwd, 'post-stack-setup', { tool_input: { file_path: filePath } });
+
+    // .nvmrc must now exist with content `22`.
+    const nvmrcPath = path.join(cwd, '.nvmrc');
+    assert.equal(fs.existsSync(nvmrcPath), true, '.nvmrc must be auto-written');
+    assert.equal(fs.readFileSync(nvmrcPath, 'utf8').trim(), '22');
+  });
+});
+
+test('runPostStackSetup does NOT clobber an existing .nvmrc on gitnexus setup', () => {
+  withTempDir((cwd) => {
+    const filePath = path.join(cwd, '.traffic-one.json');
+    writeJson(filePath, {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      codeGraphProvider: 'gitnexus',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-12T00:00:00Z',
+    });
+    // Pre-existing .nvmrc — must be preserved.
+    const nvmrcPath = path.join(cwd, '.nvmrc');
+    fs.writeFileSync(nvmrcPath, '20.11.0\n', 'utf8');
+
+    runHook(cwd, 'post-stack-setup', { tool_input: { file_path: filePath } });
+
+    assert.equal(fs.readFileSync(nvmrcPath, 'utf8').trim(), '20.11.0',
+      'existing .nvmrc must not be overwritten');
+  });
+});
+
+test('runPostStackSetup does NOT write .nvmrc when codeGraphProvider is graphify', () => {
+  withTempDir((cwd) => {
+    const filePath = path.join(cwd, '.traffic-one.json');
+    writeJson(filePath, {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      codeGraphProvider: 'graphify',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-12T00:00:00Z',
+    });
+
+    runHook(cwd, 'post-stack-setup', { tool_input: { file_path: filePath } });
+
+    assert.equal(
+      fs.existsSync(path.join(cwd, '.nvmrc')),
+      false,
+      '.nvmrc must only be written for gitnexus, not for graphify',
+    );
   });
 });
 
@@ -1671,20 +1810,21 @@ test('gitnexus-runner auto-passes --skip-git when project has no .git directory 
   assert.match(runnerSrc, /skippedGit/);
 });
 
-test('gitnexus-runner pre-flights Node version BEFORE the `which(gitnexus)` check', () => {
-  // Regression for trading-game: a user can have `gitnexus` already on
-  // PATH (installed during an earlier session with `--force`, or via a
-  // permissive npm config) but on a Node <22 binary. The runner used to
-  // skip the version check whenever `which(gitnexus)` succeeded, so it
-  // went straight to `gitnexus analyze .` which crashes with
-  // `SyntaxError: Cannot use import statement outside a module`. The fix
-  // moved the pre-flight ABOVE `which(gitnexus)`. This test pins that
-  // ordering: with `nodeMajor: 20` injected we must refuse even if a
-  // gitnexus binary exists on PATH.
-  const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+test('gitnexus-runner does not refuse when gitnexus is on PATH (trust user PATH)', () => {
+  // v2.8.1 behaviour: when an `gitnexus` binary already lives on PATH, the
+  // runner trusts the user's setup and tries it — even when the active
+  // process is on Node <22. If that binary turns out to crash, the
+  // resulting stderr/stdout is surfaced in the error stamp so the user
+  // gets a specific diagnosis. Refusal pre-flight only fires when there
+  // is NO usable path forward (no absolute nvm-v22 binary, no PATH
+  // binary, no v22 npm to install with).
+  //
+  // Regression motivation: when the user has gitnexus installed via a
+  // non-nvm mechanism (Homebrew, custom prefix, fork) the runner should
+  // not pre-emptively refuse based on `process.versions.node` alone.
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'))];
   withTempDir((cwd) => {
-    // Build a tiny fake `gitnexus` binary on PATH so `which()` finds one,
-    // then assert the runner refuses anyway because of the Node major.
+    // Fake gitnexus binary that exits 0 (no `.gitnexus/` produced).
     const fakeBin = path.join(cwd, '.fake-bin');
     fs.mkdirSync(fakeBin, { recursive: true });
     const fakeGitnexus = path.join(fakeBin, 'gitnexus');
@@ -1692,36 +1832,42 @@ test('gitnexus-runner pre-flights Node version BEFORE the `which(gitnexus)` chec
     fs.chmodSync(fakeGitnexus, 0o755);
 
     const prevPath = process.env.PATH;
+    const prevHome = process.env.HOME;
     process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
+    process.env.HOME = cwd;  // no `.nvm/` -> findNvmNode22 returns null
     try {
+      const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
       const result = bootstrap(cwd, { nodeMajor: 20 });
-      // Must be the version-mismatch refusal, NOT a successful run /
-      // `used-existing`. If the ordering regresses, this test catches it.
+      // Must NOT be a version-mismatch refusal. The runner uses the on-PATH
+      // binary, then reports "gitnexus ran but `.gitnexus/` was not
+      // produced" (because the fake binary doesn't actually generate it).
+      assert.notEqual(result.action, 'node-version-mismatch');
       assert.equal(result.ok, false);
-      assert.equal(result.action, 'node-version-mismatch');
-      assert.equal(result.nodeMajor, 20);
-      assert.match(result.error, /Node >=22/);
-      assert.match(result.error, /nvm install 22/);
+      assert.match(result.error || '', /\.gitnexus\/?.*not produced/);
     } finally {
       process.env.PATH = prevPath;
+      process.env.HOME = prevHome;
+      delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'))];
     }
   });
 });
 
 test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', () => {
-  const runner = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
-  const { bootstrap, GITNEXUS_MIN_NODE_MAJOR, currentNodeMajor } = runner;
-  // Sanity-check the helpers exist + behave as documented.
-  assert.equal(GITNEXUS_MIN_NODE_MAJOR, 22);
-  assert.ok(typeof currentNodeMajor() === 'number' || currentNodeMajor() === null);
-
+  // Stub HOME so `findNvmNode22()` returns null and the refusal branch
+  // fires deterministically regardless of what's installed on the host.
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'))];
   withTempDir((cwd) => {
-    // Force the install probe to miss so the runner falls into the install
-    // branch where the Node-major pre-flight lives. Inject `nodeMajor: 20`
-    // so the test is deterministic regardless of which Node runs the suite.
     const prevPath = process.env.PATH;
+    const prevHome = process.env.HOME;
     process.env.PATH = '/nonexistent-path-that-does-not-exist';
+    process.env.HOME = cwd;
     try {
+      const { bootstrap, GITNEXUS_MIN_NODE_MAJOR, currentNodeMajor } =
+        require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+      // Sanity-check the helpers exist + behave as documented.
+      assert.equal(GITNEXUS_MIN_NODE_MAJOR, 22);
+      assert.ok(typeof currentNodeMajor() === 'number' || currentNodeMajor() === null);
+
       const result = bootstrap(cwd, { nodeMajor: 20 });
       assert.equal(result.ok, false);
       assert.equal(result.action, 'node-version-mismatch');
@@ -1734,16 +1880,17 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
       assert.match(result.error, /nvm alias default 22/);
       // Must offer the graphify fallback so users on locked Node can switch.
       assert.match(result.error, /graphify/);
+
+      // The runner must stamp `.traffic-one.json` so subsequent runs
+      // surface the error in the orchestrator summary.
+      const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+      assert.match(state.gitnexusLastError, /Node >=22/);
+      assert.match(state.gitnexusLastErrorAt, /^\d{4}-\d{2}-\d{2}T/);
     } finally {
       process.env.PATH = prevPath;
+      process.env.HOME = prevHome;
+      delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'))];
     }
-
-    // The runner must stamp `.traffic-one.json` so subsequent runs surface
-    // the error in the orchestrator summary (and the cooldown is reset on
-    // next user retry).
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
-    assert.match(state.gitnexusLastError, /Node >=22/);
-    assert.match(state.gitnexusLastErrorAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 
