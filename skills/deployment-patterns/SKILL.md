@@ -61,10 +61,16 @@ Generate deployment artifacts in this order:
    with privacy masking, synthetic checks for `/` and `/health`, email plus one
    chat alert route, SLO burn-rate alerts, and a failed-deploy log analysis
    path.
-8. **Rollback.** Frontend rollback means redeploying the previous immutable
+8. **Launch readiness.** For public launches, invoke `app-launch-checklist` and
+   verify SEO metadata/assets, cookie consent, privacy/terms, account deletion,
+   data export/right-to-access, WCAG 2.2 AA critical flows, support routing,
+   admin hardening, backup restore evidence, payment production tests, staging
+   soft-launch, status page, and mobile store-readiness evidence where
+   applicable.
+9. **Rollback.** Frontend rollback means redeploying the previous immutable
    build/deployment. Database rollback is a forward-only undo migration, not
    `pg_restore` and not editing an already-applied migration.
-9. **Domain hardening.** Configure the custom domain, automatic TLS, security
+10. **Domain hardening.** Configure the custom domain, automatic TLS, security
    headers, and an HSTS preload readiness check before calling production done.
 
 ### Post-Deploy Observability Baseline
@@ -222,8 +228,18 @@ When the project includes Capacitor delivery, generate or verify:
   `/.well-known/assetlinks.json`.
 - Store submission metadata: bundle ID/application ID, version/build number
   bump, screenshots, age rating, App Privacy/Data Safety answers, privacy
-  policy URL, and iOS `PrivacyInfo.xcprivacy` when required by Apple policy or
-  required-reason API usage.
+  policy URL, support URL, review notes/demo access, in-app account deletion
+  when account creation exists, and iOS `PrivacyInfo.xcprivacy` plus required
+  SDK privacy manifests/required-reason API declarations.
+- Google Play target API compliance, Play App Signing, Android App Bundle
+  readiness, and Data Safety answers verified against current official docs.
+- ASO assets: app name, iOS subtitle/keywords, Android short/long description,
+  localized screenshots for required device sizes, content rating, and release
+  notes.
+- Permission prompts shown in context, not on launch.
+- TestFlight and Play Internal Testing evidence from at least five external
+  testers before public release unless the user explicitly accepts a smaller
+  private-launch risk.
 - OTA/live update strategy for web-only fixes, such as Capgo or Capacitor Live
   Updates, with a release-channel rollback plan.
 

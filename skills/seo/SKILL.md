@@ -67,6 +67,19 @@ Use this skill when:
 - interior pages: `BreadcrumbList`
 - Q&A sections: `FAQPage` only when the content truly matches
 
+### Launch metadata checklist
+
+- Every public route has a unique `<title>`, meta description, canonical URL,
+  and JSON-LD for the primary entity visible on the page.
+- Default and dynamic share images are PNG/JPG at 1200x630 for Open Graph and
+  Twitter Cards; dynamic pages either auto-generate these images or use an
+  accurate fallback.
+- Favicon/PWA basics exist when applicable: `favicon.ico`,
+  `apple-touch-icon`, and `manifest.webmanifest`.
+- `robots.txt` and `sitemap.xml` match the intended public route surface.
+- SPA pages that must rank are prerendered/static-rendered or have equivalent
+  host support; do not claim SEO parity from a client-only shell alone.
+
 ### On-page rules
 
 #### Title tags

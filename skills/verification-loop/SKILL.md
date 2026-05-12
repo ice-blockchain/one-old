@@ -133,9 +133,12 @@ Risk lenses:
 - **Payments/webhooks**: signature verification, idempotency, replay handling,
   live/test credential separation.
 - **Operations**: clean-checkout startup, env validation, health checks,
-  rollback, incident owner path, useful logs without secrets.
+  rollback, incident owner path, useful logs without secrets, support routing,
+  backup restore evidence, status page, and staging soft-launch evidence.
 - **User experience**: desktop/mobile critical flows, loading/empty/error
-  states, permission-denied states, support/recovery path.
+  states, permission-denied states, support/recovery path, launch SEO metadata,
+  privacy/terms/signup links, consent controls, account deletion, and data
+  export/right-to-access.
 
 Output a one-sentence ship/block recommendation, then blockers, high-value
 fixes, evidence checked, evidence missing, and one next action.
@@ -155,10 +158,10 @@ Score out of 100 across 8 weighted dimensions:
 | Code quality | 12 | Build, typecheck, lint, and tests pass; no `any` in critical auth/payment/data paths; no dead routes; no unresolved `TODO`/`FIXME` in payment, auth, RLS, or deployment code. |
 | Architecture and config | 12 | UI, data access, and business logic are separated; state ownership is consistent; no god component/service; config follows 12-factor environment config. |
 | Performance | 12 | Lighthouse mobile and field/CrUX evidence show Core Web Vitals at the 75th percentile: LCP <= 2.5s, INP <= 200ms, CLS <= 0.1. If field data is unavailable, mark CrUX/RUM as `UNVERIFIED` and use lab data only for partial credit. |
-| Deployment readiness | 12 | Reproducible build; pinned runtime and lockfile; immutable releases; strict build/release/run separation; preview environments per PR; documented rollback to previous frontend artifact plus forward-only DB undo migration. |
+| Deployment readiness | 12 | Reproducible build; pinned runtime and lockfile; immutable releases; strict build/release/run separation; preview environments per PR; documented rollback to previous frontend artifact plus forward-only DB undo migration; staging soft-launch evidence and provider env vars in encrypted stores. |
 | Database safety | 12 | RLS coverage is 100%; RLS-referenced columns are indexed; migrations are in git and applied by CI; backups are restore-tested; destructive migrations have a tested forward-only rollback or are blocked. |
 | Reliability and observability | 12 | Async routes have error boundaries; transient calls use retry/backoff; payment flows use idempotency keys; risky launches use feature flags; Sentry/PostHog Errors or equivalent is wired; Sentry release tags map to commit SHA and source maps upload in CI; Supabase Logs Explorer is usable for Supabase services; logs go to stdout/stderr and redact PII; `/` and `/health` synthetic checks run every 1-5 minutes; email plus one chat alert route exists; SLO burn-rate alerts cover auth/API/uptime; `pg_stat_statements` slow-query evidence exists for Supabase/Postgres; replay/analytics masking is documented before session replay is enabled. |
-| Docs, accessibility, mobile, and cost | 10 | README, AGENTS.md/CLAUDE.md, env setup, and architecture diagram/text exist; WCAG 2.2 AA critical-flow checks pass; privacy policy/terms/cookie consent/account deletion exist where required; Ionic builds satisfy App Store/Play preflight; budget forecast and caps cover LLM calls, Supabase compute, and image transformations. |
+| Docs, accessibility, mobile, and cost | 10 | README, AGENTS.md/CLAUDE.md, env setup, and architecture diagram/text exist; launch SEO metadata, OG/Twitter images, favicon/PWA manifest, robots, and sitemap are present for public surfaces; WCAG 2.2 AA critical-flow checks pass; privacy policy/terms/granular cookie consent/GPC handling/account deletion/data export exist where required; support form reaches a monitored inbox; admin surfaces have MFA/audit logs; payment production tests cover success/refund/failure/3DS/webhook idempotency; Ionic builds satisfy App Store/Play preflight; budget forecast and caps cover LLM calls, Supabase compute, and image transformations. |
 
 Hard blockers override the numeric score and force `NOT_READY`:
 
@@ -167,7 +170,13 @@ Hard blockers override the numeric score and force `NOT_READY`:
 - Any public Supabase table lacks RLS, or write policies omit `WITH CHECK`.
 - Production DB migration is destructive without a tested forward-only undo migration.
 - Payment mutations lack server-side idempotency keys.
-- App Store / Play Store submission lacks in-app account deletion, required privacy manifest/data safety declarations, or required review metadata.
+- Public launch lacks required consent gating, privacy/terms links, account
+  deletion, data export/right-to-access, WCAG 2.2 AA critical-flow evidence,
+  support routing, backup restore evidence, production payment testing, or an
+  incident/status-page owner.
+- App Store / Play Store submission lacks in-app account deletion, required
+  privacy manifest/data safety declarations, current target API compliance,
+  digital-goods billing compliance, or required review metadata.
 
 Verdict thresholds:
 

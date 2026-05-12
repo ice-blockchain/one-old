@@ -1,7 +1,7 @@
 {
   "name": "traffic-one",
   "version": "2.7.1",
-  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with project memory under .traffic-one/, token-economy handoff digests + graphify codebase-graph cache, senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) mirrored into AGENTS.md, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, post-deploy observability guidance, AI fix suggestions with approval gates, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow, plus development skills for backend, frontend, mobile, API, testing, security, and deployment work. Rules auto-load via AGENTS.md; skills auto-trigger; hooks enforce plan gate, security-gated deploys, forbidden installs.",
+  "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with project memory under .traffic-one/, token-economy handoff digests + graphify codebase-graph cache, senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) mirrored into AGENTS.md, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow, plus development skills for backend, frontend, mobile, API, testing, security, and deployment work. Rules auto-load via AGENTS.md; skills auto-trigger; hooks enforce plan gate, security-gated deploys, forbidden installs.",
   "author": {
     "name": "Traffic-One"
   },
@@ -11,7 +11,7 @@
   "interface": {
     "displayName": "Traffic One",
     "shortDescription": "React, Ionic/Capacitor, RN, TypeScript, modern UI, and security-gated deploys.",
-    "longDescription": "Traffic One adds opinionated React, Ionic/Capacitor mobile packaging, explicit React Native, TypeScript, Turborepo, persistent .traffic-one project memory, modern clean UI design gates, visual QA, testing, post-deploy observability guidance, AI fix suggestions with approval gates, pre-deployment security scanning, and Gitflow rules with project-specific Codex skills and hooks.",
+    "longDescription": "Traffic One adds opinionated React, Ionic/Capacitor mobile packaging, explicit React Native, TypeScript, Turborepo, persistent .traffic-one project memory, modern clean UI design gates, visual QA, testing, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, pre-deployment security scanning, and Gitflow rules with project-specific Codex skills and hooks.",
     "developerName": "Traffic-One",
     "category": "Engineering",
     "capabilities": [
@@ -24,6 +24,7 @@
       "Make this UI modern and clean",
       "Run visual QA for this route",
       "Create project memory",
+      "Run the app launch checklist",
       "Add post-deploy observability",
       "Run the Traffic One Security Check"
     ],

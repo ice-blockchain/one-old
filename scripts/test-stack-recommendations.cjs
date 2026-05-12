@@ -1157,6 +1157,57 @@ test('post-deploy observability guidance is integrated, not duplicated', () => {
   assert.match(cursorStackRecommendations, /Post-Deploy Observability Defaults/);
 });
 
+test('app launch checklist guidance is integrated, not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const launchSkill = fs.readFileSync(path.join(skillsRoot, 'app-launch-checklist', 'SKILL.md'), 'utf8');
+  const seo = fs.readFileSync(path.join(skillsRoot, 'seo', 'SKILL.md'), 'utf8');
+  const ionicMobile = fs.readFileSync(path.join(skillsRoot, 'ionic-mobile', 'SKILL.md'), 'utf8');
+  const deploymentPatterns = fs.readFileSync(path.join(skillsRoot, 'deployment-patterns', 'SKILL.md'), 'utf8');
+  const verificationLoop = fs.readFileSync(path.join(skillsRoot, 'verification-loop', 'SKILL.md'), 'utf8');
+  const stackRecommendations = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'stack-recommendations.md'), 'utf8');
+  const accessibility = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'accessibility.md'), 'utf8');
+  const performance = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'performance.md'), 'utf8');
+  const ionicCapacitor = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ionic', 'capacitor.md'), 'utf8');
+  const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
+  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const ref = fs.readFileSync(path.join(ROOT, 'ref.md'), 'utf8');
+  const codexManifest = fs.readFileSync(path.join(ROOT, '.codex-plugin', 'plugin.json'), 'utf8');
+  const cursorStackRecommendations = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-stack-recommendations.mdc'), 'utf8');
+
+  assert.equal(skillNames.includes('launch-readiness'), false);
+  assert.equal(skillNames.includes('app-store-checklist'), false);
+  assert.equal(skillNames.includes('app-launch-checklist'), true);
+  assert.match(launchSkill, /WCAG 2\.2 Level AA/);
+  assert.match(launchSkill, /Global\s+Privacy Control/);
+  assert.match(launchSkill, /PrivacyInfo\.xcprivacy/);
+  assert.match(launchSkill, /five\s+external testers/);
+  assert.match(seo, /1200x630/);
+  assert.match(seo, /manifest\.webmanifest/);
+  assert.match(ionicMobile, /Store launch checklist/);
+  assert.match(ionicMobile, /Google Play Billing/);
+  assert.match(deploymentPatterns, /Launch readiness/);
+  assert.match(verificationLoop, /data export\/right-to-access/);
+  assert.match(stackRecommendations, /App Launch Checklist Defaults/);
+  assert.match(stackRecommendations, /Lighthouse Performance >= 90/);
+  assert.match(accessibility, /WCAG 2\.2 Level AA/);
+  assert.match(accessibility, /Focus is not obscured/);
+  assert.match(performance, /Lighthouse Performance >= 90/);
+  assert.match(ionicCapacitor, /Android 15 \/ API level 35/);
+  assert.match(ionicCapacitor, /Play App Signing/);
+  assert.match(shipper, /app-launch-checklist/);
+  assert.match(skillFilters, /'app-launch-checklist'/);
+  assert.match(agentsMirror, /app-launch checklist/);
+  assert.match(readme, /app launch checklist/);
+  assert.match(ref, /Skills: 101/);
+  assert.match(codexManifest, /Run the app launch checklist/);
+  assert.match(cursorStackRecommendations, /App Launch Checklist Defaults/);
+});
+
 test('auto documentation generator guidance is present and not duplicated', () => {
   const skillsRoot = path.join(ROOT, 'skills');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })

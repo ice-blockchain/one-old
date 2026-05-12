@@ -95,6 +95,7 @@ source metadata lives in skill frontmatter; the readable source map lives in
 | "run the Traffic One Security Check" | `predeploy-security-check` |
 | "score production readiness" | `verification-loop` |
 | "add monitoring and AI fix suggestions" | `observability` |
+| "run the app launch checklist" | `app-launch-checklist` |
 | "create project memory" | `project-memory` |
 | "generate project docs" | `auto-documentation-generator` |
 | "generate deployment artifacts" | `deployment-patterns` |
@@ -199,6 +200,7 @@ Or via Cursor Settings → Plugins → Add.
 | Provider-first stack recommendations | `rules/common/stack-recommendations.md`, then run `node scripts/sync-cursor.cjs` |
 | Curated library catalog | `rules/common/library-catalog.md`, then run `node scripts/sync-cursor.cjs` |
 | Post-deploy observability defaults | `rules/common/stack-recommendations.md`, `skills/observability/SKILL.md`, then run `node scripts/sync-cursor.cjs` |
+| App launch checklist defaults | `rules/common/stack-recommendations.md`, `skills/app-launch-checklist/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Project memory defaults | `rules/common/project-memory.md`, `skills/project-memory/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Documentation defaults | `rules/common/documentation.md`, `skills/auto-documentation-generator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Senior-engineer orchestration workflow | `rules/common/senior-engineer-team.md`, `skills/senior-eng-orchestrator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |

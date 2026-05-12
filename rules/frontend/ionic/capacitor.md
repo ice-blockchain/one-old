@@ -50,7 +50,30 @@ paths:
   `/.well-known/assetlinks.json`.
 - Store submission metadata includes bundle/application id, version/build bump,
   required screenshots, App Privacy/Data Safety answers, age rating, privacy
-  policy URL, and iOS `PrivacyInfo.xcprivacy` when required by Apple policy or
-  required-reason API usage.
+  policy URL, support URL, review notes/demo access, and iOS
+  `PrivacyInfo.xcprivacy` for the app plus required third-party SDK privacy
+  manifests and required-reason API usage.
+- App Store Connect launch evidence includes App Privacy answers and account
+  deletion inside the app when account creation is supported. Since May 1, 2024,
+  Apple requires approved reasons for listed APIs used by app code or
+  third-party SDKs when submitting new or updated apps.
+- Google Play launch evidence includes Data Safety answers, Play App Signing,
+  Android App Bundle readiness, and current target API compliance. Verify the
+  current requirement in official docs before release; the documented baseline
+  for new apps/updates starting August 31, 2025 is Android 15 / API level 35 or
+  higher, with listed platform exceptions.
+- ASO assets are release inputs: app name, subtitle and keywords for iOS,
+  short/long description for Android, localized screenshots for required device
+  sizes, app icon, content rating, and release notes.
+- Digital goods sold in mobile apps use Apple In-App Purchase and Google Play
+  Billing unless the project has a documented store-policy exception. Do not
+  ship Stripe in-app for digital goods.
+- Permission prompts are asked in context after a value explanation screen, not
+  at app launch.
+- Verify Universal Links/App Links and auth callback deep links on a physical
+  device before public release.
+- Run TestFlight and Play Internal Testing with at least five external testers
+  before public release unless the user explicitly accepts a smaller
+  private-launch risk.
 - Ship a force-update/version check before release and document the OTA/live
   update provider or explain why store review is required for every fix.
