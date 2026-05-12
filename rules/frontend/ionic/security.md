@@ -37,3 +37,14 @@ and permission surfaces.
 - Request permissions at the feature boundary, not at app startup.
 - Permission-denied states are explicit and recoverable.
 - Native logs strip tokens, PII, exact location, contact data, and payment data.
+
+## Native crash reporting
+
+- Capacitor releases need native crash reporting for failures the browser SDK
+  cannot see. Prefer the Sentry Capacitor SDK when Sentry is already the app's
+  error tracker; Firebase Crashlytics is acceptable only when the project
+  already uses Firebase or the user explicitly chooses it.
+- Upload iOS dSYM and Android mapping/native symbols in CI for every release,
+  tied to the same commit-SHA release/version used by the web bundle.
+- Crash breadcrumbs and custom keys must avoid tokens, emails, payment fields,
+  precise location, contacts, and other PII.

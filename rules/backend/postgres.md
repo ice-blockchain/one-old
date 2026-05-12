@@ -87,5 +87,10 @@ paths:
 ## Operations gates
 - Supabase Security Advisor and Performance Advisor findings are clean or
   documented before production release.
+- Enable `pg_stat_statements` on Supabase/Postgres before production
+  observability is marked ready. Surface slow queries by normalized query,
+  p95/mean execution time, calls, and rows read when available, then include a
+  concrete index suggestion or an `EXPLAIN ANALYZE` follow-up. Never paste bind
+  values or PII into reports.
 - Backups have a tested restore path. Free-tier Supabase projects need explicit
   export/off-site backup planning before production data lands.

@@ -51,6 +51,26 @@ React + Vite + browser-specific concerns.
 - Avoid postinstall scripts from untrusted packages — review additions to `package.json`.
 - Lockfile committed; never edit by hand.
 
+## Client observability
+
+- Use Sentry React for browser error capture before custom error tracking.
+  Initialize it before the app entrypoint imports application code, and set the
+  release to the deployed commit SHA.
+- Upload browser source maps to Sentry on every production build through CI or
+  the selected host build step. Source maps must be private after upload:
+  delete them from public artifacts or deny public access to `*.map`.
+- If the app uses Supabase, prefer the Supabase Sentry integration or equivalent
+  breadcrumb/error context, but never include Supabase keys, JWTs, row payloads,
+  or PII in events.
+- Product analytics, funnels, session replay, and feature flags default to
+  PostHog. Session replay starts with `maskAllInputs`, text/query-string
+  redaction, and `ph-no-capture`/equivalent masking for payment, auth, account,
+  health, admin, and customer-data surfaces. LogRocket is allowed only when the
+  user explicitly selects it or the existing project already uses it.
+- Browser code must not manage log files. Build/server/Edge/runtime logs write
+  to stdout/stderr for the host to collect; client diagnostics become scrubbed
+  Sentry/PostHog/LogRocket events or local dev-only console messages.
+
 ## Content Security Policy
 
 - Ship a strict CSP header in production. At minimum: `default-src 'self'; script-src 'self'; connect-src 'self' wss://<your-ws-host>`.

@@ -34,6 +34,8 @@ const SKILL_FILTERS = {
     'api-design', 'api-connector-builder',
     'adaptive-communication',
     'documentation-lookup',
+    'observability',
+    'app-launch-checklist',
     'design-audit', 'browser-qa',
     'supabase-setup', 'predeploy-security-check',
   ]),
