@@ -1643,6 +1643,43 @@ test('gitnexus-runner respects codeGraphAutoRun: false (provider-agnostic opt-ou
   });
 });
 
+test('gitnexus-runner pre-flights Node version BEFORE the `which(gitnexus)` check', () => {
+  // Regression for trading-game: a user can have `gitnexus` already on
+  // PATH (installed during an earlier session with `--force`, or via a
+  // permissive npm config) but on a Node <22 binary. The runner used to
+  // skip the version check whenever `which(gitnexus)` succeeded, so it
+  // went straight to `gitnexus analyze .` which crashes with
+  // `SyntaxError: Cannot use import statement outside a module`. The fix
+  // moved the pre-flight ABOVE `which(gitnexus)`. This test pins that
+  // ordering: with `nodeMajor: 20` injected we must refuse even if a
+  // gitnexus binary exists on PATH.
+  const { bootstrap } = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
+  withTempDir((cwd) => {
+    // Build a tiny fake `gitnexus` binary on PATH so `which()` finds one,
+    // then assert the runner refuses anyway because of the Node major.
+    const fakeBin = path.join(cwd, '.fake-bin');
+    fs.mkdirSync(fakeBin, { recursive: true });
+    const fakeGitnexus = path.join(fakeBin, 'gitnexus');
+    fs.writeFileSync(fakeGitnexus, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.chmodSync(fakeGitnexus, 0o755);
+
+    const prevPath = process.env.PATH;
+    process.env.PATH = `${fakeBin}:/usr/bin:/bin`;
+    try {
+      const result = bootstrap(cwd, { nodeMajor: 20 });
+      // Must be the version-mismatch refusal, NOT a successful run /
+      // `used-existing`. If the ordering regresses, this test catches it.
+      assert.equal(result.ok, false);
+      assert.equal(result.action, 'node-version-mismatch');
+      assert.equal(result.nodeMajor, 20);
+      assert.match(result.error, /Node >=22/);
+      assert.match(result.error, /nvm install 22/);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  });
+});
+
 test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', () => {
   const runner = require(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'));
   const { bootstrap, GITNEXUS_MIN_NODE_MAJOR, currentNodeMajor } = runner;
