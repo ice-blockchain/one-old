@@ -5,7 +5,8 @@
 # Execution Discipline
 
 Behavioral rules adapted for AI agents working in real codebases. These prevent
-silent assumptions, speculative architecture, and unrelated edits.
+silent assumptions, speculative architecture, unrelated edits, orchestration
+drift, and invisible failure.
 
 ## Think before coding
 - State important assumptions before changing code. If a choice affects behavior,
@@ -16,6 +17,11 @@ silent assumptions, speculative architecture, and unrelated edits.
   or a much simpler existing pattern.
 - If the codebase contradicts the request, stop and surface the mismatch with
   concrete file references.
+- Be honest about uncertainty. Do not fill gaps with plausible-sounding facts,
+  dates, API behavior, or source details. Say what is unverified and how to
+  verify it.
+- For significant tasks, name the plausible approach before acting when the
+  direction materially changes architecture, content, data, permissions, or UX.
 
 ## Simplicity first
 - Implement the smallest code that satisfies the current requirement.
@@ -24,6 +30,9 @@ silent assumptions, speculative architecture, and unrelated edits.
 - Prefer existing local patterns over new frameworks, helper layers, or clever APIs.
 - If a solution grows much larger than the behavior requires, simplify before
   continuing.
+- Use the model for judgment calls, not deterministic work. Routing, retries,
+  status-code handling, formatting, parsing, sorting, and repeatable transforms
+  should be code or tools whenever practical.
 
 ## Surgical changes
 - Every changed line must trace to the user's request or to keeping the build/tests
@@ -32,9 +41,38 @@ silent assumptions, speculative architecture, and unrelated edits.
 - Match existing style in files you touch, even when it differs from your preference.
 - Remove only dead code created by your change. Mention pre-existing dead code
   separately unless the user asked for cleanup.
+- Read before writing: inspect the file's exports, immediate callers, and shared
+  utilities before adding nearby code. If two existing patterns conflict, do not
+  blend them; pick the more recent or better-tested pattern, explain why, and
+  flag the other for cleanup.
+- Convention beats novelty. If the project uses a pattern you dislike, conform
+  for this task and raise the disagreement separately instead of forking the
+  codebase silently.
 
 ## Goal-driven execution
 - Convert non-trivial work into verifiable success criteria before implementing.
 - For bugs, reproduce the failure first when practical, then make the smallest fix.
 - For refactors, preserve behavior and run before/after checks where possible.
 - Keep looping until the chosen verification passes, or report the blocker clearly.
+- Tests verify intent, not just behavior. A test that cannot fail when the
+  business rule changes is weak evidence even if it passes.
+- Fail loudly: "done", "tests pass", or "migration completed" is wrong if any
+  relevant path was skipped, unverified, or uncertain.
+
+## Agent run control
+- Keep long-running tasks checkpointed. After each significant step, be able to
+  state what changed, what was verified, what remains, and what risk is still
+  open before continuing.
+- Respect token and attention budgets. When a task is growing beyond the current
+  context, summarize decisions and next steps instead of silently pushing through
+  a degraded session.
+- At completion, provide a compact status summary: files changed, what changed,
+  verification run, and any follow-up that needs the user's attention.
+
+## External-action boundaries
+- Never take an external action on the user's behalf without explicit current
+  confirmation: send, post, publish, share, schedule, deploy, migrate, push to a
+  protected environment, or call an external API with side effects.
+- Before destructive local work, list what will be affected and wait for
+  explicit confirmation unless the user already gave that exact destructive
+  instruction in the current turn.
