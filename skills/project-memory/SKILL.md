@@ -89,8 +89,10 @@ Create or refresh:
   legacy root `adr/` files only when safe.
 - Refresh `schema.sql` after each migration. Prefer migrations or
   `pg_dump --schema-only --no-owner --no-privileges`; never dump table data.
-- Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`
-  local/ephemeral unless the user explicitly asks to preserve a report.
+- Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
+  `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
+  asks to preserve a report. The codebase-graph artefact location depends on
+  `codeGraphProvider` in `.traffic-one.json`.
 - Treat memory as continuity, not a transcript. Store stable facts, decisions,
   failed approaches, current work state, and "next session" handoffs; do not
   paste chat history or bulky generated output.

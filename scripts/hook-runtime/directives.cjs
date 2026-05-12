@@ -87,12 +87,39 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
           skill to surface the right rules and integration patterns for that
           backend choice.
 
+  Codebase-graph provider (REQUIRED — no skip / no default):
+    The plugin builds a structural cache of the codebase that subagents and
+    skills read BEFORE falling back to grep / glob. Estimated effect: 50–70%
+    lower token usage on multi-file work + measurably better cross-file
+    refactor and "where does X live" answers. Two options — gitnexus is
+    listed first; pick one:
+
+      • \`gitnexus\` — Node CLI (\`npm install -g gitnexus\`); writes a
+        knowledge graph + auto-generated context to \`.gitnexus/\`. Optional
+        MCP server (\`gitnexus mcp\`) for richer queries.
+        **Requires Node >=22.** The plugin auto-detects the current Node and
+        refuses to install on older versions with a one-line \`nvm\` upgrade
+        command (\`nvm install 22 && nvm alias default 22\`). If the user is
+        on Node <22 and doesn't want to upgrade, recommend \`graphify\`.
+        **License: PolyForm Noncommercial — only usable on non-commercial
+        projects. The plugin surfaces this again at install time.**
+      • \`graphify\` — Python CLI (\`pipx install graphifyy\`); writes
+        \`graphify-out/GRAPH_REPORT.md\` + \`graph.json\`. License: MIT.
+        Currently auto-runs after first build.
+
+    Ask the user verbatim, in English: "Which provider should we use for the
+    codebase graph: **gitnexus** or **graphify**?"
+    Treat as REQUIRED. Do NOT write \`.traffic-one.json\` with
+    \`codeGraphProvider\` absent. If the user expresses uncertainty, repeat the
+    one-line license trade-off above and ask again. NEVER default-pick.
+
 GENERAL RULES:
   - One pitch per layer. If they say no twice, accept it and move on.
   - Don't be pushy; sound like a senior dev recommending what works.
+  - The codeGraphProvider question above is REQUIRED — no skip, no default.
   - Write \`.traffic-one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
-    All seven top-level fields are REQUIRED — do NOT drop any. Subsequent hooks
-    rely on \`onboardingComplete: true\` and \`mode\` being present:
+    All eight top-level fields are REQUIRED — do NOT drop any. Subsequent
+    hooks rely on \`onboardingComplete: true\` and \`mode\` being present:
 
     {
       "version": 2,
@@ -100,6 +127,7 @@ GENERAL RULES:
       "stack": "<chosen-id>",
       "backend": "<chosen-backend>",
       "realtime": "<heavy|light|none>",
+      "codeGraphProvider": "<gitnexus|graphify>",
       "confirmed": true,
       "onboardingComplete": true,
       "confirmedAt": "<ISO-8601 UTC, e.g. 2026-04-30T10:00:00Z>"
@@ -108,21 +136,24 @@ GENERAL RULES:
     If the user explicitly chose Next.js, add \`"frontend": "nextjs"\` and use
     \`"stack": "minimal"\`. Otherwise omit \`frontend\`.
 
-  EXAMPLES — non-default backend branches (still write all 7 fields):
+  EXAMPLES — non-default backend branches (still write all 8 fields):
 
-    User declined the recommended backend + has own API:
+    User declined the recommended backend + has own API + picked graphify:
     { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
       "backend": "external-api", "realtime": "none",
+      "codeGraphProvider": "graphify",
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
-    User declined the recommended backend + no backend planned:
+    User declined the recommended backend + no backend planned + picked gitnexus:
     { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
       "backend": "none", "realtime": "none",
+      "codeGraphProvider": "gitnexus",
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
-    User chose Firebase / Mongo / their own Postgres:
+    User chose Firebase / Mongo / their own Postgres + picked graphify:
     { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
       "backend": "other", "realtime": "none",
+      "codeGraphProvider": "graphify",
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
   Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-monorepo
@@ -131,6 +162,7 @@ GENERAL RULES:
   Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none
     Default = ${defaultBackend}.
   Realtime values: heavy · light · none
+  Code-graph provider values: gitnexus · graphify (REQUIRED, no default).
 
 ── After the rule bundle loads (PostToolUse system message arrives) ──
 
@@ -260,7 +292,7 @@ function autoDetectedAnnouncement(detected) {
 function onboardingReminderShort() {
   return `═══ traffic-one — onboarding still incomplete ═══
 
-Write \`.traffic-one.json\` (use the Write tool) with the full 7-field schema
+Write \`.traffic-one.json\` (use the Write tool) with the full 8-field schema
 before continuing with feature work. The PostToolUse hook will then auto-load
 the matching rule bundle into THIS session — no restart needed.
 
@@ -270,6 +302,7 @@ the matching rule bundle into THIS session — no restart needed.
     "stack": "<chosen-id>",
     "backend": "<chosen-backend>",
     "realtime": "<heavy|light|none>",
+    "codeGraphProvider": "<gitnexus|graphify>",
     "confirmed": true,
     "onboardingComplete": true,
     "confirmedAt": "<ISO-8601 UTC>"
@@ -279,6 +312,7 @@ Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-m
   · react-native-expo-app · minimal.
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
+Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
 
 If the user explicitly chose Next.js, add \`"frontend": "nextjs"\` and use
 \`"stack": "minimal"\`. See the FIRST-RUN ONBOARDING directive for the full pitch
@@ -290,16 +324,25 @@ script and decline-Supabase examples.
 // Returns the additionalContext block paired with a systemMessage when the
 // model writes a partial state file. The PostToolUse hook silently ignored
 // this case before, leaving the user's stack choice unpersisted.
-function postWriteIncompleteWarning({ stack, validStackIds }) {
+function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, validCodeGraphProviders }) {
   const header = '═══ traffic-one — `.traffic-one.json` write incomplete ═══';
   const lines = [header, ''];
+  const providers = Array.isArray(validCodeGraphProviders) && validCodeGraphProviders.length > 0
+    ? validCodeGraphProviders
+    : ['gitnexus', 'graphify'];
 
-  if (!stack) {
+  const stackMissing = !stack;
+  const stackUnknown = stack && (!validStackIds || !validStackIds.includes(stack));
+  const cgProvided = typeof codeGraphProvider === 'string' && codeGraphProvider.length > 0;
+  const cgUnknown = cgProvided && !providers.includes(codeGraphProvider);
+  const cgMissing = !cgProvided;
+
+  if (stackMissing) {
     lines.push(
       'You wrote `.traffic-one.json` without a `stack` field. The PostToolUse',
       'hook cannot auto-load any rule bundle until `stack` is set.',
     );
-  } else {
+  } else if (stackUnknown) {
     lines.push(
       `Stack id \`${stack}\` is not a valid traffic-one stack. The PostToolUse`,
       'hook cannot auto-load any rule bundle until a known stack id is set.',
@@ -308,9 +351,27 @@ function postWriteIncompleteWarning({ stack, validStackIds }) {
     );
   }
 
+  if (cgMissing) {
+    if (lines.length > 2) lines.push('');
+    lines.push(
+      'You also did not set `codeGraphProvider`. This is a REQUIRED field —',
+      'no skip, no default. Ask the user which codebase-graph provider to use:',
+      `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`,
+      'usage 50–70% on multi-file work. See `rules/common/codebase-graph.md`',
+      'and the FIRST-RUN ONBOARDING directive for the license trade-off',
+      '(gitnexus is PolyForm Noncommercial; graphify is MIT).',
+    );
+  } else if (cgUnknown) {
+    if (lines.length > 2) lines.push('');
+    lines.push(
+      `\`codeGraphProvider: "${codeGraphProvider}"\` is not a known value.`,
+      `Valid code-graph providers: ${providers.map((p) => `\`${p}\``).join(' · ')}.`,
+    );
+  }
+
   lines.push(
     '',
-    'Re-write the file with the Write tool using the full 7-field schema:',
+    'Re-write the file with the Write tool using the full 8-field schema:',
     '',
     '  {',
     '    "version": 2,',
@@ -318,6 +379,7 @@ function postWriteIncompleteWarning({ stack, validStackIds }) {
     '    "stack": "<chosen-id>",',
     '    "backend": "<chosen-backend>",',
     '    "realtime": "<heavy|light|none>",',
+    '    "codeGraphProvider": "<gitnexus|graphify>",',
     '    "confirmed": true,',
     '    "onboardingComplete": true,',
     '    "confirmedAt": "<ISO-8601 UTC>"',

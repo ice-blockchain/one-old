@@ -69,7 +69,35 @@ a frontend-only prototype or rejects Supabase.
 
 `heavy` · `light` · `none`
 
+## codeGraphProvider — REQUIRED (no skip, no default)
+
+`gitnexus` · `graphify`
+
+Ask the user verbatim:
+
+> Which provider should we use for the codebase graph: **gitnexus** or
+> **graphify**? Both build a structural cache that subagents and skills read
+> before falling back to `Glob`/`Grep`. Estimated 50–70% lower cross-session
+> token usage and noticeably better cross-file refactor / "where does X live"
+> answers.
+>
+> - **gitnexus** — Node CLI (`npm install -g gitnexus`); writes
+>   `.gitnexus/`. **License: PolyForm Noncommercial — only usable on
+>   non-commercial projects.** Optionally serves an MCP server for richer
+>   queries.
+> - **graphify** — Python CLI (`pipx install graphifyy`); writes
+>   `graphify-out/GRAPH_REPORT.md` + `graph.json`. **License: MIT.**
+
+Treat the answer as required. Do NOT write `.traffic-one.json` with
+`codeGraphProvider` absent. If the user expresses uncertainty, explain the
+license trade-off above; do not default-pick. List `gitnexus` first — do
+not add a "(Recommended)" tag.
+
 ## File shape (write exactly this with the Write tool)
+
+The schema is **8 required fields** for new projects: `mode`, `stack`,
+`backend`, `realtime`, `codeGraphProvider`, `confirmed`,
+`onboardingComplete`, `confirmedAt` (`version` makes 9 with bookkeeping).
 
 ```json
 {
@@ -78,6 +106,7 @@ a frontend-only prototype or rejects Supabase.
   "stack": "<chosen id>",
   "backend": "<chosen backend>",
   "realtime": "<heavy|light|none>",
+  "codeGraphProvider": "<gitnexus|graphify>",
   "confirmed": true,
   "onboardingComplete": true,
   "confirmedAt": "<ISO-8601 UTC>"
@@ -92,7 +121,7 @@ If the user explicitly chose Next.js, add `"frontend": "nextjs"` and use
 Reply with ONE short line confirming the choice and continuing with the user's
 original request:
 
-> "Saved — using `<stack>` (backend `<backend>`, realtime `<realtime>`). Continuing with your build."
+> "Saved — using `<stack>` (backend `<backend>`, realtime `<realtime>`, graph `<codeGraphProvider>`). Continuing with your build."
 
 The PostToolUse hook injects the full stack rules into THIS session immediately.
 You'll see `traffic-one rules loaded for stack: <id>` in a system message
@@ -104,3 +133,6 @@ before your next action — those rules are now live, use them.
 - Do NOT use stack ids that aren't listed above.
 - Do NOT change `mode` during a reconfigure.
 - Do NOT proceed with feature work or other skills while onboarding is incomplete.
+- Do NOT omit `codeGraphProvider`. The `runPostStackSetup` hook will emit a
+  blocking warning until the field is present and set to `gitnexus` or
+  `graphify`.

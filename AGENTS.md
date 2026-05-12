@@ -50,17 +50,19 @@ Agentic quality lane: every role gets explicit acceptance criteria and a regress
 
 ---
 
-## Token economy — graphify cache + per-phase digests
+## Token economy — codebase-graph cache + per-phase digests
 
 Two on-disk caches reduce token usage across the orchestrator flow:
 
-- **`.traffic-one/digests/<run-id>/<role>.md`** — every subagent writes a ≤2 KB handoff digest at the end of its run (verdict, Touched, Public contracts delta, blockers, Next-phase reading hints). Downstream subagents READ the digest INSTEAD of re-reading the full diff. `<run-id>` is the orchestrator's UTC second-precision timestamp (`2026-05-07T14-23-05Z`). Format spec: `rules/common/agent-handoff-digests.md`. Read protocol: predecessor digest → plan section → graph report → raw files (last resort).
+- **`.traffic-one/digests/<run-id>/<role>.md`** — every subagent writes a ≤2 KB handoff digest at the end of its run (verdict, Touched, Public contracts delta, blockers, Next-phase reading hints). Downstream subagents READ the digest INSTEAD of re-reading the full diff. `<run-id>` is the orchestrator's UTC second-precision timestamp (`2026-05-07T14-23-05Z`). Format spec: `rules/common/agent-handoff-digests.md`. Read protocol: predecessor digest → plan section → codebase-graph artefact → raw files (last resort).
 
-- **`graphify-out/GRAPH_REPORT.md`** — once-per-project cached codebase structure summary built via `graphify .` after the first successful build. Read it BEFORE answering "where does X live / what calls Y / what's in module Z" — it replaces dozens of `Glob`/`Grep` calls with one file Read. Format / install: `rules/common/codebase-graph.md`. The plugin's PostToolUse hook emits a one-time install hint after the first successful build on `mode: new-project + onboardingComplete: true`.
+- **Codebase-graph artefact** — once-per-project cached structure summary built by the user's chosen provider (`codeGraphProvider` in `.traffic-one.json`, required 8th onboarding field). Read it BEFORE answering "where does X live / what calls Y / what's in module Z" — it replaces dozens of `Glob`/`Grep` calls with one Read. Format / install: `rules/common/codebase-graph.md`. The plugin's PostToolUse hook dispatches to the right runner after the first successful build on `mode: new-project + onboardingComplete: true`.
+  - `codeGraphProvider: "gitnexus"` → `.gitnexus/` (PolyForm Noncommercial; `npm install -g gitnexus`; `gitnexus analyze .`). The runner backs up traffic-one's `AGENTS.md` / `CLAUDE.md` / `.claude/skills/` before running because GitNexus would otherwise clobber them.
+  - `codeGraphProvider: "graphify"` → `graphify-out/GRAPH_REPORT.md` (MIT; `pipx install graphifyy`; `graphify update .`).
 
-Both `.traffic-one/digests/` and `graphify-out/` are gitignored — they are local, ephemeral caches, not source.
+`.traffic-one/digests/`, `.traffic-one/backups/`, `graphify-out/`, and `.gitnexus/` are gitignored — they are local, ephemeral caches, not source.
 
-On Codex CLI (no native subagents), follow the same digest + graph read protocol manually as you simulate the role flow.
+On Codex CLI (no native subagents), follow the same digest + codebase-graph read protocol manually as you simulate the role flow.
 
 Context-budget rule: every harness component has a per-turn tax. Audit and trim
 the nine common leaks before adding more rules or skills: bloated

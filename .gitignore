@@ -13,8 +13,10 @@
 .claude-plugin-mode
 .orphaned_at
 
-# graphify codebase graph (generated; consumed but never committed)
+# codebase-graph artefacts (generated; consumed but never committed)
 graphify-out/
+.gitnexus/
+.traffic-one/backups/
 
 # OS
 .DS_Store

@@ -113,8 +113,10 @@ Keep persistent memory useful, not encyclopedic:
 
 ## Write Rules
 
-- Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`
-  local/ephemeral unless the user explicitly asks to preserve a report.
+- Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
+  `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
+  asks to preserve a report. The codebase-graph artefact location depends on
+  `codeGraphProvider` in `.traffic-one.json`.
 - Do not place secrets, service-role keys, database passwords, raw customer data,
   or production connection strings in project memory.
 - Append to `agent-log.md` and `deployments.jsonl`; do not rewrite history except
