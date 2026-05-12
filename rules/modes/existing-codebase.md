@@ -30,5 +30,15 @@ Preserve all existing structure. New code only.
   - Mark unknown facts as `Unverified` with the exact command/input needed.
   - Never include secret values, production data, fake deploy URLs, or
     boilerplate sections.
+- Before normal feature work on any existing web surface, run the `seo`
+  baseline reconciliation from `rules/common/seo.md`:
+  - Inspect routes, app shell HTML, public assets, sitemap/robots, metadata
+    helpers, and existing SEO tests before adding new SEO code.
+  - If SEO is missing or only partially present, add route-aware metadata,
+    canonical URLs, JSON-LD, Open Graph/Twitter tags, favicon/PWA assets,
+    `robots.txt`, `sitemap.xml`, and regression coverage.
+  - If SEO exists, update it in place for the changed public routes and preserve
+    verified brand/domain values.
+  - Mark unknown production domains as `Unverified`; do not invent deploy URLs.
 
 <!-- TODO: expand with project-specific incremental rules once structure is validated -->

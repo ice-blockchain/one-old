@@ -9,6 +9,7 @@ skills:
   - project-memory
   - architecture-decision-records
   - auto-documentation-generator
+  - seo
   - hexagonal-architecture
   - api-design
   - supabase-setup
@@ -63,6 +64,10 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
   README/AGENTS/CLAUDE, architecture, ADR, environment, API/database,
   deployment, security, contributing, changelog, and `llms.txt` docs concise and
   source-backed.
+- `seo` — mandatory for generated websites and for existing web-surface
+  reconciliation. The plan must identify public routes, private/admin noindex
+  routes, canonical site URL source, crawl/share assets, and SPA prerender or
+  host-support risks before the frontend role implements metadata.
 - `hexagonal-architecture` — if the system has multiple integrations or the user expects testability/swappable adapters.
 - `api-design` — for any service that exposes a public API surface (REST/GraphQL/RPC).
 - `supabase-setup` — if `backend === "supabase"` and migrations are not yet linked. Walk the user through Path A or B; do not finish your plan with "open the SQL editor".
@@ -102,6 +107,9 @@ List every package / app / service. One line each: name, responsibility, public 
 ## Public contracts
 TypeScript types, OpenAPI fragments, or zod schema sketches for the inter-module boundaries.
 Just enough to unblock parallel frontend ∥ backend implementation.
+For web surfaces, include the route metadata contract: public route list,
+private/admin noindex routes, site URL env var, JSON-LD entity types, sitemap
+source, and OG image strategy.
 
 ## Risks
 The 3 things most likely to derail the build. One mitigation each.

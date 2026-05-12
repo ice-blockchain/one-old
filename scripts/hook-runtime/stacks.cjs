@@ -10,8 +10,10 @@
 // useful when the model picks defaults or writes handoff docs, but too large to
 // load mandatorily on stacks that already have a framework core. Documentation
 // defaults stay mandatory because new generated projects must always ship the
-// human/agent docs baseline. Project memory stays mandatory because it is the
-// cross-session context bridge for every supported agent.
+// human/agent docs baseline. SEO defaults stay mandatory because generated and
+// reconciled web projects must not defer metadata/assets until launch. Project
+// memory stays mandatory because it is the cross-session context bridge for
+// every supported agent.
 const STACKS = {
   'react-realtime-monorepo': {
     label:
@@ -24,6 +26,7 @@ const STACKS = {
       'rules/common/senior-engineer-team.md',
       'rules/common/project-memory.md',
       'rules/common/documentation.md',
+      'rules/common/seo.md',
       'rules/common/quality-tooling.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
@@ -74,6 +77,7 @@ const STACKS = {
       'rules/common/senior-engineer-team.md',
       'rules/common/project-memory.md',
       'rules/common/documentation.md',
+      'rules/common/seo.md',
       'rules/common/quality-tooling.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
@@ -110,6 +114,7 @@ const STACKS = {
       'rules/common/senior-engineer-team.md',
       'rules/common/project-memory.md',
       'rules/common/documentation.md',
+      'rules/common/seo.md',
       'rules/common/quality-tooling.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
@@ -145,6 +150,7 @@ const STACKS = {
       'rules/common/senior-engineer-team.md',
       'rules/common/project-memory.md',
       'rules/common/documentation.md',
+      'rules/common/seo.md',
       'rules/common/quality-tooling.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
@@ -178,6 +184,7 @@ const STACKS = {
       'rules/common/senior-engineer-team.md',
       'rules/common/project-memory.md',
       'rules/common/documentation.md',
+      'rules/common/seo.md',
       'rules/common/quality-tooling.md',
       'rules/common/agent-handoff-digests.md',
       'rules/common/codebase-graph.md',
@@ -201,6 +208,7 @@ const STACKS = {
       'rules/common/codebase-graph.md',
       'rules/common/stack-recommendations.md',
       'rules/common/documentation.md',
+      'rules/common/seo.md',
       'rules/common/quality-tooling.md',
       'rules/common/library-catalog.md',
     ],

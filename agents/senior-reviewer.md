@@ -7,6 +7,7 @@ skills:
   - security-scan
   - predeploy-security-check
   - verification-loop
+  - seo
   - project-memory
   - auto-documentation-generator
   - repo-scan
@@ -60,6 +61,10 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
   readiness, launch score, or release approval; include the Production-Readiness
   Score, hard blockers, and 12-factor / AWS Well-Architected / OWASP ASVS
   mapping instead of only a code-review verdict.
+- `seo` — when the diff touches generated websites, public routes, app shells,
+  route metadata, public assets, deployment docs, or launch readiness. Check
+  the mandatory route metadata, JSON-LD, robots/sitemap, favicon/PWA/OG assets,
+  site-url env docs, private/admin noindex, and regression coverage.
 - `project-memory` — when `.traffic-one/` files changed or should have changed;
   check product/stack/rules/known issues/schema/agent log/ADR/deploy memory for
   accuracy, brevity, and absence of secrets.
@@ -134,6 +139,12 @@ CHANGES_REQUESTED — <one line summary>.
 - New or changed public architecture, API, database, deployment, security, env,
   or agent behavior is reflected in the canonical docs without duplicating
   boilerplate.
+- New generated websites and changed public web routes include the mandatory
+  SEO baseline: route-specific title, description, canonical, robots,
+  Open Graph/Twitter image, JSON-LD, favicon/PWA assets, `robots.txt`,
+  `sitemap.xml`, site-url env docs, and metadata tests. Private/admin routes
+  are `noindex,nofollow`, and SPA ranking caveats are documented when no
+  prerender/static rendering or host support exists.
 
 ## What "CHANGES_REQUESTED" means
 
