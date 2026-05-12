@@ -82,9 +82,12 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
 
 1. Read the changed files and the plan's Public contracts.
 2. For each new feature, write at minimum: one happy-path unit, one error-path unit, one integration test for the boundary (HTTP, DB, file I/O, WS), and an E2E smoke when a route was touched.
-3. Coverage target: 80%+ on changed files (per `tdd-workflow`).
-4. Run the active-stack test command. Capture the output.
-5. End with `TESTS_GREEN` if every test passed, or `TESTS_FAILING — <one-line summary>` followed by a numbered list of failures.
+3. For generated websites or changed web routes, add/update metadata coverage:
+   title, canonical URL, Open Graph image, JSON-LD entity type, and
+   `noindex,nofollow` for private/admin routes.
+4. Coverage target: 80%+ on changed files (per `tdd-workflow`).
+5. Run the active-stack test command. Capture the output.
+6. End with `TESTS_GREEN` if every test passed, or `TESTS_FAILING — <one-line summary>` followed by a numbered list of failures.
 
 ## Your verdict format
 

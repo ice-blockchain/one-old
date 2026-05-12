@@ -14,6 +14,10 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 
 Improve search visibility through technical correctness, performance, and content relevance, not gimmicks.
 
+Traffic One generation rule: this skill is mandatory for generated websites,
+public web routes, and existing web-surface reconciliations. Do not wait until
+deploy/launch to add the baseline.
+
 ## When to Use
 
 Use this skill when:
@@ -79,6 +83,20 @@ Use this skill when:
 - `robots.txt` and `sitemap.xml` match the intended public route surface.
 - SPA pages that must rank are prerendered/static-rendered or have equivalent
   host support; do not claim SEO parity from a client-only shell alone.
+
+### Traffic One generated-web baseline
+
+- React/Vite or Ionic SPA output adds a route-aware `Seo.tsx` component and
+  `src/lib/seo.ts` helpers. Frameworks with native metadata APIs use those APIs
+  instead while satisfying the same fields.
+- App shell HTML includes fallback title, description, canonical, Open Graph,
+  Twitter Card, favicon links, and manifest link.
+- Public assets include `robots.txt`, `sitemap.xml`, `manifest.webmanifest`,
+  `favicon.ico`, `apple-touch-icon`, app icons, and a default 1200x630 OG image.
+- `.env.example` documents `VITE_SITE_URL` or the framework's public site URL
+  equivalent. Unknown production domains are `Unverified`, not invented.
+- Tests assert title, canonical, OG image, JSON-LD, and private/admin noindex
+  for representative routes.
 
 ### On-page rules
 

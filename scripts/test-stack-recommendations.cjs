@@ -400,6 +400,96 @@ test('all stack bundles include documentation defaults', () => {
   }
 });
 
+test('SEO baseline is mandatory for generated and existing web projects', () => {
+  const seoRule = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'seo.md'), 'utf8');
+  const seoSkill = fs.readFileSync(path.join(ROOT, 'skills', 'seo', 'SKILL.md'), 'utf8');
+  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
+  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
+  const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  const cursorSeo = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-seo.mdc'), 'utf8');
+
+  for (const [stackId, spec] of Object.entries(STACKS)) {
+    assert.equal(
+      spec.mandatory.includes('rules/common/seo.md'),
+      true,
+      `${stackId} must load SEO defaults mandatorily`,
+    );
+  }
+
+  assert.match(seoRule, /SEO is not a launch-only cleanup task/);
+  assert.match(seoRule, /Seo\.tsx/);
+  assert.match(seoRule, /src\/lib\/seo\.ts/);
+  assert.match(seoRule, /VITE_SITE_URL/);
+  assert.match(seoRule, /noindex,nofollow/);
+  assert.match(seoRule, /prerendering\/static rendering/);
+  assert.match(seoSkill, /Traffic One generated-web baseline/);
+  assert.match(newProjectRule, /Mandatory SEO baseline/);
+  assert.match(newProjectRule, /og-default\.png/);
+  assert.match(existingRule, /run the `seo`\s+baseline reconciliation/);
+  assert.match(directives, /Mandatory SEO baseline/);
+  assert.match(directives, /SEO baseline reconciliation/);
+  assert.match(architect, /route metadata contract/);
+  assert.match(frontend, /rules\/common\/seo\.md/);
+  assert.match(reviewer, /mandatory\s+SEO baseline/);
+  assert.match(tester, /metadata coverage/);
+  assert.match(createPage, /SEO plan for public web routes/);
+  assert.match(createFeature, /SEO impact plan/);
+  assert.match(promptTemplates, /include the route metadata contract/);
+  assert.match(agentsMirror, /SEO baseline — generated and reconciled automatically/);
+  assert.match(claude, /@rules\/common\/seo\.md/);
+  assert.match(readme, /Generated\/existing web SEO baseline/);
+  assert.match(cursorSeo, /SEO is not a launch-only cleanup task/);
+
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-12T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/common\/seo\.md/);
+    assert.match(context, /Generated Web Baseline/);
+    assert.match(context, /VITE_SITE_URL/);
+  });
+
+  withTempDir((cwd) => {
+    makeExistingProject(cwd, {
+      react: '^18.0.0',
+      '@vitejs/plugin-react': '^4.0.0',
+      vite: '^6.0.0',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/common\/seo\.md/);
+    assert.match(context, /SEO baseline reconciliation/);
+  });
+});
+
 test('all stack bundles include project-memory defaults', () => {
   for (const [stackId, spec] of Object.entries(STACKS)) {
     assert.equal(

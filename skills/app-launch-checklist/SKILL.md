@@ -34,6 +34,9 @@ external messages behind explicit current-turn approval.
 
 ### Web SEO and metadata
 
+- This baseline is generated or reconciled during normal website work through
+  the `seo` skill and `rules/common/seo.md`; the launch checklist verifies it
+  rather than discovering it for the first time.
 - Every public route has a unique `<title>`, meta description, canonical URL,
   and primary-entity JSON-LD that matches visible page content.
 - Open Graph and Twitter Card images are PNG/JPG at 1200x630 for default and

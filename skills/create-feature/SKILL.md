@@ -22,8 +22,9 @@ Confirm the feature slice structure before creating any files.
 9. State the feature i18n namespace/key pattern and catalog location in `packages/i18n`
 10. State how feature components consume translations with `useTranslation`, `t`, or `<Trans>`
 11. State the page-speed impact plan for every route/surface the feature touches: lazy boundaries, heavy dependency split points, media handling, below-the-fold deferral, and third-party script containment
-12. State the visual QA plan: screenshots, Storybook states, interaction checks, and anti-AI-slop checks
-13. State the Lighthouse QA plan for page-level feature output: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
+12. State the SEO impact plan for every public web route the feature touches: route title, description, canonical path, robots value, JSON-LD entity type, OG/Twitter image, sitemap inclusion, and metadata regression check
+13. State the visual QA plan: screenshots, Storybook states, interaction checks, and anti-AI-slop checks
+14. State the Lighthouse QA plan for page-level feature output: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
 
 Scaffold rules:
 - Feature UI copy, form labels, placeholders, validation errors, alt text, ARIA labels, and loading/error/empty states use translation keys.
@@ -39,6 +40,10 @@ Scaffold rules:
 - Design-led feature surfaces include purposeful animation and interactive feedback using the active stack's approved motion library, while respecting reduced-motion preferences.
 - Preserve server state ownership in RTK Query/Redux; do not duplicate data into component state for presentation convenience.
 - Keep feature-only heavy UI and dependencies out of root app imports; dynamic-import route-specific charts, maps, 3D, video, editors, and analytics widgets.
+- Public web feature routes include route-aware SEO metadata and JSON-LD through
+  the project's SEO layer. Private/admin feature routes explicitly set
+  `noindex,nofollow`. Add/update metadata regression coverage when route output
+  changes.
 - Optimize and reserve dimensions for feature media, and defer below-the-fold content that is not needed for the first interaction.
 - For page-level feature output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
 
