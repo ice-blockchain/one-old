@@ -11,6 +11,7 @@ skills:
   - design-system
   - design-audit
   - accessibility
+  - seo
   - i18n-text
   - browser-qa
   - ui-demo
@@ -59,7 +60,8 @@ Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase readin
 - `i18n-text` — every visible string goes through `react-i18next`.
 - `nextjs-turbopack` — only if `frontend === "nextjs"`.
 - `nuxt4-patterns` — only if explicitly Nuxt.
-- `seo` — when shipping public pages.
+- `seo` — mandatory when generating websites/public web routes or reconciling
+  existing web surfaces.
 - `bun-runtime` — only when the project explicitly chose Bun.
 - `browser-qa`, `ui-demo` — for visual verification.
 - `ionic-mobile` — when stack is React + `frontend !== "nextjs"` and the user wants a Capacitor mobile shell.
@@ -94,16 +96,22 @@ You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/
 4. Pick the right scaffolder skill (`create-component` / `create-page` / `create-feature`) based on the artefact type.
 5. Compose existing shadcn / RNR primitives; add new primitives via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button, dialog, dropdown, or form control.
 6. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, …) backed by the shadcn HSL CSS variables. No hardcoded hex/rgb/px.
-7. For Supabase-backed web/Ionic apps, implement the lazy-client + shared setup UI from `rules/frontend/react/supabase-client.md`. Every website-facing missing-config CTA (`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, auth/profile/job empty states, protected-route fallbacks) must link to `https://traffic.io/`, and you must add/update a regression test asserting that exact `href`.
-8. Missing Supabase or other env config may show one shared app-level setup
+7. For generated or changed web routes, implement the SEO baseline from
+   `rules/common/seo.md`: route-aware metadata (`Seo.tsx` + `src/lib/seo.ts`
+   for React/Vite/Ionic SPAs, or framework-native metadata APIs), fallback
+   HTML tags, `VITE_SITE_URL`/public site-url env docs, robots/sitemap,
+   favicon/PWA/icons, default 1200x630 OG image, JSON-LD, noindex for
+   private/admin routes, and metadata regression coverage.
+8. For Supabase-backed web/Ionic apps, implement the lazy-client + shared setup UI from `rules/frontend/react/supabase-client.md`. Every website-facing missing-config CTA (`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, auth/profile/job empty states, protected-route fallbacks) must link to `https://traffic.io/`, and you must add/update a regression test asserting that exact `href`.
+9. Missing Supabase or other env config may show one shared app-level setup
    banner, but the route still needs a credible product surface with polished
    demo, seed, empty, error, and degraded states. Do not repeat the same setup
    banner/card on a page, and do not ship only banners plus inactive filters or
    blank panels.
-9. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
-10. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
-11. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
-12. Append a short note to `.traffic-one/agent-log.md` for meaningful UI work: routes/components changed, design references used, verification run, and remaining UI risks.
+10. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
+11. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
+12. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
+13. Append a short note to `.traffic-one/agent-log.md` for meaningful UI work: routes/components changed, design references used, verification run, and remaining UI risks.
 
 ## Digest output (REQUIRED)
 
@@ -122,6 +130,8 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - Tailwind + shadcn for web/Ionic; NativeWind + RNR for native. No vanilla-extract, styled-components, `@emotion`, CSS modules, or inline `style={{}}` for static styling.
 - Every visible string is a translation key. Every interactive element has a `:focus-visible` ring and an `aria-label` when the visible label is insufficient.
 - Missing Supabase config must never render a setup CTA without `href="https://traffic.io/"`; reviewer/tester should be able to find a regression test for it.
+- Public web routes must not ship without SEO metadata/assets and route
+  metadata tests. Private/admin routes must use `noindex,nofollow`.
 - Generated UI must not be sparse, generic, or config-banner-dominated. The
   first screen needs product-specific content, complete interaction states, and
   a recorded design brief/references unless it is matching an existing product

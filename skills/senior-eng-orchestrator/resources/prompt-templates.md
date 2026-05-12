@@ -33,10 +33,12 @@ inline their content.
 
 For `mode: new-project`, run `project-memory` and
 `auto-documentation-generator` after the plan even when the user did not ask for
-memory/docs. Create/update the `.traffic-one/` memory baseline and canonical
-docs needed for the scaffold. For `mode: existing-codebase` or
-`existing-with-supabase`, run them before normal feature work to create missing
-memory/docs and update existing files in place.
+memory/docs. Also invoke `seo` for generated websites/public web routes and
+include the route metadata contract in the plan. Create/update the
+`.traffic-one/` memory baseline and canonical docs needed for the scaffold. For
+`mode: existing-codebase` or `existing-with-supabase`, run them before normal feature work,
+plus the SEO baseline reconciliation, to create missing memory/docs, update
+existing files in place, and fill missing web metadata.
 
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
@@ -67,6 +69,11 @@ Implement only the frontend layer of the plan. The other implementer
 (senior-backend) is running in parallel — assume their public contract from
 the plan; do not invent it. Surface contract gaps in your digest's
 "Open questions / blockers" section.
+
+For generated websites or changed public web routes, apply `rules/common/seo.md`
+before finishing: route-aware metadata, JSON-LD, robots/sitemap,
+favicon/PWA/OG assets, site-url env docs, private/admin noindex, and metadata
+regression coverage.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
@@ -140,6 +147,9 @@ If the user asked "safe to ship", production readiness, launch score, or release
 approval, also run the `verification-loop` Production-Readiness Score and include
 the score, hard blockers, and 12-factor / AWS Well-Architected / OWASP mapping.
 
+For generated websites or changed public web routes, request changes if the SEO
+baseline from `rules/common/seo.md` is missing or only partial.
+
 Write your digest to:
   .traffic-one/digests/<run-id>/reviewer.md
 
@@ -169,6 +179,9 @@ Add or update tests for the changed surface. Run them. Verdict format:
   TESTS_FAILING — <count> failing.
     1. <test name> — <file:line> — <error excerpt>.
     2. …
+
+For generated websites or changed web routes, include metadata regression
+coverage for title, canonical URL, OG image, JSON-LD, and private/admin noindex.
 
 Write your digest to:
   .traffic-one/digests/<run-id>/tester.md

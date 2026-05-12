@@ -200,7 +200,17 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      and content-rich. Missing Supabase/env config may show one shared setup
      banner, but never ship only duplicated config banners, empty filters, or
      blank placeholder panels.
-  6. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
+  6. Mandatory SEO baseline: invoke \`seo\` before calling a generated website
+     or app complete. Add route-aware metadata (\`Seo.tsx\` +
+     \`src/lib/seo.ts\` for React/Vite/Ionic SPA output, or framework-native
+     metadata APIs when explicit Next.js/minimal stacks apply), fallback
+     metadata in \`index.html\`, \`VITE_SITE_URL\` in \`.env.example\`,
+     \`robots.txt\`, \`sitemap.xml\`, \`manifest.webmanifest\`,
+     \`favicon.ico\`, \`apple-touch-icon\`, app icons, a 1200x630 OG image,
+     and regression coverage for title, canonical, OG image, JSON-LD, and
+     noindex admin/private routes. If an SPA public route must rank, document
+     the prerender/static-rendering or host-support plan.
+  7. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
      relevant root-level canonical docs from \`rules/common/documentation.md\`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
@@ -267,6 +277,7 @@ function autoDetectedAnnouncement(detected) {
     'On your first reply, briefly confirm the detected stack (one line) and continue.',
     'Before normal feature work, run the project-memory baseline reconciliation: create or update `.traffic-one/` memory from verified repo facts, migrate legacy ADRs into `.traffic-one/decisions/` when safe, and never include secrets.',
     'Then run the auto-documentation baseline reconciliation: create missing canonical docs at the repo root and update existing docs in place per rules/common/documentation.md. Migrate legacy docs/ canonical files to root when safe and mark unknown facts as Unverified.',
+    'For any existing web surface, run the SEO baseline reconciliation from rules/common/seo.md before normal feature work: inspect routes/app shell/public assets/metadata helpers/tests, add or update route-aware metadata, JSON-LD, robots/sitemap, favicon/PWA/OG assets, site-url env docs, and metadata regression coverage.',
     'For any frontend UI work, the mandatory design gate applies: use frontend-design/UI-quality rules, state real-product references or match the existing aesthetic, avoid sparse config-banner-dominated screens, and verify responsive states.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];

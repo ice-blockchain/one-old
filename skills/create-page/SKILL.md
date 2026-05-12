@@ -22,8 +22,9 @@ Confirm the page and route before creating any files.
 10. State the i18n namespace/key pattern and catalog location in `packages/i18n`
 11. State whether page copy uses `useTranslation`, `t`, or `<Trans>`
 12. State the page-speed impact plan: lazy route boundary, heavy dependency split points, media dimensions/formats, below-the-fold deferral, and third-party script containment
-13. State the visual QA plan: Playwright screenshots or Storybook/page states at representative breakpoints, including an anti-AI-slop check
-14. State the Lighthouse QA plan: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
+13. State the SEO plan for public web routes: title, description, canonical path, robots value, JSON-LD entity type, OG/Twitter image, sitemap inclusion, and metadata regression check
+14. State the visual QA plan: Playwright screenshots or Storybook/page states at representative breakpoints, including an anti-AI-slop check
+15. State the Lighthouse QA plan: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
 
 Scaffold rules:
 - Route titles, headings, empty/loading/error states, navigation labels, and ARIA copy use translation keys.
@@ -38,6 +39,9 @@ Scaffold rules:
 - Design-led pages include purposeful animation and interactive feedback using the active stack's approved motion library, while respecting reduced-motion preferences.
 - Use Tailwind utility classes + shadcn primitives from `packages/ui/src/components/ui/`. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`. No inline `style={{}}` for static styling, no `.css.ts` / vanilla-extract, no hardcoded visual values, no ad hoc decorative shells.
 - Page routes are lazy-loaded with Suspense; do not import route-only heavy components, charts, maps, 3D, video, editors, analytics widgets, or demo data in the app root.
+- Public web pages include route-aware SEO metadata and JSON-LD through the
+  project's SEO layer. Private/admin pages explicitly set `noindex,nofollow`.
+  Add/update metadata regression coverage when a route is created or changed.
 - All page media reserves dimensions, uses optimized formats where applicable, and defers below-the-fold loading.
 - For page-level output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
 

@@ -74,10 +74,13 @@ contract, env validation, and migrations/RLS baseline are in place.
 │       │   │   ├── ws/            app-specific WS bridges (if not shared in packages)
 │       │   │   └── ...
 │       │   ├── components/        app-only components not promoted to packages/ui yet
+│       │   │   └── Seo.tsx        route-aware title/meta/canonical/JSON-LD layer
 │       │   ├── lib/
+│       │   │   ├── seo.ts         route metadata + JSON-LD helpers
 │       │   │   └── utils.ts        cn() helper (= clsx + tailwind-merge)
 │       │   └── styles/
 │       │       └── globals.css     Tailwind directives + shadcn HSL theme block
+│       ├── public/                robots, sitemap, manifest, favicon, icons, OG image
 │       ├── tailwind.config.ts      extends @app/tailwind-config preset
 │       ├── postcss.config.cjs
 │       ├── components.json         shadcn/ui CLI config
@@ -222,7 +225,28 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`.
 
-7. **CI/CD pipeline (use Turborepo's caching)**
+7. **Mandatory SEO baseline**
+   - Invoke the `seo` skill before calling a generated website/app complete.
+   - Add a route-aware SEO layer for every public web surface:
+     `apps/web/src/components/Seo.tsx` and `apps/web/src/lib/seo.ts` for
+     React/Vite/Ionic SPA output, or the active framework's native metadata
+     API for explicit Next.js/minimal stacks.
+   - Add or update fallback metadata in `apps/web/index.html`: title,
+     description, canonical, Open Graph, Twitter Card, favicon links, and
+     `manifest.webmanifest`.
+   - Add public crawl/share assets: `robots.txt`, `sitemap.xml`,
+     `manifest.webmanifest`, `favicon.ico`, `apple-touch-icon`, `icon-192.png`,
+     `icon-512.png`, and a default `1200x630` `og-default.png` or JPG.
+   - Add `VITE_SITE_URL` (or the framework's public site-url env var) to
+     `.env.example`. Mark the production domain `Unverified` until the user or
+     host provides it; do not invent deploy URLs.
+   - Add Playwright or unit regression coverage for route title, canonical,
+     Open Graph image, JSON-LD, and `noindex,nofollow` on private/admin routes.
+   - If an SPA public route must rank, document the prerender/static rendering
+     or host-support plan in `deployment.md` or `.traffic-one/known-issues.md`.
+     Do not claim SEO parity from a client-rendered shell alone.
+
+8. **CI/CD pipeline (use Turborepo's caching)**
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
    - Remote cache enabled if available; otherwise local.
    - Storybook build artefact uploaded for PR previews.
@@ -231,7 +255,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Supabase migration jobs use `supabase/setup-cli`, encrypted
      `SUPABASE_ACCESS_TOKEN`, and per-environment project/db-password secrets.
 
-8. **Deployment artifact baseline (smallest production set)**
+9. **Deployment artifact baseline (smallest production set)**
    - Choose one static host target for the SPA: Vercel, Netlify, or Cloudflare
      Pages. Commit that host's manifest/fallback files and do not add a
      Dockerfile unless the plan explicitly selects self-hosting, BYOC,
@@ -262,12 +286,12 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Configure the custom domain, automatic TLS, security headers, and an HSTS
      preload readiness check before calling production complete.
 
-9. **Tooling guards**
+10. **Tooling guards**
    - Husky + lint-staged for pre-commit format + lint.
    - Commitlint with conventional-commit rules.
    - PR template: summary, test plan, screenshots/Storybook link, a11y check.
 
-10. **Mandatory auto-documentation baseline**
+11. **Mandatory auto-documentation baseline**
    - Invoke `auto-documentation-generator` for every generated project before
      calling the scaffold complete, even if the user did not explicitly request
      docs.
@@ -283,7 +307,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Do not leave the project with only a README. The reviewer must treat a
      missing mandatory docs baseline as `CHANGES_REQUESTED`.
 
-11. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
+12. **Supabase setup (only if `backend === "supabase"` or `"our-fork"`)** — never assume a global `supabase` CLI exists.
 
    a. Add Supabase as a workspace devDependency:
       ```bash
