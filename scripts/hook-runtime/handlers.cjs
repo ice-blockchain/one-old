@@ -841,18 +841,28 @@ function runPostBuildGraphifyHint(rawInput) {
     }
   } else {
     if (provider === 'gitnexus') {
-      // Beginner-friendly Node-version-mismatch branch: emit the upgrade
-      // command verbatim instead of the generic "install + build" hint
-      // (the generic hint asks the user to run `npm install -g gitnexus`
-      // which would just fail again with the same EBADENGINE error).
-      if (bootstrapResult.action === 'node-version-mismatch') {
-        additionalContext = '[gitnexus] Auto-bootstrap blocked — Node version too old.\n'
+      // Most actionable branch first: nvm is installed but no v22 yet.
+      // Hand the agent a single bash command + tell it to run via Bash
+      // tool (user's permission prompt becomes the consent gate).
+      if (bootstrapResult.action === 'nvm-install-needed') {
+        additionalContext = '[gitnexus] Auto-bootstrap blocked — Node 22 not installed yet.\n'
           + `${bootstrapResult.error}\n`
-          + 'Relay this upgrade sequence to the user verbatim. After the '
-          + '`nvm` commands, they MUST fully quit + relaunch Claude Code so '
-          + 'the hook process picks up the new default Node. If they prefer '
-          + 'not to upgrade Node, edit `.traffic-one.json` → '
-          + '`codeGraphProvider: "graphify"` (Python; works on any Node).';
+          + 'AGENT: present the bash command above to the user, then run it via '
+          + 'your Bash tool. The Bash permission prompt is the consent gate — '
+          + 'do NOT install Node without it. After it succeeds, the runner will '
+          + 'pick up the new Node 22 binary automatically (no Claude Code '
+          + 'relaunch needed; the runner globs `~/.nvm/versions/node/v22.*` '
+          + 'directly).';
+      } else if (bootstrapResult.action === 'node-version-mismatch') {
+        // Beginner-friendly Node-version-mismatch branch: emit the upgrade
+        // command verbatim instead of the generic "install + build" hint
+        // (the generic hint asks the user to run `npm install -g gitnexus`
+        // which would just fail again with the same EBADENGINE error).
+        additionalContext = '[gitnexus] Auto-bootstrap blocked — Node version too old + nvm not present.\n'
+          + `${bootstrapResult.error}\n`
+          + 'Install nvm first (https://github.com/nvm-sh/nvm), then re-invoke '
+          + 'the runner. Or pick `codeGraphProvider: "graphify"` (Python; works '
+          + 'on any Node) by editing `.traffic-one.json`.';
       } else {
         additionalContext = `[gitnexus] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
           + 'Falling back to a manual hint — install + build once when convenient:\n'
