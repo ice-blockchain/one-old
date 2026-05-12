@@ -241,6 +241,29 @@ function nodeVersionMismatchMessage(major) {
   );
 }
 
+// Detect whether nvm is installed at all (looks for `~/.nvm/nvm.sh` — the
+// canonical nvm script). nvm is a shell function, not a binary, so we can't
+// `which` it; the script's presence is the reliable signal.
+function nvmPresent() {
+  const home = process.env.HOME || '';
+  if (!home) return false;
+  return fs.existsSync(path.join(home, '.nvm', 'nvm.sh'));
+}
+
+// Single-line bash command the agent can hand to the Bash tool. Sources the
+// nvm script first because nvm is a shell function, then installs + sets
+// default. Bash tool permission prompt is the user's consent — the runner
+// itself never executes this.
+function nvmInstallCommand() {
+  return (
+    `bash -lc '. "$HOME/.nvm/nvm.sh" `
+    + `&& nvm install ${GITNEXUS_MIN_NODE_MAJOR} `
+    + `&& nvm alias default ${GITNEXUS_MIN_NODE_MAJOR} `
+    + `&& nvm use default `
+    + `&& npm install -g gitnexus'`
+  );
+}
+
 function tryInstall() {
   // Prefer the absolute nvm-v22 npm when available so the install lands in
   // the v22 nvm folder regardless of which Node is "active" in PATH. This
@@ -384,6 +407,38 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     && major !== null
     && major < GITNEXUS_MIN_NODE_MAJOR
   ) {
+    // Two sub-cases for beginner UX:
+    //   (a) nvm IS installed but has no v22 → emit `nvm-install-needed`
+    //       with a single-line bash command the agent can hand to its
+    //       Bash tool. The Bash permission prompt becomes the user's
+    //       consent — the runner never executes nvm itself.
+    //   (b) nvm is NOT installed → emit the generic version-mismatch
+    //       message (which now also covers "install nvm first" as part
+    //       of `nodeVersionMismatchMessage` if we choose to extend it).
+    if (nvmPresent()) {
+      const command = nvmInstallCommand();
+      const error = (
+        `GitNexus needs Node >=${GITNEXUS_MIN_NODE_MAJOR}. `
+        + `nvm is installed but has no v${GITNEXUS_MIN_NODE_MAJOR} version yet.\n`
+        + `One bash command sets it all up (install + default + gitnexus). `
+        + `Run it via the Bash tool — the user's permission prompt is the consent gate:\n\n`
+        + `  ${command}\n\n`
+        + `After it succeeds, re-invoke the runner (or wait for the next post-build hook).`
+      );
+      writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
+      return {
+        ok: false,
+        action: 'nvm-install-needed',
+        report: null,
+        error,
+        durationMs: Date.now() - startedAt,
+        license: 'PolyForm Noncommercial',
+        nodeMajor: major,
+        requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
+        recommendedCommand: command,
+      };
+    }
+
     const error = nodeVersionMismatchMessage(major);
     writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
     return {
@@ -468,6 +523,8 @@ module.exports = {
   currentNodeMajor,
   nodeVersionMismatchMessage,
   findNvmNode22,
+  nvmPresent,
+  nvmInstallCommand,
 };
 
 if (require.main === module) {

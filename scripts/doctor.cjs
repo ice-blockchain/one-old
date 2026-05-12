@@ -1,0 +1,205 @@
+#!/usr/bin/env node
+'use strict';
+
+// scripts/doctor.cjs
+// Proactive diagnostic for traffic-one. Inspects the environment for the
+// known-fragile spots (Node version, nvm default, gitnexus binary
+// location, project `.nvmrc`, `.git/`, traffic-one state file) and
+// produces a structured JSON report. The `traffic-one-doctor` skill
+// runs this and surfaces the findings to the user with recommendations.
+//
+// Output: JSON to stdout. The report is purely informational — doctor.cjs
+// never writes to the project, never installs anything, never modifies the
+// state file. The skill (or user) decides what to do with the findings.
+
+const fs = require('fs');
+const path = require('path');
+const { spawnSync } = require('child_process');
+
+const runner = require('./gitnexus-runner.cjs');
+
+function which(cmd) {
+  const r = spawnSync('sh', ['-c', `command -v ${JSON.stringify(cmd)}`], { encoding: 'utf8' });
+  if (r.status === 0 && typeof r.stdout === 'string') {
+    const out = r.stdout.trim();
+    return out.length > 0 ? out : null;
+  }
+  return null;
+}
+
+function safeRead(filePath) {
+  try { return fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+}
+
+function safeStat(p) {
+  try { return fs.statSync(p); } catch { return null; }
+}
+
+function probeNode() {
+  return {
+    runningMajor: runner.currentNodeMajor(),
+    runningVersion: process.versions.node,
+    onPath: which('node'),
+    requiredMajor: runner.GITNEXUS_MIN_NODE_MAJOR,
+  };
+}
+
+function probeNvm() {
+  const home = process.env.HOME || '';
+  const installed = runner.nvmPresent();
+  if (!installed) return { installed: false };
+  const nvmRoot = path.join(home, '.nvm');
+  const defaultAlias = (safeRead(path.join(nvmRoot, 'alias', 'default')) || '').trim();
+  let versions = [];
+  try {
+    versions = fs.readdirSync(path.join(nvmRoot, 'versions', 'node'))
+      .filter((n) => /^v\d+\.\d+\.\d+$/.test(n))
+      .sort();
+  } catch { /* empty */ }
+  const nvm22 = runner.findNvmNode22();
+  return {
+    installed: true,
+    root: nvmRoot,
+    defaultAlias,
+    installedVersions: versions,
+    hasV22: !!nvm22,
+    v22Paths: nvm22,
+    installCommand: nvm22 ? null : runner.nvmInstallCommand(),
+  };
+}
+
+function probeGitnexus() {
+  const fromPath = which('gitnexus');
+  const nvm22 = runner.findNvmNode22();
+  return {
+    onPath: fromPath,
+    absoluteV22: nvm22 ? nvm22.gitnexus : null,
+    // A pre-existing gitnexus living inside an OLDER nvm Node folder is
+    // the "installed via --force, will crash" landmine. Flag it.
+    crashRiskInOldNvm: !!(fromPath && /\/\.nvm\/versions\/node\/v(?!22)[\d.]+\/bin\/gitnexus$/.test(fromPath)),
+  };
+}
+
+function probeProject(cwd) {
+  const trafficOne = safeRead(path.join(cwd, '.traffic-one.json'));
+  let state = null;
+  if (trafficOne) { try { state = JSON.parse(trafficOne); } catch { state = null; } }
+  const nvmrcRaw = safeRead(path.join(cwd, '.nvmrc'));
+  const gitDir = safeStat(path.join(cwd, '.git'));
+  const gitnexusOut = safeStat(path.join(cwd, '.gitnexus'));
+  const graphifyOut = safeStat(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'));
+  return {
+    cwd,
+    hasState: !!state,
+    state,
+    nvmrc: nvmrcRaw === null ? null : nvmrcRaw.trim(),
+    hasGit: !!gitDir && gitDir.isDirectory(),
+    artefacts: {
+      gitnexus: gitnexusOut ? { mtimeMs: gitnexusOut.mtimeMs } : null,
+      graphify: graphifyOut ? { mtimeMs: graphifyOut.mtimeMs } : null,
+    },
+  };
+}
+
+function buildFindings({ node, nvm, gitnexus, project }) {
+  const findings = [];
+
+  if (node.runningMajor !== null && node.runningMajor < node.requiredMajor && project.state?.codeGraphProvider === 'gitnexus') {
+    if (nvm.installed && nvm.hasV22) {
+      findings.push({
+        severity: 'info',
+        code: 'NODE_LT22_BUT_V22_AVAILABLE',
+        message: `Hook process is on Node ${node.runningMajor} but nvm v22 (${nvm.v22Paths.version}) is installed. The runner uses the absolute v22 path; no action required.`,
+      });
+    } else if (nvm.installed && !nvm.hasV22) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'NVM_INSTALLED_NO_V22',
+        message: `Hook process is on Node ${node.runningMajor} and nvm has no v22 installed. Run the install command below.`,
+        recommendedCommand: nvm.installCommand,
+      });
+    } else {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'NO_NVM_NO_V22',
+        message: `Hook process is on Node ${node.runningMajor} and nvm is not installed. Install nvm (https://github.com/nvm-sh/nvm) then run \`nvm install 22 && nvm alias default 22\`. Or switch \`codeGraphProvider\` to "graphify" (Python; any Node).`,
+      });
+    }
+  }
+
+  if (gitnexus.crashRiskInOldNvm) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'GITNEXUS_IN_OLD_NVM_NODE',
+      message: `\`gitnexus\` on PATH (${gitnexus.onPath}) lives in an old nvm Node folder — will crash with "SyntaxError: Cannot use import statement" when invoked. Reinstall against Node 22: \`npm install -g gitnexus\` from a shell with Node 22 active.`,
+    });
+  }
+
+  if (project.state?.codeGraphProvider === 'gitnexus' && project.state?.mode === 'new-project' && project.nvmrc !== null && /^\d+\.\d+\.\d+$/.test(project.nvmrc) && !project.nvmrc.startsWith('22')) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'NVMRC_PINNED_TO_OLD_NODE',
+      message: `Project's .nvmrc pins Node ${project.nvmrc}, but gitnexus needs Node >=22. cd-ing into this project will yank Node down via nvm. Overwrite \`.nvmrc\` with \`22\` to lock the project to a compatible version.`,
+    });
+  }
+
+  if (project.state?.codeGraphProvider === 'gitnexus' && !project.hasGit && !project.artefacts.gitnexus) {
+    findings.push({
+      severity: 'info',
+      code: 'NO_GIT_DIR',
+      message: 'No `.git/` directory at project root. The runner auto-passes `--skip-git` to gitnexus for non-git folders; no action required unless you want git-aware analysis (then `git init`).',
+    });
+  }
+
+  if (project.state?.codeGraphProvider === 'gitnexus' && project.artefacts.gitnexus) {
+    const ageDays = (Date.now() - project.artefacts.gitnexus.mtimeMs) / (24 * 60 * 60 * 1000);
+    if (ageDays > 7) {
+      findings.push({
+        severity: 'info',
+        code: 'GITNEXUS_STALE',
+        message: `\`.gitnexus/\` is ${Math.round(ageDays)} days old. The next build will refresh it; or manually run \`gitnexus analyze .\` to update now.`,
+      });
+    }
+  }
+
+  if (project.state?.gitnexusLastError) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'LAST_RUN_FAILED',
+      message: `Most recent gitnexus runner failed: ${project.state.gitnexusLastError.split('\n')[0]}`,
+    });
+  }
+
+  if (project.state && !project.state.codeGraphProvider) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'MISSING_CODE_GRAPH_PROVIDER',
+      message: 'State file has no `codeGraphProvider` field. Re-run onboarding to add it (gitnexus or graphify).',
+    });
+  }
+
+  return findings;
+}
+
+function main() {
+  const cwd = process.cwd();
+  const node = probeNode();
+  const nvm = probeNvm();
+  const gitnexus = probeGitnexus();
+  const project = probeProject(cwd);
+  const findings = buildFindings({ node, nvm, gitnexus, project });
+  const summary = findings.some((f) => f.severity === 'fix-needed')
+    ? 'ACTION_NEEDED'
+    : (findings.length > 0 ? 'INFO_ONLY' : 'HEALTHY');
+
+  process.stdout.write(JSON.stringify({
+    summary,
+    findings,
+    probes: { node, nvm, gitnexus, project },
+    pluginVersion: project.state?.pluginVersion || null,
+  }, null, 2) + '\n');
+}
+
+if (require.main === module) main();
+
+module.exports = { probeNode, probeNvm, probeGitnexus, probeProject, buildFindings };
