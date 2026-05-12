@@ -1,0 +1,69 @@
+---
+paths:
+  - "vite.config.*"
+  - "apps/**/vite.config.*"
+  - "apps/**/src/**"
+  - "src/**"
+  - "packages/**/vite.config.*"
+  - "packages/**/src/**"
+---
+
+# React Vite Rules
+
+Traffic One React web apps use Vite. These rules cover Vite-specific build,
+development, and security behavior that the general React rules do not.
+
+## Baseline config
+
+- Use `defineConfig` and keep plugin configuration explicit.
+- Prefer `@vitejs/plugin-react-swc` for new React apps. Use
+  `@vitejs/plugin-react` only when a required Babel plugin makes SWC unsuitable.
+- Use `vite-tsconfig-paths` when the project already has `tsconfig` path aliases;
+  do not hand-roll duplicate `resolve.alias` entries.
+- For TypeScript apps, add either `vite-plugin-checker` or a CI/local
+  `typecheck` script. `vite build` transpiles and bundles; it does not replace
+  `tsc --noEmit`.
+
+## Env safety
+
+- Only public values use the `VITE_` prefix. Secrets, service-role keys,
+  database URLs, payment keys, and private API tokens stay server-side.
+- Do not set `envPrefix: ""` or call `loadEnv(mode, root, "")` in browser
+  builds. Load only explicit public prefixes such as `["VITE_"]`.
+- Production source maps stay disabled unless uploaded to a private error
+  tracker and removed from public artifacts.
+
+## Dev server and proxies
+
+- Use `server.proxy` for local API routing; include `ws: true` for WebSocket
+  proxy routes.
+- In Docker or remote dev containers, set `server.host: true` and configure HMR
+  ports deliberately.
+- Monorepo apps that import workspace packages may need `server.fs.allow` for
+  the workspace root; keep the allow-list narrow.
+
+## Performance
+
+- Split heavy route-only libraries at the usage site: charts, maps, editors,
+  PDF, video, 3D, analytics widgets, and demo datasets.
+- Use object-form `manualChunks` for a few stable vendor groups. Do not split
+  every package into its own chunk.
+- Avoid broad barrel imports on hot paths when they make Vite load a whole
+  directory for one symbol. Public package barrels are allowed; app hot-path
+  internals should use direct imports when profiling shows slowdown.
+- Use `server.warmup.clientFiles` for known hot entries in large apps.
+- Profile slow dev servers with Vite's profile output before adding or removing
+  plugins by guesswork.
+
+## Library mode
+
+- Packages published from Vite `build.lib` must emit declarations through
+  `vite-plugin-dts` or `tsc --emitDeclarationOnly`.
+- Externalize peer dependencies such as `react`, `react-dom`, and
+  `react/jsx-runtime` to avoid duplicate runtimes in consumers.
+
+## Verification
+
+- Before deploy, verify `pnpm build` and `pnpm typecheck` separately.
+- Smoke-test the built output with the project preview command or the Traffic
+  One Lighthouse runner, not only the dev server.

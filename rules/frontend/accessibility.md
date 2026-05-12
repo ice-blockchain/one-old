@@ -16,6 +16,11 @@ React-specific testing helpers live in `frontend/react/testing.md`.
 - `<dialog>` (or a focus-trapping modal primitive) for modals.
 - `<nav>`, `<main>`, `<header>`, `<footer>`, `<section>`, `<article>` — give the page a real outline.
 - `<table>` only for tabular data, with `<caption>` and proper `<th scope>`.
+- Each page has one clear `<h1>`, labelled navigation regions when there are
+  multiple navs, and section headings that make the outline usable without
+  visual styling.
+- Landmark order should match reading order. Do not hide the real page title in
+  a visual-only component or replace structure with ARIA when native HTML works.
 
 ## Localized accessibility copy
 

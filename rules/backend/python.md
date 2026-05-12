@@ -8,7 +8,7 @@ paths:
 
 # Python Backend Rules
 
-Backend-focused integration from upstream `rules/python/*`.
+Backend-focused rules for python projects.
 
 ## Style
 - Follow PEP 8.

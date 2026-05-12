@@ -46,6 +46,8 @@ Codex role adapter:
 
 **Orchestrator skill** (`senior-eng-orchestrator`): on Claude Code and Cursor, this skill auto-spawns the subagents in dependency order (architect → frontend ∥ backend → reviewer ∥ tester → shipper) whenever the host runtime exposes a callable agent adapter. On Codex, it first announces the role plan and automatically asks for subagent confirmation for matching multi-layer builds, then stops until the user answers. If no agent adapter is available, the user declines, or subagents are not confirmed, follow the same order manually with per-role prompts and state that the Traffic One team is being simulated by the main agent.
 
+Agentic quality lane: every role gets explicit acceptance criteria and a regression check; work is split into independently verifiable units with one dominant risk and one clear owner. Route deeper reasoning to architecture, security, root-cause debugging, data integrity, auth boundaries, and cross-file invariants; keep routine transforms and mechanical docs/fixes on normal effort. Reviewer/tester prompts inspect hidden coupling, stale state, async races, edge cases, data/auth assumptions, and rollout risk before style preferences.
+
 ---
 
 ## Token economy — graphify cache + per-phase digests
@@ -64,10 +66,12 @@ Context-budget rule: every harness component has a per-turn tax. Audit and trim
 the nine common leaks before adding more rules or skills: bloated
 `AGENTS.md`/`CLAUDE.md`, long conversation re-reads, hook-injected prompt
 context, cache misses after pauses, irrelevant skill loading, always-on MCP
-schemas, unneeded deep reasoning, wrong-direction generation that should be
+schemas, unneeded deep reasoning, over-broad subagent fan-out, missing handoff
+digests that force full-diff rereads, wrong-direction generation that should be
 stopped early, and noisy plugin/session-start messages. Prefer path-scoped
-rules, lean skill descriptions, on-demand references, ≤2 KB handoff digests, and
-status/UI hook messages over prompt-context injection.
+rules, lean skill descriptions, on-demand references, ≤2 KB handoff digests,
+disjoint subagent scopes, and status/UI hook messages over prompt-context
+injection.
 
 ## Project memory — `.traffic-one/`
 
@@ -109,6 +113,13 @@ next-session handoff in `.traffic-one/`. Never use memory as a transcript dump.
 `known-issues.md` doubles as the failure log; `agent-log.md` gets compact
 end-of-session summaries.
 
+Existing-project reconnaissance: before creating or refreshing memory, verify
+package/workspace manifests, runtime pins, framework/build fingerprints,
+entrypoints, routes, API handlers, native packaging config, CI/deploy manifests,
+test structure, lint/typecheck scripts, data flow, and integration surfaces.
+Record concise durable facts only; leave file-by-file inventories to graphify or
+repo-scan outputs.
+
 ---
 
 ## Clean-code baseline (always)
@@ -127,8 +138,12 @@ end-of-session summaries.
 - Every changed line must trace to the user's request or to keeping verification healthy.
 - Do not reformat, rename, move, or improve adjacent code as a drive-by change.
 - Read before writing: inspect exports, immediate callers, and shared utilities before adding nearby code.
+- Search before building: find local helpers, approved stack/provider defaults, and current official docs before creating new utilities, integrations, patterns, or dependencies. If a search channel is unavailable, say so.
 - Surface conflicting local patterns instead of averaging them; convention beats novelty inside an existing codebase.
 - Convert non-trivial work into concrete success criteria; reproduce bugs first when practical.
+- For AI-assisted implementation, define the capability check and regression check before editing, capture a baseline failure when practical, and compare after the change.
+- Decompose agentic work into units that are independently verifiable, have one dominant risk, and expose a clear done condition. Split the task before assigning it if that is not true.
+- Match reasoning/model effort to risk: routine transforms stay normal; architecture, security, root-cause debugging, data integrity, auth boundaries, and cross-file invariants justify deeper reasoning.
 - Tests verify intent, not just behavior; passing shallow tests is not enough evidence.
 - Checkpoint long tasks after significant steps; state what changed, what is verified, what remains, and open risk.
 - Fail loudly: "done", "tests pass", or "migration completed" is wrong if relevant work was skipped or unverified.
@@ -144,10 +159,12 @@ end-of-session summaries.
 - If `gitleaks` or `trufflehog` is missing locally, ask the user to install them and explain the benefit: `gitleaks` scans the working tree and full git history for committed keys/tokens, while `trufflehog` verifies and flags known or unknown secrets. On macOS with Homebrew, ask approval for `brew install gitleaks trufflehog`; if Homebrew is missing, ask the user to install Homebrew first. Do not deploy using weaker fallback checks.
 
 ## Dependencies (always — applies to any new install)
-- **Library-first**: when a need isn't covered by the active stack core, check stack-native/provider defaults first, then search 2–3 candidates and apply the quality gate.
+- **Search locally first**: use `rg` to find existing helpers, services, hooks, schemas, packages, and tests that already solve part of the need.
+- **Library-first**: when a need isn't covered by the active stack core, check stack-native/provider defaults first, then search 2–3 candidates on npm/GitHub and verify current API/setup behavior in official docs when it matters.
 - Quality gate (lib MUST pass all): maintained (commit ≤ 6 mo) · adopted (≥ 1k stars OR ≥ 100k weekly downloads) · permissive license (MIT/Apache/BSD/ISC) · ships types · no high+ `npm audit`. Frontend extras: ≤ 30 KB gz feature / 100 KB heavy, ESM treeshakeable.
 - If nothing passes → build under `packages/<name>` and write `architecture.md` **before** code. CI fails packages missing `architecture.md`.
 - Note the decision (chosen + rejected with reasons) in the commit body.
+- If docs/package/GitHub search is unavailable, report that limitation instead of claiming full coverage.
 - Trigger `library-pick` skill when in doubt.
 
 ## Stack recommendations (always)
@@ -198,12 +215,24 @@ end-of-session summaries.
 - Husky + lint-staged + commitlint; lockfile committed; `pnpm audit` in CI.
 - `.traffic-one.json` selects the stack. Do not offer Next.js as a first-class Traffic One stack; if the user explicitly chooses Next.js or an existing repo has `next`, record `frontend=nextjs` with `stack=minimal` and apply provider-first recommendations instead of React/Vite stack rules.
 
+## Quality tooling (framework-agnostic — `rules/common/quality-tooling.md`)
+
+- Use local project tooling only: package scripts, committed configs, and workspace lockfile. Do not run one-off remote lint/format/typecheck tools to bypass local config.
+- Root `package.json` exposes `lint`, `lint:fix`, `typecheck`, `format`, `format:check`, `test`, and `build`, delegating through Turborepo/workspaces as needed.
+- `vite build` does not replace TypeScript checking. Run `tsc --noEmit` or `vue-tsc`/framework equivalent through `typecheck`.
+- Do not relax ESLint, Prettier, TypeScript, test, or CI config to silence failures unless the user explicitly asks for a tooling-policy change. Fix code first.
+- ESLint owns code-quality rules; Prettier owns formatting. Avoid stylistic ESLint rules that fight Prettier.
+
 ## React (web) stack core (`rules/frontend/react/core.md`)
 
 ### Forced library stack — no exceptions
 
 ### Build
 - **Per-app bundler**: Vite for libraries and standalone apps
+- **Vite defaults:** `defineConfig`, `@vitejs/plugin-react-swc`, `vite-tsconfig-paths`, and either `vite-plugin-checker` for dev feedback or a mandatory `typecheck` script.
+- Vite env vars exposed to browser code use the `VITE_` prefix only. Never set `envPrefix: ""`, never load all env vars into client config, and never place secrets in `import.meta.env`.
+- Dev proxy and WebSocket proxy config lives in `vite.config.*`, reads targets from env vars, and never hardcodes production secrets or private endpoints.
+- Keep barrels off hot paths when they pull large modules into the root graph; lazy-load charts, editors, maps, video, 3D, and other heavy dependencies at usage sites.
 
 ### Runtime
 - **UI:** react ^18 (.tsx/.ts only)
@@ -492,8 +521,10 @@ products use Ionic Framework with Capacitor instead.
 - Use Lighthouse findings to fix avoidable page-speed regressions; if it cannot be run, report page speed as unverified with concrete risks.
 - Lazy-load every page; preload on hover/focus.
 - Bundle budget: critical path ≤180 KB gz, per-route chunk ≤80 KB gz.
+- Page-type ceilings are upper bounds and the stricter route budget wins: marketing/landing ≤160 KB initial JS, content/SEO pages ≤120 KB, authenticated app shells ≤220 KB with heavy tools split by route.
 - Web Vitals targets: LCP ≤2.5 s, FCP ≤1.5 s, INP ≤200 ms, TBT ≤200 ms, CLS ≤0.1.
 - Tree-shake: named imports only (`import { x } from "lodash-es"`).
+- Vite hot paths avoid barrels that import large modules; heavy charts, maps, editors, 3D, video, and PDF libraries lazy-load at the usage site.
 - Hero media may use eager/high-priority loading only for the primary asset; lazy-load below-the-fold media.
 - Third-party scripts load async/defer and only where needed; use `will-change` narrowly and remove it after animation.
 - Real-time render budget: ≤30 fps for non-game UIs; batch via `requestAnimationFrame`.
@@ -509,6 +540,8 @@ products use Ionic Framework with Capacitor instead.
 
 ## Accessibility rules
 - Semantic HTML first. `<button>` for actions, `<a>` for navigation, `<dialog>` for modals.
+- Each page has one clear `<h1>`, labelled navigation regions when multiple navs exist, and section headings that make the outline usable without visual styling.
+- Landmark order matches reading order; use native HTML before ARIA.
 - Every interactive element keyboard-reachable; visible focus styles.
 - Modals trap focus, restore on close. Skip-link at top of layout.
 - Forms: `<label htmlFor>`; errors via `aria-describedby` + `role="alert"`.
@@ -560,15 +593,19 @@ products use Ionic Framework with Capacitor instead.
 
 ## Available skills (invoke with $skill-name or describe your intent)
 - `$stack-setup` — first-run onboarding Q&A or stack reconfigure
-- `$create-component` — scaffold a React component (with `.css.ts` + story)
+- `$create-component` — scaffold a React component with Tailwind/shadcn styling and a story when useful
 - `$create-feature` — scaffold a full feature slice (Redux + components + api)
 - `$create-page` — scaffold a lazy-loaded page + route entry
 - `$create-service` — scaffold a service function or RTK Query endpoint
+- `$vite-patterns` — apply Vite config, env, monorepo, library-mode, and performance rules
+- `$documentation-lookup` — look up current official docs or available MCP/local docs before version-sensitive implementation
+- `$click-path-audit` — trace UI actions through handlers, state, async effects, services, and final visible state
 - `$ionic-mobile` — recommend and implement Ionic/Capacitor mobile delivery for React web
 - `$frontend-design` — create distinctive, production-grade UI with a design brief and visual QA
 - `$design-audit` — rank visual issues and produce a phased, implementation-ready design plan
 - `$design-system` — generate or audit token-driven design systems and UI consistency
 - `$browser-qa` — verify responsive visual QA, interactions, and accessibility in a browser
+- `$seo` — audit or implement technical SEO, structured data, metadata, indexability, and Core Web Vitals improvements
 - `$create-native-component` — scaffold a React Native/Expo component (explicit only)
 - `$create-native-screen` — scaffold an Expo Router screen/route (explicit only)
 - `$create-native-feature` — scaffold a React Native feature slice (explicit only)
@@ -588,5 +625,5 @@ products use Ionic Framework with Capacitor instead.
 - `$database-migrations` — plan safe forward-only production migration sequencing
 - `$context-budget` — audit token consumption across rules, skills, hooks, MCPs, conversation history, and the nine overhead patterns
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
-- `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification
-- Adapted ECC development skills — broad backend, frontend, mobile, API, testing, security, deployment, and language-specific skills live under `skills/` and auto-trigger from their frontmatter. Each imported skill carries Traffic One precedence metadata; do not inline the full list here to keep context lean.
+- `$execution-discipline` — apply assumptions, simplicity, surgical edits, research-before-coding, and verification
+- Broad backend, frontend, mobile, API, testing, security, deployment, and language-specific skills live under `skills/` and auto-trigger from their frontmatter; do not inline the full list here to keep context lean.

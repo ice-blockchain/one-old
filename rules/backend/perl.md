@@ -9,7 +9,7 @@ paths:
 
 # Perl Backend Rules
 
-Backend-focused integration from upstream `rules/perl/*`.
+Backend-focused rules for perl projects.
 
 ## Style
 - Use `v5.36` for new backend code to enable strictness, warnings, `say`, and signatures.

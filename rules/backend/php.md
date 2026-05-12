@@ -9,7 +9,7 @@ paths:
 
 # PHP Backend Rules
 
-Backend-focused integration from upstream `rules/php/*`.
+Backend-focused rules for php projects.
 
 ## Style
 - Follow PSR-12.

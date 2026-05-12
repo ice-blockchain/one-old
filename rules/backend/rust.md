@@ -7,7 +7,7 @@ paths:
 
 # Rust Backend Rules
 
-Backend-focused integration from upstream `rules/rust/*`.
+Backend-focused rules for rust projects.
 
 ## Style & ownership
 - Run `cargo fmt` and `cargo clippy -- -D warnings`.
