@@ -70,6 +70,12 @@ Create or refresh:
   `pg_dump --schema-only --no-owner --no-privileges`; never dump table data.
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`
   local/ephemeral unless the user explicitly asks to preserve a report.
+- Treat memory as continuity, not a transcript. Store stable facts, decisions,
+  failed approaches, current work state, and "next session" handoffs; do not
+  paste chat history or bulky generated output.
+- For user-facing/product work, capture audience, tone, voice, words to avoid,
+  and permanent facts only when the user or codebase provides them. Mark guesses
+  `Unverified`.
 
 ## Minimal File Templates
 
@@ -91,6 +97,12 @@ Create or refresh:
 - Unverified:
 
 ## Non-Goals
+- Unverified:
+
+## Voice And Tone
+- Unverified:
+
+## Permanent Facts
 - Unverified:
 ```
 
@@ -131,6 +143,35 @@ Create the file empty. Append one line per deploy:
 
 ```json
 {"timestamp":"2026-05-08T00:00:00Z","commit":"<sha>","environment":"staging","actor":"<user-or-agent>","trigger":"manual","result":"success","url":"https://example.com","rollbackId":"<id>"}
+```
+
+### `.traffic-one/known-issues.md`
+
+```markdown
+# Known Issues And Failed Approaches
+
+## Open Issues
+- Unverified:
+
+## Failed Approaches
+- Task:
+- What did not work:
+- What worked:
+- Note for next time:
+```
+
+### `.traffic-one/agent-log.md`
+
+Append entries in this shape:
+
+```markdown
+## Session Summary, <ISO date>
+**Worked on:** <focus>
+**Completed:** <done>
+**In progress:** <started but not done>
+**Decisions made:** <key choices>
+**Verification:** <commands/checks or unverified>
+**Next session:** <first thing to pick up>
 ```
 
 ## Output Format

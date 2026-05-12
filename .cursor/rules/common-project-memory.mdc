@@ -73,6 +73,24 @@ normal feature work:
 - `.traffic-one/skills/`: reusable local skills or commands such as
   `security-check` and `deploy-staging` when the project needs them.
 
+## Memory Shape
+
+Keep persistent memory useful, not encyclopedic:
+
+- `product.md` records the stable "who / goal / audience / tone / avoid" context
+  so each new session does not re-infer the product from scratch.
+- `stack.md` is the locked tech-stack source: language, framework, package
+  manager, database, testing, linting, deploy target, and version pins.
+- `rules/coding.md` holds durable conventions and "always true" project facts.
+  If a request conflicts with one, flag it before proceeding.
+- `decisions/` records significant choices, rejected alternatives, and why they
+  were rejected. Do not contradict a logged decision silently.
+- `known-issues.md` doubles as the failure log: when an approach takes multiple
+  attempts or a workaround is accepted, record what failed and what finally
+  worked so agents do not solve the same problem twice.
+- `agent-log.md` receives end-of-session summaries: worked on, completed,
+  in-progress, decisions made, verification, and the first next step.
+
 ## Write Rules
 
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, and `graphify-out/`

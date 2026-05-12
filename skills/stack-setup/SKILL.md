@@ -45,6 +45,15 @@ Next.js is not a first-class Traffic One stack id. If the user explicitly wants
 Next.js after the React/Vite pitch, use `stack: "minimal"` and add
 `"frontend": "nextjs"` so provider-first Next.js recommendations apply.
 
+## Stack lock rule
+
+Once `.traffic-one.json` and `.traffic-one/stack.md` exist, treat them as the
+project's locked stack. Do not suggest alternate frameworks, package managers,
+databases, auth providers, test runners, or deploy targets unless the user asks
+to reconfigure or an existing tool is impossible to use. If a locked choice
+looks harmful, flag the concern, but continue with the selected stack until the
+user explicitly changes it.
+
 ## Backend values
 
 `supabase` (default for our recommended stack) · `self-hosted` · `managed`

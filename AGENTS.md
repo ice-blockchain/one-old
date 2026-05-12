@@ -60,6 +60,15 @@ Both `.traffic-one/digests/` and `graphify-out/` are gitignored — they are loc
 
 On Codex CLI (no native subagents), follow the same digest + graph read protocol manually as you simulate the role flow.
 
+Context-budget rule: every harness component has a per-turn tax. Audit and trim
+the nine common leaks before adding more rules or skills: bloated
+`AGENTS.md`/`CLAUDE.md`, long conversation re-reads, hook-injected prompt
+context, cache misses after pauses, irrelevant skill loading, always-on MCP
+schemas, unneeded deep reasoning, wrong-direction generation that should be
+stopped early, and noisy plugin/session-start messages. Prefer path-scoped
+rules, lean skill descriptions, on-demand references, ≤2 KB handoff digests, and
+status/UI hook messages over prompt-context injection.
+
 ## Project memory — `.traffic-one/`
 
 Traffic One projects use a versioned `.traffic-one/` folder as persistent,
@@ -94,6 +103,12 @@ connection strings, raw customer data, or fake MCP/deploy credentials. Append to
 an accidentally logged secret. Refresh `.traffic-one/schema.sql` after every
 database migration.
 
+Memory shape rule: keep stable user, product, audience, tone, stack, permanent
+facts, decisions, rejected approaches, failed attempts, verification, and
+next-session handoff in `.traffic-one/`. Never use memory as a transcript dump.
+`known-issues.md` doubles as the failure log; `agent-log.md` gets compact
+end-of-session summaries.
+
 ---
 
 ## Clean-code baseline (always)
@@ -106,16 +121,25 @@ database migration.
 ## Execution discipline (always)
 - State important assumptions before changing code; verify behavior/security/data-shape choices instead of guessing.
 - If a request has multiple plausible meanings, name the interpretations and ask or choose the smallest reversible step.
+- Be honest about uncertainty; do not fill gaps with plausible facts, dates, source details, or API behavior.
 - Implement the smallest code that satisfies the current requirement; no speculative abstractions or future-proofing.
+- Use the model for judgment calls, not deterministic routing, retries, status handling, parsing, formatting, sorting, or repeatable transforms.
 - Every changed line must trace to the user's request or to keeping verification healthy.
 - Do not reformat, rename, move, or improve adjacent code as a drive-by change.
+- Read before writing: inspect exports, immediate callers, and shared utilities before adding nearby code.
+- Surface conflicting local patterns instead of averaging them; convention beats novelty inside an existing codebase.
 - Convert non-trivial work into concrete success criteria; reproduce bugs first when practical.
+- Tests verify intent, not just behavior; passing shallow tests is not enough evidence.
+- Checkpoint long tasks after significant steps; state what changed, what is verified, what remains, and open risk.
+- Fail loudly: "done", "tests pass", or "migration completed" is wrong if relevant work was skipped or unverified.
+- End coding tasks with a compact file-level change summary, verification run, and follow-up needing attention.
 
 ## Security baseline (always)
 - No hardcoded secrets. All secrets via env vars, presence checked at startup.
 - Parameterized SQL only. Validate every request body/query/params with Zod.
 - Auth AND authorization checks on every protected endpoint — UI gating is not enough.
 - No stack traces in production responses. `.env*` gitignored.
+- Current-turn explicit confirmation is required before deploy/publish/release, shared/prod migrations, destructive commands, external API calls with side effects, emails/messages/posts/calendar actions, document shares, dependency removal, or git history scrubbing.
 - Before deploy/release/publish/production promotion, run `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp`. The scanner blocks exposed secrets, Supabase service-role/JWT/admin DB secrets in browser/mobile code, weak auth/session patterns, broken access control, missing rate limits, insecure Supabase RLS/Storage, unsafe views/functions/RPC, unsafe uploads, CORS/security-header misconfiguration (OWASP A02:2025), SQLi/XSS injection (OWASP A05:2025), UI-only admin gates, hardcoded env fallbacks, high+ production dependency vulnerabilities, suspicious npm supply-chain indicators, weak crypto, missing security logging, and Ionic/Capacitor/Expo bundled secrets or non-PKCE mobile auth.
 - If `gitleaks` or `trufflehog` is missing locally, ask the user to install them and explain the benefit: `gitleaks` scans the working tree and full git history for committed keys/tokens, while `trufflehog` verifies and flags known or unknown secrets. On macOS with Homebrew, ask approval for `brew install gitleaks trufflehog`; if Homebrew is missing, ask the user to install Homebrew first. Do not deploy using weaker fallback checks.
 
@@ -562,7 +586,7 @@ products use Ionic Framework with Capacitor instead.
 - `$postgres-review` — review SQL, migrations, indexes, RLS
 - `$postgres-patterns` — apply PostgreSQL schema, indexing, query, admin, and security best practices
 - `$database-migrations` — plan safe forward-only production migration sequencing
-- `$context-budget` — audit token consumption across loaded rules/skills
+- `$context-budget` — audit token consumption across rules, skills, hooks, MCPs, conversation history, and the nine overhead patterns
 - `$git-commit` — craft Gitflow-conforming commits and PR descriptions
 - `$execution-discipline` — apply Karpathy-style assumptions, simplicity, surgical edits, and verification
 - Adapted ECC development skills — broad backend, frontend, mobile, API, testing, security, deployment, and language-specific skills live under `skills/` and auto-trigger from their frontmatter. Each imported skill carries Traffic One precedence metadata; do not inline the full list here to keep context lean.
