@@ -1119,6 +1119,44 @@ test('production readiness score guidance is merged, not duplicated', () => {
   assert.match(agentsMirror, /Production-readiness score/);
 });
 
+test('post-deploy observability guidance is integrated, not duplicated', () => {
+  const skillsRoot = path.join(ROOT, 'skills');
+  const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name);
+  const observability = fs.readFileSync(path.join(skillsRoot, 'observability', 'SKILL.md'), 'utf8');
+  const deploymentPatterns = fs.readFileSync(path.join(skillsRoot, 'deployment-patterns', 'SKILL.md'), 'utf8');
+  const verificationLoop = fs.readFileSync(path.join(skillsRoot, 'verification-loop', 'SKILL.md'), 'utf8');
+  const stackRecommendations = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'stack-recommendations.md'), 'utf8');
+  const reactSecurity = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'security.md'), 'utf8');
+  const reactVite = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'vite.md'), 'utf8');
+  const ionicSecurity = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ionic', 'security.md'), 'utf8');
+  const postgresRules = fs.readFileSync(path.join(ROOT, 'rules', 'backend', 'postgres.md'), 'utf8');
+  const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
+  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const cursorStackRecommendations = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-stack-recommendations.mdc'), 'utf8');
+
+  assert.equal(skillNames.includes('post-deploy-observability'), false);
+  assert.equal(skillNames.includes('ai-error-fixing'), false);
+  assert.equal(skillNames.includes('observability'), true);
+  assert.match(observability, /AI fix suggestion format/);
+  assert.match(observability, /explicit current-turn user approval/);
+  assert.match(deploymentPatterns, /Failed deploys/);
+  assert.match(deploymentPatterns, /SLO burn-rate/);
+  assert.match(verificationLoop, /pg_stat_statements/);
+  assert.match(stackRecommendations, /Post-Deploy Observability Defaults/);
+  assert.match(stackRecommendations, /Supabase Logs/);
+  assert.match(reactSecurity, /Client observability/);
+  assert.match(reactVite, /SENTRY_AUTH_TOKEN/);
+  assert.match(ionicSecurity, /Native crash reporting/);
+  assert.match(postgresRules, /pg_stat_statements/);
+  assert.match(shipper, /failed-deploy log analysis/);
+  assert.match(skillFilters, /'observability'/);
+  assert.match(agentsMirror, /Post-deploy observability/);
+  assert.match(cursorStackRecommendations, /Post-Deploy Observability Defaults/);
+});
+
 test('auto documentation generator guidance is present and not duplicated', () => {
   const skillsRoot = path.join(ROOT, 'skills');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })

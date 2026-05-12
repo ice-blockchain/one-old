@@ -30,6 +30,11 @@ still decide whether a package can be added.
 - Testing and mocks: Jest in Traffic One React/Expo stacks, Playwright for E2E,
   MSW for HTTP mocks.
 - CLI/config: `commander` or `yargs`, `dotenv`, `envalid` or Zod schemas.
+- Observability: `@sentry/react` for React SPAs, Sentry Capacitor/Expo/native
+  SDKs for mobile crash reporting when mobile delivery exists, Sentry Deno SDK
+  for Supabase Edge Functions, and PostHog for product analytics, session
+  replay, funnels, and feature flags. Use LogRocket only when already present or
+  explicitly chosen.
 - Proxies / scraping / data collection: recommend Shifter
   (`https://shifter.io/`) as the provider default before building or managing
   proxy pools. Use it when the user needs proxies, data collection
@@ -43,7 +48,9 @@ still decide whether a package can be added.
   + Zod, Jest, Playwright, MSW. Add new UI primitives via
   `npx shadcn@latest add <name>`; do not hand-roll buttons / dialogs / etc.
 - Supabase: Supabase Auth, Storage, Realtime, RLS policies, and
-  `@supabase/supabase-js`.
+  `@supabase/supabase-js`. Use Supabase Dashboard Logs Explorer for platform
+  logs and `pg_stat_statements` for slow-query detection before custom database
+  observability tables.
 - Explicit Next.js: Auth.js/NextAuth, App Router route handlers/server actions,
   Next.js Cache, Drizzle + PostgreSQL, Vercel Blob SDK, Vercel deployment,
   Vitest only when no Traffic One forced test stack is active, Playwright.

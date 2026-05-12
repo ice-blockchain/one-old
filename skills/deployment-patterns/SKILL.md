@@ -54,11 +54,55 @@ Generate deployment artifacts in this order:
 6. **Health/status.** For static SPAs, add a `/health` route through a Supabase
    Edge Function, static-host function, or hosted heartbeat endpoint for uptime
    monitors. Capacitor apps also need a simple force-update/version check.
-7. **Rollback.** Frontend rollback means redeploying the previous immutable
+7. **Post-deploy observability.** Add the smallest founder-actionable
+   observability set before calling production complete: Supabase Logs Explorer
+   visibility for Supabase services, Sentry release tags tied to the git SHA,
+   source-map uploads in CI/build, PostHog or explicitly chosen LogRocket replay
+   with privacy masking, synthetic checks for `/` and `/health`, email plus one
+   chat alert route, SLO burn-rate alerts, and a failed-deploy log analysis
+   path.
+8. **Rollback.** Frontend rollback means redeploying the previous immutable
    build/deployment. Database rollback is a forward-only undo migration, not
    `pg_restore` and not editing an already-applied migration.
-8. **Domain hardening.** Configure the custom domain, automatic TLS, security
+9. **Domain hardening.** Configure the custom domain, automatic TLS, security
    headers, and an HSTS preload readiness check before calling production done.
+
+### Post-Deploy Observability Baseline
+
+Generate guidance or artifacts only for the app being deployed; do not build a
+custom observability platform inside the plugin.
+
+- **Centralized logs:** Supabase projects use the Dashboard Logs Explorer for
+  API/PostgREST, Auth, Edge Functions, Postgres, Storage, and Realtime logs.
+  App runtime logs write to stdout/stderr for the host to collect; no app-managed
+  log files.
+- **Client errors:** React/Ionic apps initialize Sentry before application
+  imports, set `release` to the commit SHA, upload source maps every production
+  build, and remove or block public `.map` files after upload.
+- **Edge Function errors:** Supabase Edge Functions use the Sentry Deno SDK with
+  per-request `withScope` or direct capture context. Do not store user/tenant
+  request data in global Sentry scope because the runtime may be reused.
+- **Replay and analytics:** PostHog is the default for replay, funnels, product
+  analytics, and feature flags. LogRocket is acceptable when explicit/existing.
+  Replay is blocked until inputs, text, query strings, request/response bodies,
+  payment/auth/account/admin surfaces, and sensitive DOM regions are masked.
+- **Uptime:** Configure synthetic checks for `/` and `/health` every 1-5 minutes
+  with email plus one chat destination. Mention the exact monitor provider as
+  selected by the project or mark it `Unverified`.
+- **SLOs:** Start with simple SLIs such as auth request success rate, API non-2xx
+  rate, and uptime. Alert on multi-window burn rate instead of raw error count.
+- **API failures:** Track non-2xx rate by endpoint, status family, user/tenant
+  hash, and role where available without PII.
+- **Slow queries:** For Supabase/Postgres, enable `pg_stat_statements` and
+  report normalized query, p95/mean execution time, calls, rows read when
+  available, and one suggested index or an `EXPLAIN ANALYZE` follow-up.
+- **Failed deploys:** On deploy failure, pull provider build logs, identify the
+  failing step, and map common causes to canned fixes: lockfile mismatch,
+  missing env var, source-map upload/auth failure, migration conflict, failing
+  typecheck/test/build, or missing Supabase link/project secret.
+- **AI fix suggestions:** For each error class, propose one patch and a short
+  explanation. Require explicit user approval before opening a PR, pushing a
+  branch, changing provider settings, running migrations, or redeploying.
 
 ### Static Host SPA Manifests
 
@@ -583,9 +627,13 @@ Before any production deployment:
 
 ### Monitoring
 - [ ] Application metrics exported (request rate, latency, errors)
-- [ ] Alerts configured for error rate > threshold
-- [ ] Log aggregation set up (structured logs, searchable)
-- [ ] Uptime monitoring on health endpoint
+- [ ] Sentry release is tied to git SHA and source maps upload on every build
+- [ ] Supabase Logs Explorer covers API/Auth/Edge/Postgres logs where Supabase is used
+- [ ] Alerts use SLO burn-rate thresholds, not only raw error counts
+- [ ] Log aggregation set up (stdout/stderr, structured, searchable, PII scrubbed)
+- [ ] Uptime monitoring on `/` and `/health` at 1-5 minute interval
+- [ ] Email plus one chat route exists, with known-flaky third parties suppressed
+- [ ] PostHog/LogRocket replay has documented masking/consent before enablement
 
 ### Security
 - [ ] Dependencies scanned for CVEs

@@ -27,8 +27,13 @@ development, and security behavior that the general React rules do not.
   database URLs, payment keys, and private API tokens stay server-side.
 - Do not set `envPrefix: ""` or call `loadEnv(mode, root, "")` in browser
   builds. Load only explicit public prefixes such as `["VITE_"]`.
-- Production source maps stay disabled unless uploaded to a private error
-  tracker and removed from public artifacts.
+- Production source maps stay disabled unless uploaded to Sentry or the selected
+  private error tracker during CI/build with a release value equal to the commit
+  SHA. `SENTRY_AUTH_TOKEN`, org, and project values stay in CI/host secrets, not
+  `VITE_` vars.
+- After source-map upload, remove `*.map` files from public artifacts or block
+  public access to them. Verify the deployed Sentry release can unminify a test
+  error before calling production observability done.
 
 ## Dev server and proxies
 
