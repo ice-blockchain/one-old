@@ -226,7 +226,16 @@ function runGitnexus(cwd, opts) {
   // Prefer the directly-installed binary; fall back to `npx` when global
   // install was blocked by EACCES (tryInstall sets opts.useNpx).
   const cmd = opts.useNpx ? 'npx' : 'gitnexus';
-  const args = opts.useNpx ? ['gitnexus@latest', 'analyze', '.'] : ['analyze', '.'];
+  // Fresh scaffolds typically don't have `.git/` initialised yet. GitNexus
+  // refuses non-git folders by default with the tip
+  //   "pass --skip-git to index any folder without a .git directory."
+  // …which it writes to STDOUT, not stderr, so a naïve runner would surface
+  // an opaque "gitnexus exited non-zero" with empty stderr. Pre-detect and
+  // pass `--skip-git` ourselves when no `.git` lives at the project root.
+  const hasGit = fs.existsSync(path.join(cwd, '.git'));
+  const baseArgs = ['analyze', '.'];
+  if (!hasGit) baseArgs.push('--skip-git');
+  const args = opts.useNpx ? ['gitnexus@latest', ...baseArgs] : baseArgs;
   const result = spawnSync(cmd, args, {
     cwd,
     encoding: 'utf8',
@@ -237,6 +246,7 @@ function runGitnexus(cwd, opts) {
     status: typeof result.status === 'number' ? result.status : 1,
     stderr: (result.stderr || '').trim(),
     stdout: (result.stdout || '').trim(),
+    skippedGit: !hasGit,
   };
 }
 
@@ -311,8 +321,14 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
 
   const run = runGitnexus(cwd, { useNpx });
   if (run.status !== 0) {
-    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: run.stderr || 'gitnexus exited non-zero' });
-    return { ok: false, action, report: null, error: run.stderr || 'gitnexus exited non-zero', durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial', backupRoot: backups.backupRoot };
+    // GitNexus writes its diagnostic tips to STDOUT, not stderr (verified
+    // in the wild: "Not a git repository / pass --skip-git ..." landed on
+    // stdout in trading-game). Surface stdout when stderr is empty so the
+    // agent has something actionable to relay to the user instead of a
+    // bare "gitnexus exited non-zero".
+    const detail = run.stderr || run.stdout || 'gitnexus exited non-zero';
+    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: detail });
+    return { ok: false, action, report: null, error: detail, durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial', backupRoot: backups.backupRoot };
   }
 
   // Restore traffic-one's versions of AGENTS.md / CLAUDE.md / .claude/skills
