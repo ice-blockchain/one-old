@@ -21,8 +21,11 @@ Run-id: <run-id>. The user's request is:
 
 Read .traffic-one.json plus existing project memory:
 .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/*.md,
-.traffic-one/known-issues.md, and .traffic-one/agent-log.md when present. If
-graphify-out/GRAPH_REPORT.md exists, read it too.
+.traffic-one/known-issues.md, and .traffic-one/agent-log.md when present.
+Also read the codebase-graph artefact at the active provider's location (per
+rules/common/codebase-graph.md): `.gitnexus/` when codeGraphProvider is
+"gitnexus", `graphify-out/GRAPH_REPORT.md` when "graphify". Skip silently if
+missing.
 
 Produce .traffic-one/plan.md (≤250 lines, six sections: Goal, Stack & rationale,
 Module map, Public contracts, Risks, Cut-list). Cite skills by name; do not
@@ -54,7 +57,10 @@ Read in priority order:
   2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/coding.md,
      .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Frontend + § Module map (only your scope)
-  4. graphify-out/GRAPH_REPORT.md nodes for `apps/*/src/`, `packages/ui*` (if exists)
+  4. Codebase-graph artefact at active provider's location (per
+     rules/common/codebase-graph.md): `.gitnexus/` for gitnexus,
+     `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`,
+     `packages/ui*` nodes.
   5. Specific source files only when 1–4 don't answer the question.
 
 Implement only the frontend layer of the plan. The other implementer
@@ -83,8 +89,10 @@ Read in priority order:
   2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/security.md,
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Backend + § Public contracts
-  4. graphify-out/GRAPH_REPORT.md nodes for `apps/*/server/`, `packages/api*`,
-     `services/*`, `supabase/` (if exists)
+  4. Codebase-graph artefact at active provider's location (per
+     rules/common/codebase-graph.md): `.gitnexus/` for gitnexus,
+     `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`,
+     `packages/api*`, `services/*`, `supabase/` nodes.
   5. Specific source / migration files only when 1–4 don't answer the question.
 
 Implement only the backend layer of the plan. The other implementer
@@ -116,7 +124,10 @@ Read in priority order:
      .traffic-one/known-issues.md, and .traffic-one/.agentignore if present.
   3. `git diff --name-only HEAD`, then `git diff HEAD <file>` ONLY for files
      listed in the digests' "Touched" or "Next-phase reading hints" sections.
-  4. graphify-out/GRAPH_REPORT.md nodes that neighbor those files (if exists).
+  4. Codebase-graph artefact at active provider's location (per
+     rules/common/codebase-graph.md): `.gitnexus/` or
+     `graphify-out/GRAPH_REPORT.md`. Use it to find neighbors of changed
+     nodes.
   5. Full file Reads only when a violation requires it.
 
 Verdict format: end with one of
@@ -148,7 +159,10 @@ Read in priority order:
      .traffic-one/schema.sql if present.
   3. .traffic-one/plan.md § Public contracts.
   4. `git diff --name-only HEAD` + existing test files adjacent to the touched code.
-  5. graphify-out/GRAPH_REPORT.md for related modules (if exists).
+  5. Codebase-graph artefact at active provider's location (per
+     rules/common/codebase-graph.md): `.gitnexus/` or
+     `graphify-out/GRAPH_REPORT.md`. Use it to find related modules and call
+     sites that should be covered.
 
 Add or update tests for the changed surface. Run them. Verdict format:
   TESTS_GREEN — <count> tests passed; coverage <%> on changed files.
