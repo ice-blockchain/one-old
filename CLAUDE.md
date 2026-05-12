@@ -13,6 +13,7 @@ Every rule below is mandatory. Never suggest an alternative library to those in
 @rules/common/project-memory.md
 @rules/common/documentation.md
 @rules/common/senior-engineer-team.md
+@rules/common/quality-tooling.md
 @rules/common/git.md
 
 ## Framework-agnostic project rules (TypeScript, monorepo, Gitflow)
@@ -39,8 +40,9 @@ Path-scoped rules — load automatically when you touch matching files:
 - `testing.md` — three-layer model, MSW, Playwright, real-time fakes
 
 **React-specific** (`rules/frontend/react/`):
-- `components.md` — component structure, props, vanilla-extract, Storybook
+- `components.md` — component structure, props, Tailwind/shadcn composition, Storybook
 - `design-quality.md` — mandatory React-stack product-specific UI quality, usable first screen, responsive visual QA
+- `vite.md` — Vite config, env safety, dev proxy, typecheck/build split, chunking
 - `stores.md` — Redux Toolkit + RTK Query + zustand boundaries
 - `services.md` — RTK Query slice patterns, generated hooks, tag invalidation
 - `supabase-client.md` — lazy Supabase client, EnvBanner/ConfigurePromptCard, Traffic setup CTA to `https://traffic.io/`
@@ -56,7 +58,7 @@ Path-scoped rules — load automatically when you touch matching files:
 - `capacitor.md` — Capacitor config, native platform folders, plugins, release checks
 - `components.md` — Ionic-aware React components, overlays, mobile states
 - `navigation.md` — React Router wrapper defaults, deep links, Android back behavior
-- `styles.md` — vanilla-extract with Ionic CSS variable bridge
+- `styles.md` — Tailwind/shadcn with Ionic CSS variable bridge
 - `services.md` — API and Capacitor plugin service boundaries
 - `stores.md` — mobile shell state, native capability state, persistence rules
 - `realtime.md` — WebSocket lifecycle across background/resume and mobile networks
@@ -68,7 +70,7 @@ Path-scoped rules — load automatically when you touch matching files:
 **React Native-specific, explicit React Native / Expo only** (`rules/frontend/react-native/`):
 - `core.md` — Expo-first stack core, forced libraries, folder structure
 - `components.md` — native primitives, explicit props, list rendering
-- `styles.md` — `StyleSheet.create`, design tokens, no NativeWind/Tailwind
+- `styles.md` — NativeWind/RNR design tokens, dynamic styles only through native style APIs
 - `stores.md` — Redux Toolkit + RTK Query + zustand mobile boundaries
 - `services.md` — RTK Query/axios services, SecureStore, offline concerns
 - `realtime.md` — mobile WS lifecycle, foreground/background handling

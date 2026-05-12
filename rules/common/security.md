@@ -25,6 +25,23 @@ Pre-commit checklist — applies to every change that touches input, auth, stora
 2. Invalidate any derived tokens/sessions.
 3. Scrub git history only after rotation (history scrubbing alone does not help — assume the value is compromised).
 
+## Explicit confirmation boundaries
+
+The following actions require explicit confirmation in the current user turn.
+Prior discussion or implied intent is not enough:
+
+- Deploying, publishing, releasing, submitting to a store, or pushing to a
+  protected/staging/production environment.
+- Running migrations, schema changes, destructive scripts, or data backfills
+  against any shared or production database.
+- Sending email/messages, scheduling calendar events, sharing documents, posting
+  social content, or making external API calls with side effects.
+- Deleting files, dropping records, removing dependencies, overwriting existing
+  code in a way that is not trivially reversible, or scrubbing git history.
+
+Before these actions, list exactly what will be affected and wait for a clear
+yes in the current message.
+
 ## Dependencies
 - Pin exact majors; review transitive updates.
 - Run `npm audit` / `pip-audit` / equivalent in CI; fail on high+ severity.

@@ -1,13 +1,16 @@
 ---
 name: verification-loop
-description: "A comprehensive verification system for Claude Code sessions, including Production-Readiness Score audits for SPA + Supabase and Ionic releases."
+description: "A comprehensive verification system for Claude Code sessions, including local-evidence production audits and Production-Readiness Score audits for SPA + Supabase and Ionic releases."
 metadata:
-  origin: ECC
+  source: everything-claude-code
+  source_path: skills/verification-loop/SKILL.md
   source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
   adapted_for: traffic-one
+  merged_source_paths:
+    - skills/production-audit/SKILL.md
 ---
 
-Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence. Treat upstream examples that use unapproved frameworks or libraries as conceptual patterns to adapt.
+Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
 
 # Verification Loop Skill
 
@@ -21,6 +24,8 @@ Invoke this skill:
 - When you want to ensure quality gates pass
 - After refactoring
 - When asked for a production-readiness, shipability, launch, or "safe to ship" score
+- When asked "what breaks in production", "is this ready to ship", "what did we
+  miss", or "audit launch risk"
 
 ## Verification Phases
 
@@ -93,6 +98,47 @@ Review each changed file for:
 - Unintended changes
 - Missing error handling
 - Potential edge cases
+- Hidden coupling introduced by AI-generated code
+- Security/auth assumptions and rollout risk
+
+### Phase 6b: Local-Evidence Production Audit
+
+Use this when the user asks about launch risk, production readiness, or what
+could break in production. Build the audit from local and user-authorized
+evidence only; do not upload source or run unpinned external scanners by
+default.
+
+Start with:
+
+```bash
+git status --short --branch
+git log --oneline --decorate -20
+git diff --stat origin/main...HEAD
+```
+
+Then inspect the surfaces that exist in the repo:
+
+- package scripts, CI workflows, Docker/deploy manifests, release scripts
+- auth middleware, API routes, webhooks, background jobs, and migrations
+- env documentation and startup validation
+- logs, error reporting, health checks, dashboards, and rollback notes
+- E2E coverage for launch-critical user paths
+
+Risk lenses:
+
+- **Security/auth**: server-side authz, secret handling, rate limits, CSRF,
+  CORS, uploads, and AI/tool abuse boundaries.
+- **Data integrity**: safe migrations, RLS/grants, idempotent writes, retries,
+  backfills, and recovery path.
+- **Payments/webhooks**: signature verification, idempotency, replay handling,
+  live/test credential separation.
+- **Operations**: clean-checkout startup, env validation, health checks,
+  rollback, incident owner path, useful logs without secrets.
+- **User experience**: desktop/mobile critical flows, loading/empty/error
+  states, permission-denied states, support/recovery path.
+
+Output a one-sentence ship/block recommendation, then blockers, high-value
+fixes, evidence checked, evidence missing, and one next action.
 
 ### Phase 7: Production-Readiness Score
 

@@ -8,7 +8,7 @@ paths:
 
 # Kotlin/JVM Backend Rules
 
-Backend-focused integration from upstream `rules/kotlin/*`.
+Backend-focused rules for kotlin projects.
 
 ## Style & modeling
 - Use ktlint or Detekt with official Kotlin style.

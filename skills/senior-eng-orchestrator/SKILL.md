@@ -18,6 +18,11 @@ description: >
   `CHANGES_REQUESTED` from reviewer with a 2-cycle cap. Do NOT use for
   single-component / single-skill requests where a direct skill call is more
   appropriate.
+metadata:
+  source: everything-claude-code
+  source_path: skills/senior-eng-orchestrator/SKILL.md
+  source_commit: 4e66b2882da9afb9747468b08a253ca2f09c85f3
+  adapted_for: traffic-one
 ---
 
 # Senior Engineering Orchestrator
@@ -70,6 +75,21 @@ On Claude Code and Cursor, these triggers mean "run the identical Traffic One wo
 Skip if:
 - The request is for a single component, page, or service ("add a logout button"). Route to the matching specialist skill (`create-component`, `create-page`, `create-service`) directly and do not ask for subagents.
 - The user asks a research/audit question without intent to ship ("review this design", "what's the right stack here"). Route to a specialist skill or subagent.
+
+## Agentic quality lane
+
+- Give every role explicit acceptance criteria and at least one regression check
+  before implementation starts.
+- Split work into independently verifiable units with one dominant risk and one
+  clear owner. If a unit spans too many surfaces, narrow it before assigning it.
+- Route deeper reasoning to architecture, security, root-cause debugging, data
+  integrity, auth boundaries, and cross-file invariants. Routine transforms,
+  docs updates, and mechanical fixes should stay on normal effort.
+- Reviewer and tester prompts must inspect AI-generated code for hidden coupling,
+  stale state, async races, edge cases, data/auth assumptions, and rollout risk
+  before style preferences.
+- Completion means the user-visible capability and the regression guard both
+  pass, or the blocker is reported with the exact unverified risk.
 
 ## Phases (run in order)
 
