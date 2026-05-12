@@ -1017,26 +1017,56 @@ function runPostStackSetup(rawInput) {
   const bundle = parsed?.hookSpecificOutput?.additionalContext;
   if (typeof bundle !== 'string') return { stdout: '', exitCode: 0 };
 
-  // Early Node-22 warning for the gitnexus provider. If the user just wrote
-  // `codeGraphProvider: "gitnexus"` AND the current hook process is on a
-  // Node major < 22, surface the upgrade command BEFORE the post-build
-  // hook ever fires — beginners shouldn't waste a 3-minute doomed npm
-  // install to find out they're on the wrong Node.
+  // Seamless gitnexus setup. Two things happen when the user just wrote
+  // `codeGraphProvider: "gitnexus"`:
+  //
+  //   (a) Write `.nvmrc` with `22` at the project root for new-project mode
+  //       (don't clobber if it already exists). This locks the project to
+  //       Node 22 so `cd`-into-project triggers `nvm use` to the right
+  //       version going forward.
+  //
+  //   (b) Surface the upgrade banner ONLY when there's no path forward:
+  //       no `~/.nvm/versions/node/v22.*` install at all AND current hook
+  //       process is on Node <22. When an nvm-v22 install exists (even if
+  //       it's not the active Node), the runner will use the absolute v22
+  //       binary path — no upgrade or relaunch needed.
   let nodeWarning = '';
   if (state.codeGraphProvider === 'gitnexus') {
     try {
-      const { currentNodeMajor, GITNEXUS_MIN_NODE_MAJOR, nodeVersionMismatchMessage } =
-        require(path.resolve(__dirname, '..', 'gitnexus-runner.cjs'));
+      const {
+        currentNodeMajor,
+        GITNEXUS_MIN_NODE_MAJOR,
+        nodeVersionMismatchMessage,
+        findNvmNode22,
+      } = require(path.resolve(__dirname, '..', 'gitnexus-runner.cjs'));
+
+      // (a) Write `.nvmrc: 22` for new-project mode when it's missing.
+      if (state.mode === 'new-project') {
+        const nvmrcPath = path.join(stateDir, '.nvmrc');
+        if (!fs.existsSync(nvmrcPath)) {
+          try {
+            fs.writeFileSync(nvmrcPath, '22\n', 'utf8');
+          } catch {
+            // best-effort; never block stack-rule loading on .nvmrc write.
+          }
+        }
+      }
+
+      // (b) Conditional Node-22 banner.
+      const nvm22 = findNvmNode22();
       const major = currentNodeMajor();
-      if (major !== null && major < GITNEXUS_MIN_NODE_MAJOR) {
+      const tooOldAndNoFallback =
+        major !== null
+        && major < GITNEXUS_MIN_NODE_MAJOR
+        && (!nvm22 || (!nvm22.node && !nvm22.npm));
+      if (tooOldAndNoFallback) {
         nodeWarning = '\n\n═══ traffic-one — gitnexus needs Node ≥22 ═══\n'
           + nodeVersionMismatchMessage(major)
           + '\n\nAfter the `nvm` commands, fully quit + relaunch Claude Code '
           + 'so the hook process picks up the new default Node binary.\n';
       }
     } catch {
-      // best-effort; never block stack-rule loading because the version
-      // probe couldn't be required.
+      // best-effort; never block stack-rule loading on a probe failure.
     }
   }
 

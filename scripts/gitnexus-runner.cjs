@@ -55,6 +55,54 @@ function runStampForFs() {
   return new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z');
 }
 
+// ── nvm-aware Node-22 binary discovery ──────────────────────────────────────
+// Claude Code's hook process inherits the PATH it was launched with. Once
+// the user runs `nvm alias default 22`, only NEW shells see Node 22 — the
+// running Claude Code session still resolves `node` / `npm` / `gitnexus`
+// against the older Node nvm folder. That's confusing for beginners who
+// "did everything you told me" and still hit failures.
+//
+// Workaround: don't trust PATH. Glob `~/.nvm/versions/node/v22.*` directly,
+// pick the highest installed v22.x.y, and use ABSOLUTE paths for node, npm,
+// and gitnexus. PATH-independent. No relaunch required.
+//
+// Returns `{ root, node, npm, gitnexus, version }` where every value is an
+// absolute path OR null when the binary doesn't exist. Returns `null` when
+// no v22.* nvm install exists at all.
+function findNvmNode22() {
+  const home = process.env.HOME || '';
+  if (!home) return null;
+  const nodesRoot = path.join(home, '.nvm', 'versions', 'node');
+  if (!fs.existsSync(nodesRoot)) return null;
+  let candidates;
+  try {
+    candidates = fs.readdirSync(nodesRoot);
+  } catch {
+    return null;
+  }
+  // Match v22.x.y; pick the highest by semantic minor/patch sort.
+  const v22s = candidates
+    .filter((name) => /^v22\.\d+\.\d+$/.test(name))
+    .sort((a, b) => {
+      const [, am, ap] = a.match(/^v22\.(\d+)\.(\d+)$/) || [];
+      const [, bm, bp] = b.match(/^v22\.(\d+)\.(\d+)$/) || [];
+      if (Number(am) !== Number(bm)) return Number(bm) - Number(am);
+      return Number(bp) - Number(ap);
+    });
+  if (v22s.length === 0) return null;
+  const version = v22s[0];
+  const root = path.join(nodesRoot, version);
+  const bin = path.join(root, 'bin');
+  function exists(p) { try { return fs.existsSync(p); } catch { return false; } }
+  return {
+    root,
+    version,
+    node: exists(path.join(bin, 'node')) ? path.join(bin, 'node') : null,
+    npm: exists(path.join(bin, 'npm')) ? path.join(bin, 'npm') : null,
+    gitnexus: exists(path.join(bin, 'gitnexus')) ? path.join(bin, 'gitnexus') : null,
+  };
+}
+
 function which(cmd) {
   const result = spawnSync('sh', ['-c', `command -v ${JSON.stringify(cmd)}`], { encoding: 'utf8' });
   if (result.status === 0 && typeof result.stdout === 'string') {
@@ -194,19 +242,38 @@ function nodeVersionMismatchMessage(major) {
 }
 
 function tryInstall() {
-  if (!which('npm')) {
+  // Prefer the absolute nvm-v22 npm when available so the install lands in
+  // the v22 nvm folder regardless of which Node is "active" in PATH. This
+  // matters when Claude Code's hook shell was snapshotted before the user
+  // bumped their nvm default to 22 — `npm` on PATH would still point at
+  // Node 20, and installing gitnexus there places a broken binary that
+  // crashes with `SyntaxError: Cannot use import statement` on every run.
+  const nvm22 = findNvmNode22();
+  let npmCmd;
+  let installAction;
+  if (nvm22 && nvm22.npm) {
+    npmCmd = nvm22.npm;
+    installAction = 'installed-nvm-v22';
+  } else if (which('npm')) {
+    npmCmd = 'npm';
+    installAction = 'installed-npm-global';
+  } else {
     return {
       action: 'install-skipped',
-      error: '`npm` not on PATH. Install Node.js + npm or pick `graphify` as the codeGraphProvider.',
+      error: '`npm` not on PATH and no `~/.nvm/versions/node/v22.*` install detected. Install Node.js >=22 (`nvm install 22 && nvm alias default 22`) or pick `graphify` as the codeGraphProvider.',
     };
   }
-  const result = spawnSync('npm', ['install', '-g', 'gitnexus'], {
+  const result = spawnSync(npmCmd, ['install', '-g', 'gitnexus'], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,
   });
-  if (result.status === 0 && which('gitnexus')) {
-    return { action: 'installed-npm-global', error: null };
+  // Post-install: prefer the absolute v22 gitnexus path; fall back to PATH.
+  const installedAbs = nvm22 && fs.existsSync(path.join(nvm22.root, 'bin', 'gitnexus'))
+    ? path.join(nvm22.root, 'bin', 'gitnexus')
+    : null;
+  if (result.status === 0 && (installedAbs || which('gitnexus'))) {
+    return { action: installAction, error: null, gitnexusBin: installedAbs };
   }
   const stderr = (result.stderr || '').trim();
   if (/EACCES|permission denied|EPERM/i.test(stderr)) {
@@ -223,9 +290,31 @@ function tryInstall() {
 }
 
 function runGitnexus(cwd, opts) {
-  // Prefer the directly-installed binary; fall back to `npx` when global
-  // install was blocked by EACCES (tryInstall sets opts.useNpx).
-  const cmd = opts.useNpx ? 'npx' : 'gitnexus';
+  // Pick the gitnexus binary in this priority order:
+  //   1. Explicit `opts.gitnexusBin` (set by tryInstall when it just placed
+  //      the binary at an absolute path) — newest install wins.
+  //   2. Absolute nvm-v22 gitnexus (`~/.nvm/versions/node/v22.*/bin/gitnexus`)
+  //      — PATH-independent; works even when Claude Code's hook shell was
+  //      snapshotted on an older Node.
+  //   3. `npx gitnexus@latest` (set by tryInstall when global install
+  //      hit EACCES) — slower but no global install needed.
+  //   4. Bare `gitnexus` from PATH — last resort.
+  let cmd;
+  let baseArgs = ['analyze', '.'];
+  const nvm22 = findNvmNode22();
+  if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin)) {
+    cmd = opts.gitnexusBin;
+  } else if (opts.useNpx) {
+    cmd = 'npx';
+    baseArgs = ['gitnexus@latest', ...baseArgs];
+  } else if (nvm22 && nvm22.gitnexus) {
+    // Absolute path means we don't care what `gitnexus` resolves to on the
+    // current shell's PATH. Critical for the "Claude Code session snapshotted
+    // before nvm default was bumped" case.
+    cmd = nvm22.gitnexus;
+  } else {
+    cmd = 'gitnexus';
+  }
   // Fresh scaffolds typically don't have `.git/` initialised yet. GitNexus
   // refuses non-git folders by default with the tip
   //   "pass --skip-git to index any folder without a .git directory."
@@ -233,10 +322,8 @@ function runGitnexus(cwd, opts) {
   // an opaque "gitnexus exited non-zero" with empty stderr. Pre-detect and
   // pass `--skip-git` ourselves when no `.git` lives at the project root.
   const hasGit = fs.existsSync(path.join(cwd, '.git'));
-  const baseArgs = ['analyze', '.'];
   if (!hasGit) baseArgs.push('--skip-git');
-  const args = opts.useNpx ? ['gitnexus@latest', ...baseArgs] : baseArgs;
-  const result = spawnSync(cmd, args, {
+  const result = spawnSync(cmd, baseArgs, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -247,6 +334,7 @@ function runGitnexus(cwd, opts) {
     stderr: (result.stderr || '').trim(),
     stdout: (result.stdout || '').trim(),
     skippedGit: !hasGit,
+    binUsed: cmd,
   };
 }
 
@@ -271,16 +359,31 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     }
   }
 
-  // Node version pre-flight. GitNexus needs Node >=22 to BOTH install AND
-  // run — `npm install -g gitnexus` on Node <22 hits EBADENGINE, and a
-  // gitnexus binary previously installed on a wrong Node (via `--force` or
-  // a permissive npm config) crashes with `SyntaxError: Cannot use import
-  // statement outside a module`. So check version BEFORE `which(gitnexus)`,
-  // not inside the install branch. Refuse early with an actionable banner.
-  // `opts.nodeMajor` lets tests inject a fake major without mucking with
-  // process.versions (which is read-only on some Node releases).
+  // Resolve gitnexus the seamless way:
+  //   1. If `~/.nvm/versions/node/v22.*/bin/gitnexus` exists → use that
+  //      absolute path. PATH-independent. No relaunch required even when
+  //      Claude Code's hook shell was snapshotted on an older Node.
+  //   2. Otherwise if `gitnexus` resolves on PATH → use that.
+  //   3. Otherwise install: prefer `<nvm-v22-npm> install -g gitnexus` so
+  //      the binary lands in the v22 nvm folder regardless of which Node is
+  //      currently active.
+  //   4. Only refuse with node-version-mismatch when ALL of: no nvm-v22
+  //      install present, no `gitnexus` on PATH, AND current Node <22.
+  const nvm22 = findNvmNode22();
+  const hasGitnexusOnPath = which('gitnexus') !== null;
+  const hasAbsoluteGitnexus = !!(nvm22 && nvm22.gitnexus);
   const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
-  if (major !== null && major < GITNEXUS_MIN_NODE_MAJOR) {
+  const canInstallOnV22 = !!(nvm22 && nvm22.npm);
+
+  // Refuse early only if there's no path forward: no v22 nvm install AND
+  // no gitnexus on PATH AND current Node is too old to install gitnexus.
+  if (
+    !hasAbsoluteGitnexus
+    && !hasGitnexusOnPath
+    && !canInstallOnV22
+    && major !== null
+    && major < GITNEXUS_MIN_NODE_MAJOR
+  ) {
     const error = nodeVersionMismatchMessage(major);
     writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
     return {
@@ -297,18 +400,20 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
 
   let action = 'used-existing';
   let useNpx = false;
-  if (!which('gitnexus')) {
+  let gitnexusBin = hasAbsoluteGitnexus ? nvm22.gitnexus : null;
+  if (!hasAbsoluteGitnexus && !hasGitnexusOnPath) {
     if (opts.skipInstall) {
       return { ok: false, action: 'install-skipped', report: null, error: 'gitnexus not on PATH and skipInstall=true', durationMs: 0 };
     }
     const installResult = tryInstall();
     action = installResult.action;
+    if (installResult.gitnexusBin) gitnexusBin = installResult.gitnexusBin;
     if (installResult.fallback === 'npx' && which('npx')) {
       // Use `npx gitnexus@latest analyze .` for this run; future runs will
       // continue to use npx until the user fixes their npm prefix.
       useNpx = true;
       action = 'installed-npx-fallback';
-    } else if (installResult.error || !which('gitnexus')) {
+    } else if (installResult.error || (!gitnexusBin && !which('gitnexus'))) {
       writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: installResult.error || 'gitnexus still not on PATH after install attempt' });
       return { ok: false, action, report: null, error: installResult.error || 'gitnexus not available after install', durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial' };
     }
@@ -319,7 +424,7 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   const runStamp = runStampForFs();
   const backups = backupConflicts(cwd, runStamp);
 
-  const run = runGitnexus(cwd, { useNpx });
+  const run = runGitnexus(cwd, { useNpx, gitnexusBin });
   if (run.status !== 0) {
     // GitNexus writes its diagnostic tips to STDOUT, not stderr (verified
     // in the wild: "Not a git repository / pass --skip-git ..." landed on
@@ -362,6 +467,7 @@ module.exports = {
   GITNEXUS_MIN_NODE_MAJOR,
   currentNodeMajor,
   nodeVersionMismatchMessage,
+  findNvmNode22,
 };
 
 if (require.main === module) {
