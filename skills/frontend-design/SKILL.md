@@ -1,6 +1,11 @@
 ---
 name: frontend-design
-description: Create distinctive, production-grade frontend interfaces with high design quality. Use when the user asks to build web components, pages, or applications and the visual direction matters as much as the code quality.
+description: >
+  Create distinctive, production-grade frontend interfaces with high design quality.
+  Use when the user asks to build web components, pages, or applications and the visual
+  direction matters as much as the code quality. Do not activate during Traffic One
+  new-project onboarding before `.traffic-one.json` has `onboardingComplete: true`
+  and `.traffic-one/plan.md` exists; use `detect-project` / `stack-setup` first.
 metadata:
   source: everything-claude-code
   source_path: skills/frontend-design/SKILL.md
@@ -9,6 +14,11 @@ metadata:
 ---
 
 Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 # Frontend Design
 

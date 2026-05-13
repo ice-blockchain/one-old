@@ -2,12 +2,21 @@
 name: create-feature
 description: >
   Use PROACTIVELY whenever the user asks to create, add, build, or scaffold a feature, module,
-  domain, or slice of functionality. Triggers: "create a feature", "add a [name] feature",
+  domain, or slice of functionality after Traffic One onboarding is resolved. Do not activate
+  during Traffic One new-project onboarding before `.traffic-one.json` has
+  `onboardingComplete: true` and `.traffic-one/plan.md` exists; use `detect-project`
+  / `stack-setup` first.
+  Triggers: "create a feature", "add a [name] feature",
   "build the [name] module", "scaffold [name] functionality", "I need [name] with CRUD",
   "add [name] with list and detail".
 ---
 
 # Skill: Create Feature
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Confirm the feature slice structure before creating any files.
 

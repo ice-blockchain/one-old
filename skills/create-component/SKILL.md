@@ -3,11 +3,19 @@ name: create-component
 description: >
   Use PROACTIVELY whenever the user asks to create, add, build, make, scaffold, or generate
   a React component, UI element, card, modal, form, button, table, list, or any piece of UI.
+  Do not activate during Traffic One new-project onboarding before `.traffic-one.json` has
+  `onboardingComplete: true` and `.traffic-one/plan.md` exists; use `detect-project`
+  / `stack-setup` first.
   Triggers: "create a component", "add a X component", "make a form for", "build a modal",
   "I need a table", "scaffold a card", "new UI for".
 ---
 
 # Skill: Create Component
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Confirm placement and props before creating any files.
 
