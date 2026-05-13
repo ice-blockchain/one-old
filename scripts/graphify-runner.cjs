@@ -175,8 +175,26 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     return { ok: false, action, report: null, error: 'graphify ran but GRAPH_REPORT.md was not produced', durationMs: Date.now() - startedAt };
   }
 
+  // Probe `graphify --version` and stamp `.traffic-one.json` → `toolchain.graphify`
+  // so doctor.cjs + post-build hooks can compare installed vs recommended.
+  let installedVersion = null;
+  try {
+    const { probeToolVersion, mergeToolchainStamp } = require(path.resolve(__dirname, 'toolchain.cjs'));
+    installedVersion = probeToolVersion('graphify');
+    if (installedVersion) {
+      const current = readState(cwd);
+      const updated = mergeToolchainStamp(current, 'graphify', {
+        version: installedVersion,
+        at: nowIso(),
+      });
+      writeStateMerge(cwd, { toolchain: updated.toolchain });
+    }
+  } catch {
+    // best-effort; never fail the run because the version probe glitched.
+  }
+
   writeStateMerge(cwd, { graphifyLastRunAt: nowIso() });
-  return { ok: true, action, report: reportAbs, error: null, durationMs: Date.now() - startedAt };
+  return { ok: true, action, report: reportAbs, error: null, durationMs: Date.now() - startedAt, installedVersion };
 }
 
 module.exports = { bootstrap, which, nowIso };

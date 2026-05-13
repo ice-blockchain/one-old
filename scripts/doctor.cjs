@@ -178,6 +178,32 @@ function buildFindings({ node, nvm, gitnexus, project }) {
     });
   }
 
+  // Toolchain version drift. Walk `state.toolchain.*` against
+  // `scripts/toolchain-versions.json` and emit one finding per tool whose
+  // installed version sits below `minimum` (fix-needed) or below
+  // `recommended` (info nudge).
+  try {
+    const toolchain = require('./toolchain.cjs');
+    const stamps = (project.state && project.state.toolchain) || {};
+    for (const [name, stamp] of Object.entries(stamps)) {
+      const status = toolchain.toolStatus(name, stamp && stamp.installedVersion);
+      if (status.status === 'too-old' || status.status === 'outdated') {
+        const spec = toolchain.getToolSpec(name) || {};
+        const severity = status.status === 'too-old' ? 'fix-needed' : 'info';
+        const upgrade = spec.installCommand || `<upgrade ${name}>`;
+        findings.push({
+          severity,
+          code: 'TOOLCHAIN_OUTDATED',
+          tool: name,
+          message: `${name} ${status.installed} installed; ${status.status === 'too-old' ? `minimum supported is ${status.minimum}` : `recommended is ${status.recommended}`}. Upgrade: \`${upgrade}\`.`,
+          recommendedCommand: upgrade,
+        });
+      }
+    }
+  } catch {
+    // toolchain module missing or malformed; never block doctor on it.
+  }
+
   return findings;
 }
 

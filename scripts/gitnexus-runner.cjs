@@ -531,6 +531,36 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     return { ok: false, action, report: null, error: 'gitnexus ran but .gitnexus/ was not produced', durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial', backupRoot: backups.backupRoot, restored };
   }
 
+  // Probe the just-run binary's `--version` and stamp `.traffic-one.json`
+  // → `toolchain.gitnexus` so doctor.cjs + future runners can compare
+  // installed-vs-recommended without re-probing. The actual binary used
+  // is `run.binUsed` (set by runGitnexus); if absent, fall back to
+  // discovering the nvm-v22 path or PATH lookup.
+  let installedVersion = null;
+  let probedBin = null;
+  try {
+    const { probeToolVersion, mergeToolchainStamp } = require(path.resolve(__dirname, 'toolchain.cjs'));
+    const binCandidate = run.binUsed || (nvm22 && nvm22.gitnexus) || (which('gitnexus') || null);
+    if (binCandidate && fs.existsSync(binCandidate.replace(/\s.*/, ''))) {
+      probedBin = binCandidate;
+      installedVersion = probeToolVersion('gitnexus', { binPath: binCandidate });
+    } else if (binCandidate) {
+      // npx case — `binCandidate` is "npx" with args appended; just probe via PATH.
+      installedVersion = probeToolVersion('gitnexus');
+    }
+    if (installedVersion) {
+      const current = readState(cwd);
+      const updated = mergeToolchainStamp(current, 'gitnexus', {
+        version: installedVersion,
+        binPath: probedBin || undefined,
+        at: nowIso(),
+      });
+      writeStateMerge(cwd, { toolchain: updated.toolchain });
+    }
+  } catch {
+    // best-effort; never fail the run because the version probe glitched.
+  }
+
   writeStateMerge(cwd, { gitnexusLastRunAt: nowIso() });
   return {
     ok: true,
@@ -541,6 +571,7 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     license: 'PolyForm Noncommercial',
     backupRoot: backups.backupRoot,
     restored,
+    installedVersion,
   };
 }
 

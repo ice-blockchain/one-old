@@ -98,6 +98,32 @@ function tokenEconomyBanner(cwd) {
   } catch {
     // best-effort; banner is informational
   }
+  // Toolchain drift hints. Walk `.traffic-one.json` → `toolchain.*` and
+  // surface a one-line nudge per tool whose installed version sits below
+  // the plugin's curated `recommended` (or below `minimum` — louder).
+  // The curated spec lives at `scripts/toolchain-versions.json`; bump it
+  // there to update what every project sees on its next SessionStart.
+  try {
+    const stateFile = path.join(cwd, '.traffic-one.json');
+    if (fs.existsSync(stateFile)) {
+      const state = safeReadJson(stateFile, {});
+      const toolchain = (state && state.toolchain) || {};
+      if (Object.keys(toolchain).length > 0) {
+        const tch = require(path.resolve(__dirname, '..', 'toolchain.cjs'));
+        for (const [name, stamp] of Object.entries(toolchain)) {
+          const status = tch.toolStatus(name, stamp && stamp.installedVersion);
+          if (status.status === 'too-old') {
+            const spec = tch.getToolSpec(name) || {};
+            lines.push(`[toolchain] ${name} ${status.installed} is below the minimum supported (${status.minimum}). Upgrade: \`${spec.installCommand || `<upgrade ${name}>`}\`.`);
+          } else if (status.status === 'outdated') {
+            lines.push(`[toolchain] ${name} ${status.installed} installed; recommended is ${status.recommended}.`);
+          }
+        }
+      }
+    }
+  } catch {
+    // best-effort; banner is informational
+  }
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
