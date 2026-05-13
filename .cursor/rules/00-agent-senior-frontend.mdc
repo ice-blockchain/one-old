@@ -61,7 +61,7 @@ You write to:
 - `apps/*/src/**` (excluding `apps/*/server/`, `apps/*/api/`).
 - `apps/*/app/**` (Expo Router routes only).
 - `packages/ui/**`, `packages/ui-native/**`, `packages/i18n/**`, `packages/tailwind-config/**`.
-- `src/**` for `react-frontend-only` single-app projects.
+- `src/**` for `custom-backend` React/Vite frontend-only or external-API projects.
 
 You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/migrations/`, `prisma/`, `db/`, or any backend module.
 

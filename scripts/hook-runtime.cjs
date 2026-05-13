@@ -33,7 +33,8 @@ const { MAX_STDIN } = config;
 
 const HANDLERS = {
   'session-start':            ()         => handlers.runSessionStart(),
-  'user-prompt-submit':       ()         => handlers.runUserPromptSubmit(),
+  'user-prompt-submit':       (rawInput) => handlers.runUserPromptSubmit(rawInput),
+  'check-onboarding-gate':     (rawInput) => handlers.runCheckOnboardingGate(rawInput),
   'check-architecture-write': (rawInput) => handlers.runCheckArchitectureWrite(rawInput),
   'check-library-allowlist':  (rawInput) => handlers.runCheckLibraryAllowlist(rawInput),
   'post-build-page-speed':    (rawInput) => handlers.runPostBuildPageSpeed(rawInput),
@@ -130,12 +131,14 @@ module.exports = {
   // detection + packing + directives
   detectMode:                  detection.detectMode,
   detectStackFromCodebase:     detection.detectStackFromCodebase,
+  classifyPromptForStack:      detection.classifyPromptForStack,
   packBundle:                  packing.packBundle,
   onboardingDirectiveNewProject: directives.onboardingDirectiveNewProject,
   autoDetectedAnnouncement:      directives.autoDetectedAnnouncement,
   // handlers
   forbiddenForStack:        handlers.forbiddenForStack,
   runCheckArchitectureWrite: handlers.runCheckArchitectureWrite,
+  runCheckOnboardingGate:     handlers.runCheckOnboardingGate,
   runCheckLibraryAllowlist:  handlers.runCheckLibraryAllowlist,
   runPostBuildPageSpeed:     handlers.runPostBuildPageSpeed,
   runPostStackSetup:         handlers.runPostStackSetup,

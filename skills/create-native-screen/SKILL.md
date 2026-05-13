@@ -3,11 +3,20 @@ name: create-native-screen
 description: >
   Use PROACTIVELY only when the user explicitly asks to create, add, or build a
   React Native / Expo screen, Expo Router route, RN tab, stack screen, modal
-  route, or deep-linkable native page. Triggers: "React Native screen",
+  route, or deep-linkable native page.
+  Do not activate during Traffic One new-project onboarding before `.traffic-one.json`
+  has `onboardingComplete: true` and `.traffic-one/plan.md` exists; use
+  `detect-project` / `stack-setup` first.
+  Triggers: "React Native screen",
   "Expo route", "Expo Router screen", "RN tab", "React Native stack route".
 ---
 
 # Skill: Create Native Screen
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Use this for explicit Expo Router route work.
 

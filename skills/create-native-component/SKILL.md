@@ -4,11 +4,20 @@ description: >
   Use PROACTIVELY only when the user explicitly asks to create, add, build,
   make, scaffold, or generate a React Native / Expo component, RN UI element,
   native screen component, card, modal, form, button, list item, or shared
-  React Native primitive. Triggers: "React Native component", "Expo component",
+  React Native primitive.
+  Do not activate during Traffic One new-project onboarding before `.traffic-one.json`
+  has `onboardingComplete: true` and `.traffic-one/plan.md` exists; use
+  `detect-project` / `stack-setup` first.
+  Triggers: "React Native component", "Expo component",
   "RN UI", "native component in React Native", "React Native form".
 ---
 
 # Skill: Create Native Component
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Use this for explicit Expo/React Native UI. Keep generic mobile variants in
 `ionic-mobile` and React web component work in `create-component`.

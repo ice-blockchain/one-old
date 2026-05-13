@@ -1,12 +1,20 @@
 ---
 name: create-page
 description: >
-  Use PROACTIVELY whenever the user asks to create, add, or build a page, route, screen, or view.
+  Use PROACTIVELY whenever the user asks to create, add, or build a page, route, screen,
+  or view after Traffic One onboarding is resolved. Do not activate during Traffic One
+  new-project onboarding before `.traffic-one.json` has `onboardingComplete: true`
+  and `.traffic-one/plan.md` exists; use `detect-project` / `stack-setup` first.
   Triggers: "create a page", "add a route", "new screen for", "build the [name] page",
   "I need a /[path] route", "scaffold the [name] view".
 ---
 
 # Skill: Create Page
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Confirm the page and route before creating any files.
 

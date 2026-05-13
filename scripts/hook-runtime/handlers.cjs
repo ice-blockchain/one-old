@@ -13,8 +13,11 @@ const { spawn } = require('child_process');
 const {
   STATE_FILE,
   BUDGET_CHARS,
+  STATE_VERSION,
   RN_STACKS,
   WEB_STACKS,
+  STACK_IDS,
+  LEGACY_STACK_ALIASES,
   pluginRoot,
 } = require('./config.cjs');
 
@@ -25,9 +28,10 @@ const {
   readState,
   writeState,
   normalizeState,
+  initializeToolchainState,
 } = require('./state.cjs');
 
-const { STACKS } = require('./stacks.cjs');
+const { STACKS, stackSpecForState } = require('./stacks.cjs');
 
 const {
   listAllSkills,
@@ -41,9 +45,11 @@ const {
   dependenciesFromPackage,
   detectMode,
   detectStackFromCodebase,
+  classifyPromptForStack,
 } = require('./detection.cjs');
 
 const { packBundle } = require('./packing.cjs');
+const { materializeProjectAssets } = require('./materialize.cjs');
 const {
   computeProjectFingerprint,
 } = require('../security-check-runner.cjs');
@@ -53,6 +59,8 @@ const {
   autoDetectedAnnouncement,
   onboardingReminderShort,
   postWriteIncompleteWarning,
+  codexDefaultModeFallbackDirective,
+  codexDefaultModeFallbackMobilePrompt,
 } = require('./directives.cjs');
 
 // ── Token-economy banner: surface graphify report + recent digests ─────────
@@ -127,6 +135,135 @@ function tokenEconomyBanner(cwd) {
   return lines.length ? `${lines.join('\n')}\n` : '';
 }
 
+function isKnownStack(stack) {
+  return STACK_IDS.has(stack) || Object.prototype.hasOwnProperty.call(LEGACY_STACK_ALIASES, stack);
+}
+
+function isNativeState(state) {
+  return Boolean(
+    state
+    && (
+      (state.mobile && state.mobile.framework === 'react-native-expo')
+      || RN_STACKS.has(state.stack)
+    ),
+  );
+}
+
+function isWebState(state) {
+  if (!state) return false;
+  if (WEB_STACKS.has(state.stack) && (!state.mobile || state.mobile.framework !== 'react-native-expo')) {
+    return true;
+  }
+  return Boolean(state.frontend && state.frontend !== 'none');
+}
+
+function promptTextFromSubmit(rawInput) {
+  const payload = parseJsonText(rawInput, {});
+  const candidates = [
+    payload.prompt,
+    payload.user_prompt,
+    payload.userPrompt,
+    payload.message,
+    payload.text,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return '';
+}
+
+function isStateFilePath(filePath) {
+  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  return normalized === STATE_FILE || normalized.endsWith(`/${STATE_FILE}`);
+}
+
+const FRONTEND_IDS = new Set(['none', 'react-vite', 'nextjs', 'vue', 'svelte', 'angular', 'astro', 'solid', 'remix', 'other']);
+const BACKEND_IDS = new Set([
+  'none',
+  'supabase',
+  'external-api',
+  'node',
+  'nestjs',
+  'python',
+  'django',
+  'fastapi',
+  'go',
+  'rust',
+  'java',
+  'kotlin',
+  'php',
+  'laravel',
+  'dotnet',
+  'firebase',
+  'mongo',
+  'other',
+]);
+const MOBILE_FRAMEWORK_IDS = new Set(['ionic-capacitor', 'react-native-expo', 'none']);
+const MOBILE_SOURCE_IDS = new Set(['explicit', 'prompted', 'none']);
+
+function hasInitializedToolchain(toolchain) {
+  if (!toolchain || typeof toolchain !== 'object') return false;
+  const expected = initializeToolchainState({});
+  return Object.keys(expected).every((toolName) => {
+    const entry = toolchain[toolName];
+    return entry
+      && typeof entry === 'object'
+      && Object.prototype.hasOwnProperty.call(entry, 'installedVersion')
+      && Object.prototype.hasOwnProperty.call(entry, 'installedAt');
+  });
+}
+
+function hasTechnologyArrays(technologies) {
+  return technologies
+    && typeof technologies === 'object'
+    && Array.isArray(technologies.frontend)
+    && Array.isArray(technologies.backend)
+    && Array.isArray(technologies.mobile);
+}
+
+function hasValidMobileState(mobile) {
+  if (!mobile || typeof mobile !== 'object') return false;
+  return typeof mobile.enabled === 'boolean'
+    && MOBILE_FRAMEWORK_IDS.has(mobile.framework)
+    && MOBILE_SOURCE_IDS.has(mobile.source);
+}
+
+function isNewProjectOnboardingIncomplete(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.mode !== 'new-project') return false;
+  const hasValidStack = typeof state.stack === 'string' && isKnownStack(state.stack);
+  const hasGraphProvider = state.codeGraphProvider === 'gitnexus' || state.codeGraphProvider === 'graphify';
+  const hasFrontend = typeof state.frontend === 'string' && FRONTEND_IDS.has(state.frontend);
+  const hasBackend = typeof state.backend === 'string' && BACKEND_IDS.has(state.backend);
+  return !hasValidStack
+    || !hasFrontend
+    || !hasBackend
+    || !hasValidMobileState(state.mobile)
+    || !hasTechnologyArrays(state.technologies)
+    || !hasGraphProvider
+    || !hasInitializedToolchain(state.toolchain)
+    || state.confirmed !== true
+    || state.onboardingComplete !== true
+    || typeof state.confirmedAt !== 'string'
+    || state.confirmedAt.trim() === '';
+}
+
+function onboardingGateFallbackReason() {
+  return [
+    'Traffic One onboarding gate: mode=new-project and onboarding is not complete.',
+    'Switch Codex/Claude to Plan mode before using tools. If Plan mode is not active or the popup tool is unavailable, the fallback chat prompt must be displayed as the next visible assistant message.',
+    '',
+    'The previous assistant turn tried to use tools before displaying the fallback prompt. Stop tool use now. Your next visible assistant message must be:',
+    '',
+    codexDefaultModeFallbackMobilePrompt(),
+    '',
+    'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, mobile, technologies, codeGraphProvider, toolchain, confirmed, onboardingComplete, and confirmedAt.',
+    'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, or continue implementation until the typed answer is received and the remaining Code Graph and Team prompts are resolved.',
+  ].join('\n');
+}
+
 // ── SessionStart ─────────────────────────────────────────────────────────────
 function runSessionStart() {
   const cwd  = process.cwd();
@@ -140,20 +277,21 @@ function runSessionStart() {
   const mode = state.mode || detectMode(cwd);
   state.mode = mode;
 
-  const stackId = state.stack;
+  let stackId = state.stack;
 
   // Tolerate a partial state file (e.g. {stack, backend, realtime, version}
   // without onboardingComplete) — fill in defaults rather than re-running
   // onboarding. The user already picked a stack; we just complete bookkeeping.
-  if (stackId && Object.prototype.hasOwnProperty.call(STACKS, stackId)) {
+  if (stackId && isKnownStack(stackId)) {
     normalizeState(state, mode);
+    stackId = state.stack;
   }
 
   const onboardingComplete = Boolean(state.onboardingComplete);
 
   // Flow 1 — already onboarded (or partial state with valid stack) → pack bundle
-  if (onboardingComplete && Object.prototype.hasOwnProperty.call(STACKS, stackId)) {
-    const spec = STACKS[stackId];
+  if (onboardingComplete && STACK_IDS.has(stackId)) {
+    const spec = stackSpecForState(state);
 
     // Splice in the mode-specific rule if it exists (e.g. modes/new-project.md
     // contains the Turborepo scaffold checklist that the model needs to see).
@@ -165,14 +303,19 @@ function runSessionStart() {
     const { body, dropped } = packBundle(root, modeMandatory, spec.optional, BUDGET_CHARS);
 
     const allSkills = listAllSkills();
-    const removed = pruneCacheSkills(stackId);
+    const removed = pruneCacheSkills(state);
     if (removed > 0) {
       state.skillsPruned = true;
       state.skillsPrunedCount = removed;
     }
-    const skillDirective = pruneSkillsDirective(stackId, allSkills);
+    const skillDirective = pruneSkillsDirective(state, allSkills);
+    try {
+      materializeProjectAssets(cwd, state);
+    } catch {
+      // best-effort; SessionStart rule loading should not fail on local copy issues
+    }
 
-    let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} ═══\n`;
+    let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (dropped.length > 0) {
       header += `[${dropped.length} rule file(s) deferred to path-scoped attach]\n`;
     }
@@ -208,6 +351,8 @@ function runSessionStart() {
         mode,
         stack:                detected.stack,
         backend:              detected.backend || 'other',
+        frontend:             detected.frontend || 'none',
+        ...(detected.mobile ? { mobile: detected.mobile } : {}),
         realtime:             detected.realtime || 'none',
         confirmed:            true,
         onboardingComplete:   true,
@@ -216,13 +361,9 @@ function runSessionStart() {
         evidence:             detected.evidence,
       });
 
-      if (detected.frontend) {
-        state.frontend = detected.frontend;
-      } else {
-        delete state.frontend;
-      }
+      normalizeState(state, mode);
 
-      const spec = STACKS[detected.stack];
+      const spec = stackSpecForState(state);
 
       // Splice in the mode-specific rule (e.g. modes/existing-codebase.md)
       const modeRulePath = `rules/modes/${mode}.md`;
@@ -233,16 +374,21 @@ function runSessionStart() {
       const { body, dropped } = packBundle(root, modeMandatory, spec.optional, BUDGET_CHARS);
 
       const allSkills = listAllSkills();
-      const removed = pruneCacheSkills(detected.stack);
+      const removed = pruneCacheSkills(state);
       if (removed > 0) {
         state.skillsPruned = true;
         state.skillsPrunedCount = removed;
       }
       writeState(cwd, state);
-      const skillDirective = pruneSkillsDirective(detected.stack, allSkills);
+      try {
+        materializeProjectAssets(cwd, state);
+      } catch {
+        // best-effort; auto-detection still succeeds even if local copy fails
+      }
+      const skillDirective = pruneSkillsDirective(state, allSkills);
 
       const banner = autoDetectedAnnouncement(detected);
-      let header = `═══ traffic-one — stack: ${detected.stack} · mode: ${mode} ═══\n`;
+      let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
       if (dropped.length > 0) {
         header += `[${dropped.length} rule file(s) deferred]\n`;
       }
@@ -268,6 +414,9 @@ function runSessionStart() {
   const spec = STACKS.minimal;
   const { body } = packBundle(root, spec.mandatory, spec.optional, Math.floor(BUDGET_CHARS / 2));
   const context = `${directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n${body}`;
+  if (!state.toolchain || typeof state.toolchain !== 'object') {
+    state.toolchain = initializeToolchainState();
+  }
   writeState(cwd, state);
   return {
     stdout: JSON.stringify({
@@ -281,7 +430,7 @@ function runSessionStart() {
 }
 
 // ── UserPromptSubmit ─────────────────────────────────────────────────────────
-function runUserPromptSubmit() {
+function runUserPromptSubmit(rawInput = '') {
   const statePath = path.join(process.cwd(), STATE_FILE);
   if (!fs.existsSync(statePath)) {
     return {
@@ -299,7 +448,7 @@ function runUserPromptSubmit() {
   }
 
   const stack = state.stack || state.mode || 'unknown';
-  const validStack = state.stack && Object.prototype.hasOwnProperty.call(STACKS, state.stack);
+  const validStack = state.stack && isKnownStack(state.stack);
   const isIncomplete = !validStack || state.onboardingComplete !== true;
 
   // Re-inject the short onboarding reminder while a new project hasn't yet
@@ -308,12 +457,46 @@ function runUserPromptSubmit() {
   // pointed at the schema until `.traffic-one.json` is fully populated.
   if (isIncomplete && state.mode === 'new-project') {
     const reminder = onboardingReminderShort();
+    const promptText = promptTextFromSubmit(rawInput);
+    const classification = promptText ? classifyPromptForStack(promptText) : null;
+    const classificationContext = classification
+      ? [
+        '[FIRST PROMPT STACK CLASSIFICATION]',
+        `stack=${classification.stack}`,
+        `frontend=${classification.frontend}`,
+        `backend=${classification.backend}`,
+        `mobile=${classification.mobile.enabled ? classification.mobile.framework : 'none'}`,
+        'mode=new-project: switch Codex and Claude Code to Plan mode before onboarding questions or implementation. If no mode switch is available, stay plan-only, ask fallback chat questions, and stop for typed answers.',
+        codexDefaultModeFallbackDirective(),
+        'Onboarding choices must be prompt popups: call Codex `request_user_input` when available; do not print numbered option lists in chat. If the popup tool is unavailable, ask the same question in chat with numbered options, tell the user to reply with the option number or label, and stop; never choose a default or continue implementation while the answer is pending.',
+        classification.shouldAskMobile
+          ? [
+            'Popup 1: ask the mobile decision with Codex `request_user_input`:',
+            'question="Do you want a mobile app too?"',
+            'options: Web only (Recommended); Ionic + Capacitor; React Native / Expo.',
+            'Stop and wait for the popup answer, or for a typed option if popup is unavailable.',
+          ].join(' ')
+          : 'Mobile intent was detected or not applicable; skip the mobile popup.',
+        [
+          'Popup 2: ask the required codebase graph provider with Codex `request_user_input`:',
+          'question="Which provider should we use for the codebase graph?"',
+          'options: GitNexus; graphify.',
+          'Stop and wait for the popup answer, or for a typed option if popup is unavailable; no default and no skip.',
+        ].join(' '),
+        [
+          'Popup 3: for non-trivial multi-layer builds, ask the Traffic One team/subagent choice with Codex `request_user_input`:',
+          'question="Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"',
+          'options: Run team (Recommended); Main agent only.',
+          'Ask this only after the codebase graph choice is answered; stop for a typed option if popup is unavailable.',
+        ].join(' '),
+      ].join('\n')
+      : '';
     return {
       stdout: JSON.stringify({
         systemMessage: 'traffic-one [onboarding incomplete]',
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
-          additionalContext: `[ACTIVE STACK: ${stack}]\n\n${reminder}`,
+          additionalContext: `[ACTIVE STACK: ${stack}]\n\n${classificationContext ? `${classificationContext}\n\n` : ''}${reminder}`,
         },
       }),
       exitCode: 0,
@@ -332,6 +515,31 @@ function runUserPromptSubmit() {
   };
 }
 
+// ── PreToolUse: new-project onboarding gate ──────────────────────────────────
+function runCheckOnboardingGate(rawInput) {
+  const data = parseJsonText(rawInput, {});
+  const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
+  const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
+  const cwd = process.cwd();
+  const statePath = path.join(cwd, STATE_FILE);
+  const state = safeReadJson(statePath, {});
+  const mode = state.mode || detectMode(cwd);
+  const effectiveState = {
+    ...state,
+    mode,
+  };
+
+  if (isStateFilePath(filePath)) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  if (mode === 'new-project' && isNewProjectOnboardingIncomplete(effectiveState)) {
+    return denyPreToolUse(onboardingGateFallbackReason());
+  }
+
+  return { stdout: '', exitCode: 0 };
+}
+
 // ── PreToolUse: architecture write/edit guard ────────────────────────────────
 function readStack() {
   const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
@@ -348,8 +556,9 @@ function runCheckArchitectureWrite(rawInput) {
       : typeof toolInput.new_string === 'string'
         ? toolInput.new_string
         : '';
+  const stateForArchitecture = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
   const stack = readStack();
-  const isNative = RN_STACKS.has(stack);
+  const isNative = isNativeState(stateForArchitecture);
   const violations = [];
 
   // Plan gate: on a new project, deny feature-source writes until the architect
@@ -361,9 +570,9 @@ function runCheckArchitectureWrite(rawInput) {
   const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
 
   const statePath         = path.join(process.cwd(), STATE_FILE);
-  const stateForPlan      = safeReadJson(statePath, {});
+  const stateForPlan      = stateForArchitecture;
   const stateMissing      = !fs.existsSync(statePath);
-  const validStateStack   = stateForPlan.stack && Object.prototype.hasOwnProperty.call(STACKS, stateForPlan.stack);
+  const validStateStack   = stateForPlan.stack && isKnownStack(stateForPlan.stack);
   const memoryPresent     = fs.existsSync(path.join(process.cwd(), '.traffic-one', 'plan.md'))
     || fs.existsSync(path.join(process.cwd(), '.traffic-one', 'stack.md'));
   const detectedModeForState = stateForPlan.mode || (stateMissing ? detectMode(process.cwd()) : null);
@@ -505,7 +714,20 @@ function allowsNextjs(state) {
   return state.frontend === 'nextjs' || packageJsonHasNext();
 }
 
-function forbiddenForStack(stack, allowNextjs) {
+function stateFromStackForAllowlist(stackOrState) {
+  if (stackOrState && typeof stackOrState === 'object') return stackOrState;
+  const stack = typeof stackOrState === 'string' ? stackOrState : null;
+  if (stack === 'react-native-expo-monorepo' || stack === 'react-native-expo-app') {
+    return { stack, frontend: 'none', backend: 'supabase', mobile: { enabled: true, framework: 'react-native-expo' } };
+  }
+  if (stack === 'react-realtime-monorepo' || stack === 'react-frontend-only' || stack === 'default' || stack === 'custom-backend') {
+    return { stack, frontend: 'react-vite', backend: stack === 'react-frontend-only' ? 'none' : 'supabase', mobile: { enabled: false, framework: 'none' } };
+  }
+  return { stack, frontend: 'none', backend: 'none', mobile: { enabled: false, framework: 'none' } };
+}
+
+function forbiddenForStack(stackOrState, allowNextjs) {
+  const state = stateFromStackForAllowlist(stackOrState);
   const common = [
     ['mobx', 'Use Redux Toolkit for global business state and zustand for ephemeral UI state.'],
     ['recoil', 'Use Redux Toolkit for global business state and zustand for ephemeral UI state.'],
@@ -549,11 +771,14 @@ function forbiddenForStack(stack, allowNextjs) {
     ['bootstrap', 'Build shared native primitives in packages/ui-native via `npx @react-native-reusables/cli@latest add <name>`.'],
   ];
 
-  if (RN_STACKS.has(stack)) {
+  if (isNativeState(state)) {
     return [...common, ...native];
   }
-  if (WEB_STACKS.has(stack) || stack === null) {
-    return [...common, ...web];
+  if (isWebState(state) || state.stack === null) {
+    const webRules = state.frontend === 'nextjs'
+      ? web.filter(([pattern]) => pattern !== 'vitest' && pattern !== '@vitest/')
+      : web;
+    return [...common, ...webRules];
   }
   return common;
 }
@@ -649,7 +874,7 @@ function runCheckLibraryAllowlist(rawInput) {
 
   const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
   const stack = typeof state.stack === 'string' ? state.stack : null;
-  const hits = forbiddenForStack(stack, allowsNextjs(state)).filter(([pattern]) => new RegExp(pattern).test(command));
+  const hits = forbiddenForStack(state.stack ? state : stack, allowsNextjs(state)).filter(([pattern]) => new RegExp(pattern).test(command));
 
   if (hits.length === 0) {
     return { stdout: '', exitCode: 0 };
@@ -690,13 +915,7 @@ function runPostBuildPageSpeed(rawInput) {
   }
 
   const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
-  const stack = typeof state.stack === 'string' ? state.stack : null;
-  const frontend = typeof state.frontend === 'string' ? state.frontend : null;
-  const isWebStack =
-    WEB_STACKS.has(stack) ||
-    frontend === 'react' ||
-    frontend === 'nextjs' ||
-    stack === 'vite';
+  const isWebStack = isWebState(state);
   if (!isWebStack) {
     return { stdout: '', exitCode: 0 };
   }
@@ -978,20 +1197,26 @@ function runPostStackSetup(rawInput) {
   // model sometimes writes a partial file (no `onboardingComplete`, no
   // `codeGraphProvider`). Normalize and treat it as complete only when both
   // required fields are present + valid.
-  const validStackIds = Object.keys(STACKS).filter((id) => id !== 'node-backend');
+  const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
-  const stackOk = state && state.stack && Object.prototype.hasOwnProperty.call(STACKS, state.stack);
+  const stateDirEarly = path.dirname(path.resolve(filePath));
+  let normalizedBeforeValidation = false;
+  if (state && state.stack && isKnownStack(state.stack)) {
+    normalizedBeforeValidation = normalizeState(state, detectMode(stateDirEarly));
+  }
+  const stackOk = state && state.stack && STACK_IDS.has(state.stack);
   const cgProvider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
+  const toolchainOk = state && state.toolchain && typeof state.toolchain === 'object';
 
-  if (!state || !stackOk || !cgOk) {
+  if (!state || !stackOk || !cgOk || !toolchainOk) {
     // Don't fail silently: emit a system message + reminder so the model can
     // self-correct in the same turn. The warning covers both missing/invalid
     // stack AND missing/invalid codeGraphProvider.
     if (!state) {
       return { stdout: '', exitCode: 0 };
     }
-    const invalidStack = state.stack && !Object.prototype.hasOwnProperty.call(STACKS, state.stack)
+    const invalidStack = state.stack && !isKnownStack(state.stack)
       ? state.stack
       : null;
     const additionalContext = postWriteIncompleteWarning({
@@ -1007,6 +1232,8 @@ function runPostStackSetup(rawInput) {
       systemMessage = 'traffic-one — `.traffic-one.json` write incomplete (no `stack` field); please re-write with all 8 fields';
     } else if (cgProvider && !cgOk) {
       systemMessage = `traffic-one — \`.traffic-one.json\` has unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
+    } else if (!toolchainOk) {
+      systemMessage = 'traffic-one — `.traffic-one.json` missing required `toolchain` field; re-write with initialized toolchain';
     } else {
       systemMessage = 'traffic-one — `.traffic-one.json` missing required `codeGraphProvider` field; ask the user (gitnexus or graphify) and re-write';
     }
@@ -1022,18 +1249,20 @@ function runPostStackSetup(rawInput) {
     };
   }
 
-  const stateDirEarly = path.dirname(path.resolve(filePath));
-  if (normalizeState(state, detectMode(stateDirEarly))) {
+  if (normalizedBeforeValidation || normalizeState(state, detectMode(stateDirEarly))) {
     // Write back the completed state so subsequent hooks see a clean file.
     try {
-      fs.writeFileSync(
-        filePath,
-        `${JSON.stringify({ ...state, version: 2 }, null, 2)}\n`,
-        'utf8',
-      );
+      writeState(stateDirEarly, { ...state, version: STATE_VERSION });
     } catch {
       // best-effort; even if write fails, still emit the rule bundle below
     }
+  }
+
+  let materialized = null;
+  try {
+    materialized = materializeProjectAssets(stateDirEarly, state);
+  } catch {
+    materialized = null;
   }
 
   const stack = state.stack || '(unknown)';
@@ -1106,7 +1335,10 @@ function runPostStackSetup(rawInput) {
     }
   }
 
-  const banner = `═══ traffic-one — stack rules now active (${stack}) ═══\nContinue with the user's request applying these rules. No restart needed.${nodeWarning}\n\n`;
+  const materializedLine = materialized
+    ? `\nProject-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills.`
+    : '';
+  const banner = `═══ traffic-one — stack rules now active (${stack}) ═══\nContinue with the user's request applying these rules. No restart needed.${materializedLine}${nodeWarning}\n\n`;
   const lines  = bundle.split(/\r?\n/);
   const firstRuleIndex = lines.findIndex((line) => line.startsWith('# ── rules/'));
   const bundleBody = firstRuleIndex >= 0 ? lines.slice(firstRuleIndex).join('\n') : bundle;
@@ -1256,6 +1488,7 @@ function runPostFunctionEdit(filePath) {
 module.exports = {
   runSessionStart,
   runUserPromptSubmit,
+  runCheckOnboardingGate,
   runCheckArchitectureWrite,
   runCheckLibraryAllowlist,
   runPostBuildPageSpeed,

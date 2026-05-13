@@ -3,11 +3,19 @@ name: create-service
 description: >
   Use PROACTIVELY whenever the user asks to add an API call, create a service, fetch data from
   an endpoint, connect to a backend, or wire up HTTP requests.
+  Do not activate during Traffic One new-project onboarding before `.traffic-one.json` has
+  `onboardingComplete: true` and `.traffic-one/plan.md` exists; use `detect-project`
+  / `stack-setup` first.
   Triggers: "add an API call", "create a service for", "fetch [resource] from the API",
   "connect to the [name] endpoint", "call the API to", "I need to GET/POST/PUT/DELETE".
 ---
 
 # Skill: Create Service
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Confirm the service function and hook before creating any files.
 
