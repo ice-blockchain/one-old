@@ -2143,6 +2143,152 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
+// ── Toolchain version tracking (2.9.0) ─────────────────────────────────────
+
+test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
+  const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
+  const spec = tch.loadSpec();
+  for (const name of ['gitnexus', 'graphify', 'gitleaks', 'trufflehog']) {
+    const entry = spec[name];
+    assert.ok(entry, `spec must include ${name}`);
+    assert.match(entry.recommended, /^\d+\.\d+\.\d+$/, `${name}.recommended must be a semver`);
+    assert.match(entry.minimum, /^\d+\.\d+\.\d+$/, `${name}.minimum must be a semver`);
+    // recommended must be >= minimum.
+    assert.ok(tch.compareSemver(entry.recommended, entry.minimum) >= 0, `${name}.recommended must be >= minimum`);
+    assert.ok(entry.versionCommand, `${name} must declare versionCommand`);
+    assert.ok(entry.installCommand, `${name} must declare installCommand`);
+  }
+});
+
+test('toolStatus classifies current / outdated / too-old / missing correctly', () => {
+  const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
+  // gitnexus spec: minimum 1.0.0, recommended 1.6.4.
+  assert.equal(tch.toolStatus('gitnexus', '1.6.4').status, 'current');
+  assert.equal(tch.toolStatus('gitnexus', '2.0.0').status, 'current');
+  assert.equal(tch.toolStatus('gitnexus', '1.5.0').status, 'outdated');
+  assert.equal(tch.toolStatus('gitnexus', '0.9.0').status, 'too-old');
+  assert.equal(tch.toolStatus('gitnexus', null).status, 'missing');
+  assert.equal(tch.toolStatus('unknown-tool', '1.0.0').status, 'unknown');
+});
+
+test('compareSemver handles equal, less, greater, malformed', () => {
+  const { compareSemver } = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
+  assert.equal(compareSemver('1.2.3', '1.2.3'), 0);
+  assert.equal(compareSemver('1.2.3', '1.2.4'), -1);
+  assert.equal(compareSemver('2.0.0', '1.9.9'), 1);
+  assert.equal(compareSemver('v1.2.3', '1.2.3'), 0); // tolerant `v` prefix
+  assert.equal(compareSemver('1.2', '1.2.3'), null); // malformed → null
+  assert.equal(compareSemver('abc', '1.2.3'), null);
+});
+
+test('mergeToolchainStamp writes installedVersion + installedAt under toolchain.<name>', () => {
+  const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
+  const before = { stack: 'react-realtime-monorepo', otherField: 'preserved' };
+  const after = tch.mergeToolchainStamp(before, 'gitnexus', {
+    version: '1.6.4',
+    binPath: '/usr/local/bin/gitnexus',
+    at: '2026-05-13T00:00:00Z',
+  });
+  assert.equal(after.otherField, 'preserved', 'sibling state fields must survive');
+  assert.equal(after.toolchain.gitnexus.installedVersion, '1.6.4');
+  assert.equal(after.toolchain.gitnexus.installedAt, '2026-05-13T00:00:00Z');
+  assert.equal(after.toolchain.gitnexus.binPath, '/usr/local/bin/gitnexus');
+});
+
+test('doctor.cjs flags TOOLCHAIN_OUTDATED (severity info) when installed < recommended but >= minimum', () => {
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
+  const { buildFindings } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
+  const node = { runningMajor: 22, requiredMajor: 22 };
+  const nvm = { installed: true, hasV22: true };
+  const gitnexus = { crashRiskInOldNvm: false };
+  const project = {
+    cwd: '/tmp',
+    hasState: true,
+    state: {
+      codeGraphProvider: 'gitnexus',
+      mode: 'new-project',
+      toolchain: { gitnexus: { installedVersion: '1.5.0' } },  // < recommended 1.6.4 but > minimum 1.0.0
+    },
+    nvmrc: null,
+    hasGit: true,
+    artefacts: { gitnexus: null, graphify: null },
+  };
+  const findings = buildFindings({ node, nvm, gitnexus, project });
+  const drift = findings.find((f) => f.code === 'TOOLCHAIN_OUTDATED' && f.tool === 'gitnexus');
+  assert.ok(drift, JSON.stringify(findings, null, 2));
+  assert.equal(drift.severity, 'info');
+  assert.match(drift.message, /1\.5\.0/);
+  assert.match(drift.message, /1\.6\.4/);
+  assert.ok(drift.recommendedCommand);
+});
+
+test('doctor.cjs flags TOOLCHAIN_OUTDATED (severity fix-needed) when installed < minimum', () => {
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
+  const { buildFindings } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
+  const project = {
+    cwd: '/tmp',
+    hasState: true,
+    state: {
+      codeGraphProvider: 'graphify',
+      mode: 'new-project',
+      toolchain: { graphify: { installedVersion: '0.3.0' } },  // below minimum 0.4.0
+    },
+    nvmrc: null,
+    hasGit: true,
+    artefacts: { gitnexus: null, graphify: null },
+  };
+  const findings = buildFindings({
+    node: { runningMajor: 22, requiredMajor: 22 },
+    nvm: { installed: true, hasV22: true },
+    gitnexus: { crashRiskInOldNvm: false },
+    project,
+  });
+  const drift = findings.find((f) => f.code === 'TOOLCHAIN_OUTDATED' && f.tool === 'graphify');
+  assert.ok(drift, JSON.stringify(findings, null, 2));
+  assert.equal(drift.severity, 'fix-needed');
+  assert.match(drift.message, /minimum supported is 0\.4\.0/);
+});
+
+test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per drifted tool', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'existing-codebase',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      codeGraphProvider: 'gitnexus',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-13T00:00:00Z',
+      toolchain: {
+        gitnexus: { installedVersion: '1.5.0' },  // outdated, not too-old
+        graphify: { installedVersion: '0.3.0' },  // too-old
+      },
+    });
+    // Make it look like an existing project so detection accepts the state.
+    makeExistingProject(cwd, { react: '^18.0.0' });
+
+    const result = runHook(cwd, 'session-start');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.match(context, /\[toolchain\] gitnexus 1\.5\.0 installed; recommended is 1\.6\.4/);
+    assert.match(context, /\[toolchain\] graphify 0\.3\.0 is below the minimum supported \(0\.4\.0\)/);
+  });
+});
+
+test('manifests bumped to 2.9.0', () => {
+  for (const rel of [
+    '.claude-plugin/plugin.json',
+    '.claude-plugin/marketplace.json',
+    '.codex-plugin/plugin.json',
+    '.cursor-plugin/plugin.json',
+  ]) {
+    const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert.match(text, /"version":\s*"2\.9\.0"/, `${rel} must be bumped to 2.9.0`);
+  }
+});
+
 let failed = 0;
 
 for (const { name, fn } of tests) {
