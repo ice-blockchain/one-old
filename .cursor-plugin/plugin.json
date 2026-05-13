@@ -2,7 +2,7 @@
   "name": "traffic-one",
   "displayName": "Traffic One",
   "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with persistent .traffic-one project memory, token-economy handoff digests + a required codebase-graph provider choice at onboarding (GitNexus or graphify) with auto-install + auto-run, senior-engineer role rules (architect / frontend / backend / reviewer / tester / shipper) auto-attached, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow. Rules auto-attach via globs; skills auto-trigger on semantic match.",
-  "version": "2.8.1",
+  "version": "2.9.0",
   "author": {
     "name": "Cosmin Turcin"
   },
