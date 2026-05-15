@@ -13,7 +13,6 @@ const { spawn } = require('child_process');
 const {
   STATE_FILE,
   BUDGET_CHARS,
-  STATE_VERSION,
   RN_STACKS,
   WEB_STACKS,
   STACK_IDS,
@@ -1252,7 +1251,7 @@ function runPostStackSetup(rawInput) {
   if (normalizedBeforeValidation || normalizeState(state, detectMode(stateDirEarly))) {
     // Write back the completed state so subsequent hooks see a clean file.
     try {
-      writeState(stateDirEarly, { ...state, version: STATE_VERSION });
+      writeState(stateDirEarly, state);
     } catch {
       // best-effort; even if write fails, still emit the rule bundle below
     }

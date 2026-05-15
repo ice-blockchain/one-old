@@ -157,11 +157,12 @@ not add a "(Recommended)" tag.
 
 The schema is required for new projects: `mode`, `stack`, `frontend`, `backend`,
 `mobile`, `technologies`, `realtime`, `codeGraphProvider`, `toolchain`,
-`confirmed`, `onboardingComplete`, `confirmedAt` (`version` is bookkeeping).
+`confirmed`, `onboardingComplete`, `confirmedAt` (`version` is the current
+Traffic One plugin version; do not write a separate `pluginVersion` field).
 
 ```json
 {
-  "version": 3,
+  "version": "<current-plugin-version>",
   "mode": "<existing mode if reconfiguring; otherwise 'new-project'>",
   "stack": "<chosen id>",
   "frontend": "<chosen frontend>",

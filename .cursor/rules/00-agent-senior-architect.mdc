@@ -37,6 +37,7 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 ## Skills you consult (in this order)
 
 - `stack-setup` — only if `.traffic-one.json` is empty or `confirmed !== true`.
+- `monorepo-architecture` — **mandatory** when `stack === "default"` or `frontend === "react-vite"`. Produces the `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, `apps/web/`, and `packages/{ui,tailwind-config,i18n}` skeleton before the Module map is finalised. Skip only for `stack === "minimal"` single-app projects with no shared code.
 - `detect-project` — to confirm we're greenfield vs. extending an existing repo.
 - `library-pick` — for every non-default library decision; document the chosen + rejected with reasons.
 - `project-memory` — create or reconcile `.traffic-one/product.md`,
@@ -74,7 +75,32 @@ selected by `auto-documentation-generator` before reporting `PLAN_READY`. For
 `mode: existing-codebase` or `existing-with-supabase`, reconcile project memory
 and docs before normal feature work: create missing canonical files and update
 existing files in place. Run `mkdir -p .traffic-one` via Bash before the first
-write. Plan sections in order:
+write.
+
+### Required workspace scaffold (stack=default OR frontend=react-vite)
+
+Before emitting `PLAN_READY` you MUST write these files. They are **baseline**, not speculative architecture — the `least amount of architecture` rule does NOT permit skipping them, because every downstream skill (`create-component`, `create-page`, `i18n-text`, `frontend-design`, `seo`, the shared Tailwind preset) assumes `packages/*` exists. A flat `apps/web/` without `packages/*` is a broken Traffic One scaffold even for v1.
+
+Minimum required files (consult `monorepo-architecture` skill for exact content):
+
+```
+pnpm-workspace.yaml
+turbo.json
+tsconfig.base.json
+package.json                          # root: private, packageManager, engines, scripts
+.npmrc                                # optional but recommended
+apps/<name>/package.json              # workspace consumer
+packages/ui/package.json              # @app/ui — shadcn primitives
+packages/ui/src/index.ts              # empty barrel
+packages/tailwind-config/package.json # @app/tailwind-config — shared preset
+packages/tailwind-config/index.ts     # exports preset
+packages/i18n/package.json            # @app/i18n — shared i18next resources
+packages/i18n/src/index.ts            # empty barrel
+```
+
+Empty `src/index.ts` barrels are allowed (skeleton is the architect's job; filling them is the frontend role's job). Do not write feature code in these packages — only the skeleton.
+
+Plan sections in order:
 
 ```markdown
 # Plan: <product name>
@@ -92,6 +118,7 @@ Reference the Traffic One stack id from `.traffic-one.json`. Note any deviation 
 
 ## Module map
 List every package / app / service. One line each: name, responsibility, public API surface.
+For `stack: default` or `frontend: react-vite`, the Module map MUST list `apps/<name>` AND the shared `packages/*` workspaces (minimum: `packages/ui`, `packages/tailwind-config`, `packages/i18n`). The "least architecture" principle does NOT permit collapsing this to `apps/web` only or "the smallest tree" — Traffic One downstream skills depend on these packages existing as workspace entries (shadcn primitives, Tailwind preset, i18n resources). Listing them in the plan and scaffolding empty barrels is required baseline, not speculative architecture. Flat `src/` layouts and "apps/web only" layouts are both rejected on this stack.
 
 ## Public contracts
 TypeScript types, OpenAPI fragments, or zod schema sketches for the inter-module boundaries.
@@ -125,6 +152,7 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 ## Hard rules
 
 - You do **not** write feature source files (no `apps/*/src/**`, `packages/*/src/**` other than empty package skeletons that are part of scaffolding the workspace itself).
+- On `stack: default` or `frontend: react-vite`, the "Required workspace scaffold" subsection of "What you write" is non-negotiable: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls pnpm-workspace.yaml turbo.json packages/ui/package.json packages/tailwind-config/package.json packages/i18n/package.json` — if any is missing, the run is incomplete. The "least amount of architecture" principle (above) does not override this — workspace skeleton is baseline, not speculative.
 - You do not skip the plan to "save time". The plan-gate hook will deny feature writes until `.traffic-one/plan.md` exists.
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.
 - The plan stays under ~250 lines. If a section is bigger, link out to the relevant root doc.

@@ -238,12 +238,14 @@ GENERAL RULES:
   - One pitch per layer. If they say no twice, accept it and move on.
   - Don't be pushy; sound like a senior dev recommending what works.
   - The codeGraphProvider question above is REQUIRED — no skip, no default.
+  - \`version\` is the current Traffic One plugin semver. Do NOT write a
+    separate \`pluginVersion\` field.
   - Write \`.traffic-one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
     All required top-level fields are REQUIRED — do NOT drop any. Subsequent
     hooks rely on \`onboardingComplete: true\` and \`mode\` being present:
 
     {
-      "version": 3,
+      "version": "<current-plugin-version>",
       "mode": "new-project",
       "stack": "<chosen-id>",
       "frontend": "<none|react-vite|nextjs|vue|svelte|angular|astro|solid|remix|other>",
@@ -271,7 +273,7 @@ GENERAL RULES:
   EXAMPLES — non-default backend branches (still write every required field):
 
     User declined the recommended backend + has own API + picked graphify:
-    { "version": 3, "mode": "new-project", "stack": "custom-backend",
+    { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
       "frontend": "react-vite", "backend": "external-api",
       "mobile": { "enabled": false, "framework": "none", "source": "none" },
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
@@ -280,7 +282,7 @@ GENERAL RULES:
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User declined the recommended backend + no backend planned + picked gitnexus:
-    { "version": 3, "mode": "new-project", "stack": "custom-backend",
+    { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
       "frontend": "react-vite", "backend": "none",
       "mobile": { "enabled": false, "framework": "none", "source": "none" },
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
@@ -289,7 +291,7 @@ GENERAL RULES:
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User chose Firebase / Mongo / their own Postgres + picked graphify:
-    { "version": 3, "mode": "new-project", "stack": "custom-backend",
+    { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
       "frontend": "react-vite", "backend": "other",
       "mobile": { "enabled": false, "framework": "none", "source": "none" },
       "technologies": { "frontend": ["react", "vite"], "backend": ["other"], "mobile": [] },
@@ -456,7 +458,7 @@ before continuing with feature work. The PostToolUse hook will then auto-load
 the matching rule bundle into THIS session — no restart needed.
 
   {
-    "version": 3,
+    "version": "<current-plugin-version>",
     "mode": "new-project",
     "stack": "<chosen-id>",
     "frontend": "<chosen-frontend>",
@@ -557,7 +559,7 @@ function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, v
       'Re-write the file with the Write tool using the full required schema:',
     '',
     '  {',
-      '    "version": 3,',
+      '    "version": "<current-plugin-version>",',
       '    "mode": "new-project",',
       '    "stack": "<chosen-id>",',
       '    "frontend": "<chosen-frontend>",',
