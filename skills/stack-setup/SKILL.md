@@ -194,6 +194,13 @@ The PostToolUse hook injects the full stack rules into THIS session immediately.
 You'll see `traffic-one rules loaded for stack: <id>` in a system message
 before your next action — those rules are now live, use them.
 
+After that system message, the next scaffold action for `mode: "new-project"`
+must read and follow `rules/modes/new-project.md`. For `stack: "default"` or a
+React/Vite new project with backend data, do not create a flat/root Vite app:
+no root `src/`, root `index.html`, root `vite.config.ts`, or root
+`package.json` without pnpm workspaces. Scaffold the Turborepo workspace
+(`apps/web` plus required `packages/*`) before any feature code.
+
 ## Must-not-do
 - Do NOT tell the user to restart Claude Code. The PostToolUse hook handles loading.
 - Do NOT ask the user to edit JSON.

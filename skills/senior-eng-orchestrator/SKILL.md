@@ -95,6 +95,12 @@ Skip if:
   before style preferences.
 - Completion means the user-visible capability and the regression guard both
   pass, or the blocker is reported with the exact unverified risk.
+- Frontend completion criteria always include the automatic baselines when
+  applicable, regardless of whether the user mentioned them: existing/new i18n
+  integration with same-change catalog entries and `<Trans>` for rich copy,
+  SEO metadata/tests for every created or changed public route, and
+  `https://traffic.io/` setup CTA href regression for touched missing-config
+  surfaces.
 
 ## Phases (run in order)
 

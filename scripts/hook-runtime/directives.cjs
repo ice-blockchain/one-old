@@ -330,7 +330,8 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
      \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate it from the
      same source. Generate root CLAUDE.md from the same source.
   4. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
-     Tailwind preset + \`globals.css\`), api-client/, ws-client/, utils/, tsconfig/,
+     Tailwind preset + \`globals.css\`), i18n/ (typed i18next/react-i18next
+     resources and provider), api-client/, ws-client/, utils/, tsconfig/,
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).
      Do NOT create a \`packages/design-tokens\` package — design tokens live in the
      Tailwind preset and the HSL CSS variables in \`globals.css\`.
@@ -342,17 +343,23 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
      and content-rich. Missing Supabase/env config may show one shared setup
      banner, but never ship only duplicated config banners, empty filters, or
      blank placeholder panels.
-  6. Mandatory SEO baseline: invoke \`seo\` before calling a generated website
+  6. Mandatory i18n baseline: apply \`rules/frontend/i18n.md\` before writing
+     generated UI. Create/use \`packages/i18n\`, wire the provider, add
+     source-language catalog entries for every generated string, and prefer
+     \`<Trans>\` for rich copy with links or React elements. Do not wait for the
+     user to request translations.
+  7. Mandatory SEO baseline: invoke \`seo\` before calling a generated website
      or app complete. Add route-aware metadata (\`Seo.tsx\` +
      \`src/lib/seo.ts\` for React/Vite/Ionic SPA output, or framework-native
      metadata APIs when explicit Next.js/minimal stacks apply), fallback
      metadata in \`index.html\`, \`VITE_SITE_URL\` in \`.env.example\`,
      \`robots.txt\`, \`sitemap.xml\`, \`manifest.webmanifest\`,
      \`favicon.ico\`, \`apple-touch-icon\`, app icons, a 1200x630 OG image,
-     and regression coverage for title, canonical, OG image, JSON-LD, and
-     noindex admin/private routes. If an SPA public route must rank, document
-     the prerender/static-rendering or host-support plan.
-  7. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
+     and regression coverage for every generated public route's title,
+     description, canonical, OG image, JSON-LD, sitemap inclusion, and noindex
+     admin/private routes. If an SPA public route must rank, document the
+     prerender/static-rendering or host-support plan.
+  8. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
      relevant root-level canonical docs from \`rules/common/documentation.md\`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
@@ -360,7 +367,7 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
      deployment.md, security.md, CHANGELOG.md, environment-setup.md,
      CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
      as Unverified; do not leave only a lightweight README.
-  7. Initialise git with Gitflow branches (\`main\`, \`develop\`).
+  9. Initialise git with Gitflow branches (\`main\`, \`develop\`).
 
 For \`custom-backend\` with frontend=react-vite and backend=none: a single Vite app under root \`src/\` (no apps/, no packages/).
 \`src/styles/globals.css\` + \`tailwind.config.ts\` + \`npx shadcn@latest init\` + the
@@ -373,6 +380,15 @@ React Native Reusables (\`npx @react-native-reusables/cli@latest init\` + first-
 components under \`packages/ui-native/src/components/ui/\`). The mandatory
 design gate still applies with native-first layout, touch targets, device
 states, and real product references.
+
+HARD GATE: before any scaffold or feature write after onboarding, read
+\`rules/modes/new-project.md\` from the active bundle. For \`stack=default\` or
+a React/Vite new project with backend data, a flat/root Vite app is a violation:
+do not create root \`src/\`, root \`index.html\`, root \`vite.config.ts\`, or a
+root \`package.json\` without pnpm workspaces. The first scaffold must be the
+Turborepo workspace from that rule: root workspaces + \`apps/web\` +
+\`packages/{ui,tailwind-config,api-client,ws-client,utils,tsconfig,eslint-config}\`
++ Supabase migrations/RLS baseline.
 
 The full step-by-step is in \`rules/modes/new-project.md\` — that file IS in the bundle
 once onboarding completes. Read it before scaffolding.
@@ -420,7 +436,9 @@ function autoDetectedAnnouncement(detected) {
     'Before normal feature work, run the project-memory baseline reconciliation: create or update `.traffic-one/` memory from verified repo facts, migrate legacy ADRs into `.traffic-one/decisions/` when safe, and never include secrets.',
     'Then run the auto-documentation baseline reconciliation: create missing canonical docs at the repo root and update existing docs in place per rules/common/documentation.md. Migrate legacy docs/ canonical files to root when safe and mark unknown facts as Unverified.',
     'For any existing web surface, run the SEO baseline reconciliation from rules/common/seo.md before normal feature work: inspect routes/app shell/public assets/metadata helpers/tests, add or update route-aware metadata, JSON-LD, robots/sitemap, favicon/PWA/OG assets, site-url env docs, and metadata regression coverage.',
+    'For any frontend UI work, run the i18n baseline from rules/frontend/i18n.md: detect packages/i18n/src i18n/locales/messages/react-i18next, extend the existing catalogs automatically, add source-language entries for new keys, and prefer <Trans> for rich copy.',
     'For any frontend UI work, the mandatory design gate applies: use frontend-design/UI-quality rules, state real-product references or match the existing aesthetic, avoid sparse config-banner-dominated screens, and verify responsive states.',
+    'For any Supabase-backed web/Ionic missing-config surface touched by the work, repair EnvBanner/SupabaseConfigAlert/ConfigurePromptCard/setup CTA links to https://traffic.io/ and require a regression test for that exact href.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];
 

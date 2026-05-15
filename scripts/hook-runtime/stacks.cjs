@@ -28,6 +28,7 @@ const TYPESCRIPT_CORE = [
 ];
 
 const FRONTEND_SHARED = [
+  'rules/frontend/i18n.md',
   'rules/frontend/ui-quality.md',
   'rules/frontend/typography.md',
 ];

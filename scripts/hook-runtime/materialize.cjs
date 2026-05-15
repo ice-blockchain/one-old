@@ -176,10 +176,35 @@ function writeRootClaude(cwd, localClaudeContent) {
   return writeTextIfChanged(rootClaude, localClaudeContent);
 }
 
+function unique(values) {
+  const seen = new Set();
+  const out = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function modeRulesForState(root, state) {
+  const mode = state && typeof state.mode === 'string' ? state.mode : '';
+  if (!mode) return [];
+
+  const relPath = `rules/modes/${mode}.md`;
+  if (!fs.existsSync(path.join(root, relPath))) return [];
+
+  return [relPath];
+}
+
 function materializeProjectAssets(cwd, state) {
   const root = pluginRoot();
   const spec = stackSpecForState(state);
-  const rules = [...spec.mandatory, ...spec.optional].filter((relPath) => fs.existsSync(path.join(root, relPath)));
+  const rules = unique([
+    ...spec.mandatory,
+    ...modeRulesForState(root, state),
+    ...spec.optional,
+  ]).filter((relPath) => fs.existsSync(path.join(root, relPath)));
   const skills = [...activeSkillsFor(state)].filter((name) => fs.existsSync(path.join(root, 'skills', name, 'SKILL.md'))).sort();
   const nextRulePaths = new Set(rules);
   const nextSkillNames = new Set(skills);

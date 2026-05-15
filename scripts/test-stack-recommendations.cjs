@@ -10,7 +10,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
 const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-const { STACKS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+const { STACKS, stackSpecForState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
 const { computeProjectFingerprint } = require(path.join(ROOT, 'scripts', 'security-check-runner.cjs'));
 
 const tests = [];
@@ -421,6 +421,10 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
     createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
     createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
     createService: fs.readFileSync(path.join(ROOT, 'skills', 'create-service', 'SKILL.md'), 'utf8'),
+    promptTemplates: fs.readFileSync(
+      path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+      'utf8',
+    ),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
     reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
     agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
@@ -440,6 +444,8 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
   assert.match(sources.newProjectRule, /protected-route\s+fallbacks/);
   assert.match(sources.stacks, /rules\/frontend\/react\/supabase-client\.md/);
   assert.match(sources.directives, /MUST link to[\s\S]*https:\/\/traffic\.io\//);
+  assert.match(sources.promptTemplates, /https:\/\/traffic\.io\//);
+  assert.match(sources.promptTemplates, /exact `href`/);
   assert.match(sources.frontendAgent, /protected-route fallbacks/);
   assert.match(sources.reviewerAgent, /not directly to the Supabase\s+dashboard/);
   assert.match(sources.agentsMirror, /SupabaseConfigAlert/);
@@ -698,19 +704,29 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   assert.match(seoRule, /VITE_SITE_URL/);
   assert.match(seoRule, /noindex,nofollow/);
   assert.match(seoRule, /prerendering\/static rendering/);
+  assert.match(seoRule, /every created or changed public route/);
   assert.match(seoSkill, /Traffic One generated-web baseline/);
+  assert.match(seoSkill, /for every created or changed public\s+route/);
   assert.match(newProjectRule, /Mandatory SEO baseline/);
   assert.match(newProjectRule, /og-default\.png/);
+  assert.match(newProjectRule, /every generated public\s+route's title/);
   assert.match(existingRule, /run the `seo`\s+baseline reconciliation/);
   assert.match(directives, /Mandatory SEO baseline/);
+  assert.match(directives, /every generated public route's title/);
   assert.match(directives, /SEO baseline reconciliation/);
   assert.match(architect, /route metadata contract/);
   assert.match(frontend, /rules\/common\/seo\.md/);
+  assert.match(frontend, /every created or\s+changed public route/);
   assert.match(reviewer, /mandatory\s+SEO baseline/);
+  assert.match(reviewer, /metadata tests for every created or\s+changed public route/);
   assert.match(tester, /metadata coverage/);
+  assert.match(tester, /every created or changed public route's title/);
   assert.match(createPage, /SEO plan for public web routes/);
+  assert.match(createPage, /for every public\s+route created or changed/);
   assert.match(createFeature, /SEO impact plan/);
+  assert.match(createFeature, /for every public route created or changed/);
   assert.match(promptTemplates, /include the route metadata contract/);
+  assert.match(promptTemplates, /regression coverage for every created or changed public route/);
   assert.match(agentsMirror, /SEO baseline — generated and reconciled automatically/);
   assert.match(claude, /@rules\/common\/seo\.md/);
   assert.match(readme, /Generated\/existing web SEO baseline/);
@@ -750,6 +766,89 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
 
     assert.match(context, /rules\/common\/seo\.md/);
     assert.match(context, /SEO baseline reconciliation/);
+  });
+});
+
+test('frontend i18n baseline is mandatory and automatic for UI work', () => {
+  const i18nRule = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'i18n.md'), 'utf8');
+  const reactCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'core.md'), 'utf8');
+  const nativeCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react-native', 'core.md'), 'utf8');
+  const i18nSkill = fs.readFileSync(path.join(ROOT, 'skills', 'i18n-text', 'SKILL.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
+  const createComponent = fs.readFileSync(path.join(ROOT, 'skills', 'create-component', 'SKILL.md'), 'utf8');
+  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
+  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+
+  for (const state of [
+    { stack: 'default', frontend: 'react-vite', backend: 'supabase' },
+    { stack: 'custom-frontend', frontend: 'react-vite', backend: 'none' },
+    {
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { enabled: true, framework: 'react-native-expo' },
+    },
+  ]) {
+    const spec = stackSpecForState(state);
+    assert.equal(
+      spec.mandatory.includes('rules/frontend/i18n.md'),
+      true,
+      `${spec.label} must load frontend i18n defaults mandatorily`,
+    );
+  }
+
+  assert.match(i18nRule, /even when the user did not explicitly ask for translations/);
+  assert.match(i18nRule, /Prefer `<Trans>`/);
+  assert.match(i18nRule, /Do not\s+create a parallel translation system/);
+  assert.match(reactCore, /Detect and extend existing i18n modules automatically/);
+  assert.match(nativeCore, /Detect and extend existing i18n modules automatically/);
+  assert.match(i18nSkill, /Do not wait for the user to mention i18n/);
+  assert.match(i18nSkill, /Prefer `<Trans>` over `t\(\)`/);
+  assert.match(createPage, /Before writing page UI, detect the project's i18n module/);
+  assert.match(createFeature, /Before writing feature UI, detect the project's i18n module/);
+  assert.match(createComponent, /Before writing component UI, detect the project's i18n module/);
+  assert.match(newProjectRule, /New Traffic One frontend projects include `packages\/i18n` by default/);
+  assert.match(existingRule, /reconcile the i18n baseline/);
+  assert.match(directives, /Mandatory i18n baseline/);
+  assert.match(directives, /Do not wait for the\s+user to request translations/);
+  assert.match(frontend, /Before writing UI, apply `rules\/frontend\/i18n\.md`/);
+  assert.match(reviewer, /uses `<Trans>` instead of\s+`t\(\)`/);
+  assert.match(tester, /translated accessible names and labels/);
+  assert.match(promptTemplates, /even when the user did not\s+mention translations/);
+  assert.match(promptTemplates, /prefer `<Trans>`/);
+  assert.match(agentsMirror, /i18n baseline — generated and reconciled automatically/);
+  assert.match(claude, /i18n\.md/);
+
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-12T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/i18n\.md/);
+    assert.match(context, /Frontend i18n Baseline/);
+    assert.match(context, /even when the user did not explicitly ask for translations/);
   });
 });
 
@@ -1048,6 +1147,31 @@ test('materializeProjectAssets copies only active local rules and skills', () =>
   });
 });
 
+test('materializeProjectAssets includes mode-specific local rules', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  withTempDir((cwd) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    };
+
+    materializeProjectAssets(cwd, state);
+
+    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md');
+    const manifest = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json'), 'utf8');
+    const localAgents = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md'), 'utf8');
+    const localClaude = fs.readFileSync(path.join(cwd, 'CLAUDE.md'), 'utf8');
+
+    assert.ok(fs.existsSync(localRulePath));
+    assert.match(manifest, /rules\/modes\/new-project\.md/);
+    assert.match(localAgents, /\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
+    assert.match(localClaude, /@\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
+  });
+});
+
 test('architecture hook blocks invalid component write', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-frontend-only' });
@@ -1251,6 +1375,91 @@ test('plan-gate allows root architecture docs on new-project without plan', () =
       tool_input: {
         file_path: 'architecture.md',
         content: '# Architecture\n',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('new-project monorepo gate blocks flat root Vite scaffold', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const rootSrc = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'src/main.tsx',
+        content: 'export const App = () => null;\n',
+      },
+    });
+
+    assert.match(rootSrc.stdout, /permissionDecision/);
+    assert.match(rootSrc.stdout, /New-project monorepo gate/);
+    assert.match(rootSrc.stdout, /apps\/web/);
+
+    const rootPackage = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'package.json',
+        content: JSON.stringify({ private: true, scripts: { dev: 'vite' }, dependencies: { react: '^19.0.0' } }, null, 2),
+      },
+    });
+
+    assert.match(rootPackage.stdout, /permissionDecision/);
+    assert.match(rootPackage.stdout, /workspaces/);
+  });
+});
+
+test('new-project monorepo gate follows nested project state', () => {
+  withTempDir((cwd) => {
+    const projectDir = path.join(cwd, 'jobs-platform');
+    fs.mkdirSync(path.join(projectDir, '.traffic-one'), { recursive: true });
+    writeJson(path.join(projectDir, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+    });
+    fs.writeFileSync(path.join(projectDir, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'jobs-platform/package.json',
+        content: JSON.stringify({ private: true, scripts: { dev: 'vite' } }, null, 2),
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /New-project monorepo gate/);
+    assert.match(result.stdout, /workspaces/);
+  });
+});
+
+test('new-project monorepo gate allows workspace root package', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'package.json',
+        content: JSON.stringify({
+          private: true,
+          packageManager: 'pnpm@10.23.0',
+          workspaces: ['apps/*', 'packages/*'],
+        }, null, 2),
       },
     });
 
@@ -2495,7 +2704,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.9) ─────────────────────────────────────
+// ── Toolchain version tracking (2.9.11) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -2629,7 +2838,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.9', () => {
+test('manifests bumped to 2.9.11', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2637,7 +2846,7 @@ test('manifests bumped to 2.9.9', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.9"/, `${rel} must be bumped to 2.9.9`);
+    assert.match(text, /"version":\s*"2\.9\.11"/, `${rel} must be bumped to 2.9.11`);
   }
 });
 

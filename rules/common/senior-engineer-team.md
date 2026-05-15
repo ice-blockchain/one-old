@@ -20,6 +20,11 @@
   - `senior-shipper` → `worker`, deploy/release only after the shipper gate is satisfied.
 - Cursor uses available Cursor/background-agent/task facilities to run the same roles. If Cursor exposes no callable agent facility, keep the same phase order manually with the mirrored `00-agent-senior-*.mdc` role contexts and state that the Traffic One team is being simulated by the main agent because the runtime has no subagent adapter.
 - Include the relevant Traffic One role instructions from `agents/senior-*.md` or a concise equivalent in every Codex/Cursor subagent prompt.
+- Every frontend role prompt must include the automatic baselines even when the
+  user did not mention them: i18n integration with existing/new catalogs and
+  `<Trans>` for rich copy, SEO metadata/tests for every created or changed
+  public route, and `https://traffic.io/` setup CTA href regression for touched
+  missing-config surfaces.
 - If subagents are unavailable or blocked in any runtime, continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
 - Do not ask for subagents on single-component, single-page, single-service, read-only audit, or small refactor tasks; route those directly to the matching specialist skill.
 - If a Codex agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.

@@ -201,6 +201,7 @@ Or via Cursor Settings → Plugins → Add.
 | Curated library catalog | `rules/common/library-catalog.md`, then run `node scripts/sync-cursor.cjs` |
 | Post-deploy observability defaults | `rules/common/stack-recommendations.md`, `skills/observability/SKILL.md`, then run `node scripts/sync-cursor.cjs` |
 | App launch checklist defaults | `rules/common/stack-recommendations.md`, `skills/app-launch-checklist/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
+| Generated/existing frontend i18n baseline | `rules/frontend/i18n.md`, `skills/i18n-text/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Generated/existing web SEO baseline | `rules/common/seo.md`, `skills/seo/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Project memory defaults | `rules/common/project-memory.md`, `skills/project-memory/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
 | Documentation defaults | `rules/common/documentation.md`, `skills/auto-documentation-generator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |

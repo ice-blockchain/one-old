@@ -35,8 +35,20 @@ Confirm the page and route before creating any files.
 15. State the Lighthouse QA plan: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
 
 Scaffold rules:
+- Before writing page UI, detect the project's i18n module (`packages/i18n`,
+  `src/i18n*`, `locales/`, `public/locales/`, `messages/`, `i18next`,
+  `react-i18next`, provider wrappers). If one exists, extend it automatically
+  and add source-language catalog entries for every new key. New Traffic One
+  frontend projects use `packages/i18n` by default. Do not wait for the user to
+  request translations.
 - Route titles, headings, empty/loading/error states, navigation labels, and ARIA copy use translation keys.
+- Prefer `<Trans>` over `t()` for page copy with links, React elements,
+  emphasis, formatting, line breaks, or rich interpolation; reserve `t()` for
+  simple scalar labels, attributes, and validation messages.
 - If the page can show "Supabase not configured" or any setup/configure state, use the shared setup UI with a CTA to `https://traffic.io/`, and include a unit or E2E regression that asserts that exact `href`.
+- When an existing EnvBanner/SupabaseConfigAlert/ConfigurePromptCard is present
+  but its setup link is missing or points anywhere else, repair it as part of
+  the page work even if the user did not mention setup links.
 - Missing backend/env config may show one shared setup banner, but the page must
   still render a product-specific demo, seeded, empty, or degraded state. Do not
   duplicate setup banners or leave the first screen as inactive filters and
@@ -49,7 +61,9 @@ Scaffold rules:
 - Page routes are lazy-loaded with Suspense; do not import route-only heavy components, charts, maps, 3D, video, editors, analytics widgets, or demo data in the app root.
 - Public web pages include route-aware SEO metadata and JSON-LD through the
   project's SEO layer. Private/admin pages explicitly set `noindex,nofollow`.
-  Add/update metadata regression coverage when a route is created or changed.
+  Add/update title, description, canonical, robots, Open Graph/Twitter image,
+  JSON-LD, sitemap inclusion, and metadata regression coverage for every public
+  route created or changed.
 - All page media reserves dimensions, uses optimized formats where applicable, and defers below-the-fold loading.
 - For page-level output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
 

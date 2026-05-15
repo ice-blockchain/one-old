@@ -311,7 +311,8 @@ repo-scan outputs.
 - WebSocket connections owned by a service singleton; components subscribe via hooks. Never `new WebSocket()` in a component.
 - Cross-package imports use workspace package names (`@app/ui`, `@app/utils`) — never deep relative paths.
 - New apps use `packages/i18n` for locale config, typed resources, and feature-based namespaces.
-- Existing apps with a mature i18n package may keep it, but new UI copy still uses i18next/react-i18next.
+- Existing apps with a mature i18n package may keep it, but new UI copy still uses i18next/react-i18next. Detect and extend existing i18n modules automatically; do not wait for the user to ask for translations.
+- Prefer `<Trans>` for rich copy with links, React elements, emphasis, line breaks, nested components, or rich interpolation. Use `t()` only for simple scalar labels, attributes, and validation messages.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 
 ## React Native (Expo) stack core (`rules/frontend/react-native/core.md`)
@@ -443,6 +444,13 @@ products use Ionic Framework with Capacitor instead.
 - Lazy `getSupabase()` returns null when env vars are missing — render `<EnvBanner />`, `<SupabaseConfigAlert />`, and per-feature `<ConfigurePromptCard />` empty states instead of throwing. Every website-facing "Supabase not configured" / "Configure Supabase" / setup CTA in those banners/cards, protected-route fallbacks, and auth/profile/job empty states must link to `https://traffic.io/`, because Traffic is where users set up Supabase credentials. Add a unit/component or E2E regression test that asserts the setup link has that exact `href`.
 - **RTK Query `baseQuery` MUST be null-safe.** When `getSupabase()` is null, return `{ error: { kind: "not-configured" } }` so feature slices show the empty state on `isError`. Never call methods on a null Supabase client. See `rules/frontend/react/supabase-client.md` for the canonical baseQuery.
 
+## i18n baseline — generated and reconciled automatically
+- Localization is not optional polish. Generated UI, changed UI, and existing web/native surface reconciliation use the project's i18n system even when the user did not ask for translations.
+- Before creating or changing UI, inspect for `packages/i18n`, `src/i18n*`, `app/i18n*`, `locales/`, `public/locales/`, `messages/`, catalog files, `i18next`, `react-i18next`, `expo-localization`, and provider wrappers.
+- If an i18n module exists, extend that exact module and catalog shape. New Traffic One frontend projects include `packages/i18n` by default and wire the provider before feature UI is scaffolded.
+- All visible copy, placeholders, labels, validation errors, loading/empty/error/offline/permission-denied states, alt text, ARIA labels, live-region copy, and accessibility hints use translation keys with same-change source-language catalog entries.
+- Prefer `<Trans>` for rich copy with links, React elements, emphasis, line breaks, nested components, or rich interpolation. Use `t()` only for simple scalar labels, attributes, and validation messages.
+
 ## SEO baseline — generated and reconciled automatically
 - SEO is not a launch-only cleanup task. For every generated website, public web app, marketing route, content route, docs surface, or public SPA shell, invoke `seo` and satisfy `rules/common/seo.md` before calling the work complete.
 - React/Vite and Ionic SPA output includes `Seo.tsx` plus `src/lib/seo.ts`; explicit Next.js or other metadata-aware frameworks use their native metadata APIs while satisfying the same fields.
@@ -450,7 +458,7 @@ products use Ionic Framework with Capacitor instead.
 - `index.html` or the framework shell includes fallback title, description, canonical, `og:*`, `twitter:*`, favicon links, and manifest link.
 - Public assets include `robots.txt`, `sitemap.xml`, `manifest.webmanifest`, `favicon.ico`, `apple-touch-icon`, app icons, and a default 1200x630 PNG/JPG Open Graph image.
 - `.env.example` documents `VITE_SITE_URL` or the framework's public site-url equivalent. Unknown production domains are `Unverified`, not invented.
-- Tests assert representative public-route title, canonical, OG image, JSON-LD, and private/admin noindex metadata. SPA pages that must rank need prerendering/static rendering or equivalent host support before claiming SEO parity.
+- Tests assert every created or changed public route's title, description, canonical, OG image, JSON-LD, sitemap inclusion, and private/admin noindex metadata. SPA pages that must rank need prerendering/static rendering or equivalent host support before claiming SEO parity.
 
 ## Deployment artifacts — smallest reliable production set
 - Generate one static-host manifest for React SPA + Supabase deployments before considering containers. Vercel, Netlify, or Cloudflare Pages config is enough for the SPA; Docker is reserved for self-hosted, BYOC, SSR/server-runtime, or container-only plans.
