@@ -2495,7 +2495,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.6) ─────────────────────────────────────
+// ── Toolchain version tracking (2.9.7) ─────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -2629,7 +2629,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.6', () => {
+test('manifests bumped to 2.9.7', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2637,7 +2637,7 @@ test('manifests bumped to 2.9.6', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.6"/, `${rel} must be bumped to 2.9.6`);
+    assert.match(text, /"version":\s*"2\.9\.7"/, `${rel} must be bumped to 2.9.7`);
   }
 });
 

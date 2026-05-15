@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "version": "2.9.6",
+  "version": "2.9.7",
   "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin with project memory under .traffic-one/, token-economy handoff digests + a required codebase-graph provider choice at onboarding (GitNexus or graphify) with auto-install + auto-run, senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) mirrored into AGENTS.md, modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, Traffic One pre-deployment security scanner, WebSocket patterns, accessibility, Gitflow, plus adapted ECC development skills for backend, frontend, mobile, API, testing, security, and deployment work. Rules auto-load via AGENTS.md; skills auto-trigger; hooks enforce plan gate, security-gated deploys, forbidden installs.",
   "author": {
     "name": "Cosmin Turcin"
