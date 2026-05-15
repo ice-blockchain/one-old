@@ -193,7 +193,7 @@ function classifyPromptForStack(prompt) {
       framework: mobile.framework,
       source: mobile.source,
     },
-    shouldAskMobile: !mobile.intentDetected && stack !== 'minimal',
+    shouldAskMobile: stack !== 'minimal',
     evidence: {
       frontend: frontend || null,
       backend: backend || null,

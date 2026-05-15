@@ -41,7 +41,7 @@ function codexDefaultModeFallbackDirective() {
 
 // ── New-project onboarding directive ─────────────────────────────────────────
 // End-to-end default: React monorepo + Supabase backend + our deploy infra.
-// We deviate only when the user explicitly asks for something else.
+// Explicit user preferences shape the eventual state only after onboarding.
 function onboardingDirectiveNewProject() {
   const backendLabel  = pitchBackendLabel();
   const deployLabel   = pitchDeployLabel();
@@ -57,6 +57,10 @@ once the file is written — no restart needed.
 DEFAULT (end-to-end): stack=default, frontend=react-vite, backend=${defaultBackend}, mobile=none, realtime=none.
 Only deviate when the first user prompt asks for a minimal/static project or
 explicit custom frontend/backend/mobile technology.
+Explicit user requests influence the eventual stack choice, but they never
+skip or auto-answer Traffic One onboarding. Always ask the required Mobile App,
+Code Graph, and Team preflight questions in order before writing state,
+planning, scaffolding, installing, editing files, or simulating roles.
 
 NEW-PROJECT PLAN MODE GATE (Codex + Claude Code):
   When project mode resolves to \`new-project\` (\`mode === "new-project"\`),
@@ -90,17 +94,19 @@ CODEX ONBOARDING POPUP RULE (blocking):
   while an onboarding answer is still pending.
 
   Required popup order for complex new projects:
-    1. Mobile App (only when first prompt had no mobile intent).
+    1. Mobile App (always; explicit web/mobile/stack requests do not skip it).
     2. Code Graph (always required before \`.traffic-one.json\`).
     3. Team (for non-trivial multi-layer builds).
 
 ${codexDefaultModeFallbackDirective()}
 
 CODEX MOBILE DECISION PREFLIGHT (popup 1, blocking before code graph/team):
-  For a complex new project where the first prompt does NOT already request
-  mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, ask the mobile
-  question before the codebase graph provider and Traffic One subagent
-  questions. Use the Codex \`request_user_input\` popup when available:
+  For every complex new project, ask the mobile question before the codebase
+  graph provider and Traffic One subagent questions. Do this even when the
+  first prompt explicitly says web only, site, mobile app, iOS, Android, Ionic,
+  Capacitor, React Native, Expo, RN, Next.js, frontend only, no backend, no
+  subagents, or "just build it"; those are implementation preferences, not
+  onboarding answers. Use the Codex \`request_user_input\` popup when available:
 
     header: "Mobile App"
     question: "Do you want a mobile app too?"
@@ -118,8 +124,7 @@ CODEX MOBILE DECISION PREFLIGHT (popup 1, blocking before code graph/team):
   reply. Do not assume "web only" just because the popup is unavailable.
 
 CODEX CODEBASE GRAPH PROVIDER PREFLIGHT (popup 2, always required):
-  After the mobile decision is resolved (or skipped because mobile intent was
-  explicit), ask the codebase-graph provider choice with Codex
+  After the mobile decision is resolved, ask the codebase-graph provider choice with Codex
   \`request_user_input\` before asking the subagent/team question:
 
     header: "Code Graph"
@@ -167,10 +172,9 @@ PATH A — User mentioned only FEATURES (no specific tech stack):
     for the UI layer, Jest + Playwright for tests) backed by ${backendLabel};
     ${deployLabel}. Want to use this stack?"
 
-  If yes (or no objection), run the Codex mobile decision preflight above
-  unless their first prompt already requested mobile/iOS/Android/Ionic/
-  Capacitor/React Native/Expo. Generic mobile defaults to Ionic + Capacitor;
-  explicit React Native / Expo uses React Native rules. Then write
+  If yes (or no objection), run the Codex mobile decision preflight above.
+  Do not skip it because the first prompt already requested web, mobile,
+  Ionic, Capacitor, React Native, Expo, or another stack. Then write
   \`.traffic-one.json\` with
                 stack=default, frontend=react-vite, backend=${defaultBackend}, realtime=none
                 (ask only if real-time matters: gameplay/markets/trading).
@@ -506,18 +510,18 @@ Default complex-project recommendation is stack=default, frontend=react-vite,
 backend=supabase. If the user explicitly chose a non-default frontend or
 backend, record the matching custom stack and concrete technology fields.
 
-If first-prompt classification says mobile should be asked, use the Codex
-\`request_user_input\` popup before every other onboarding choice: question
-"Do you want a mobile app too?", options "Web only (Recommended)",
-"Ionic + Capacitor", and "React Native / Expo". Then ask the required Code
-Graph popup with "GitNexus" and "graphify". Only after that, ask the Team
-popup for subagents when the build is multi-layer. Do not print numbered
-option lists in chat when \`request_user_input\` is available. If the popup
-tool is unavailable, ask the same question in chat with numbered options, tell
-the user to reply with the option number or label, and stop. Do not choose a
-default or continue implementation while the answer is pending. See the
-FIRST-RUN ONBOARDING directive for the full pitch script and decline-Supabase
-examples.
+Use the Codex \`request_user_input\` popup before every other onboarding
+choice: question "Do you want a mobile app too?", options "Web only
+(Recommended)", "Ionic + Capacitor", and "React Native / Expo". Ask it even
+when the user's prompt already named web, mobile, Next.js, Ionic, React Native,
+frontend-only, or any other implementation preference. Then ask the required
+Code Graph popup with "GitNexus" and "graphify". Only after that, ask the Team
+popup for subagents when the build is multi-layer. Do not print numbered option
+lists in chat when \`request_user_input\` is available. If the popup tool is
+unavailable, ask the same question in chat with numbered options, tell the user
+to reply with the option number or label, and stop. Do not choose a default or
+continue implementation while the answer is pending. See the FIRST-RUN
+ONBOARDING directive for the full pitch script and decline-Supabase examples.
 `;
 }
 

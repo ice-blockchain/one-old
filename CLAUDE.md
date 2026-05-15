@@ -21,6 +21,13 @@ Before onboarding is resolved, mention only project-detection/onboarding. Do
 not say `create-feature`, `frontend-design`, `tdd-workflow`, or other
 implementation skills are active yet.
 
+Explicit user requests never skip Traffic One onboarding. Stack, framework,
+backend, mobile, or execution preferences named in the prompt are only inputs
+to the eventual `.traffic-one.json`; they are not accepted as implicit answers
+to the required Mobile App, Code Graph, or Team preflight questions. Ask those
+questions in order before `.traffic-one.json`, `.traffic-one/plan.md`, tools,
+installs, scaffolding, source edits, or simulated role work.
+
 ## Always-on rules (language-agnostic baseline)
 @rules/common/clean-code.md
 @rules/common/execution-discipline.md
