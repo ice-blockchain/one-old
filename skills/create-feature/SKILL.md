@@ -36,8 +36,20 @@ Confirm the feature slice structure before creating any files.
 14. State the Lighthouse QA plan for page-level feature output: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
 
 Scaffold rules:
+- Before writing feature UI, detect the project's i18n module
+  (`packages/i18n`, `src/i18n*`, `locales/`, `public/locales/`, `messages/`,
+  `i18next`, `react-i18next`, provider wrappers). If one exists, extend it
+  automatically and add source-language catalog entries for every new key. New
+  Traffic One frontend projects use `packages/i18n` by default. Do not wait for
+  the user to request translations.
 - Feature UI copy, form labels, placeholders, validation errors, alt text, ARIA labels, and loading/error/empty states use translation keys.
+- Prefer `<Trans>` over `t()` for feature copy with links, React elements,
+  emphasis, formatting, line breaks, or rich interpolation; reserve `t()` for
+  simple scalar labels, attributes, and validation messages.
 - If the feature can surface missing Supabase config, render the shared setup UI (`<EnvBanner />`, `<SupabaseConfigAlert />`, or `<ConfigurePromptCard />`) with a CTA to `https://traffic.io/`, and add/update a unit or E2E regression that asserts that exact `href`.
+- When an existing EnvBanner/SupabaseConfigAlert/ConfigurePromptCard is present
+  but its setup link is missing or points anywhere else, repair it as part of
+  the feature work even if the user did not mention setup links.
 - Missing backend/env config may show one shared setup banner at the app level,
   but the feature still needs a product-specific demo, seeded, empty, error, or
   degraded state. Do not duplicate setup banners or ship a first screen made
@@ -51,8 +63,9 @@ Scaffold rules:
 - Keep feature-only heavy UI and dependencies out of root app imports; dynamic-import route-specific charts, maps, 3D, video, editors, and analytics widgets.
 - Public web feature routes include route-aware SEO metadata and JSON-LD through
   the project's SEO layer. Private/admin feature routes explicitly set
-  `noindex,nofollow`. Add/update metadata regression coverage when route output
-  changes.
+  `noindex,nofollow`. Add/update title, description, canonical, robots, Open
+  Graph/Twitter image, JSON-LD, sitemap inclusion, and metadata regression
+  coverage for every public route created or changed.
 - Optimize and reserve dimensions for feature media, and defer below-the-fold content that is not needed for the first interaction.
 - For page-level feature output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
 

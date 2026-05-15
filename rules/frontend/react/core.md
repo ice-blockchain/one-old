@@ -69,4 +69,4 @@ delivering mobile with Ionic/Capacitor.
 - User-facing text, placeholders, labels, loading/error/empty copy, alt text, ARIA labels come from i18n translation keys. Hardcoded strings only for brand names, user/server-provided content, technical IDs, test fixtures.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.
 - WebSocket connections owned by a service singleton; components subscribe via hooks.
-- New apps use `packages/i18n`; existing apps with a mature i18n package may keep it but new UI copy still uses `i18next`/`react-i18next`.
+- New apps use `packages/i18n`; existing apps with a mature i18n package may keep it but new UI copy still uses `i18next`/`react-i18next`. Detect and extend existing i18n modules automatically; prefer `<Trans>` for rich copy with links or React elements and reserve `t()` for simple strings.

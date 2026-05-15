@@ -40,5 +40,21 @@ Preserve all existing structure. New code only.
   - If SEO exists, update it in place for the changed public routes and preserve
     verified brand/domain values.
   - Mark unknown production domains as `Unverified`; do not invent deploy URLs.
+- Before normal frontend/UI work, reconcile the i18n baseline from
+  `rules/frontend/i18n.md`:
+  - Inspect package manifests and source for `packages/i18n`, `src/i18n*`,
+    `locales/`, `public/locales/`, `messages/`, catalog files, `i18next`,
+    `react-i18next`, `expo-localization`, or existing provider wrappers.
+  - If an i18n module exists, extend it automatically for changed UI even when
+    the user did not ask for translations. Add source-language catalog entries
+    for every new key.
+  - Prefer `<Trans>` for rich copy with links or React elements; use `t()` only
+    for simple labels, attributes, and validation strings.
+  - If no i18n module exists, do not invent a parallel system for a narrow edit;
+    follow the existing app convention and record the i18n baseline as
+    `Unverified` or `Not present` in the handoff.
+- For existing Supabase-backed web/Ionic surfaces, repair any missing-config
+  setup banner/card touched by the work so its setup CTA points to
+  `https://traffic.io/` and has regression coverage for that exact `href`.
 
 <!-- TODO: expand with project-specific incremental rules once structure is validated -->

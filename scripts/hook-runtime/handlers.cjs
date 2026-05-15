@@ -156,6 +156,61 @@ function isWebState(state) {
   return Boolean(state.frontend && state.frontend !== 'none');
 }
 
+function stateRequiresNewProjectMonorepo(state) {
+  if (!state || state.mode !== 'new-project' || isNativeState(state)) return false;
+  if (state.stack === 'default' || state.stack === 'react-realtime-monorepo') return true;
+  return state.frontend === 'react-vite' && state.backend !== 'none';
+}
+
+function findProjectRootForHookFile(cwd, filePath) {
+  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized) return cwd;
+
+  const absPath = path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(cwd, normalized);
+  const cwdAbs = path.resolve(cwd);
+  let current = path.dirname(absPath);
+
+  while (current.startsWith(cwdAbs)) {
+    if (fs.existsSync(path.join(current, STATE_FILE))) {
+      return current;
+    }
+    if (current === cwdAbs) break;
+    current = path.dirname(current);
+  }
+
+  return cwd;
+}
+
+function projectRelativeHookPath(cwd, projectRoot, filePath) {
+  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized) return '';
+  const absPath = path.isAbsolute(normalized)
+    ? path.resolve(normalized)
+    : path.resolve(cwd, normalized);
+  const relative = path.relative(projectRoot, absPath).replace(/\\/g, '/');
+  if (relative && !relative.startsWith('..') && relative !== '.') {
+    return relative;
+  }
+  return normalized;
+}
+
+function packageJsonDeclaresWorkspace(content) {
+  if (!content || !content.trim()) return true;
+  try {
+    const pkg = JSON.parse(content);
+    const workspaces = pkg && pkg.workspaces;
+    const hasWorkspaces = Array.isArray(workspaces)
+      || Boolean(workspaces && Array.isArray(workspaces.packages));
+    const hasPnpmPackageManager = typeof pkg.packageManager === 'string'
+      && /^pnpm@\d/.test(pkg.packageManager);
+    return pkg.private === true && hasWorkspaces && hasPnpmPackageManager;
+  } catch {
+    return true;
+  }
+}
+
 function promptTextFromSubmit(rawInput) {
   const payload = parseJsonText(rawInput, {});
   const candidates = [
@@ -548,15 +603,17 @@ function readStack() {
 function runCheckArchitectureWrite(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
-  const filePath = (typeof toolInput.file_path === 'string' ? toolInput.file_path : '').replace(/\\/g, '/');
+  const rawFilePath = (typeof toolInput.file_path === 'string' ? toolInput.file_path : '').replace(/\\/g, '/');
+  const cwd = process.cwd();
+  const projectRoot = findProjectRootForHookFile(cwd, rawFilePath);
+  const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
   const content =
     typeof toolInput.content === 'string'
       ? toolInput.content
       : typeof toolInput.new_string === 'string'
         ? toolInput.new_string
         : '';
-  const stateForArchitecture = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
-  const stack = readStack();
+  const stateForArchitecture = safeReadJson(path.join(projectRoot, STATE_FILE), {});
   const isNative = isNativeState(stateForArchitecture);
   const violations = [];
 
@@ -568,19 +625,43 @@ function runCheckArchitectureWrite(rawInput) {
   const PLAN_FILE_RE      = /(^|\/)\.traffic-one\/plan\.md$/;
   const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
 
-  const statePath         = path.join(process.cwd(), STATE_FILE);
+  const statePath         = path.join(projectRoot, STATE_FILE);
   const stateForPlan      = stateForArchitecture;
   const stateMissing      = !fs.existsSync(statePath);
   const validStateStack   = stateForPlan.stack && isKnownStack(stateForPlan.stack);
-  const memoryPresent     = fs.existsSync(path.join(process.cwd(), '.traffic-one', 'plan.md'))
-    || fs.existsSync(path.join(process.cwd(), '.traffic-one', 'stack.md'));
-  const detectedModeForState = stateForPlan.mode || (stateMissing ? detectMode(process.cwd()) : null);
+  const memoryPresent     = fs.existsSync(path.join(projectRoot, '.traffic-one', 'plan.md'))
+    || fs.existsSync(path.join(projectRoot, '.traffic-one', 'stack.md'));
+  const detectedModeForState = stateForPlan.mode || (stateMissing ? detectMode(projectRoot) : null);
   const isNewProject      = stateForPlan.mode === 'new-project';
-  const planAbsPath       = path.join(process.cwd(), '.traffic-one', 'plan.md');
+  const planAbsPath       = path.join(projectRoot, '.traffic-one', 'plan.md');
   const planMissing       = !fs.existsSync(planAbsPath);
   const writingPlan       = PLAN_FILE_RE.test(filePath);
   const writingDoc        = ADR_OR_DOC_RE.test(filePath);
   const writingFeatureSource = FEATURE_SOURCE_RE.test(filePath);
+  const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(stateForPlan);
+
+  if (
+    requiresMonorepoScaffold
+    && filePath === 'package.json'
+    && !packageJsonDeclaresWorkspace(content)
+  ) {
+    violations.push(
+      'New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: '
+      + '`private: true`, `packageManager: pnpm@...`, and workspaces for `apps/*` and `packages/*`. '
+      + 'Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.'
+    );
+  }
+
+  if (
+    requiresMonorepoScaffold
+    && /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/.test(filePath)
+  ) {
+    violations.push(
+      'New-project monorepo gate: root Vite app files are not allowed for this stack. '
+      + 'Use `apps/web/` for the React app and create the required `packages/*` workspaces first; '
+      + 'see `rules/modes/new-project.md`.'
+    );
+  }
 
   if (
     writingFeatureSource

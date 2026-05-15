@@ -95,8 +95,9 @@ Use this skill when:
   `favicon.ico`, `apple-touch-icon`, app icons, and a default 1200x630 OG image.
 - `.env.example` documents `VITE_SITE_URL` or the framework's public site URL
   equivalent. Unknown production domains are `Unverified`, not invented.
-- Tests assert title, canonical, OG image, JSON-LD, and private/admin noindex
-  for representative routes.
+- Tests assert title, description, canonical, OG image, JSON-LD, sitemap
+  inclusion, and private/admin noindex for every created or changed public
+  route.
 
 ### On-page rules
 

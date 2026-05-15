@@ -49,6 +49,7 @@ React Native, Expo, RN, or a fully React Native implementation, selected by
 Path-scoped rules — load automatically when you touch matching files:
 
 **Framework-agnostic frontend** (`rules/frontend/`):
+- `i18n.md` — automatic i18n detection/integration, catalog entries, `<Trans>` for rich copy
 - `accessibility.md` — WCAG 2.2 AA + real-time a11y
 - `ui-quality.md` — mandatory frontend-stack design brief, modern clean UI gate, state coverage, visual QA
 - `typography.md` — mandatory frontend-stack readable type, character-level copy polish, line length rules

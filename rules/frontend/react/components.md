@@ -28,8 +28,8 @@ Performance hooks (`React.memo`, `useCallback`) live in `frontend/react/performa
 ## Rendering & data
 - If the component fetches data, extract into a `useComponentName` hook — keep the component presentational.
 - Always handle `isLoading`, `isError`, and empty states explicitly — never render undefined data.
-- Render all user-facing copy through `react-i18next` translation keys, including labels, placeholders, alt text, ARIA labels, loading/error/empty states, and button text.
-- Keep translation catalogs in `packages/i18n` by default, using feature-based namespaces; use `<Trans>` when copy contains React elements or links.
+- Render all user-facing copy through `react-i18next` translation keys, including labels, placeholders, alt text, ARIA labels, loading/error/empty states, and button text. Detect and extend an existing i18n module automatically; do not wait for the user to ask for translations.
+- Keep translation catalogs in `packages/i18n` by default, using feature-based namespaces. Prefer `<Trans>` when copy contains React elements, links, emphasis, line breaks, nested components, or rich interpolation; use `t()` only for simple scalar strings.
 - Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - Subscribe to real-time streams via a hook (e.g. `useGameTick(gameId)`) — components never instantiate WebSocket connections.
 - Lazy-load page-level components: `React.lazy` + `Suspense` with a skeleton fallback.
