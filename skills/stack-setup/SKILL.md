@@ -77,10 +77,12 @@ reply with the option number or label, and stop. Do not choose a default,
 infer an answer, write `.traffic-one.json`, scaffold, or continue while the
 onboarding answer is pending.
 
-Detect mobile intent from the first prompt. If the user already asked for
-mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, do not ask again.
-If mobile intent is missing for a complex project, ask before the subagent
-preflight, before the Code Graph popup, and before writing `.traffic-one.json`. On Codex, use
+Always ask the mobile decision for a complex new project. If the user already
+asked for mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only,
+Next.js, frontend-only, no backend, no subagents, or "just build it", treat
+that as implementation intent rather than an onboarding answer. Ask before the
+subagent preflight, before the Code Graph popup, and before writing
+`.traffic-one.json`. On Codex, use
 `request_user_input` as a popup:
 
 - header: `Mobile App`
@@ -91,9 +93,9 @@ preflight, before the Code Graph popup, and before writing `.traffic-one.json`. 
   - `React Native / Expo` — add an explicit React Native/Expo app stack.
 
 If the popup tool is unavailable, ask the same question in plain text with the
-same numbered options and stop for the user's typed reply. Generic mobile uses
-`mobile.framework: "ionic-capacitor"`; explicit React Native / Expo uses
-`mobile.framework: "react-native-expo"`.
+same numbered options and stop for the user's typed reply. The popup or typed
+answer is the source of truth for `mobile.framework`; do not infer it from the
+original prompt.
 
 ## Stack lock rule
 
@@ -123,7 +125,7 @@ a frontend-only prototype or rejects Supabase.
 
 `gitnexus` · `graphify`
 
-After the mobile popup is answered or skipped, ask this provider choice before
+After the mobile popup is answered, ask this provider choice before
 the subagent/team popup. On Codex, use `request_user_input` as a popup:
 
 - header: `Code Graph`

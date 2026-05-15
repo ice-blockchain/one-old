@@ -233,6 +233,70 @@ function isStateFilePath(filePath) {
   return normalized === STATE_FILE || normalized.endsWith(`/${STATE_FILE}`);
 }
 
+function isProjectMemoryWritePath(relativePath) {
+  const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized.startsWith('.traffic-one/')) return false;
+  if (normalized.startsWith('.traffic-one/digests/')) return false;
+  if (normalized.startsWith('.traffic-one/reports/')) return false;
+  if (normalized.startsWith('.traffic-one/backups/')) return false;
+  if (normalized.startsWith('.traffic-one/rules/active/')) return false;
+  if (normalized.startsWith('.traffic-one/skills/')) return false;
+  return normalized !== '.traffic-one/manifest.json'
+    && normalized !== '.traffic-one/rules/manifest.json';
+}
+
+function materializationFailureResult(error) {
+  const detail = error && error.message ? error.message : String(error || 'unknown error');
+  return {
+    stdout: JSON.stringify({
+      systemMessage: 'traffic-one — project-local materialization failed',
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `traffic-one could not materialize .traffic-one/rules/active, .traffic-one/skills, and .traffic-one/rules/manifest.json: ${detail}`,
+      },
+    }),
+    exitCode: 0,
+  };
+}
+
+function materializationSuccessResult(materialized, triggerPath) {
+  if (!materialized || (materialized.written <= 0 && materialized.removed <= 0)) {
+    return { stdout: '', exitCode: 0 };
+  }
+  return {
+    stdout: JSON.stringify({
+      systemMessage: 'traffic-one — project-local rules/skills materialized',
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/rules/manifest.json.`,
+      },
+    }),
+    exitCode: 0,
+  };
+}
+
+function materializeFromProjectMemoryWrite(cwd, filePath) {
+  const projectRoot = findProjectRootForHookFile(cwd, filePath);
+  const relativePath = projectRelativeHookPath(cwd, projectRoot, filePath);
+  if (!isProjectMemoryWritePath(relativePath)) return null;
+
+  const statePath = path.join(projectRoot, STATE_FILE);
+  const state = safeReadJson(statePath, null);
+  if (!state || !state.stack || !STACK_IDS.has(state.stack) || state.onboardingComplete !== true) {
+    return null;
+  }
+
+  try {
+    if (normalizeState(state, detectMode(projectRoot))) {
+      writeState(projectRoot, state);
+    }
+    const materialized = materializeProjectAssets(projectRoot, state);
+    return materializationSuccessResult(materialized, relativePath);
+  } catch (error) {
+    return materializationFailureResult(error);
+  }
+}
+
 const FRONTEND_IDS = new Set(['none', 'react-vite', 'nextjs', 'vue', 'svelte', 'angular', 'astro', 'solid', 'remix', 'other']);
 const BACKEND_IDS = new Set([
   'none',
@@ -528,9 +592,10 @@ function runUserPromptSubmit(rawInput = '') {
             'Popup 1: ask the mobile decision with Codex `request_user_input`:',
             'question="Do you want a mobile app too?"',
             'options: Web only (Recommended); Ionic + Capacitor; React Native / Expo.',
+            'Ask this even if the prompt already named web, mobile, Next.js, Ionic, React Native, frontend-only, or no subagents.',
             'Stop and wait for the popup answer, or for a typed option if popup is unavailable.',
           ].join(' ')
-          : 'Mobile intent was detected or not applicable; skip the mobile popup.',
+          : 'Minimal/static project classification only: mobile popup is not required.',
         [
           'Popup 2: ask the required codebase graph provider with Codex `request_user_input`:',
           'question="Which provider should we use for the codebase graph?"',
@@ -1269,7 +1334,9 @@ function runPostStackSetup(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  if (!filePath.endsWith(STATE_FILE)) return { stdout: '', exitCode: 0 };
+  if (!filePath.endsWith(STATE_FILE)) {
+    return materializeFromProjectMemoryWrite(process.cwd(), filePath) || { stdout: '', exitCode: 0 };
+  }
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
   const state = safeReadJson(filePath, null);
@@ -1341,8 +1408,8 @@ function runPostStackSetup(rawInput) {
   let materialized = null;
   try {
     materialized = materializeProjectAssets(stateDirEarly, state);
-  } catch {
-    materialized = null;
+  } catch (error) {
+    return materializationFailureResult(error);
   }
 
   const stack = state.stack || '(unknown)';

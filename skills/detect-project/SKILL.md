@@ -20,9 +20,17 @@ description: >
 → **MODE: new-project** — stop here for repo detection, then infer backend
 needs from the user request. If the request includes auth, profiles, CRUD,
 jobs, applications, uploads/files, real-time updates, dashboards backed by user
-data, or any durable user-owned data, set `stack=default`,
-`frontend=react-vite`, and `backend=supabase` by default unless the first prompt
-names custom frontend/backend technology.
+data, or any durable user-owned data, recommend `stack=default`,
+`frontend=react-vite`, and `backend=supabase` first. If the first prompt names
+custom frontend/backend technology, record that as the proposed stack branch
+only after the required onboarding gates below are answered.
+
+Explicit user requests never skip Traffic One onboarding. A prompt such as
+"use Next.js", "web only", "frontend only", "use React Native", "no subagents",
+or "just build it" is implementation intent, not an onboarding answer. Always
+ask the required mobile, code graph, and team preflight questions in order
+before `.traffic-one.json`, `.traffic-one/plan.md`, scaffolding, installs, or
+source edits.
 
 When this step returns new-project, switch Codex and Claude Code to Plan mode
 immediately. If the host cannot switch automatically, say Plan mode is required,
@@ -54,7 +62,8 @@ Look for `@supabase/supabase-js` or `@supabase/ssr` in `package.json` dependenci
 Full rules active. Classify the first prompt into one of five stack ids:
 `minimal`, `default`, `custom-frontend`, `custom-backend`, or `custom-stack`.
 Default to Supabase for backend-backed apps unless the user explicitly chooses
-frontend-only, an external API, self-hosted Postgres, or another provider.
+frontend-only, an external API, self-hosted Postgres, or another provider
+during the onboarding flow.
 Backend-backed means auth, profiles, CRUD records, uploads/files, applications,
 jobs, dashboards backed by user data, real-time updates, or any durable
 user-owned data. State Supabase as the selected default, not as something to
@@ -80,12 +89,13 @@ Codex subagent preflight for new projects:
   reply with the option number or label, and stop. Do not choose a default,
   infer an answer, write `.traffic-one.json`, scaffold, or continue while the
   onboarding answer is pending.
-- If mobile intent is missing from the first prompt, ask the mobile decision
-  first with a Codex `request_user_input` popup before asking this subagent
-  preflight. Use header `Mobile App`, question `Do you want a mobile app too?`,
+- Ask the mobile decision first with a Codex `request_user_input` popup before
+  asking code graph or subagent preflight, even if the first prompt explicitly
+  requested web, mobile, React Native, Ionic, Next.js, or another stack. Use
+  header `Mobile App`, question `Do you want a mobile app too?`,
   and options `Web only (Recommended)`, `Ionic + Capacitor`, and
   `React Native / Expo`. Stop and wait for the popup answer.
-- After the mobile popup is answered or skipped, ask the required codebase graph
+- After the mobile popup is answered, ask the required codebase graph
   provider with Codex `request_user_input`: header `Code Graph`, question
   `Which provider should we use for the codebase graph?`, options `GitNexus`
   and `graphify`. This is required before `.traffic-one.json`; no default and
@@ -124,10 +134,11 @@ State clearly:
 5. For new-project, switch Codex and Claude Code to Plan mode before asking
    onboarding questions. If no mode switch is available, say Plan mode is
    required, stay plan-only, ask fallback chat questions, and stop.
-6. If mobile intent is not detected in the first prompt for a complex project,
-   ask the `Do you want a mobile app too?` popup with the options above before
-   writing `.traffic-one.json`. Generic mobile defaults to Ionic + Capacitor;
-   explicit React Native / Expo uses `mobile.framework=react-native-expo`.
+6. For any complex new project, ask the `Do you want a mobile app too?` popup
+   with the options above before writing `.traffic-one.json`, regardless of
+   whether the user's prompt already said web, mobile, Ionic, Capacitor, React
+   Native, Expo, Next.js, frontend-only, or "just build it". The popup answer
+   is the source of truth for `mobile.framework`.
 7. Ask the required `Code Graph` popup next with `GitNexus` and `graphify`
    options, before the subagent/team prompt and before writing `.traffic-one.json`.
 8. For new-project non-trivial multi-layer builds on Codex: after the mobile

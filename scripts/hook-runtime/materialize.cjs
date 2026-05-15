@@ -244,10 +244,12 @@ function materializeProjectAssets(cwd, state) {
     rules: rules.map(toPosix),
     skills,
   };
-  writeTextIfChanged(
+  if (writeTextIfChanged(
     path.join(cwd, '.traffic-one', 'rules', 'manifest.json'),
     `${JSON.stringify(manifest, null, 2)}\n`,
-  );
+  )) {
+    written += 1;
+  }
 
   return { rules: rules.length, skills: skills.length, written, removed };
 }
