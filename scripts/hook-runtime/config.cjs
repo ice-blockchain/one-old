@@ -11,7 +11,6 @@ const MAX_STDIN          = 1024 * 1024;
 const STATE_FILE         = '.traffic-one.json';
 const LEGACY_LOCK_FILE   = '.claude-plugin-mode';
 const BUDGET_CHARS       = 9500;
-const STATE_VERSION      = 3;
 
 const STACK_IDS = new Set([
   'minimal',
@@ -70,7 +69,6 @@ module.exports = {
   STATE_FILE,
   LEGACY_LOCK_FILE,
   BUDGET_CHARS,
-  STATE_VERSION,
   STACK_IDS,
   LEGACY_STACK_ALIASES,
   RN_STACKS,

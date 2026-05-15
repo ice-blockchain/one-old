@@ -115,6 +115,7 @@ test('supabase project bundle includes supabase auth default', () => {
 });
 
 test('new project onboarding defaults to supabase backend', () => {
+  const { getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
@@ -122,7 +123,8 @@ test('new project onboarding defaults to supabase backend', () => {
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(defaultBackendValue(), 'supabase');
-    assert.equal(state.version, 3);
+    assert.equal(state.version, getPluginVersion());
+    assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
     assert.equal(state.mode, 'new-project');
     assert.ok(state.toolchain, 'new-project state should initialize toolchain');
     assert.match(context, /backend=supabase/);
@@ -1792,20 +1794,18 @@ test('graphify-runner uses `graphify update .` (not the outdated `graphify .`)',
   assert.doesNotMatch(runnerSrc, /spawnSync\('graphify',\s*\[\s*'\.'\s*,/);
 });
 
-test('writeState stamps pluginVersion in .traffic-one.json (diagnostic)', () => {
+test('writeState stamps plugin version in .traffic-one.json version field', () => {
   const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   withTempDir((cwd) => {
     writeState(cwd, { stack: 'react-realtime-monorepo', mode: 'new-project' });
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
     const pluginVersion = getPluginVersion();
-    // The plugin version helper reads from .claude-plugin/plugin.json.
+    // The plugin version helper reads from the plugin manifest.
     assert.match(pluginVersion, /^\d+\.\d+\.\d+$/);
-    assert.equal(state.pluginVersion, pluginVersion);
-    assert.equal(state.version, 3);
+    assert.equal(state.version, pluginVersion);
+    assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
     assert.equal(state.stack, 'default');
     assert.ok(state.toolchain.gitnexus);
-    // The cache-mismatch diagnostic relies on this exact field name.
-    assert.ok(state.pluginVersion, 'pluginVersion must be set');
   });
 });
 
@@ -2495,7 +2495,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.7) ─────────────────────────────────────
+// ── Toolchain version tracking (2.9.9) ─────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -2629,7 +2629,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.7', () => {
+test('manifests bumped to 2.9.9', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2637,7 +2637,7 @@ test('manifests bumped to 2.9.7', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.7"/, `${rel} must be bumped to 2.9.7`);
+    assert.match(text, /"version":\s*"2\.9\.9"/, `${rel} must be bumped to 2.9.9`);
   }
 });
 

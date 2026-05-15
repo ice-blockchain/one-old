@@ -10,26 +10,34 @@ const path = require('path');
 const {
   STATE_FILE,
   LEGACY_LOCK_FILE,
-  STATE_VERSION,
   STACK_IDS,
   LEGACY_STACK_ALIASES,
   pluginRoot,
 } = require('./config.cjs');
 
-// Cache the plugin's own version (from .claude-plugin/plugin.json) so we can
-// stamp it into every `.traffic-one.json` write. The cache is set once at
-// module load; the plugin version doesn't change mid-session.
+const PLUGIN_MANIFEST_DIRS = ['.codex-plugin', '.claude-plugin', '.cursor-plugin'];
+
+// Cache the plugin's own version so we can stamp it into every
+// `.traffic-one.json` write. The cache is set once at module load; the plugin
+// version doesn't change mid-session.
 let cachedPluginVersion = null;
 function getPluginVersion() {
   if (cachedPluginVersion !== null) return cachedPluginVersion;
-  try {
-    const manifestPath = path.join(pluginRoot(), '.claude-plugin', 'plugin.json');
-    const text = fs.readFileSync(manifestPath, 'utf8');
-    const parsed = JSON.parse(text);
-    cachedPluginVersion = typeof parsed.version === 'string' ? parsed.version : '';
-  } catch {
-    cachedPluginVersion = '';
+  const root = pluginRoot();
+  for (const manifestDir of PLUGIN_MANIFEST_DIRS) {
+    try {
+      const manifestPath = path.join(root, manifestDir, 'plugin.json');
+      const text = fs.readFileSync(manifestPath, 'utf8');
+      const parsed = JSON.parse(text);
+      if (typeof parsed.version === 'string' && parsed.version.trim()) {
+        cachedPluginVersion = parsed.version;
+        return cachedPluginVersion;
+      }
+    } catch {
+      // Try the next host-specific manifest.
+    }
   }
+  cachedPluginVersion = '';
   return cachedPluginVersion;
 }
 
@@ -199,7 +207,7 @@ function readState(cwd) {
   const legacy = safeReadText(legacyPath);
   if (legacy !== null) {
     return {
-      version: STATE_VERSION,
+      version: getPluginVersion(),
       mode: legacy.trim(),
       stack: null,
       confirmed: false,
@@ -209,19 +217,17 @@ function readState(cwd) {
 }
 
 function writeState(cwd, state) {
-  // Stamp the schema version (state shape) AND the plugin version (which
-  // build of traffic-one produced this state). The plugin version helps
-  // diagnose cache-mismatch problems: when a user reports a hook didn't
-  // fire, we can check `pluginVersion` in their `.traffic-one.json` against
-  // the source-of-truth manifest to confirm which version actually ran.
-  const pluginVersion = getPluginVersion();
-  if (state && typeof state === 'object' && state.stack) {
-    normalizeState(state, state.mode || 'new-project');
+  // Stamp the plugin version (which build of traffic-one produced this state).
+  // It doubles as the project-state version visible to users; the legacy
+  // `pluginVersion` field is intentionally stripped.
+  const source = state && typeof state === 'object' ? { ...state } : {};
+  delete source.pluginVersion;
+  if (source.stack) {
+    normalizeState(source, source.mode || 'new-project');
   }
   const nextState = {
-    ...state,
-    version: STATE_VERSION,
-    ...(pluginVersion ? { pluginVersion } : {}),
+    ...source,
+    version: getPluginVersion(),
   };
   writeJson(path.join(cwd, STATE_FILE), nextState);
 }
