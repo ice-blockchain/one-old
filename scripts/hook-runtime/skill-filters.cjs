@@ -45,6 +45,7 @@ const SKILL_FILTERS = {
     'accessibility', 'ionic-mobile',
     'vite-patterns', 'click-path-audit', 'seo',
     'e2e-testing', 'ai-regression-testing',
+    'monorepo-architecture',
   ]),
   nextjs: new Set([
     'frontend-design', 'frontend-patterns',
