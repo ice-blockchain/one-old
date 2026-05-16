@@ -28,6 +28,9 @@ const {
   writeState,
   normalizeState,
   initializeToolchainState,
+  stackFingerprint,
+  getPluginVersion,
+  isMaterialized,
 } = require('./state.cjs');
 
 const { STACKS, stackSpecForState } = require('./stacks.cjs');
@@ -35,8 +38,8 @@ const { STACKS, stackSpecForState } = require('./stacks.cjs');
 const {
   listAllSkills,
   pruneSkillsDirective,
-  pruneCacheSkills,
-  restoreDisabledSkills,
+  cleanActiveSkills,
+  copyActiveSkills,
 } = require('./skill-filters.cjs');
 
 const {
@@ -388,9 +391,11 @@ function runSessionStart() {
   const root = pluginRoot();
   const state = readState(cwd);
 
-  // MULTI-PROJECT SAFETY: always restore the full skill set before re-pruning.
-  // The cache is shared across all traffic-one projects on this machine.
-  restoreDisabledSkills();
+  // MULTI-PROJECT SAFETY: clean non-bootstrap skills left by the previous
+  // project's session. The plugin cache is shared across all traffic-one
+  // projects on this machine; this ensures each session starts from a clean
+  // 3-skill baseline before copying the correct set for THIS project.
+  cleanActiveSkills();
 
   const mode = state.mode || detectMode(cwd);
   state.mode = mode;
@@ -420,20 +425,22 @@ function runSessionStart() {
 
     const { body, dropped } = packBundle(root, modeMandatory, spec.optional, BUDGET_CHARS);
 
+    const copied = copyActiveSkills(state);
     const allSkills = listAllSkills();
-    const removed = pruneCacheSkills(state);
-    if (removed > 0) {
-      state.skillsPruned = true;
-      state.skillsPrunedCount = removed;
-    }
     const skillDirective = pruneSkillsDirective(state, allSkills);
     try {
       materializeProjectAssets(cwd, state);
     } catch {
       // best-effort; SessionStart rule loading should not fail on local copy issues
     }
+    state.materializedStack   = stackFingerprint(state);
+    state.materializedAt      = nowIso();
+    state.materializedVersion = getPluginVersion();
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
+    if (copied > 0) {
+      header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
+    }
     if (dropped.length > 0) {
       header += `[${dropped.length} rule file(s) deferred to path-scoped attach]\n`;
     }
@@ -491,22 +498,24 @@ function runSessionStart() {
 
       const { body, dropped } = packBundle(root, modeMandatory, spec.optional, BUDGET_CHARS);
 
+      const copied2 = copyActiveSkills(state);
       const allSkills = listAllSkills();
-      const removed = pruneCacheSkills(state);
-      if (removed > 0) {
-        state.skillsPruned = true;
-        state.skillsPrunedCount = removed;
-      }
-      writeState(cwd, state);
       try {
         materializeProjectAssets(cwd, state);
       } catch {
         // best-effort; auto-detection still succeeds even if local copy fails
       }
+      state.materializedStack   = stackFingerprint(state);
+      state.materializedAt      = nowIso();
+      state.materializedVersion = getPluginVersion();
+      writeState(cwd, state);
       const skillDirective = pruneSkillsDirective(state, allSkills);
 
       const banner = autoDetectedAnnouncement(detected);
       let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
+      if (copied2 > 0) {
+        header += `[skills] ${copied2} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
+      }
       if (dropped.length > 0) {
         header += `[${dropped.length} rule file(s) deferred]\n`;
       }
@@ -739,6 +748,17 @@ function runCheckArchitectureWrite(rawInput) {
       + 'onboardingComplete, and confirmedAt before writing feature source. '
       + 'The .traffic-one/ folder is project memory, not the stack-selection '
       + 'state file.'
+    );
+  }
+
+  // Materialization gate: block feature writes until the SessionStart hook has
+  // copied the correct rules and skills to .traffic-one/ for this stack.
+  // This ensures the model has full quality/performance context before implementing.
+  if (writingFeatureSource && !isMaterialized(stateForPlan)) {
+    violations.push(
+      `Materialization gate: stack context for ${stackFingerprint(stateForPlan)} has not been materialized yet. `
+      + 'Start a new Claude Code session (the SessionStart hook will copy the correct rules and skills) '
+      + 'or run `/detect-project` to trigger materialization before writing feature source.'
     );
   }
 

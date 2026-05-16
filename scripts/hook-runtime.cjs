@@ -121,13 +121,17 @@ module.exports = {
   // constants
   MAX_STDIN:   config.MAX_STDIN,
   STACKS:      stacks.STACKS,
-  SKILL_FILTERS: skillFilters.SKILL_FILTERS,
+  SKILL_FILTERS:    skillFilters.SKILL_FILTERS,
+  BOOTSTRAP_SKILLS: skillFilters.BOOTSTRAP_SKILLS,
   // skill filters
-  activeSkillsFor:        skillFilters.activeSkillsFor,
-  listAllSkills:          skillFilters.listAllSkills,
-  pruneSkillsDirective:   skillFilters.pruneSkillsDirective,
-  pruneCacheSkills:       skillFilters.pruneCacheSkills,
-  restoreDisabledSkills:  skillFilters.restoreDisabledSkills,
+  activeSkillsFor:       skillFilters.activeSkillsFor,
+  listAllSkills:         skillFilters.listAllSkills,
+  pruneSkillsDirective:  skillFilters.pruneSkillsDirective,
+  cleanActiveSkills:     skillFilters.cleanActiveSkills,
+  copyActiveSkills:      skillFilters.copyActiveSkills,
+  // deprecated no-op shims
+  pruneCacheSkills:      skillFilters.pruneCacheSkills,
+  restoreDisabledSkills: skillFilters.restoreDisabledSkills,
   // detection + packing + directives
   detectMode:                  detection.detectMode,
   detectStackFromCodebase:     detection.detectStackFromCodebase,
