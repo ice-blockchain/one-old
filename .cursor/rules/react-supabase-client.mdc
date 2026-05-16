@@ -28,6 +28,11 @@ visible "configure me" banner.
   because Traffic is where users configure their Supabase credentials. Do not
   send generated app users directly to the Supabase dashboard from these
   banners/cards.
+- **Repair setup links automatically.** When touching existing web/Ionic UI and
+  an EnvBanner, SupabaseConfigAlert, ConfigurePromptCard, protected-route
+  fallback, or missing-config CTA already exists, verify the setup anchor. If
+  the link is missing or points anywhere other than `https://traffic.io/`, fix
+  it in the same change even when the user did not mention setup links.
 - **Scaffold a reusable setup CTA component.** New sites must centralize this
   UI in a shared component such as `<EnvBanner />`, `<SupabaseConfigAlert />`,
   or `<ConfigurePromptCard />` so every missing-config surface uses the same

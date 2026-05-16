@@ -12,9 +12,36 @@ const {
   pitchDeployLabel,
 } = require('./config.cjs');
 
+function codexDefaultModeFallbackMobilePrompt() {
+  return [
+    'Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable.',
+    '',
+    'Do you want a mobile app too?',
+    '',
+    '1. Web only (Recommended)',
+    '2. Ionic + Capacitor',
+    '3. React Native / Expo',
+    '',
+    'Reply with the option number or label.',
+  ].join('\n');
+}
+
+function codexDefaultModeFallbackDirective() {
+  return [
+    'CODEX DEFAULT-MODE FALLBACK (visible response, blocking):',
+    'If the current Codex thread is not in Plan mode, or `request_user_input` cannot be called, do not use tools and do not keep detecting/scaffolding.',
+    'Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not say you are using create-feature, create-page, frontend-design, tdd-workflow, or other implementation skills yet.',
+    'Your next visible assistant message must be the plain-chat fallback prompt below, then you must stop for the user answer:',
+    '',
+    codexDefaultModeFallbackMobilePrompt(),
+    '',
+    'After the user answers, ask the Code Graph fallback prompt next, then the Team fallback prompt for non-trivial multi-layer builds. Ask only the next unresolved question and stop each time.',
+  ].join('\n');
+}
+
 // ── New-project onboarding directive ─────────────────────────────────────────
 // End-to-end default: React monorepo + Supabase backend + our deploy infra.
-// We deviate only when the user explicitly asks for something else.
+// Explicit user preferences shape the eventual state only after onboarding.
 function onboardingDirectiveNewProject() {
   const backendLabel  = pitchBackendLabel();
   const deployLabel   = pitchDeployLabel();
@@ -27,15 +54,109 @@ what the user is building, recommend our stack, and write \`.traffic-one.json\`.
 A PostToolUse hook will auto-load the matching rule bundle into THIS session
 once the file is written — no restart needed.
 
-DEFAULT (end-to-end): stack=react-realtime-monorepo, backend=${defaultBackend}, realtime=none.
-Only deviate when the user EXPLICITLY asks for something else.
+DEFAULT (end-to-end): stack=default, frontend=react-vite, backend=${defaultBackend}, mobile=none, realtime=none.
+Only deviate when the first user prompt asks for a minimal/static project or
+explicit custom frontend/backend/mobile technology.
+Explicit user requests influence the eventual stack choice, but they never
+skip or auto-answer Traffic One onboarding. Always ask the required Mobile App,
+Code Graph, and Team preflight questions in order before writing state,
+planning, scaffolding, installing, editing files, or simulating roles.
 
-CODEX SUBAGENT PREFLIGHT (blocking for non-trivial multi-layer builds):
+NEW-PROJECT PLAN MODE GATE (Codex + Claude Code):
+  When project mode resolves to \`new-project\` (\`mode === "new-project"\`),
+  immediately switch the host to Plan mode before asking onboarding questions, writing
+  \`.traffic-one.json\`, writing \`.traffic-one/plan.md\`, spawning/simulating
+  subagents, creating files, editing code, running installs, or scaffolding.
+
+  - Codex: switch the thread into Plan mode so \`request_user_input\` popups
+    are available. If no callable switch is exposed, say Plan mode is required,
+    stay plan-only, use the plain-chat fallback questions below, and stop for
+    the user's typed answers.
+  - Claude Code: enter Claude Code Plan Mode before using Task, Write, Edit,
+    Bash, or scaffolding tools. If the host cannot switch automatically, ask
+    the user to switch Claude Code to Plan Mode and stop.
+
+  Stay in Plan mode until every required onboarding choice is answered and the
+  architect plan exists or is explicitly approved for creation. Do not continue
+  implementation while \`mode === "new-project"\` and onboarding/plan gates are
+  unresolved in normal/default mode.
+
+CODEX ONBOARDING POPUP RULE (blocking):
+  These onboarding choices must be displayed as Codex prompt popups, not as
+  prose questions with numbered options. When \`request_user_input\` is present
+  in the available tools, call that tool and stop. Do NOT print "Options:" or a
+  numbered list in chat. Plain-text options are allowed only when
+  \`request_user_input\` is absent/unavailable; in that case explicitly say the
+  popup tool is unavailable, ask the same blocking question directly in chat
+  with the numbered options, tell the user to reply with the option number or
+  label, and stop. Never choose a default, infer an answer, write
+  \`.traffic-one.json\`, scaffold, run installs, or continue implementation
+  while an onboarding answer is still pending.
+
+  Required popup order for complex new projects:
+    1. Mobile App (always; explicit web/mobile/stack requests do not skip it).
+    2. Code Graph (always required before \`.traffic-one.json\`).
+    3. Team (for non-trivial multi-layer builds).
+
+${codexDefaultModeFallbackDirective()}
+
+CODEX MOBILE DECISION PREFLIGHT (popup 1, blocking before code graph/team):
+  For every complex new project, ask the mobile question before the codebase
+  graph provider and Traffic One subagent questions. Do this even when the
+  first prompt explicitly says web only, site, mobile app, iOS, Android, Ionic,
+  Capacitor, React Native, Expo, RN, Next.js, frontend only, no backend, no
+  subagents, or "just build it"; those are implementation preferences, not
+  onboarding answers. Use the Codex \`request_user_input\` popup when available:
+
+    header: "Mobile App"
+    question: "Do you want a mobile app too?"
+    options:
+      - "Web only (Recommended)" — Build the responsive web/admin app only for v1; no mobile wrapper/native app.
+      - "Ionic + Capacitor" — Add the default hybrid iOS/Android mobile app path around the web app.
+      - "React Native / Expo" — Add an explicit React Native/Expo mobile app stack.
+
+  Stop and wait for the user's popup answer before writing
+  \`.traffic-one.json\`, asking for codeGraphProvider, asking the subagent
+  preflight, writing a plan, creating files, editing code, scaffolding the
+  repo, or simulating Traffic One roles manually. If the host does not expose
+  \`request_user_input\`, ask the same question in plain text with the same
+  three numbered options as a degraded fallback and stop for the user's typed
+  reply. Do not assume "web only" just because the popup is unavailable.
+
+CODEX CODEBASE GRAPH PROVIDER PREFLIGHT (popup 2, always required):
+  After the mobile decision is resolved, ask the codebase-graph provider choice with Codex
+  \`request_user_input\` before asking the subagent/team question:
+
+    header: "Code Graph"
+    question: "Which provider should we use for the codebase graph?"
+    options:
+      - "GitNexus" — Node CLI; writes .gitnexus/; PolyForm Noncommercial; requires Node >=22.
+      - "graphify" — Python CLI; writes graphify-out/GRAPH_REPORT.md + graph.json; MIT license.
+
+  This choice is REQUIRED — no skip and no default. Do NOT write
+  \`.traffic-one.json\` with \`codeGraphProvider\` absent. If the user expresses
+  uncertainty, explain the license/runtime trade-off and ask the popup again.
+  If the popup is unavailable, ask in chat with numbered options and stop for
+  the user's typed reply. Do not pick either provider.
+
+CODEX SUBAGENT PREFLIGHT (popup 3, blocking for non-trivial multi-layer builds):
   Before writing a plan, creating files, editing code, scaffolding the repo, or
-  simulating Traffic One roles manually, recommend the Traffic One parallel
-  workflow and ask exactly:
+  simulating Traffic One roles manually, and after the mobile and codebase graph
+  decisions above are already resolved, recommend the Traffic One parallel
+  workflow. Use the Codex \`request_user_input\` popup when available:
+
+    header: "Team"
+    question: "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"
+    options:
+      - "Run team (Recommended)" — Use Codex subagents for architect, frontend/backend, and reviewer/tester roles.
+      - "Main agent only" — Simulate the same roles in this thread without spawned subagents.
+
+  If the host does not expose \`request_user_input\`, ask exactly:
 
     "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"
+
+  Include the plain-text fallback options "1. Run team (Recommended)" and
+  "2. Main agent only", then stop for the user's typed reply.
 
   Stop and wait for the user's answer. If they confirm, use available Codex
   subagents with the Traffic One role route. If they decline or subagents are
@@ -51,8 +172,11 @@ PATH A — User mentioned only FEATURES (no specific tech stack):
     for the UI layer, Jest + Playwright for tests) backed by ${backendLabel};
     ${deployLabel}. Want to use this stack?"
 
-  If yes (or no objection) → write \`.traffic-one.json\` with
-                stack=react-realtime-monorepo, backend=${defaultBackend}, realtime=none
+  If yes (or no objection), run the Codex mobile decision preflight above.
+  Do not skip it because the first prompt already requested web, mobile,
+  Ionic, Capacitor, React Native, Expo, or another stack. Then write
+  \`.traffic-one.json\` with
+                stack=default, frontend=react-vite, backend=${defaultBackend}, realtime=none
                 (ask only if real-time matters: gameplay/markets/trading).
 
 PATH B — User mentioned a SPECIFIC TECH STACK:
@@ -62,13 +186,13 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
     Frontend:
       • React → great, point out battle-tested rules for monorepo, RTK Query,
         Tailwind + shadcn/ui, accessibility, real-time.
-      • Vue / Svelte / Angular → say "Our depth is in React; we ship rules
-        and skills tuned for it. Try React for this project?" If they insist
-        → fall back to \`minimal\` stack (clean-code + security + git baseline).
-      • Next.js → say our default is React/Vite + Supabase, but Next.js is
-        fine when explicit. If they keep Next.js, set stack=minimal and add
-        frontend=nextjs; provider-first recommendations apply (NextAuth/Auth.js
-        for auth, Next.js-native APIs/cache).
+      • Any non-default frontend (Next.js / Vue / Svelte / Angular / etc.) →
+        say the default first recommendation is React/Vite + Supabase, then
+        honor the user's explicit choice if they keep it. Set
+        stack=custom-frontend (or custom-stack if they also chose a custom
+        backend) and record the concrete frontend, e.g. frontend=nextjs.
+        Apply that frontend's provider/framework recommendations instead of
+        React/Vite-only rules.
 
     Backend (default to ${defaultBackend} unless user explicitly refuses):
       • If user did NOT name a backend → silently set backend=${defaultBackend}.
@@ -107,8 +231,9 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
         \`graphify-out/GRAPH_REPORT.md\` + \`graph.json\`. License: MIT.
         Currently auto-runs after first build.
 
-    Ask the user verbatim, in English: "Which provider should we use for the
-    codebase graph: **gitnexus** or **graphify**?"
+    Ask with the CODEX CODEBASE GRAPH PROVIDER PREFLIGHT popup above. If the
+    host cannot show popups, ask verbatim in English: "Which provider should we
+    use for the codebase graph: **gitnexus** or **graphify**?"
     Treat as REQUIRED. Do NOT write \`.traffic-one.json\` with
     \`codeGraphProvider\` absent. If the user expresses uncertainty, repeat the
     one-line license trade-off above and ask again. NEVER default-pick.
@@ -117,47 +242,68 @@ GENERAL RULES:
   - One pitch per layer. If they say no twice, accept it and move on.
   - Don't be pushy; sound like a senior dev recommending what works.
   - The codeGraphProvider question above is REQUIRED — no skip, no default.
+  - \`version\` is the current Traffic One plugin semver. Do NOT write a
+    separate \`pluginVersion\` field.
   - Write \`.traffic-one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
-    All eight top-level fields are REQUIRED — do NOT drop any. Subsequent
+    All required top-level fields are REQUIRED — do NOT drop any. Subsequent
     hooks rely on \`onboardingComplete: true\` and \`mode\` being present:
 
     {
-      "version": 2,
+      "version": "<current-plugin-version>",
       "mode": "new-project",
       "stack": "<chosen-id>",
+      "frontend": "<none|react-vite|nextjs|vue|svelte|angular|astro|solid|remix|other>",
       "backend": "<chosen-backend>",
+      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "technologies": { "frontend": [], "backend": [], "mobile": [] },
       "realtime": "<heavy|light|none>",
       "codeGraphProvider": "<gitnexus|graphify>",
+      "toolchain": {
+        "gitnexus": { "installedVersion": null, "installedAt": null },
+        "graphify": { "installedVersion": null, "installedAt": null },
+        "gitleaks": { "installedVersion": null, "installedAt": null },
+        "trufflehog": { "installedVersion": null, "installedAt": null }
+      },
       "confirmed": true,
       "onboardingComplete": true,
       "confirmedAt": "<ISO-8601 UTC, e.g. 2026-04-30T10:00:00Z>"
     }
 
-    If the user explicitly chose Next.js, add \`"frontend": "nextjs"\` and use
-    \`"stack": "minimal"\`. Otherwise omit \`frontend\`.
+    Stack ids are: minimal · default · custom-frontend · custom-backend ·
+    custom-stack. Recommend the default stack first; if the user explicitly
+    chose another frontend/backend, record the matching custom stack plus the
+    concrete \`frontend\` and/or \`backend\` fields.
 
-  EXAMPLES — non-default backend branches (still write all 8 fields):
+  EXAMPLES — non-default backend branches (still write every required field):
 
     User declined the recommended backend + has own API + picked graphify:
-    { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
-      "backend": "external-api", "realtime": "none",
+    { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
+      "frontend": "react-vite", "backend": "external-api",
+      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
+      "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User declined the recommended backend + no backend planned + picked gitnexus:
-    { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
-      "backend": "none", "realtime": "none",
+    { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
+      "frontend": "react-vite", "backend": "none",
+      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
+      "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "gitnexus",
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User chose Firebase / Mongo / their own Postgres + picked graphify:
-    { "version": 2, "mode": "new-project", "stack": "react-realtime-monorepo",
-      "backend": "other", "realtime": "none",
+    { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
+      "frontend": "react-vite", "backend": "other",
+      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "technologies": { "frontend": ["react", "vite"], "backend": ["other"], "mobile": [] },
+      "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
-  Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-monorepo
-    · react-native-expo-app · minimal. (\`node-backend\` is legacy — do NOT offer it.)
+  Stack ids: minimal · default · custom-frontend · custom-backend · custom-stack.
 
   Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none
     Default = ${defaultBackend}.
@@ -169,7 +315,7 @@ GENERAL RULES:
 THIS IS NOT OPTIONAL: the moment you see \`traffic-one rules loaded for stack: <id>\`,
 SCAFFOLD THE PROJECT STRUCTURE BEFORE writing any feature code.
 
-For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
+For the recommended default stack (\`default\` with frontend=react-vite and backend=supabase), that means:
   1. Workspace skeleton: \`turbo.json\`, \`pnpm-workspace.yaml\`, \`tsconfig.base.json\`,
      \`.gitignore\`, root \`package.json\` (private, workspaces declared, packageManager: pnpm).
   2. \`apps/web/\`: package.json, vite.config.ts, tsconfig.json, index.html,
@@ -188,7 +334,8 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate it from the
      same source. Generate root CLAUDE.md from the same source.
   4. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
-     Tailwind preset + \`globals.css\`), api-client/, ws-client/, utils/, tsconfig/,
+     Tailwind preset + \`globals.css\`), i18n/ (typed i18next/react-i18next
+     resources and provider), api-client/, ws-client/, utils/, tsconfig/,
      eslint-config/. Each gets package.json + README.md + \`architecture.md\` (REQUIRED).
      Do NOT create a \`packages/design-tokens\` package — design tokens live in the
      Tailwind preset and the HSL CSS variables in \`globals.css\`.
@@ -200,17 +347,23 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      and content-rich. Missing Supabase/env config may show one shared setup
      banner, but never ship only duplicated config banners, empty filters, or
      blank placeholder panels.
-  6. Mandatory SEO baseline: invoke \`seo\` before calling a generated website
+  6. Mandatory i18n baseline: apply \`rules/frontend/i18n.md\` before writing
+     generated UI. Create/use \`packages/i18n\`, wire the provider, add
+     source-language catalog entries for every generated string, and prefer
+     \`<Trans>\` for rich copy with links or React elements. Do not wait for the
+     user to request translations.
+  7. Mandatory SEO baseline: invoke \`seo\` before calling a generated website
      or app complete. Add route-aware metadata (\`Seo.tsx\` +
      \`src/lib/seo.ts\` for React/Vite/Ionic SPA output, or framework-native
      metadata APIs when explicit Next.js/minimal stacks apply), fallback
      metadata in \`index.html\`, \`VITE_SITE_URL\` in \`.env.example\`,
      \`robots.txt\`, \`sitemap.xml\`, \`manifest.webmanifest\`,
      \`favicon.ico\`, \`apple-touch-icon\`, app icons, a 1200x630 OG image,
-     and regression coverage for title, canonical, OG image, JSON-LD, and
-     noindex admin/private routes. If an SPA public route must rank, document
-     the prerender/static-rendering or host-support plan.
-  7. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
+     and regression coverage for every generated public route's title,
+     description, canonical, OG image, JSON-LD, sitemap inclusion, and noindex
+     admin/private routes. If an SPA public route must rank, document the
+     prerender/static-rendering or host-support plan.
+  8. Mandatory docs baseline: run \`auto-documentation-generator\` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
      relevant root-level canonical docs from \`rules/common/documentation.md\`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
@@ -218,19 +371,28 @@ For the recommended monorepo stack (\`react-realtime-monorepo\`), that means:
      deployment.md, security.md, CHANGELOG.md, environment-setup.md,
      CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
      as Unverified; do not leave only a lightweight README.
-  7. Initialise git with Gitflow branches (\`main\`, \`develop\`).
+  9. Initialise git with Gitflow branches (\`main\`, \`develop\`).
 
-For \`react-frontend-only\`: a single Vite app under root \`src/\` (no apps/, no packages/).
+For \`custom-backend\` with frontend=react-vite and backend=none: a single Vite app under root \`src/\` (no apps/, no packages/).
 \`src/styles/globals.css\` + \`tailwind.config.ts\` + \`npx shadcn@latest init\` + the
 same first-batch components under \`src/components/ui/\`. The mandatory docs
 baseline and mandatory design gate still apply.
 
-For \`react-native-expo-*\`: see \`rules/modes/new-project.md\` and \`rules/frontend/react-native/core.md\`.
+For mobile.framework=\`react-native-expo\`: see \`rules/modes/new-project.md\` and \`rules/frontend/react-native/core.md\`.
 Scaffold uses NativeWind v4 (metro/babel/global.css/nativewind-env.d.ts) and
 React Native Reusables (\`npx @react-native-reusables/cli@latest init\` + first-batch
 components under \`packages/ui-native/src/components/ui/\`). The mandatory
 design gate still applies with native-first layout, touch targets, device
 states, and real product references.
+
+HARD GATE: before any scaffold or feature write after onboarding, read
+\`rules/modes/new-project.md\` from the active bundle. For \`stack=default\` or
+a React/Vite new project with backend data, a flat/root Vite app is a violation:
+do not create root \`src/\`, root \`index.html\`, root \`vite.config.ts\`, or a
+root \`package.json\` without pnpm workspaces. The first scaffold must be the
+Turborepo workspace from that rule: root workspaces + \`apps/web\` +
+\`packages/{ui,tailwind-config,api-client,ws-client,utils,tsconfig,eslint-config}\`
++ Supabase migrations/RLS baseline.
 
 The full step-by-step is in \`rules/modes/new-project.md\` — that file IS in the bundle
 once onboarding completes. Read it before scaffolding.
@@ -278,7 +440,9 @@ function autoDetectedAnnouncement(detected) {
     'Before normal feature work, run the project-memory baseline reconciliation: create or update `.traffic-one/` memory from verified repo facts, migrate legacy ADRs into `.traffic-one/decisions/` when safe, and never include secrets.',
     'Then run the auto-documentation baseline reconciliation: create missing canonical docs at the repo root and update existing docs in place per rules/common/documentation.md. Migrate legacy docs/ canonical files to root when safe and mark unknown facts as Unverified.',
     'For any existing web surface, run the SEO baseline reconciliation from rules/common/seo.md before normal feature work: inspect routes/app shell/public assets/metadata helpers/tests, add or update route-aware metadata, JSON-LD, robots/sitemap, favicon/PWA/OG assets, site-url env docs, and metadata regression coverage.',
+    'For any frontend UI work, run the i18n baseline from rules/frontend/i18n.md: detect packages/i18n/src i18n/locales/messages/react-i18next, extend the existing catalogs automatically, add source-language entries for new keys, and prefer <Trans> for rich copy.',
     'For any frontend UI work, the mandatory design gate applies: use frontend-design/UI-quality rules, state real-product references or match the existing aesthetic, avoid sparse config-banner-dominated screens, and verify responsive states.',
+    'For any Supabase-backed web/Ionic missing-config surface touched by the work, repair EnvBanner/SupabaseConfigAlert/ConfigurePromptCard/setup CTA links to https://traffic.io/ and require a regression test for that exact href.',
     'Check the Library Catalog before adding custom validation, auth, HTTP, storage, observability, or test utilities.',
   ];
 
@@ -303,31 +467,61 @@ function autoDetectedAnnouncement(detected) {
 function onboardingReminderShort() {
   return `═══ traffic-one — onboarding still incomplete ═══
 
-Write \`.traffic-one.json\` (use the Write tool) with the full 8-field schema
+mode=new-project: Codex and Claude Code must be in Plan mode now. If the host
+cannot switch modes automatically, say Plan mode is required, stay
+plan-only, ask the required onboarding questions in chat, and stop for the
+user's typed answers. Do not scaffold, install, edit source, or choose defaults
+while Plan mode/onboarding answers are pending.
+
+${codexDefaultModeFallbackDirective()}
+
+Write \`.traffic-one.json\` (use the Write tool) with the full required schema
 before continuing with feature work. The PostToolUse hook will then auto-load
 the matching rule bundle into THIS session — no restart needed.
 
   {
-    "version": 2,
+    "version": "<current-plugin-version>",
     "mode": "new-project",
     "stack": "<chosen-id>",
+    "frontend": "<chosen-frontend>",
     "backend": "<chosen-backend>",
+    "mobile": { "enabled": false, "framework": "none", "source": "none" },
+    "technologies": { "frontend": [], "backend": [], "mobile": [] },
     "realtime": "<heavy|light|none>",
     "codeGraphProvider": "<gitnexus|graphify>",
+    "toolchain": {
+      "gitnexus": { "installedVersion": null, "installedAt": null },
+      "graphify": { "installedVersion": null, "installedAt": null },
+      "gitleaks": { "installedVersion": null, "installedAt": null },
+      "trufflehog": { "installedVersion": null, "installedAt": null }
+    },
     "confirmed": true,
     "onboardingComplete": true,
     "confirmedAt": "<ISO-8601 UTC>"
   }
 
-Stack ids: react-realtime-monorepo · react-frontend-only · react-native-expo-monorepo
-  · react-native-expo-app · minimal.
+Stack ids: minimal · default · custom-frontend · custom-backend · custom-stack.
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
 Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
+Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
-If the user explicitly chose Next.js, add \`"frontend": "nextjs"\` and use
-\`"stack": "minimal"\`. See the FIRST-RUN ONBOARDING directive for the full pitch
-script and decline-Supabase examples.
+Default complex-project recommendation is stack=default, frontend=react-vite,
+backend=supabase. If the user explicitly chose a non-default frontend or
+backend, record the matching custom stack and concrete technology fields.
+
+Use the Codex \`request_user_input\` popup before every other onboarding
+choice: question "Do you want a mobile app too?", options "Web only
+(Recommended)", "Ionic + Capacitor", and "React Native / Expo". Ask it even
+when the user's prompt already named web, mobile, Next.js, Ionic, React Native,
+frontend-only, or any other implementation preference. Then ask the required
+Code Graph popup with "GitNexus" and "graphify". Only after that, ask the Team
+popup for subagents when the build is multi-layer. Do not print numbered option
+lists in chat when \`request_user_input\` is available. If the popup tool is
+unavailable, ask the same question in chat with numbered options, tell the user
+to reply with the option number or label, and stop. Do not choose a default or
+continue implementation while the answer is pending. See the FIRST-RUN
+ONBOARDING directive for the full pitch script and decline-Supabase examples.
 `;
 }
 
@@ -366,7 +560,9 @@ function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, v
     if (lines.length > 2) lines.push('');
     lines.push(
       'You also did not set `codeGraphProvider`. This is a REQUIRED field —',
-      'no skip, no default. Ask the user which codebase-graph provider to use:',
+      'no skip, no default. Ask with Codex `request_user_input` popup when available:',
+      'header "Code Graph"; question "Which provider should we use for the codebase graph?";',
+      'if the popup is unavailable, ask in chat with numbered options and stop for the typed reply;',
       `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`,
       'usage 50–70% on multi-file work. See `rules/common/codebase-graph.md`',
       'and the FIRST-RUN ONBOARDING directive for the license trade-off',
@@ -382,16 +578,20 @@ function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, v
 
   lines.push(
     '',
-    'Re-write the file with the Write tool using the full 8-field schema:',
+      'Re-write the file with the Write tool using the full required schema:',
     '',
     '  {',
-    '    "version": 2,',
-    '    "mode": "new-project",',
-    '    "stack": "<chosen-id>",',
-    '    "backend": "<chosen-backend>",',
-    '    "realtime": "<heavy|light|none>",',
-    '    "codeGraphProvider": "<gitnexus|graphify>",',
-    '    "confirmed": true,',
+      '    "version": "<current-plugin-version>",',
+      '    "mode": "new-project",',
+      '    "stack": "<chosen-id>",',
+      '    "frontend": "<chosen-frontend>",',
+      '    "backend": "<chosen-backend>",',
+      '    "mobile": { "enabled": false, "framework": "none", "source": "none" },',
+      '    "technologies": { "frontend": [], "backend": [], "mobile": [] },',
+      '    "realtime": "<heavy|light|none>",',
+      '    "codeGraphProvider": "<gitnexus|graphify>",',
+      '    "toolchain": { "gitnexus": { "installedVersion": null, "installedAt": null }, "graphify": { "installedVersion": null, "installedAt": null }, "gitleaks": { "installedVersion": null, "installedAt": null }, "trufflehog": { "installedVersion": null, "installedAt": null } },',
+      '    "confirmed": true,',
     '    "onboardingComplete": true,',
     '    "confirmedAt": "<ISO-8601 UTC>"',
     '  }',
@@ -408,4 +608,6 @@ module.exports = {
   autoDetectedAnnouncement,
   onboardingReminderShort,
   postWriteIncompleteWarning,
+  codexDefaultModeFallbackDirective,
+  codexDefaultModeFallbackMobilePrompt,
 };

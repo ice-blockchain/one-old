@@ -6,6 +6,7 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { getPluginVersion } = require('./hook-runtime/state.cjs');
 
 const DEFAULT_REPORT_DIR = path.join('.traffic-one', 'reports', 'security');
 const SECURITY_STAMP_FIELDS = [
@@ -1026,6 +1027,11 @@ function stampState(cwd, report, relativeReportPath) {
   state.lastSecurityCheckStatus = 'passed';
   state.lastSecurityCheckFingerprint = report.fingerprint.fingerprint;
   state.lastSecurityCheckReport = relativeReportPath;
+  delete state.pluginVersion;
+  const pluginVersion = getPluginVersion();
+  if (pluginVersion) {
+    state.version = pluginVersion;
+  }
   fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
 

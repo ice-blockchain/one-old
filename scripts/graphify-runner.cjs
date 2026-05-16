@@ -23,6 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { getPluginVersion } = require('./hook-runtime/state.cjs');
 
 const TRAFFIC_ONE = '.traffic-one.json';
 
@@ -60,6 +61,11 @@ function writeStateMerge(cwd, patch) {
     }
   }
   const merged = { ...current, ...patch };
+  delete merged.pluginVersion;
+  const pluginVersion = getPluginVersion();
+  if (pluginVersion) {
+    merged.version = pluginVersion;
+  }
   try {
     fs.writeFileSync(filePath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
   } catch {

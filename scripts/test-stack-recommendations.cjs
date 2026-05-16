@@ -10,7 +10,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
 const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-const { STACKS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+const { STACKS, stackSpecForState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
 const { computeProjectFingerprint } = require(path.join(ROOT, 'scripts', 'security-check-runner.cjs'));
 
 const tests = [];
@@ -70,7 +70,7 @@ test('react stack denies next packages', () => {
 test('explicit nextjs state allows next packages', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      stack: 'minimal',
+      stack: 'custom-frontend',
       frontend: 'nextjs',
     });
 
@@ -115,6 +115,7 @@ test('supabase project bundle includes supabase auth default', () => {
 });
 
 test('new project onboarding defaults to supabase backend', () => {
+  const { getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
@@ -122,8 +123,10 @@ test('new project onboarding defaults to supabase backend', () => {
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(defaultBackendValue(), 'supabase');
-    assert.equal(state.version, 2);
+    assert.equal(state.version, getPluginVersion());
+    assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
     assert.equal(state.mode, 'new-project');
+    assert.ok(state.toolchain, 'new-project state should initialize toolchain');
     assert.match(context, /backend=supabase/);
     assert.match(context, /Supabase \(managed Postgres with Auth, Storage, Realtime, and RLS\)/);
   });
@@ -133,19 +136,307 @@ test('new project onboarding includes Codex subagent preflight', () => {
   const detectProject = fs.readFileSync(path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'), 'utf8');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const stackSetup = fs.readFileSync(path.join(ROOT, 'skills', 'stack-setup', 'SKILL.md'), 'utf8');
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
 
   assert.match(detectProject, /Codex subagent preflight for new projects/);
+  assert.match(detectProject, /switch Codex and Claude Code to Plan mode/);
+  assert.match(detectProject, /Explicit user requests never skip Traffic One onboarding/);
+  assert.match(detectProject, /Codex Default mode fallback/);
+  assert.match(detectProject, /Plan mode is required for Traffic One new-project onboarding/);
   assert.match(detectProject, /blocking preflight gate on Codex/);
+  assert.match(detectProject, /request_user_input/);
+  assert.match(detectProject, /Web only \(Recommended\)/);
+  assert.match(detectProject, /Ionic \+ Capacitor/);
+  assert.match(detectProject, /React Native \/ Expo/);
+  assert.match(detectProject, /Code Graph/);
+  assert.match(detectProject, /GitNexus/);
+  assert.match(detectProject, /graphify/);
   assert.match(directives, /CODEX SUBAGENT PREFLIGHT/);
+  assert.match(directives, /NEW-PROJECT PLAN MODE GATE \(Codex \+ Claude Code\)/);
+  assert.match(directives, /mode === "new-project"/);
+  assert.match(directives, /switch the host to Plan mode/);
+  assert.match(directives, /CODEX ONBOARDING POPUP RULE/);
+  assert.match(directives, /CODEX DEFAULT-MODE FALLBACK \(visible response, blocking\)/);
+  assert.match(directives, /Your next visible assistant message must be the plain-chat fallback prompt/);
+  assert.match(directives, /mention only the project-detection\/onboarding flow/);
+  assert.match(directives, /Do not say you are using create-feature, create-page, frontend-design, tdd-workflow/);
+  assert.match(directives, /CODEX MOBILE DECISION PREFLIGHT/);
+  assert.match(directives, /explicit user requests influence the eventual stack choice/i);
+  assert.match(directives, /implementation preferences, not\s+onboarding answers/);
+  assert.match(directives, /CODEX CODEBASE GRAPH PROVIDER PREFLIGHT/);
+  assert.match(directives, /request_user_input/);
+  assert.match(directives, /Do NOT print "Options:" or a\s+numbered list in chat/);
+  assert.match(directives, /reply with the option number or\s+label/);
+  assert.match(directives, /Never choose a default/);
   assert.match(orchestrator, /Codex consent gate — blocking/);
+  assert.match(orchestrator, /Plan mode/);
+  assert.match(orchestrator, /Codex Default mode fallback is a visible first-response requirement/);
+  assert.match(orchestrator, /Claude Code follows the same Plan Mode requirement/);
+  assert.match(stackSetup, /Codex Default mode fallback/);
+  assert.match(stackSetup, /before any tool\s+use/);
+  assert.match(orchestrator, /Code Graph/);
+  assert.match(orchestrator, /reply with the option number or label/);
+  assert.match(orchestrator, /Run team \(Recommended\)/);
+  assert.match(orchestrator, /Main agent only/);
+  assert.match(agentsMirror, /mode === "new-project"/);
+  assert.match(agentsMirror, /Codex and Claude Code must switch to Plan mode/);
+  assert.match(agentsMirror, /Codex default-mode fallback is a visible first-response requirement/);
+  assert.match(agentsMirror, /Before onboarding is resolved, mention only the project-detection\/onboarding flow/);
+  assert.match(agentsMirror, /implementation intent and must not be treated as onboarding answers/);
+  assert.match(claude, /mode === "new-project"/);
+  assert.match(claude, /Claude Code and Codex must switch to Plan\s+mode/);
+  assert.match(claude, /In Codex Default mode, the fallback must be the next visible assistant response/);
+  assert.match(claude, /Before onboarding is resolved, mention only project-detection\/onboarding/);
+  assert.match(claude, /Explicit user requests never skip Traffic One onboarding/);
 
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
 
+    assert.match(context, /NEW-PROJECT PLAN MODE GATE \(Codex \+ Claude Code\)/);
+    assert.match(context, /mode === "new-project"/);
+    assert.match(context, /Plan mode/);
+    assert.match(context, /CODEX ONBOARDING POPUP RULE/);
+    assert.match(context, /CODEX DEFAULT-MODE FALLBACK \(visible response, blocking\)/);
+    assert.match(context, /Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable/);
+    assert.match(context, /Do not say you are using create-feature, create-page, frontend-design, tdd-workflow/);
+    assert.match(context, /CODEX MOBILE DECISION PREFLIGHT/);
+    assert.match(context, /implementation preferences, not\s+onboarding answers/);
+    assert.match(context, /CODEX CODEBASE GRAPH PROVIDER PREFLIGHT/);
+    assert.match(context, /Do you want a mobile app too\?/);
+    assert.match(context, /Web only \(Recommended\)/);
+    assert.match(context, /Ionic \+ Capacitor/);
+    assert.match(context, /React Native \/ Expo/);
+    assert.match(context, /Which provider should we use for the codebase graph\?/);
+    assert.match(context, /GitNexus/);
+    assert.match(context, /graphify/);
     assert.match(context, /Traffic One sees this as a multi-layer build/);
     assert.match(context, /architect → frontend\/backend → reviewer\/tester/);
+    assert.ok(context.indexOf('CODEX MOBILE DECISION PREFLIGHT') < context.indexOf('CODEX CODEBASE GRAPH PROVIDER PREFLIGHT'));
+    assert.ok(context.indexOf('CODEX CODEBASE GRAPH PROVIDER PREFLIGHT') < context.indexOf('CODEX SUBAGENT PREFLIGHT'));
+  });
+});
+
+test('first prompt reminder asks mobile popup before subagent preflight', () => {
+  withTempDir((cwd) => {
+    runHook(cwd, 'session-start');
+
+    const result = runHook(cwd, 'user-prompt-submit', {
+      prompt: 'create a modern learning platform with courses and an admin area to manage courses and users',
+    });
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /\[FIRST PROMPT STACK CLASSIFICATION\]/);
+    assert.match(context, /stack=default/);
+    assert.match(context, /mode=new-project/);
+    assert.match(context, /switch Codex and Claude Code to Plan mode/);
+    assert.match(context, /CODEX DEFAULT-MODE FALLBACK \(visible response, blocking\)/);
+    assert.match(context, /Your next visible assistant message must be the plain-chat fallback prompt/);
+    assert.match(context, /Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable/);
+    assert.match(context, /Onboarding choices must be prompt popups/);
+    assert.match(context, /reply with the option number or label/);
+    assert.match(context, /never choose a default/i);
+    assert.match(context, /request_user_input/);
+    assert.match(context, /Popup 1/);
+    assert.match(context, /Do you want a mobile app too\?/);
+    assert.match(context, /Web only \(Recommended\)/);
+    assert.match(context, /Ionic \+ Capacitor/);
+    assert.match(context, /React Native \/ Expo/);
+    assert.match(context, /Popup 2/);
+    assert.match(context, /Which provider should we use for the codebase graph\?/);
+    assert.match(context, /GitNexus/);
+    assert.match(context, /graphify/);
+    assert.match(context, /Popup 3/);
+    assert.match(context, /Run team \(Recommended\)/);
+    assert.match(context, /Main agent only/);
+  });
+});
+
+test('explicit stack or mobile prompt still asks mobile popup first', () => {
+  withTempDir((cwd) => {
+    runHook(cwd, 'session-start');
+
+    const result = runHook(cwd, 'user-prompt-submit', {
+      prompt: 'fa-mi un site complet pentru jobs cu Next.js, web only, fara subagenti',
+    });
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /\[FIRST PROMPT STACK CLASSIFICATION\]/);
+    assert.match(context, /stack=custom-frontend/);
+    assert.match(context, /frontend=nextjs/);
+    assert.match(context, /Popup 1/);
+    assert.match(context, /Do you want a mobile app too\?/);
+    assert.match(context, /Ask this even if the prompt already named web, mobile, Next\.js, Ionic, React Native, frontend-only, or no subagents/);
+    assert.doesNotMatch(context, /skip the mobile popup/);
+    assert.ok(context.indexOf('Popup 1') < context.indexOf('Popup 2'));
+    assert.ok(context.indexOf('Popup 2') < context.indexOf('Popup 3'));
+  });
+});
+
+test('implementation skills defer until new-project onboarding is resolved', () => {
+  const implementationSkills = [
+    'skills/create-feature/SKILL.md',
+    'skills/create-page/SKILL.md',
+    'skills/create-component/SKILL.md',
+    'skills/create-service/SKILL.md',
+    'skills/create-native-feature/SKILL.md',
+    'skills/create-native-screen/SKILL.md',
+    'skills/create-native-component/SKILL.md',
+    'skills/create-native-service/SKILL.md',
+    'skills/frontend-design/SKILL.md',
+    'skills/tdd-workflow/SKILL.md',
+  ];
+
+  for (const rel of implementationSkills) {
+    const content = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    const compact = content.replace(/\s+/g, ' ');
+    assert.match(compact, /Do not activate during Traffic One new-project onboarding/i, rel);
+    assert.match(compact, /detect-project/, rel);
+    assert.match(compact, /stack-setup/, rel);
+    assert.match(compact, /onboardingComplete/, rel);
+  }
+});
+
+test('onboarding gate hook is installed before tools can proceed', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const preToolUse = hooks.hooks.PreToolUse;
+  assert.ok(Array.isArray(preToolUse));
+  assert.match(preToolUse[0].matcher, /Bash/);
+  assert.match(preToolUse[0].matcher, /Read/);
+  assert.match(preToolUse[0].matcher, /LS/);
+  assert.match(preToolUse[0].matcher, /Glob/);
+  assert.match(preToolUse[0].matcher, /Grep/);
+  assert.match(preToolUse[0].matcher, /Write/);
+  assert.match(preToolUse[0].hooks[0].command, /check-onboarding-gate/);
+  assert.ok(
+    preToolUse.findIndex((entry) => /check-onboarding-gate/.test(entry.hooks[0].command))
+      < preToolUse.findIndex((entry) => /check-library-allowlist/.test(entry.hooks[0].command)),
+    'onboarding gate must run before Bash library/version checks',
+  );
+});
+
+test('onboarding gate denies tool use when empty cwd resolves mode=new-project', () => {
+  withTempDir((cwd) => {
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'npm view react version' },
+    });
+    const parsed = parseStdoutJson(result);
+    const reason = parsed.hookSpecificOutput.permissionDecisionReason;
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(reason, /mode=new-project/);
+    assert.match(reason, /Plan mode/);
+    assert.match(reason, /fallback chat prompt must be displayed as the next visible assistant message/);
+    assert.match(reason, /Your next visible assistant message must be/);
+    assert.match(reason, /Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable/);
+    assert.match(reason, /Do you want a mobile app too\?/);
+    assert.match(reason, /Web only \(Recommended\)/);
+    assert.match(reason, /Ionic \+ Capacitor/);
+    assert.match(reason, /React Native \/ Expo/);
+    assert.match(reason, /Reply with the option number or label/);
+    assert.match(reason, /remaining Code Graph and Team prompts/);
+    assert.match(reason, /Do not choose defaults/);
+    assert.match(reason, /inspect package versions/);
+  });
+});
+
+test('onboarding gate denies partial new-project state across read and search tools', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      confirmed: false,
+      onboardingComplete: false,
+    });
+
+    for (const toolInput of [
+      { file_path: 'package.json' },
+      { path: '.' },
+      { pattern: 'package.json' },
+    ]) {
+      const result = runHook(cwd, 'check-onboarding-gate', { tool_input: toolInput });
+      const parsed = parseStdoutJson(result);
+      assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /onboarding is not complete/);
+    }
+  });
+});
+
+test('onboarding gate treats missing toolchain as incomplete onboarding', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      codeGraphProvider: 'gitnexus',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-13T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+    const parsed = parseStdoutJson(result);
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /toolchain/);
+  });
+});
+
+test('onboarding gate allows .traffic-one.json repair writes with relative or absolute paths', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+    });
+
+    const relative = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { file_path: '.traffic-one.json' },
+    });
+    const absolute = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { file_path: path.join(cwd, '.traffic-one.json') },
+    });
+
+    assert.equal(relative.stdout, '');
+    assert.equal(absolute.stdout, '');
+  });
+});
+
+test('onboarding gate allows tools only after complete v3 onboarding state exists', () => {
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      codeGraphProvider: 'graphify',
+      toolchain: initializeToolchainState({}),
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-13T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'npm view react version' },
+    });
+
+    assert.equal(result.stdout, '');
   });
 });
 
@@ -158,6 +449,10 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
     createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
     createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
     createService: fs.readFileSync(path.join(ROOT, 'skills', 'create-service', 'SKILL.md'), 'utf8'),
+    promptTemplates: fs.readFileSync(
+      path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+      'utf8',
+    ),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
     reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
     agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
@@ -177,6 +472,8 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
   assert.match(sources.newProjectRule, /protected-route\s+fallbacks/);
   assert.match(sources.stacks, /rules\/frontend\/react\/supabase-client\.md/);
   assert.match(sources.directives, /MUST link to[\s\S]*https:\/\/traffic\.io\//);
+  assert.match(sources.promptTemplates, /https:\/\/traffic\.io\//);
+  assert.match(sources.promptTemplates, /exact `href`/);
   assert.match(sources.frontendAgent, /protected-route fallbacks/);
   assert.match(sources.reviewerAgent, /not directly to the Supabase\s+dashboard/);
   assert.match(sources.agentsMirror, /SupabaseConfigAlert/);
@@ -435,19 +732,29 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   assert.match(seoRule, /VITE_SITE_URL/);
   assert.match(seoRule, /noindex,nofollow/);
   assert.match(seoRule, /prerendering\/static rendering/);
+  assert.match(seoRule, /every created or changed public route/);
   assert.match(seoSkill, /Traffic One generated-web baseline/);
+  assert.match(seoSkill, /for every created or changed public\s+route/);
   assert.match(newProjectRule, /Mandatory SEO baseline/);
   assert.match(newProjectRule, /og-default\.png/);
+  assert.match(newProjectRule, /every generated public\s+route's title/);
   assert.match(existingRule, /run the `seo`\s+baseline reconciliation/);
   assert.match(directives, /Mandatory SEO baseline/);
+  assert.match(directives, /every generated public route's title/);
   assert.match(directives, /SEO baseline reconciliation/);
   assert.match(architect, /route metadata contract/);
   assert.match(frontend, /rules\/common\/seo\.md/);
+  assert.match(frontend, /every created or\s+changed public route/);
   assert.match(reviewer, /mandatory\s+SEO baseline/);
+  assert.match(reviewer, /metadata tests for every created or\s+changed public route/);
   assert.match(tester, /metadata coverage/);
+  assert.match(tester, /every created or changed public route's title/);
   assert.match(createPage, /SEO plan for public web routes/);
+  assert.match(createPage, /for every public\s+route created or changed/);
   assert.match(createFeature, /SEO impact plan/);
+  assert.match(createFeature, /for every public route created or changed/);
   assert.match(promptTemplates, /include the route metadata contract/);
+  assert.match(promptTemplates, /regression coverage for every created or changed public route/);
   assert.match(agentsMirror, /SEO baseline — generated and reconciled automatically/);
   assert.match(claude, /@rules\/common\/seo\.md/);
   assert.match(readme, /Generated\/existing web SEO baseline/);
@@ -490,6 +797,89 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   });
 });
 
+test('frontend i18n baseline is mandatory and automatic for UI work', () => {
+  const i18nRule = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'i18n.md'), 'utf8');
+  const reactCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'core.md'), 'utf8');
+  const nativeCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react-native', 'core.md'), 'utf8');
+  const i18nSkill = fs.readFileSync(path.join(ROOT, 'skills', 'i18n-text', 'SKILL.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
+  const createComponent = fs.readFileSync(path.join(ROOT, 'skills', 'create-component', 'SKILL.md'), 'utf8');
+  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
+  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
+  const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
+  const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+
+  for (const state of [
+    { stack: 'default', frontend: 'react-vite', backend: 'supabase' },
+    { stack: 'custom-frontend', frontend: 'react-vite', backend: 'none' },
+    {
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'none',
+      mobile: { enabled: true, framework: 'react-native-expo' },
+    },
+  ]) {
+    const spec = stackSpecForState(state);
+    assert.equal(
+      spec.mandatory.includes('rules/frontend/i18n.md'),
+      true,
+      `${spec.label} must load frontend i18n defaults mandatorily`,
+    );
+  }
+
+  assert.match(i18nRule, /even when the user did not explicitly ask for translations/);
+  assert.match(i18nRule, /Prefer `<Trans>`/);
+  assert.match(i18nRule, /Do not\s+create a parallel translation system/);
+  assert.match(reactCore, /Detect and extend existing i18n modules automatically/);
+  assert.match(nativeCore, /Detect and extend existing i18n modules automatically/);
+  assert.match(i18nSkill, /Do not wait for the user to mention i18n/);
+  assert.match(i18nSkill, /Prefer `<Trans>` over `t\(\)`/);
+  assert.match(createPage, /Before writing page UI, detect the project's i18n module/);
+  assert.match(createFeature, /Before writing feature UI, detect the project's i18n module/);
+  assert.match(createComponent, /Before writing component UI, detect the project's i18n module/);
+  assert.match(newProjectRule, /New Traffic One frontend projects include `packages\/i18n` by default/);
+  assert.match(existingRule, /reconcile the i18n baseline/);
+  assert.match(directives, /Mandatory i18n baseline/);
+  assert.match(directives, /Do not wait for the\s+user to request translations/);
+  assert.match(frontend, /Before writing UI, apply `rules\/frontend\/i18n\.md`/);
+  assert.match(reviewer, /uses `<Trans>` instead of\s+`t\(\)`/);
+  assert.match(tester, /translated accessible names and labels/);
+  assert.match(promptTemplates, /even when the user did not\s+mention translations/);
+  assert.match(promptTemplates, /prefer `<Trans>`/);
+  assert.match(agentsMirror, /i18n baseline — generated and reconciled automatically/);
+  assert.match(claude, /i18n\.md/);
+
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 2,
+      mode: 'new-project',
+      stack: 'react-realtime-monorepo',
+      backend: 'supabase',
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-12T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(context, /rules\/frontend\/i18n\.md/);
+    assert.match(context, /Frontend i18n Baseline/);
+    assert.match(context, /even when the user did not explicitly ask for translations/);
+  });
+});
+
 test('all stack bundles include project-memory defaults', () => {
   for (const [stackId, spec] of Object.entries(STACKS)) {
     assert.equal(
@@ -502,10 +892,8 @@ test('all stack bundles include project-memory defaults', () => {
 
 test('frontend stack bundles load design quality rules mandatorily', () => {
   const frontendStacks = [
-    'react-realtime-monorepo',
-    'react-frontend-only',
-    'react-native-expo-monorepo',
-    'react-native-expo-app',
+    'default',
+    'custom-backend',
   ];
 
   for (const stackId of frontendStacks) {
@@ -522,7 +910,7 @@ test('frontend stack bundles load design quality rules mandatorily', () => {
     );
   }
 
-  for (const stackId of ['react-realtime-monorepo', 'react-frontend-only']) {
+  for (const stackId of ['default', 'custom-backend']) {
     assert.equal(
       STACKS[stackId].mandatory.includes('rules/frontend/react/design-quality.md'),
       true,
@@ -629,7 +1017,8 @@ test('existing React Native project SessionStart includes docs reconciliation gu
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(state.mode, 'existing-codebase');
-    assert.equal(state.stack, 'react-native-expo-app');
+    assert.equal(state.stack, 'custom-frontend');
+    assert.equal(state.mobile.framework, 'react-native-expo');
     assert.match(context, /rules\/common\/documentation\.md/);
     assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
   });
@@ -652,7 +1041,8 @@ test('existing Go project SessionStart includes docs reconciliation guidance', (
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(state.mode, 'existing-codebase');
-    assert.equal(state.stack, 'minimal');
+    assert.equal(state.stack, 'custom-backend');
+    assert.equal(state.backend, 'go');
     assert.match(context, /go\.mod detected/);
     assert.match(context, /rules\/common\/documentation\.md/);
     assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
@@ -695,10 +1085,190 @@ test('next project detects frontend without react stack', () => {
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
     const context = payload.hookSpecificOutput.additionalContext;
 
-    assert.equal(state.stack, 'minimal');
+    assert.equal(state.stack, 'custom-frontend');
     assert.equal(state.frontend, 'nextjs');
     assert.match(context, /NextAuth\/Auth\.js/);
-    assert.match(context, /date-fns/);
+    assert.match(context, /nextjs-turbopack/);
+    assert.doesNotMatch(context, /rules\/frontend\/react\/core\.md/);
+  });
+});
+
+test('first-prompt classifier resolves stack, tech, and mobile prompt defaults', () => {
+  const { classifyPromptForStack } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'detection.cjs'));
+
+  assert.equal(classifyPromptForStack('simple static landing page for a conference').stack, 'minimal');
+
+  const crm = classifyPromptForStack('Build a CRM app with auth, dashboards, users, and uploads');
+  assert.equal(crm.stack, 'default');
+  assert.equal(crm.frontend, 'react-vite');
+  assert.equal(crm.backend, 'supabase');
+  assert.equal(crm.shouldAskMobile, true);
+
+  const next = classifyPromptForStack('Build a Next.js app with login and billing');
+  assert.equal(next.stack, 'custom-frontend');
+  assert.equal(next.frontend, 'nextjs');
+  assert.equal(next.backend, 'supabase');
+  assert.equal(next.shouldAskMobile, true);
+
+  const go = classifyPromptForStack('Build a React admin app with a Go backend');
+  assert.equal(go.stack, 'custom-backend');
+  assert.equal(go.backend, 'go');
+
+  const custom = classifyPromptForStack('Build a Vue app with a Django backend and Expo mobile app');
+  assert.equal(custom.stack, 'custom-stack');
+  assert.equal(custom.frontend, 'vue');
+  assert.equal(custom.backend, 'django');
+  assert.equal(custom.mobile.framework, 'react-native-expo');
+  assert.equal(custom.shouldAskMobile, true);
+
+  const mobileOnly = classifyPromptForStack('Build a mobile app for tracking field jobs');
+  assert.equal(mobileOnly.stack, 'custom-frontend');
+  assert.equal(mobileOnly.backend, 'supabase');
+  assert.equal(mobileOnly.mobile.framework, 'ionic-capacitor');
+  assert.equal(mobileOnly.shouldAskMobile, true);
+});
+
+test('normalizeState initializes toolchain and preserves existing stamps', () => {
+  const { normalizeState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const state = {
+    stack: 'default',
+    backend: 'supabase',
+    codeGraphProvider: 'graphify',
+    toolchain: {
+      gitnexus: {
+        installedVersion: '1.6.4',
+        installedAt: '2026-05-13T00:00:00Z',
+        binPath: '/usr/local/bin/gitnexus',
+      },
+    },
+  };
+
+  assert.equal(normalizeState(state, 'new-project'), true);
+  assert.equal(state.toolchain.gitnexus.installedVersion, '1.6.4');
+  assert.equal(state.toolchain.gitnexus.installedAt, '2026-05-13T00:00:00Z');
+  assert.equal(state.toolchain.gitnexus.binPath, '/usr/local/bin/gitnexus');
+  assert.equal(state.toolchain.graphify.installedVersion, null);
+  assert.equal(state.toolchain.gitleaks.installedAt, null);
+  assert.equal(state.toolchain.trufflehog.installedVersion, null);
+});
+
+test('materializeProjectAssets copies only active local rules and skills', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  withTempDir((cwd) => {
+    const state = {
+      stack: 'custom-frontend',
+      frontend: 'none',
+      backend: 'supabase',
+      mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' },
+    };
+
+    const result = materializeProjectAssets(cwd, state);
+    assert.ok(result.rules > 0);
+    assert.ok(result.skills > 0);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'frontend', 'react-native', 'core.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-native-screen', 'SKILL.md')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'golang-patterns', 'SKILL.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'nextjs-turbopack', 'SKILL.md')), false);
+
+    const agentsPath = path.join(cwd, 'AGENTS.md');
+    const claudePath = path.join(cwd, 'CLAUDE.md');
+    const rulesManifestPath = path.join(cwd, '.traffic-one', 'rules', 'manifest.json');
+    assert.ok(fs.existsSync(agentsPath));
+    assert.match(fs.readFileSync(claudePath, 'utf8'), /@\.traffic-one\/rules\/active\//);
+    assert.match(fs.readFileSync(rulesManifestPath, 'utf8'), /react-native\/core\.md/);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')), false);
+  });
+});
+
+test('materializeProjectAssets includes mode-specific local rules', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  withTempDir((cwd) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    };
+
+    materializeProjectAssets(cwd, state);
+
+    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md');
+    const manifest = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json'), 'utf8');
+    const localAgents = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md'), 'utf8');
+    const localClaude = fs.readFileSync(path.join(cwd, 'CLAUDE.md'), 'utf8');
+
+    assert.ok(fs.existsSync(localRulePath));
+    assert.match(manifest, /rules\/modes\/new-project\.md/);
+    assert.match(localAgents, /\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
+    assert.match(localClaude, /@\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
+  });
+});
+
+test('post-stack-setup materializes local rules after project-memory writes', () => {
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      realtime: 'none',
+      codeGraphProvider: 'graphify',
+      toolchain: initializeToolchainState({}),
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-13T10:00:00Z',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'product.md'), '# Product\n', 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: '.traffic-one/product.md' },
+    });
+
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.match(context, /Project-local rules\/skills materialized/);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')), false);
+  });
+});
+
+test('post-stack-setup reports local materialization failures', () => {
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      realtime: 'none',
+      codeGraphProvider: 'graphify',
+      toolchain: initializeToolchainState({}),
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-13T10:00:00Z',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'active'), 'not a directory\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'product.md'), '# Product\n', 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: '.traffic-one/product.md' },
+    });
+
+    const payload = parseStdoutJson(result);
+    assert.match(payload.systemMessage, /materialization failed/);
+    assert.match(payload.hookSpecificOutput.additionalContext, /\.traffic-one\/rules\/active/);
   });
 });
 
@@ -905,6 +1475,91 @@ test('plan-gate allows root architecture docs on new-project without plan', () =
       tool_input: {
         file_path: 'architecture.md',
         content: '# Architecture\n',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('new-project monorepo gate blocks flat root Vite scaffold', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const rootSrc = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'src/main.tsx',
+        content: 'export const App = () => null;\n',
+      },
+    });
+
+    assert.match(rootSrc.stdout, /permissionDecision/);
+    assert.match(rootSrc.stdout, /New-project monorepo gate/);
+    assert.match(rootSrc.stdout, /apps\/web/);
+
+    const rootPackage = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'package.json',
+        content: JSON.stringify({ private: true, scripts: { dev: 'vite' }, dependencies: { react: '^19.0.0' } }, null, 2),
+      },
+    });
+
+    assert.match(rootPackage.stdout, /permissionDecision/);
+    assert.match(rootPackage.stdout, /workspaces/);
+  });
+});
+
+test('new-project monorepo gate follows nested project state', () => {
+  withTempDir((cwd) => {
+    const projectDir = path.join(cwd, 'jobs-platform');
+    fs.mkdirSync(path.join(projectDir, '.traffic-one'), { recursive: true });
+    writeJson(path.join(projectDir, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+    });
+    fs.writeFileSync(path.join(projectDir, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'jobs-platform/package.json',
+        content: JSON.stringify({ private: true, scripts: { dev: 'vite' } }, null, 2),
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /New-project monorepo gate/);
+    assert.match(result.stdout, /workspaces/);
+  });
+});
+
+test('new-project monorepo gate allows workspace root package', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'package.json',
+        content: JSON.stringify({
+          private: true,
+          packageManager: 'pnpm@10.23.0',
+          workspaces: ['apps/*', 'packages/*'],
+        }, null, 2),
       },
     });
 
@@ -1448,17 +2103,18 @@ test('graphify-runner uses `graphify update .` (not the outdated `graphify .`)',
   assert.doesNotMatch(runnerSrc, /spawnSync\('graphify',\s*\[\s*'\.'\s*,/);
 });
 
-test('writeState stamps pluginVersion in .traffic-one.json (diagnostic)', () => {
+test('writeState stamps plugin version in .traffic-one.json version field', () => {
   const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   withTempDir((cwd) => {
     writeState(cwd, { stack: 'react-realtime-monorepo', mode: 'new-project' });
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
     const pluginVersion = getPluginVersion();
-    // The plugin version helper reads from .claude-plugin/plugin.json.
+    // The plugin version helper reads from the plugin manifest.
     assert.match(pluginVersion, /^\d+\.\d+\.\d+$/);
-    assert.equal(state.pluginVersion, pluginVersion);
-    // The cache-mismatch diagnostic relies on this exact field name.
-    assert.ok(state.pluginVersion, 'pluginVersion must be set');
+    assert.equal(state.version, pluginVersion);
+    assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
+    assert.equal(state.stack, 'default');
+    assert.ok(state.toolchain.gitnexus);
   });
 });
 
@@ -1573,6 +2229,11 @@ test('onboarding directive contains the codeGraphProvider question with gitnexus
   // The question must exist as a required onboarding field.
   assert.match(directive, /codeGraphProvider/);
   assert.match(directive, /REQUIRED/i);
+  assert.match(directive, /request_user_input/);
+  assert.match(directive, /Code Graph/);
+  assert.match(directive, /Which provider should we use for the codebase graph\?/);
+  assert.match(directive, /Do NOT print "Options:"/);
+  assert.match(directive, /ask in chat with numbered options and stop/);
   // gitnexus listed first (per user instruction; no "Recommended" tag).
   const gIdx = directive.indexOf('gitnexus');
   const fIdx = directive.indexOf('graphify');
@@ -2143,7 +2804,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.0) ─────────────────────────────────────
+// ── Toolchain version tracking (2.9.13) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -2277,7 +2938,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.0', () => {
+test('manifests bumped to 2.9.13', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2285,7 +2946,7 @@ test('manifests bumped to 2.9.0', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.0"/, `${rel} must be bumped to 2.9.0`);
+    assert.match(text, /"version":\s*"2\.9\.13"/, `${rel} must be bumped to 2.9.13`);
   }
 });
 

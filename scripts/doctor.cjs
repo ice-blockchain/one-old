@@ -222,7 +222,7 @@ function main() {
     summary,
     findings,
     probes: { node, nvm, gitnexus, project },
-    pluginVersion: project.state?.pluginVersion || null,
+    version: typeof project.state?.version === 'string' ? project.state.version : null,
   }, null, 2) + '\n');
 }
 

@@ -17,6 +17,19 @@ SessionStart shows `═══ traffic-one — FIRST-RUN ONBOARDING (new project)
 The directive itself contains the full pitch script (paths A "features only"
 and B "tech specified"). Follow it. The directive is the source of truth — this
 skill exists so the user can also invoke it explicitly ("set up the stack").
+When this path fires, switch Codex and Claude Code to Plan mode before asking
+onboarding questions or writing files. If the host cannot switch automatically,
+say Plan mode is required, stay plan-only, ask fallback chat questions, and
+stop for the user's typed answers.
+
+Codex Default mode fallback: if Plan mode is off or `request_user_input` cannot
+be called, the fallback is the next visible assistant response before any tool
+use. Say: "Plan mode is required for Traffic One new-project onboarding, but
+Plan mode is not active here and the popup prompt is unavailable." Then ask
+`Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic +
+Capacitor`, and `3. React Native / Expo`, tell the user to reply with the
+option number or label, and stop. Ask Code Graph only after that answer, then
+Team only after Code Graph for multi-layer builds.
 
 ### Path B — Mid-project reconfigure
 User says "switch stack", "change stack", "reconfigure", etc. Read the existing
@@ -31,19 +44,58 @@ on the model's first reply (auto-detected stack: X, backend: Y, realtime: Z).
 
 ## Stack ids (the only valid values)
 
-- `react-realtime-monorepo` — React + Supabase monorepo. **Default for new projects.**
-- `react-frontend-only` — Single React app, no monorepo.
-- `react-native-expo-monorepo` — Expo RN monorepo. Only when user explicitly says React Native / Expo.
-- `react-native-expo-app` — Single Expo RN app. Same condition.
-- `minimal` — clean-code + security baseline, language-agnostic.
+- `minimal` — no backend and no frontend framework is necessary; simple landing/presentation/static projects.
+- `default` — React/Vite frontend with Supabase backend. **Default for complex backend-backed projects.**
+- `custom-frontend` — complex project with a non-default frontend or mobile-only frontend; backend defaults to Supabase when unspecified.
+- `custom-backend` — React/Vite frontend with a non-Supabase backend, external API, or no backend.
+- `custom-stack` — non-default frontend/mobile choice plus non-Supabase backend.
 
-`node-backend` exists for backwards compatibility with old config files. **Do
-not offer it during onboarding or reconfigure** — backends now live alongside a
-frontend stack via the `backend` field.
+Legacy ids (`react-realtime-monorepo`, `react-frontend-only`,
+`react-native-expo-*`, `node-backend`) are normalized by hooks for old projects.
+Do not write them during onboarding or reconfigure.
 
-Next.js is not a first-class Traffic One stack id. If the user explicitly wants
-Next.js after the React/Vite pitch, use `stack: "minimal"` and add
-`"frontend": "nextjs"` so provider-first Next.js recommendations apply.
+Recommend `stack: "default"`, `frontend: "react-vite"`, and
+`backend: "supabase"` first for new complex projects. If the user explicitly
+chooses another frontend or backend, or an existing repo already uses one, use
+the matching `custom-frontend`, `custom-backend`, or `custom-stack` state and
+load only the selected technology rules.
+
+## Mobile filter
+
+When the resolved project mode is `new-project` (`mode === "new-project"`),
+Plan mode is mandatory for both Codex and Claude Code until onboarding choices
+are answered and the project plan is ready. In Codex, Plan mode enables popup
+prompts; in Claude Code, enter Claude Code Plan Mode before
+Task/Write/Edit/Bash/scaffold actions.
+
+Codex onboarding choices must be prompt popups, not prose with numbered
+options. When `request_user_input` is available, call that tool and stop; do
+not print `Options:` in chat. Plain text fallback is allowed only when the
+popup tool is unavailable, and the fallback must say that first, ask the same
+blocking question directly in chat with numbered options, tell the user to
+reply with the option number or label, and stop. Do not choose a default,
+infer an answer, write `.traffic-one.json`, scaffold, or continue while the
+onboarding answer is pending.
+
+Always ask the mobile decision for a complex new project. If the user already
+asked for mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only,
+Next.js, frontend-only, no backend, no subagents, or "just build it", treat
+that as implementation intent rather than an onboarding answer. Ask before the
+subagent preflight, before the Code Graph popup, and before writing
+`.traffic-one.json`. On Codex, use
+`request_user_input` as a popup:
+
+- header: `Mobile App`
+- question: `Do you want a mobile app too?`
+- options:
+  - `Web only (Recommended)` — keep v1 to the responsive web/admin app.
+  - `Ionic + Capacitor` — add the default hybrid iOS/Android app path.
+  - `React Native / Expo` — add an explicit React Native/Expo app stack.
+
+If the popup tool is unavailable, ask the same question in plain text with the
+same numbered options and stop for the user's typed reply. The popup or typed
+answer is the source of truth for `mobile.framework`; do not infer it from the
+original prompt.
 
 ## Stack lock rule
 
@@ -73,7 +125,17 @@ a frontend-only prototype or rejects Supabase.
 
 `gitnexus` · `graphify`
 
-Ask the user verbatim:
+After the mobile popup is answered, ask this provider choice before
+the subagent/team popup. On Codex, use `request_user_input` as a popup:
+
+- header: `Code Graph`
+- question: `Which provider should we use for the codebase graph?`
+- options:
+  - `GitNexus` — Node CLI; writes `.gitnexus/`; PolyForm Noncommercial; requires Node >=22.
+  - `graphify` — Python CLI; writes `graphify-out/GRAPH_REPORT.md` + `graph.json`; MIT license.
+
+If the popup tool is unavailable, ask the user verbatim with numbered options
+and stop for the user's typed reply:
 
 > Which provider should we use for the codebase graph: **gitnexus** or
 > **graphify**? Both build a structural cache that subagents and skills read
@@ -95,26 +157,33 @@ not add a "(Recommended)" tag.
 
 ## File shape (write exactly this with the Write tool)
 
-The schema is **8 required fields** for new projects: `mode`, `stack`,
-`backend`, `realtime`, `codeGraphProvider`, `confirmed`,
-`onboardingComplete`, `confirmedAt` (`version` makes 9 with bookkeeping).
+The schema is required for new projects: `mode`, `stack`, `frontend`, `backend`,
+`mobile`, `technologies`, `realtime`, `codeGraphProvider`, `toolchain`,
+`confirmed`, `onboardingComplete`, `confirmedAt` (`version` is the current
+Traffic One plugin version; do not write a separate `pluginVersion` field).
 
 ```json
 {
-  "version": 2,
+  "version": "<current-plugin-version>",
   "mode": "<existing mode if reconfiguring; otherwise 'new-project'>",
   "stack": "<chosen id>",
+  "frontend": "<chosen frontend>",
   "backend": "<chosen backend>",
+  "mobile": { "enabled": false, "framework": "none", "source": "none" },
+  "technologies": { "frontend": [], "backend": [], "mobile": [] },
   "realtime": "<heavy|light|none>",
   "codeGraphProvider": "<gitnexus|graphify>",
+  "toolchain": {
+    "gitnexus": { "installedVersion": null, "installedAt": null },
+    "graphify": { "installedVersion": null, "installedAt": null },
+    "gitleaks": { "installedVersion": null, "installedAt": null },
+    "trufflehog": { "installedVersion": null, "installedAt": null }
+  },
   "confirmed": true,
   "onboardingComplete": true,
   "confirmedAt": "<ISO-8601 UTC>"
 }
 ```
-
-If the user explicitly chose Next.js, add `"frontend": "nextjs"` and use
-`"stack": "minimal"`. Otherwise omit `frontend`.
 
 ## After writing
 
@@ -126,6 +195,13 @@ original request:
 The PostToolUse hook injects the full stack rules into THIS session immediately.
 You'll see `traffic-one rules loaded for stack: <id>` in a system message
 before your next action — those rules are now live, use them.
+
+After that system message, the next scaffold action for `mode: "new-project"`
+must read and follow `rules/modes/new-project.md`. For `stack: "default"` or a
+React/Vite new project with backend data, do not create a flat/root Vite app:
+no root `src/`, root `index.html`, root `vite.config.ts`, or root
+`package.json` without pnpm workspaces. Scaffold the Turborepo workspace
+(`apps/web` plus required `packages/*`) before any feature code.
 
 ## Must-not-do
 - Do NOT tell the user to restart Claude Code. The PostToolUse hook handles loading.

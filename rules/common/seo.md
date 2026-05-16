@@ -38,9 +38,9 @@ projects must include:
   `VITE_SITE_URL` for Vite/Ionic or the framework's public site-url equivalent.
   Real production domains are user/host inputs; mark them `Unverified` until
   supplied and never invent a deploy URL.
-- Regression coverage that proves at least one public route has the expected
-  title, canonical URL, Open Graph image, and JSON-LD, and that private/admin
-  routes emit `noindex,nofollow`.
+- Regression coverage that proves every created or changed public route has the
+  expected title, description, canonical URL, Open Graph image, JSON-LD, and
+  sitemap inclusion, and that private/admin routes emit `noindex,nofollow`.
 - A note in `deployment.md` or `.traffic-one/known-issues.md` when an SPA route
   must rank but lacks prerendering/static rendering or equivalent host support.
   Do not claim full SEO parity for client-rendered shells alone.
@@ -57,7 +57,7 @@ mode, inspect the current web surface:
 - If the baseline is missing or partial, add the smallest compatible SEO layer
   and assets listed above.
 - If the baseline exists, update route metadata, sitemap/robots, structured
-  data, and tests for the changed routes.
+  data, and tests for every changed public route.
 - Never overwrite brand/domain metadata blindly; keep existing verified values
   and mark unknown production domains as `Unverified`.
 
@@ -65,5 +65,6 @@ mode, inspect the current web surface:
 
 Reviewers request changes when public web work lacks route-level title,
 description, canonical, Open Graph/Twitter image, JSON-LD, sitemap/robots,
-favicon/PWA basics, or SEO regression coverage. Testers add or update
-Playwright/unit coverage for metadata when routes are created or changed.
+favicon/PWA basics, or SEO regression coverage for every created or changed
+public route. Testers add or update Playwright/unit coverage for metadata when
+routes are created or changed.

@@ -8,6 +8,7 @@ skills:
   - predeploy-security-check
   - verification-loop
   - seo
+  - i18n-text
   - project-memory
   - auto-documentation-generator
   - repo-scan
@@ -65,6 +66,11 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
   route metadata, public assets, deployment docs, or launch readiness. Check
   the mandatory route metadata, JSON-LD, robots/sitemap, favicon/PWA/OG assets,
   site-url env docs, private/admin noindex, and regression coverage.
+- `i18n-text` — when the diff touches frontend UI, copy, forms, labels,
+  accessibility text, setup banners, or existing translation catalogs. Check
+  that existing i18n modules are extended automatically, same-change catalog
+  entries exist, and rich copy with links/elements uses `<Trans>` instead of
+  `t()`.
 - `project-memory` — when `.traffic-one/` files changed or should have changed;
   check product/stack/rules/known issues/schema/agent log/ADR/deploy memory for
   accuracy, brevity, and absence of secrets.
@@ -142,9 +148,14 @@ CHANGES_REQUESTED — <one line summary>.
 - New generated websites and changed public web routes include the mandatory
   SEO baseline: route-specific title, description, canonical, robots,
   Open Graph/Twitter image, JSON-LD, favicon/PWA assets, `robots.txt`,
-  `sitemap.xml`, site-url env docs, and metadata tests. Private/admin routes
-  are `noindex,nofollow`, and SPA ranking caveats are documented when no
-  prerender/static rendering or host support exists.
+  `sitemap.xml`, site-url env docs, and metadata tests for every created or
+  changed public route. Private/admin routes are `noindex,nofollow`, and SPA
+  ranking caveats are documented when no prerender/static rendering or host
+  support exists.
+- New or changed UI in a project with i18n extends the existing translation
+  module automatically, uses catalog keys for user-facing copy, adds same-change
+  source-language entries, and uses `<Trans>` for rich copy with links or React
+  elements instead of forcing everything through `t()`.
 
 ## What "CHANGES_REQUESTED" means
 

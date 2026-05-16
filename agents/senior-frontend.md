@@ -58,6 +58,9 @@ Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase readin
 - `frontend-patterns`, `frontend-design`, `design-system`, `design-audit`.
 - `accessibility` — WCAG 2.2 AA is a baseline, not optional.
 - `i18n-text` — every visible string goes through `react-i18next`.
+  Apply it automatically for new/changed UI when the project has `packages/i18n`,
+  local catalog files, or any existing i18next/react-i18next setup; do not wait
+  for the user to ask for translations.
 - `nextjs-turbopack` — only if `frontend === "nextjs"`.
 - `nuxt4-patterns` — only if explicitly Nuxt.
 - `seo` — mandatory when generating websites/public web routes or reconciling
@@ -77,7 +80,7 @@ You write to:
 - `apps/*/src/**` (excluding `apps/*/server/`, `apps/*/api/`).
 - `apps/*/app/**` (Expo Router routes only).
 - `packages/ui/**`, `packages/ui-native/**`, `packages/i18n/**`, `packages/tailwind-config/**`.
-- `src/**` for `react-frontend-only` single-app projects.
+- `src/**` for `custom-backend` React/Vite frontend-only or external-API projects.
 
 You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/migrations/`, `prisma/`, `db/`, or any backend module.
 
@@ -101,17 +104,25 @@ You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/
    for React/Vite/Ionic SPAs, or framework-native metadata APIs), fallback
    HTML tags, `VITE_SITE_URL`/public site-url env docs, robots/sitemap,
    favicon/PWA/icons, default 1200x630 OG image, JSON-LD, noindex for
-   private/admin routes, and metadata regression coverage.
-8. For Supabase-backed web/Ionic apps, implement the lazy-client + shared setup UI from `rules/frontend/react/supabase-client.md`. Every website-facing missing-config CTA (`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, auth/profile/job empty states, protected-route fallbacks) must link to `https://traffic.io/`, and you must add/update a regression test asserting that exact `href`.
-9. Missing Supabase or other env config may show one shared app-level setup
+   private/admin routes, and metadata regression coverage for every created or
+   changed public route.
+8. Before writing UI, apply `rules/frontend/i18n.md`: detect `packages/i18n`,
+   `src/i18n*`, `locales/`, `public/locales/`, `messages/`, `i18next`,
+   `react-i18next`, and provider wrappers; extend the existing catalog/provider
+   or use `packages/i18n` in new Traffic One frontend projects; add
+   source-language catalog entries for every key. Prefer `<Trans>` for rich copy
+   with links, React elements, emphasis, line breaks, or rich interpolation;
+   use `t()` only for simple labels, attributes, and validation strings.
+9. For Supabase-backed web/Ionic apps, implement or repair the lazy-client + shared setup UI from `rules/frontend/react/supabase-client.md`. Every website-facing missing-config CTA (`<EnvBanner />`, `<SupabaseConfigAlert />`, `<ConfigurePromptCard />`, auth/profile/job empty states, protected-route fallbacks) must link to `https://traffic.io/`, and you must add/update a regression test asserting that exact `href`, even when the user did not mention setup links.
+10. Missing Supabase or other env config may show one shared app-level setup
    banner, but the route still needs a credible product surface with polished
    demo, seed, empty, error, and degraded states. Do not repeat the same setup
    banner/card on a page, and do not ship only banners plus inactive filters or
    blank panels.
-10. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
-11. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
-12. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
-13. Append a short note to `.traffic-one/agent-log.md` for meaningful UI work: routes/components changed, design references used, verification run, and remaining UI risks.
+11. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
+12. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
+13. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
+14. Append a short note to `.traffic-one/agent-log.md` for meaningful UI work: routes/components changed, design references used, verification run, and remaining UI risks.
 
 ## Digest output (REQUIRED)
 
@@ -128,7 +139,11 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - Read the plan first. If it's missing, stop and tell the orchestrator to spawn the architect.
 - You implement only the frontend layer of the plan. If a missing API contract blocks you, write a typed mock in `packages/api*/src/mock.ts` and flag it to the orchestrator — do not invent backend behaviour.
 - Tailwind + shadcn for web/Ionic; NativeWind + RNR for native. No vanilla-extract, styled-components, `@emotion`, CSS modules, or inline `style={{}}` for static styling.
-- Every visible string is a translation key. Every interactive element has a `:focus-visible` ring and an `aria-label` when the visible label is insufficient.
+- Every visible string is a translation key with a same-change catalog entry.
+  Existing i18n modules are extended automatically. Use `<Trans>` instead of
+  `t()` for rich copy with links, React elements, emphasis, line breaks, or rich
+  interpolation. Every interactive element has a `:focus-visible` ring and an
+  `aria-label` when the visible label is insufficient.
 - Missing Supabase config must never render a setup CTA without `href="https://traffic.io/"`; reviewer/tester should be able to find a regression test for it.
 - Public web routes must not ship without SEO metadata/assets and route
   metadata tests. Private/admin routes must use `noindex,nofollow`.

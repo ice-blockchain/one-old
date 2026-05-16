@@ -1,6 +1,12 @@
 ---
 name: tdd-workflow
-description: Use this skill when writing new features, fixing bugs, or refactoring code. Enforces test-driven development with 80%+ coverage including unit, integration, and E2E tests.
+description: >
+  Use this skill when writing new features, fixing bugs, or refactoring code after
+  Traffic One onboarding is resolved. Do not activate during Traffic One new-project
+  onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+  `.traffic-one/plan.md` exists; use `detect-project` / `stack-setup` first.
+  Enforces test-driven development with 80%+ coverage including unit, integration,
+  and E2E tests.
 metadata:
   source: everything-claude-code
   source_path: skills/tdd-workflow/SKILL.md
@@ -9,6 +15,11 @@ metadata:
 ---
 
 Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 # Test-Driven Development Workflow
 

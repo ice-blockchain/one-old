@@ -31,22 +31,27 @@ You are the conductor. The Traffic One workflow is identical across runtimes: sa
 
 ## Codex consent gate — blocking
 
-When the host is Codex and this skill triggers, the first action is always a user-facing confirmation question before any implementation work.
+When the host is Codex and this skill triggers, the first action is always to ensure the thread is in Plan mode for new projects, then run the required onboarding popup sequence before any implementation work. For new projects, resolve the mobile-app decision first even when the initial prompt already named web, mobile, Next.js, Ionic, React Native, frontend-only, no backend, no subagents, or "just build it"; those are implementation preferences, not onboarding answers. Then resolve the codebase graph provider, then ask for the subagent team. Claude Code follows the same Plan Mode requirement before Task/Write/Edit/Bash/scaffold actions.
 
 Required behavior on Codex:
 
-1. Announce that Traffic One detected a non-trivial multi-layer build.
-2. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
-3. Ask whether to run the role subagents.
-4. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate the roles manually before the answer.
-5. If the user confirms, call Codex `spawn_agent` using the role mapping below.
-6. If the user declines, or subagents are unavailable/blocked, continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
+1. Do not print numbered options in chat when `request_user_input` is available. Call the popup tool and stop. Plain text fallback is allowed only when the popup tool is unavailable, and the fallback must say that first, ask the same blocking question directly in chat with numbered options, tell the user to reply with the option number or label, and stop. Do not choose a default, infer an answer, write `.traffic-one.json`, scaffold, or continue while the onboarding answer is pending.
+2. If this is a new project, switch Codex and Claude Code to Plan mode before asking onboarding questions. If no mode switch is exposed, say Plan mode is required, stay plan-only, ask fallback chat questions, and stop for typed answers. Do not write `.traffic-one.json`, `.traffic-one/plan.md`, create files, edit code, run commands, or simulate roles until Plan mode/onboarding choices are resolved.
+3. Codex Default mode fallback is a visible first-response requirement. If Plan mode is off or `request_user_input` cannot be called, do not run `detect-project`, Read/LS/Glob/Grep, Bash, `npm view`, scaffolds, or edits. The next assistant message must say: "Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable." Then ask `Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic + Capacitor`, and `3. React Native / Expo`, tell the user to reply with the option number or label, and stop. Ask Code Graph only after that answer, then Team only after Code Graph for multi-layer builds.
+4. If this is a new complex project, ask the mobile decision with Codex `request_user_input` even if the first prompt already named web, mobile, iOS, Android, Ionic, Capacitor, React Native, Expo, RN, Next.js, frontend-only, no backend, no subagents, or "just build it": header `Mobile App`, question `Do you want a mobile app too?`, options `Web only (Recommended)`, `Ionic + Capacitor`, and `React Native / Expo`. Stop and wait for the popup answer before continuing.
+5. Ask the required codebase graph provider with Codex `request_user_input`: header `Code Graph`, question `Which provider should we use for the codebase graph?`, options `GitNexus` and `graphify`. Stop and wait for the popup answer before continuing. This is required before `.traffic-one.json`; no default and no skip.
+6. Announce that Traffic One detected a non-trivial multi-layer build.
+7. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
+8. Ask whether to run the role subagents using Codex `request_user_input` when available, with options `Run team (Recommended)` and `Main agent only`.
+9. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate the roles manually before the answer.
+10. If the user confirms, call Codex `spawn_agent` using the role mapping below.
+11. If the user declines, or subagents are unavailable/blocked, continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
 
 Recommended prompt, English only:
 
 > Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?
 
-Use this wording in English; do not translate this confirmation question based on the user's language.
+Use this wording in English; do not translate this confirmation question based on the user's language. If `request_user_input` is unavailable, ask the same wording in plain text with the same numbered options and stop for the user's typed reply.
 
 If work has already started and this gate was missed, pause at the next safe point, acknowledge the missed gate, ask the confirmation question, and wait before continuing.
 
@@ -54,7 +59,7 @@ If work has already started and this gate was missed, pause at the next safe poi
 
 - Claude Code: auto-spawn the named Traffic One agents with the `Task` tool when this skill triggers.
 - Claude Code agents do not inherit parent skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
-- Codex: before starting a non-trivial multi-layer build, announce the Traffic One route and automatically ask the user for subagent confirmation. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before calling `spawn_agent`, this confirmation is mandatory and blocking; stop until the user answers. Do not silently simulate the team before asking. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
+- Codex: when `mode === "new-project"`, switch to Plan mode before onboarding/team questions. Before starting a non-trivial multi-layer build, announce the Traffic One route and automatically ask the user for subagent confirmation. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before calling `spawn_agent`, this confirmation is mandatory and blocking; stop until the user answers. Do not silently simulate the team before asking. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
 - Cursor: auto-spawn available Cursor/background-agent/task agents when this skill triggers. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
 - Codex role mapping:
   - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
@@ -90,6 +95,12 @@ Skip if:
   before style preferences.
 - Completion means the user-visible capability and the regression guard both
   pass, or the blocker is reported with the exact unverified risk.
+- Frontend completion criteria always include the automatic baselines when
+  applicable, regardless of whether the user mentioned them: existing/new i18n
+  integration with same-change catalog entries and `<Trans>` for rich copy,
+  SEO metadata/tests for every created or changed public route, and
+  `https://traffic.io/` setup CTA href regression for touched missing-config
+  surfaces.
 
 ## Phases (run in order)
 

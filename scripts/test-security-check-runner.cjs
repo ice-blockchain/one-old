@@ -11,6 +11,7 @@ const {
   missingToolInstallPrompt,
   runSecurityCheck,
 } = require('./security-check-runner.cjs');
+const { getPluginVersion } = require('./hook-runtime/state.cjs');
 
 const tests = [];
 
@@ -233,12 +234,18 @@ test('clean web project passes and writes reports', () => {
 test('passing stamp writes lastSecurityCheck fields', () => {
   withTempDir((cwd) => {
     makeCleanWebProject(cwd);
-    writeFile(cwd, '.traffic-one.json', JSON.stringify({ stack: 'react-realtime-monorepo' }, null, 2));
+    writeFile(cwd, '.traffic-one.json', JSON.stringify({
+      stack: 'react-realtime-monorepo',
+      version: 3,
+      pluginVersion: '2.0.0',
+    }, null, 2));
 
     const result = runWithFakeTools(cwd, { stamp: true });
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(result.report.status, 'passed');
+    assert.equal(state.version, getPluginVersion());
+    assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
     assert.equal(state.lastSecurityCheckStatus, 'passed');
     assert.equal(state.lastSecurityCheckFingerprint, result.report.fingerprint.fingerprint);
     assert.match(state.lastSecurityCheckReport, /^\.traffic-one\/reports\/security\//);

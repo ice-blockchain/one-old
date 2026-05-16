@@ -23,6 +23,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Checking onboarding gate...",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" check-onboarding-gate"
+          }
+        ]
+      },
+      {
         "matcher": "Write|Edit",
         "hooks": [
           {

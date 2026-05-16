@@ -3,11 +3,20 @@ name: create-native-feature
 description: >
   Use PROACTIVELY only when the user explicitly asks to create, add, build, or
   scaffold a React Native / Expo feature, RN module, native flow, Redux slice,
-  RTK Query domain, or Expo app capability. Triggers: "React Native feature",
+  RTK Query domain, or Expo app capability.
+  Do not activate during Traffic One new-project onboarding before `.traffic-one.json`
+  has `onboardingComplete: true` and `.traffic-one/plan.md` exists; use
+  `detect-project` / `stack-setup` first.
+  Triggers: "React Native feature",
   "Expo feature", "build the RN module", "React Native CRUD", "Expo app capability".
 ---
 
 # Skill: Create Native Feature
+
+Traffic One onboarding guard: Do not activate during Traffic One new-project
+onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
+return here after the stack, mobile, code graph, and team gates are resolved.
 
 Use this for explicit Expo/React Native feature slices.
 

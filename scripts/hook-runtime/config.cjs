@@ -11,10 +11,26 @@ const MAX_STDIN          = 1024 * 1024;
 const STATE_FILE         = '.traffic-one.json';
 const LEGACY_LOCK_FILE   = '.claude-plugin-mode';
 const BUDGET_CHARS       = 9500;
-const STATE_VERSION      = 2;
+
+const STACK_IDS = new Set([
+  'minimal',
+  'default',
+  'custom-frontend',
+  'custom-backend',
+  'custom-stack',
+]);
+
+const LEGACY_STACK_ALIASES = {
+  'react-realtime-monorepo': 'default',
+  'react-frontend-only': 'custom-backend',
+  'react-native-expo-monorepo': 'custom-frontend',
+  'react-native-expo-app': 'custom-frontend',
+  'node-backend': 'custom-backend',
+  'framework-web': 'custom-frontend',
+};
 
 const RN_STACKS  = new Set(['react-native-expo-monorepo', 'react-native-expo-app']);
-const WEB_STACKS = new Set(['react-realtime-monorepo', 'react-frontend-only']);
+const WEB_STACKS = new Set(['default', 'custom-frontend', 'custom-backend', 'custom-stack', 'react-realtime-monorepo', 'react-frontend-only']);
 
 // ── Infrastructure config (end-to-end default) ───────────────────────────────
 // The plugin's recommended stack is end-to-end: React monorepo + Supabase
@@ -53,7 +69,8 @@ module.exports = {
   STATE_FILE,
   LEGACY_LOCK_FILE,
   BUDGET_CHARS,
-  STATE_VERSION,
+  STACK_IDS,
+  LEGACY_STACK_ALIASES,
   RN_STACKS,
   WEB_STACKS,
   INFRA_CONFIG,
