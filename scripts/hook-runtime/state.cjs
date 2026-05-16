@@ -362,6 +362,29 @@ function requireAddon(state, name) {
   };
 }
 
+// Returns a stable string fingerprint of the stack dimensions that determine
+// which rules and skills are active. Used to detect when the active set needs
+// to be re-materialized (e.g. after stack change or plugin update).
+function stackFingerprint(state) {
+  if (!state || typeof state !== 'object') return 'minimal|none|none|none';
+  return [
+    state.stack   || 'minimal',
+    state.frontend || 'none',
+    state.backend  || 'none',
+    (state.mobile && state.mobile.framework) || 'none',
+  ].join('|');
+}
+
+// Returns true when .traffic-one.json already carries a valid materialization
+// stamp that matches the current stack. If not, implementation tools should be
+// blocked until the stamp is written by SessionStart.
+function isMaterialized(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (!state.onboardingComplete) return true; // pre-onboarding: don't block
+  if (!state.materializedStack) return false;
+  return state.materializedStack === stackFingerprint(state);
+}
+
 module.exports = {
   parseJsonText,
   safeReadText,
@@ -376,4 +399,6 @@ module.exports = {
   requireAddon,
   KNOWN_ADDONS,
   getPluginVersion,  // exported for testing + diagnostic
+  stackFingerprint,
+  isMaterialized,
 };

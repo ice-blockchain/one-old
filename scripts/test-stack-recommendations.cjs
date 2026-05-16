@@ -133,10 +133,10 @@ test('new project onboarding defaults to supabase backend', () => {
 });
 
 test('new project onboarding includes Codex subagent preflight', () => {
-  const detectProject = fs.readFileSync(path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'), 'utf8');
+  const detectProject = fs.readFileSync(path.join(ROOT, 'skills-templates', 'detect-project', 'SKILL.md'), 'utf8');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
-  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
-  const stackSetup = fs.readFileSync(path.join(ROOT, 'skills', 'stack-setup', 'SKILL.md'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const stackSetup = fs.readFileSync(path.join(ROOT, 'skills-templates', 'stack-setup', 'SKILL.md'), 'utf8');
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
   const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
 
@@ -280,16 +280,16 @@ test('explicit stack or mobile prompt still asks mobile popup first', () => {
 
 test('implementation skills defer until new-project onboarding is resolved', () => {
   const implementationSkills = [
-    'skills/create-feature/SKILL.md',
-    'skills/create-page/SKILL.md',
-    'skills/create-component/SKILL.md',
-    'skills/create-service/SKILL.md',
-    'skills/create-native-feature/SKILL.md',
-    'skills/create-native-screen/SKILL.md',
-    'skills/create-native-component/SKILL.md',
-    'skills/create-native-service/SKILL.md',
-    'skills/frontend-design/SKILL.md',
-    'skills/tdd-workflow/SKILL.md',
+    'skills-templates/create-feature/SKILL.md',
+    'skills-templates/create-page/SKILL.md',
+    'skills-templates/create-component/SKILL.md',
+    'skills-templates/create-service/SKILL.md',
+    'skills-templates/create-native-feature/SKILL.md',
+    'skills-templates/create-native-screen/SKILL.md',
+    'skills-templates/create-native-component/SKILL.md',
+    'skills-templates/create-native-service/SKILL.md',
+    'skills-templates/frontend-design/SKILL.md',
+    'skills-templates/tdd-workflow/SKILL.md',
   ];
 
   for (const rel of implementationSkills) {
@@ -446,11 +446,11 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
     newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
     stacks: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8'),
     directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
-    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
-    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
-    createService: fs.readFileSync(path.join(ROOT, 'skills', 'create-service', 'SKILL.md'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8'),
+    createService: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-service', 'SKILL.md'), 'utf8'),
     promptTemplates: fs.readFileSync(
-      path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+      path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
       'utf8',
     ),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
@@ -513,7 +513,7 @@ test('new projects must include the auto-documentation baseline', () => {
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
@@ -532,14 +532,15 @@ test('new projects must include the auto-documentation baseline', () => {
   assert.match(reviewer, /Missing facts are\s+explicitly `Unverified`/);
   assert.match(promptTemplates, /run `project-memory` and\s+`auto-documentation-generator` after the plan even/);
   assert.match(agentsMirror, /auto-documentation is mandatory/);
-  assert.match(claude, /@rules\/common\/documentation\.md/);
+  // documentation.md is injected once per session via packBundle() hook, not as a static @import
+  assert.match(claude, /packBundle\(\)/);
   assert.match(cursorDocumentation, /For `mode: new-project`, this is mandatory/);
   assert.match(cursorNewProject, /Mandatory auto-documentation baseline/);
 });
 
 test('project memory baseline is integrated across runtimes', () => {
   const memoryRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'project-memory.md'), 'utf8');
-  const memorySkill = fs.readFileSync(path.join(ROOT, 'skills', 'project-memory', 'SKILL.md'), 'utf8');
+  const memorySkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'project-memory', 'SKILL.md'), 'utf8');
   const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
   const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
@@ -549,7 +550,7 @@ test('project memory baseline is integrated across runtimes', () => {
   const backend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-backend.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
@@ -580,7 +581,8 @@ test('project memory baseline is integrated across runtimes', () => {
   assert.match(shipper, /Append one JSON line to `.traffic-one\/deployments\.jsonl`/);
   assert.match(promptTemplates, /Read .traffic-one.json plus existing project memory/);
   assert.match(agentsMirror, /Project memory — `.traffic-one\/`/);
-  assert.match(claude, /@rules\/common\/project-memory\.md/);
+  // project-memory.md is injected once per session via packBundle() hook, not as a static @import
+  assert.match(claude, /packBundle\(\)/);
   assert.match(cursorMemory, /\.traffic-one\/agent-log\.md/);
   assert.match(cursorNewProject, /Project memory baseline/);
 });
@@ -640,9 +642,9 @@ test('existing projects must reconcile the auto-documentation baseline', () => {
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
-  const autoDocs = fs.readFileSync(path.join(ROOT, 'skills', 'auto-documentation-generator', 'SKILL.md'), 'utf8');
+  const autoDocs = fs.readFileSync(path.join(ROOT, 'skills-templates', 'auto-documentation-generator', 'SKILL.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
@@ -699,7 +701,7 @@ test('all stack bundles include documentation defaults', () => {
 
 test('SEO baseline is mandatory for generated and existing web projects', () => {
   const seoRule = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'seo.md'), 'utf8');
-  const seoSkill = fs.readFileSync(path.join(ROOT, 'skills', 'seo', 'SKILL.md'), 'utf8');
+  const seoSkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'seo', 'SKILL.md'), 'utf8');
   const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
   const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
@@ -707,10 +709,10 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
-  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
-  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
@@ -756,7 +758,8 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   assert.match(promptTemplates, /include the route metadata contract/);
   assert.match(promptTemplates, /regression coverage for every created or changed public route/);
   assert.match(agentsMirror, /SEO baseline — generated and reconciled automatically/);
-  assert.match(claude, /@rules\/common\/seo\.md/);
+  // seo.md is injected once per session via packBundle() hook, not as a static @import
+  assert.match(claude, /packBundle\(\)/);
   assert.match(readme, /Generated\/existing web SEO baseline/);
   assert.match(cursorSeo, /SEO is not a launch-only cleanup task/);
 
@@ -801,10 +804,10 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
   const i18nRule = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'i18n.md'), 'utf8');
   const reactCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'core.md'), 'utf8');
   const nativeCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react-native', 'core.md'), 'utf8');
-  const i18nSkill = fs.readFileSync(path.join(ROOT, 'skills', 'i18n-text', 'SKILL.md'), 'utf8');
-  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
-  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
-  const createComponent = fs.readFileSync(path.join(ROOT, 'skills', 'create-component', 'SKILL.md'), 'utf8');
+  const i18nSkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'i18n-text', 'SKILL.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8');
+  const createComponent = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-component', 'SKILL.md'), 'utf8');
   const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
   const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
@@ -812,7 +815,7 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
@@ -975,9 +978,9 @@ test('frontend design gate rejects sparse config-banner-dominated generated UI',
     reactDesign: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'design-quality.md'), 'utf8'),
     newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
     directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
-    frontendSkill: fs.readFileSync(path.join(ROOT, 'skills', 'frontend-design', 'SKILL.md'), 'utf8'),
-    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
-    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
+    frontendSkill: fs.readFileSync(path.join(ROOT, 'skills-templates', 'frontend-design', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
     reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
     agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
@@ -1319,7 +1322,7 @@ test('python backend rule still rejects hand-rolled jwt default', () => {
 });
 
 test('library-pick checks catalog before candidates', () => {
-  const skill = fs.readFileSync(path.join(ROOT, 'skills', 'library-pick', 'SKILL.md'), 'utf8');
+  const skill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'library-pick', 'SKILL.md'), 'utf8');
   assert.match(skill, /rules\/common\/library-catalog\.md/);
   assert.match(skill, /date-fns or dayjs/);
 });
@@ -1804,7 +1807,7 @@ test('SessionStart bundle includes deployment artifact defaults', () => {
 });
 
 test('deployment assistant guidance is merged, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1817,7 +1820,7 @@ test('deployment assistant guidance is merged, not duplicated', () => {
 });
 
 test('database architect guidance is merged, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1840,7 +1843,7 @@ test('database architect guidance is merged, not duplicated', () => {
 });
 
 test('production readiness score guidance is merged, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1869,7 +1872,7 @@ test('production readiness score guidance is merged, not duplicated', () => {
 });
 
 test('post-deploy observability guidance is integrated, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1907,7 +1910,7 @@ test('post-deploy observability guidance is integrated, not duplicated', () => {
 });
 
 test('app launch checklist guidance is integrated, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1958,7 +1961,7 @@ test('app launch checklist guidance is integrated, not duplicated', () => {
 });
 
 test('auto documentation generator guidance is present and not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1996,7 +1999,8 @@ test('auto documentation generator guidance is present and not duplicated', () =
   assert.match(reviewer, /auto-documentation-generator/);
   assert.match(shipper, /auto-documentation-generator/);
   assert.match(agentsMirror, /Auto-documentation generator/);
-  assert.match(claude, /@rules\/common\/documentation\.md/);
+  // documentation.md is injected once per session via packBundle() hook, not as a static @import
+  assert.match(claude, /packBundle\(\)/);
   assert.match(readme, /generate project docs/);
   assert.match(skillFilters, /auto-documentation-generator/);
 });
@@ -2073,7 +2077,7 @@ test('graphify-runner short-circuits when GRAPH_REPORT.md is fresh (lets Phase 5
 });
 
 test('orchestrator Phase 5 dispatches to the chosen codebase-graph runner per provider', () => {
-  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   // Both runners must be referenced by the dispatch (case statement) so the
   // post-build hook + Phase 5 stay symmetric.
   assert.match(orchestrator, /graphify-runner\.cjs/);
@@ -2216,7 +2220,7 @@ test('post-stack-setup silent on small digest write (< 3 KB)', () => {
 // ── Phase 5 sanity check is documented in the orchestrator ─────────────────
 
 test('orchestrator Phase 5 documents the missing-digest sanity check', () => {
-  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   assert.match(orchestrator, /Phase 5 — Cleanup \+ sanity check/);
   assert.match(orchestrator, /Digest sanity:/);
 });
@@ -2664,7 +2668,7 @@ test('doctor.cjs flags NVMRC_PINNED_TO_OLD_NODE when project .nvmrc < 22 + provi
 });
 
 test('traffic-one-doctor skill exists with required trigger phrases', () => {
-  const skillPath = path.join(ROOT, 'skills', 'traffic-one-doctor', 'SKILL.md');
+  const skillPath = path.join(ROOT, 'skills-templates', 'traffic-one-doctor', 'SKILL.md');
   assert.ok(fs.existsSync(skillPath), 'skill file must exist');
   const text = fs.readFileSync(skillPath, 'utf8');
   // Required trigger phrases so the model picks it up on common user wording.

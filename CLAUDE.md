@@ -28,24 +28,17 @@ to the required Mobile App, Code Graph, or Team preflight questions. Ask those
 questions in order before `.traffic-one.json`, `.traffic-one/plan.md`, tools,
 installs, scaffolding, source edits, or simulated role work.
 
-## Always-on rules (language-agnostic baseline)
-@rules/common/clean-code.md
-@rules/common/execution-discipline.md
+## Always-on rules (security — injected every prompt turn)
 @rules/common/security.md
-@rules/common/stack-recommendations.md
-@rules/common/library-catalog.md
-@rules/common/project-memory.md
-@rules/common/documentation.md
-@rules/common/seo.md
-@rules/common/senior-engineer-team.md
-@rules/common/quality-tooling.md
-@rules/common/git.md
 
-## Framework-agnostic project rules (TypeScript, monorepo, Gitflow)
-@rules/core.md
-
-## Stack-specific core (React web — replace this import for other flavours)
-@rules/frontend/react/core.md
+All other rules (clean-code, execution-discipline, stack-recommendations,
+library-catalog, project-memory, documentation, seo, senior-engineer-team,
+quality-tooling, git, core, and stack-specific cores) are injected once per
+session by the SessionStart hook via packBundle() and copied into the user
+project's .traffic-one/rules/ by materializeProjectAssets(). They are NOT
+re-imported here to avoid the ~14,600-token per-prompt system-prompt cost.
+The materialization gate in the PreToolUse hook ensures the model has the
+full context before any implementation begins.
 
 Generic mobile variants of React web products stay on the React stack and use
 Ionic Framework with Capacitor packaging. React Native Expo stacks use

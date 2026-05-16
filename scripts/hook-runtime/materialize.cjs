@@ -205,7 +205,7 @@ function materializeProjectAssets(cwd, state) {
     ...modeRulesForState(root, state),
     ...spec.optional,
   ]).filter((relPath) => fs.existsSync(path.join(root, relPath)));
-  const skills = [...activeSkillsFor(state)].filter((name) => fs.existsSync(path.join(root, 'skills', name, 'SKILL.md'))).sort();
+  const skills = [...activeSkillsFor(state)].filter((name) => fs.existsSync(path.join(root, 'skills-templates', name, 'SKILL.md'))).sort();
   const nextRulePaths = new Set(rules);
   const nextSkillNames = new Set(skills);
   const previous = loadPreviousManifest(cwd);
@@ -223,7 +223,7 @@ function materializeProjectAssets(cwd, state) {
 
   const skillsRoot = path.join(cwd, '.traffic-one', 'skills');
   for (const name of skills) {
-    if (copySkillDir(path.join(root, 'skills', name), path.join(skillsRoot, name))) {
+    if (copySkillDir(path.join(root, 'skills-templates', name), path.join(skillsRoot, name))) {
       written += 1;
     }
   }
