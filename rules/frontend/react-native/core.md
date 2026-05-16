@@ -52,4 +52,4 @@ products use Ionic Framework with Capacitor instead.
 - Server state in RTK Query/Redux only — never duplicated in zustand or component state.
 - Cross-package imports use workspace names (`@app/ui-native`, `@app/utils`).
 - Monorepo default: `apps/mobile/app`, `apps/mobile/src/features/*`, `packages/ui-native`.
-- New apps use `packages/i18n`; existing apps with mature i18n may keep it but new UI copy still uses `i18next`/`react-i18next`. Read device locale via `expo-localization` and feed i18next.
+- New apps use `packages/i18n`; existing apps with mature i18n may keep it but new UI copy still uses `i18next`/`react-i18next`. Detect and extend existing i18n modules automatically; prefer `<Trans>` for rich copy with links or React elements and reserve `t()` for simple strings. Read device locale via `expo-localization` and feed i18next.

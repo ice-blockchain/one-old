@@ -39,53 +39,117 @@ const SKILL_FILTERS = {
     'design-audit', 'browser-qa',
     'supabase-setup', 'predeploy-security-check',
   ]),
-  'react-realtime-monorepo': new Set([
+  'react-vite': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',
     'frontend-design', 'frontend-patterns',
     'accessibility', 'ionic-mobile',
     'vite-patterns', 'click-path-audit', 'seo',
     'e2e-testing', 'ai-regression-testing',
-    'postgres-review', 'postgres-patterns', 'database-migrations',
+    'monorepo-architecture',
+  ]),
+  nextjs: new Set([
+    'frontend-design', 'frontend-patterns',
+    'accessibility', 'click-path-audit', 'seo',
+    'e2e-testing',
     'nextjs-turbopack',
   ]),
-  'react-frontend-only': new Set([
-    'create-component', 'create-feature', 'create-page', 'create-service',
+  'custom-web': new Set([
     'frontend-design', 'frontend-patterns',
-    'accessibility', 'ionic-mobile',
-    'vite-patterns', 'click-path-audit', 'seo',
+    'accessibility', 'click-path-audit', 'seo',
     'e2e-testing',
   ]),
-  'react-native-expo-monorepo': new Set([
-    'create-native-component', 'create-native-feature', 'create-native-screen',
-    'create-native-service',
-    'frontend-patterns', 'accessibility', 'e2e-testing',
-    'android-clean-architecture',
-    'swift-concurrency-6-2', 'swift-actor-persistence',
-    'swift-protocol-di-testing', 'swiftui-patterns',
-    'compose-multiplatform-patterns',
-    'dart-flutter-patterns', 'flutter-dart-code-review',
+  'ionic-capacitor': new Set([
+    'ionic-mobile', 'frontend-design', 'frontend-patterns',
+    'accessibility', 'e2e-testing', 'browser-qa',
   ]),
-  'react-native-expo-app': new Set([
+  'react-native-expo': new Set([
     'create-native-component', 'create-native-feature', 'create-native-screen',
     'create-native-service',
     'frontend-patterns', 'accessibility', 'e2e-testing',
   ]),
-  'node-backend': new Set([
+  supabase: new Set([
+    'backend-patterns',
+    'postgres-review', 'postgres-patterns', 'database-migrations',
+    'supabase-setup',
+  ]),
+  node: new Set([
     'backend-patterns', 'nestjs-patterns',
     'postgres-review', 'postgres-patterns', 'database-migrations',
     'hexagonal-architecture', 'docker-patterns', 'bun-runtime',
     'mcp-server-patterns', 'dashboard-builder',
   ]),
-  minimal: new Set(),
+  go: new Set(['golang-patterns', 'golang-testing', 'backend-patterns']),
+  python: new Set(['python-patterns', 'python-testing', 'backend-patterns']),
+  django: new Set(['django-patterns', 'django-security', 'django-tdd', 'django-verification', 'backend-patterns']),
+  rust: new Set(['rust-patterns', 'rust-testing', 'backend-patterns']),
+  java: new Set(['java-coding-standards', 'springboot-patterns', 'springboot-security', 'springboot-tdd', 'springboot-verification', 'backend-patterns']),
+  kotlin: new Set(['kotlin-patterns', 'kotlin-testing', 'kotlin-ktor-patterns', 'kotlin-exposed-patterns', 'backend-patterns']),
+  php: new Set(['laravel-patterns', 'laravel-security', 'laravel-tdd', 'laravel-verification', 'backend-patterns']),
+  dotnet: new Set(['dotnet-patterns', 'csharp-testing', 'backend-patterns']),
+  cpp: new Set(['cpp-coding-standards', 'cpp-testing', 'backend-patterns']),
+  perl: new Set(['perl-patterns', 'perl-security', 'perl-testing', 'backend-patterns']),
 };
 
-function activeSkillsFor(stack) {
+function addSkillSet(out, name) {
+  const stackSet = SKILL_FILTERS[name];
+  if (!stackSet) return;
+  for (const skillName of stackSet) {
+    out.add(skillName);
+  }
+}
+
+function normalizedSkillState(input) {
+  if (input && typeof input === 'object') {
+    return {
+      stack: input.stack || 'minimal',
+      frontend: input.frontend || 'none',
+      backend: input.backend || 'none',
+      mobile: input.mobile && typeof input.mobile === 'object'
+        ? input.mobile
+        : { enabled: false, framework: 'none', source: 'none' },
+    };
+  }
+  const stack = typeof input === 'string' ? input : 'minimal';
+  if (stack === 'default' || stack === 'react-realtime-monorepo') {
+    return { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { enabled: false, framework: 'none', source: 'none' } };
+  }
+  if (stack === 'react-frontend-only') {
+    return { stack: 'custom-backend', frontend: 'react-vite', backend: 'none', mobile: { enabled: false, framework: 'none', source: 'none' } };
+  }
+  if (stack === 'react-native-expo-monorepo' || stack === 'react-native-expo-app') {
+    return { stack: 'custom-frontend', frontend: 'none', backend: 'supabase', mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' } };
+  }
+  return { stack, frontend: 'none', backend: 'none', mobile: { enabled: false, framework: 'none', source: 'none' } };
+}
+
+function activeSkillsFor(stackOrState) {
+  const state = normalizedSkillState(stackOrState);
   const out = new Set(SKILL_FILTERS._common);
-  const stackSet = SKILL_FILTERS[stack];
-  if (stackSet) {
-    for (const name of stackSet) {
-      out.add(name);
-    }
+  if (state.frontend === 'react-vite') {
+    addSkillSet(out, 'react-vite');
+  } else if (state.frontend === 'nextjs') {
+    addSkillSet(out, 'nextjs');
+  } else if (state.frontend && state.frontend !== 'none') {
+    addSkillSet(out, 'custom-web');
+  }
+  if (state.mobile && state.mobile.framework === 'ionic-capacitor') {
+    addSkillSet(out, 'ionic-capacitor');
+  }
+  if (state.mobile && state.mobile.framework === 'react-native-expo') {
+    addSkillSet(out, 'react-native-expo');
+  }
+  if (state.backend === 'supabase' || state.backend === 'our-fork') {
+    addSkillSet(out, 'supabase');
+  } else if (state.backend === 'nestjs') {
+    addSkillSet(out, 'node');
+  } else if (state.backend === 'fastapi') {
+    addSkillSet(out, 'python');
+  } else if (state.backend === 'laravel') {
+    addSkillSet(out, 'php');
+  } else if (state.backend === 'csharp') {
+    addSkillSet(out, 'dotnet');
+  } else if (state.backend && state.backend !== 'none' && state.backend !== 'external-api' && state.backend !== 'other') {
+    addSkillSet(out, state.backend);
   }
   return out;
 }
@@ -110,8 +174,8 @@ function listAllSkills() {
   return out;
 }
 
-function pruneSkillsDirective(stack, allSkills) {
-  const active = activeSkillsFor(stack);
+function pruneSkillsDirective(stackOrState, allSkills) {
+  const active = activeSkillsFor(stackOrState);
   const inactive = [];
   for (const name of allSkills) {
     if (!active.has(name)) {
@@ -126,12 +190,12 @@ function pruneSkillsDirective(stack, allSkills) {
   const inactivePreview = inactive.slice(0, 30).join(', ');
   const inactiveSuffix = inactive.length > 30 ? `, ... +${inactive.length - 30} more` : '';
   return (
-    `[ACTIVE SKILLS for stack=${stack}]: ${activeIntersect.join(', ')}\n` +
+    `[ACTIVE SKILLS for stack=${normalizedSkillState(stackOrState).stack}]: ${activeIntersect.join(', ')}\n` +
     `[DO NOT INVOKE — wrong stack]: ${inactivePreview}${inactiveSuffix}\n`
   );
 }
 
-function pruneCacheSkills(stack) {
+function pruneCacheSkills(stackOrState) {
   // Only mutate the cache when running from the plugin install path; source
   // repo dev work stays untouched.
   if (!isInPluginCache()) {
@@ -141,7 +205,7 @@ function pruneCacheSkills(stack) {
   if (!fs.existsSync(skillsDir)) {
     return 0;
   }
-  const active = activeSkillsFor(stack);
+  const active = activeSkillsFor(stackOrState);
   let removed = 0;
   let entries;
   try {

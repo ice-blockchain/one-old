@@ -17,10 +17,10 @@ Traffic One precedence: follow this skill only where it does not conflict with T
 
 # Next.js and Turbopack
 
-Next.js is not a first-class Traffic One stack id. When the user explicitly
-chooses Next.js, or an existing repo already has `next`, keep `stack=minimal`
-with `frontend=nextjs` and apply provider-first Next.js defaults instead of the
-React/Vite forced stack.
+Traffic One recommends the default React/Vite + Supabase stack first for new
+complex projects. When the user explicitly chooses Next.js, or an existing repo
+already has `next`, use `stack=custom-frontend` with `frontend=nextjs` and apply
+provider-first Next.js defaults instead of the React/Vite forced stack.
 
 Next.js 16+ uses Turbopack by default for local development: an incremental bundler written in Rust that significantly speeds up dev startup and hot updates.
 

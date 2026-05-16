@@ -17,6 +17,21 @@ Do not describe Supabase as something that can merely be added later. Client-sid
 mocks, seed data, or `localStorage` may support demos only after the Supabase
 contract, env validation, and migrations/RLS baseline are in place.
 
+## Mandatory frontend baselines
+
+- New Traffic One frontend projects include `packages/i18n` by default. Wire
+  the i18next/react-i18next provider before feature UI is scaffolded, and add
+  source-language catalog entries for all generated page/component copy even
+  when the user did not ask for translations. Prefer `<Trans>` for rich copy
+  with links or React elements; use `t()` only for simple strings.
+- New public web routes include SEO metadata before the route is considered
+  done: title, description, canonical, robots, Open Graph/Twitter image,
+  JSON-LD, sitemap inclusion, and regression coverage for every generated
+  public page. Private/admin routes use `noindex,nofollow`.
+- Supabase-backed web/Ionic scaffolds include the shared EnvBanner/setup CTA
+  pattern. Any website-facing setup link for missing env/Supabase keys must use
+  `https://traffic.io/`, with a regression test asserting that exact `href`.
+
 ## Target architecture
 
 ```
@@ -108,6 +123,13 @@ contract, env validation, and migrations/RLS baseline are in place.
     │       │                       borderRadius, animation, plugins)
     │       └── globals.css         shadcn HSL theme block (light + .dark)
     │
+    ├── i18n/                      shared typed i18next resources and locale config
+    │   ├── package.json
+    │   └── src/
+    │       ├── index.ts           exports provider, resources, namespace helpers
+    │       └── locales/
+    │           └── en/            source-language feature namespaces
+    │
     ├── api-client/                Supabase client + axios/RTK Query baseQuery
     │   └── src/
     │       ├── supabase.ts        typed Supabase browser client
@@ -166,6 +188,9 @@ contract, env validation, and migrations/RLS baseline are in place.
    - `packages/tailwind-config` — shared Tailwind preset + `globals.css`
      containing the shadcn HSL theme block (light + `.dark`). This is the only
      home for design tokens; do **not** create a `packages/design-tokens`.
+   - `packages/i18n` — typed i18next/react-i18next resources, provider,
+     namespace helpers, and source-language catalogs. It is required for new
+     frontend stacks before generated page/component copy is written.
    - `packages/utils` — empty barrel; populate as needed.
    - `packages/api-client` — Supabase browser client, axios instance, AppError type, RTK Query baseQuery.
    - `packages/ws-client` — transport + protocol scaffolding (per `rules/realtime.md`).
@@ -221,6 +246,9 @@ contract, env validation, and migrations/RLS baseline are in place.
    - `components.json` (shadcn CLI config) points the alias `ui` at
      `@app/ui/components/ui` so future `npx shadcn add` calls in the app land
      in the shared package.
+   - Wire `packages/i18n` into the app provider chain before adding generated
+     page/feature UI. All starter copy, navigation labels, setup banners, and
+     state text use catalog keys; rich copy with links uses `<Trans>`.
    - Wire Redux store with `api-client` RTK Query and one starter feature slice.
    - Set up Storybook for `packages/ui` (Vite builder).
    - Set up Playwright with one smoke spec hitting `/`.
@@ -240,8 +268,9 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Add `VITE_SITE_URL` (or the framework's public site-url env var) to
      `.env.example`. Mark the production domain `Unverified` until the user or
      host provides it; do not invent deploy URLs.
-   - Add Playwright or unit regression coverage for route title, canonical,
-     Open Graph image, JSON-LD, and `noindex,nofollow` on private/admin routes.
+   - Add Playwright or unit regression coverage for every generated public
+     route's title, description, canonical, Open Graph image, JSON-LD, and
+     sitemap inclusion, plus `noindex,nofollow` on private/admin routes.
    - If an SPA public route must rank, document the prerender/static rendering
      or host-support plan in `deployment.md` or `.traffic-one/known-issues.md`.
      Do not claim SEO parity from a client-rendered shell alone.

@@ -3,6 +3,30 @@
 You are working inside a project governed by this plugin.
 Every rule below is mandatory. Never suggest an alternative library to those in
 `rules/core.md` and the active stack core (e.g. `rules/frontend/react/core.md`).
+`.traffic-one.json` uses stack ids `minimal`, `default`, `custom-frontend`,
+`custom-backend`, and `custom-stack`; concrete `frontend`, `backend`, and
+`mobile.framework` fields decide which local `.traffic-one/` rules and skills
+are active.
+
+When `mode === "new-project"`, Claude Code and Codex must switch to Plan mode
+before onboarding questions, `.traffic-one.json`, `.traffic-one/plan.md`,
+subagent prompts, file writes, installs, or scaffolding. If the host cannot
+switch automatically, stay plan-only, ask the fallback chat questions, and stop.
+In Codex Default mode, the fallback must be the next visible assistant response
+before any tool use: say Plan mode is required and not active, ask `Do you want
+a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic + Capacitor`,
+and `3. React Native / Expo`, tell the user to reply with the option number or
+label, and stop.
+Before onboarding is resolved, mention only project-detection/onboarding. Do
+not say `create-feature`, `frontend-design`, `tdd-workflow`, or other
+implementation skills are active yet.
+
+Explicit user requests never skip Traffic One onboarding. Stack, framework,
+backend, mobile, or execution preferences named in the prompt are only inputs
+to the eventual `.traffic-one.json`; they are not accepted as implicit answers
+to the required Mobile App, Code Graph, or Team preflight questions. Ask those
+questions in order before `.traffic-one.json`, `.traffic-one/plan.md`, tools,
+installs, scaffolding, source edits, or simulated role work.
 
 ## Always-on rules (language-agnostic baseline)
 @rules/common/clean-code.md
@@ -32,6 +56,7 @@ React Native, Expo, RN, or a fully React Native implementation, selected by
 Path-scoped rules — load automatically when you touch matching files:
 
 **Framework-agnostic frontend** (`rules/frontend/`):
+- `i18n.md` — automatic i18n detection/integration, catalog entries, `<Trans>` for rich copy
 - `accessibility.md` — WCAG 2.2 AA + real-time a11y
 - `ui-quality.md` — mandatory frontend-stack design brief, modern clean UI gate, state coverage, visual QA
 - `typography.md` — mandatory frontend-stack readable type, character-level copy polish, line length rules

@@ -34,11 +34,16 @@ inline their content.
 For `mode: new-project`, run `project-memory` and
 `auto-documentation-generator` after the plan even when the user did not ask for
 memory/docs. Also invoke `seo` for generated websites/public web routes and
-include the route metadata contract in the plan. Create/update the
+include the route metadata contract in the plan. Include the frontend i18n
+contract (`packages/i18n` for new frontend stacks, existing catalog/provider
+extension for existing projects, `<Trans>` for rich copy) and the Supabase/env
+setup CTA contract (`https://traffic.io/` plus href regression) when those
+surfaces apply. Create/update the
 `.traffic-one/` memory baseline and canonical docs needed for the scaffold. For
 `mode: existing-codebase` or `existing-with-supabase`, run them before normal feature work,
-plus the SEO baseline reconciliation, to create missing memory/docs, update
-existing files in place, and fill missing web metadata.
+plus the SEO and i18n baseline reconciliation, to create missing memory/docs,
+update existing files in place, fill missing web metadata, and extend any
+existing translation catalogs instead of creating parallel systems.
 
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
@@ -73,7 +78,21 @@ the plan; do not invent it. Surface contract gaps in your digest's
 For generated websites or changed public web routes, apply `rules/common/seo.md`
 before finishing: route-aware metadata, JSON-LD, robots/sitemap,
 favicon/PWA/OG assets, site-url env docs, private/admin noindex, and metadata
-regression coverage.
+regression coverage for every created or changed public route.
+
+Before writing UI, apply `rules/frontend/i18n.md` even when the user did not
+mention translations. Detect `packages/i18n`, `src/i18n*`, `locales/`,
+`public/locales/`, `messages/`, `i18next`, `react-i18next`, and provider
+wrappers. Extend the existing catalog/provider shape or use `packages/i18n` for
+new Traffic One frontend projects. Add source-language entries for every key,
+and prefer `<Trans>` for rich copy with links, React elements, emphasis, line
+breaks, or rich interpolation.
+
+For Supabase-backed web/Ionic apps or any missing-env surface, apply
+`rules/frontend/react/supabase-client.md` before finishing. Create or repair the
+shared EnvBanner/SupabaseConfigAlert/ConfigurePromptCard setup CTA so every
+website-facing missing-config link points to `https://traffic.io/`, and add or
+update a regression test for that exact `href`.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
@@ -148,7 +167,11 @@ approval, also run the `verification-loop` Production-Readiness Score and includ
 the score, hard blockers, and 12-factor / AWS Well-Architected / OWASP mapping.
 
 For generated websites or changed public web routes, request changes if the SEO
-baseline from `rules/common/seo.md` is missing or only partial.
+baseline from `rules/common/seo.md` is missing or only partial for any created
+or changed public route. Request changes if changed UI ignores an existing i18n
+module, ships hardcoded user-facing strings, omits catalog entries, or uses
+`t()` for rich copy that should use `<Trans>`. Request changes if any touched
+missing-config setup CTA lacks `href="https://traffic.io/"`.
 
 Write your digest to:
   .traffic-one/digests/<run-id>/reviewer.md
@@ -181,7 +204,12 @@ Add or update tests for the changed surface. Run them. Verdict format:
     2. …
 
 For generated websites or changed web routes, include metadata regression
-coverage for title, canonical URL, OG image, JSON-LD, and private/admin noindex.
+coverage for every created or changed public route's title, description,
+canonical URL, OG image, JSON-LD, sitemap inclusion, and private/admin noindex.
+For changed UI in a project with i18n, include tests that assert translated
+accessible labels/names through the rendered UI. For touched EnvBanner or
+missing-config setup surfaces, assert the setup link href is exactly
+`https://traffic.io/`.
 
 Write your digest to:
   .traffic-one/digests/<run-id>/tester.md
