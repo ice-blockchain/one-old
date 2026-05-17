@@ -385,6 +385,43 @@ function isMaterialized(state) {
   return state.materializedStack === stackFingerprint(state);
 }
 
+// SUBAGENT SIGNAL.
+// The orchestrator skill writes `currentRunId` (ISO timestamp) and
+// `activeAgentRole` (e.g. 'senior-frontend') to .traffic-one.json before each
+// subagent spawn. The hook reads these to emit a slim, role-scoped bundle
+// instead of re-inlining the full 117KB rule set the parent already loaded.
+//
+// Safety: only treats the session as a subagent when materialization is fresh
+// (< 30 min) and the fingerprint matches. Stale runs fall back to the full
+// parent bundle so abandoned/restarted sessions stay safe.
+const SUBAGENT_STALE_MS = 30 * 60 * 1000;
+const VALID_AGENT_ROLES = new Set([
+  'senior-architect',
+  'senior-frontend',
+  'senior-backend',
+  'senior-reviewer',
+  'senior-tester',
+  'senior-shipper',
+]);
+
+function isSubagentSession(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (typeof state.currentRunId !== 'string' || !state.currentRunId) return false;
+  if (!state.materializedStack) return false;
+  if (state.materializedStack !== stackFingerprint(state)) return false;
+  if (state.materializedAt) {
+    const ageMs = Date.now() - Date.parse(state.materializedAt);
+    if (Number.isFinite(ageMs) && ageMs > SUBAGENT_STALE_MS) return false;
+  }
+  return true;
+}
+
+function activeAgentRole(state) {
+  if (!state || typeof state !== 'object') return null;
+  const role = state.activeAgentRole;
+  return typeof role === 'string' && VALID_AGENT_ROLES.has(role) ? role : null;
+}
+
 module.exports = {
   parseJsonText,
   safeReadText,
@@ -401,4 +438,7 @@ module.exports = {
   getPluginVersion,  // exported for testing + diagnostic
   stackFingerprint,
   isMaterialized,
+  isSubagentSession,
+  activeAgentRole,
+  VALID_AGENT_ROLES,
 };

@@ -235,8 +235,106 @@ function stackSpecForState(state) {
   return composeRuleManifest(state);
 }
 
+// PER-ROLE RULE SCOPING.
+// When the orchestrator signals via `state.activeAgentRole` which subagent is
+// being spawned, the SessionStart hook emits a slim rule index scoped to that
+// role's actual needs — instead of the kitchen-sink mandatory bundle.
+//
+// Each role's base set is small, curated, and supplemented with stack-specific
+// rules computed dynamically (e.g. frontend gets React rules from the active
+// stack spec). Anything not listed here is still materialized to
+// .traffic-one/rules/active/ and can be read on demand.
+const AGENT_ROLE_BASE_RULES = {
+  'senior-architect': [
+    'rules/common/clean-code.md',
+    'rules/common/execution-discipline.md',
+    'rules/common/stack-recommendations.md',
+    'rules/common/library-catalog.md',
+    'rules/common/project-memory.md',
+    'rules/common/documentation.md',
+    'rules/common/senior-engineer-team.md',
+    'rules/common/codebase-graph.md',
+    'rules/common/security.md',
+    'rules/common/agent-handoff-digests.md',
+    'rules/core.md',
+  ],
+  'senior-frontend': [
+    'rules/common/clean-code.md',
+    'rules/common/execution-discipline.md',
+    'rules/common/security.md',
+    'rules/common/codebase-graph.md',
+    'rules/common/agent-handoff-digests.md',
+    'rules/core.md',
+    'rules/frontend/i18n.md',
+    'rules/frontend/ui-quality.md',
+    'rules/frontend/typography.md',
+  ],
+  'senior-backend': [
+    'rules/common/clean-code.md',
+    'rules/common/execution-discipline.md',
+    'rules/common/security.md',
+    'rules/common/quality-tooling.md',
+    'rules/common/codebase-graph.md',
+    'rules/common/agent-handoff-digests.md',
+    'rules/core.md',
+  ],
+  'senior-reviewer': [
+    'rules/common/security.md',
+    'rules/common/quality-tooling.md',
+    'rules/common/clean-code.md',
+    'rules/common/execution-discipline.md',
+    'rules/common/agent-handoff-digests.md',
+    'rules/common/codebase-graph.md',
+  ],
+  'senior-tester': [
+    'rules/common/quality-tooling.md',
+    'rules/common/execution-discipline.md',
+    'rules/common/agent-handoff-digests.md',
+    'rules/common/codebase-graph.md',
+    'rules/frontend/testing.md',
+  ],
+  'senior-shipper': [
+    'rules/common/security.md',
+    'rules/common/git.md',
+    'rules/common/agent-handoff-digests.md',
+    'rules/common/quality-tooling.md',
+  ],
+};
+
+// Returns the role-scoped rule paths for a subagent, or null if the role is
+// unknown (caller falls back to the full mandatory set).
+function roleScopedRules(role, state) {
+  const base = AGENT_ROLE_BASE_RULES[role];
+  if (!base) return null;
+  const spec = stackSpecForState(state);
+  const frontendRules = spec.mandatory.filter((r) => r.startsWith('rules/frontend/'));
+  const backendRules  = spec.optional.filter((r) => r.startsWith('rules/backend/'));
+  const testingRules  = spec.optional.filter((r) => /\/testing\.md$/.test(r));
+  if (role === 'senior-frontend') {
+    return unique([...base, ...frontendRules]);
+  }
+  if (role === 'senior-backend') {
+    return unique([...base, ...backendRules]);
+  }
+  if (role === 'senior-tester') {
+    return unique([...base, ...testingRules, ...backendRules]);
+  }
+  if (role === 'senior-architect') {
+    // Architect gets a top-level view: stack-recommendations + a few frontend/
+    // backend headers so they can write a plan that references actual rules.
+    return unique([...base, ...frontendRules, ...backendRules]);
+  }
+  if (role === 'senior-reviewer') {
+    // Reviewer reads diffs against all stack rules — include them for reference.
+    return unique([...base, ...frontendRules, ...backendRules]);
+  }
+  return base;
+}
+
 module.exports = {
   STACKS,
   composeRuleManifest,
   stackSpecForState,
+  AGENT_ROLE_BASE_RULES,
+  roleScopedRules,
 };
