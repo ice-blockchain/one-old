@@ -1110,8 +1110,19 @@ function runPostBuildPageSpeed(rawInput) {
 //
 // Provider-aware: `state.codeGraphProvider` (gitnexus | graphify) picks the
 // artefact path. If the provider's artefact doesn't exist yet, return silent.
+//
+// THROTTLING: this hook fires on every Glob/Grep tool use. A subagent doing
+// 40 searches would accumulate 40 × ~150 bytes = 6KB of identical reminders.
+// Use a module-level marker so the hint emits at most once per hook process.
+// Each subagent spawns a fresh process, so each subagent gets one hint.
+let graphifyHintSentForCwd = null;
+
 function runPreGraphifyHint(_rawInput) {
   const cwd = process.cwd();
+  if (graphifyHintSentForCwd === cwd) {
+    return { stdout: '', exitCode: 0 };
+  }
+
   const state = safeReadJson(path.join(cwd, STATE_FILE), {});
   const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
 
@@ -1134,6 +1145,7 @@ function runPreGraphifyHint(_rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
+  graphifyHintSentForCwd = cwd;
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
   const digestHint = runId
     ? ` Predecessor digests (if any) live under \`.traffic-one/digests/${runId}/\`.`
@@ -1432,22 +1444,19 @@ function runPostStackSetup(rawInput) {
     return materializationFailureResult(error);
   }
 
-  const stack = state.stack || '(unknown)';
-  const originalCwd = process.cwd();
-  const stateDir    = path.dirname(path.resolve(filePath));
-  let sessionResult;
+  // Stamp the materialization fields after a successful copy so the PreToolUse
+  // implementation gate (isMaterialized) sees a fresh fingerprint.
   try {
-    process.chdir(stateDir);
-    sessionResult = runSessionStart();
+    state.materializedStack   = stackFingerprint(state);
+    state.materializedAt      = nowIso();
+    state.materializedVersion = getPluginVersion();
+    writeState(stateDirEarly, state);
   } catch {
-    return { stdout: '', exitCode: 0 };
-  } finally {
-    process.chdir(originalCwd);
+    // best-effort; stamp failure should not block the user
   }
 
-  const parsed = parseJsonText(sessionResult.stdout || '', null);
-  const bundle = parsed?.hookSpecificOutput?.additionalContext;
-  if (typeof bundle !== 'string') return { stdout: '', exitCode: 0 };
+  const stack = state.stack || '(unknown)';
+  const stateDir = path.dirname(path.resolve(filePath));
 
   // Seamless gitnexus setup. Two things happen when the user just wrote
   // `codeGraphProvider: "gitnexus"`:
@@ -1503,13 +1512,9 @@ function runPostStackSetup(rawInput) {
   }
 
   const materializedLine = materialized
-    ? `\nProject-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills.`
-    : '';
-  const banner = `═══ traffic-one — stack rules now active (${stack}) ═══\nContinue with the user's request applying these rules. No restart needed.${materializedLine}${nodeWarning}\n\n`;
-  const lines  = bundle.split(/\r?\n/);
-  const firstRuleIndex = lines.findIndex((line) => line.startsWith('# ── rules/'));
-  const bundleBody = firstRuleIndex >= 0 ? lines.slice(firstRuleIndex).join('\n') : bundle;
-  const context = banner + bundleBody;
+    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Read them via @-imports from .traffic-one/rules/active/ on demand.`
+    : 'Active rules and skills remain loaded from session start.';
+  const context = `[traffic-one] stack rules active for ${stack}. ${materializedLine}${nodeWarning}`;
 
   return {
     stdout: JSON.stringify({
