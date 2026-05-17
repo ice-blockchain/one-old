@@ -122,7 +122,27 @@ mkdir -p ".traffic-one/digests/$RUN_ID"
 
 Expected shape: `2026-05-07T14-23-05Z`. Pass this run-id verbatim to every subagent in the synthetic prompt. The full per-phase prompt templates live in `resources/prompt-templates.md`; reference them rather than inlining their full text in this skill body.
 
-Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones.
+Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
+
+### Subagent token-economy: write `currentRunId` + `activeAgentRole` before each spawn
+
+Before EACH subagent spawn, update `.traffic-one.json` with two fields the SessionStart hook reads to emit a slim, role-scoped rule bundle (~5KB instead of ~117KB). This saves roughly 28K tokens per subagent SessionStart:
+
+```jsonc
+{
+  // ...existing fields...
+  "currentRunId": "<the RUN_ID computed above>",
+  "activeAgentRole": "senior-architect"   // or senior-frontend / -backend / -reviewer / -tester / -shipper
+}
+```
+
+Write order:
+
+1. After computing `RUN_ID`, write `currentRunId` once.
+2. Before each `Task` (Claude Code) / `spawn_agent` (Codex) / Cursor task call, overwrite `activeAgentRole` with the role you're about to spawn.
+3. After the orchestrator run finishes (Phase 5), clear both fields (or leave them — the hook ignores them after 30 minutes).
+
+For parallel spawns (frontend + backend in Phase 2), write the field for the FIRST role just before that Task call. The second role gets the slim bundle on the next SessionStart even if the field doesn't match — the safety fallback emits a slim-but-unscoped bundle when `currentRunId` is set but `activeAgentRole` is stale, still saving ~115KB vs the full parent bundle.
 
 ### Phase 1 — Architect (sequential, blocking)
 

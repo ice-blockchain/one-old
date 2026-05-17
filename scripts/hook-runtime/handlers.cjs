@@ -31,9 +31,11 @@ const {
   stackFingerprint,
   getPluginVersion,
   isMaterialized,
+  isSubagentSession,
+  activeAgentRole,
 } = require('./state.cjs');
 
-const { STACKS, stackSpecForState } = require('./stacks.cjs');
+const { STACKS, stackSpecForState, roleScopedRules } = require('./stacks.cjs');
 
 const {
   listAllSkills,
@@ -50,7 +52,7 @@ const {
   classifyPromptForStack,
 } = require('./detection.cjs');
 
-const { packBundle } = require('./packing.cjs');
+const { packBundle, packRuleIndex } = require('./packing.cjs');
 const { materializeProjectAssets } = require('./materialize.cjs');
 const {
   computeProjectFingerprint,
@@ -385,6 +387,48 @@ function onboardingGateFallbackReason() {
   ].join('\n');
 }
 
+// Digest retention: keep only the N most recent .traffic-one/digests/<runId>/
+// directories. Without this, every orchestrator run accumulates ~12KB of
+// digests forever — and subagents that read predecessor digests pay for the
+// cruft. Runs once at SessionStart for both parent and subagent paths.
+function sweepOldDigests(cwd, keepCount = 5) {
+  const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
+  if (!fs.existsSync(digestsRoot)) return 0;
+  let entries;
+  try {
+    entries = fs.readdirSync(digestsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort()      // ISO-timestamp dir names sort chronologically
+      .reverse();  // newest first
+  } catch {
+    return 0;
+  }
+  let removed = 0;
+  for (const name of entries.slice(keepCount)) {
+    try {
+      fs.rmSync(path.join(digestsRoot, name), { recursive: true, force: true });
+      removed += 1;
+    } catch {
+      // best-effort; never block SessionStart on retention sweep
+    }
+  }
+  return removed;
+}
+
+// Read the compact graph preview (~500 tokens) written by gitnexus/graphify
+// runners. Subagents see top-level module names without doing a full Read of
+// the graph artefact, so they can scope their work immediately.
+function readGraphPreview(cwd) {
+  const previewPath = path.join(cwd, '.traffic-one', 'graph-preview.md');
+  if (!fs.existsSync(previewPath)) return '';
+  try {
+    return `\n${fs.readFileSync(previewPath, 'utf8').trimEnd()}\n`;
+  } catch {
+    return '';
+  }
+}
+
 // ── SessionStart ─────────────────────────────────────────────────────────────
 function runSessionStart() {
   const cwd  = process.cwd();
@@ -396,6 +440,43 @@ function runSessionStart() {
   // projects on this machine; this ensures each session starts from a clean
   // 3-skill baseline before copying the correct set for THIS project.
   cleanActiveSkills();
+
+  // Digest retention sweep (cheap, idempotent). Keeps the last 5 orchestrator
+  // runs and removes older ones from .traffic-one/digests/.
+  sweepOldDigests(cwd, 5);
+
+  // SUBAGENT FAST PATH. The orchestrator skill writes `currentRunId` +
+  // `activeAgentRole` to .traffic-one.json before each subagent spawn. When
+  // those signals are present (and materialization is fresh), emit a slim
+  // 3-5KB bundle instead of re-inlining the full 117KB rule set the parent
+  // already loaded. Saves ~28K tokens per subagent SessionStart.
+  if (isSubagentSession(state)) {
+    const role = activeAgentRole(state);
+    const ruleSet = role ? roleScopedRules(role, state) : null;
+    const rules = ruleSet || stackSpecForState(state).mandatory;
+
+    copyActiveSkills(state);
+    const allSkills = listAllSkills();
+    const skillDirective = pruneSkillsDirective(state, allSkills);
+    const { body } = packRuleIndex(root, rules);
+    const graphPreview = readGraphPreview(cwd);
+    const roleLabel = role || 'subagent';
+    const runId = state.currentRunId;
+
+    const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
+      + `[subagent] Full rules already loaded by parent session and materialized to `
+      + `.traffic-one/rules/active/. This index lists role-scoped rules; Read them on demand.\n`;
+    const context = `${header}${skillDirective}${graphPreview}\n${body}`;
+    return {
+      stdout: JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'SessionStart',
+          additionalContext: context,
+        },
+      }),
+      exitCode: 0,
+    };
+  }
 
   const mode = state.mode || detectMode(cwd);
   state.mode = mode;
@@ -448,7 +529,8 @@ function runSessionStart() {
     if (skillDirective) {
       header += skillDirective;
     }
-    const context = `${header}\n${body}`;
+    const graphPreview = readGraphPreview(cwd);
+    const context = `${header}${graphPreview}\n${body}`;
     writeState(cwd, state);
     return {
       stdout: JSON.stringify({
@@ -523,7 +605,8 @@ function runSessionStart() {
       if (skillDirective) {
         header += skillDirective;
       }
-      const context = `${banner}\n\n${header}\n${body}`;
+      const graphPreview = readGraphPreview(cwd);
+      const context = `${banner}\n\n${header}${graphPreview}\n${body}`;
       return {
         stdout: JSON.stringify({
           hookSpecificOutput: {
