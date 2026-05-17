@@ -2942,7 +2942,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.14', () => {
+test('manifests bumped to 2.9.16', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2950,8 +2950,184 @@ test('manifests bumped to 2.9.14', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.14"/, `${rel} must be bumped to 2.9.14`);
+    assert.match(text, /"version":\s*"2\.9\.16"/, `${rel} must be bumped to 2.9.16`);
   }
+});
+
+// ── Per-subagent rule scoping (2.9.16) ──────────────────────────────────────
+
+test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const fresh = new Date().toISOString();
+  const state = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: fresh,
+    currentRunId: '2026-05-17T08-00-00Z',
+  };
+  assert.equal(isSubagentSession(state), true);
+});
+
+test('isSubagentSession returns false when materialization is stale (>30 min)', () => {
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const state = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: stale,
+    currentRunId: '2026-05-17T08-00-00Z',
+  };
+  assert.equal(isSubagentSession(state), false);
+});
+
+test('isSubagentSession returns false when currentRunId is missing', () => {
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const state = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: new Date().toISOString(),
+  };
+  assert.equal(isSubagentSession(state), false);
+});
+
+test('AGENT_ROLE_BASE_RULES covers all 6 senior roles with curated sets', () => {
+  const { AGENT_ROLE_BASE_RULES } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+  const roles = ['senior-architect', 'senior-frontend', 'senior-backend',
+                 'senior-reviewer', 'senior-tester', 'senior-shipper'];
+  for (const role of roles) {
+    assert.ok(Array.isArray(AGENT_ROLE_BASE_RULES[role]), `${role} missing`);
+    assert.ok(AGENT_ROLE_BASE_RULES[role].length >= 3, `${role} has too few rules`);
+  }
+});
+
+test('roleScopedRules excludes non-relevant rules per role', () => {
+  const { roleScopedRules } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+  const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
+  const frontendRules = roleScopedRules('senior-frontend', state);
+  const backendRules  = roleScopedRules('senior-backend', state);
+  const reviewerRules = roleScopedRules('senior-reviewer', state);
+  // Frontend gets frontend rules, no backend rules
+  assert.ok(frontendRules.some((r) => r.startsWith('rules/frontend/')), 'frontend missing frontend rules');
+  assert.ok(!frontendRules.some((r) => r.startsWith('rules/backend/')), 'frontend should not have backend rules');
+  // Backend gets backend rules, no frontend rules
+  assert.ok(backendRules.some((r) => r.startsWith('rules/backend/')), 'backend missing backend rules');
+  assert.ok(!backendRules.some((r) => r.startsWith('rules/frontend/')), 'backend should not have frontend rules');
+  // Reviewer sees both for cross-cutting review
+  assert.ok(reviewerRules.some((r) => r.startsWith('rules/common/security.md')), 'reviewer missing security');
+});
+
+test('packRuleIndex emits bullet list of paths, no rule content', () => {
+  const { packRuleIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'packing.cjs'));
+  const rules = ['rules/common/security.md', 'rules/common/clean-code.md', 'rules/core.md'];
+  const { body } = packRuleIndex(ROOT, rules);
+  assert.match(body, /## Active rule index/);
+  assert.match(body, /- \.traffic-one\/rules\/active\/rules\/common\/security\.md/);
+  assert.ok(body.length < 5000, `index too large: ${body.length} bytes`);
+  // Should NOT contain actual rule content (no '# Security Baseline' from security.md)
+  assert.ok(!body.includes('# Security Baseline'), 'index leaked rule content');
+});
+
+test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.16',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-17T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.16',
+      currentRunId: '2026-05-17T11-00-00Z',
+      activeAgentRole: 'senior-frontend',
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.ok(context.length < 8000, `subagent bundle too large: ${context.length} bytes`);
+    assert.match(context, /subagent/i);
+    assert.match(context, /senior-frontend/);
+    // Should NOT include full rule content (no '# ── rules/' headers from packBundle)
+    assert.ok(!context.includes('# ── rules/'), 'subagent bundle leaked rule content');
+  });
+});
+
+test('sweepOldDigests keeps only the N most recent directories', () => {
+  withTempDir((cwd) => {
+    const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
+    fs.mkdirSync(digestsRoot, { recursive: true });
+    const stamps = [
+      '2026-01-01T00-00-00Z', '2026-02-01T00-00-00Z', '2026-03-01T00-00-00Z',
+      '2026-04-01T00-00-00Z', '2026-05-01T00-00-00Z', '2026-06-01T00-00-00Z',
+      '2026-07-01T00-00-00Z',
+    ];
+    for (const s of stamps) {
+      fs.mkdirSync(path.join(digestsRoot, s));
+      fs.writeFileSync(path.join(digestsRoot, s, 'architect.md'), '# digest');
+    }
+    // Trigger SessionStart so sweep runs
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'minimal' });
+    runHook(cwd, 'session-start', '');
+    const remaining = fs.readdirSync(digestsRoot).sort();
+    assert.equal(remaining.length, 5, `expected 5 remaining, got ${remaining.length}`);
+    // Should keep the 5 most recent (newest sorted alphabetically by ISO)
+    assert.deepEqual(remaining, [
+      '2026-03-01T00-00-00Z', '2026-04-01T00-00-00Z', '2026-05-01T00-00-00Z',
+      '2026-06-01T00-00-00Z', '2026-07-01T00-00-00Z',
+    ]);
+  });
+});
+
+test('graph-preview is included in subagent SessionStart when present', () => {
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, '.traffic-one', 'graph-preview.md'),
+      '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
+    );
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.16',
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      confirmed: true, onboardingComplete: true,
+      confirmedAt: '2026-05-17T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.16',
+      currentRunId: '2026-05-17T11-00-00Z',
+      activeAgentRole: 'senior-architect',
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.match(context, /Codebase graph preview/);
+    assert.match(context, /apps\/web/);
+  });
+});
+
+test('generateGraphPreview returns null when graph artefact is missing', () => {
+  withTempDir((cwd) => {
+    const { generateGraphPreview } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+    assert.equal(generateGraphPreview(cwd, 'graphify'), null);
+    assert.equal(generateGraphPreview(cwd, 'gitnexus'), null);
+  });
 });
 
 let failed = 0;
