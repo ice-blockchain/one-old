@@ -2950,7 +2950,7 @@ test('manifests bumped to 2.9.16', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.15"/, `${rel} must be bumped to 2.9.16`);
+    assert.match(text, /"version":\s*"2\.9\.16"/, `${rel} must be bumped to 2.9.16`);
   }
 });
 
