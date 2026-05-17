@@ -2942,7 +2942,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.13', () => {
+test('manifests bumped to 2.9.14', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2950,7 +2950,7 @@ test('manifests bumped to 2.9.13', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.13"/, `${rel} must be bumped to 2.9.13`);
+    assert.match(text, /"version":\s*"2\.9\.14"/, `${rel} must be bumped to 2.9.14`);
   }
 });
 
