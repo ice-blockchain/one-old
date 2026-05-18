@@ -115,6 +115,42 @@ function defaultMobileState() {
   };
 }
 
+const MOBILE_SOURCE_IDS = new Set(['explicit', 'prompted', 'none']);
+const MOBILE_SOURCE_ALIASES = new Map([
+  ['asked', 'prompted'],
+  ['chat', 'prompted'],
+  ['fallback-chat', 'prompted'],
+  ['onboarding', 'prompted'],
+  ['popup', 'prompted'],
+  ['prompt', 'prompted'],
+  ['user-onboarding', 'prompted'],
+  ['user-prompted', 'prompted'],
+  ['disabled', 'none'],
+  ['n/a', 'none'],
+  ['na', 'none'],
+  ['not-applicable', 'none'],
+  ['web', 'none'],
+  ['web-only', 'none'],
+  ['explicit-user-request', 'explicit'],
+  ['explicitly-requested', 'explicit'],
+  ['requested', 'explicit'],
+  ['user-requested', 'explicit'],
+]);
+
+function canonicalMobileSource(source) {
+  if (typeof source !== 'string') {
+    return source;
+  }
+  if (MOBILE_SOURCE_IDS.has(source)) {
+    return source;
+  }
+  const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (MOBILE_SOURCE_IDS.has(normalized)) {
+    return normalized;
+  }
+  return MOBILE_SOURCE_ALIASES.get(normalized) || source;
+}
+
 function defaultTechnologiesFor(state) {
   const frontend = [];
   const backend = [];
@@ -291,6 +327,7 @@ function normalizeState(state, defaultMode) {
       ...defaultMobileState(),
       ...state.mobile,
     };
+    normalizedMobile.source = canonicalMobileSource(normalizedMobile.source);
     if (
       state.mobile.enabled !== normalizedMobile.enabled
       || state.mobile.framework !== normalizedMobile.framework

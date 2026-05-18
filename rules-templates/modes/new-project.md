@@ -181,7 +181,10 @@ contract, env validation, and migrations/RLS baseline are in place.
      runtime does not emit the hook, run
      `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`
      from the project root and verify `.traffic-one.json` has `version`,
-     `materializedStack`, `materializedAt`, and `materializedVersion`.
+     `materializedStack`, `materializedAt`, and `materializedVersion`. Never
+     write those `materialized*` fields manually; they are output from the
+     materializer and are valid only with the generated manifest, rules, skills,
+     root `AGENTS.md`, and root `CLAUDE.md`.
    - Root `AGENTS.md` is the canonical active agent context. Do not generate
      `.traffic-one/rules/AGENTS.md`; `.traffic-one/rules/` must contain only
      generated rule files. Root `CLAUDE.md` should be a symlink to root
