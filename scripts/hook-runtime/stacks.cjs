@@ -243,7 +243,7 @@ function stackSpecForState(state) {
 // Each role's base set is small, curated, and supplemented with stack-specific
 // rules computed dynamically (e.g. frontend gets React rules from the active
 // stack spec). Anything not listed here is still materialized to
-// .traffic-one/rules/active/ and can be read on demand.
+// .traffic-one/rules/ and can be read on demand.
 const AGENT_ROLE_BASE_RULES = {
   'senior-architect': [
     'rules/common/clean-code.md',

@@ -60,8 +60,15 @@ function pluginRoot() {
   return path.resolve(__dirname, '..', '..');
 }
 
+function isManagedPluginCachePath(root) {
+  return [
+    `${path.sep}.claude${path.sep}plugins${path.sep}cache${path.sep}`,
+    `${path.sep}.codex${path.sep}plugins${path.sep}cache${path.sep}`,
+  ].some((marker) => root.includes(marker));
+}
+
 function isInPluginCache() {
-  return pluginRoot().includes(`${path.sep}.claude${path.sep}plugins${path.sep}cache${path.sep}`);
+  return isManagedPluginCachePath(pluginRoot());
 }
 
 module.exports = {
@@ -78,5 +85,6 @@ module.exports = {
   pitchBackendLabel,
   pitchDeployLabel,
   pluginRoot,
+  isManagedPluginCachePath,
   isInPluginCache,
 };

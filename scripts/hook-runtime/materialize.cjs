@@ -43,12 +43,68 @@ function removeGeneratedFile(filePath) {
   return false;
 }
 
+function isGeneratedManifest(filePath) {
+  try {
+    const json = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return json && json.generatedBy === 'traffic-one';
+  } catch {
+    return false;
+  }
+}
+
+function removeGeneratedManifest(filePath) {
+  if (fs.existsSync(filePath) && isGeneratedManifest(filePath)) {
+    fs.rmSync(filePath, { force: true });
+    return true;
+  }
+  return false;
+}
+
+function isGeneratedTree(dirPath) {
+  if (!fs.existsSync(dirPath)) return false;
+  const stat = fs.lstatSync(dirPath);
+  if (stat.isFile()) return isGenerated(dirPath);
+  if (!stat.isDirectory()) return false;
+
+  const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+  return entries.every((entry) => isGeneratedTree(path.join(dirPath, entry.name)));
+}
+
+function removeGeneratedTree(dirPath) {
+  if (fs.existsSync(dirPath) && isGeneratedTree(dirPath)) {
+    fs.rmSync(dirPath, { recursive: true, force: true });
+    return true;
+  }
+  return false;
+}
+
 function removeGeneratedSkillDir(dirPath) {
   const skillPath = path.join(dirPath, 'SKILL.md');
   if (fs.existsSync(skillPath) && isGenerated(skillPath)) {
     fs.rmSync(dirPath, { recursive: true, force: true });
     return true;
   }
+  return false;
+}
+
+function migrateLegacyMemoryFile(cwd, fileName) {
+  const legacyPath = path.join(cwd, '.traffic-one', 'rules', fileName);
+  const targetPath = path.join(cwd, '.traffic-one', fileName);
+  if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory()) {
+    return false;
+  }
+
+  if (!fs.existsSync(targetPath)) {
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    fs.renameSync(legacyPath, targetPath);
+    return true;
+  }
+
+  if (readText(legacyPath) === readText(targetPath)) {
+    fs.rmSync(legacyPath, { force: true });
+    return true;
+  }
+
   return false;
 }
 
@@ -74,24 +130,41 @@ function copySkillDir(srcDir, dstDir) {
 }
 
 function loadPreviousManifest(cwd) {
-  const manifestPath = path.join(cwd, '.traffic-one', 'rules', 'manifest.json');
-  try {
-    return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-  } catch {
-    return {};
+  const candidates = [
+    path.join(cwd, '.traffic-one', 'manifest.json'),
+    path.join(cwd, '.traffic-one', 'rules', 'manifest.json'),
+  ];
+  for (const manifestPath of candidates) {
+    try {
+      return JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    } catch {
+      // Try the legacy/new location pair before falling back to an empty state.
+    }
   }
+  return {};
 }
 
 function cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames) {
   let removed = 0;
-  const activeRoot = path.join(cwd, '.traffic-one', 'rules', 'active');
+  const projectMemoryRoot = path.join(cwd, '.traffic-one');
+  const legacyActiveRoot = path.join(cwd, '.traffic-one', 'rules', 'active');
   const skillsRoot = path.join(cwd, '.traffic-one', 'skills');
 
   for (const relPath of Array.isArray(previous.rules) ? previous.rules : []) {
+    const currentRulePath = path.join(projectMemoryRoot, relPath);
+    const legacyRulePath = path.join(legacyActiveRoot, relPath);
+    if (removeGeneratedFile(legacyRulePath)) removed += 1;
     if (nextRulePaths.has(relPath)) continue;
-    const dst = path.join(activeRoot, relPath);
-    if (removeGeneratedFile(dst)) removed += 1;
+    if (removeGeneratedFile(currentRulePath)) removed += 1;
   }
+
+  if (removeGeneratedTree(legacyActiveRoot)) removed += 1;
+  if (removeGeneratedFile(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md'))) removed += 1;
+  if (removeGeneratedManifest(path.join(cwd, '.traffic-one', 'rules', 'manifest.json'))) {
+    removed += 1;
+  }
+  if (migrateLegacyMemoryFile(cwd, 'coding.md')) removed += 1;
+  if (migrateLegacyMemoryFile(cwd, 'security.md')) removed += 1;
 
   for (const name of Array.isArray(previous.skills) ? previous.skills : []) {
     if (nextSkillNames.has(name)) continue;
@@ -102,12 +175,14 @@ function cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames) {
 }
 
 function renderAgents(state, rules, skills) {
+  const root = pluginRoot();
   const lines = [
     '# Traffic One Local Agent Context',
     '',
     GENERATED_MARKER,
     '',
     'Use the project-local active rule bundle below before falling back to plugin-root rules.',
+    'Host runtimes may read AGENTS.md directly, so active rule contents are inlined instead of relying on host-specific import syntax.',
     '',
     '## Active State',
     '',
@@ -118,54 +193,113 @@ function renderAgents(state, rules, skills) {
     '',
     '## Active Rules',
     '',
-    ...rules.map((relPath) => `- .traffic-one/rules/active/${relPath}`),
+    ...rules.map((relPath) => `- .traffic-one/${relPath}`),
     '',
     '## Active Skills',
     '',
     ...skills.map((name) => `- .traffic-one/skills/${name}/SKILL.md`),
     '',
+    '## Active Rule Contents',
+    '',
   ];
+  for (const relPath of rules) {
+    const source = readText(path.join(root, relPath));
+    lines.push(`### ${relPath}`, '');
+    if (typeof source === 'string' && source.trim()) {
+      lines.push(source.trimEnd(), '');
+    } else {
+      lines.push(`Rule source missing in plugin root: ${relPath}`, '');
+    }
+  }
   return `${lines.join('\n')}\n`;
 }
 
-function renderClaude(state, rules, skills) {
+function localContextName(fileName) {
+  return fileName === 'CLAUDE.md' ? 'CLAUDE.local.md' : 'AGENTS.local.md';
+}
+
+function preserveManualRootContext(cwd, fileName, state) {
+  const rootPath = path.join(cwd, fileName);
+  if (!fs.existsSync(rootPath)) return false;
+  const stat = fs.lstatSync(rootPath);
+  if (stat.isSymbolicLink() || isGenerated(rootPath)) return false;
+  if (!state || state.mode !== 'new-project') return false;
+
+  const localName = localContextName(fileName);
+  const localPath = path.join(cwd, '.traffic-one', localName);
+  const existing = readText(rootPath) || '';
+  const preserved = [
+    `# Preserved ${fileName}`,
+    '',
+    `This content existed before Traffic One generated root ${fileName}.`,
+    '',
+    '---',
+    '',
+    existing.trimEnd(),
+    '',
+  ].join('\n');
+
+  if (!fs.existsSync(localPath)) {
+    writeTextIfChanged(localPath, preserved);
+  }
+  fs.rmSync(rootPath, { force: true });
+  return true;
+}
+
+function localContextBlocks(cwd) {
+  const blocks = [];
+  for (const fileName of ['AGENTS.local.md', 'CLAUDE.local.md']) {
+    const filePath = path.join(cwd, '.traffic-one', fileName);
+    const content = readText(filePath);
+    if (typeof content === 'string' && content.trim()) {
+      blocks.push(`### .traffic-one/${fileName}\n\n${content.trimEnd()}`);
+    }
+  }
+  return blocks;
+}
+
+function renderAgentsWithLocalContext(cwd, state, rules, skills) {
+  const base = renderAgents(state, rules, skills).trimEnd();
+  const localBlocks = localContextBlocks(cwd);
+  if (localBlocks.length === 0) {
+    return `${base}\n`;
+  }
+  return [
+    base,
+    '',
+    '## Preserved Project Notes',
+    '',
+    ...localBlocks,
+    '',
+  ].join('\n');
+}
+
+function renderClaudeFallback() {
   const lines = [
-    '# Traffic One Local Claude Context',
+    '# Traffic One Claude Context',
     '',
     GENERATED_MARKER,
     '',
-    `Active stack: ${state.stack || 'minimal'}; frontend: ${state.frontend || 'none'}; backend: ${state.backend || 'none'}; mobile: ${(state.mobile && state.mobile.framework) || 'none'}.`,
+    'Read the canonical root agent context:',
     '',
-    '## Active Rules',
-    '',
-    ...rules.map((relPath) => `@.traffic-one/rules/active/${relPath}`),
-    '',
-    '## Local Skills',
-    '',
-    ...skills.map((name) => `@.traffic-one/skills/${name}/SKILL.md`),
+    '@AGENTS.md',
     '',
   ];
   return `${lines.join('\n')}\n`;
 }
 
-function writeRootAgents(cwd, localAgentsContent) {
+function writeRootAgents(cwd, content) {
   const rootAgents = path.join(cwd, 'AGENTS.md');
-  const target = path.join('.traffic-one', 'rules', 'AGENTS.md');
   if (fs.existsSync(rootAgents) && !fs.lstatSync(rootAgents).isSymbolicLink() && !isGenerated(rootAgents)) {
     return false;
   }
-  try {
-    if (fs.existsSync(rootAgents)) {
-      fs.rmSync(rootAgents, { force: true });
-    }
-    fs.symlinkSync(target, rootAgents);
-    return true;
-  } catch {
-    return writeTextIfChanged(rootAgents, localAgentsContent);
+  if (fs.existsSync(rootAgents)) {
+    fs.rmSync(rootAgents, { force: true });
   }
+  return writeTextIfChanged(rootAgents, content);
 }
 
-function writeRootClaude(cwd, localClaudeContent) {
+function writeRootClaude(cwd) {
   const rootClaude = path.join(cwd, 'CLAUDE.md');
   if (fs.existsSync(rootClaude) && !fs.lstatSync(rootClaude).isSymbolicLink() && !isGenerated(rootClaude)) {
     return false;
@@ -173,7 +307,12 @@ function writeRootClaude(cwd, localClaudeContent) {
   if (fs.existsSync(rootClaude)) {
     fs.rmSync(rootClaude, { force: true });
   }
-  return writeTextIfChanged(rootClaude, localClaudeContent);
+  try {
+    fs.symlinkSync('AGENTS.md', rootClaude);
+    return true;
+  } catch {
+    return writeTextIfChanged(rootClaude, renderClaudeFallback());
+  }
 }
 
 function unique(values) {
@@ -212,10 +351,10 @@ function materializeProjectAssets(cwd, state) {
   const removed = cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames);
 
   let written = 0;
-  const activeRoot = path.join(cwd, '.traffic-one', 'rules', 'active');
+  const projectMemoryRoot = path.join(cwd, '.traffic-one');
   for (const relPath of rules) {
     const src = path.join(root, relPath);
-    const dst = path.join(activeRoot, relPath);
+    const dst = path.join(projectMemoryRoot, relPath);
     const source = fs.readFileSync(src, 'utf8').trimEnd();
     const content = `${GENERATED_MARKER}\n<!-- SOURCE: ${relPath} -->\n\n${source}\n`;
     if (writeTextIfChanged(dst, content)) written += 1;
@@ -228,11 +367,12 @@ function materializeProjectAssets(cwd, state) {
     }
   }
 
-  const localAgents = renderAgents(state, rules, skills);
-  const localClaude = renderClaude(state, rules, skills);
-  if (writeTextIfChanged(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md'), localAgents)) written += 1;
+  if (preserveManualRootContext(cwd, 'AGENTS.md', state)) written += 1;
+  if (preserveManualRootContext(cwd, 'CLAUDE.md', state)) written += 1;
+
+  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, skills);
   if (writeRootAgents(cwd, localAgents)) written += 1;
-  if (writeRootClaude(cwd, localClaude)) written += 1;
+  if (writeRootClaude(cwd)) written += 1;
 
   const manifest = {
     generatedBy: 'traffic-one',
@@ -245,13 +385,42 @@ function materializeProjectAssets(cwd, state) {
     skills,
   };
   if (writeTextIfChanged(
-    path.join(cwd, '.traffic-one', 'rules', 'manifest.json'),
+    path.join(cwd, '.traffic-one', 'manifest.json'),
     `${JSON.stringify(manifest, null, 2)}\n`,
   )) {
     written += 1;
   }
 
   return { rules: rules.length, skills: skills.length, written, removed };
+}
+
+function hasMaterializedProjectAssets(cwd, state) {
+  const manifestPath = path.join(cwd, '.traffic-one', 'manifest.json');
+  let manifest;
+  try {
+    manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return false;
+  }
+
+  if (!manifest || manifest.generatedBy !== 'traffic-one') return false;
+  if (state && manifest.stack && state.stack && manifest.stack !== state.stack) return false;
+  if (!Array.isArray(manifest.rules) || manifest.rules.length === 0) return false;
+  if (!Array.isArray(manifest.skills) || manifest.skills.length === 0) return false;
+
+  const agentsPath = path.join(cwd, 'AGENTS.md');
+  if (!fs.existsSync(agentsPath) || !isGenerated(agentsPath)) return false;
+  if (!fs.existsSync(path.join(cwd, 'CLAUDE.md'))) return false;
+
+  for (const relPath of manifest.rules) {
+    if (!fs.existsSync(path.join(cwd, '.traffic-one', relPath))) return false;
+  }
+  for (const name of manifest.skills) {
+    if (!fs.existsSync(path.join(cwd, '.traffic-one', 'skills', name, 'SKILL.md'))) {
+      return false;
+    }
+  }
+  return true;
 }
 
 // ── Graph preview ─────────────────────────────────────────────────────────────
@@ -333,6 +502,7 @@ function writeGraphPreview(cwd, provider) {
 module.exports = {
   GENERATED_MARKER,
   materializeProjectAssets,
+  hasMaterializedProjectAssets,
   generateGraphPreview,
   writeGraphPreview,
 };

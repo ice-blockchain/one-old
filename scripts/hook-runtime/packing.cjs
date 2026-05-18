@@ -49,14 +49,14 @@ function packBundle(root, mandatory, optional, budget) {
 
 // For subagent SessionStart. The parent's session already inlined full rule
 // content via packBundle() and materialize.cjs copied every active rule to
-// `.traffic-one/rules/active/<relPath>`. Subagents just need an index pointing
+// `.traffic-one/<relPath>`. Subagents just need an index pointing
 // to the materialized copies; they Read specific rules on demand instead of
 // paying the 117KB rule-bundle cost up front.
 function packRuleIndex(root, rules) {
   const lines = [
     '## Active rule index (read on demand)',
     '',
-    'Full rule content is materialized at `.traffic-one/rules/active/<path>`.',
+    'Full rule content is materialized at `.traffic-one/<path>`.',
     'Use the Read tool to load a specific rule when its guidance is needed.',
     '',
   ];
@@ -64,7 +64,7 @@ function packRuleIndex(root, rules) {
   for (const rel of rules) {
     const filePath = path.join(root, rel);
     if (!fs.existsSync(filePath)) continue;
-    lines.push(`- .traffic-one/rules/active/${rel}`);
+    lines.push(`- .traffic-one/${rel}`);
     included.push(rel);
   }
   return { body: lines.join('\n') + '\n', included, dropped: [] };

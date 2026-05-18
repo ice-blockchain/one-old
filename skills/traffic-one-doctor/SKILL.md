@@ -50,8 +50,12 @@ sometimes a `recommendedCommand`.
 Run from the project root:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.cjs"
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/doctor.cjs"
 ```
+
+In Codex, prefer `TRAFFIC_ONE_PLUGIN_ROOT` or `CODEX_PLUGIN_ROOT` when the
+host exposes one. If no plugin-root env var is available, use the absolute
+plugin root that contains this `SKILL.md`.
 
 Parse the JSON. Walk findings in order. For each `severity: "fix-needed"`:
 

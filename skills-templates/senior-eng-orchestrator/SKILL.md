@@ -269,10 +269,10 @@ Dispatch on `codeGraphProvider` from `.traffic-one.json`:
 PROVIDER=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('.traffic-one.json','utf8')).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
-    node "${CLAUDE_PLUGIN_ROOT}/scripts/gitnexus-runner.cjs"
+    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"
     ;;
   graphify)
-    node "${CLAUDE_PLUGIN_ROOT}/scripts/graphify-runner.cjs"
+    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/graphify-runner.cjs"
     ;;
   *)
     # Provider missing/unknown — the postWriteIncompleteWarning hook will

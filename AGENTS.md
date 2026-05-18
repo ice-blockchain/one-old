@@ -88,22 +88,22 @@ is missing or lacks a valid `stack`, create or repair `.traffic-one.json`
 before feature-source work.
 Read `.traffic-one/.agentignore` first when present, then
 `.traffic-one/product.md`, `.traffic-one/stack.md`,
-`.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
+`.traffic-one/coding.md`, `.traffic-one/security.md`,
 `.traffic-one/known-issues.md`, `.traffic-one/schema.sql`, and the tail of
 `.traffic-one/agent-log.md` before broad source reads.
 
 For new projects and existing-project reconciliation, invoke `project-memory`
 and create or refresh: root `.traffic-one.json`, `.traffic-one/product.md`,
-`.traffic-one/decisions/`, `.traffic-one/rules/coding.md`,
-`.traffic-one/rules/security.md`, `.traffic-one/rules/AGENTS.md`,
+`.traffic-one/decisions/`, `.traffic-one/coding.md`,
+`.traffic-one/security.md`, `.traffic-one/rules/**`,
 `.traffic-one/schema.sql`,
 `.traffic-one/deployments.jsonl`, `.traffic-one/known-issues.md`,
 `.traffic-one/stack.md`, `.traffic-one/.agentignore`,
 `.traffic-one/agent-log.md`, `.traffic-one/mcp.json`, and
 `.traffic-one/skills/` when reusable team commands are needed. Root `AGENTS.md`
-should symlink to `.traffic-one/rules/AGENTS.md` when safe, otherwise it is
-generated from the same source; root `CLAUDE.md` is generated from that same
-source for Claude Code compatibility.
+contains the full active rule bundle; `.traffic-one/rules/` contains only
+generated rule files and no `AGENTS.md`/manifest; root `CLAUDE.md` should
+symlink to root `AGENTS.md` when safe for Claude Code compatibility.
 
 Project memory must never contain secret values, service-role keys, production
 connection strings, raw customer data, or fake MCP/deploy credentials. Append to
@@ -159,7 +159,7 @@ repo-scan outputs.
 - Auth AND authorization checks on every protected endpoint — UI gating is not enough.
 - No stack traces in production responses. `.env*` gitignored.
 - Current-turn explicit confirmation is required before deploy/publish/release, shared/prod migrations, destructive commands, external API calls with side effects, emails/messages/posts/calendar actions, document shares, dependency removal, or git history scrubbing.
-- Before deploy/release/publish/production promotion, run `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp`. The scanner blocks exposed secrets, Supabase service-role/JWT/admin DB secrets in browser/mobile code, weak auth/session patterns, broken access control, missing rate limits, insecure Supabase RLS/Storage, unsafe views/functions/RPC, unsafe uploads, CORS/security-header misconfiguration (OWASP A02:2025), SQLi/XSS injection (OWASP A05:2025), UI-only admin gates, hardcoded env fallbacks, high+ production dependency vulnerabilities, suspicious npm supply-chain indicators, weak crypto, missing security logging, and Ionic/Capacitor/Expo bundled secrets or non-PKCE mobile auth.
+- Before deploy/release/publish/production promotion, run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp`. The scanner blocks exposed secrets, Supabase service-role/JWT/admin DB secrets in browser/mobile code, weak auth/session patterns, broken access control, missing rate limits, insecure Supabase RLS/Storage, unsafe views/functions/RPC, unsafe uploads, CORS/security-header misconfiguration (OWASP A02:2025), SQLi/XSS injection (OWASP A05:2025), UI-only admin gates, hardcoded env fallbacks, high+ production dependency vulnerabilities, suspicious npm supply-chain indicators, weak crypto, missing security logging, and Ionic/Capacitor/Expo bundled secrets or non-PKCE mobile auth.
 - If `gitleaks` or `trufflehog` is missing locally, ask the user to install them and explain the benefit: `gitleaks` scans the working tree and full git history for committed keys/tokens, while `trufflehog` verifies and flags known or unknown secrets. On macOS with Homebrew, ask approval for `brew install gitleaks trufflehog`; if Homebrew is missing, ask the user to install Homebrew first. Do not deploy using weaker fallback checks.
 - Logs, analytics, replay payloads, Sentry contexts, and deploy logs redact emails, tokens, cookies, payment fields, precise location, contact data, and customer secrets by default. Session replay in EU/CA or similarly sensitive jurisdictions requires masking, query/body redaction, consent/legal basis, and retention docs before enablement.
 - AI-generated fix suggestions may propose a patch and explanation, but opening PRs, pushing branches, changing provider settings, running migrations, or redeploying requires explicit current-turn approval.
@@ -275,7 +275,7 @@ repo-scan outputs.
 ### Page speed standard
 - Generated React web pages optimize Lighthouse Performance on mobile against a built production preview, with 100 as the ideal score.
 - Use the Traffic One runner by default for React/Vite and Ionic web routes:
-  `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /`.
+  `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
   writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
   non-zero below the default thresholds.
@@ -558,7 +558,7 @@ products use Ionic Framework with Capacitor instead.
 ## Performance rules
 - Optimize Lighthouse Performance on mobile against a built production preview for generated React/Ionic web routes, with 100 as the ideal.
 - Use the Traffic One runner by default for React/Vite and Ionic web routes:
-  `node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /`.
+  `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
   writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
   non-zero below the default thresholds.

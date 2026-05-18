@@ -2,6 +2,7 @@
 .idea/
 .vscode/
 *.iml
+tests/
 
 # Claude Code local session settings — never commit these
 .claude/settings.local.json

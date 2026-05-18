@@ -60,12 +60,13 @@ Create or refresh:
   or incomplete
 - `.traffic-one/product.md`
 - `.traffic-one/decisions/README.md` and ADR files as needed
-- `.traffic-one/rules/coding.md`
-- `.traffic-one/rules/security.md`
-- `.traffic-one/rules/AGENTS.md`
-- root `AGENTS.md` symlink to `.traffic-one/rules/AGENTS.md` when safe, or a
-  generated root file from the same source when symlinks are not appropriate
-- root `CLAUDE.md` generated from the same source for Claude Code compatibility
+- `.traffic-one/coding.md`
+- `.traffic-one/security.md`
+- `.traffic-one/rules/**` generated active rule files only
+- `.traffic-one/manifest.json` generated active bundle manifest
+- root `AGENTS.md` containing the full active rule bundle
+- root `CLAUDE.md` symlinked to root `AGENTS.md` when safe for Claude Code
+  compatibility
 - `.traffic-one/schema.sql`
 - `.traffic-one/deployments.jsonl`
 - `.traffic-one/known-issues.md`
@@ -74,6 +75,9 @@ Create or refresh:
 - `.traffic-one/agent-log.md`
 - `.traffic-one/mcp.json`
 - `.traffic-one/skills/` when reusable team commands are needed
+- generated active stack bundle: `.traffic-one/rules/**`,
+  `.traffic-one/manifest.json`, `.traffic-one/skills/`, root `AGENTS.md`, and
+  root `CLAUDE.md`
 
 ## Guardrails
 
@@ -96,6 +100,12 @@ Create or refresh:
 - Treat memory as continuity, not a transcript. Store stable facts, decisions,
   failed approaches, current work state, and "next session" handoffs; do not
   paste chat history or bulky generated output.
+- Do not hand-create active rule or skill bundles. After the complete
+  `.traffic-one.json` state exists, rely on the generic post-tool materializer
+  hook or run
+  `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`
+  from the project root. Feature-source work must wait until `.traffic-one.json`
+  has `materializedStack`, `materializedAt`, and `materializedVersion`.
 - For user-facing/product work, capture audience, tone, voice, words to avoid,
   and permanent facts only when the user or codebase provides them. Mark guesses
   `Unverified`.
@@ -129,7 +139,7 @@ Create or refresh:
 - Unverified:
 ```
 
-### `.traffic-one/rules/coding.md`
+### `.traffic-one/coding.md`
 
 ```markdown
 # Coding Rules
@@ -140,7 +150,7 @@ Create or refresh:
 - Unverified project-specific rule:
 ```
 
-### `.traffic-one/rules/security.md`
+### `.traffic-one/security.md`
 
 ```markdown
 # Security Rules
