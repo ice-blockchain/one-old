@@ -77,7 +77,7 @@ Report:
 ### Phase 5: Security Scan
 ```bash
 # Traffic One pre-deploy scanner
-node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --no-stamp
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --no-stamp
 
 # Check for secrets
 grep -rn "sk-" --include="*.ts" --include="*.js" . 2>/dev/null | head -10

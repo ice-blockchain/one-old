@@ -24,7 +24,7 @@ files exist:
 1. `.traffic-one/.agentignore` — respect it before broad file reads or edits.
 2. `.traffic-one/product.md` — user, job-to-be-done, success metric.
 3. `.traffic-one/stack.md` — selected stack and version pins.
-4. `.traffic-one/rules/coding.md` and `.traffic-one/rules/security.md` —
+4. `.traffic-one/coding.md` and `.traffic-one/security.md` —
    project-specific rules that override generic preferences when stricter.
 5. `.traffic-one/known-issues.md` — avoid re-fixing known bugs in loops.
 6. `.traffic-one/schema.sql` — current DB schema snapshot for DB-backed apps.
@@ -52,7 +52,8 @@ local evidence instead of guessing:
   analytics, external APIs, queues, cron, and realtime.
 
 Record only concise, durable facts in `.traffic-one/stack.md`,
-`.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
+`.traffic-one/coding.md`, `.traffic-one/security.md`,
+`.traffic-one/known-issues.md`, and
 `.traffic-one/agent-log.md`. Leave file-by-file inventories to graphify or
 dedicated repo-scan outputs.
 
@@ -69,14 +70,14 @@ normal feature work:
 - `.traffic-one/decisions/`: canonical ADR directory. Append new ADRs; never
   rewrite prior decisions silently. If legacy `adr/` exists, migrate or mirror
   into `.traffic-one/decisions/` when safe.
-- `.traffic-one/rules/coding.md`: short project-specific coding rules. Keep it
+- `.traffic-one/coding.md`: short project-specific coding rules. Keep it
   under roughly 150 instructions; do not duplicate the linter.
-- `.traffic-one/rules/security.md`: non-negotiables such as no service-role keys
+- `.traffic-one/security.md`: non-negotiables such as no service-role keys
   in client/mobile code, no `user_metadata` in RLS, secrets only via env vars,
   and no production data in fixtures or docs.
-- `.traffic-one/rules/AGENTS.md`: generated agent entrypoint composed from
-  coding and security rules. Root `AGENTS.md` should symlink to this file when
-  symlinks are safe; otherwise generate root `AGENTS.md` from the same source.
+- `.traffic-one/rules/**`: generated active rule files for the selected stack.
+  This directory is generated-only and must not contain `AGENTS.md`, project
+  memory notes, or manifest metadata.
 - `.traffic-one/schema.sql`: DB schema snapshot refreshed after every migration.
   If no database exists, write `Not applicable` with the reason.
 - `.traffic-one/deployments.jsonl`: append-only deploy log. One JSON object per
@@ -94,6 +95,28 @@ normal feature work:
   commands, scopes, and required env var names; never store token values.
 - `.traffic-one/skills/`: reusable local skills or commands such as
   `security-check` and `deploy-staging` when the project needs them.
+- `.traffic-one/rules/**`, `.traffic-one/manifest.json`, and
+  `.traffic-one/skills/`: generated active stack bundle materialized from the
+  plugin before feature-source work begins. Root `AGENTS.md` contains the full
+  active rule bundle; root `CLAUDE.md` should symlink to root `AGENTS.md` when
+  safe.
+
+Active rule/skill materialization is not hand-authored memory. After
+`.traffic-one.json` has the complete state schema and onboarding is complete,
+the generic post-tool hook must materialize the local bundle on the next host
+tool event. If a host runtime does not emit that hook, or an agent manually
+repairs project memory, run this from the project root before writing feature
+source:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+```
+
+The expected result is a stamped `.traffic-one.json` with `version`,
+`materializedStack`, `materializedAt`, and `materializedVersion`, plus
+project-local `.traffic-one/rules/**`, `.traffic-one/manifest.json`,
+`.traffic-one/skills/**`, root `AGENTS.md` containing the full active rule
+bundle, and root `CLAUDE.md` symlinked to `AGENTS.md` when safe.
 
 ## Memory Shape
 
@@ -103,7 +126,7 @@ Keep persistent memory useful, not encyclopedic:
   so each new session does not re-infer the product from scratch.
 - `stack.md` is the locked tech-stack source: language, framework, package
   manager, database, testing, linting, deploy target, and version pins.
-- `rules/coding.md` holds durable conventions and "always true" project facts.
+- `coding.md` holds durable conventions and "always true" project facts.
   If a request conflicts with one, flag it before proceeding.
 - `decisions/` records significant choices, rejected alternatives, and why they
   were rejected. Do not contradict a logged decision silently.

@@ -192,9 +192,24 @@ original request:
 
 > "Saved — using `<stack>` (backend `<backend>`, realtime `<realtime>`, graph `<codeGraphProvider>`). Continuing with your build."
 
-The PostToolUse hook injects the full stack rules into THIS session immediately.
-You'll see `traffic-one rules loaded for stack: <id>` in a system message
-before your next action — those rules are now live, use them.
+The generic post-tool hook converges the project immediately after any host
+tool event once the complete state exists. You'll see either
+`traffic-one rules loaded for stack: <id>` or `project-local rules/skills
+materialized` in a system message before your next action — those rules are now
+live, use them.
+
+If the host runtime does not emit a post-tool hook, or you are repairing a state
+file written by another agent, run the materializer from the project root before
+feature work:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+```
+
+Do not continue until `.traffic-one.json` has `version`, `materializedStack`,
+`materializedAt`, and `materializedVersion`, and the project has
+`.traffic-one/rules/**`, `.traffic-one/manifest.json`, `.traffic-one/skills/**`,
+root `AGENTS.md`, and root `CLAUDE.md`.
 
 After that system message, the next scaffold action for `mode: "new-project"`
 must read and follow `rules/modes/new-project.md`. For `stack: "default"` or a

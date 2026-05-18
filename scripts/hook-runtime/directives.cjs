@@ -327,12 +327,13 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
   3. Project memory baseline: create \`.traffic-one/\` and run
      \`project-memory\`. Verify the root companion state file
      \`.traffic-one.json\` exists with the full onboarding schema, then write
-     product.md, stack.md, rules/coding.md, rules/security.md, rules/AGENTS.md,
+     product.md, stack.md, coding.md, security.md,
      known-issues.md, agent-log.md, .agentignore, mcp.json, deployments.jsonl,
      schema.sql, decisions/, and skills/ when reusable team commands are
-     needed. Root AGENTS.md should symlink to
-     \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate it from the
-     same source. Generate root CLAUDE.md from the same source.
+     needed. Root AGENTS.md contains the active rule bundle. Do not generate
+     \`.traffic-one/rules/AGENTS.md\`; \`.traffic-one/rules/\` contains only
+     generated rule files. Root CLAUDE.md should symlink to root AGENTS.md when
+     safe.
   4. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
      Tailwind preset + \`globals.css\`), i18n/ (typed i18next/react-i18next
      resources and provider), api-client/, ws-client/, utils/, tsconfig/,

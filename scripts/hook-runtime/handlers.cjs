@@ -55,7 +55,10 @@ const {
 } = require('./detection.cjs');
 
 const { packBundle, packRuleIndex, packFixCycleHeader } = require('./packing.cjs');
-const { materializeProjectAssets } = require('./materialize.cjs');
+const {
+  materializeProjectAssets,
+  hasMaterializedProjectAssets,
+} = require('./materialize.cjs');
 const {
   computeProjectFingerprint,
 } = require('../security-check-runner.cjs');
@@ -80,8 +83,8 @@ function tokenEconomyBanner(cwd) {
   const memoryPaths = [
     '.traffic-one/product.md',
     '.traffic-one/stack.md',
-    '.traffic-one/rules/coding.md',
-    '.traffic-one/rules/security.md',
+    '.traffic-one/coding.md',
+    '.traffic-one/security.md',
     '.traffic-one/known-issues.md',
     '.traffic-one/agent-log.md',
   ];
@@ -248,10 +251,9 @@ function isProjectMemoryWritePath(relativePath) {
   if (normalized.startsWith('.traffic-one/digests/')) return false;
   if (normalized.startsWith('.traffic-one/reports/')) return false;
   if (normalized.startsWith('.traffic-one/backups/')) return false;
-  if (normalized.startsWith('.traffic-one/rules/active/')) return false;
+  if (normalized.startsWith('.traffic-one/rules/')) return false;
   if (normalized.startsWith('.traffic-one/skills/')) return false;
-  return normalized !== '.traffic-one/manifest.json'
-    && normalized !== '.traffic-one/rules/manifest.json';
+  return normalized !== '.traffic-one/manifest.json';
 }
 
 function materializationFailureResult(error) {
@@ -261,7 +263,7 @@ function materializationFailureResult(error) {
       systemMessage: 'traffic-one — project-local materialization failed',
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `traffic-one could not materialize .traffic-one/rules/active, .traffic-one/skills, and .traffic-one/rules/manifest.json: ${detail}`,
+        additionalContext: `traffic-one could not materialize .traffic-one/rules, .traffic-one/skills, and .traffic-one/manifest.json: ${detail}`,
       },
     }),
     exitCode: 0,
@@ -277,11 +279,41 @@ function materializationSuccessResult(materialized, triggerPath) {
       systemMessage: 'traffic-one — project-local rules/skills materialized',
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/rules/manifest.json.`,
+        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains the active rule bundle; root CLAUDE.md symlinks to AGENTS.md when safe.`,
       },
     }),
     exitCode: 0,
   };
+}
+
+function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
+  const statePath = path.join(cwd, STATE_FILE);
+  const state = safeReadJson(statePath, null);
+  if (!state || typeof state !== 'object') return null;
+  if (!state.stack || !isKnownStack(state.stack)) return null;
+  if (state.onboardingComplete !== true) return null;
+
+  if (isMaterialized(state) && hasMaterializedProjectAssets(cwd, state)) {
+    return null;
+  }
+
+  return materializeProjectFromState(cwd, trigger);
+}
+
+function ensureGitnexusNvmrc(cwd, state) {
+  if (!state || state.codeGraphProvider !== 'gitnexus' || state.mode !== 'new-project') {
+    return false;
+  }
+  const nvmrcPath = path.join(cwd, '.nvmrc');
+  if (fs.existsSync(nvmrcPath)) {
+    return false;
+  }
+  try {
+    fs.writeFileSync(nvmrcPath, '22\n', 'utf8');
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function materializeFromProjectMemoryWrite(cwd, filePath) {
@@ -355,6 +387,105 @@ function hasValidMobileState(mobile) {
   return typeof mobile.enabled === 'boolean'
     && MOBILE_FRAMEWORK_IDS.has(mobile.framework)
     && MOBILE_SOURCE_IDS.has(mobile.source);
+}
+
+function materializeProjectFromState(cwd, trigger = 'manual materialize-project') {
+  const statePath = path.join(cwd, STATE_FILE);
+  const state = safeReadJson(statePath, null);
+  const validStackIds = Object.keys(STACKS);
+  const validCodeGraphProviders = ['gitnexus', 'graphify'];
+
+  if (!state || typeof state !== 'object') {
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one — `.traffic-one.json` is missing or invalid; cannot materialize project rules',
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: 'Write the complete Traffic One state file first, then run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root.',
+        },
+      }),
+      exitCode: 0,
+    };
+  }
+
+  let normalizedBeforeValidation = false;
+  if (state.stack && isKnownStack(state.stack)) {
+    normalizedBeforeValidation = normalizeState(state, state.mode || detectMode(cwd));
+  }
+
+  const stackOk = state.stack && STACK_IDS.has(state.stack);
+  const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
+  const ready = stackOk
+    && cgOk
+    && hasValidMobileState(state.mobile)
+    && hasTechnologyArrays(state.technologies)
+    && hasInitializedToolchain(state.toolchain)
+    && state.confirmed === true
+    && state.onboardingComplete === true
+    && typeof state.confirmedAt === 'string'
+    && state.confirmedAt.trim() !== '';
+
+  if (!ready) {
+    const invalidStack = state.stack && !isKnownStack(state.stack)
+      ? state.stack
+      : null;
+    const additionalContext = postWriteIncompleteWarning({
+      stack: invalidStack,
+      validStackIds,
+      codeGraphProvider: cgProvider,
+      validCodeGraphProviders,
+    });
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one — `.traffic-one.json` is incomplete; cannot materialize project rules yet',
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext,
+        },
+      }),
+      exitCode: 0,
+    };
+  }
+
+  if (normalizedBeforeValidation) {
+    try {
+      writeState(cwd, state);
+    } catch {
+      // best-effort; materialization can still proceed with the normalized object.
+    }
+  }
+
+  ensureGitnexusNvmrc(cwd, state);
+
+  let materialized = null;
+  try {
+    materialized = materializeProjectAssets(cwd, state);
+  } catch (error) {
+    return materializationFailureResult(error);
+  }
+
+  try {
+    state.materializedStack   = stackFingerprint(state);
+    state.materializedAt      = nowIso();
+    state.materializedVersion = getPluginVersion();
+    writeState(cwd, state);
+  } catch {
+    // best-effort; the copied local assets are still usable.
+  }
+
+  const result = materializationSuccessResult(materialized, trigger);
+  if (result.stdout) return result;
+  return {
+    stdout: JSON.stringify({
+      systemMessage: 'traffic-one — project-local rules/skills already materialized',
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: `Project-local rules/skills are current for ${stackFingerprint(state)}. Root AGENTS.md contains the active rule bundle; root CLAUDE.md symlinks to AGENTS.md when safe.`,
+      },
+    }),
+    exitCode: 0,
+  };
 }
 
 function isNewProjectOnboardingIncomplete(state) {
@@ -491,7 +622,7 @@ function runSessionStart() {
 
     const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
       + `[subagent] Full rules already loaded by parent session and materialized to `
-      + `.traffic-one/rules/active/. This index lists role-scoped rules; Read them on demand.\n`;
+      + `.traffic-one/rules/. This index lists role-scoped rules; Read them on demand.\n`;
     const context = `${header}${skillDirective}${graphPreview}\n${body}`;
     return {
       stdout: JSON.stringify({
@@ -740,6 +871,11 @@ function runUserPromptSubmit(rawInput = '') {
     };
   }
 
+  const materialized = materializeProjectIfNeeded(process.cwd(), 'generic user-prompt convergence');
+  if (materialized && materialized.stdout) {
+    return materialized;
+  }
+
   return {
     stdout: JSON.stringify({
       systemMessage: `traffic-one [${stack}]`,
@@ -774,6 +910,11 @@ function runCheckOnboardingGate(rawInput) {
     return denyPreToolUse(onboardingGateFallbackReason());
   }
 
+  const materialized = materializeProjectIfNeeded(cwd, 'generic pre-tool convergence');
+  if (materialized && materialized.stdout) {
+    return materialized;
+  }
+
   return { stdout: '', exitCode: 0 };
 }
 
@@ -790,6 +931,7 @@ function runCheckArchitectureWrite(rawInput) {
   const cwd = process.cwd();
   const projectRoot = findProjectRootForHookFile(cwd, rawFilePath);
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
+  materializeProjectIfNeeded(projectRoot, 'architecture preflight convergence');
   const content =
     typeof toolInput.content === 'string'
       ? toolInput.content
@@ -863,11 +1005,16 @@ function runCheckArchitectureWrite(rawInput) {
   // Materialization gate: block feature writes until the SessionStart hook has
   // copied the correct rules and skills to .traffic-one/ for this stack.
   // This ensures the model has full quality/performance context before implementing.
-  if (writingFeatureSource && !isMaterialized(stateForPlan)) {
+  const hasMaterializedAssets = hasMaterializedProjectAssets(projectRoot, stateForPlan);
+  const featureContextMaterialized = !stateForPlan.onboardingComplete
+    || (isMaterialized(stateForPlan) && hasMaterializedAssets);
+
+  if (writingFeatureSource && !featureContextMaterialized) {
     violations.push(
-      `Materialization gate: stack context for ${stackFingerprint(stateForPlan)} has not been materialized yet. `
-      + 'Start a new Claude Code session (the SessionStart hook will copy the correct rules and skills) '
-      + 'or run `/detect-project` to trigger materialization before writing feature source.'
+      `Materialization gate: stack context for ${stackFingerprint(stateForPlan)} has not been materialized on disk yet. `
+      + 'Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` '
+      + 'from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, '
+      + '`.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.'
     );
   }
 
@@ -1088,7 +1235,7 @@ function checkSecurityDeployStamp(stateForDeploy, cwd) {
     return {
       ok: false,
       reason: 'Deploy gate: the Traffic One pre-deployment security check has not passed in the last 10 minutes. Run '
-        + '`node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp` '
+        + '`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp` '
         + 'from the project root, address any findings, then deploy through `senior-shipper`.',
     };
   }
@@ -1107,7 +1254,7 @@ function checkSecurityDeployStamp(stateForDeploy, cwd) {
     return {
       ok: false,
       reason: 'Deploy gate: the worktree changed after the last passing security check. Rerun '
-        + '`node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp` '
+        + '`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp` '
         + 'so the security fingerprint matches the code being deployed.',
     };
   }
@@ -1207,7 +1354,7 @@ function runPostBuildPageSpeed(rawInput) {
           '[traffic-one] A production build just ran for a web stack.',
           'Before final delivery for generated/changed React or Ionic routes, run the Lighthouse mobile gate:',
           '',
-          '  node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /',
+          '  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /',
           '',
           'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. If the environment blocks Lighthouse, explicitly report page speed as unverified with concrete risks.',
         ].join('\n'),
@@ -1437,11 +1584,12 @@ function runPostStackSetup(rawInput) {
   const toolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
 
-  // PostToolUse on Write|Edit fires for ALL writes. Dispatch:
+  // PostToolUse may be configured broadly by different host runtimes. Dispatch:
   //   1. supabase/functions/<name>/index.ts            → runPostFunctionEdit (auto-deploy)
   //   2. .traffic-one/digests/<run-id>/<role>.md       → digest-size warning
   //   3. .traffic-one.json                             → existing stack-rules auto-load
-  //   4. anything else                                 → no-op
+  //   4. project-memory writes                         → local materialization
+  //   5. anything else                                 → converge from complete state if needed
   if (filePath.replace(/\\/g, '/').match(FUNCTION_PATH_RE)) {
     const result = runPostFunctionEdit(filePath);
     if (result) {
@@ -1483,7 +1631,10 @@ function runPostStackSetup(rawInput) {
   }
 
   if (!filePath.endsWith(STATE_FILE)) {
-    return materializeFromProjectMemoryWrite(process.cwd(), filePath) || { stdout: '', exitCode: 0 };
+    const memoryResult = materializeFromProjectMemoryWrite(process.cwd(), filePath);
+    if (memoryResult) return memoryResult;
+    return materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence')
+      || { stdout: '', exitCode: 0 };
   }
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
@@ -1628,7 +1779,7 @@ function runPostStackSetup(rawInput) {
   }
 
   const materializedLine = materialized
-    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Read them via @-imports from .traffic-one/rules/active/ on demand.`
+    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Root AGENTS.md contains the active rule bundle; root CLAUDE.md symlinks to AGENTS.md when safe.`
     : 'Active rules and skills remain loaded from session start.';
   const context = `[traffic-one] stack rules active for ${stack}. ${materializedLine}${nodeWarning}`;
 
@@ -1642,6 +1793,10 @@ function runPostStackSetup(rawInput) {
     }),
     exitCode: 0,
   };
+}
+
+function runMaterializeProject(_rawInput = '') {
+  return materializeProjectFromState(process.cwd(), 'manual materialize-project');
 }
 
 // ── Supabase Edge Function auto-deploy ───────────────────────────────────────
@@ -1781,6 +1936,7 @@ module.exports = {
   runCheckLibraryAllowlist,
   runPostBuildPageSpeed,
   runPostStackSetup,
+  runMaterializeProject,
   runPostFunctionEdit,      // exported for testing + entrypoint dispatch
   runPreGraphifyHint,        // PreToolUse(Glob|Grep) → graph hint
   runPostBuildGraphifyHint,  // PostToolUse(Bash) → post-build install/build hint

@@ -54,6 +54,26 @@ function parseStdoutJson(result) {
   return JSON.parse(result.stdout);
 }
 
+function completeDefaultState(overrides = {}) {
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  return {
+    version: '2.9.24',
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    realtime: 'none',
+    codeGraphProvider: 'gitnexus',
+    toolchain: initializeToolchainState({}),
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-05-13T10:00:00Z',
+    ...overrides,
+  };
+}
+
 test('react stack denies next packages', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'react-frontend-only' });
@@ -186,10 +206,10 @@ test('new project onboarding includes Codex subagent preflight', () => {
   assert.match(agentsMirror, /Before onboarding is resolved, mention only the project-detection\/onboarding flow/);
   assert.match(agentsMirror, /implementation intent and must not be treated as onboarding answers/);
   assert.match(claude, /mode === "new-project"/);
-  assert.match(claude, /Claude Code and Codex must switch to Plan\s+mode/);
-  assert.match(claude, /In Codex Default mode, the fallback must be the next visible assistant response/);
-  assert.match(claude, /Before onboarding is resolved, mention only project-detection\/onboarding/);
-  assert.match(claude, /Explicit user requests never skip Traffic One onboarding/);
+  assert.match(claude, /Codex and Claude Code must switch to Plan\s+mode/);
+  assert.match(claude, /Codex default-mode fallback is a visible first-response requirement/);
+  assert.match(claude, /Before onboarding is resolved, mention only the project-detection\/onboarding flow/);
+  assert.match(claude, /implementation intent and must not be treated as onboarding answers/);
 
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
@@ -320,6 +340,45 @@ test('onboarding gate hook is installed before tools can proceed', () => {
   );
 });
 
+test('developer settings mirror onboarding and graph hooks', () => {
+  const settings = JSON.parse(fs.readFileSync(path.join(ROOT, 'settings.json'), 'utf8'));
+  const preToolUse = settings.hooks.PreToolUse;
+  const postToolUse = settings.hooks.PostToolUse;
+  assert.ok(Array.isArray(preToolUse));
+  assert.ok(Array.isArray(postToolUse));
+
+  assert.match(preToolUse[0].matcher, /Bash/);
+  assert.match(preToolUse[0].matcher, /Read/);
+  assert.match(preToolUse[0].matcher, /LS/);
+  assert.match(preToolUse[0].matcher, /Glob/);
+  assert.match(preToolUse[0].matcher, /Grep/);
+  assert.match(preToolUse[0].matcher, /Write/);
+  assert.match(preToolUse[0].hooks[0].command, /check-onboarding-gate/);
+  assert.ok(preToolUse.some((entry) => /pre-graphify-hint/.test(entry.hooks[0].command)));
+
+  const bashPostHook = postToolUse.find((entry) => entry.matcher === 'Bash');
+  assert.ok(bashPostHook, 'Claude settings must run Bash post hooks');
+  const bashCommands = bashPostHook.hooks.map((hook) => hook.command).join('\n');
+  assert.match(bashCommands, /post-build-page-speed/);
+  assert.match(bashCommands, /post-build-graphify/);
+
+  const materializePostHook = postToolUse.find((entry) => /post-stack-setup/.test(entry.hooks[0].command));
+  assert.ok(materializePostHook, 'settings must include generic materialization post hook');
+  assert.equal(materializePostHook.matcher, '.*');
+});
+
+test('hook configs use host-agnostic post-tool materialization', () => {
+  for (const relPath of ['hooks/hooks.json', 'settings.json']) {
+    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, relPath), 'utf8'));
+    const postToolUse = hooks.hooks.PostToolUse;
+    const materializePostHook = postToolUse.find((entry) => /post-stack-setup/.test(entry.hooks[0].command));
+
+    assert.ok(materializePostHook, `${relPath} must include post-stack-setup`);
+    assert.equal(materializePostHook.matcher, '.*', `${relPath} must not bind materialization to host-specific tool names`);
+    assert.match(materializePostHook.hooks[0].statusMessage, /materialization/i);
+  }
+});
+
 test('onboarding gate denies tool use when empty cwd resolves mode=new-project', () => {
   withTempDir((cwd) => {
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -415,28 +474,15 @@ test('onboarding gate allows .traffic-one.json repair writes with relative or ab
 });
 
 test('onboarding gate allows tools only after complete v3 onboarding state exists', () => {
-  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   withTempDir((cwd) => {
-    writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: 3,
-      mode: 'new-project',
-      stack: 'default',
-      frontend: 'react-vite',
-      backend: 'supabase',
-      mobile: { enabled: false, framework: 'none', source: 'prompted' },
-      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
-      codeGraphProvider: 'graphify',
-      toolchain: initializeToolchainState({}),
-      confirmed: true,
-      onboardingComplete: true,
-      confirmedAt: '2026-05-13T10:00:00Z',
-    });
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({ codeGraphProvider: 'graphify' }));
 
     const result = runHook(cwd, 'check-onboarding-gate', {
       tool_input: { command: 'npm view react version' },
     });
 
-    assert.equal(result.stdout, '');
+    assert.doesNotMatch(result.stdout, /permissionDecision/);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
   });
 });
 
@@ -532,8 +578,7 @@ test('new projects must include the auto-documentation baseline', () => {
   assert.match(reviewer, /Missing facts are\s+explicitly `Unverified`/);
   assert.match(promptTemplates, /run `project-memory` and\s+`auto-documentation-generator` after the plan even/);
   assert.match(agentsMirror, /auto-documentation is mandatory/);
-  // documentation.md is injected once per session via packBundle() hook, not as a static @import
-  assert.match(claude, /packBundle\(\)/);
+  assert.match(claude, /Auto-documentation generator/);
   assert.match(cursorDocumentation, /For `mode: new-project`, this is mandatory/);
   assert.match(cursorNewProject, /Mandatory auto-documentation baseline/);
 });
@@ -561,19 +606,24 @@ test('project memory baseline is integrated across runtimes', () => {
   assert.match(memoryRules, /\.traffic-one\/product\.md/);
   assert.match(memoryRules, /Root `\.traffic-one\.json`/);
   assert.match(memoryRules, /\.traffic-one\/decisions\//);
-  assert.match(memoryRules, /\.traffic-one\/rules\/coding\.md/);
+  assert.match(memoryRules, /\.traffic-one\/coding\.md/);
   assert.match(memoryRules, /\.traffic-one\/deployments\.jsonl/);
   assert.match(memoryRules, /\.traffic-one\/mcp\.json/);
-  assert.match(memoryRules, /Root `AGENTS\.md` should symlink/);
+  assert.match(memoryRules, /Root `AGENTS\.md` contains the full\s+active rule bundle/);
+  assert.doesNotMatch(memoryRules, /Root `AGENTS\.md` should symlink/);
+  assert.doesNotMatch(memoryRules, /\.traffic-one\/rules\/AGENTS\.md`: canonical/);
+  assert.match(memorySkill, /root `AGENTS\.md` containing the full active rule bundle/);
   assert.match(memorySkill, /Create, refresh, or audit the Traffic One `.traffic-one\/` project memory/);
   assert.match(memorySkill, /root `\.traffic-one\.json`/);
   assert.match(newProjectRule, /Project memory baseline/);
   assert.match(newProjectRule, /root `\.traffic-one\.json` exists/);
+  assert.match(newProjectRule, /Root `AGENTS\.md` is the canonical active agent context/);
   assert.match(existingRule, /run the `project-memory` baseline reconciliation/);
   assert.match(existingRule, /root `\.traffic-one\.json` exists/);
   assert.match(directives, /Project memory baseline: create/);
   assert.match(directives, /Verify the root companion state file/);
   assert.match(directives, /project-memory/);
+  assert.match(directives, /Root AGENTS\.md contains the active rule bundle/);
   assert.match(stacks, /rules\/common\/project-memory\.md/);
   assert.match(skillFilters, /'project-memory'/);
   assert.match(architect, /project-memory/);
@@ -581,8 +631,7 @@ test('project memory baseline is integrated across runtimes', () => {
   assert.match(shipper, /Append one JSON line to `.traffic-one\/deployments\.jsonl`/);
   assert.match(promptTemplates, /Read .traffic-one.json plus existing project memory/);
   assert.match(agentsMirror, /Project memory — `.traffic-one\/`/);
-  // project-memory.md is injected once per session via packBundle() hook, not as a static @import
-  assert.match(claude, /packBundle\(\)/);
+  assert.match(claude, /Project memory — `\.traffic-one\/`/);
   assert.match(cursorMemory, /\.traffic-one\/agent-log\.md/);
   assert.match(cursorNewProject, /Project memory baseline/);
 });
@@ -758,8 +807,7 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   assert.match(promptTemplates, /include the route metadata contract/);
   assert.match(promptTemplates, /regression coverage for every created or changed public route/);
   assert.match(agentsMirror, /SEO baseline — generated and reconciled automatically/);
-  // seo.md is injected once per session via packBundle() hook, not as a static @import
-  assert.match(claude, /packBundle\(\)/);
+  assert.match(claude, /SEO baseline — generated and reconciled automatically/);
   assert.match(readme, /Generated\/existing web SEO baseline/);
   assert.match(cursorSeo, /SEO is not a launch-only cleanup task/);
 
@@ -859,7 +907,7 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
   assert.match(promptTemplates, /even when the user did not\s+mention translations/);
   assert.match(promptTemplates, /prefer `<Trans>`/);
   assert.match(agentsMirror, /i18n baseline — generated and reconciled automatically/);
-  assert.match(claude, /i18n\.md/);
+  assert.match(claude, /i18n baseline — generated and reconciled automatically/);
 
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
@@ -1003,7 +1051,7 @@ test('frontend design gate rejects sparse config-banner-dominated generated UI',
   assert.match(sources.reviewerAgent, /mandatory design gate/);
   assert.match(sources.reviewerAgent, /duplicated setup UI/);
   assert.match(sources.agentsMirror, /Do not rely on path-scoped attach/);
-  assert.match(sources.claudeManifest, /mandatory frontend-stack design brief/);
+  assert.match(sources.claudeManifest, /Generated app\/site prompts must produce a product-specific first screen/);
 });
 
 test('existing React Native project SessionStart includes docs reconciliation guidance', () => {
@@ -1155,6 +1203,17 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
   assert.equal(state.toolchain.trufflehog.installedVersion, null);
 });
 
+test('plugin cache detection covers both Claude and Codex installs', () => {
+  const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.24');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.24');
+  const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
+
+  assert.equal(isManagedPluginCachePath(codexCache), true);
+  assert.equal(isManagedPluginCachePath(claudeCache), true);
+  assert.equal(isManagedPluginCachePath(sourceCheckout), false);
+});
+
 test('materializeProjectAssets copies only active local rules and skills', () => {
   const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
   withTempDir((cwd) => {
@@ -1164,22 +1223,35 @@ test('materializeProjectAssets copies only active local rules and skills', () =>
       backend: 'supabase',
       mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' },
     };
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'coding.md'), '# Coding Rules\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'security.md'), '# Security Rules\n', 'utf8');
 
     const result = materializeProjectAssets(cwd, state);
     assert.ok(result.rules > 0);
     assert.ok(result.skills > 0);
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'frontend', 'react-native', 'core.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'frontend', 'react-native', 'core.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-native-screen', 'SKILL.md')));
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'golang-patterns', 'SKILL.md')), false);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'nextjs-turbopack', 'SKILL.md')), false);
 
     const agentsPath = path.join(cwd, 'AGENTS.md');
     const claudePath = path.join(cwd, 'CLAUDE.md');
-    const rulesManifestPath = path.join(cwd, '.traffic-one', 'rules', 'manifest.json');
+    const manifestPath = path.join(cwd, '.traffic-one', 'manifest.json');
     assert.ok(fs.existsSync(agentsPath));
-    assert.match(fs.readFileSync(claudePath, 'utf8'), /@\.traffic-one\/rules\/active\//);
-    assert.match(fs.readFileSync(rulesManifestPath, 'utf8'), /react-native\/core\.md/);
-    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')), false);
+    const rootAgents = fs.readFileSync(agentsPath, 'utf8');
+    assert.match(rootAgents, /\.traffic-one\/rules\/frontend\/react-native\/core\.md/);
+    assert.doesNotMatch(rootAgents, /\.traffic-one\/rules\/active/);
+    assert.match(rootAgents, /## Active Rule Contents/);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'coding.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'security.md')), false);
+    assert.match(fs.readFileSync(path.join(cwd, '.traffic-one', 'coding.md'), 'utf8'), /Coding Rules/);
+    assert.match(fs.readFileSync(path.join(cwd, '.traffic-one', 'security.md'), 'utf8'), /Security Rules/);
+    assert.equal(fs.lstatSync(claudePath).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(claudePath), 'AGENTS.md');
+    assert.match(fs.readFileSync(manifestPath, 'utf8'), /react-native\/core\.md/);
   });
 });
 
@@ -1196,16 +1268,40 @@ test('materializeProjectAssets includes mode-specific local rules', () => {
 
     materializeProjectAssets(cwd, state);
 
-    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md');
-    const manifest = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json'), 'utf8');
-    const localAgents = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md'), 'utf8');
-    const localClaude = fs.readFileSync(path.join(cwd, 'CLAUDE.md'), 'utf8');
+    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md');
+    const manifest = fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8');
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
 
     assert.ok(fs.existsSync(localRulePath));
     assert.match(manifest, /rules\/modes\/new-project\.md/);
-    assert.match(localAgents, /\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
-    assert.match(localClaude, /@\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
+    assert.match(rootAgents, /\.traffic-one\/rules\/modes\/new-project\.md/);
+    assert.match(rootAgents, /## Active Rule Contents/);
+    assert.match(rootAgents, /### rules\/modes\/new-project\.md/);
+    assert.match(rootAgents, /# Mode: New Project/);
+    assert.doesNotMatch(rootAgents, /\.traffic-one\/rules\/active/);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+    assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(path.join(cwd, 'CLAUDE.md')), 'AGENTS.md');
   });
+});
+
+test('hook configs use universal plugin-root fallback for Claude and Codex', () => {
+  const settings = fs.readFileSync(path.join(ROOT, 'settings.json'), 'utf8');
+  const codexHooks = fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8');
+  const combined = `${settings}\n${codexHooks}`;
+
+  assert.match(combined, /TRAFFIC_ONE_PLUGIN_ROOT/);
+  assert.match(combined, /CODEX_PLUGIN_ROOT/);
+  assert.match(combined, /CLAUDE_PLUGIN_ROOT/);
+  assert.doesNotMatch(combined, /node "\\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/hook-runtime\.cjs/);
+});
+
+test('Codex manifest discovers full skill templates without cache writes', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, '.codex-plugin', 'plugin.json'), 'utf8'));
+  assert.equal(manifest.skills, './skills-templates/');
+  assert.ok(fs.existsSync(path.join(ROOT, 'skills-templates', 'frontend-design', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md')));
 });
 
 test('post-stack-setup materializes local rules after project-memory writes', () => {
@@ -1236,10 +1332,96 @@ test('post-stack-setup materializes local rules after project-memory writes', ()
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
     assert.match(context, /Project-local rules\/skills materialized/);
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')));
-    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')), false);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+  });
+});
+
+test('materialize-project normalizes partial state and writes local rules/skills', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: 'web-only',
+      codeGraphProvider: 'gitnexus',
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'materialize-project');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(context, /Project-local rules\/skills/);
+    assert.equal(state.version, '2.9.24');
+    assert.equal(state.confirmed, true);
+    assert.equal(state.onboardingComplete, true);
+    assert.equal(state.mobile.framework, 'none');
+    assert.equal(state.mobile.enabled, false);
+    assert.ok(Array.isArray(state.technologies.frontend));
+    assert.ok(state.toolchain.gitnexus);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
+    assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
+  });
+});
+
+test('post-tool convergence materializes complete state without write-specific payload', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Existing project note\n\nKeep this note.\n', 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { tool_name: 'future-host-patch-tool' },
+    });
+    const payload = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(state.materializedAt);
+    assert.ok(state.materializedVersion);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'AGENTS.local.md')));
+    assert.match(fs.readFileSync(path.join(cwd, '.nvmrc'), 'utf8'), /^22\n$/);
+    assert.match(rootAgents, /Traffic One Local Agent Context/);
+    assert.match(rootAgents, /Preserved Project Notes/);
+    assert.match(rootAgents, /Keep this note/);
+    assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), true);
+  });
+});
+
+test('pre-tool convergence repairs missing materialized assets before feature gates', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      ...completeDefaultState(),
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: '2026-05-13T10:00:00Z',
+      materializedVersion: '2.9.24',
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'future-host-read-or-build' },
+    });
+    const payload = parseStdoutJson(result);
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
   });
 });
 
@@ -1262,7 +1444,7 @@ test('post-stack-setup reports local materialization failures', () => {
       confirmedAt: '2026-05-13T10:00:00Z',
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one', 'rules'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'active'), 'not a directory\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'common'), 'not a directory\n', 'utf8');
     fs.writeFileSync(path.join(cwd, '.traffic-one', 'product.md'), '# Product\n', 'utf8');
 
     const result = runHook(cwd, 'post-stack-setup', {
@@ -1271,7 +1453,7 @@ test('post-stack-setup reports local materialization failures', () => {
 
     const payload = parseStdoutJson(result);
     assert.match(payload.systemMessage, /materialization failed/);
-    assert.match(payload.hookSpecificOutput.additionalContext, /\.traffic-one\/rules\/active/);
+    assert.match(payload.hookSpecificOutput.additionalContext, /\.traffic-one\/rules/);
   });
 });
 
@@ -1446,6 +1628,32 @@ test('plan-gate allows feature write when plan exists', () => {
     });
 
     assert.equal(result.stdout, '');
+  });
+});
+
+test('materialization gate blocks forged stamp when local assets are missing', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      ...completeDefaultState({
+        materializedStack: 'default|react-vite|supabase|none',
+        materializedAt: '2026-05-13T10:00:00Z',
+        materializedVersion: '2.9.24',
+      }),
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules'), 'blocks materialization\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/jobs/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Materialization gate/);
+    assert.match(result.stdout, /\.traffic-one\/rules/);
   });
 });
 
@@ -1999,8 +2207,7 @@ test('auto documentation generator guidance is present and not duplicated', () =
   assert.match(reviewer, /auto-documentation-generator/);
   assert.match(shipper, /auto-documentation-generator/);
   assert.match(agentsMirror, /Auto-documentation generator/);
-  // documentation.md is injected once per session via packBundle() hook, not as a static @import
-  assert.match(claude, /packBundle\(\)/);
+  assert.match(claude, /Auto-documentation generator/);
   assert.match(readme, /generate project docs/);
   assert.match(skillFilters, /auto-documentation-generator/);
 });
@@ -2808,7 +3015,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.13) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.24) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -2942,7 +3149,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.18', () => {
+test('manifests bumped to 2.9.24', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2950,11 +3157,11 @@ test('manifests bumped to 2.9.18', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.18"/, `${rel} must be bumped to 2.9.18`);
+    assert.match(text, /"version":\s*"2\.9\.24"/, `${rel} must be bumped to 2.9.24`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.16) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.24) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -3024,7 +3231,8 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
   const rules = ['rules/common/security.md', 'rules/common/clean-code.md', 'rules/core.md'];
   const { body } = packRuleIndex(ROOT, rules);
   assert.match(body, /## Active rule index/);
-  assert.match(body, /- \.traffic-one\/rules\/active\/rules\/common\/security\.md/);
+  assert.match(body, /- \.traffic-one\/rules\/common\/security\.md/);
+  assert.doesNotMatch(body, /\.traffic-one\/rules\/active/);
   assert.ok(body.length < 5000, `index too large: ${body.length} bytes`);
   // Should NOT contain actual rule content (no '# Security Baseline' from security.md)
   assert.ok(!body.includes('# Security Baseline'), 'index leaked rule content');
@@ -3033,7 +3241,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.16',
+      version: '2.9.24',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -3049,7 +3257,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.16',
+      materializedVersion: '2.9.24',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -3098,7 +3306,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.16',
+      version: '2.9.24',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3110,7 +3318,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.16',
+      materializedVersion: '2.9.24',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -3130,7 +3338,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.17) ──────────────────────────────────────────────
+// ── Token usage report (2.9.24) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -3281,7 +3489,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.18) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.24) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -3333,7 +3541,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.18',
+      version: '2.9.24',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3345,7 +3553,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.18',
+      materializedVersion: '2.9.24',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -3365,7 +3573,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.18',
+      version: '2.9.24',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3377,7 +3585,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.18',
+      materializedVersion: '2.9.24',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },

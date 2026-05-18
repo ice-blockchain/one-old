@@ -61,7 +61,7 @@ Run-id: <run-id>. The architect digest is at:
 
 Read in priority order:
   1. .traffic-one/digests/<run-id>/architect.md
-  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/coding.md,
+  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/coding.md,
      .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Frontend + § Module map (only your scope)
   4. Codebase-graph artefact at active provider's location (per
@@ -112,7 +112,7 @@ Run-id: <run-id>. The architect digest is at:
 
 Read in priority order:
   1. .traffic-one/digests/<run-id>/architect.md
-  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/security.md,
+  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/security.md,
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Backend + § Public contracts
   4. Codebase-graph artefact at active provider's location (per
@@ -146,7 +146,7 @@ Run-id: <run-id>. The implementer digests are at:
 
 Read in priority order:
   1. Both implementer digests above.
-  2. .traffic-one/rules/coding.md, .traffic-one/rules/security.md,
+  2. .traffic-one/coding.md, .traffic-one/security.md,
      .traffic-one/known-issues.md, and .traffic-one/.agentignore if present.
   3. `git diff --name-only HEAD`, then `git diff HEAD <file>` ONLY for files
      listed in the digests' "Touched" or "Next-phase reading hints" sections.

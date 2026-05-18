@@ -2,8 +2,9 @@
 'use strict';
 
 // scripts/hook-runtime.cjs — entry point for traffic-one hooks.
-// Each hook in settings.json / hooks/hooks.json invokes:
-//   node "${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs" <subcommand>
+// Each hook in settings.json / hooks/hooks.json invokes this file through the
+// universal plugin-root env fallback:
+//   TRAFFIC_ONE_PLUGIN_ROOT → CODEX_PLUGIN_ROOT → CLAUDE_PLUGIN_ROOT
 //
 // This file is intentionally tiny. The actual logic lives in
 // `scripts/hook-runtime/`, organised by concern:
@@ -39,6 +40,7 @@ const HANDLERS = {
   'check-library-allowlist':  (rawInput) => handlers.runCheckLibraryAllowlist(rawInput),
   'post-build-page-speed':    (rawInput) => handlers.runPostBuildPageSpeed(rawInput),
   'post-stack-setup':         (rawInput) => handlers.runPostStackSetup(rawInput),
+  'materialize-project':      (rawInput) => handlers.runMaterializeProject(rawInput),
   'pre-graphify-hint':        (rawInput) => handlers.runPreGraphifyHint(rawInput),
   'post-build-graphify':      (rawInput) => handlers.runPostBuildGraphifyHint(rawInput),
 };
@@ -146,6 +148,7 @@ module.exports = {
   runCheckLibraryAllowlist:  handlers.runCheckLibraryAllowlist,
   runPostBuildPageSpeed:     handlers.runPostBuildPageSpeed,
   runPostStackSetup:         handlers.runPostStackSetup,
+  runMaterializeProject:      handlers.runMaterializeProject,
   runSessionStart:           handlers.runSessionStart,
   runUserPromptSubmit:       handlers.runUserPromptSubmit,
   runPreGraphifyHint:        handlers.runPreGraphifyHint,

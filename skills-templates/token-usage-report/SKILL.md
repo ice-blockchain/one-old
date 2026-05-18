@@ -30,24 +30,25 @@ Trigger on phrases like:
 
 ```bash
 # Latest session for the current project (auto-detects from cwd)
-node "$CLAUDE_PLUGIN_ROOT/scripts/token-report.cjs"
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs"
 
 # Specific session
-node "$CLAUDE_PLUGIN_ROOT/scripts/token-report.cjs" --session <session-id>
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --session <session-id>
 
 # All sessions for the project
-node "$CLAUDE_PLUGIN_ROOT/scripts/token-report.cjs" --all
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --all
 
 # JSON output (machine-readable)
-node "$CLAUDE_PLUGIN_ROOT/scripts/token-report.cjs" --json
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --json
 
 # Save to file
-node "$CLAUDE_PLUGIN_ROOT/scripts/token-report.cjs" --out .traffic-one/reports/tokens.md
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --out .traffic-one/reports/tokens.md
 ```
 
-When `$CLAUDE_PLUGIN_ROOT` is not set, use the absolute path that
-`/Users/<you>/.claude/plugins/cache/...` resolves to, or run the script
-from the plugin source.
+When no plugin-root env var is set, use the absolute path that
+`/Users/<you>/.codex/plugins/cache/...` or
+`/Users/<you>/.claude/plugins/cache/...` resolves to, or run the script from
+the plugin source.
 
 ## What the report contains
 

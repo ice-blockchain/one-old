@@ -166,16 +166,26 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Confirm root `.traffic-one.json` exists with the full Traffic One state
      schema. `.traffic-one/` is memory; `.traffic-one.json` is stack/state.
    - Write `.traffic-one/product.md`, `.traffic-one/stack.md`,
-     `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`,
-     `.traffic-one/rules/AGENTS.md`, `.traffic-one/known-issues.md`,
+     `.traffic-one/coding.md`, `.traffic-one/security.md`,
+     `.traffic-one/known-issues.md`,
      `.traffic-one/agent-log.md`, `.traffic-one/.agentignore`,
      `.traffic-one/mcp.json`, `.traffic-one/deployments.jsonl`,
      `.traffic-one/schema.sql`, `.traffic-one/decisions/`, and
      `.traffic-one/skills/` when reusable commands are needed.
-   - Root `AGENTS.md` should symlink to `.traffic-one/rules/AGENTS.md` when
-     safe; otherwise generate root `AGENTS.md` from the same source. Root
-     `CLAUDE.md` is generated from the same source for Claude Code
-     compatibility.
+   - Ensure the generated active stack bundle exists before feature-source
+     writes: `.traffic-one/rules/**`,
+     `.traffic-one/manifest.json`, `.traffic-one/skills/**`, root `AGENTS.md`
+     containing the full active rule bundle, and root `CLAUDE.md` symlinked to
+     `AGENTS.md` when safe. The generic post-tool hook normally converges this
+     after any host tool event once `.traffic-one.json` is complete; if the host
+     runtime does not emit the hook, run
+     `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`
+     from the project root and verify `.traffic-one.json` has `version`,
+     `materializedStack`, `materializedAt`, and `materializedVersion`.
+   - Root `AGENTS.md` is the canonical active agent context. Do not generate
+     `.traffic-one/rules/AGENTS.md`; `.traffic-one/rules/` must contain only
+     generated rule files. Root `CLAUDE.md` should be a symlink to root
+     `AGENTS.md` for Claude Code compatibility.
    - If the project has no DB yet, `.traffic-one/schema.sql` says
      `Not applicable` with the reason. Once migrations exist, refresh it after
      every migration.

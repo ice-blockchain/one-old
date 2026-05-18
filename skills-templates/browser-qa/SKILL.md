@@ -42,7 +42,7 @@ For React/Vite and Ionic web routes, use the Traffic One Lighthouse runner befor
 declaring page-speed work complete:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/lighthouse-runner.mjs" --route /
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /
 ```
 
 When working from the plugin source checkout, run it from the app/repo root with:
