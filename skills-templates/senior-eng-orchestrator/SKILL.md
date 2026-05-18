@@ -182,9 +182,31 @@ The 2-cycle reviewer cap (architect / orchestrator level) still applies — if t
 
 Spawn `senior-architect` via the available subagent tool. On Claude Code, use `Task` with `subagent_type: "senior-architect"`. On Codex, after the required confirmation step, use a `worker` subagent with the senior-architect role instructions, owned write scope `.traffic-one/plan.md` plus ADR/docs only. On Cursor, use the closest available background-agent/task adapter with the same role instructions and write scope. Block on its return.
 
-Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
+Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory without hand-writing `materializedStack`, `materializedAt`, or `materializedVersion`, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
 
 Architect must end its reply with the literal token `PLAN_READY`. If it doesn't, surface to the user and do not proceed to Phase 2.
+
+After `PLAN_READY`, before Phase 2, verify project-local materialization exists
+for the same project root:
+
+```bash
+test -f .traffic-one/manifest.json &&
+test -d .traffic-one/rules &&
+test -d .traffic-one/skills &&
+test -f AGENTS.md &&
+test -e CLAUDE.md
+```
+
+If any check fails, run:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+```
+
+Then repeat the checks. Do not spawn frontend/backend, simulate Phase 2, or
+write feature source until the manifest, local rules, local skills, AGENTS.md,
+and CLAUDE.md exist. This guard is required because some host runtimes do not
+surface PostToolUse hooks from subagents back to the parent thread.
 
 ### Phase 2 — Implement (parallel)
 

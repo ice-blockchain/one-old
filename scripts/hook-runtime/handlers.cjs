@@ -300,6 +300,85 @@ function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
   return materializeProjectFromState(cwd, trigger);
 }
 
+const PROJECT_ROOT_HINT_FIELDS = [
+  'file_path',
+  'path',
+  'cwd',
+  'workdir',
+];
+const PROJECT_COMMAND_HINT_FIELDS = [
+  'command',
+  'cmd',
+  'shell_command',
+];
+const PROJECT_PATH_TOKEN_RE = /(?:^|[\s"'`=])((?:\.{1,2}\/)?(?:[A-Za-z0-9_.@-]+\/)+(?:[A-Za-z0-9_.@-]+)?)(?=$|[\s"'`,;|&])/g;
+
+function projectRootForPathHint(cwd, hintPath) {
+  const raw = String(hintPath || '').trim();
+  if (!raw || raw.startsWith('-') || raw.includes('://')) return null;
+
+  const cleaned = raw
+    .replace(/^["'`]+|["'`,;]+$/g, '')
+    .replace(/\\ /g, ' ');
+  if (!cleaned || cleaned.startsWith('-') || cleaned.includes('$')) return null;
+
+  const cwdAbs = path.resolve(cwd);
+  const absPath = path.isAbsolute(cleaned)
+    ? path.resolve(cleaned)
+    : path.resolve(cwd, cleaned);
+  if (!absPath.startsWith(cwdAbs)) return null;
+
+  let current = absPath;
+  if (!fs.existsSync(current) || !fs.lstatSync(current).isDirectory()) {
+    current = path.dirname(current);
+  }
+
+  while (current.startsWith(cwdAbs)) {
+    if (fs.existsSync(path.join(current, STATE_FILE))) {
+      return current;
+    }
+    if (current === cwdAbs) break;
+    current = path.dirname(current);
+  }
+
+  return null;
+}
+
+function projectRootsFromToolInputHints(cwd, toolInput) {
+  const roots = new Set();
+  const addHint = (hint) => {
+    const root = projectRootForPathHint(cwd, hint);
+    if (root) roots.add(root);
+  };
+
+  for (const field of PROJECT_ROOT_HINT_FIELDS) {
+    if (typeof toolInput[field] === 'string') {
+      addHint(toolInput[field]);
+    }
+  }
+
+  for (const field of PROJECT_COMMAND_HINT_FIELDS) {
+    const command = typeof toolInput[field] === 'string' ? toolInput[field] : '';
+    if (!command) continue;
+    for (const match of command.matchAll(PROJECT_PATH_TOKEN_RE)) {
+      addHint(match[1]);
+    }
+  }
+
+  return [...roots];
+}
+
+function materializeFromToolInputHints(cwd, toolInput, trigger = 'generic post-tool convergence') {
+  for (const projectRoot of projectRootsFromToolInputHints(cwd, toolInput)) {
+    const relativeRoot = path.relative(cwd, projectRoot).replace(/\\/g, '/') || '.';
+    const result = materializeProjectIfNeeded(projectRoot, `${trigger}: ${relativeRoot}`);
+    if (result && result.stdout) {
+      return result;
+    }
+  }
+  return null;
+}
+
 function ensureGitnexusNvmrc(cwd, state) {
   if (!state || state.codeGraphProvider !== 'gitnexus' || state.mode !== 'new-project') {
     return false;
@@ -389,6 +468,75 @@ function hasValidMobileState(mobile) {
     && MOBILE_SOURCE_IDS.has(mobile.source);
 }
 
+function formatStateValue(value) {
+  return typeof value === 'string' ? `"${value}"` : String(value);
+}
+
+function trafficOneStateValidationIssues(state, validCodeGraphProviders = ['gitnexus', 'graphify']) {
+  const issues = [];
+  if (!state || typeof state !== 'object') {
+    return ['`.traffic-one.json` must contain a JSON object.'];
+  }
+
+  if (!state.stack) {
+    issues.push('`stack` is missing.');
+  } else if (!STACK_IDS.has(state.stack)) {
+    issues.push(`\`stack\` is ${formatStateValue(state.stack)}; valid values: ${[...STACK_IDS].map((id) => `\`${id}\``).join(' · ')}.`);
+  }
+
+  if (!state.frontend) {
+    issues.push('`frontend` is missing.');
+  } else if (!FRONTEND_IDS.has(state.frontend)) {
+    issues.push(`\`frontend\` is ${formatStateValue(state.frontend)}; valid values: ${[...FRONTEND_IDS].map((id) => `\`${id}\``).join(' · ')}.`);
+  }
+
+  if (!state.backend) {
+    issues.push('`backend` is missing.');
+  } else if (!BACKEND_IDS.has(state.backend)) {
+    issues.push(`\`backend\` is ${formatStateValue(state.backend)}; valid values: ${[...BACKEND_IDS].map((id) => `\`${id}\``).join(' · ')}.`);
+  }
+
+  if (!state.mobile || typeof state.mobile !== 'object') {
+    issues.push('`mobile` must be an object with `enabled`, `framework`, and `source`.');
+  } else {
+    if (typeof state.mobile.enabled !== 'boolean') {
+      issues.push(`\`mobile.enabled\` is ${formatStateValue(state.mobile.enabled)}; expected boolean.`);
+    }
+    if (!MOBILE_FRAMEWORK_IDS.has(state.mobile.framework)) {
+      issues.push(`\`mobile.framework\` is ${formatStateValue(state.mobile.framework)}; valid values: ${[...MOBILE_FRAMEWORK_IDS].map((id) => `\`${id}\``).join(' · ')}.`);
+    }
+    if (!MOBILE_SOURCE_IDS.has(state.mobile.source)) {
+      issues.push(`\`mobile.source\` is ${formatStateValue(state.mobile.source)}; valid values: ${[...MOBILE_SOURCE_IDS].map((id) => `\`${id}\``).join(' · ')}.`);
+    }
+  }
+
+  if (!hasTechnologyArrays(state.technologies)) {
+    issues.push('`technologies` must contain `frontend`, `backend`, and `mobile` arrays.');
+  }
+
+  const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : '';
+  if (!cgProvider) {
+    issues.push('`codeGraphProvider` is missing.');
+  } else if (!validCodeGraphProviders.includes(cgProvider)) {
+    issues.push(`\`codeGraphProvider\` is ${formatStateValue(cgProvider)}; valid values: ${validCodeGraphProviders.map((id) => `\`${id}\``).join(' · ')}.`);
+  }
+
+  if (!hasInitializedToolchain(state.toolchain)) {
+    issues.push('`toolchain` must include initialized entries for every tracked tool.');
+  }
+  if (state.confirmed !== true) {
+    issues.push('`confirmed` must be true.');
+  }
+  if (state.onboardingComplete !== true) {
+    issues.push('`onboardingComplete` must be true.');
+  }
+  if (typeof state.confirmedAt !== 'string' || state.confirmedAt.trim() === '') {
+    issues.push('`confirmedAt` must be a non-empty ISO-8601 string.');
+  }
+
+  return issues;
+}
+
 function materializeProjectFromState(cwd, trigger = 'manual materialize-project') {
   const statePath = path.join(cwd, STATE_FILE);
   const state = safeReadJson(statePath, null);
@@ -413,28 +561,17 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     normalizedBeforeValidation = normalizeState(state, state.mode || detectMode(cwd));
   }
 
-  const stackOk = state.stack && STACK_IDS.has(state.stack);
   const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
-  const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
-  const ready = stackOk
-    && cgOk
-    && hasValidMobileState(state.mobile)
-    && hasTechnologyArrays(state.technologies)
-    && hasInitializedToolchain(state.toolchain)
-    && state.confirmed === true
-    && state.onboardingComplete === true
-    && typeof state.confirmedAt === 'string'
-    && state.confirmedAt.trim() !== '';
+  const validationIssues = trafficOneStateValidationIssues(state, validCodeGraphProviders);
+  const ready = validationIssues.length === 0;
 
   if (!ready) {
-    const invalidStack = state.stack && !isKnownStack(state.stack)
-      ? state.stack
-      : null;
     const additionalContext = postWriteIncompleteWarning({
-      stack: invalidStack,
+      stack: state.stack || null,
       validStackIds,
       codeGraphProvider: cgProvider,
       validCodeGraphProviders,
+      validationIssues,
     });
     return {
       stdout: JSON.stringify({
@@ -508,6 +645,34 @@ function isNewProjectOnboardingIncomplete(state) {
     || state.confirmedAt.trim() === '';
 }
 
+function canRepairNewProjectOnboardingState(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.mode !== 'new-project') return false;
+  if (state.onboardingComplete !== true) return false;
+  if (state.confirmed === false) return false;
+  if (typeof state.stack !== 'string' || !isKnownStack(state.stack)) return false;
+  if (typeof state.frontend !== 'string' || !FRONTEND_IDS.has(state.frontend)) return false;
+  if (typeof state.backend !== 'string' || !BACKEND_IDS.has(state.backend)) return false;
+  if (state.mobile === undefined || state.mobile === null) return false;
+  if (state.codeGraphProvider !== 'gitnexus' && state.codeGraphProvider !== 'graphify') return false;
+
+  const candidate = JSON.parse(JSON.stringify(state));
+  normalizeState(candidate, candidate.mode || 'new-project');
+  return !isNewProjectOnboardingIncomplete(candidate);
+}
+
+function repairNewProjectOnboardingState(cwd, state, trigger) {
+  if (!canRepairNewProjectOnboardingState(state)) return null;
+  try {
+    const repaired = JSON.parse(JSON.stringify(state));
+    normalizeState(repaired, repaired.mode || detectMode(cwd));
+    writeState(cwd, repaired);
+    return materializeProjectFromState(cwd, trigger);
+  } catch (error) {
+    return materializationFailureResult(error);
+  }
+}
+
 function onboardingGateFallbackReason() {
   return [
     'Traffic One onboarding gate: mode=new-project and onboarding is not complete.',
@@ -564,6 +729,24 @@ function readGraphPreview(cwd) {
   }
 }
 
+function ensureSessionMaterialization(cwd, state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.onboardingComplete !== true) return false;
+  if (!state.stack || !STACK_IDS.has(state.stack)) return false;
+
+  const hasFreshStamp = isMaterialized(state);
+  const hasAssets = hasMaterializedProjectAssets(cwd, state);
+  if (hasFreshStamp && hasAssets) return false;
+
+  normalizeState(state, state.mode || detectMode(cwd));
+  materializeProjectAssets(cwd, state);
+  state.materializedStack = stackFingerprint(state);
+  state.materializedAt = nowIso();
+  state.materializedVersion = getPluginVersion();
+  writeState(cwd, state);
+  return true;
+}
+
 // ── SessionStart ─────────────────────────────────────────────────────────────
 function runSessionStart() {
   const cwd  = process.cwd();
@@ -580,12 +763,20 @@ function runSessionStart() {
   // runs and removes older ones from .traffic-one/digests/.
   sweepOldDigests(cwd, 5);
 
+  try {
+    ensureSessionMaterialization(cwd, state);
+  } catch {
+    // Best-effort: if local materialization fails, the normal/full SessionStart
+    // branch below still provides rule context instead of trusting a stale stamp.
+  }
+
   // SUBAGENT FAST PATH. The orchestrator skill writes `currentRunId` +
   // `activeAgentRole` to .traffic-one.json before each subagent spawn. When
   // those signals are present (and materialization is fresh), emit a slim
   // bundle instead of re-inlining the full 117KB rule set the parent
-  // already loaded.
-  if (isSubagentSession(state)) {
+  // already loaded. Never trust the JSON stamp alone; the generated manifest,
+  // project-local rules, project-local skills, and root agent files must exist.
+  if (isSubagentSession(state) && hasMaterializedProjectAssets(cwd, state)) {
     const role = activeAgentRole(state);
     const runId = state.currentRunId;
     const spawnIndex = role ? getSpawnIndex(state, role) : 0;
@@ -666,14 +857,20 @@ function runSessionStart() {
     const copied = copyActiveSkills(state);
     const allSkills = listAllSkills();
     const skillDirective = pruneSkillsDirective(state, allSkills);
+    let sessionMaterialized = false;
     try {
       materializeProjectAssets(cwd, state);
+      sessionMaterialized = true;
     } catch {
-      // best-effort; SessionStart rule loading should not fail on local copy issues
+      // Best-effort: SessionStart can still provide the in-memory rule bundle,
+      // but it must not stamp .traffic-one.json as materialized unless the
+      // project-local rules, skills, manifest, and root context files exist.
     }
-    state.materializedStack   = stackFingerprint(state);
-    state.materializedAt      = nowIso();
-    state.materializedVersion = getPluginVersion();
+    if (sessionMaterialized) {
+      state.materializedStack   = stackFingerprint(state);
+      state.materializedAt      = nowIso();
+      state.materializedVersion = getPluginVersion();
+    }
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (copied > 0) {
@@ -739,14 +936,19 @@ function runSessionStart() {
 
       const copied2 = copyActiveSkills(state);
       const allSkills = listAllSkills();
+      let autoMaterialized = false;
       try {
         materializeProjectAssets(cwd, state);
+        autoMaterialized = true;
       } catch {
-        // best-effort; auto-detection still succeeds even if local copy fails
+        // Best-effort: auto-detection still succeeds, but do not claim the
+        // project-local materialization is present when the copy failed.
       }
-      state.materializedStack   = stackFingerprint(state);
-      state.materializedAt      = nowIso();
-      state.materializedVersion = getPluginVersion();
+      if (autoMaterialized) {
+        state.materializedStack   = stackFingerprint(state);
+        state.materializedAt      = nowIso();
+        state.materializedVersion = getPluginVersion();
+      }
       writeState(cwd, state);
       const skillDirective = pruneSkillsDirective(state, allSkills);
 
@@ -907,6 +1109,8 @@ function runCheckOnboardingGate(rawInput) {
   }
 
   if (mode === 'new-project' && isNewProjectOnboardingIncomplete(effectiveState)) {
+    const repaired = repairNewProjectOnboardingState(cwd, effectiveState, 'generic pre-tool onboarding repair');
+    if (repaired) return repaired;
     return denyPreToolUse(onboardingGateFallbackReason());
   }
 
@@ -1633,6 +1837,8 @@ function runPostStackSetup(rawInput) {
   if (!filePath.endsWith(STATE_FILE)) {
     const memoryResult = materializeFromProjectMemoryWrite(process.cwd(), filePath);
     if (memoryResult) return memoryResult;
+    const hintedResult = materializeFromToolInputHints(process.cwd(), toolInput);
+    if (hintedResult) return hintedResult;
     return materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence')
       || { stdout: '', exitCode: 0 };
   }
@@ -1654,8 +1860,9 @@ function runPostStackSetup(rawInput) {
   const cgProvider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
   const toolchainOk = state && state.toolchain && typeof state.toolchain === 'object';
+  const validationIssues = state ? trafficOneStateValidationIssues(state, validCodeGraphProviders) : [];
 
-  if (!state || !stackOk || !cgOk || !toolchainOk) {
+  if (!state || validationIssues.length > 0) {
     // Don't fail silently: emit a system message + reminder so the model can
     // self-correct in the same turn. The warning covers both missing/invalid
     // stack AND missing/invalid codeGraphProvider.
@@ -1666,10 +1873,11 @@ function runPostStackSetup(rawInput) {
       ? state.stack
       : null;
     const additionalContext = postWriteIncompleteWarning({
-      stack: invalidStack,
+      stack: state.stack || null,
       validStackIds,
       codeGraphProvider: cgProvider,
       validCodeGraphProviders,
+      validationIssues,
     });
     let systemMessage;
     if (invalidStack) {
@@ -1680,8 +1888,10 @@ function runPostStackSetup(rawInput) {
       systemMessage = `traffic-one — \`.traffic-one.json\` has unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
     } else if (!toolchainOk) {
       systemMessage = 'traffic-one — `.traffic-one.json` missing required `toolchain` field; re-write with initialized toolchain';
-    } else {
+    } else if (!cgProvider) {
       systemMessage = 'traffic-one — `.traffic-one.json` missing required `codeGraphProvider` field; ask the user (gitnexus or graphify) and re-write';
+    } else {
+      systemMessage = 'traffic-one — `.traffic-one.json` has invalid required fields; see validation issues and re-write';
     }
     return {
       stdout: JSON.stringify({

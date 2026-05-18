@@ -49,6 +49,17 @@ On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
 Format and read protocol: rules/common/agent-handoff-digests.md.
 
+Do not write `materializedStack`, `materializedAt`, or
+`materializedVersion` by hand. Those fields are output from the materializer
+only.
+
+Before emitting PLAN_READY, verify project-local context is materialized. If
+`.traffic-one/manifest.json`, `.traffic-one/rules`, `.traffic-one/skills`,
+root `AGENTS.md`, or root `CLAUDE.md` is missing, run:
+  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+from the project root, then verify those paths again. If materialization fails,
+report the blocker instead of emitting PLAN_READY.
+
 Token budget: ~8k for reads, ~3k for writes. End your reply with the literal
 token PLAN_READY on its own line.
 ```

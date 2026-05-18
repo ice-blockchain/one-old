@@ -114,7 +114,9 @@ The expected result is a stamped `.traffic-one.json` with `version`,
 `materializedStack`, `materializedAt`, and `materializedVersion`, plus
 project-local `.traffic-one/rules/**`, `.traffic-one/manifest.json`,
 `.traffic-one/skills/**`, root `AGENTS.md` containing the full active rule
-bundle, and root `CLAUDE.md` symlinked to `AGENTS.md` when safe.
+bundle, and root `CLAUDE.md` symlinked to `AGENTS.md` when safe. Never write
+the `materialized*` fields by hand; the plugin treats them as valid only when
+the generated manifest, rules, skills, and root context files exist.
 
 ## Memory Shape
 

@@ -106,6 +106,10 @@ Create or refresh:
   `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`
   from the project root. Feature-source work must wait until `.traffic-one.json`
   has `materializedStack`, `materializedAt`, and `materializedVersion`.
+  Never write those `materialized*` fields by hand; they are valid only when
+  the materializer also created `.traffic-one/manifest.json`,
+  `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root
+  `CLAUDE.md`.
 - For user-facing/product work, capture audience, tone, voice, words to avoid,
   and permanent facts only when the user or codebase provides them. Mark guesses
   `Unverified`.
