@@ -70,4 +70,43 @@ function packRuleIndex(root, rules) {
   return { body: lines.join('\n') + '\n', included, dropped: [] };
 }
 
-module.exports = { packBundle, packRuleIndex };
+// For fix-cycle re-spawns (spawnIndex[role] > 1). The same role already ran
+// in this orchestrator run, so it has produced a digest and the orchestrator
+// has written a fix-cycle context file with EXACT findings to apply. Emit
+// only the pointers — the model recalls its prior work and applies the
+// targeted changes without re-exploring the codebase.
+//
+// Target size: ~300-500 bytes (vs ~2KB for the role-scoped index, ~117KB for
+// the full bundle).
+function packFixCycleHeader(cwd, role, runId, spawnIndex) {
+  const fixCycleFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
+  const digestFile   = `.traffic-one/digests/${runId}/${roleDigestName(role)}.md`;
+  const lines = [
+    `═══ traffic-one — ${role} FIX-CYCLE #${spawnIndex - 1} (run ${runId}) ═══`,
+    '',
+    `[fix-cycle] You previously ran in this orchestrator run; apply only the targeted fixes below.`,
+    '',
+    `1. Read the fix-cycle context (exact reviewer findings with file:line):`,
+    `   ${fixCycleFile}`,
+    '',
+    `2. Recall your prior work from your previous digest:`,
+    `   ${digestFile}`,
+    '',
+    `3. Apply ONLY the listed fixes. Do not re-explore the codebase, do not re-read source files except those the fix-cycle context names. Active rules are already loaded; do not re-import them.`,
+    '',
+    `4. Re-emit your digest at ${digestFile} when done.`,
+    '',
+  ];
+  return { body: lines.join('\n') + '\n', included: [], dropped: [] };
+}
+
+// Map a senior-* role to its digest filename (the orchestrator writes
+// architect.md / frontend.md / backend.md / reviewer.md / tester.md / shipper.md
+// per `rules/common/agent-handoff-digests.md`).
+function roleDigestName(role) {
+  if (!role || typeof role !== 'string') return 'agent';
+  const m = /^senior-(.+)$/.exec(role);
+  return m ? m[1] : role;
+}
+
+module.exports = { packBundle, packRuleIndex, packFixCycleHeader, roleDigestName };

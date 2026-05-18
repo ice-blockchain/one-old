@@ -33,6 +33,8 @@ const {
   isMaterialized,
   isSubagentSession,
   activeAgentRole,
+  isFixCycleSession,
+  getSpawnIndex,
 } = require('./state.cjs');
 
 const { STACKS, stackSpecForState, roleScopedRules } = require('./stacks.cjs');
@@ -52,7 +54,7 @@ const {
   classifyPromptForStack,
 } = require('./detection.cjs');
 
-const { packBundle, packRuleIndex } = require('./packing.cjs');
+const { packBundle, packRuleIndex, packFixCycleHeader } = require('./packing.cjs');
 const { materializeProjectAssets } = require('./materialize.cjs');
 const {
   computeProjectFingerprint,
@@ -450,10 +452,33 @@ function runSessionStart() {
   // SUBAGENT FAST PATH. The orchestrator skill writes `currentRunId` +
   // `activeAgentRole` to .traffic-one.json before each subagent spawn. When
   // those signals are present (and materialization is fresh), emit a slim
-  // 3-5KB bundle instead of re-inlining the full 117KB rule set the parent
-  // already loaded. Saves ~28K tokens per subagent SessionStart.
+  // bundle instead of re-inlining the full 117KB rule set the parent
+  // already loaded.
   if (isSubagentSession(state)) {
     const role = activeAgentRole(state);
+    const runId = state.currentRunId;
+    const spawnIndex = role ? getSpawnIndex(state, role) : 0;
+
+    // FIX-CYCLE BRANCH. Same role re-spawned in the same run (spawnIndex > 1)
+    // = the reviewer found issues and the orchestrator is looping back. The
+    // role has its own prior digest + a fix-cycle context file written by the
+    // orchestrator with EXACT findings to apply. Emit ~500 bytes of pointers
+    // and tell the model not to re-explore. Saves ~25-30K tokens vs the
+    // already-slim role-scoped index, ~115KB vs the full bundle.
+    if (isFixCycleSession(state)) {
+      const { body } = packFixCycleHeader(cwd, role, runId, spawnIndex);
+      return {
+        stdout: JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'SessionStart',
+            additionalContext: body,
+          },
+        }),
+        exitCode: 0,
+      };
+    }
+
+    // Standard subagent path: role-scoped rule index (~2-5KB).
     const ruleSet = role ? roleScopedRules(role, state) : null;
     const rules = ruleSet || stackSpecForState(state).mandatory;
 
@@ -463,7 +488,6 @@ function runSessionStart() {
     const { body } = packRuleIndex(root, rules);
     const graphPreview = readGraphPreview(cwd);
     const roleLabel = role || 'subagent';
-    const runId = state.currentRunId;
 
     const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
       + `[subagent] Full rules already loaded by parent session and materialized to `

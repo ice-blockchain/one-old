@@ -422,6 +422,30 @@ function activeAgentRole(state) {
   return typeof role === 'string' && VALID_AGENT_ROLES.has(role) ? role : null;
 }
 
+// FIX-CYCLE DETECTION.
+// `spawnIndex` is a map { role -> integer } that the orchestrator increments
+// before each subagent spawn for that role within a single `currentRunId`.
+//   1 = first spawn (build / plan / review pass 0)
+//   2+ = re-spawn (fix cycle, re-review, etc.)
+// The SessionStart hook checks this to emit an ULTRA-slim bundle for
+// re-spawns: just pointers to the prior digest + the fix-cycle context file
+// the orchestrator wrote before the re-spawn. Saves ~25K-30K tokens per
+// fix-cycle spawn vs the already-slim role-scoped bundle.
+function getSpawnIndex(state, role) {
+  if (!state || typeof state !== 'object') return 0;
+  const map = state.spawnIndex;
+  if (!map || typeof map !== 'object') return 0;
+  const n = map[role];
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
+function isFixCycleSession(state) {
+  if (!isSubagentSession(state)) return false;
+  const role = activeAgentRole(state);
+  if (!role) return false;
+  return getSpawnIndex(state, role) > 1;
+}
+
 module.exports = {
   parseJsonText,
   safeReadText,
@@ -441,4 +465,6 @@ module.exports = {
   isSubagentSession,
   activeAgentRole,
   VALID_AGENT_ROLES,
+  getSpawnIndex,
+  isFixCycleSession,
 };

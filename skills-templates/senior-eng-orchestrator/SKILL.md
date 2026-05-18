@@ -144,6 +144,40 @@ Write order:
 
 For parallel spawns (frontend + backend in Phase 2), write the field for the FIRST role just before that Task call. The second role gets the slim bundle on the next SessionStart even if the field doesn't match — the safety fallback emits a slim-but-unscoped bundle when `currentRunId` is set but `activeAgentRole` is stale, still saving ~115KB vs the full parent bundle.
 
+### Fix-cycle re-spawn (CHANGES_REQUESTED loop)
+
+When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
+
+Instead, follow this protocol for each fix-cycle re-spawn:
+
+1. **Write the fix-cycle context file** with exact reviewer findings. Use the reviewer's `CHANGES_REQUESTED <numbered list>` verbatim — paste `file:line` references and concrete suggested changes; do not paraphrase. Save to:
+
+   ```
+   .traffic-one/fix-cycles/<currentRunId>/<role>-fix-<n>.md
+   ```
+
+   where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.).
+
+2. **Bump `spawnIndex[role]`** in `.traffic-one.json` before the re-spawn:
+
+   ```jsonc
+   {
+     "currentRunId": "<unchanged>",
+     "activeAgentRole": "senior-frontend",
+     "spawnIndex": { "senior-frontend": 2 }   // was 1, now 2 for fix-1
+   }
+   ```
+
+   The SessionStart hook reads `spawnIndex[role] > 1` and emits an ultra-slim ~500-byte bundle that points to the fix-cycle file + the role's prior digest, with explicit instructions not to re-explore.
+
+3. **Spawn the subagent with a tight task description**:
+
+   > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ONLY the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md`. Do not re-read source files except those the fix-cycle context names. Re-emit your digest when done. End with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>` on partial failure)."
+
+4. **After the fix-cycle subagent returns**, loop back to `senior-reviewer` (which also gets a fresh spawn with its own `spawnIndex[senior-reviewer]++` to leverage the same fix-cycle saving on re-reviews).
+
+The 2-cycle reviewer cap (architect / orchestrator level) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
+
 ### Phase 1 — Architect (sequential, blocking)
 
 Spawn `senior-architect` via the available subagent tool. On Claude Code, use `Task` with `subagent_type: "senior-architect"`. On Codex, after the required confirmation step, use a `worker` subagent with the senior-architect role instructions, owned write scope `.traffic-one/plan.md` plus ADR/docs only. On Cursor, use the closest available background-agent/task adapter with the same role instructions and write scope. Block on its return.
