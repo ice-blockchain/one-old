@@ -67,6 +67,8 @@ const {
   codexDefaultModeFallbackMobilePrompt,
 } = require('./directives.cjs');
 
+const tokenLogger = require('./token-logger.cjs');
+
 // ── Token-economy banner: surface graphify report + recent digests ─────────
 // Single-line hints appended to the SessionStart header when these on-disk
 // artefacts exist. They tell the agent "you have a cache; consult it before
@@ -1156,6 +1158,10 @@ const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?
 
 function runPostBuildPageSpeed(rawInput) {
   const data = parseJsonText(rawInput, {});
+
+  // Opt-in per-tool token log (TRAFFIC_ONE_TOKEN_LOG=1). No-op when disabled.
+  tokenLogger.logToolUse(process.cwd(), data);
+
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
   const command = typeof toolInput.command === 'string' ? toolInput.command : '';
   if (!BUILD_COMMAND_RE.test(command)) {
@@ -1400,6 +1406,9 @@ function runPostBuildGraphifyHint(rawInput) {
 function runPostStackSetup(rawInput) {
   const payload = parseJsonText(rawInput, null);
   if (!payload) return { stdout: '', exitCode: 0 };
+
+  // Opt-in per-tool token log (TRAFFIC_ONE_TOKEN_LOG=1). No-op when disabled.
+  tokenLogger.logToolUse(process.cwd(), payload);
 
   const toolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
