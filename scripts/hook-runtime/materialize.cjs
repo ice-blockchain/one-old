@@ -174,15 +174,35 @@ function cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames) {
   return removed;
 }
 
-function renderAgents(state, rules, skills) {
+function pathSegments(filePath) {
+  return path.resolve(filePath).split(path.sep).filter(Boolean);
+}
+
+function isLeanMaterialization(cwd, state) {
+  if (state && (
+    state.leanMode === true
+    || state.contextMode === 'lean'
+    || state.tokenProfile === 'lean'
+  )) {
+    return true;
+  }
+  return pathSegments(cwd).includes('tests');
+}
+
+function renderAgents(state, rules, skills, options = {}) {
   const root = pluginRoot();
+  const leanMode = options.leanMode === true;
   const lines = [
     '# Traffic One Local Agent Context',
     '',
     GENERATED_MARKER,
     '',
-    'Use the project-local active rule bundle below before falling back to plugin-root rules.',
-    'Host runtimes may read AGENTS.md directly, so active rule contents are inlined instead of relying on host-specific import syntax.',
+    leanMode
+      ? 'Use the project-local active rule index below before falling back to plugin-root rules.'
+      : 'Use the project-local active rule bundle below before falling back to plugin-root rules.',
+    leanMode
+      ? 'Lean context mode lists paths only; read a specific .traffic-one rule when its guidance applies.'
+      : 'Host runtimes may read AGENTS.md directly, so active rule contents are inlined instead of relying on host-specific import syntax.',
     '',
     '## Active State',
     '',
@@ -199,9 +219,19 @@ function renderAgents(state, rules, skills) {
     '',
     ...skills.map((name) => `- .traffic-one/skills/${name}/SKILL.md`),
     '',
-    '## Active Rule Contents',
-    '',
   ];
+  if (leanMode) {
+    lines.push(
+      '## Active Rule Index',
+      '',
+      'Full rule content is materialized under `.traffic-one/<path>`.',
+      'Read only the specific rules needed for the current file or task.',
+      '',
+    );
+    return `${lines.join('\n')}\n`;
+  }
+
+  lines.push('## Active Rule Contents', '');
   for (const relPath of rules) {
     const source = readText(path.join(root, templatePath(relPath)));
     lines.push(`### ${relPath}`, '');
@@ -259,7 +289,9 @@ function localContextBlocks(cwd) {
 }
 
 function renderAgentsWithLocalContext(cwd, state, rules, skills) {
-  const base = renderAgents(state, rules, skills).trimEnd();
+  const base = renderAgents(state, rules, skills, {
+    leanMode: isLeanMaterialization(cwd, state),
+  }).trimEnd();
   const localBlocks = localContextBlocks(cwd);
   if (localBlocks.length === 0) {
     return `${base}\n`;
@@ -338,6 +370,7 @@ function modeRulesForState(root, state) {
 
 function materializeProjectAssets(cwd, state) {
   const root = pluginRoot();
+  const leanMode = isLeanMaterialization(cwd, state);
   const spec = stackSpecForState(state);
   const rules = unique([
     ...spec.mandatory,
@@ -377,6 +410,7 @@ function materializeProjectAssets(cwd, state) {
   const manifest = {
     generatedBy: 'traffic-one',
     generatedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+    contextProfile: leanMode ? 'lean' : 'full',
     stack: state.stack || 'minimal',
     frontend: state.frontend || 'none',
     backend: state.backend || 'none',
@@ -391,7 +425,7 @@ function materializeProjectAssets(cwd, state) {
     written += 1;
   }
 
-  return { rules: rules.length, skills: skills.length, written, removed };
+  return { rules: rules.length, skills: skills.length, written, removed, contextProfile: leanMode ? 'lean' : 'full' };
 }
 
 function hasMaterializedProjectAssets(cwd, state) {
@@ -503,6 +537,7 @@ module.exports = {
   GENERATED_MARKER,
   materializeProjectAssets,
   hasMaterializedProjectAssets,
+  isLeanMaterialization,
   generateGraphPreview,
   writeGraphPreview,
 };

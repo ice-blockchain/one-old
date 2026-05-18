@@ -180,7 +180,10 @@ test('new project onboarding defaults to supabase backend', () => {
 
 test('new project onboarding includes Codex subagent preflight', () => {
   const detectProject = fs.readFileSync(path.join(ROOT, 'skills-templates', 'detect-project', 'SKILL.md'), 'utf8');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const directives = [
+    fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'onboarding-prompts.cjs'), 'utf8'),
+  ].join('\n');
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   const stackSetup = fs.readFileSync(path.join(ROOT, 'skills-templates', 'stack-setup', 'SKILL.md'), 'utf8');
   const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
@@ -1340,6 +1343,35 @@ test('materializeProjectAssets includes mode-specific local rules', () => {
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
     assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), true);
     assert.equal(fs.readlinkSync(path.join(cwd, 'CLAUDE.md')), 'AGENTS.md');
+  });
+});
+
+test('materializeProjectAssets uses lean root AGENTS for tests projects', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  withTempDir((root) => {
+    const cwd = path.join(root, 'tests', 'careerforge');
+    fs.mkdirSync(cwd, { recursive: true });
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    };
+
+    const result = materializeProjectAssets(cwd, state);
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md');
+    const manifest = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8'));
+
+    assert.equal(result.contextProfile, 'lean');
+    assert.equal(manifest.contextProfile, 'lean');
+    assert.ok(fs.existsSync(localRulePath));
+    assert.match(fs.readFileSync(localRulePath, 'utf8'), /# Mode: New Project/);
+    assert.match(rootAgents, /## Active Rule Index/);
+    assert.doesNotMatch(rootAgents, /## Active Rule Contents/);
+    assert.doesNotMatch(rootAgents, /# Mode: New Project/);
+    assert.ok(rootAgents.length < 8000, `lean AGENTS too large: ${rootAgents.length} bytes`);
   });
 });
 
@@ -3583,6 +3615,80 @@ test('token-report estimateCost uses model-specific pricing', () => {
   // Opus input list price = $15/M, Sonnet input list price = $3/M
   assert.equal(tr.estimateCost(opusStats), 15);
   assert.equal(tr.estimateCost(sonnetStats), 3);
+});
+
+test('token-report parseCodexJsonlFile extracts Codex totals and Traffic One estimates', () => {
+  withTempDir((cwd) => {
+    const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+    const jsonl = path.join(cwd, 'rollout-2026-05-18T10-00-00-session.jsonl');
+    const lines = [
+      {
+        timestamp: '2026-05-18T10:00:00Z',
+        type: 'session_meta',
+        payload: {
+          id: 'session',
+          timestamp: '2026-05-18T10:00:00Z',
+          cwd,
+          originator: 'Codex Desktop',
+          model: 'gpt-5.2',
+          base_instructions: { text: 'Traffic One rules live in .traffic-one/rules.' },
+        },
+      },
+      {
+        timestamp: '2026-05-18T10:00:05Z',
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'functions.exec_command' },
+      },
+      {
+        timestamp: '2026-05-18T10:00:06Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          output: 'Original token count: 1,234\nOutput:\nTraffic One .traffic-one/rules materialized.',
+        },
+      },
+      {
+        timestamp: '2026-05-18T10:00:10Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: 1000,
+              cached_input_tokens: 250,
+              output_tokens: 60,
+              reasoning_output_tokens: 9,
+              total_tokens: 1060,
+            },
+            last_token_usage: {
+              input_tokens: 400,
+              cached_input_tokens: 100,
+              output_tokens: 10,
+              reasoning_output_tokens: 3,
+              total_tokens: 410,
+            },
+            model_context_window: 258400,
+          },
+        },
+      },
+    ];
+    fs.writeFileSync(jsonl, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf8');
+
+    const report = tr.parseCodexJsonlFile(jsonl);
+    assert.equal(report.session.id, 'session');
+    assert.equal(report.stats.messages, 1);
+    assert.equal(report.stats.toolUses, 1);
+    assert.equal(report.stats.inputTokens, 750);
+    assert.equal(report.stats.cacheReadInputTokens, 250);
+    assert.equal(report.stats.outputTokens, 60);
+    assert.equal(report.stats.reasoningOutputTokens, 9);
+    assert.equal(report.stats.modelContextWindow, 258400);
+    assert.equal(tr.totalTokens(report.stats), 1060);
+    assert.equal(report.stats.byModel['gpt-5.2'].messages, 1);
+    assert.equal(report.trafficOne.directToolOutputTokens, 1234);
+    assert.equal(report.trafficOne.directToolOutputs, 1);
+    assert.ok(report.trafficOne.instructionApproxTokens > 0);
+  });
 });
 
 test('token-logger isEnabled honors TRAFFIC_ONE_TOKEN_LOG env var', () => {

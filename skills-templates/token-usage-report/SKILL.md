@@ -1,6 +1,6 @@
 ---
 name: token-usage-report
-description: Use when the user asks about token usage, cost, billing, "how many tokens did we use", "show token report", "where are tokens going", "token breakdown by subagent", "which phase spent most tokens", or wants an analysis of cache hit rate, subagent costs, or per-tool tokens. Produces an exact breakdown by phase/role/tool from Claude Code's on-disk transcripts. Also covers the opt-in TRAFFIC_ONE_TOKEN_LOG=1 env var for in-flight per-tool logging.
+description: Use when the user asks about token usage, cost, billing, "how many tokens did we use", "show token report", "where are tokens going", "token breakdown by subagent", "which phase spent most tokens", or wants an analysis of cache hit rate, subagent costs, or per-tool tokens. Produces an exact breakdown from Claude Code or Codex Desktop on-disk transcripts. Also covers the opt-in TRAFFIC_ONE_TOKEN_LOG=1 env var for in-flight per-tool logging.
 metadata:
   type: skill
   source: traffic-one
@@ -8,11 +8,11 @@ metadata:
 
 # Token usage report
 
-Generates an exact token-usage breakdown for the current Claude Code session
-(or any past session in this project). Parses the authoritative transcripts
-under `~/.claude/projects/<slug>/` — same data the Anthropic console bills
-from — and groups by main agent + each subagent, by role, by tool, and by
-model. Reports cache hit rate and an estimated cost.
+Generates an exact token-usage breakdown for the current Claude Code or Codex
+Desktop session. Claude Code reports parse authoritative transcripts under
+`~/.claude/projects/<slug>/`; Codex Desktop reports parse
+`~/.codex/sessions/**` token-count events. Reports cache hit rate and, where
+available, role/tool/model breakdowns.
 
 ## When to invoke
 
@@ -31,6 +31,12 @@ Trigger on phrases like:
 ```bash
 # Latest session for the current project (auto-detects from cwd)
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs"
+
+# Force Codex Desktop transcript parsing
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --codex
+
+# Force Claude Code transcript parsing
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --claude
 
 # Specific session
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --session <session-id>
@@ -61,6 +67,9 @@ the plugin source.
 - **Tool calls**: total invocations of each tool across all phases.
 - **By model**: per-model totals and cost estimates.
 - **Notes**: largest single message, subagent spawn count, source pointer.
+- **Codex-only**: fresh input is reported as input minus cached input; reasoning
+  output and best-effort Traffic One direct tool-output attribution are shown
+  when present.
 
 ## Optional: in-flight per-tool log (`TRAFFIC_ONE_TOKEN_LOG=1`)
 
