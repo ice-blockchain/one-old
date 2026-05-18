@@ -44,6 +44,7 @@ const SKILL_FILTERS = {
     'supabase-setup', 'predeploy-security-check',
     'senior-eng-orchestrator',
     'traffic-one-doctor',
+    'token-usage-report',
   ]),
   'react-vite': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',

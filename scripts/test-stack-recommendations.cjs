@@ -2942,7 +2942,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.16', () => {
+test('manifests bumped to 2.9.17', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2950,7 +2950,7 @@ test('manifests bumped to 2.9.16', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.16"/, `${rel} must be bumped to 2.9.16`);
+    assert.match(text, /"version":\s*"2\.9\.17"/, `${rel} must be bumped to 2.9.17`);
   }
 });
 
@@ -3128,6 +3128,157 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
     assert.equal(generateGraphPreview(cwd, 'graphify'), null);
     assert.equal(generateGraphPreview(cwd, 'gitnexus'), null);
   });
+});
+
+// ── Token usage report (2.9.17) ──────────────────────────────────────────────
+
+test('token-report parseJsonlFile extracts usage from assistant messages', () => {
+  withTempDir((cwd) => {
+    const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+    const jsonl = path.join(cwd, 'fixture.jsonl');
+    const line1 = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-05-17T10:00:00Z',
+      message: {
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'tool_use', name: 'Bash' }],
+        usage: { input_tokens: 100, cache_creation_input_tokens: 200, cache_read_input_tokens: 1000, output_tokens: 50 },
+      },
+    });
+    const line2 = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-05-17T10:01:00Z',
+      message: {
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'tool_use', name: 'Write' }, { type: 'tool_use', name: 'Read' }],
+        usage: { input_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 2000, output_tokens: 80 },
+      },
+    });
+    fs.writeFileSync(jsonl, `${line1}\n${line2}\n`);
+    const stats = tr.parseJsonlFile(jsonl);
+    assert.equal(stats.messages, 2);
+    assert.equal(stats.toolUses, 3);
+    assert.equal(stats.inputTokens, 150);
+    assert.equal(stats.cacheCreationInputTokens, 200);
+    assert.equal(stats.cacheReadInputTokens, 3000);
+    assert.equal(stats.outputTokens, 130);
+    assert.equal(stats.byTool.Bash, 1);
+    assert.equal(stats.byTool.Write, 1);
+    assert.equal(stats.byTool.Read, 1);
+    assert.equal(stats.byModel['claude-sonnet-4-6'].messages, 2);
+  });
+});
+
+test('token-report discoverSubagents reads agentType from meta.json', () => {
+  withTempDir((cwd) => {
+    const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+    const subDir = path.join(cwd, 'subagents');
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(path.join(subDir, 'agent-abc.jsonl'), '');
+    fs.writeFileSync(path.join(subDir, 'agent-abc.meta.json'), JSON.stringify({ agentType: 'traffic-one:senior-frontend', description: 'Build UI' }));
+    fs.writeFileSync(path.join(subDir, 'agent-def.jsonl'), '');
+    // No meta for agent-def — should fall back to 'unknown'
+    const subs = tr.discoverSubagents(cwd);
+    assert.equal(subs.length, 2);
+    const frontend = subs.find((s) => s.id === 'agent-abc');
+    assert.equal(frontend.agentType, 'traffic-one:senior-frontend');
+    assert.equal(frontend.description, 'Build UI');
+    const unknown = subs.find((s) => s.id === 'agent-def');
+    assert.equal(unknown.agentType, 'unknown');
+  });
+});
+
+test('token-report estimateCost uses model-specific pricing', () => {
+  const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+  const opusStats = { byModel: { 'claude-opus-4-7': {
+    inputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0,
+  } } };
+  const sonnetStats = { byModel: { 'claude-sonnet-4-6': {
+    inputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0,
+  } } };
+  // Opus input list price = $15/M, Sonnet input list price = $3/M
+  assert.equal(tr.estimateCost(opusStats), 15);
+  assert.equal(tr.estimateCost(sonnetStats), 3);
+});
+
+test('token-logger isEnabled honors TRAFFIC_ONE_TOKEN_LOG env var', () => {
+  const tl = require(path.join(ROOT, 'scripts', 'hook-runtime', 'token-logger.cjs'));
+  const prev = process.env[tl.ENV_FLAG];
+  delete process.env[tl.ENV_FLAG];
+  assert.equal(tl.isEnabled(), false);
+  process.env[tl.ENV_FLAG] = '1';
+  assert.equal(tl.isEnabled(), true);
+  process.env[tl.ENV_FLAG] = 'true';
+  assert.equal(tl.isEnabled(), true);
+  process.env[tl.ENV_FLAG] = '0';
+  assert.equal(tl.isEnabled(), false);
+  if (prev === undefined) delete process.env[tl.ENV_FLAG];
+  else process.env[tl.ENV_FLAG] = prev;
+});
+
+test('token-logger writes one JSONL line per tool use when enabled', () => {
+  withTempDir((cwd) => {
+    const tl = require(path.join(ROOT, 'scripts', 'hook-runtime', 'token-logger.cjs'));
+    const prev = process.env[tl.ENV_FLAG];
+    process.env[tl.ENV_FLAG] = '1';
+    try {
+      tl.logToolUse(cwd, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: '/tmp/foo.ts', content: 'console.log(1);' },
+        tool_response: 'ok',
+      });
+      tl.logToolUse(cwd, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_response: 'foo\nbar\n',
+      });
+    } finally {
+      if (prev === undefined) delete process.env[tl.ENV_FLAG];
+      else process.env[tl.ENV_FLAG] = prev;
+    }
+    const logPath = path.join(cwd, tl.LOG_REL_PATH);
+    assert.ok(fs.existsSync(logPath));
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 2);
+    const entry1 = JSON.parse(lines[0]);
+    assert.equal(entry1.toolName, 'Write');
+    assert.equal(entry1.hookEvent, 'PostToolUse');
+    assert.ok(entry1.inputBytes > 0);
+    assert.ok(entry1.estTokens > 0);
+  });
+});
+
+test('token-logger is a no-op when env var is unset', () => {
+  withTempDir((cwd) => {
+    const tl = require(path.join(ROOT, 'scripts', 'hook-runtime', 'token-logger.cjs'));
+    const prev = process.env[tl.ENV_FLAG];
+    delete process.env[tl.ENV_FLAG];
+    try {
+      tl.logToolUse(cwd, { tool_name: 'Bash', tool_input: { command: 'ls' } });
+    } finally {
+      if (prev !== undefined) process.env[tl.ENV_FLAG] = prev;
+    }
+    assert.equal(fs.existsSync(path.join(cwd, tl.LOG_REL_PATH)), false);
+  });
+});
+
+test('token-usage-report skill exists with required trigger phrases', () => {
+  const skillPath = path.join(ROOT, 'skills-templates', 'token-usage-report', 'SKILL.md');
+  assert.ok(fs.existsSync(skillPath), 'token-usage-report SKILL.md missing');
+  const text = fs.readFileSync(skillPath, 'utf8');
+  assert.match(text, /name:\s*token-usage-report/);
+  assert.match(text, /how many tokens/);
+  assert.match(text, /TRAFFIC_ONE_TOKEN_LOG/);
+  assert.match(text, /token-report\.cjs/);
+});
+
+test('token-usage-report is in SKILL_FILTERS._common', () => {
+  const { SKILL_FILTERS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'));
+  assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
 let failed = 0;
