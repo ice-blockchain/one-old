@@ -2942,7 +2942,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.17', () => {
+test('manifests bumped to 2.9.18', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2950,7 +2950,7 @@ test('manifests bumped to 2.9.17', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.17"/, `${rel} must be bumped to 2.9.17`);
+    assert.match(text, /"version":\s*"2\.9\.18"/, `${rel} must be bumped to 2.9.18`);
   }
 });
 
@@ -3279,6 +3279,116 @@ test('token-usage-report skill exists with required trigger phrases', () => {
 test('token-usage-report is in SKILL_FILTERS._common', () => {
   const { SKILL_FILTERS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'));
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
+});
+
+// ── Fix-cycle slim bundle (2.9.18) ───────────────────────────────────────────
+
+test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
+  const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  assert.equal(getSpawnIndex({}, 'senior-frontend'), 0);
+  assert.equal(getSpawnIndex({ spawnIndex: {} }, 'senior-frontend'), 0);
+  assert.equal(getSpawnIndex({ spawnIndex: { 'senior-frontend': 1 } }, 'senior-frontend'), 1);
+  assert.equal(getSpawnIndex({ spawnIndex: { 'senior-frontend': 3 } }, 'senior-frontend'), 3);
+});
+
+test('isFixCycleSession requires subagent + spawnIndex > 1', () => {
+  const { isFixCycleSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const fresh = new Date().toISOString();
+  const base = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: fresh,
+    currentRunId: '2026-05-18T08-00-00Z',
+    activeAgentRole: 'senior-frontend',
+  };
+  // spawnIndex=1 is the FIRST spawn (not a fix-cycle)
+  assert.equal(isFixCycleSession({ ...base, spawnIndex: { 'senior-frontend': 1 } }), false);
+  // spawnIndex=2 IS a fix-cycle
+  assert.equal(isFixCycleSession({ ...base, spawnIndex: { 'senior-frontend': 2 } }), true);
+  // Without currentRunId, never a subagent session
+  assert.equal(isFixCycleSession({ ...base, currentRunId: null, spawnIndex: { 'senior-frontend': 2 } }), false);
+});
+
+test('packFixCycleHeader emits ultra-slim bundle with both pointers', () => {
+  const { packFixCycleHeader } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'packing.cjs'));
+  const { body } = packFixCycleHeader('/cwd', 'senior-frontend', '2026-05-18T08-00-00Z', 2);
+  assert.ok(body.length < 1500, `fix-cycle header too large: ${body.length} bytes`);
+  assert.match(body, /FIX-CYCLE #1/);
+  assert.match(body, /\.traffic-one\/fix-cycles\/2026-05-18T08-00-00Z\/senior-frontend-fix-1\.md/);
+  assert.match(body, /\.traffic-one\/digests\/2026-05-18T08-00-00Z\/frontend\.md/);
+  assert.match(body, /do not re-explore/i);
+});
+
+test('roleDigestName maps senior-* to short digest filename', () => {
+  const { roleDigestName } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'packing.cjs'));
+  assert.equal(roleDigestName('senior-frontend'), 'frontend');
+  assert.equal(roleDigestName('senior-backend'), 'backend');
+  assert.equal(roleDigestName('senior-architect'), 'architect');
+  assert.equal(roleDigestName('senior-reviewer'), 'reviewer');
+  assert.equal(roleDigestName('senior-tester'), 'tester');
+  assert.equal(roleDigestName('senior-shipper'), 'shipper');
+});
+
+test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.18',
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      confirmed: true, onboardingComplete: true,
+      confirmedAt: '2026-05-18T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.18',
+      currentRunId: '2026-05-18T11-00-00Z',
+      activeAgentRole: 'senior-frontend',
+      spawnIndex: { 'senior-frontend': 2 },
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.ok(context.length < 1500, `fix-cycle bundle too large: ${context.length} bytes`);
+    assert.match(context, /FIX-CYCLE #1/);
+    assert.match(context, /fix-cycles/);
+    assert.match(context, /do not re-explore/i);
+    // Should NOT include the role-scoped rule index that the standard subagent branch emits
+    assert.ok(!context.includes('## Active rule index'), 'fix-cycle leaked rule index');
+  });
+});
+
+test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.18',
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      confirmed: true, onboardingComplete: true,
+      confirmedAt: '2026-05-18T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.18',
+      currentRunId: '2026-05-18T11-00-00Z',
+      activeAgentRole: 'senior-frontend',
+      spawnIndex: { 'senior-frontend': 1 },
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    // First spawn should get the standard subagent slim bundle with rule index, NOT fix-cycle
+    assert.match(context, /## Active rule index/);
+    assert.ok(!context.includes('FIX-CYCLE'), 'first spawn should not be fix-cycle');
+  });
 });
 
 let failed = 0;
