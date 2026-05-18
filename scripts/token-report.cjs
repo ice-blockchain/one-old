@@ -2,10 +2,14 @@
 'use strict';
 
 // scripts/token-report.cjs
-// Exact token-usage report for the current Claude Code session, parsed from
-// the on-disk transcripts under ~/.claude/projects/<slug>/. Source of truth =
-// the `usage` object on every assistant message (input_tokens,
+// Exact token-usage report for Claude Code sessions, parsed from the on-disk
+// transcripts under ~/.claude/projects/<slug>/. Source of truth = the `usage`
+// object on every assistant message (input_tokens,
 // cache_creation_input_tokens, cache_read_input_tokens, output_tokens).
+//
+// Codex Desktop sessions are supported too via ~/.codex/sessions/**. Source of
+// truth = the `event_msg` token_count payloads
+// (total_token_usage/last_token_usage).
 //
 // Aggregates by phase:
 //   - Main agent (parent transcript)
@@ -71,11 +75,21 @@ function emptyStats() {
     cacheCreationInputTokens: 0,
     cacheReadInputTokens: 0,
     outputTokens: 0,
+    reasoningOutputTokens: 0,
     firstAt: null,
     lastAt: null,
     byTool: {},        // toolName -> count
     byModel: {},       // model -> { inputTokens, cacheCreationInputTokens, cacheReadInputTokens, outputTokens, messages }
     largestMessage: null, // { tokens, timestamp, role }
+    modelContextWindow: null,
+  };
+}
+
+function emptyTrafficOneEstimate() {
+  return {
+    directToolOutputTokens: 0,
+    directToolOutputs: 0,
+    instructionApproxTokens: 0,
   };
 }
 
@@ -150,6 +164,286 @@ function parseJsonlFile(filePath) {
   return stats;
 }
 
+function numberValue(value) {
+  return Number.isFinite(value) ? value : 0;
+}
+
+function codexUsageFields(usage) {
+  if (!usage || typeof usage !== 'object') {
+    return {
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      outputTokens: 0,
+      reasoningOutputTokens: 0,
+      reportedTotalTokens: 0,
+    };
+  }
+  const totalInput = numberValue(usage.input_tokens);
+  const cachedInput = Math.min(numberValue(usage.cached_input_tokens), totalInput);
+  const outputTokens = numberValue(usage.output_tokens);
+  return {
+    inputTokens: Math.max(0, totalInput - cachedInput),
+    cacheCreationInputTokens: numberValue(usage.cache_creation_input_tokens),
+    cacheReadInputTokens: cachedInput,
+    outputTokens,
+    reasoningOutputTokens: numberValue(usage.reasoning_output_tokens),
+    reportedTotalTokens: numberValue(usage.total_tokens) || totalInput + outputTokens,
+  };
+}
+
+function addCodexLargestUsage(stats, usage, timestamp) {
+  const fields = codexUsageFields(usage);
+  const totalThisCall = fields.inputTokens
+    + fields.cacheCreationInputTokens
+    + fields.cacheReadInputTokens
+    + fields.outputTokens;
+  if (!stats.largestMessage || totalThisCall > stats.largestMessage.tokens) {
+    stats.largestMessage = {
+      tokens: totalThisCall,
+      timestamp,
+      role: 'codex-api-call',
+    };
+  }
+}
+
+function applyCodexCumulativeUsage(stats, usage, model) {
+  const fields = codexUsageFields(usage);
+  stats.inputTokens = fields.inputTokens;
+  stats.cacheCreationInputTokens = fields.cacheCreationInputTokens;
+  stats.cacheReadInputTokens = fields.cacheReadInputTokens;
+  stats.outputTokens = fields.outputTokens;
+  stats.reasoningOutputTokens = fields.reasoningOutputTokens;
+
+  const modelName = model || 'codex';
+  stats.byModel = {
+    [modelName]: {
+      messages: stats.messages,
+      inputTokens: fields.inputTokens,
+      cacheCreationInputTokens: fields.cacheCreationInputTokens,
+      cacheReadInputTokens: fields.cacheReadInputTokens,
+      outputTokens: fields.outputTokens,
+    },
+  };
+}
+
+function parseOriginalTokenCount(output) {
+  if (typeof output !== 'string') return 0;
+  const match = /Original token count:\s*([0-9][0-9,]*)/.exec(output);
+  if (!match) return 0;
+  return Number(match[1].replace(/,/g, '')) || 0;
+}
+
+function looksTrafficOneRelated(text) {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return /\btraffic-one\b|Traffic One|\.traffic-one|AGENTS\.md|CLAUDE\.md|hook-runtime|skills-templates|rules\/common|rules\/frontend|token-report\.cjs/.test(text);
+}
+
+function addTrafficOneOutputEstimate(estimate, output) {
+  if (!looksTrafficOneRelated(output)) return;
+  const tokens = parseOriginalTokenCount(output);
+  if (tokens <= 0) return;
+  estimate.directToolOutputTokens += tokens;
+  estimate.directToolOutputs += 1;
+}
+
+function estimateTrafficOneInstructionTokens(text) {
+  if (!looksTrafficOneRelated(text)) return 0;
+  const blocks = String(text).split(/\n{2,}/);
+  let chars = 0;
+  for (const block of blocks) {
+    if (looksTrafficOneRelated(block)) chars += Buffer.byteLength(block, 'utf8');
+  }
+  return Math.ceil(chars / 4);
+}
+
+function codexSessionIdFromFile(filePath) {
+  return path.basename(filePath).replace(/^rollout-/, '').replace(/\.jsonl$/, '');
+}
+
+function readFirstLine(filePath, maxBytes = 4 * 1024 * 1024) {
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const chunks = [];
+    let offset = 0;
+    const buffer = Buffer.alloc(64 * 1024);
+    while (offset < maxBytes) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, offset);
+      if (bytesRead <= 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      const newline = chunk.indexOf(10);
+      if (newline >= 0) {
+        chunks.push(chunk.subarray(0, newline));
+        break;
+      }
+      chunks.push(chunk);
+      offset += bytesRead;
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
+function readCodexSessionMeta(filePath) {
+  const line = readFirstLine(filePath).trim();
+  if (!line) return null;
+  try {
+    const parsed = JSON.parse(line);
+    if (!parsed || parsed.type !== 'session_meta') return null;
+    const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
+    return {
+      id: typeof payload.id === 'string' ? payload.id : codexSessionIdFromFile(filePath),
+      startedAt: payload.timestamp || parsed.timestamp || null,
+      cwd: typeof payload.cwd === 'string' ? payload.cwd : null,
+      originator: typeof payload.originator === 'string' ? payload.originator : 'Codex Desktop',
+      source: typeof payload.source === 'string' ? payload.source : null,
+      modelProvider: typeof payload.model_provider === 'string' ? payload.model_provider : null,
+      model: typeof payload.model === 'string' ? payload.model : 'codex',
+    };
+  } catch {
+    return null;
+  }
+}
+
+function pathsRelated(left, right) {
+  if (!left || !right) return false;
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return a === b || a.startsWith(`${b}${path.sep}`) || b.startsWith(`${a}${path.sep}`);
+}
+
+function findCodexSessionsDir() {
+  return path.join(os.homedir(), '.codex', 'sessions');
+}
+
+function walkCodexSessionFiles(dir, out = []) {
+  if (!fs.existsSync(dir)) return out;
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkCodexSessionFiles(fullPath, out);
+    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      out.push(fullPath);
+    }
+  }
+  return out;
+}
+
+function findCodexSessionsForCwd(cwd, sessionsDir = findCodexSessionsDir()) {
+  const sessions = [];
+  for (const filePath of walkCodexSessionFiles(sessionsDir)) {
+    const meta = readCodexSessionMeta(filePath);
+    if (!meta || !pathsRelated(cwd, meta.cwd)) continue;
+    let mtime = 0;
+    try { mtime = fs.statSync(filePath).mtimeMs; } catch { mtime = 0; }
+    sessions.push({
+      id: meta.id,
+      jsonl: filePath,
+      mtimeMs: mtime,
+      ...meta,
+    });
+  }
+  sessions.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return sessions;
+}
+
+function parseCodexJsonlFile(filePath) {
+  const stats = emptyStats();
+  const trafficOne = emptyTrafficOneEstimate();
+  let session = {
+    id: codexSessionIdFromFile(filePath),
+    jsonl: filePath,
+    cwd: null,
+    startedAt: null,
+    originator: 'Codex Desktop',
+    source: null,
+    modelProvider: null,
+    model: 'codex',
+  };
+  let cumulativeUsage = null;
+
+  let text;
+  try {
+    text = fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return { session, stats, trafficOne };
+  }
+
+  for (const rawLine of text.split('\n')) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    let parsed;
+    try { parsed = JSON.parse(line); } catch { continue; }
+    const ts = parsed.timestamp || null;
+    if (ts) {
+      if (!stats.firstAt || ts < stats.firstAt) stats.firstAt = ts;
+      if (!stats.lastAt || ts > stats.lastAt) stats.lastAt = ts;
+    }
+
+    if (parsed.type === 'session_meta') {
+      const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
+      session = {
+        ...session,
+        id: typeof payload.id === 'string' ? payload.id : session.id,
+        startedAt: payload.timestamp || ts || session.startedAt,
+        cwd: typeof payload.cwd === 'string' ? payload.cwd : session.cwd,
+        originator: typeof payload.originator === 'string' ? payload.originator : session.originator,
+        source: typeof payload.source === 'string' ? payload.source : session.source,
+        modelProvider: typeof payload.model_provider === 'string' ? payload.model_provider : session.modelProvider,
+        model: typeof payload.model === 'string' ? payload.model : session.model,
+      };
+      trafficOne.instructionApproxTokens += estimateTrafficOneInstructionTokens(payload.base_instructions && payload.base_instructions.text);
+      trafficOne.instructionApproxTokens += estimateTrafficOneInstructionTokens(payload.instructions && payload.instructions.text);
+      trafficOne.instructionApproxTokens += estimateTrafficOneInstructionTokens(payload.user_instructions && payload.user_instructions.text);
+      continue;
+    }
+
+    if (parsed.type === 'response_item') {
+      const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
+      if (payload.type === 'function_call') {
+        const name = payload.name || payload.tool_name || payload.call_name || 'function_call';
+        stats.byTool[name] = (stats.byTool[name] || 0) + 1;
+        stats.toolUses += 1;
+      } else if (payload.type === 'function_call_output') {
+        addTrafficOneOutputEstimate(trafficOne, payload.output);
+      }
+      continue;
+    }
+
+    if (parsed.type === 'event_msg') {
+      const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
+      if (payload.type !== 'token_count') continue;
+      const info = payload.info && typeof payload.info === 'object' ? payload.info : {};
+      stats.messages += 1;
+      if (Number.isFinite(info.model_context_window)) {
+        stats.modelContextWindow = info.model_context_window;
+      }
+      if (info.last_token_usage) {
+        addCodexLargestUsage(stats, info.last_token_usage, ts);
+      }
+      if (info.total_token_usage) {
+        cumulativeUsage = info.total_token_usage;
+      }
+    }
+  }
+
+  applyCodexCumulativeUsage(stats, cumulativeUsage, session.model);
+  return { session, stats, trafficOne };
+}
+
 function projectSlugFromCwd(cwd) {
   return cwd.replace(/\//g, '-');
 }
@@ -217,7 +511,18 @@ function aggregateSession(session) {
     ...s,
     stats: parseJsonlFile(s.jsonl),
   }));
-  return { session, parent, subagents };
+  return { source: 'claude', session, parent, subagents };
+}
+
+function aggregateCodexSession(session) {
+  const parsed = parseCodexJsonlFile(session.jsonl);
+  return {
+    source: 'codex',
+    session: { ...session, ...parsed.session },
+    parent: parsed.stats,
+    subagents: [],
+    trafficOne: parsed.trafficOne,
+  };
 }
 
 function fmtNum(n) {
@@ -251,6 +556,8 @@ function fmtDuration(firstAt, lastAt) {
 }
 
 function renderMarkdown(agg) {
+  if (agg && agg.source === 'codex') return renderCodexMarkdown(agg);
+
   const lines = [];
   const { session, parent, subagents } = agg;
   const allStats = [parent, ...subagents.map((s) => s.stats)];
@@ -262,13 +569,14 @@ function renderMarkdown(agg) {
       cacheCreationInputTokens: acc.cacheCreationInputTokens + s.cacheCreationInputTokens,
       cacheReadInputTokens: acc.cacheReadInputTokens + s.cacheReadInputTokens,
       outputTokens: acc.outputTokens + s.outputTokens,
+      reasoningOutputTokens: acc.reasoningOutputTokens + (s.reasoningOutputTokens || 0),
       byModel: mergeByModel(acc.byModel, s.byModel),
       firstAt: minIso(acc.firstAt, s.firstAt),
       lastAt:  maxIso(acc.lastAt, s.lastAt),
     }),
     {
       messages: 0, toolUses: 0,
-      inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0,
+      inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
       byModel: {}, firstAt: null, lastAt: null,
     },
   );
@@ -379,6 +687,77 @@ function renderMarkdown(agg) {
   return lines.join('\n') + '\n';
 }
 
+function renderCodexMarkdown(agg) {
+  const lines = [];
+  const { session, parent: total, trafficOne } = agg;
+
+  lines.push(`# Token usage report`);
+  lines.push('');
+  lines.push(`- Source: Codex Desktop`);
+  lines.push(`- Session: \`${session.id}\``);
+  if (session.cwd) lines.push(`- Cwd: \`${session.cwd}\``);
+  lines.push(`- Duration: ${fmtDuration(total.firstAt, total.lastAt)}`);
+  if (total.firstAt) lines.push(`- Started: ${total.firstAt}`);
+  if (total.lastAt) lines.push(`- Ended:   ${total.lastAt}`);
+  lines.push('');
+
+  lines.push('## Totals');
+  lines.push('');
+  lines.push(`| Metric | Value |`);
+  lines.push(`|--------|-------|`);
+  lines.push(`| Total tokens | ${fmtNum(totalTokens(total))} |`);
+  lines.push(`| Input (fresh) | ${fmtNum(total.inputTokens)} |`);
+  lines.push(`| Cache write | ${fmtNum(total.cacheCreationInputTokens)} |`);
+  lines.push(`| Cache read (reported) | ${fmtNum(total.cacheReadInputTokens)} |`);
+  lines.push(`| Output | ${fmtNum(total.outputTokens)} |`);
+  if (total.reasoningOutputTokens > 0) {
+    lines.push(`| Reasoning output | ${fmtNum(total.reasoningOutputTokens)} |`);
+  }
+  lines.push(`| Cache hit rate | ${cacheHitRate(total).toFixed(1)}% |`);
+  lines.push(`| API calls | ${fmtNum(total.messages)} |`);
+  lines.push(`| Tool calls | ${fmtNum(total.toolUses)} |`);
+  if (total.modelContextWindow) {
+    lines.push(`| Model context window | ${fmtNum(total.modelContextWindow)} |`);
+  }
+  lines.push('');
+
+  const sortedTools = Object.entries(total.byTool || {}).sort((a, b) => b[1] - a[1]);
+  if (sortedTools.length > 0) {
+    lines.push('## Tool calls');
+    lines.push('');
+    lines.push(`| Tool | Calls |`);
+    lines.push(`|------|-------|`);
+    for (const [tool, count] of sortedTools) {
+      lines.push(`| ${tool} | ${fmtNum(count)} |`);
+    }
+    lines.push('');
+  }
+
+  if (trafficOne && (
+    trafficOne.directToolOutputTokens > 0
+    || trafficOne.instructionApproxTokens > 0
+  )) {
+    lines.push('## Traffic One estimate');
+    lines.push('');
+    lines.push(`| Metric | Value |`);
+    lines.push(`|--------|-------|`);
+    lines.push(`| Direct Traffic One tool-output tokens | ${fmtNum(trafficOne.directToolOutputTokens)} |`);
+    lines.push(`| Matching tool outputs | ${fmtNum(trafficOne.directToolOutputs)} |`);
+    lines.push(`| Traffic One instruction approx. | ${fmtNum(trafficOne.instructionApproxTokens)} |`);
+    lines.push('');
+  }
+
+  lines.push('## Notes');
+  lines.push('');
+  if (total.largestMessage) {
+    lines.push(`- Largest single API call: ${fmtNum(total.largestMessage.tokens)} tokens at ${total.largestMessage.timestamp || '—'}`);
+  }
+  lines.push(`- Source: transcripts under \`~/.codex/sessions/**\``);
+  lines.push(`- Codex reports cached input as a subset of input; this report shows fresh input as input minus cached input.`);
+  lines.push(`- Traffic One attribution is best-effort: direct tool-output tokens come from transcript "Original token count" lines whose output references Traffic One files or rules.`);
+  return lines.join('\n') + '\n';
+}
+
 function sumIntoStats(target, source) {
   target.messages += source.messages;
   target.toolUses += source.toolUses;
@@ -386,6 +765,7 @@ function sumIntoStats(target, source) {
   target.cacheCreationInputTokens += source.cacheCreationInputTokens;
   target.cacheReadInputTokens += source.cacheReadInputTokens;
   target.outputTokens += source.outputTokens;
+  target.reasoningOutputTokens += source.reasoningOutputTokens || 0;
   for (const [tool, count] of Object.entries(source.byTool || {})) {
     target.byTool[tool] = (target.byTool[tool] || 0) + count;
   }
@@ -431,11 +811,14 @@ function maxIso(a, b) {
 }
 
 function parseArgs(argv) {
-  const out = { json: false, all: false };
+  const out = { json: false, all: false, source: 'auto' };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') out.json = true;
     else if (arg === '--all') out.all = true;
+    else if (arg === '--codex') out.source = 'codex';
+    else if (arg === '--claude') out.source = 'claude';
+    else if (arg === '--source') { out.source = argv[i + 1] || 'auto'; i += 1; }
     else if (arg === '--session') { out.session = argv[i + 1]; i += 1; }
     else if (arg === '--project') { out.project = argv[i + 1]; i += 1; }
     else if (arg === '--out')     { out.out = argv[i + 1]; i += 1; }
@@ -444,14 +827,64 @@ function parseArgs(argv) {
   return out;
 }
 
+function selectTargetSessions(sessions, args, label) {
+  if (args.session) {
+    const match = sessions.find((s) => (
+      s.id === args.session
+      || path.basename(s.jsonl || s.parentJsonl || '') === args.session
+    ));
+    if (!match) {
+      const list = sessions.slice(0, 5).map((s) => `  - ${s.id}`).join('\n');
+      process.stderr.write(`Session ${args.session} not found in ${label}. Recent sessions:\n${list}\n`);
+      process.exit(1);
+    }
+    return [match];
+  }
+  if (args.all) return sessions;
+  return [sessions[0]];
+}
+
+function aggregateBySource(session) {
+  return session.sourceType === 'codex'
+    ? aggregateCodexSession(session)
+    : aggregateSession(session);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   const cwd = args.cwd || process.cwd();
   const projectSlug = args.project || projectSlugFromCwd(cwd);
-  const sessions = findSessionsForProject(projectSlug);
+  const source = ['auto', 'claude', 'codex'].includes(args.source) ? args.source : 'auto';
+  let reports = [];
 
-  if (sessions.length === 0) {
-    const message = `No Claude Code transcripts found for project slug: ${projectSlug}\nLooked in: ${path.join(findClaudeProjectsDir(), projectSlug)}`;
+  if (source === 'auto') {
+    const mixedSessions = [
+      ...findSessionsForProject(projectSlug).map((session) => ({ ...session, sourceType: 'claude' })),
+      ...findCodexSessionsForCwd(cwd).map((session) => ({ ...session, sourceType: 'codex' })),
+    ].sort((a, b) => b.mtimeMs - a.mtimeMs);
+    if (mixedSessions.length > 0) {
+      reports = selectTargetSessions(mixedSessions, args, 'Claude Code or Codex Desktop transcripts').map(aggregateBySource);
+    }
+  } else if (source === 'claude') {
+    const claudeSessions = findSessionsForProject(projectSlug);
+    if (claudeSessions.length > 0) {
+      reports = selectTargetSessions(claudeSessions, args, 'Claude Code transcripts').map(aggregateSession);
+    }
+  } else if (source === 'codex') {
+    const codexSessions = findCodexSessionsForCwd(cwd);
+    if (codexSessions.length > 0) {
+      reports = selectTargetSessions(codexSessions, args, 'Codex Desktop transcripts').map(aggregateCodexSession);
+    }
+  }
+
+  if (reports.length === 0) {
+    const looked = source === 'codex'
+      ? `Looked in: ${findCodexSessionsDir()}`
+      : source === 'claude'
+        ? `Looked in: ${path.join(findClaudeProjectsDir(), projectSlug)}`
+        : `Looked in: ${path.join(findClaudeProjectsDir(), projectSlug)} and ${findCodexSessionsDir()}`;
+    const label = source === 'auto' ? 'Claude Code or Codex Desktop' : source;
+    const message = `No ${label} transcripts found for cwd: ${cwd}\n${looked}`;
     if (args.json) {
       process.stdout.write(`${JSON.stringify({ ok: false, error: message })}\n`);
     } else {
@@ -460,22 +893,6 @@ function main() {
     return;
   }
 
-  let targets;
-  if (args.session) {
-    const match = sessions.find((s) => s.id === args.session);
-    if (!match) {
-      const list = sessions.slice(0, 5).map((s) => `  - ${s.id}`).join('\n');
-      process.stderr.write(`Session ${args.session} not found. Recent sessions:\n${list}\n`);
-      process.exit(1);
-    }
-    targets = [match];
-  } else if (args.all) {
-    targets = sessions;
-  } else {
-    targets = [sessions[0]];
-  }
-
-  const reports = targets.map(aggregateSession);
   let body;
   if (args.json) {
     body = `${JSON.stringify(reports, null, 2)}\n`;
@@ -503,14 +920,20 @@ if (require.main === module) {
 
 module.exports = {
   parseJsonlFile,
+  parseCodexJsonlFile,
   aggregateSession,
+  aggregateCodexSession,
   projectSlugFromCwd,
   findSessionsForProject,
+  findCodexSessionsForCwd,
+  readCodexSessionMeta,
   discoverSubagents,
   emptyStats,
+  emptyTrafficOneEstimate,
   totalTokens,
   cacheHitRate,
   estimateCost,
   priceFor,
+  parseOriginalTokenCount,
   renderMarkdown,
 };
