@@ -54,10 +54,36 @@ function parseStdoutJson(result) {
   return JSON.parse(result.stdout);
 }
 
+// SessionStart no longer inlines rule content (2.9.25+) — bundle is pointer-
+// only and rule bodies live in the materialized `.traffic-one/...` files.
+// Tests that historically asserted on inlined rule wording use this helper to
+// reassemble the model's effective context (bundle + every materialized rule).
+function sessionContextWithMaterializedRules(cwd, payload) {
+  let context = (payload && payload.hookSpecificOutput && payload.hookSpecificOutput.additionalContext) || '';
+  const trafficOne = path.join(cwd, '.traffic-one');
+  if (!fs.existsSync(trafficOne)) return context;
+  const skipNames = new Set(['skills', 'digests', 'fix-cycles', 'reports', 'backups', 'decisions']);
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (skipNames.has(entry.name)) continue;
+      const fp = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fp);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        try { context += '\n' + fs.readFileSync(fp, 'utf8'); } catch { /* skip */ }
+      }
+    }
+  };
+  walk(trafficOne);
+  return context;
+}
+
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   return {
-    version: '2.9.24',
+    version: '2.9.25',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
@@ -1205,8 +1231,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.24');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.24');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.25');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.25');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -1357,7 +1383,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.24');
+    assert.equal(state.version, '2.9.25');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -1409,7 +1435,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.24',
+      materializedVersion: '2.9.25',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -1637,7 +1663,7 @@ test('materialization gate blocks forged stamp when local assets are missing', (
       ...completeDefaultState({
         materializedStack: 'default|react-vite|supabase|none',
         materializedAt: '2026-05-13T10:00:00Z',
-        materializedVersion: '2.9.24',
+        materializedVersion: '2.9.25',
       }),
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -3015,7 +3041,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.24) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.25) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -3149,7 +3175,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.24', () => {
+test('manifests bumped to 2.9.25', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -3157,11 +3183,11 @@ test('manifests bumped to 2.9.24', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.24"/, `${rel} must be bumped to 2.9.24`);
+    assert.match(text, /"version":\s*"2\.9\.25"/, `${rel} must be bumped to 2.9.25`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.24) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.25) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -3241,7 +3267,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.24',
+      version: '2.9.25',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -3257,7 +3283,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.24',
+      materializedVersion: '2.9.25',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -3306,7 +3332,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.24',
+      version: '2.9.25',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3318,7 +3344,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.24',
+      materializedVersion: '2.9.25',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -3338,7 +3364,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.24) ──────────────────────────────────────────────
+// ── Token usage report (2.9.25) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -3489,7 +3515,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.24) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.25) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -3541,7 +3567,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.24',
+      version: '2.9.25',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3553,7 +3579,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.24',
+      materializedVersion: '2.9.25',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -3573,7 +3599,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.24',
+      version: '2.9.25',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3585,7 +3611,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.24',
+      materializedVersion: '2.9.25',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },

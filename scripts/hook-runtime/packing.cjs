@@ -1,57 +1,59 @@
 'use strict';
 
 // scripts/hook-runtime/packing.cjs
-// Concatenates rule files into the SessionStart bundle. Mandatory files
-// always load (even past the budget — drop after = drop important rules).
-// Optional files fill remaining headroom in declaration order; the rest get
-// listed in `dropped` for the path-scoped attach mechanism to pick up later.
+// Emits SessionStart context. The bundle DOES NOT inline rule content — it
+// emits bullet-list pointers to the materialized copies under
+// `.traffic-one/rules/...`. The model reads rules on demand via the Read
+// tool. This applies to both parent and subagent SessionStart paths; only
+// the framing/header text differs.
+//
+// Why not inline? `materializeProjectAssets()` already copies every active
+// rule to the project's `.traffic-one/` folder. Inlining the same content
+// into SessionStart additionalContext was a ~117KB duplicate that bloated
+// every spawn (parent + each subagent). Cache reads, sure, but still
+// massive cumulative cost.
+//
+// Security baseline (`@rules/common/security.md` in CLAUDE.md) stays
+// inlined via CLAUDE.md @-import — that's a separate path and keeps the
+// security checklist always-on for every API call.
 
-const fs   = require('fs');
+const fs = require('fs');
 const path = require('path');
+const { templatePath } = require('./stacks.cjs');
 
-function packBundle(root, mandatory, optional, budget) {
-  const bodyParts = [];
-  const included  = [];
-  const dropped   = [];
-  let total = 0;
-
+// Parent SessionStart: rule pointer list with mandatory + optional sections.
+// `budget` is accepted but unused (pointers are tiny — no need to truncate).
+// `dropped` always returns [] for the same reason.
+function packBundle(root, mandatory, optional, _budget) {
+  const lines = [
+    '## Active rules (read on demand)',
+    '',
+    'Materialized at `.traffic-one/rules/...` and `.traffic-one/core.md`.',
+    'Read specific rules via the Read tool when their guidance applies.',
+    '',
+    '### Mandatory',
+  ];
+  const included = [];
   for (const rel of mandatory) {
-    const filePath = path.join(root, rel);
-    if (!fs.existsSync(filePath)) continue;
-    const content = fs.readFileSync(filePath, 'utf8');
-    const header  = `# ── ${rel} ──\n`;
-    bodyParts.push(header + content);
+    if (!fs.existsSync(path.join(root, templatePath(rel)))) continue;
+    lines.push(`- .traffic-one/${rel}`);
     included.push(rel);
-    total += header.length + content.length + 2;
   }
-
-  for (const rel of optional) {
-    const filePath = path.join(root, rel);
-    if (!fs.existsSync(filePath)) continue;
-    const content = fs.readFileSync(filePath, 'utf8');
-    const header  = `# ── ${rel} ──\n`;
-    const additionSize = header.length + content.length + 2;
-    if (total + additionSize > budget) {
-      dropped.push(rel);
-      continue;
+  if (Array.isArray(optional) && optional.length > 0) {
+    lines.push('');
+    lines.push('### Optional (load when touching matching files)');
+    for (const rel of optional) {
+      if (!fs.existsSync(path.join(root, templatePath(rel)))) continue;
+      lines.push(`- .traffic-one/${rel}`);
+      included.push(rel);
     }
-    bodyParts.push(header + content);
-    included.push(rel);
-    total += additionSize;
   }
-
-  return {
-    body: bodyParts.join('\n\n'),
-    included,
-    dropped,
-  };
+  return { body: lines.join('\n') + '\n', included, dropped: [] };
 }
 
-// For subagent SessionStart. The parent's session already inlined full rule
-// content via packBundle() and materialize.cjs copied every active rule to
-// `.traffic-one/<relPath>`. Subagents just need an index pointing
-// to the materialized copies; they Read specific rules on demand instead of
-// paying the 117KB rule-bundle cost up front.
+// For subagent SessionStart. Same pointer-only output as packBundle but with
+// a subagent-specific header. Kept as a separate function so the subagent
+// path can evolve independently (e.g. role-scoped rule sets).
 function packRuleIndex(root, rules) {
   const lines = [
     '## Active rule index (read on demand)',
@@ -62,8 +64,7 @@ function packRuleIndex(root, rules) {
   ];
   const included = [];
   for (const rel of rules) {
-    const filePath = path.join(root, rel);
-    if (!fs.existsSync(filePath)) continue;
+    if (!fs.existsSync(path.join(root, templatePath(rel)))) continue;
     lines.push(`- .traffic-one/${rel}`);
     included.push(rel);
   }
@@ -78,7 +79,7 @@ function packRuleIndex(root, rules) {
 //
 // Target size: ~300-500 bytes (vs ~2KB for the role-scoped index, ~117KB for
 // the full bundle).
-function packFixCycleHeader(cwd, role, runId, spawnIndex) {
+function packFixCycleHeader(_cwd, role, runId, spawnIndex) {
   const fixCycleFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
   const digestFile   = `.traffic-one/digests/${runId}/${roleDigestName(role)}.md`;
   const lines = [
