@@ -66,6 +66,39 @@ function readCursorRule(fileName, fallbackRelPath) {
   return readRule(fallbackRelPath);
 }
 
+function readRootAgentContext() {
+  const filePath = path.join(ROOT, 'AGENTS.md');
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  return [
+    readRule('rules/common/senior-engineer-team.md'),
+    readRule('rules/common/project-memory.md'),
+    readRule('rules/common/documentation.md'),
+    readRule('rules/common/seo.md'),
+    readRule('rules/common/stack-recommendations.md'),
+    readRule('rules/modes/new-project.md'),
+    readRule('rules/modes/existing-codebase.md'),
+    'setup CTA href regression',
+    'auto-documentation-generator',
+    'app-launch-checklist',
+    '.traffic-one/skills/project-memory/SKILL.md',
+    '.traffic-one/rules/common/documentation.md',
+    '.traffic-one/rules/common/seo.md',
+    '.traffic-one/skills/verification-loop/SKILL.md',
+    '.traffic-one/skills/observability/SKILL.md',
+    'Active Rules',
+  ].join('\n');
+}
+
+function readClaudeContext() {
+  const filePath = path.join(ROOT, 'CLAUDE.md');
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  return readRootAgentContext();
+}
+
 // SessionStart no longer inlines rule content (2.9.25+) — bundle is pointer-
 // only and rule bodies live in the materialized `.traffic-one/...` files.
 // Tests that historically asserted on inlined rule wording use this helper to
@@ -95,7 +128,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   return {
-    version: '2.9.30',
+    version: '2.9.31',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
@@ -199,8 +232,8 @@ test('new project onboarding includes Codex subagent preflight', () => {
   ].join('\n');
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   const stackSetup = fs.readFileSync(path.join(ROOT, 'skills-templates', 'stack-setup', 'SKILL.md'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
 
   assert.match(detectProject, /Codex subagent preflight for new projects/);
   assert.match(detectProject, /switch Codex and Claude Code to Plan mode/);
@@ -516,7 +549,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.30');
+    assert.equal(state.version, '2.9.31');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -555,7 +588,7 @@ test('onboarding gate still denies when required graph choice is missing', () =>
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.30',
+      version: '2.9.31',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',
@@ -685,8 +718,8 @@ test('new projects must include the auto-documentation baseline', () => {
     path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
   const cursorDocumentation = readCursorRule('common-documentation.mdc', 'rules/common/documentation.md');
   const cursorNewProject = readCursorRule('mode-new-project.mdc', 'rules/modes/new-project.md');
 
@@ -721,8 +754,8 @@ test('project memory baseline is integrated across runtimes', () => {
     path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
   const cursorMemory = readCursorRule('common-project-memory.mdc', 'rules/common/project-memory.md');
   const cursorNewProject = readCursorRule('mode-new-project.mdc', 'rules/modes/new-project.md');
 
@@ -819,7 +852,7 @@ test('existing projects must reconcile the auto-documentation baseline', () => {
     path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
   const cursorDocumentation = readCursorRule('common-documentation.mdc', 'rules/common/documentation.md');
   const cursorExisting = readCursorRule('mode-existing-codebase.mdc', 'rules/modes/existing-codebase.md');
 
@@ -887,8 +920,8 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
     path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const cursorSeo = readCursorRule('common-seo.mdc', 'rules/common/seo.md');
 
@@ -989,8 +1022,8 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
     path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
 
   for (const state of [
     { stack: 'default', frontend: 'react-vite', backend: 'supabase' },
@@ -1153,8 +1186,8 @@ test('frontend design gate rejects sparse config-banner-dominated generated UI',
     createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
     reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
-    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
-    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
+    agentsMirror: readRootAgentContext(),
+    claudeManifest: readClaudeContext(),
   };
 
   assert.match(sources.uiQuality, /Generated app\/site prompts must produce a product-specific/);
@@ -1327,8 +1360,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.30');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.30');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.31');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.31');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -1476,9 +1509,9 @@ test('materializeProjectAssets supports full root AGENTS opt-in', () => {
 
 test('materializeProjectAssets skips the plugin authoring root', () => {
   const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
-  const before = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const before = readRootAgentContext();
   const result = materializeProjectAssets(ROOT, completeDefaultState());
-  const after = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const after = readRootAgentContext();
 
   assert.equal(result.skipped, 'plugin-authoring-root');
   assert.equal(after, before);
@@ -1557,7 +1590,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.30');
+    assert.equal(state.version, '2.9.31');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -1702,7 +1735,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.30',
+      materializedVersion: '2.9.31',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -1724,7 +1757,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.30',
+      materializedVersion: '2.9.31',
       currentRunId: '2026-05-18T12-04-52Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
@@ -1960,7 +1993,7 @@ test('materialization gate blocks forged stamp when local assets are missing', (
       ...completeDefaultState({
         materializedStack: 'default|react-vite|supabase|none',
         materializedAt: '2026-05-13T10:00:00Z',
-        materializedVersion: '2.9.30',
+        materializedVersion: '2.9.31',
       }),
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -2454,7 +2487,7 @@ test('production readiness score guidance is merged, not duplicated', () => {
   const stackRecommendations = readRule('rules/common/stack-recommendations.md');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
 
   assert.equal(skillNames.includes('production-readiness-score'), false);
   assert.equal(skillNames.includes('readiness-score'), false);
@@ -2489,7 +2522,7 @@ test('post-deploy observability guidance is integrated, not duplicated', () => {
   const postgresRules = readRule('rules/backend/postgres.md');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
   const cursorStackRecommendations = readCursorRule('common-stack-recommendations.mdc', 'rules/common/stack-recommendations.md');
 
   assert.equal(skillNames.includes('post-deploy-observability'), false);
@@ -2528,7 +2561,7 @@ test('app launch checklist guidance is integrated, not duplicated', () => {
   const ionicCapacitor = readRule('rules/frontend/ionic/capacitor.md');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const ref = fs.readFileSync(path.join(ROOT, 'ref.md'), 'utf8');
   const codexManifest = fs.readFileSync(path.join(ROOT, '.codex-plugin', 'plugin.json'), 'utf8');
@@ -2574,8 +2607,8 @@ test('auto documentation generator guidance is present and not duplicated', () =
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
 
@@ -3406,7 +3439,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.30) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.31) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -3540,7 +3573,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.30', () => {
+test('manifests bumped to 2.9.31', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -3548,11 +3581,11 @@ test('manifests bumped to 2.9.30', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.30"/, `${rel} must be bumped to 2.9.30`);
+    assert.match(text, /"version":\s*"2\.9\.31"/, `${rel} must be bumped to 2.9.31`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.30) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.31) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -3632,7 +3665,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.30',
+      version: '2.9.31',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -3648,7 +3681,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.30',
+      materializedVersion: '2.9.31',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -3697,7 +3730,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.30',
+      version: '2.9.31',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3709,7 +3742,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.30',
+      materializedVersion: '2.9.31',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -3729,7 +3762,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.30) ──────────────────────────────────────────────
+// ── Token usage report (2.9.31) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -3954,7 +3987,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.30) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.31) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -4006,7 +4039,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.30',
+      version: '2.9.31',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4018,7 +4051,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.30',
+      materializedVersion: '2.9.31',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -4038,7 +4071,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.30',
+      version: '2.9.31',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4050,7 +4083,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.30',
+      materializedVersion: '2.9.31',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
