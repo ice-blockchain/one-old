@@ -11,33 +11,10 @@ const {
   pitchBackendLabel,
   pitchDeployLabel,
 } = require('./config.cjs');
-
-function codexDefaultModeFallbackMobilePrompt() {
-  return [
-    'Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable.',
-    '',
-    'Do you want a mobile app too?',
-    '',
-    '1. Web only (Recommended)',
-    '2. Ionic + Capacitor',
-    '3. React Native / Expo',
-    '',
-    'Reply with the option number or label.',
-  ].join('\n');
-}
-
-function codexDefaultModeFallbackDirective() {
-  return [
-    'CODEX DEFAULT-MODE FALLBACK (visible response, blocking):',
-    'If the current Codex thread is not in Plan mode, or `request_user_input` cannot be called, do not use tools and do not keep detecting/scaffolding.',
-    'Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not say you are using create-feature, create-page, frontend-design, tdd-workflow, or other implementation skills yet.',
-    'Your next visible assistant message must be the plain-chat fallback prompt below, then you must stop for the user answer:',
-    '',
-    codexDefaultModeFallbackMobilePrompt(),
-    '',
-    'After the user answers, ask the Code Graph fallback prompt next, then the Team fallback prompt for non-trivial multi-layer builds. Ask only the next unresolved question and stop each time.',
-  ].join('\n');
-}
+const {
+  codexDefaultModeFallbackDirective,
+  codexDefaultModeFallbackMobilePrompt,
+} = require('./onboarding-prompts.cjs');
 
 // ── New-project onboarding directive ─────────────────────────────────────────
 // End-to-end default: React monorepo + Supabase backend + our deploy infra.
@@ -158,9 +135,16 @@ CODEX SUBAGENT PREFLIGHT (popup 3, blocking for non-trivial multi-layer builds):
   Include the plain-text fallback options "1. Run team (Recommended)" and
   "2. Main agent only", then stop for the user's typed reply.
 
-  Stop and wait for the user's answer. If they confirm, use available Codex
-  subagents with the Traffic One role route. If they decline or subagents are
-  unavailable, continue manually in the same role order and say so.
+  Stop and wait for the user's answer. Persist the answer in \`.traffic-one.json\`:
+    - "Run team (Recommended)" → "team": { "mode": "subagents", "source": "prompted" }
+    - "Main agent only" → "team": { "mode": "main-agent", "source": "prompted" }
+
+  If they confirm, use available Codex subagents with the Traffic One role
+  route. The parent/orchestrator must not write feature source files while
+  \`team.mode="subagents"\`; it spawns role agents, coordinates digests, and
+  summarizes. If they decline or subagents are unavailable, continue manually
+  in the same role order, update \`team.mode="main-agent"\` with
+  \`team.source="unavailable"\` when runtime availability is the reason, and say so.
 
 ── Branch on the user's first message ──
 
@@ -244,6 +228,10 @@ GENERAL RULES:
   - The codeGraphProvider question above is REQUIRED — no skip, no default.
   - \`version\` is the current Traffic One plugin semver. Do NOT write a
     separate \`pluginVersion\` field.
+  - \`mobile.source\` is an exact enum. Use only \`prompted\` for the required
+    Mobile App popup/chat answer, \`explicit\` for an explicit mobile request,
+    or \`none\` when no mobile decision has been collected. Never write
+    descriptive variants such as \`user-onboarding\`.
   - Write \`.traffic-one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
     All required top-level fields are REQUIRED — do NOT drop any. Subsequent
     hooks rely on \`onboardingComplete: true\` and \`mode\` being present:
@@ -254,10 +242,11 @@ GENERAL RULES:
       "stack": "<chosen-id>",
       "frontend": "<none|react-vite|nextjs|vue|svelte|angular|astro|solid|remix|other>",
       "backend": "<chosen-backend>",
-      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "mobile": { "enabled": false, "framework": "none", "source": "prompted" },
       "technologies": { "frontend": [], "backend": [], "mobile": [] },
       "realtime": "<heavy|light|none>",
       "codeGraphProvider": "<gitnexus|graphify>",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "toolchain": {
         "gitnexus": { "installedVersion": null, "installedAt": null },
         "graphify": { "installedVersion": null, "installedAt": null },
@@ -279,28 +268,31 @@ GENERAL RULES:
     User declined the recommended backend + has own API + picked graphify:
     { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
       "frontend": "react-vite", "backend": "external-api",
-      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "mobile": { "enabled": false, "framework": "none", "source": "prompted" },
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User declined the recommended backend + no backend planned + picked gitnexus:
     { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
       "frontend": "react-vite", "backend": "none",
-      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "mobile": { "enabled": false, "framework": "none", "source": "prompted" },
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "gitnexus",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User chose Firebase / Mongo / their own Postgres + picked graphify:
     { "version": "<current-plugin-version>", "mode": "new-project", "stack": "custom-backend",
       "frontend": "react-vite", "backend": "other",
-      "mobile": { "enabled": false, "framework": "none", "source": "none" },
+      "mobile": { "enabled": false, "framework": "none", "source": "prompted" },
       "technologies": { "frontend": ["react", "vite"], "backend": ["other"], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
   Stack ids: minimal · default · custom-frontend · custom-backend · custom-stack.
@@ -327,12 +319,14 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
   3. Project memory baseline: create \`.traffic-one/\` and run
      \`project-memory\`. Verify the root companion state file
      \`.traffic-one.json\` exists with the full onboarding schema, then write
-     product.md, stack.md, rules/coding.md, rules/security.md, rules/AGENTS.md,
+     product.md, stack.md, coding.md, security.md,
      known-issues.md, agent-log.md, .agentignore, mcp.json, deployments.jsonl,
      schema.sql, decisions/, and skills/ when reusable team commands are
-     needed. Root AGENTS.md should symlink to
-     \`.traffic-one/rules/AGENTS.md\` when safe; otherwise generate it from the
-     same source. Generate root CLAUDE.md from the same source.
+     needed. Root AGENTS.md contains the compact active rule kernel/index by
+     default. Do not generate
+     \`.traffic-one/rules/AGENTS.md\`; \`.traffic-one/rules/\` contains only
+     generated rule files. Root CLAUDE.md should symlink to root AGENTS.md when
+     safe.
   4. \`packages/\`: ui/ (shadcn components live here), tailwind-config/ (shared
      Tailwind preset + \`globals.css\`), i18n/ (typed i18next/react-i18next
      resources and provider), api-client/, ws-client/, utils/, tsconfig/,
@@ -485,10 +479,11 @@ the matching rule bundle into THIS session — no restart needed.
     "stack": "<chosen-id>",
     "frontend": "<chosen-frontend>",
     "backend": "<chosen-backend>",
-    "mobile": { "enabled": false, "framework": "none", "source": "none" },
+    "mobile": { "enabled": false, "framework": "none", "source": "<explicit|prompted|none>" },
     "technologies": { "frontend": [], "backend": [], "mobile": [] },
     "realtime": "<heavy|light|none>",
     "codeGraphProvider": "<gitnexus|graphify>",
+    "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
     "toolchain": {
       "gitnexus": { "installedVersion": null, "installedAt": null },
       "graphify": { "installedVersion": null, "installedAt": null },
@@ -504,6 +499,7 @@ Stack ids: minimal · default · custom-frontend · custom-backend · custom-sta
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
 Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
+Team mode: subagents · main-agent (REQUIRED for new-project multi-layer builds — ASK the user).
 Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
 Default complex-project recommendation is stack=default, frontend=react-vite,
@@ -529,7 +525,13 @@ ONBOARDING directive for the full pitch script and decline-Supabase examples.
 // Returns the additionalContext block paired with a systemMessage when the
 // model writes a partial state file. The PostToolUse hook silently ignored
 // this case before, leaving the user's stack choice unpersisted.
-function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, validCodeGraphProviders }) {
+function postWriteIncompleteWarning({
+  stack,
+  validStackIds,
+  codeGraphProvider,
+  validCodeGraphProviders,
+  validationIssues = [],
+}) {
   const header = '═══ traffic-one — `.traffic-one.json` write incomplete ═══';
   const lines = [header, ''];
   const providers = Array.isArray(validCodeGraphProviders) && validCodeGraphProviders.length > 0
@@ -542,12 +544,21 @@ function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, v
   const cgUnknown = cgProvided && !providers.includes(codeGraphProvider);
   const cgMissing = !cgProvided;
 
+  if (Array.isArray(validationIssues) && validationIssues.length > 0) {
+    lines.push('State validation issues:');
+    for (const issue of validationIssues) {
+      lines.push(`- ${issue}`);
+    }
+  }
+
   if (stackMissing) {
+    if (lines.length > 2) lines.push('');
     lines.push(
       'You wrote `.traffic-one.json` without a `stack` field. The PostToolUse',
       'hook cannot auto-load any rule bundle until `stack` is set.',
     );
   } else if (stackUnknown) {
+    if (lines.length > 2) lines.push('');
     lines.push(
       `Stack id \`${stack}\` is not a valid traffic-one stack. The PostToolUse`,
       'hook cannot auto-load any rule bundle until a known stack id is set.',
@@ -576,6 +587,16 @@ function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, v
     );
   }
 
+  if (Array.isArray(validationIssues) && validationIssues.some((issue) => issue.includes('`team`'))) {
+    if (lines.length > 2) lines.push('');
+    lines.push(
+      'You also did not persist the Team preflight answer. This is required for',
+      'new-project multi-layer builds so the architecture gate can enforce the',
+      'chosen route: `team.mode="subagents"` for "Run team", or',
+      '`team.mode="main-agent"` for "Main agent only".',
+    );
+  }
+
   lines.push(
     '',
       'Re-write the file with the Write tool using the full required schema:',
@@ -586,10 +607,11 @@ function postWriteIncompleteWarning({ stack, validStackIds, codeGraphProvider, v
       '    "stack": "<chosen-id>",',
       '    "frontend": "<chosen-frontend>",',
       '    "backend": "<chosen-backend>",',
-      '    "mobile": { "enabled": false, "framework": "none", "source": "none" },',
+      '    "mobile": { "enabled": false, "framework": "none", "source": "<explicit|prompted|none>" },',
       '    "technologies": { "frontend": [], "backend": [], "mobile": [] },',
       '    "realtime": "<heavy|light|none>",',
       '    "codeGraphProvider": "<gitnexus|graphify>",',
+      '    "team": { "mode": "<subagents|main-agent>", "source": "prompted" },',
       '    "toolchain": { "gitnexus": { "installedVersion": null, "installedAt": null }, "graphify": { "installedVersion": null, "installedAt": null }, "gitleaks": { "installedVersion": null, "installedAt": null }, "trufflehog": { "installedVersion": null, "installedAt": null } },',
       '    "confirmed": true,',
     '    "onboardingComplete": true,',

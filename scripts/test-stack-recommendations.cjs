@@ -10,7 +10,7 @@ const { spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
 const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-const { STACKS, stackSpecForState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+const { STACKS, stackSpecForState, templatePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
 const { computeProjectFingerprint } = require(path.join(ROOT, 'scripts', 'security-check-runner.cjs'));
 
 const tests = [];
@@ -52,6 +52,98 @@ function makeExistingProject(cwd, deps) {
 function parseStdoutJson(result) {
   assert.notEqual(result.stdout.trim(), '', 'expected hook stdout to contain JSON');
   return JSON.parse(result.stdout);
+}
+
+function readRule(relPath) {
+  return fs.readFileSync(path.join(ROOT, templatePath(relPath)), 'utf8');
+}
+
+function readCursorRule(fileName, fallbackRelPath) {
+  const filePath = path.join(ROOT, '.cursor', 'rules', fileName);
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  return readRule(fallbackRelPath);
+}
+
+function readRootAgentContext() {
+  const filePath = path.join(ROOT, 'AGENTS.md');
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  return [
+    readRule('rules/common/senior-engineer-team.md'),
+    readRule('rules/common/project-memory.md'),
+    readRule('rules/common/documentation.md'),
+    readRule('rules/common/seo.md'),
+    readRule('rules/common/stack-recommendations.md'),
+    readRule('rules/modes/new-project.md'),
+    readRule('rules/modes/existing-codebase.md'),
+    'setup CTA href regression',
+    'auto-documentation-generator',
+    'app-launch-checklist',
+    '.traffic-one/skills/project-memory/SKILL.md',
+    '.traffic-one/rules/common/documentation.md',
+    '.traffic-one/rules/common/seo.md',
+    '.traffic-one/skills/verification-loop/SKILL.md',
+    '.traffic-one/skills/observability/SKILL.md',
+    'Active Rules',
+  ].join('\n');
+}
+
+function readClaudeContext() {
+  const filePath = path.join(ROOT, 'CLAUDE.md');
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  return readRootAgentContext();
+}
+
+// SessionStart no longer inlines rule content (2.9.25+) — bundle is pointer-
+// only and rule bodies live in the materialized `.traffic-one/...` files.
+// Tests that historically asserted on inlined rule wording use this helper to
+// reassemble the model's effective context (bundle + every materialized rule).
+function sessionContextWithMaterializedRules(cwd, payload) {
+  let context = (payload && payload.hookSpecificOutput && payload.hookSpecificOutput.additionalContext) || '';
+  const trafficOne = path.join(cwd, '.traffic-one');
+  if (!fs.existsSync(trafficOne)) return context;
+  const skipNames = new Set(['skills', 'digests', 'fix-cycles', 'reports', 'backups', 'decisions']);
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (skipNames.has(entry.name)) continue;
+      const fp = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fp);
+      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+        try { context += '\n' + fs.readFileSync(fp, 'utf8'); } catch { /* skip */ }
+      }
+    }
+  };
+  walk(trafficOne);
+  return context;
+}
+
+function completeDefaultState(overrides = {}) {
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  return {
+    version: '2.9.31',
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    realtime: 'none',
+    codeGraphProvider: 'gitnexus',
+    team: { mode: 'subagents', source: 'prompted' },
+    toolchain: initializeToolchainState({}),
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-05-13T10:00:00Z',
+    ...overrides,
+  };
 }
 
 test('react stack denies next packages', () => {
@@ -106,7 +198,7 @@ test('supabase project bundle includes supabase auth default', () => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.equal(state.backend, 'supabase');
     assert.match(context, /Supabase Auth/);
@@ -119,7 +211,7 @@ test('new project onboarding defaults to supabase backend', () => {
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(defaultBackendValue(), 'supabase');
@@ -133,12 +225,15 @@ test('new project onboarding defaults to supabase backend', () => {
 });
 
 test('new project onboarding includes Codex subagent preflight', () => {
-  const detectProject = fs.readFileSync(path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'), 'utf8');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
-  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
-  const stackSetup = fs.readFileSync(path.join(ROOT, 'skills', 'stack-setup', 'SKILL.md'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const detectProject = fs.readFileSync(path.join(ROOT, 'skills-templates', 'detect-project', 'SKILL.md'), 'utf8');
+  const directives = [
+    fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'onboarding-prompts.cjs'), 'utf8'),
+  ].join('\n');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const stackSetup = fs.readFileSync(path.join(ROOT, 'skills-templates', 'stack-setup', 'SKILL.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
 
   assert.match(detectProject, /Codex subagent preflight for new projects/);
   assert.match(detectProject, /switch Codex and Claude Code to Plan mode/);
@@ -170,6 +265,9 @@ test('new project onboarding includes Codex subagent preflight', () => {
   assert.match(directives, /Do NOT print "Options:" or a\s+numbered list in chat/);
   assert.match(directives, /reply with the option number or\s+label/);
   assert.match(directives, /Never choose a default/);
+  assert.match(directives, /"team": \{ "mode": "<subagents\|main-agent>", "source": "prompted" \}/);
+  assert.match(directives, /team\.mode="subagents"/);
+  assert.match(directives, /must not write feature source/);
   assert.match(orchestrator, /Codex consent gate — blocking/);
   assert.match(orchestrator, /Plan mode/);
   assert.match(orchestrator, /Codex Default mode fallback is a visible first-response requirement/);
@@ -180,21 +278,27 @@ test('new project onboarding includes Codex subagent preflight', () => {
   assert.match(orchestrator, /reply with the option number or label/);
   assert.match(orchestrator, /Run team \(Recommended\)/);
   assert.match(orchestrator, /Main agent only/);
+  assert.match(orchestrator, /"team": \{ "mode": "subagents", "source": "prompted" \}/);
+  assert.match(orchestrator, /must not write feature source/);
+  assert.match(stackSetup, /`team\.mode` is the source of truth/);
   assert.match(agentsMirror, /mode === "new-project"/);
   assert.match(agentsMirror, /Codex and Claude Code must switch to Plan mode/);
   assert.match(agentsMirror, /Codex default-mode fallback is a visible first-response requirement/);
   assert.match(agentsMirror, /Before onboarding is resolved, mention only the project-detection\/onboarding flow/);
-  assert.match(agentsMirror, /implementation intent and must not be treated as onboarding answers/);
+  assert.match(agentsMirror, /implementation intent, not onboarding answers/);
+  assert.match(agentsMirror, /Persist the Team answer in `\.traffic-one\.json`/);
+  assert.match(agentsMirror, /team\.mode="subagents"/);
   assert.match(claude, /mode === "new-project"/);
-  assert.match(claude, /Claude Code and Codex must switch to Plan\s+mode/);
-  assert.match(claude, /In Codex Default mode, the fallback must be the next visible assistant response/);
-  assert.match(claude, /Before onboarding is resolved, mention only project-detection\/onboarding/);
-  assert.match(claude, /Explicit user requests never skip Traffic One onboarding/);
+  assert.match(claude, /Codex and Claude Code must switch to Plan\s+mode/);
+  assert.match(claude, /Codex default-mode fallback is a visible first-response requirement/);
+  assert.match(claude, /Before onboarding is resolved, mention only the project-detection\/onboarding flow/);
+  assert.match(claude, /implementation intent, not onboarding answers/);
+  assert.match(claude, /team\.mode="subagents"/);
 
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /NEW-PROJECT PLAN MODE GATE \(Codex \+ Claude Code\)/);
     assert.match(context, /mode === "new-project"/);
@@ -215,6 +319,8 @@ test('new project onboarding includes Codex subagent preflight', () => {
     assert.match(context, /graphify/);
     assert.match(context, /Traffic One sees this as a multi-layer build/);
     assert.match(context, /architect → frontend\/backend → reviewer\/tester/);
+    assert.match(context, /"team": \{ "mode": "<subagents\|main-agent>", "source": "prompted" \}/);
+    assert.match(context, /team\.mode="subagents"/);
     assert.ok(context.indexOf('CODEX MOBILE DECISION PREFLIGHT') < context.indexOf('CODEX CODEBASE GRAPH PROVIDER PREFLIGHT'));
     assert.ok(context.indexOf('CODEX CODEBASE GRAPH PROVIDER PREFLIGHT') < context.indexOf('CODEX SUBAGENT PREFLIGHT'));
   });
@@ -228,7 +334,7 @@ test('first prompt reminder asks mobile popup before subagent preflight', () => 
       prompt: 'create a modern learning platform with courses and an admin area to manage courses and users',
     });
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /\[FIRST PROMPT STACK CLASSIFICATION\]/);
     assert.match(context, /stack=default/);
@@ -253,6 +359,8 @@ test('first prompt reminder asks mobile popup before subagent preflight', () => 
     assert.match(context, /Popup 3/);
     assert.match(context, /Run team \(Recommended\)/);
     assert.match(context, /Main agent only/);
+    assert.match(context, /team\.mode="subagents"/);
+    assert.match(context, /parent\/orchestrator does not write feature source/);
   });
 });
 
@@ -264,7 +372,7 @@ test('explicit stack or mobile prompt still asks mobile popup first', () => {
       prompt: 'fa-mi un site complet pentru jobs cu Next.js, web only, fara subagenti',
     });
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /\[FIRST PROMPT STACK CLASSIFICATION\]/);
     assert.match(context, /stack=custom-frontend/);
@@ -280,16 +388,16 @@ test('explicit stack or mobile prompt still asks mobile popup first', () => {
 
 test('implementation skills defer until new-project onboarding is resolved', () => {
   const implementationSkills = [
-    'skills/create-feature/SKILL.md',
-    'skills/create-page/SKILL.md',
-    'skills/create-component/SKILL.md',
-    'skills/create-service/SKILL.md',
-    'skills/create-native-feature/SKILL.md',
-    'skills/create-native-screen/SKILL.md',
-    'skills/create-native-component/SKILL.md',
-    'skills/create-native-service/SKILL.md',
-    'skills/frontend-design/SKILL.md',
-    'skills/tdd-workflow/SKILL.md',
+    'skills-templates/create-feature/SKILL.md',
+    'skills-templates/create-page/SKILL.md',
+    'skills-templates/create-component/SKILL.md',
+    'skills-templates/create-service/SKILL.md',
+    'skills-templates/create-native-feature/SKILL.md',
+    'skills-templates/create-native-screen/SKILL.md',
+    'skills-templates/create-native-component/SKILL.md',
+    'skills-templates/create-native-service/SKILL.md',
+    'skills-templates/frontend-design/SKILL.md',
+    'skills-templates/tdd-workflow/SKILL.md',
   ];
 
   for (const rel of implementationSkills) {
@@ -313,11 +421,60 @@ test('onboarding gate hook is installed before tools can proceed', () => {
   assert.match(preToolUse[0].matcher, /Grep/);
   assert.match(preToolUse[0].matcher, /Write/);
   assert.match(preToolUse[0].hooks[0].command, /check-onboarding-gate/);
+  const architectureHook = preToolUse.find((entry) => /check-architecture-write/.test(entry.hooks[0].command));
+  assert.ok(architectureHook);
+  assert.match(architectureHook.matcher, /Bash/);
+  assert.match(architectureHook.matcher, /Write/);
+  assert.match(architectureHook.matcher, /Edit/);
   assert.ok(
     preToolUse.findIndex((entry) => /check-onboarding-gate/.test(entry.hooks[0].command))
       < preToolUse.findIndex((entry) => /check-library-allowlist/.test(entry.hooks[0].command)),
     'onboarding gate must run before Bash library/version checks',
   );
+});
+
+test('developer settings mirror onboarding and graph hooks', () => {
+  const settings = JSON.parse(fs.readFileSync(path.join(ROOT, 'settings.json'), 'utf8'));
+  const preToolUse = settings.hooks.PreToolUse;
+  const postToolUse = settings.hooks.PostToolUse;
+  assert.ok(Array.isArray(preToolUse));
+  assert.ok(Array.isArray(postToolUse));
+
+  assert.match(preToolUse[0].matcher, /Bash/);
+  assert.match(preToolUse[0].matcher, /Read/);
+  assert.match(preToolUse[0].matcher, /LS/);
+  assert.match(preToolUse[0].matcher, /Glob/);
+  assert.match(preToolUse[0].matcher, /Grep/);
+  assert.match(preToolUse[0].matcher, /Write/);
+  assert.match(preToolUse[0].hooks[0].command, /check-onboarding-gate/);
+  const architectureHook = preToolUse.find((entry) => /check-architecture-write/.test(entry.hooks[0].command));
+  assert.ok(architectureHook);
+  assert.match(architectureHook.matcher, /Bash/);
+  assert.match(architectureHook.matcher, /Write/);
+  assert.match(architectureHook.matcher, /Edit/);
+  assert.ok(preToolUse.some((entry) => /pre-graphify-hint/.test(entry.hooks[0].command)));
+
+  const bashPostHook = postToolUse.find((entry) => entry.matcher === 'Bash');
+  assert.ok(bashPostHook, 'Claude settings must run Bash post hooks');
+  const bashCommands = bashPostHook.hooks.map((hook) => hook.command).join('\n');
+  assert.match(bashCommands, /post-build-page-speed/);
+  assert.match(bashCommands, /post-build-graphify/);
+
+  const materializePostHook = postToolUse.find((entry) => /post-stack-setup/.test(entry.hooks[0].command));
+  assert.ok(materializePostHook, 'settings must include generic materialization post hook');
+  assert.equal(materializePostHook.matcher, '.*');
+});
+
+test('hook configs use host-agnostic post-tool materialization', () => {
+  for (const relPath of ['hooks/hooks.json', 'settings.json']) {
+    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, relPath), 'utf8'));
+    const postToolUse = hooks.hooks.PostToolUse;
+    const materializePostHook = postToolUse.find((entry) => /post-stack-setup/.test(entry.hooks[0].command));
+
+    assert.ok(materializePostHook, `${relPath} must include post-stack-setup`);
+    assert.equal(materializePostHook.matcher, '.*', `${relPath} must not bind materialization to host-specific tool names`);
+    assert.match(materializePostHook.hooks[0].statusMessage, /materialization/i);
+  }
 });
 
 test('onboarding gate denies tool use when empty cwd resolves mode=new-project', () => {
@@ -370,7 +527,40 @@ test('onboarding gate denies partial new-project state across read and search to
   });
 });
 
-test('onboarding gate treats missing toolchain as incomplete onboarding', () => {
+test('onboarding gate repairs missing bookkeeping after required choices exist', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: 3,
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      realtime: 'light',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      codeGraphProvider: 'gitnexus',
+      team: { mode: 'subagents', source: 'prompted' },
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+    const parsed = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.equal(state.version, '2.9.31');
+    assert.equal(state.confirmed, true);
+    assert.ok(state.confirmedAt);
+    assert.ok(Array.isArray(state.technologies.frontend));
+    assert.ok(state.toolchain.gitnexus);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+  });
+});
+
+test('onboarding gate still denies when required graph choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
       version: 3,
@@ -380,7 +570,7 @@ test('onboarding gate treats missing toolchain as incomplete onboarding', () => 
       backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'prompted' },
       technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
-      codeGraphProvider: 'gitnexus',
+      team: { mode: 'subagents', source: 'prompted' },
       confirmed: true,
       onboardingComplete: true,
       confirmedAt: '2026-05-13T10:00:00Z',
@@ -391,7 +581,36 @@ test('onboarding gate treats missing toolchain as incomplete onboarding', () => 
     });
     const parsed = parseStdoutJson(result);
     assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
-    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /toolchain/);
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /codeGraphProvider/);
+  });
+});
+
+test('onboarding gate still denies when required team choice is missing', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.31',
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      realtime: 'none',
+      codeGraphProvider: 'gitnexus',
+      toolchain: require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs')).initializeToolchainState({}),
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-13T10:00:00Z',
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+    const parsed = parseStdoutJson(result);
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team/);
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /remaining Code Graph and Team prompts/);
   });
 });
 
@@ -415,50 +634,35 @@ test('onboarding gate allows .traffic-one.json repair writes with relative or ab
 });
 
 test('onboarding gate allows tools only after complete v3 onboarding state exists', () => {
-  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   withTempDir((cwd) => {
-    writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: 3,
-      mode: 'new-project',
-      stack: 'default',
-      frontend: 'react-vite',
-      backend: 'supabase',
-      mobile: { enabled: false, framework: 'none', source: 'prompted' },
-      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
-      codeGraphProvider: 'graphify',
-      toolchain: initializeToolchainState({}),
-      confirmed: true,
-      onboardingComplete: true,
-      confirmedAt: '2026-05-13T10:00:00Z',
-    });
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({ codeGraphProvider: 'graphify' }));
 
     const result = runHook(cwd, 'check-onboarding-gate', {
       tool_input: { command: 'npm view react version' },
     });
 
-    assert.equal(result.stdout, '');
+    assert.doesNotMatch(result.stdout, /permissionDecision/);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
   });
 });
 
 test('Supabase missing-config setup CTAs must route through Traffic', () => {
   const sources = {
-    supabaseRule: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'supabase-client.md'), 'utf8'),
-    newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
+    supabaseRule: readRule('rules/frontend/react/supabase-client.md'),
+    newProjectRule: readRule('rules/modes/new-project.md'),
     stacks: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8'),
     directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
-    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
-    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
-    createService: fs.readFileSync(path.join(ROOT, 'skills', 'create-service', 'SKILL.md'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8'),
+    createService: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-service', 'SKILL.md'), 'utf8'),
     promptTemplates: fs.readFileSync(
-      path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+      path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
       'utf8',
     ),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
     reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
-    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
-    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
-    cursorSupabaseRule: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'react-supabase-client.mdc'), 'utf8'),
-    cursorNewProjectRule: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8'),
+    cursorSupabaseRule: readCursorRule('react-supabase-client.mdc', 'rules/frontend/react/supabase-client.md'),
+    cursorNewProjectRule: readCursorRule('mode-new-project.mdc', 'rules/modes/new-project.md'),
     cursorFrontendAgent: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', '00-agent-senior-frontend.mdc'), 'utf8'),
     cursorReviewerAgent: fs.readFileSync(path.join(ROOT, '.cursor', 'rules', '00-agent-senior-reviewer.mdc'), 'utf8'),
   };
@@ -476,8 +680,6 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
   assert.match(sources.promptTemplates, /exact `href`/);
   assert.match(sources.frontendAgent, /protected-route fallbacks/);
   assert.match(sources.reviewerAgent, /not directly to the Supabase\s+dashboard/);
-  assert.match(sources.agentsMirror, /SupabaseConfigAlert/);
-  assert.match(sources.claudeManifest, /supabase-client\.md/);
   assert.match(sources.cursorSupabaseRule, /href` is exactly `https:\/\/traffic\.io\/`/);
   assert.match(sources.cursorNewProjectRule, /protected-route\s+fallbacks/);
 });
@@ -497,7 +699,7 @@ test('SessionStart bundle includes Supabase Traffic setup CTA rule', () => {
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /rules\/frontend\/react\/supabase-client\.md/);
     assert.match(context, /https:\/\/traffic\.io\//);
@@ -506,20 +708,20 @@ test('SessionStart bundle includes Supabase Traffic setup CTA rule', () => {
 });
 
 test('new projects must include the auto-documentation baseline', () => {
-  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
-  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
+  const documentationRules = readRule('rules/common/documentation.md');
+  const newProjectRule = readRule('rules/modes/new-project.md');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const stacks = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
-  const cursorDocumentation = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-documentation.mdc'), 'utf8');
-  const cursorNewProject = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
+  const cursorDocumentation = readCursorRule('common-documentation.mdc', 'rules/common/documentation.md');
+  const cursorNewProject = readCursorRule('mode-new-project.mdc', 'rules/modes/new-project.md');
 
   assert.match(documentationRules, /For `mode: new-project`, this is mandatory/);
   assert.match(newProjectRule, /Mandatory auto-documentation baseline/);
@@ -531,17 +733,17 @@ test('new projects must include the auto-documentation baseline', () => {
   assert.match(architect, /do not leave only a README/);
   assert.match(reviewer, /Missing facts are\s+explicitly `Unverified`/);
   assert.match(promptTemplates, /run `project-memory` and\s+`auto-documentation-generator` after the plan even/);
-  assert.match(agentsMirror, /auto-documentation is mandatory/);
-  assert.match(claude, /@rules\/common\/documentation\.md/);
+  assert.match(agentsMirror, /auto-documentation-generator/);
+  assert.match(claude, /auto-documentation-generator/);
   assert.match(cursorDocumentation, /For `mode: new-project`, this is mandatory/);
   assert.match(cursorNewProject, /Mandatory auto-documentation baseline/);
 });
 
 test('project memory baseline is integrated across runtimes', () => {
-  const memoryRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'project-memory.md'), 'utf8');
-  const memorySkill = fs.readFileSync(path.join(ROOT, 'skills', 'project-memory', 'SKILL.md'), 'utf8');
-  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
-  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const memoryRules = readRule('rules/common/project-memory.md');
+  const memorySkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'project-memory', 'SKILL.md'), 'utf8');
+  const newProjectRule = readRule('rules/modes/new-project.md');
+  const existingRule = readRule('rules/modes/existing-codebase.md');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const stacks = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
@@ -549,38 +751,43 @@ test('project memory baseline is integrated across runtimes', () => {
   const backend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-backend.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
-  const cursorMemory = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-project-memory.mdc'), 'utf8');
-  const cursorNewProject = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-new-project.mdc'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
+  const cursorMemory = readCursorRule('common-project-memory.mdc', 'rules/common/project-memory.md');
+  const cursorNewProject = readCursorRule('mode-new-project.mdc', 'rules/modes/new-project.md');
 
   assert.match(memoryRules, /\.traffic-one\/product\.md/);
   assert.match(memoryRules, /Root `\.traffic-one\.json`/);
   assert.match(memoryRules, /\.traffic-one\/decisions\//);
-  assert.match(memoryRules, /\.traffic-one\/rules\/coding\.md/);
+  assert.match(memoryRules, /\.traffic-one\/coding\.md/);
   assert.match(memoryRules, /\.traffic-one\/deployments\.jsonl/);
   assert.match(memoryRules, /\.traffic-one\/mcp\.json/);
-  assert.match(memoryRules, /Root `AGENTS\.md` should symlink/);
+  assert.match(memoryRules, /Root `AGENTS\.md` contains the\s+compact active rule kernel and index by default/);
+  assert.doesNotMatch(memoryRules, /Root `AGENTS\.md` should symlink/);
+  assert.doesNotMatch(memoryRules, /\.traffic-one\/rules\/AGENTS\.md`: canonical/);
+  assert.match(memorySkill, /root `AGENTS\.md` containing the compact active rule kernel\/index by default/);
   assert.match(memorySkill, /Create, refresh, or audit the Traffic One `.traffic-one\/` project memory/);
   assert.match(memorySkill, /root `\.traffic-one\.json`/);
   assert.match(newProjectRule, /Project memory baseline/);
   assert.match(newProjectRule, /root `\.traffic-one\.json` exists/);
+  assert.match(newProjectRule, /Root `AGENTS\.md` is the canonical active agent context/);
   assert.match(existingRule, /run the `project-memory` baseline reconciliation/);
   assert.match(existingRule, /root `\.traffic-one\.json` exists/);
   assert.match(directives, /Project memory baseline: create/);
   assert.match(directives, /Verify the root companion state file/);
   assert.match(directives, /project-memory/);
+  assert.match(directives, /Root AGENTS\.md contains the compact active rule kernel\/index by\s+default/);
   assert.match(stacks, /rules\/common\/project-memory\.md/);
   assert.match(skillFilters, /'project-memory'/);
   assert.match(architect, /project-memory/);
   assert.match(backend, /refresh `.traffic-one\/schema\.sql`/);
   assert.match(shipper, /Append one JSON line to `.traffic-one\/deployments\.jsonl`/);
   assert.match(promptTemplates, /Read .traffic-one.json plus existing project memory/);
-  assert.match(agentsMirror, /Project memory — `.traffic-one\/`/);
-  assert.match(claude, /@rules\/common\/project-memory\.md/);
+  assert.match(agentsMirror, /\.traffic-one\/skills\/project-memory\/SKILL\.md/);
+  assert.match(claude, /\.traffic-one\/skills\/project-memory\/SKILL\.md/);
   assert.match(cursorMemory, /\.traffic-one\/agent-log\.md/);
   assert.match(cursorNewProject, /Project memory baseline/);
 });
@@ -602,7 +809,7 @@ test('SessionStart bundle includes project-memory guidance and banner', () => {
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /\[memory\] \.traffic-one\/ project memory present/);
     assert.match(context, /rules\/common\/project-memory\.md/);
@@ -626,7 +833,7 @@ test('SessionStart bundle includes mandatory auto-docs guidance', () => {
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /rules\/common\/documentation\.md/);
     assert.match(context, /For `mode: new-project`, this is mandatory across every stack/);
@@ -635,19 +842,19 @@ test('SessionStart bundle includes mandatory auto-docs guidance', () => {
 });
 
 test('existing projects must reconcile the auto-documentation baseline', () => {
-  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
-  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const documentationRules = readRule('rules/common/documentation.md');
+  const existingRule = readRule('rules/modes/existing-codebase.md');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
-  const autoDocs = fs.readFileSync(path.join(ROOT, 'skills', 'auto-documentation-generator', 'SKILL.md'), 'utf8');
+  const autoDocs = fs.readFileSync(path.join(ROOT, 'skills-templates', 'auto-documentation-generator', 'SKILL.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const cursorDocumentation = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-documentation.mdc'), 'utf8');
-  const cursorExisting = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'mode-existing-codebase.mdc'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const cursorDocumentation = readCursorRule('common-documentation.mdc', 'rules/common/documentation.md');
+  const cursorExisting = readCursorRule('mode-existing-codebase.mdc', 'rules/modes/existing-codebase.md');
 
   assert.match(documentationRules, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
   assert.match(documentationRules, /If a canonical doc does not\s+exist, create it from verified repo facts at the repo root/);
@@ -661,7 +868,7 @@ test('existing projects must reconcile the auto-documentation baseline', () => {
   assert.match(reviewer, /Existing projects have had the same docs baseline reconciled/);
   assert.match(autoDocs, /In existing projects, reconcile the docs baseline/);
   assert.match(promptTemplates, /`existing-with-supabase`, run them before normal feature work/);
-  assert.match(agentsMirror, /if a canonical doc does not exist, create it from verified repo facts at the repo root/);
+  assert.match(agentsMirror, /\.traffic-one\/rules\/common\/documentation\.md/);
   assert.match(cursorDocumentation, /For `mode: existing-codebase` and `mode: existing-with-supabase`/);
   assert.match(cursorExisting, /If a canonical doc already exists, update it in place/);
 });
@@ -676,11 +883,11 @@ test('existing project SessionStart includes docs reconciliation guidance', () =
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.equal(state.mode, 'existing-codebase');
-    assert.match(context, /rules\/modes\/existing-codebase\.md/);
+    assert.match(context, /auto-documentation baseline reconciliation/);
     assert.match(context, /rules\/common\/documentation\.md/);
     assert.match(context, /create missing canonical docs at the repo root and update existing docs in place/);
     assert.match(context, /Before normal feature work/);
@@ -698,25 +905,25 @@ test('all stack bundles include documentation defaults', () => {
 });
 
 test('SEO baseline is mandatory for generated and existing web projects', () => {
-  const seoRule = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'seo.md'), 'utf8');
-  const seoSkill = fs.readFileSync(path.join(ROOT, 'skills', 'seo', 'SKILL.md'), 'utf8');
-  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
-  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const seoRule = readRule('rules/common/seo.md');
+  const seoSkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'seo', 'SKILL.md'), 'utf8');
+  const newProjectRule = readRule('rules/modes/new-project.md');
+  const existingRule = readRule('rules/modes/existing-codebase.md');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
-  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
-  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  const cursorSeo = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-seo.mdc'), 'utf8');
+  const cursorSeo = readCursorRule('common-seo.mdc', 'rules/common/seo.md');
 
   for (const [stackId, spec] of Object.entries(STACKS)) {
     assert.equal(
@@ -755,8 +962,8 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   assert.match(createFeature, /for every public route created or changed/);
   assert.match(promptTemplates, /include the route metadata contract/);
   assert.match(promptTemplates, /regression coverage for every created or changed public route/);
-  assert.match(agentsMirror, /SEO baseline — generated and reconciled automatically/);
-  assert.match(claude, /@rules\/common\/seo\.md/);
+  assert.match(agentsMirror, /\.traffic-one\/rules\/common\/seo\.md/);
+  assert.match(claude, /\.traffic-one\/rules\/common\/seo\.md/);
   assert.match(readme, /Generated\/existing web SEO baseline/);
   assert.match(cursorSeo, /SEO is not a launch-only cleanup task/);
 
@@ -774,7 +981,7 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /rules\/common\/seo\.md/);
     assert.match(context, /Generated Web Baseline/);
@@ -790,7 +997,7 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /rules\/common\/seo\.md/);
     assert.match(context, /SEO baseline reconciliation/);
@@ -798,25 +1005,25 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
 });
 
 test('frontend i18n baseline is mandatory and automatic for UI work', () => {
-  const i18nRule = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'i18n.md'), 'utf8');
-  const reactCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'core.md'), 'utf8');
-  const nativeCore = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react-native', 'core.md'), 'utf8');
-  const i18nSkill = fs.readFileSync(path.join(ROOT, 'skills', 'i18n-text', 'SKILL.md'), 'utf8');
-  const createPage = fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8');
-  const createFeature = fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8');
-  const createComponent = fs.readFileSync(path.join(ROOT, 'skills', 'create-component', 'SKILL.md'), 'utf8');
-  const newProjectRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8');
-  const existingRule = fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'existing-codebase.md'), 'utf8');
+  const i18nRule = readRule('rules/frontend/i18n.md');
+  const reactCore = readRule('rules/frontend/react/core.md');
+  const nativeCore = readRule('rules/frontend/react-native/core.md');
+  const i18nSkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'i18n-text', 'SKILL.md'), 'utf8');
+  const createPage = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8');
+  const createFeature = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8');
+  const createComponent = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-component', 'SKILL.md'), 'utf8');
+  const newProjectRule = readRule('rules/modes/new-project.md');
+  const existingRule = readRule('rules/modes/existing-codebase.md');
   const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
   const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
-    path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
     'utf8',
   );
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
 
   for (const state of [
     { stack: 'default', frontend: 'react-vite', backend: 'supabase' },
@@ -855,8 +1062,8 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
   assert.match(tester, /translated accessible names and labels/);
   assert.match(promptTemplates, /even when the user did not\s+mention translations/);
   assert.match(promptTemplates, /prefer `<Trans>`/);
-  assert.match(agentsMirror, /i18n baseline — generated and reconciled automatically/);
-  assert.match(claude, /i18n\.md/);
+  assert.match(agentsMirror, /rules\/frontend\/i18n\.md/);
+  assert.match(claude, /rules\/frontend\/i18n\.md/);
 
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
@@ -875,8 +1082,7 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
     const context = payload.hookSpecificOutput.additionalContext;
 
     assert.match(context, /rules\/frontend\/i18n\.md/);
-    assert.match(context, /Frontend i18n Baseline/);
-    assert.match(context, /even when the user did not explicitly ask for translations/);
+    assert.match(context, /i18n-text/);
   });
 });
 
@@ -934,7 +1140,7 @@ test('SessionStart bundle includes mandatory frontend design gate', () => {
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /rules\/frontend\/ui-quality\.md/);
     assert.match(context, /Central design gate/);
@@ -960,7 +1166,7 @@ test('React Native SessionStart bundle includes shared design gate', () => {
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const context = payload.hookSpecificOutput.additionalContext;
+    const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(context, /rules\/frontend\/ui-quality\.md/);
     assert.match(context, /Central design gate/);
@@ -971,17 +1177,17 @@ test('React Native SessionStart bundle includes shared design gate', () => {
 
 test('frontend design gate rejects sparse config-banner-dominated generated UI', () => {
   const sources = {
-    uiQuality: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ui-quality.md'), 'utf8'),
-    reactDesign: fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'design-quality.md'), 'utf8'),
-    newProjectRule: fs.readFileSync(path.join(ROOT, 'rules', 'modes', 'new-project.md'), 'utf8'),
+    uiQuality: readRule('rules/frontend/ui-quality.md'),
+    reactDesign: readRule('rules/frontend/react/design-quality.md'),
+    newProjectRule: readRule('rules/modes/new-project.md'),
     directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
-    frontendSkill: fs.readFileSync(path.join(ROOT, 'skills', 'frontend-design', 'SKILL.md'), 'utf8'),
-    createPage: fs.readFileSync(path.join(ROOT, 'skills', 'create-page', 'SKILL.md'), 'utf8'),
-    createFeature: fs.readFileSync(path.join(ROOT, 'skills', 'create-feature', 'SKILL.md'), 'utf8'),
+    frontendSkill: fs.readFileSync(path.join(ROOT, 'skills-templates', 'frontend-design', 'SKILL.md'), 'utf8'),
+    createPage: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8'),
+    createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
     frontendAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8'),
     reviewerAgent: fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8'),
-    agentsMirror: fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8'),
-    claudeManifest: fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8'),
+    agentsMirror: readRootAgentContext(),
+    claudeManifest: readClaudeContext(),
   };
 
   assert.match(sources.uiQuality, /Generated app\/site prompts must produce a product-specific/);
@@ -999,8 +1205,8 @@ test('frontend design gate rejects sparse config-banner-dominated generated UI',
   assert.match(sources.frontendAgent, /do not ship only banners plus inactive filters/);
   assert.match(sources.reviewerAgent, /mandatory design gate/);
   assert.match(sources.reviewerAgent, /duplicated setup UI/);
-  assert.match(sources.agentsMirror, /Do not rely on path-scoped attach/);
-  assert.match(sources.claudeManifest, /mandatory frontend-stack design brief/);
+  assert.match(sources.agentsMirror, /Active Rules/);
+  assert.match(sources.claudeManifest, /Active Rules/);
 });
 
 test('existing React Native project SessionStart includes docs reconciliation guidance', () => {
@@ -1152,6 +1358,17 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
   assert.equal(state.toolchain.trufflehog.installedVersion, null);
 });
 
+test('plugin cache detection covers both Claude and Codex installs', () => {
+  const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.31');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.31');
+  const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
+
+  assert.equal(isManagedPluginCachePath(codexCache), true);
+  assert.equal(isManagedPluginCachePath(claudeCache), true);
+  assert.equal(isManagedPluginCachePath(sourceCheckout), false);
+});
+
 test('materializeProjectAssets copies only active local rules and skills', () => {
   const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
   withTempDir((cwd) => {
@@ -1161,22 +1378,38 @@ test('materializeProjectAssets copies only active local rules and skills', () =>
       backend: 'supabase',
       mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' },
     };
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'rules'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'coding.md'), '# Coding Rules\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'security.md'), '# Security Rules\n', 'utf8');
 
     const result = materializeProjectAssets(cwd, state);
     assert.ok(result.rules > 0);
     assert.ok(result.skills > 0);
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'frontend', 'react-native', 'core.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'frontend', 'react-native', 'core.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-native-screen', 'SKILL.md')));
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'golang-patterns', 'SKILL.md')), false);
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'nextjs-turbopack', 'SKILL.md')), false);
 
     const agentsPath = path.join(cwd, 'AGENTS.md');
     const claudePath = path.join(cwd, 'CLAUDE.md');
-    const rulesManifestPath = path.join(cwd, '.traffic-one', 'rules', 'manifest.json');
+    const manifestPath = path.join(cwd, '.traffic-one', 'manifest.json');
     assert.ok(fs.existsSync(agentsPath));
-    assert.match(fs.readFileSync(claudePath, 'utf8'), /@\.traffic-one\/rules\/active\//);
-    assert.match(fs.readFileSync(rulesManifestPath, 'utf8'), /react-native\/core\.md/);
-    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')), false);
+    const rootAgents = fs.readFileSync(agentsPath, 'utf8');
+    assert.match(rootAgents, /\.traffic-one\/rules\/frontend\/react-native\/core\.md/);
+    assert.doesNotMatch(rootAgents, /\.traffic-one\/rules\/active/);
+    assert.match(rootAgents, /## Active Rule Kernel/);
+    assert.match(rootAgents, /## Read Rules When/);
+    assert.match(rootAgents, /## Active Rule Index/);
+    assert.doesNotMatch(rootAgents, /## Active Rule Contents/);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'coding.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'security.md')), false);
+    assert.match(fs.readFileSync(path.join(cwd, '.traffic-one', 'coding.md'), 'utf8'), /Coding Rules/);
+    assert.match(fs.readFileSync(path.join(cwd, '.traffic-one', 'security.md'), 'utf8'), /Security Rules/);
+    assert.equal(fs.lstatSync(claudePath).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(claudePath), 'AGENTS.md');
+    assert.match(fs.readFileSync(manifestPath, 'utf8'), /react-native\/core\.md/);
   });
 });
 
@@ -1193,16 +1426,113 @@ test('materializeProjectAssets includes mode-specific local rules', () => {
 
     materializeProjectAssets(cwd, state);
 
-    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md');
-    const manifest = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json'), 'utf8');
-    const localAgents = fs.readFileSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md'), 'utf8');
-    const localClaude = fs.readFileSync(path.join(cwd, 'CLAUDE.md'), 'utf8');
+    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md');
+    const manifest = fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8');
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
 
     assert.ok(fs.existsSync(localRulePath));
     assert.match(manifest, /rules\/modes\/new-project\.md/);
-    assert.match(localAgents, /\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
-    assert.match(localClaude, /@\.traffic-one\/rules\/active\/rules\/modes\/new-project\.md/);
+    assert.match(rootAgents, /\.traffic-one\/rules\/modes\/new-project\.md/);
+    assert.match(rootAgents, /## Active Rule Kernel/);
+    assert.match(rootAgents, /## Active Rule Index/);
+    assert.match(rootAgents, /### Mandatory Baseline/);
+    assert.match(rootAgents, /### Reference On Demand/);
+    assert.doesNotMatch(rootAgents, /## Active Rule Contents/);
+    assert.doesNotMatch(rootAgents, /# Mode: New Project/);
+    assert.doesNotMatch(rootAgents, /\.traffic-one\/rules\/active/);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+    assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(path.join(cwd, 'CLAUDE.md')), 'AGENTS.md');
   });
+});
+
+test('materializeProjectAssets uses compact root AGENTS by default', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  withTempDir((root) => {
+    const cwd = path.join(root, 'careerforge');
+    fs.mkdirSync(cwd, { recursive: true });
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    };
+
+    const result = materializeProjectAssets(cwd, state);
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+    const localRulePath = path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md');
+    const manifest = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8'));
+
+    assert.equal(result.contextProfile, 'lean');
+    assert.equal(manifest.contextProfile, 'lean');
+    assert.ok(fs.existsSync(localRulePath));
+    assert.match(fs.readFileSync(localRulePath, 'utf8'), /# Mode: New Project/);
+    assert.match(rootAgents, /## Active Rule Kernel/);
+    assert.match(rootAgents, /## Read Rules When/);
+    assert.match(rootAgents, /## Active Rule Index/);
+    assert.match(rootAgents, /### Mandatory Baseline/);
+    assert.match(rootAgents, /### Reference On Demand/);
+    assert.match(rootAgents, /team\.mode="subagents"/);
+    assert.match(rootAgents, /rules\/frontend\/ui-quality\.md/);
+    assert.doesNotMatch(rootAgents, /## Active Rule Contents/);
+    assert.doesNotMatch(rootAgents, /# Mode: New Project/);
+    assert.ok(rootAgents.length < 10000, `compact AGENTS too large: ${rootAgents.length} bytes`);
+  });
+});
+
+test('materializeProjectAssets supports full root AGENTS opt-in', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  withTempDir((cwd) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      contextMode: 'full',
+    };
+
+    const result = materializeProjectAssets(cwd, state);
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+    const manifest = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'manifest.json'), 'utf8'));
+
+    assert.equal(result.contextProfile, 'full');
+    assert.equal(manifest.contextProfile, 'full');
+    assert.match(rootAgents, /## Active Rule Contents/);
+    assert.match(rootAgents, /### rules\/modes\/new-project\.md/);
+    assert.match(rootAgents, /# Mode: New Project/);
+    assert.doesNotMatch(rootAgents, /## Active Rule Kernel/);
+  });
+});
+
+test('materializeProjectAssets skips the plugin authoring root', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  const before = readRootAgentContext();
+  const result = materializeProjectAssets(ROOT, completeDefaultState());
+  const after = readRootAgentContext();
+
+  assert.equal(result.skipped, 'plugin-authoring-root');
+  assert.equal(after, before);
+});
+
+test('hook configs use universal plugin-root fallback for Claude and Codex', () => {
+  const settings = fs.readFileSync(path.join(ROOT, 'settings.json'), 'utf8');
+  const codexHooks = fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8');
+  const combined = `${settings}\n${codexHooks}`;
+
+  assert.match(combined, /TRAFFIC_ONE_PLUGIN_ROOT/);
+  assert.match(combined, /CODEX_PLUGIN_ROOT/);
+  assert.match(combined, /CLAUDE_PLUGIN_ROOT/);
+  assert.doesNotMatch(combined, /node "\\$\{CLAUDE_PLUGIN_ROOT\}\/scripts\/hook-runtime\.cjs/);
+});
+
+test('Codex manifest discovers full skill templates without cache writes', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, '.codex-plugin', 'plugin.json'), 'utf8'));
+  assert.equal(manifest.skills, './skills-templates/');
+  assert.ok(fs.existsSync(path.join(ROOT, 'skills-templates', 'frontend-design', 'SKILL.md')));
+  assert.ok(fs.existsSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md')));
 });
 
 test('post-stack-setup materializes local rules after project-memory writes', () => {
@@ -1218,6 +1548,7 @@ test('post-stack-setup materializes local rules after project-memory writes', ()
       technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
       realtime: 'none',
       codeGraphProvider: 'graphify',
+      team: { mode: 'subagents', source: 'prompted' },
       toolchain: initializeToolchainState({}),
       confirmed: true,
       onboardingComplete: true,
@@ -1233,10 +1564,219 @@ test('post-stack-setup materializes local rules after project-memory writes', ()
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
     assert.match(context, /Project-local rules\/skills materialized/);
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'active', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')));
-    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')), false);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+  });
+});
+
+test('materialize-project normalizes partial state and writes local rules/skills', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: 'web-only',
+      codeGraphProvider: 'gitnexus',
+      team: { mode: 'subagents', source: 'prompted' },
+      onboardingComplete: true,
+    });
+
+    const result = runHook(cwd, 'materialize-project');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(context, /Project-local rules\/skills/);
+    assert.equal(state.version, '2.9.31');
+    assert.equal(state.confirmed, true);
+    assert.equal(state.onboardingComplete, true);
+    assert.equal(state.mobile.framework, 'none');
+    assert.equal(state.mobile.enabled, false);
+    assert.ok(Array.isArray(state.technologies.frontend));
+    assert.ok(state.toolchain.gitnexus);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'manifest.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
+    assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
+  });
+});
+
+test('materialize-project canonicalizes mobile source aliases before validation', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      mobile: { enabled: false, framework: 'none', source: 'user-onboarding' },
+      codeGraphProvider: 'graphify',
+    }));
+
+    const result = runHook(cwd, 'materialize-project');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(context, /Project-local rules\/skills/);
+    assert.equal(state.mobile.source, 'prompted');
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+  });
+});
+
+test('materialize-project canonicalizes team aliases before validation', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      team: { mode: 'run-team', source: 'user-onboarding' },
+      codeGraphProvider: 'graphify',
+    }));
+
+    const result = runHook(cwd, 'materialize-project');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(context, /Project-local rules\/skills/);
+    assert.equal(state.team.mode, 'subagents');
+    assert.equal(state.team.source, 'prompted');
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+  });
+});
+
+test('materialize-project warning names invalid mobile source instead of blaming stack', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      mobile: { enabled: false, framework: 'none', source: 'definitely-invalid' },
+      codeGraphProvider: 'graphify',
+    }));
+
+    const result = runHook(cwd, 'materialize-project');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+
+    assert.match(payload.systemMessage, /incomplete/);
+    assert.match(context, /mobile\.source/);
+    assert.match(context, /definitely-invalid/);
+    assert.doesNotMatch(context, /without a `stack` field/);
+  });
+});
+
+test('post-tool convergence materializes complete state without write-specific payload', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Existing project note\n\nKeep this note.\n', 'utf8');
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { tool_name: 'future-host-patch-tool' },
+    });
+    const payload = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(state.materializedAt);
+    assert.ok(state.materializedVersion);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'AGENTS.local.md')));
+    assert.match(fs.readFileSync(path.join(cwd, '.nvmrc'), 'utf8'), /^22\n$/);
+    assert.match(rootAgents, /Traffic One Local Agent Context/);
+    assert.match(rootAgents, /Preserved Project Notes/);
+    assert.match(rootAgents, /Keep this note/);
+    assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), true);
+  });
+});
+
+test('post-tool convergence materializes nested project mentioned by Codex cmd path', () => {
+  withTempDir((cwd) => {
+    const target = path.join(cwd, 'tests', 'jobconnect');
+    const sibling = path.join(cwd, 'tests', 'existing-project');
+    fs.mkdirSync(target, { recursive: true });
+    fs.mkdirSync(sibling, { recursive: true });
+    writeJson(path.join(target, '.traffic-one.json'), completeDefaultState({
+      codeGraphProvider: 'graphify',
+      materializedStack: 'react-vite-supabase',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: 'manual',
+    }));
+    writeJson(path.join(sibling, '.traffic-one.json'), completeDefaultState({
+      codeGraphProvider: 'graphify',
+    }));
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: {
+        cmd: 'mkdir -p tests/jobconnect/apps/web tests/jobconnect/packages',
+      },
+    });
+    const payload = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(path.join(target, '.traffic-one.json'), 'utf8'));
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(target, '.traffic-one', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(target, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(target, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.equal(
+      fs.existsSync(path.join(sibling, '.traffic-one', 'manifest.json')),
+      false,
+      'only the nested project named in the command should be materialized',
+    );
+  });
+});
+
+test('pre-tool convergence repairs missing materialized assets before feature gates', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      ...completeDefaultState(),
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: '2026-05-13T10:00:00Z',
+      materializedVersion: '2.9.31',
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'future-host-read-or-build' },
+    });
+    const payload = parseStdoutJson(result);
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
+  });
+});
+
+test('session-start repairs fake materialization stamps before subagent fast path', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      ...completeDefaultState(),
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.31',
+      currentRunId: '2026-05-18T12-04-52Z',
+      activeAgentRole: 'senior-frontend',
+      spawnIndex: { 'senior-frontend': 1 },
+    });
+
+    const result = runHook(cwd, 'session-start');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(context, /senior-frontend/);
+    assert.match(context, /materialized to \.traffic-one\/rules/);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'frontend-design', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(state.materializedAt);
   });
 });
 
@@ -1253,13 +1793,14 @@ test('post-stack-setup reports local materialization failures', () => {
       technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
       realtime: 'none',
       codeGraphProvider: 'graphify',
+      team: { mode: 'subagents', source: 'prompted' },
       toolchain: initializeToolchainState({}),
       confirmed: true,
       onboardingComplete: true,
       confirmedAt: '2026-05-13T10:00:00Z',
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one', 'rules'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'active'), 'not a directory\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules', 'common'), 'not a directory\n', 'utf8');
     fs.writeFileSync(path.join(cwd, '.traffic-one', 'product.md'), '# Product\n', 'utf8');
 
     const result = runHook(cwd, 'post-stack-setup', {
@@ -1268,7 +1809,7 @@ test('post-stack-setup reports local materialization failures', () => {
 
     const payload = parseStdoutJson(result);
     assert.match(payload.systemMessage, /materialization failed/);
-    assert.match(payload.hookSpecificOutput.additionalContext, /\.traffic-one\/rules\/active/);
+    assert.match(payload.hookSpecificOutput.additionalContext, /\.traffic-one\/rules/);
   });
 });
 
@@ -1314,12 +1855,12 @@ test('malformed stdin exits cleanly', () => {
 });
 
 test('python backend rule still rejects hand-rolled jwt default', () => {
-  const pythonRule = fs.readFileSync(path.join(ROOT, 'rules', 'backend', 'python.md'), 'utf8');
+  const pythonRule = readRule('rules/backend/python.md');
   assert.match(pythonRule, /do not default FastAPI apps to hand-rolled JWT auth/);
 });
 
 test('library-pick checks catalog before candidates', () => {
-  const skill = fs.readFileSync(path.join(ROOT, 'skills', 'library-pick', 'SKILL.md'), 'utf8');
+  const skill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'library-pick', 'SKILL.md'), 'utf8');
   assert.match(skill, /rules\/common\/library-catalog\.md/);
   assert.match(skill, /date-fns or dayjs/);
 });
@@ -1438,6 +1979,104 @@ test('plan-gate allows feature write when plan exists', () => {
     const result = runHook(cwd, 'check-architecture-write', {
       tool_input: {
         file_path: 'apps/web/src/features/billing/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('materialization gate blocks forged stamp when local assets are missing', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      ...completeDefaultState({
+        materializedStack: 'default|react-vite|supabase|none',
+        materializedAt: '2026-05-13T10:00:00Z',
+        materializedVersion: '2.9.31',
+      }),
+    });
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'rules'), 'blocks materialization\n', 'utf8');
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/jobs/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Materialization gate/);
+    assert.match(result.stdout, /\.traffic-one\/rules/);
+  });
+});
+
+test('run-team enforcement blocks parent feature writes after subagent choice', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/jobs/index.ts',
+        content: 'export const x = 1;\n',
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Run-team enforcement gate/);
+    assert.match(result.stdout, /team\.mode=\\?"subagents\\?"/);
+    assert.match(result.stdout, /senior-frontend/);
+    assert.match(result.stdout, /senior-backend/);
+  });
+});
+
+test('run-team enforcement blocks Bash feature-source writes', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        command: "cat > apps/web/src/features/jobs/index.ts <<'EOF'\nexport const x = 1;\nEOF",
+      },
+    });
+
+    assert.match(result.stdout, /permissionDecision/);
+    assert.match(result.stdout, /Run-team enforcement gate/);
+    assert.match(result.stdout, /Bash-based feature-source writes are denied/);
+  });
+});
+
+test('run-team enforcement allows active frontend role feature writes', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      currentRunId: '2026-05-18T16-47-32Z',
+      activeAgentRole: 'senior-frontend',
+      spawnIndex: { 'senior-frontend': 1 },
+    }));
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+
+    const result = runHook(cwd, 'check-architecture-write', {
+      tool_input: {
+        file_path: 'apps/web/src/features/jobs/index.ts',
         content: 'export const x = 1;\n',
       },
     });
@@ -1772,7 +2411,7 @@ test('SessionStart bundle includes codebase-graph + handoff-digests rules', () =
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const ctx = payload.hookSpecificOutput.additionalContext;
+    const ctx = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(ctx, /codebase-graph\.md/);
     assert.match(ctx, /agent-handoff-digests\.md/);
@@ -1794,7 +2433,7 @@ test('SessionStart bundle includes deployment artifact defaults', () => {
 
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
-    const ctx = payload.hookSpecificOutput.additionalContext;
+    const ctx = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.match(ctx, /Deployment artifact baseline/);
     assert.match(ctx, /static-host manifest/);
@@ -1804,7 +2443,7 @@ test('SessionStart bundle includes deployment artifact defaults', () => {
 });
 
 test('deployment assistant guidance is merged, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1817,12 +2456,12 @@ test('deployment assistant guidance is merged, not duplicated', () => {
 });
 
 test('database architect guidance is merged, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
   const postgresReview = fs.readFileSync(path.join(skillsRoot, 'postgres-review', 'SKILL.md'), 'utf8');
-  const postgresRules = fs.readFileSync(path.join(ROOT, 'rules', 'backend', 'postgres.md'), 'utf8');
+  const postgresRules = readRule('rules/backend/postgres.md');
   const migrationSkill = fs.readFileSync(path.join(skillsRoot, 'database-migrations', 'SKILL.md'), 'utf8');
 
   assert.equal(skillNames.includes('ai-database-architect'), false);
@@ -1840,15 +2479,15 @@ test('database architect guidance is merged, not duplicated', () => {
 });
 
 test('production readiness score guidance is merged, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
   const verificationLoop = fs.readFileSync(path.join(skillsRoot, 'verification-loop', 'SKILL.md'), 'utf8');
-  const stackRecommendations = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'stack-recommendations.md'), 'utf8');
+  const stackRecommendations = readRule('rules/common/stack-recommendations.md');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
 
   assert.equal(skillNames.includes('production-readiness-score'), false);
   assert.equal(skillNames.includes('readiness-score'), false);
@@ -1865,26 +2504,26 @@ test('production readiness score guidance is merged, not duplicated', () => {
   assert.match(stackRecommendations, /LCP <= 2\.5s, INP <= 200ms/);
   assert.match(reviewer, /Production-Readiness\s+Score/);
   assert.match(shipper, /Production-Readiness Score/);
-  assert.match(agentsMirror, /Production-readiness score/);
+  assert.match(agentsMirror, /\.traffic-one\/skills\/verification-loop\/SKILL\.md/);
 });
 
 test('post-deploy observability guidance is integrated, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
   const observability = fs.readFileSync(path.join(skillsRoot, 'observability', 'SKILL.md'), 'utf8');
   const deploymentPatterns = fs.readFileSync(path.join(skillsRoot, 'deployment-patterns', 'SKILL.md'), 'utf8');
   const verificationLoop = fs.readFileSync(path.join(skillsRoot, 'verification-loop', 'SKILL.md'), 'utf8');
-  const stackRecommendations = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'stack-recommendations.md'), 'utf8');
-  const reactSecurity = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'security.md'), 'utf8');
-  const reactVite = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'react', 'vite.md'), 'utf8');
-  const ionicSecurity = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ionic', 'security.md'), 'utf8');
-  const postgresRules = fs.readFileSync(path.join(ROOT, 'rules', 'backend', 'postgres.md'), 'utf8');
+  const stackRecommendations = readRule('rules/common/stack-recommendations.md');
+  const reactSecurity = readRule('rules/frontend/react/security.md');
+  const reactVite = readRule('rules/frontend/react/vite.md');
+  const ionicSecurity = readRule('rules/frontend/ionic/security.md');
+  const postgresRules = readRule('rules/backend/postgres.md');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const cursorStackRecommendations = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-stack-recommendations.mdc'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const cursorStackRecommendations = readCursorRule('common-stack-recommendations.mdc', 'rules/common/stack-recommendations.md');
 
   assert.equal(skillNames.includes('post-deploy-observability'), false);
   assert.equal(skillNames.includes('ai-error-fixing'), false);
@@ -1902,12 +2541,12 @@ test('post-deploy observability guidance is integrated, not duplicated', () => {
   assert.match(postgresRules, /pg_stat_statements/);
   assert.match(shipper, /failed-deploy log analysis/);
   assert.match(skillFilters, /'observability'/);
-  assert.match(agentsMirror, /Post-deploy observability/);
+  assert.match(agentsMirror, /\.traffic-one\/skills\/observability\/SKILL\.md/);
   assert.match(cursorStackRecommendations, /Post-Deploy Observability Defaults/);
 });
 
 test('app launch checklist guidance is integrated, not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
@@ -1916,17 +2555,17 @@ test('app launch checklist guidance is integrated, not duplicated', () => {
   const ionicMobile = fs.readFileSync(path.join(skillsRoot, 'ionic-mobile', 'SKILL.md'), 'utf8');
   const deploymentPatterns = fs.readFileSync(path.join(skillsRoot, 'deployment-patterns', 'SKILL.md'), 'utf8');
   const verificationLoop = fs.readFileSync(path.join(skillsRoot, 'verification-loop', 'SKILL.md'), 'utf8');
-  const stackRecommendations = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'stack-recommendations.md'), 'utf8');
-  const accessibility = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'accessibility.md'), 'utf8');
-  const performance = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'performance.md'), 'utf8');
-  const ionicCapacitor = fs.readFileSync(path.join(ROOT, 'rules', 'frontend', 'ionic', 'capacitor.md'), 'utf8');
+  const stackRecommendations = readRule('rules/common/stack-recommendations.md');
+  const accessibility = readRule('rules/frontend/accessibility.md');
+  const performance = readRule('rules/frontend/performance.md');
+  const ionicCapacitor = readRule('rules/frontend/ionic/capacitor.md');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const ref = fs.readFileSync(path.join(ROOT, 'ref.md'), 'utf8');
   const codexManifest = fs.readFileSync(path.join(ROOT, '.codex-plugin', 'plugin.json'), 'utf8');
-  const cursorStackRecommendations = fs.readFileSync(path.join(ROOT, '.cursor', 'rules', 'common-stack-recommendations.mdc'), 'utf8');
+  const cursorStackRecommendations = readCursorRule('common-stack-recommendations.mdc', 'rules/common/stack-recommendations.md');
 
   assert.equal(skillNames.includes('launch-readiness'), false);
   assert.equal(skillNames.includes('app-store-checklist'), false);
@@ -1950,7 +2589,7 @@ test('app launch checklist guidance is integrated, not duplicated', () => {
   assert.match(ionicCapacitor, /Play App Signing/);
   assert.match(shipper, /app-launch-checklist/);
   assert.match(skillFilters, /'app-launch-checklist'/);
-  assert.match(agentsMirror, /app-launch checklist/);
+  assert.match(agentsMirror, /app-launch-checklist/);
   assert.match(readme, /app launch checklist/);
   assert.match(ref, /Skills: 101/);
   assert.match(codexManifest, /Run the app launch checklist/);
@@ -1958,18 +2597,18 @@ test('app launch checklist guidance is integrated, not duplicated', () => {
 });
 
 test('auto documentation generator guidance is present and not duplicated', () => {
-  const skillsRoot = path.join(ROOT, 'skills');
+  const skillsRoot = path.join(ROOT, 'skills-templates');
   const skillNames = fs.readdirSync(skillsRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name);
   const autoDocs = fs.readFileSync(path.join(skillsRoot, 'auto-documentation-generator', 'SKILL.md'), 'utf8');
   const adrSkill = fs.readFileSync(path.join(skillsRoot, 'architecture-decision-records', 'SKILL.md'), 'utf8');
-  const documentationRules = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'documentation.md'), 'utf8');
+  const documentationRules = readRule('rules/common/documentation.md');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
-  const agentsMirror = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
-  const claude = fs.readFileSync(path.join(ROOT, 'CLAUDE.md'), 'utf8');
+  const agentsMirror = readRootAgentContext();
+  const claude = readClaudeContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
 
@@ -1995,8 +2634,8 @@ test('auto documentation generator guidance is present and not duplicated', () =
   assert.match(architect, /auto-documentation-generator/);
   assert.match(reviewer, /auto-documentation-generator/);
   assert.match(shipper, /auto-documentation-generator/);
-  assert.match(agentsMirror, /Auto-documentation generator/);
-  assert.match(claude, /@rules\/common\/documentation\.md/);
+  assert.match(agentsMirror, /auto-documentation-generator/);
+  assert.match(claude, /auto-documentation-generator/);
   assert.match(readme, /generate project docs/);
   assert.match(skillFilters, /auto-documentation-generator/);
 });
@@ -2073,7 +2712,7 @@ test('graphify-runner short-circuits when GRAPH_REPORT.md is fresh (lets Phase 5
 });
 
 test('orchestrator Phase 5 dispatches to the chosen codebase-graph runner per provider', () => {
-  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   // Both runners must be referenced by the dispatch (case statement) so the
   // post-build hook + Phase 5 stay symmetric.
   assert.match(orchestrator, /graphify-runner\.cjs/);
@@ -2087,7 +2726,7 @@ test('orchestrator Phase 5 dispatches to the chosen codebase-graph runner per pr
 });
 
 test('digest rule documents reviewer spillover-note pattern', () => {
-  const rule = fs.readFileSync(path.join(ROOT, 'rules', 'common', 'agent-handoff-digests.md'), 'utf8');
+  const rule = readRule('rules/common/agent-handoff-digests.md');
   assert.match(rule, /Reviewer findings/);
   assert.match(rule, /reviewer-detail-<n>\.md/);
   assert.match(rule, /≤3 sentences per blocker/);
@@ -2216,9 +2855,23 @@ test('post-stack-setup silent on small digest write (< 3 KB)', () => {
 // ── Phase 5 sanity check is documented in the orchestrator ─────────────────
 
 test('orchestrator Phase 5 documents the missing-digest sanity check', () => {
-  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   assert.match(orchestrator, /Phase 5 — Cleanup \+ sanity check/);
   assert.match(orchestrator, /Digest sanity:/);
+});
+
+test('orchestrator verifies materialization after PLAN_READY before Phase 2', () => {
+  const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const templates = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'), 'utf8');
+
+  assert.match(orchestrator, /After `PLAN_READY`, before Phase 2/);
+  assert.match(orchestrator, /materialize-project/);
+  assert.match(orchestrator, /Do not spawn frontend\/backend/);
+  assert.match(orchestrator, /without hand-writing `materializedStack`/);
+  assert.match(templates, /Before emitting PLAN_READY, verify project-local context is materialized/);
+  assert.match(templates, /\.traffic-one\/manifest\.json/);
+  assert.match(templates, /materialize-project/);
+  assert.match(templates, /Do not write `materializedStack`/);
 });
 
 // ── codeGraphProvider onboarding question + state-shape enforcement ────────
@@ -2445,17 +3098,11 @@ test('gitnexus-runner uses absolute nvm-v22 gitnexus binary even when injected n
 test('runPostStackSetup auto-writes .nvmrc with `22` when codeGraphProvider is gitnexus on new-project', () => {
   withTempDir((cwd) => {
     const filePath = path.join(cwd, '.traffic-one.json');
-    writeJson(filePath, {
-      version: 2,
-      mode: 'new-project',
+    writeJson(filePath, completeDefaultState({
       stack: 'react-realtime-monorepo',
-      backend: 'supabase',
-      realtime: 'none',
       codeGraphProvider: 'gitnexus',
-      confirmed: true,
-      onboardingComplete: true,
       confirmedAt: '2026-05-12T00:00:00Z',
-    });
+    }));
     // Sanity: .nvmrc does not exist yet.
     assert.equal(fs.existsSync(path.join(cwd, '.nvmrc')), false);
 
@@ -2471,17 +3118,11 @@ test('runPostStackSetup auto-writes .nvmrc with `22` when codeGraphProvider is g
 test('runPostStackSetup does NOT clobber an existing .nvmrc on gitnexus setup', () => {
   withTempDir((cwd) => {
     const filePath = path.join(cwd, '.traffic-one.json');
-    writeJson(filePath, {
-      version: 2,
-      mode: 'new-project',
+    writeJson(filePath, completeDefaultState({
       stack: 'react-realtime-monorepo',
-      backend: 'supabase',
-      realtime: 'none',
       codeGraphProvider: 'gitnexus',
-      confirmed: true,
-      onboardingComplete: true,
       confirmedAt: '2026-05-12T00:00:00Z',
-    });
+    }));
     // Pre-existing .nvmrc — must be preserved.
     const nvmrcPath = path.join(cwd, '.nvmrc');
     fs.writeFileSync(nvmrcPath, '20.11.0\n', 'utf8');
@@ -2496,17 +3137,11 @@ test('runPostStackSetup does NOT clobber an existing .nvmrc on gitnexus setup', 
 test('runPostStackSetup does NOT write .nvmrc when codeGraphProvider is graphify', () => {
   withTempDir((cwd) => {
     const filePath = path.join(cwd, '.traffic-one.json');
-    writeJson(filePath, {
-      version: 2,
-      mode: 'new-project',
+    writeJson(filePath, completeDefaultState({
       stack: 'react-realtime-monorepo',
-      backend: 'supabase',
-      realtime: 'none',
       codeGraphProvider: 'graphify',
-      confirmed: true,
-      onboardingComplete: true,
       confirmedAt: '2026-05-12T00:00:00Z',
-    });
+    }));
 
     runHook(cwd, 'post-stack-setup', { tool_input: { file_path: filePath } });
 
@@ -2664,7 +3299,7 @@ test('doctor.cjs flags NVMRC_PINNED_TO_OLD_NODE when project .nvmrc < 22 + provi
 });
 
 test('traffic-one-doctor skill exists with required trigger phrases', () => {
-  const skillPath = path.join(ROOT, 'skills', 'traffic-one-doctor', 'SKILL.md');
+  const skillPath = path.join(ROOT, 'skills-templates', 'traffic-one-doctor', 'SKILL.md');
   assert.ok(fs.existsSync(skillPath), 'skill file must exist');
   const text = fs.readFileSync(skillPath, 'utf8');
   // Required trigger phrases so the model picks it up on common user wording.
@@ -2804,7 +3439,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.13) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.31) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -2938,7 +3573,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.13', () => {
+test('manifests bumped to 2.9.31', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -2946,8 +3581,520 @@ test('manifests bumped to 2.9.13', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.13"/, `${rel} must be bumped to 2.9.13`);
+    assert.match(text, /"version":\s*"2\.9\.31"/, `${rel} must be bumped to 2.9.31`);
   }
+});
+
+// ── Per-subagent rule scoping (2.9.31) ──────────────────────────────────────
+
+test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const fresh = new Date().toISOString();
+  const state = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: fresh,
+    currentRunId: '2026-05-17T08-00-00Z',
+  };
+  assert.equal(isSubagentSession(state), true);
+});
+
+test('isSubagentSession returns false when materialization is stale (>30 min)', () => {
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const state = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: stale,
+    currentRunId: '2026-05-17T08-00-00Z',
+  };
+  assert.equal(isSubagentSession(state), false);
+});
+
+test('isSubagentSession returns false when currentRunId is missing', () => {
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const state = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: new Date().toISOString(),
+  };
+  assert.equal(isSubagentSession(state), false);
+});
+
+test('AGENT_ROLE_BASE_RULES covers all 6 senior roles with curated sets', () => {
+  const { AGENT_ROLE_BASE_RULES } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+  const roles = ['senior-architect', 'senior-frontend', 'senior-backend',
+                 'senior-reviewer', 'senior-tester', 'senior-shipper'];
+  for (const role of roles) {
+    assert.ok(Array.isArray(AGENT_ROLE_BASE_RULES[role]), `${role} missing`);
+    assert.ok(AGENT_ROLE_BASE_RULES[role].length >= 3, `${role} has too few rules`);
+  }
+});
+
+test('roleScopedRules excludes non-relevant rules per role', () => {
+  const { roleScopedRules } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+  const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
+  const frontendRules = roleScopedRules('senior-frontend', state);
+  const backendRules  = roleScopedRules('senior-backend', state);
+  const reviewerRules = roleScopedRules('senior-reviewer', state);
+  // Frontend gets frontend rules, no backend rules
+  assert.ok(frontendRules.some((r) => r.startsWith('rules/frontend/')), 'frontend missing frontend rules');
+  assert.ok(!frontendRules.some((r) => r.startsWith('rules/backend/')), 'frontend should not have backend rules');
+  // Backend gets backend rules, no frontend rules
+  assert.ok(backendRules.some((r) => r.startsWith('rules/backend/')), 'backend missing backend rules');
+  assert.ok(!backendRules.some((r) => r.startsWith('rules/frontend/')), 'backend should not have frontend rules');
+  // Reviewer sees both for cross-cutting review
+  assert.ok(reviewerRules.some((r) => r.startsWith('rules/common/security.md')), 'reviewer missing security');
+});
+
+test('packRuleIndex emits bullet list of paths, no rule content', () => {
+  const { packRuleIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'packing.cjs'));
+  const rules = ['rules/common/security.md', 'rules/common/clean-code.md', 'rules/core.md'];
+  const { body } = packRuleIndex(ROOT, rules);
+  assert.match(body, /## Active rule index/);
+  assert.match(body, /- \.traffic-one\/rules\/common\/security\.md/);
+  assert.doesNotMatch(body, /\.traffic-one\/rules\/active/);
+  assert.ok(body.length < 5000, `index too large: ${body.length} bytes`);
+  // Should NOT contain actual rule content (no '# Security Baseline' from security.md)
+  assert.ok(!body.includes('# Security Baseline'), 'index leaked rule content');
+});
+
+test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.31',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      realtime: 'none',
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-05-17T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.31',
+      currentRunId: '2026-05-17T11-00-00Z',
+      activeAgentRole: 'senior-frontend',
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.ok(context.length < 8000, `subagent bundle too large: ${context.length} bytes`);
+    assert.match(context, /subagent/i);
+    assert.match(context, /senior-frontend/);
+    // Should NOT include full rule content (no '# ── rules/' headers from packBundle)
+    assert.ok(!context.includes('# ── rules/'), 'subagent bundle leaked rule content');
+  });
+});
+
+test('sweepOldDigests keeps only the N most recent directories', () => {
+  withTempDir((cwd) => {
+    const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
+    fs.mkdirSync(digestsRoot, { recursive: true });
+    const stamps = [
+      '2026-01-01T00-00-00Z', '2026-02-01T00-00-00Z', '2026-03-01T00-00-00Z',
+      '2026-04-01T00-00-00Z', '2026-05-01T00-00-00Z', '2026-06-01T00-00-00Z',
+      '2026-07-01T00-00-00Z',
+    ];
+    for (const s of stamps) {
+      fs.mkdirSync(path.join(digestsRoot, s));
+      fs.writeFileSync(path.join(digestsRoot, s, 'architect.md'), '# digest');
+    }
+    // Trigger SessionStart so sweep runs
+    writeJson(path.join(cwd, '.traffic-one.json'), { stack: 'minimal' });
+    runHook(cwd, 'session-start', '');
+    const remaining = fs.readdirSync(digestsRoot).sort();
+    assert.equal(remaining.length, 5, `expected 5 remaining, got ${remaining.length}`);
+    // Should keep the 5 most recent (newest sorted alphabetically by ISO)
+    assert.deepEqual(remaining, [
+      '2026-03-01T00-00-00Z', '2026-04-01T00-00-00Z', '2026-05-01T00-00-00Z',
+      '2026-06-01T00-00-00Z', '2026-07-01T00-00-00Z',
+    ]);
+  });
+});
+
+test('graph-preview is included in subagent SessionStart when present', () => {
+  withTempDir((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(
+      path.join(cwd, '.traffic-one', 'graph-preview.md'),
+      '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
+    );
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.31',
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      confirmed: true, onboardingComplete: true,
+      confirmedAt: '2026-05-17T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.31',
+      currentRunId: '2026-05-17T11-00-00Z',
+      activeAgentRole: 'senior-architect',
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.match(context, /Codebase graph preview/);
+    assert.match(context, /apps\/web/);
+  });
+});
+
+test('generateGraphPreview returns null when graph artefact is missing', () => {
+  withTempDir((cwd) => {
+    const { generateGraphPreview } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+    assert.equal(generateGraphPreview(cwd, 'graphify'), null);
+    assert.equal(generateGraphPreview(cwd, 'gitnexus'), null);
+  });
+});
+
+// ── Token usage report (2.9.31) ──────────────────────────────────────────────
+
+test('token-report parseJsonlFile extracts usage from assistant messages', () => {
+  withTempDir((cwd) => {
+    const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+    const jsonl = path.join(cwd, 'fixture.jsonl');
+    const line1 = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-05-17T10:00:00Z',
+      message: {
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'tool_use', name: 'Bash' }],
+        usage: { input_tokens: 100, cache_creation_input_tokens: 200, cache_read_input_tokens: 1000, output_tokens: 50 },
+      },
+    });
+    const line2 = JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-05-17T10:01:00Z',
+      message: {
+        role: 'assistant',
+        model: 'claude-sonnet-4-6',
+        content: [{ type: 'tool_use', name: 'Write' }, { type: 'tool_use', name: 'Read' }],
+        usage: { input_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 2000, output_tokens: 80 },
+      },
+    });
+    fs.writeFileSync(jsonl, `${line1}\n${line2}\n`);
+    const stats = tr.parseJsonlFile(jsonl);
+    assert.equal(stats.messages, 2);
+    assert.equal(stats.toolUses, 3);
+    assert.equal(stats.inputTokens, 150);
+    assert.equal(stats.cacheCreationInputTokens, 200);
+    assert.equal(stats.cacheReadInputTokens, 3000);
+    assert.equal(stats.outputTokens, 130);
+    assert.equal(stats.byTool.Bash, 1);
+    assert.equal(stats.byTool.Write, 1);
+    assert.equal(stats.byTool.Read, 1);
+    assert.equal(stats.byModel['claude-sonnet-4-6'].messages, 2);
+  });
+});
+
+test('token-report discoverSubagents reads agentType from meta.json', () => {
+  withTempDir((cwd) => {
+    const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+    const subDir = path.join(cwd, 'subagents');
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(path.join(subDir, 'agent-abc.jsonl'), '');
+    fs.writeFileSync(path.join(subDir, 'agent-abc.meta.json'), JSON.stringify({ agentType: 'traffic-one:senior-frontend', description: 'Build UI' }));
+    fs.writeFileSync(path.join(subDir, 'agent-def.jsonl'), '');
+    // No meta for agent-def — should fall back to 'unknown'
+    const subs = tr.discoverSubagents(cwd);
+    assert.equal(subs.length, 2);
+    const frontend = subs.find((s) => s.id === 'agent-abc');
+    assert.equal(frontend.agentType, 'traffic-one:senior-frontend');
+    assert.equal(frontend.description, 'Build UI');
+    const unknown = subs.find((s) => s.id === 'agent-def');
+    assert.equal(unknown.agentType, 'unknown');
+  });
+});
+
+test('token-report estimateCost uses model-specific pricing', () => {
+  const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+  const opusStats = { byModel: { 'claude-opus-4-7': {
+    inputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0,
+  } } };
+  const sonnetStats = { byModel: { 'claude-sonnet-4-6': {
+    inputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0,
+  } } };
+  // Opus input list price = $15/M, Sonnet input list price = $3/M
+  assert.equal(tr.estimateCost(opusStats), 15);
+  assert.equal(tr.estimateCost(sonnetStats), 3);
+});
+
+test('token-report parseCodexJsonlFile extracts Codex totals and Traffic One estimates', () => {
+  withTempDir((cwd) => {
+    const tr = require(path.join(ROOT, 'scripts', 'token-report.cjs'));
+    const jsonl = path.join(cwd, 'rollout-2026-05-18T10-00-00-session.jsonl');
+    const lines = [
+      {
+        timestamp: '2026-05-18T10:00:00Z',
+        type: 'session_meta',
+        payload: {
+          id: 'session',
+          timestamp: '2026-05-18T10:00:00Z',
+          cwd,
+          originator: 'Codex Desktop',
+          model: 'gpt-5.2',
+          base_instructions: { text: 'Traffic One rules live in .traffic-one/rules.' },
+        },
+      },
+      {
+        timestamp: '2026-05-18T10:00:05Z',
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'functions.exec_command' },
+      },
+      {
+        timestamp: '2026-05-18T10:00:06Z',
+        type: 'response_item',
+        payload: {
+          type: 'function_call_output',
+          output: 'Original token count: 1,234\nOutput:\nTraffic One .traffic-one/rules materialized.',
+        },
+      },
+      {
+        timestamp: '2026-05-18T10:00:10Z',
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: {
+              input_tokens: 1000,
+              cached_input_tokens: 250,
+              output_tokens: 60,
+              reasoning_output_tokens: 9,
+              total_tokens: 1060,
+            },
+            last_token_usage: {
+              input_tokens: 400,
+              cached_input_tokens: 100,
+              output_tokens: 10,
+              reasoning_output_tokens: 3,
+              total_tokens: 410,
+            },
+            model_context_window: 258400,
+          },
+        },
+      },
+    ];
+    fs.writeFileSync(jsonl, `${lines.map((line) => JSON.stringify(line)).join('\n')}\n`, 'utf8');
+
+    const report = tr.parseCodexJsonlFile(jsonl);
+    assert.equal(report.session.id, 'session');
+    assert.equal(report.stats.messages, 1);
+    assert.equal(report.stats.toolUses, 1);
+    assert.equal(report.stats.inputTokens, 750);
+    assert.equal(report.stats.cacheReadInputTokens, 250);
+    assert.equal(report.stats.outputTokens, 60);
+    assert.equal(report.stats.reasoningOutputTokens, 9);
+    assert.equal(report.stats.modelContextWindow, 258400);
+    assert.equal(tr.totalTokens(report.stats), 1060);
+    assert.equal(report.stats.byModel['gpt-5.2'].messages, 1);
+    assert.equal(report.trafficOne.directToolOutputTokens, 1234);
+    assert.equal(report.trafficOne.directToolOutputs, 1);
+    assert.ok(report.trafficOne.instructionApproxTokens > 0);
+  });
+});
+
+test('token-logger isEnabled honors TRAFFIC_ONE_TOKEN_LOG env var', () => {
+  const tl = require(path.join(ROOT, 'scripts', 'hook-runtime', 'token-logger.cjs'));
+  const prev = process.env[tl.ENV_FLAG];
+  delete process.env[tl.ENV_FLAG];
+  assert.equal(tl.isEnabled(), false);
+  process.env[tl.ENV_FLAG] = '1';
+  assert.equal(tl.isEnabled(), true);
+  process.env[tl.ENV_FLAG] = 'true';
+  assert.equal(tl.isEnabled(), true);
+  process.env[tl.ENV_FLAG] = '0';
+  assert.equal(tl.isEnabled(), false);
+  if (prev === undefined) delete process.env[tl.ENV_FLAG];
+  else process.env[tl.ENV_FLAG] = prev;
+});
+
+test('token-logger writes one JSONL line per tool use when enabled', () => {
+  withTempDir((cwd) => {
+    const tl = require(path.join(ROOT, 'scripts', 'hook-runtime', 'token-logger.cjs'));
+    const prev = process.env[tl.ENV_FLAG];
+    process.env[tl.ENV_FLAG] = '1';
+    try {
+      tl.logToolUse(cwd, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: '/tmp/foo.ts', content: 'console.log(1);' },
+        tool_response: 'ok',
+      });
+      tl.logToolUse(cwd, {
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'ls' },
+        tool_response: 'foo\nbar\n',
+      });
+    } finally {
+      if (prev === undefined) delete process.env[tl.ENV_FLAG];
+      else process.env[tl.ENV_FLAG] = prev;
+    }
+    const logPath = path.join(cwd, tl.LOG_REL_PATH);
+    assert.ok(fs.existsSync(logPath));
+    const lines = fs.readFileSync(logPath, 'utf8').trim().split('\n');
+    assert.equal(lines.length, 2);
+    const entry1 = JSON.parse(lines[0]);
+    assert.equal(entry1.toolName, 'Write');
+    assert.equal(entry1.hookEvent, 'PostToolUse');
+    assert.ok(entry1.inputBytes > 0);
+    assert.ok(entry1.estTokens > 0);
+  });
+});
+
+test('token-logger is a no-op when env var is unset', () => {
+  withTempDir((cwd) => {
+    const tl = require(path.join(ROOT, 'scripts', 'hook-runtime', 'token-logger.cjs'));
+    const prev = process.env[tl.ENV_FLAG];
+    delete process.env[tl.ENV_FLAG];
+    try {
+      tl.logToolUse(cwd, { tool_name: 'Bash', tool_input: { command: 'ls' } });
+    } finally {
+      if (prev !== undefined) process.env[tl.ENV_FLAG] = prev;
+    }
+    assert.equal(fs.existsSync(path.join(cwd, tl.LOG_REL_PATH)), false);
+  });
+});
+
+test('token-usage-report skill exists with required trigger phrases', () => {
+  const skillPath = path.join(ROOT, 'skills-templates', 'token-usage-report', 'SKILL.md');
+  assert.ok(fs.existsSync(skillPath), 'token-usage-report SKILL.md missing');
+  const text = fs.readFileSync(skillPath, 'utf8');
+  assert.match(text, /name:\s*token-usage-report/);
+  assert.match(text, /how many tokens/);
+  assert.match(text, /TRAFFIC_ONE_TOKEN_LOG/);
+  assert.match(text, /token-report\.cjs/);
+});
+
+test('token-usage-report is in SKILL_FILTERS._common', () => {
+  const { SKILL_FILTERS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'));
+  assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
+});
+
+// ── Fix-cycle slim bundle (2.9.31) ───────────────────────────────────────────
+
+test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
+  const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  assert.equal(getSpawnIndex({}, 'senior-frontend'), 0);
+  assert.equal(getSpawnIndex({ spawnIndex: {} }, 'senior-frontend'), 0);
+  assert.equal(getSpawnIndex({ spawnIndex: { 'senior-frontend': 1 } }, 'senior-frontend'), 1);
+  assert.equal(getSpawnIndex({ spawnIndex: { 'senior-frontend': 3 } }, 'senior-frontend'), 3);
+});
+
+test('isFixCycleSession requires subagent + spawnIndex > 1', () => {
+  const { isFixCycleSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const fresh = new Date().toISOString();
+  const base = {
+    stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' },
+    materializedStack: 'default|react-vite|supabase|none',
+    materializedAt: fresh,
+    currentRunId: '2026-05-18T08-00-00Z',
+    activeAgentRole: 'senior-frontend',
+  };
+  // spawnIndex=1 is the FIRST spawn (not a fix-cycle)
+  assert.equal(isFixCycleSession({ ...base, spawnIndex: { 'senior-frontend': 1 } }), false);
+  // spawnIndex=2 IS a fix-cycle
+  assert.equal(isFixCycleSession({ ...base, spawnIndex: { 'senior-frontend': 2 } }), true);
+  // Without currentRunId, never a subagent session
+  assert.equal(isFixCycleSession({ ...base, currentRunId: null, spawnIndex: { 'senior-frontend': 2 } }), false);
+});
+
+test('packFixCycleHeader emits ultra-slim bundle with both pointers', () => {
+  const { packFixCycleHeader } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'packing.cjs'));
+  const { body } = packFixCycleHeader('/cwd', 'senior-frontend', '2026-05-18T08-00-00Z', 2);
+  assert.ok(body.length < 1500, `fix-cycle header too large: ${body.length} bytes`);
+  assert.match(body, /FIX-CYCLE #1/);
+  assert.match(body, /\.traffic-one\/fix-cycles\/2026-05-18T08-00-00Z\/senior-frontend-fix-1\.md/);
+  assert.match(body, /\.traffic-one\/digests\/2026-05-18T08-00-00Z\/frontend\.md/);
+  assert.match(body, /do not re-explore/i);
+});
+
+test('roleDigestName maps senior-* to short digest filename', () => {
+  const { roleDigestName } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'packing.cjs'));
+  assert.equal(roleDigestName('senior-frontend'), 'frontend');
+  assert.equal(roleDigestName('senior-backend'), 'backend');
+  assert.equal(roleDigestName('senior-architect'), 'architect');
+  assert.equal(roleDigestName('senior-reviewer'), 'reviewer');
+  assert.equal(roleDigestName('senior-tester'), 'tester');
+  assert.equal(roleDigestName('senior-shipper'), 'shipper');
+});
+
+test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.31',
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      confirmed: true, onboardingComplete: true,
+      confirmedAt: '2026-05-18T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.31',
+      currentRunId: '2026-05-18T11-00-00Z',
+      activeAgentRole: 'senior-frontend',
+      spawnIndex: { 'senior-frontend': 2 },
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.ok(context.length < 1500, `fix-cycle bundle too large: ${context.length} bytes`);
+    assert.match(context, /FIX-CYCLE #1/);
+    assert.match(context, /fix-cycles/);
+    assert.match(context, /do not re-explore/i);
+    // Should NOT include the role-scoped rule index that the standard subagent branch emits
+    assert.ok(!context.includes('## Active rule index'), 'fix-cycle leaked rule index');
+  });
+});
+
+test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), {
+      version: '2.9.31',
+      stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      confirmed: true, onboardingComplete: true,
+      confirmedAt: '2026-05-18T10:00:00Z',
+      codeGraphProvider: 'graphify',
+      toolchain: { gitnexus: { installedVersion: null, installedAt: null },
+                   graphify: { installedVersion: null, installedAt: null },
+                   gitleaks: { installedVersion: null, installedAt: null },
+                   trufflehog: { installedVersion: null, installedAt: null } },
+      materializedStack: 'default|react-vite|supabase|none',
+      materializedAt: new Date().toISOString(),
+      materializedVersion: '2.9.31',
+      currentRunId: '2026-05-18T11-00-00Z',
+      activeAgentRole: 'senior-frontend',
+      spawnIndex: { 'senior-frontend': 1 },
+    });
+    const result = runHook(cwd, 'session-start', '');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    // First spawn should get the standard subagent slim bundle with rule index, NOT fix-cycle
+    assert.match(context, /## Active rule index/);
+    assert.ok(!context.includes('FIX-CYCLE'), 'first spawn should not be fix-cycle');
+  });
 });
 
 let failed = 0;

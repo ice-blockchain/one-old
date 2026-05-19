@@ -5,23 +5,27 @@
 //   1. `pruneSkillsDirective(stack, allSkills)` — emits an [ACTIVE SKILLS for
 //      stack=…] / [DO NOT INVOKE — wrong stack] block injected into
 //      SessionStart context. The model uses it to ignore wrong-stack skills.
-//   2. `pruneCacheSkills(stack)` — physically renames irrelevant skill
-//      directories to `.disabled-<name>` in the plugin install path. Claude
-//      Code only auto-discovers non-hidden directories, so the NEXT session
-//      loads only the filtered subset (real token saving).
+//   2. `copyActiveSkills(stackOrState)` — copies only relevant skill dirs from
+//      skills-templates/ into skills/ in the plugin install path. The next
+//      session's harness discovers only the filtered subset (real token saving).
 //
-// MULTI-PROJECT SAFETY: every SessionStart calls `restoreDisabledSkills()`
-// first to undo whatever the previous project's session left, then re-prunes
-// for THIS project's stack. Cache is shared across all traffic-one projects
-// on the machine; this restore-then-reprune pattern keeps each project
-// converging to its own correct subset on session start.
+// MULTI-PROJECT SAFETY: every SessionStart calls `cleanActiveSkills()` first
+// to remove whatever the previous project's session copied, then copies the
+// correct set for THIS project. Cache is shared across all traffic-one projects
+// on the machine; this clean-then-copy pattern keeps each project converging
+// to its own correct subset on session start.
 //
 // `_common` skills are always active regardless of stack.
+// `BOOTSTRAP_SKILLS` are always kept in skills/ and never removed.
 
 const fs   = require('fs');
 const path = require('path');
 
 const { pluginRoot, isInPluginCache } = require('./config.cjs');
+
+const SKILLS_TEMPLATES_DIR = 'skills-templates';
+const SKILLS_ACTIVE_DIR    = 'skills';
+const BOOTSTRAP_SKILLS     = new Set(['stack-setup', 'detect-project', 'traffic-one-doctor']);
 
 const SKILL_FILTERS = {
   _common: new Set([
@@ -38,6 +42,9 @@ const SKILL_FILTERS = {
     'app-launch-checklist',
     'design-audit', 'browser-qa',
     'supabase-setup', 'predeploy-security-check',
+    'senior-eng-orchestrator',
+    'traffic-one-doctor',
+    'token-usage-report',
   ]),
   'react-vite': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',
@@ -155,7 +162,7 @@ function activeSkillsFor(stackOrState) {
 }
 
 function listAllSkills() {
-  const skillsDir = path.join(pluginRoot(), 'skills');
+  const skillsDir = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
   if (!fs.existsSync(skillsDir)) {
     return new Set();
   }
@@ -174,38 +181,53 @@ function listAllSkills() {
   return out;
 }
 
+// allSkills is the set of skills currently present in skills/ (bootstrap + any
+// already copied this session). The directive always shows the full computed
+// active set for the stack so the model knows what it can invoke — including
+// skills not yet physically in skills/ (they arrive next session via
+// copyActiveSkills, but are available now via the directive).
 function pruneSkillsDirective(stackOrState, allSkills) {
   const active = activeSkillsFor(stackOrState);
-  const inactive = [];
+  // Wrong-stack skills: physically in skills/ but not in the active set.
+  // With lazy-load this will typically be empty (only bootstrap is in skills/).
+  const wrongStack = [];
   for (const name of allSkills) {
     if (!active.has(name)) {
-      inactive.push(name);
+      wrongStack.push(name);
     }
   }
-  if (inactive.length === 0) {
+  const activeList = [...active].sort();
+  if (activeList.length === 0) {
     return '';
   }
-  inactive.sort();
-  const activeIntersect = [...active].filter((name) => allSkills.has(name)).sort();
-  const inactivePreview = inactive.slice(0, 30).join(', ');
-  const inactiveSuffix = inactive.length > 30 ? `, ... +${inactive.length - 30} more` : '';
-  return (
-    `[ACTIVE SKILLS for stack=${normalizedSkillState(stackOrState).stack}]: ${activeIntersect.join(', ')}\n` +
-    `[DO NOT INVOKE — wrong stack]: ${inactivePreview}${inactiveSuffix}\n`
-  );
+  const wrongStackPreview = wrongStack.slice(0, 30).join(', ');
+  const wrongStackSuffix = wrongStack.length > 30 ? `, ... +${wrongStack.length - 30} more` : '';
+  let directive = `[ACTIVE SKILLS for stack=${normalizedSkillState(stackOrState).stack}]: ${activeList.join(', ')}\n`;
+  if (wrongStack.length > 0) {
+    directive += `[DO NOT INVOKE — wrong stack]: ${wrongStackPreview}${wrongStackSuffix}\n`;
+  }
+  return directive;
 }
 
-function pruneCacheSkills(stackOrState) {
-  // Only mutate the cache when running from the plugin install path; source
-  // repo dev work stays untouched.
-  if (!isInPluginCache()) {
-    return 0;
+function copyDirSync(src, dst) {
+  fs.mkdirSync(dst, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const s = path.join(src, entry.name);
+    const d = path.join(dst, entry.name);
+    if (entry.isDirectory()) {
+      copyDirSync(s, d);
+    } else if (entry.isFile()) {
+      fs.copyFileSync(s, d);
+    }
   }
-  const skillsDir = path.join(pluginRoot(), 'skills');
-  if (!fs.existsSync(skillsDir)) {
-    return 0;
-  }
-  const active = activeSkillsFor(stackOrState);
+}
+
+// Remove every non-bootstrap skill directory from skills/ (plugin cache only).
+// Called at the start of every SessionStart to reset cross-project leftovers.
+function cleanActiveSkills() {
+  if (!isInPluginCache()) return 0;
+  const skillsDir = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
+  if (!fs.existsSync(skillsDir)) return 0;
   let removed = 0;
   let entries;
   try {
@@ -216,57 +238,54 @@ function pruneCacheSkills(stackOrState) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith('.')) continue;
-    if (active.has(entry.name)) continue;
-    const src = path.join(skillsDir, entry.name);
-    const dst = path.join(skillsDir, `.disabled-${entry.name}`);
-    if (fs.existsSync(dst)) continue;
+    if (BOOTSTRAP_SKILLS.has(entry.name)) continue;
     try {
-      fs.renameSync(src, dst);
+      fs.rmSync(path.join(skillsDir, entry.name), { recursive: true, force: true });
       removed += 1;
     } catch {
-      // best-effort; skip on permission/race errors
+      // best-effort; prefer partial cleanup over failure
     }
   }
   return removed;
 }
 
-function restoreDisabledSkills() {
-  if (!isInPluginCache()) {
-    return 0;
+// Copy the active skill set for the given stack from skills-templates/ into
+// skills/. Idempotent: already-present dirs are skipped. Returns count copied.
+function copyActiveSkills(stackOrState) {
+  if (!isInPluginCache()) return 0;
+  const templatesDir = path.join(pluginRoot(), SKILLS_TEMPLATES_DIR);
+  const activeDir    = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
+  if (!fs.existsSync(templatesDir)) return 0;
+  if (!fs.existsSync(activeDir)) {
+    try { fs.mkdirSync(activeDir, { recursive: true }); } catch { return 0; }
   }
-  const skillsDir = path.join(pluginRoot(), 'skills');
-  if (!fs.existsSync(skillsDir)) {
-    return 0;
-  }
-  let restored = 0;
-  let entries;
-  try {
-    entries = fs.readdirSync(skillsDir, { withFileTypes: true });
-  } catch {
-    return 0;
-  }
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (!entry.name.startsWith('.disabled-')) continue;
-    const realName = entry.name.slice('.disabled-'.length);
-    const src = path.join(skillsDir, entry.name);
-    const dst = path.join(skillsDir, realName);
+  const active = activeSkillsFor(stackOrState);
+  let copied = 0;
+  for (const name of active) {
+    if (BOOTSTRAP_SKILLS.has(name)) continue;
+    const src = path.join(templatesDir, name);
+    const dst = path.join(activeDir, name);
+    if (!fs.existsSync(src)) continue;
     if (fs.existsSync(dst)) continue;
     try {
-      fs.renameSync(src, dst);
-      restored += 1;
+      copyDirSync(src, dst);
+      copied += 1;
     } catch {
-      // best-effort
+      // best-effort; prefer partial copy over failure
     }
   }
-  return restored;
+  return copied;
 }
 
 module.exports = {
   SKILL_FILTERS,
+  BOOTSTRAP_SKILLS,
   activeSkillsFor,
   listAllSkills,
   pruneSkillsDirective,
-  pruneCacheSkills,
-  restoreDisabledSkills,
+  cleanActiveSkills,
+  copyActiveSkills,
+  // Deprecated no-op shims — remove in next major release
+  pruneCacheSkills:      () => 0,
+  restoreDisabledSkills: () => 0,
 };

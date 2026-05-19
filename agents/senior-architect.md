@@ -42,7 +42,7 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 ## What you read first
 
 1. `.traffic-one.json` — pick up `mode`, `stack`, `backend`, `realtime`, `frontend`. If the file is empty or pre-onboarding, run `stack-setup` first.
-2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/rules/coding.md`, `.traffic-one/rules/security.md`, and `.traffic-one/known-issues.md` if present.
+2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/coding.md`, `.traffic-one/security.md`, and `.traffic-one/known-issues.md` if present.
 3. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
 4. The user's last 1–3 messages — extract the actual product intent (verb, audience, primary action).
 

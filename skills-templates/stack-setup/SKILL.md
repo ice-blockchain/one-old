@@ -158,12 +158,17 @@ not add a "(Recommended)" tag.
 ## File shape (write exactly this with the Write tool)
 
 The schema is required for new projects: `mode`, `stack`, `frontend`, `backend`,
-`mobile`, `technologies`, `realtime`, `codeGraphProvider`, `toolchain`,
+`mobile`, `technologies`, `realtime`, `codeGraphProvider`, `team`, `toolchain`,
 `confirmed`, `onboardingComplete`, `confirmedAt` (`version` is the current
 Traffic One plugin version; do not write a separate `pluginVersion` field).
 `mobile.source` is an exact enum: use `prompted` for the required Mobile App
 popup/chat answer, `explicit` for an explicit mobile request, and `none` only
 when no mobile decision has been collected. Do not write descriptive variants.
+`team.mode` is the source of truth for orchestration after onboarding:
+`subagents` means the parent/orchestrator must spawn role agents and must not
+write feature source itself; `main-agent` means the same role phases are
+simulated manually in the current thread. Use `team.source: "prompted"` for
+the Team popup/chat answer.
 
 ```json
 {
@@ -176,6 +181,7 @@ when no mobile decision has been collected. Do not write descriptive variants.
   "technologies": { "frontend": [], "backend": [], "mobile": [] },
   "realtime": "<heavy|light|none>",
   "codeGraphProvider": "<gitnexus|graphify>",
+  "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
   "toolchain": {
     "gitnexus": { "installedVersion": null, "installedAt": null },
     "graphify": { "installedVersion": null, "installedAt": null },

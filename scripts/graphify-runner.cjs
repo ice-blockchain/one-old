@@ -200,6 +200,17 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   }
 
   writeStateMerge(cwd, { graphifyLastRunAt: nowIso() });
+
+  // Write the compact graph preview so subagent SessionStart hooks can inline
+  // a ~500-token module listing instead of forcing each subagent to Read the
+  // full GRAPH_REPORT.md to scope its work.
+  try {
+    const { writeGraphPreview } = require(path.resolve(__dirname, 'hook-runtime', 'materialize.cjs'));
+    writeGraphPreview(cwd, 'graphify');
+  } catch {
+    // best-effort; never fail the run because preview write glitched.
+  }
+
   return { ok: true, action, report: reportAbs, error: null, durationMs: Date.now() - startedAt, installedVersion };
 }
 
