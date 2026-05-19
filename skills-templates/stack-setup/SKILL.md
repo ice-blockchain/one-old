@@ -158,9 +158,17 @@ not add a "(Recommended)" tag.
 ## File shape (write exactly this with the Write tool)
 
 The schema is required for new projects: `mode`, `stack`, `frontend`, `backend`,
-`mobile`, `technologies`, `realtime`, `codeGraphProvider`, `toolchain`,
+`mobile`, `technologies`, `realtime`, `codeGraphProvider`, `team`, `toolchain`,
 `confirmed`, `onboardingComplete`, `confirmedAt` (`version` is the current
 Traffic One plugin version; do not write a separate `pluginVersion` field).
+`mobile.source` is an exact enum: use `prompted` for the required Mobile App
+popup/chat answer, `explicit` for an explicit mobile request, and `none` only
+when no mobile decision has been collected. Do not write descriptive variants.
+`team.mode` is the source of truth for orchestration after onboarding:
+`subagents` means the parent/orchestrator must spawn role agents and must not
+write feature source itself; `main-agent` means the same role phases are
+simulated manually in the current thread. Use `team.source: "prompted"` for
+the Team popup/chat answer.
 
 ```json
 {
@@ -169,10 +177,11 @@ Traffic One plugin version; do not write a separate `pluginVersion` field).
   "stack": "<chosen id>",
   "frontend": "<chosen frontend>",
   "backend": "<chosen backend>",
-  "mobile": { "enabled": false, "framework": "none", "source": "none" },
+  "mobile": { "enabled": false, "framework": "none", "source": "<explicit|prompted|none>" },
   "technologies": { "frontend": [], "backend": [], "mobile": [] },
   "realtime": "<heavy|light|none>",
   "codeGraphProvider": "<gitnexus|graphify>",
+  "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
   "toolchain": {
     "gitnexus": { "installedVersion": null, "installedAt": null },
     "graphify": { "installedVersion": null, "installedAt": null },
@@ -192,9 +201,26 @@ original request:
 
 > "Saved — using `<stack>` (backend `<backend>`, realtime `<realtime>`, graph `<codeGraphProvider>`). Continuing with your build."
 
-The PostToolUse hook injects the full stack rules into THIS session immediately.
-You'll see `traffic-one rules loaded for stack: <id>` in a system message
-before your next action — those rules are now live, use them.
+The generic post-tool hook converges the project immediately after any host
+tool event once the complete state exists. You'll see either
+`traffic-one rules loaded for stack: <id>` or `project-local rules/skills
+materialized` in a system message before your next action — those rules are now
+live, use them.
+
+If the host runtime does not emit a post-tool hook, or you are repairing a state
+file written by another agent, run the materializer from the project root before
+feature work:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+```
+
+Do not continue until `.traffic-one.json` has `version`, `materializedStack`,
+`materializedAt`, and `materializedVersion`, and the project has
+`.traffic-one/rules/**`, `.traffic-one/manifest.json`, `.traffic-one/skills/**`,
+root `AGENTS.md`, and root `CLAUDE.md`. Do not write the `materialized*` fields
+manually; they are valid only when the materializer wrote those generated
+project-local assets.
 
 After that system message, the next scaffold action for `mode: "new-project"`
 must read and follow `rules/modes/new-project.md`. For `stack: "default"` or a

@@ -44,8 +44,9 @@ Required behavior on Codex:
 7. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
 8. Ask whether to run the role subagents using Codex `request_user_input` when available, with options `Run team (Recommended)` and `Main agent only`.
 9. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate the roles manually before the answer.
-10. If the user confirms, call Codex `spawn_agent` using the role mapping below.
-11. If the user declines, or subagents are unavailable/blocked, continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
+10. Persist the answer before any implementation phase: `Run team (Recommended)` writes `"team": { "mode": "subagents", "source": "prompted" }`; `Main agent only` writes `"team": { "mode": "main-agent", "source": "prompted" }`.
+11. If the user confirms, call Codex `spawn_agent` using the role mapping below. The parent/orchestrator does not write feature source while `team.mode` is `subagents`; it updates run state, spawns role agents, waits/integrates, and summarizes.
+12. If the user declines, or subagents are unavailable/blocked, update the state to `"team": { "mode": "main-agent", "source": "unavailable" }` when runtime availability is the reason, then continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
 
 Recommended prompt, English only:
 
@@ -60,6 +61,7 @@ If work has already started and this gate was missed, pause at the next safe poi
 - Claude Code: auto-spawn the named Traffic One agents with the `Task` tool when this skill triggers.
 - Claude Code agents do not inherit parent skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
 - Codex: when `mode === "new-project"`, switch to Plan mode before onboarding/team questions. Before starting a non-trivial multi-layer build, announce the Traffic One route and automatically ask the user for subagent confirmation. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before calling `spawn_agent`, this confirmation is mandatory and blocking; stop until the user answers. Do not silently simulate the team before asking. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
+- Codex persisted team choice is authoritative after onboarding. If `.traffic-one.json` says `team.mode="subagents"`, the parent/orchestrator must not write feature source files; the architecture hook will deny those writes unless they come through an active Traffic One role session.
 - Cursor: auto-spawn available Cursor/background-agent/task agents when this skill triggers. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
 - Codex role mapping:
   - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
@@ -144,13 +146,69 @@ Write order:
 
 For parallel spawns (frontend + backend in Phase 2), write the field for the FIRST role just before that Task call. The second role gets the slim bundle on the next SessionStart even if the field doesn't match — the safety fallback emits a slim-but-unscoped bundle when `currentRunId` is set but `activeAgentRole` is stale, still saving ~115KB vs the full parent bundle.
 
+### Fix-cycle re-spawn (CHANGES_REQUESTED loop)
+
+When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
+
+Instead, follow this protocol for each fix-cycle re-spawn:
+
+1. **Write the fix-cycle context file** with exact reviewer findings. Use the reviewer's `CHANGES_REQUESTED <numbered list>` verbatim — paste `file:line` references and concrete suggested changes; do not paraphrase. Save to:
+
+   ```
+   .traffic-one/fix-cycles/<currentRunId>/<role>-fix-<n>.md
+   ```
+
+   where `<n>` is the fix-cycle number (1 for the first fix, 2 for the second, etc.).
+
+2. **Bump `spawnIndex[role]`** in `.traffic-one.json` before the re-spawn:
+
+   ```jsonc
+   {
+     "currentRunId": "<unchanged>",
+     "activeAgentRole": "senior-frontend",
+     "spawnIndex": { "senior-frontend": 2 }   // was 1, now 2 for fix-1
+   }
+   ```
+
+   The SessionStart hook reads `spawnIndex[role] > 1` and emits an ultra-slim ~500-byte bundle that points to the fix-cycle file + the role's prior digest, with explicit instructions not to re-explore.
+
+3. **Spawn the subagent with a tight task description**:
+
+   > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ONLY the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md`. Do not re-read source files except those the fix-cycle context names. Re-emit your digest when done. End with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>` on partial failure)."
+
+4. **After the fix-cycle subagent returns**, loop back to `senior-reviewer` (which also gets a fresh spawn with its own `spawnIndex[senior-reviewer]++` to leverage the same fix-cycle saving on re-reviews).
+
+The 2-cycle reviewer cap (architect / orchestrator level) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
+
 ### Phase 1 — Architect (sequential, blocking)
 
 Spawn `senior-architect` via the available subagent tool. On Claude Code, use `Task` with `subagent_type: "senior-architect"`. On Codex, after the required confirmation step, use a `worker` subagent with the senior-architect role instructions, owned write scope `.traffic-one/plan.md` plus ADR/docs only. On Cursor, use the closest available background-agent/task adapter with the same role instructions and write scope. Block on its return.
 
-Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
+Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory without hand-writing `materializedStack`, `materializedAt`, or `materializedVersion`, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
 
 Architect must end its reply with the literal token `PLAN_READY`. If it doesn't, surface to the user and do not proceed to Phase 2.
+
+After `PLAN_READY`, before Phase 2, verify project-local materialization exists
+for the same project root:
+
+```bash
+test -f .traffic-one/manifest.json &&
+test -d .traffic-one/rules &&
+test -d .traffic-one/skills &&
+test -f AGENTS.md &&
+test -e CLAUDE.md
+```
+
+If any check fails, run:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+```
+
+Then repeat the checks. Do not spawn frontend/backend, simulate Phase 2, or
+write feature source until the manifest, local rules, local skills, AGENTS.md,
+and CLAUDE.md exist. This guard is required because some host runtimes do not
+surface PostToolUse hooks from subagents back to the parent thread.
 
 ### Phase 2 — Implement (parallel)
 
@@ -235,10 +293,10 @@ Dispatch on `codeGraphProvider` from `.traffic-one.json`:
 PROVIDER=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('.traffic-one.json','utf8')).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
-    node "${CLAUDE_PLUGIN_ROOT}/scripts/gitnexus-runner.cjs"
+    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"
     ;;
   graphify)
-    node "${CLAUDE_PLUGIN_ROOT}/scripts/graphify-runner.cjs"
+    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/graphify-runner.cjs"
     ;;
   *)
     # Provider missing/unknown — the postWriteIncompleteWarning hook will
@@ -303,6 +361,7 @@ Next steps:
 - The plan-gate hook (`runCheckArchitectureWrite`) will deny feature writes if `.traffic-one/plan.md` is missing — even if you skipped Phase 1, the implementers will fail fast. Do not try to bypass.
 - The deploy-gate hook (`runCheckLibraryAllowlist`) will deny `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, etc. without both a fresh `lastShipperApprovalAt` stamp and a fresh passing `lastSecurityCheck*` stamp whose fingerprint matches the current worktree. Only `senior-shipper` writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 - When subagents are available and permitted, you do NOT write feature source files. You do NOT run deploy commands. You only spawn subagents and summarise. If subagents are unavailable, unconfirmed, or blocked, execute the same phases manually with the role prompts and clearly say so.
+- If `team.mode="subagents"` and you realize you have started writing feature source in the parent thread, stop immediately, tell the user the run-team enforcement gate was missed, spawn the missing role agents, and move any already-written work into the relevant role review/fix flow.
 
 ## When NOT to use this orchestrator
 
