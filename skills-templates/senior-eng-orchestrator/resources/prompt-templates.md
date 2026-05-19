@@ -49,6 +49,17 @@ On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
 Format and read protocol: rules/common/agent-handoff-digests.md.
 
+Do not write `materializedStack`, `materializedAt`, or
+`materializedVersion` by hand. Those fields are output from the materializer
+only.
+
+Before emitting PLAN_READY, verify project-local context is materialized. If
+`.traffic-one/manifest.json`, `.traffic-one/rules`, `.traffic-one/skills`,
+root `AGENTS.md`, or root `CLAUDE.md` is missing, run:
+  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+from the project root, then verify those paths again. If materialization fails,
+report the blocker instead of emitting PLAN_READY.
+
 Token budget: ~8k for reads, ~3k for writes. End your reply with the literal
 token PLAN_READY on its own line.
 ```
@@ -61,7 +72,7 @@ Run-id: <run-id>. The architect digest is at:
 
 Read in priority order:
   1. .traffic-one/digests/<run-id>/architect.md
-  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/coding.md,
+  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/coding.md,
      .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Frontend + § Module map (only your scope)
   4. Codebase-graph artefact at active provider's location (per
@@ -112,7 +123,7 @@ Run-id: <run-id>. The architect digest is at:
 
 Read in priority order:
   1. .traffic-one/digests/<run-id>/architect.md
-  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/security.md,
+  2. .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/security.md,
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Backend + § Public contracts
   4. Codebase-graph artefact at active provider's location (per
@@ -146,7 +157,7 @@ Run-id: <run-id>. The implementer digests are at:
 
 Read in priority order:
   1. Both implementer digests above.
-  2. .traffic-one/rules/coding.md, .traffic-one/rules/security.md,
+  2. .traffic-one/coding.md, .traffic-one/security.md,
      .traffic-one/known-issues.md, and .traffic-one/.agentignore if present.
   3. `git diff --name-only HEAD`, then `git diff HEAD <file>` ONLY for files
      listed in the digests' "Touched" or "Next-phase reading hints" sections.

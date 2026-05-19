@@ -115,6 +115,95 @@ function defaultMobileState() {
   };
 }
 
+const MOBILE_SOURCE_IDS = new Set(['explicit', 'prompted', 'none']);
+const MOBILE_SOURCE_ALIASES = new Map([
+  ['asked', 'prompted'],
+  ['chat', 'prompted'],
+  ['fallback-chat', 'prompted'],
+  ['onboarding', 'prompted'],
+  ['popup', 'prompted'],
+  ['prompt', 'prompted'],
+  ['user-onboarding', 'prompted'],
+  ['user-prompted', 'prompted'],
+  ['disabled', 'none'],
+  ['n/a', 'none'],
+  ['na', 'none'],
+  ['not-applicable', 'none'],
+  ['web', 'none'],
+  ['web-only', 'none'],
+  ['explicit-user-request', 'explicit'],
+  ['explicitly-requested', 'explicit'],
+  ['requested', 'explicit'],
+  ['user-requested', 'explicit'],
+]);
+
+const TEAM_MODE_IDS = new Set(['subagents', 'main-agent']);
+const TEAM_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
+const TEAM_MODE_ALIASES = new Map([
+  ['run-team', 'subagents'],
+  ['team', 'subagents'],
+  ['traffic-one-team', 'subagents'],
+  ['subagent', 'subagents'],
+  ['subagents-only', 'subagents'],
+  ['main', 'main-agent'],
+  ['main-agent-only', 'main-agent'],
+  ['manual', 'main-agent'],
+  ['same-thread', 'main-agent'],
+]);
+const TEAM_SOURCE_ALIASES = new Map([
+  ['chat', 'prompted'],
+  ['fallback-chat', 'prompted'],
+  ['onboarding', 'prompted'],
+  ['popup', 'prompted'],
+  ['prompt', 'prompted'],
+  ['user-onboarding', 'prompted'],
+  ['blocked', 'unavailable'],
+  ['not-available', 'unavailable'],
+  ['runtime-unavailable', 'unavailable'],
+  ['explicit-user-request', 'explicit'],
+  ['requested', 'explicit'],
+  ['user-requested', 'explicit'],
+]);
+
+function canonicalMobileSource(source) {
+  if (typeof source !== 'string') {
+    return source;
+  }
+  if (MOBILE_SOURCE_IDS.has(source)) {
+    return source;
+  }
+  const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (MOBILE_SOURCE_IDS.has(normalized)) {
+    return normalized;
+  }
+  return MOBILE_SOURCE_ALIASES.get(normalized) || source;
+}
+
+function canonicalTeamMode(mode) {
+  if (typeof mode !== 'string') return mode;
+  if (TEAM_MODE_IDS.has(mode)) return mode;
+  const normalized = mode.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (TEAM_MODE_IDS.has(normalized)) return normalized;
+  return TEAM_MODE_ALIASES.get(normalized) || mode;
+}
+
+function canonicalTeamSource(source) {
+  if (typeof source !== 'string') return source;
+  if (TEAM_SOURCE_IDS.has(source)) return source;
+  const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (TEAM_SOURCE_IDS.has(normalized)) return normalized;
+  return TEAM_SOURCE_ALIASES.get(normalized) || source;
+}
+
+function hasValidTeamState(team) {
+  return Boolean(
+    team
+    && typeof team === 'object'
+    && TEAM_MODE_IDS.has(team.mode)
+    && TEAM_SOURCE_IDS.has(team.source)
+  );
+}
+
 function defaultTechnologiesFor(state) {
   const frontend = [];
   const backend = [];
@@ -291,6 +380,7 @@ function normalizeState(state, defaultMode) {
       ...defaultMobileState(),
       ...state.mobile,
     };
+    normalizedMobile.source = canonicalMobileSource(normalizedMobile.source);
     if (
       state.mobile.enabled !== normalizedMobile.enabled
       || state.mobile.framework !== normalizedMobile.framework
@@ -311,6 +401,20 @@ function normalizeState(state, defaultMode) {
         technologies[key] = defaults[key];
         changed = true;
       }
+    }
+  }
+  if (state.team && typeof state.team === 'object') {
+    const normalizedTeam = {
+      ...state.team,
+      mode: canonicalTeamMode(state.team.mode),
+      source: canonicalTeamSource(state.team.source || 'prompted'),
+    };
+    if (
+      state.team.mode !== normalizedTeam.mode
+      || state.team.source !== normalizedTeam.source
+    ) {
+      state.team = normalizedTeam;
+      changed = true;
     }
   }
   const nextToolchain = initializeToolchainState(state.toolchain);
@@ -422,6 +526,30 @@ function activeAgentRole(state) {
   return typeof role === 'string' && VALID_AGENT_ROLES.has(role) ? role : null;
 }
 
+// FIX-CYCLE DETECTION.
+// `spawnIndex` is a map { role -> integer } that the orchestrator increments
+// before each subagent spawn for that role within a single `currentRunId`.
+//   1 = first spawn (build / plan / review pass 0)
+//   2+ = re-spawn (fix cycle, re-review, etc.)
+// The SessionStart hook checks this to emit an ULTRA-slim bundle for
+// re-spawns: just pointers to the prior digest + the fix-cycle context file
+// the orchestrator wrote before the re-spawn. Saves ~25K-30K tokens per
+// fix-cycle spawn vs the already-slim role-scoped bundle.
+function getSpawnIndex(state, role) {
+  if (!state || typeof state !== 'object') return 0;
+  const map = state.spawnIndex;
+  if (!map || typeof map !== 'object') return 0;
+  const n = map[role];
+  return Number.isInteger(n) && n > 0 ? n : 0;
+}
+
+function isFixCycleSession(state) {
+  if (!isSubagentSession(state)) return false;
+  const role = activeAgentRole(state);
+  if (!role) return false;
+  return getSpawnIndex(state, role) > 1;
+}
+
 module.exports = {
   parseJsonText,
   safeReadText,
@@ -433,6 +561,9 @@ module.exports = {
   normalizeState,
   initializeToolchainState,
   defaultTechnologiesFor,
+  hasValidTeamState,
+  TEAM_MODE_IDS,
+  TEAM_SOURCE_IDS,
   requireAddon,
   KNOWN_ADDONS,
   getPluginVersion,  // exported for testing + diagnostic
@@ -441,4 +572,6 @@ module.exports = {
   isSubagentSession,
   activeAgentRole,
   VALID_AGENT_ROLES,
+  getSpawnIndex,
+  isFixCycleSession,
 };
