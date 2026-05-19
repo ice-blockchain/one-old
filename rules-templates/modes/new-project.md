@@ -175,8 +175,9 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Ensure the generated active stack bundle exists before feature-source
      writes: `.traffic-one/rules/**`,
      `.traffic-one/manifest.json`, `.traffic-one/skills/**`, root `AGENTS.md`
-     containing the full active rule bundle, and root `CLAUDE.md` symlinked to
-     `AGENTS.md` when safe. The generic post-tool hook normally converges this
+     containing the compact active rule kernel/index by default, and root
+     `CLAUDE.md` symlinked to `AGENTS.md` when safe. The generic post-tool hook
+     normally converges this
      after any host tool event once `.traffic-one.json` is complete; if the host
      runtime does not emit the hook, run
      `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`

@@ -174,23 +174,76 @@ function cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames) {
   return removed;
 }
 
-function pathSegments(filePath) {
-  return path.resolve(filePath).split(path.sep).filter(Boolean);
-}
-
 function isLeanMaterialization(cwd, state) {
   if (state && (
-    state.leanMode === true
-    || state.contextMode === 'lean'
-    || state.tokenProfile === 'lean'
+    state.leanMode === false
+    || state.contextMode === 'full'
+    || state.tokenProfile === 'full'
   )) {
-    return true;
+    return false;
   }
-  return pathSegments(cwd).includes('tests');
+  return true;
+}
+
+function isPluginAuthoringRoot(cwd) {
+  return path.resolve(cwd) === path.resolve(pluginRoot());
+}
+
+function compactRuleKernel() {
+  return [
+    '## Active Rule Kernel',
+    '',
+    'This compact kernel is always-on. Full rule bodies are materialized under `.traffic-one/rules/**`; read the matching rule before work whose behavior, security, data shape, architecture, or UX depends on it.',
+    '',
+    '- Read project memory first for non-trivial work: `.traffic-one/.agentignore`, product/stack/coding/security notes, known issues, schema, and recent agent log when present.',
+    '- Keep changes surgical: preserve existing structure, avoid unrelated refactors, never revert user edits, and match local style even when a different style would be tempting.',
+    '- Prefer the selected Traffic One stack and local helpers. Do not add libraries, abstractions, alternate modes, or extension points without a real current caller.',
+    '- Security stays active: no secrets in source or memory, validate input at boundaries, enforce auth and authorization server-side, avoid credentialed wildcard CORS, use parameterized SQL, and keep production errors sanitized.',
+    '- New-project onboarding gates are blocking: mobile, code graph, and team choices must be persisted before scaffolding; when `team.mode="subagents"`, the parent coordinates and role agents own feature-source writes.',
+    '- UI work must satisfy i18n, SEO for public routes, accessibility, responsive layout, real visual polish, stable dimensions, and verification screenshots when the change is visual.',
+    '- Backend/data work must keep API contracts explicit, schema changes reviewed, migrations reversible where practical, RLS/storage policies safe, and generated clients or schema snapshots refreshed when applicable.',
+    '- Verification should match risk: reproduce bugs when practical, run focused tests/build/lint for touched surfaces, and report any skipped check with the exact reason.',
+    '- External or destructive actions still need explicit current confirmation: deploy, publish, push protected environments, run shared/prod migrations, send messages, delete data/files, or call side-effecting external APIs.',
+    '',
+  ];
+}
+
+function compactReadRouting() {
+  return [
+    '## Read Rules When',
+    '',
+    '- Starting/scaffolding/onboarding: `rules/modes/new-project.md`, `rules/common/senior-engineer-team.md`, `rules/common/stack-recommendations.md`, `rules/common/project-memory.md`, `rules/common/documentation.md`.',
+    '- Editing existing code: `rules/modes/existing-codebase.md`, `rules/common/execution-discipline.md`, `rules/common/clean-code.md`, plus the stack rule for touched files.',
+    '- Building UI/pages/components/styles: `rules/frontend/ui-quality.md`, `rules/frontend/typography.md`, `rules/frontend/i18n.md`, `rules/frontend/accessibility.md`, and the framework-specific frontend rules.',
+    '- Working on React/Vite state, services, realtime, testing, performance, or security: read the matching `rules/frontend/react/*.md` file before editing.',
+    '- Touching Supabase, auth, storage, RLS, SQL, migrations, or schema snapshots: `rules/common/security.md`, `rules/frontend/react/supabase-client.md`, and `rules/backend/postgres.md`.',
+    '- Adding APIs, connectors, libraries, observability, docs, SEO, tests, release, or deployment work: read the matching common rule and trigger the matching skill from `.traffic-one/skills/**`.',
+    '- Running subagents or fix cycles: `rules/common/agent-handoff-digests.md`, `rules/common/codebase-graph.md`, and the role-scoped rules named in the task prompt.',
+    '',
+  ];
+}
+
+function renderRuleIndexSection(title, relPaths) {
+  if (!Array.isArray(relPaths) || relPaths.length === 0) return [];
+  return [
+    `### ${title}`,
+    '',
+    ...relPaths.map((relPath) => `- .traffic-one/${relPath}`),
+    '',
+  ];
+}
+
+function ruleGroupsForOptions(rules, options) {
+  const mandatory = unique(options.mandatoryRules || []);
+  const reference = unique(options.referenceRules || [])
+    .filter((relPath) => !mandatory.includes(relPath));
+  if (mandatory.length > 0 || reference.length > 0) {
+    return { mandatory, reference };
+  }
+  return { mandatory: unique(rules), reference: [] };
 }
 
 function renderAgents(state, rules, skills, options = {}) {
-  const root = pluginRoot();
   const leanMode = options.leanMode === true;
   const lines = [
     '# Traffic One Local Agent Context',
@@ -198,10 +251,10 @@ function renderAgents(state, rules, skills, options = {}) {
     GENERATED_MARKER,
     '',
     leanMode
-      ? 'Use the project-local active rule index below before falling back to plugin-root rules.'
+      ? 'Use the compact project-local rule kernel and index below before falling back to plugin-root rules.'
       : 'Use the project-local active rule bundle below before falling back to plugin-root rules.',
     leanMode
-      ? 'Lean context mode lists paths only; read a specific .traffic-one rule when its guidance applies.'
+      ? 'Compact context mode keeps critical guidance always-on and reads full `.traffic-one` rules on demand.'
       : 'Host runtimes may read AGENTS.md directly, so active rule contents are inlined instead of relying on host-specific import syntax.',
     '',
     '## Active State',
@@ -221,16 +274,22 @@ function renderAgents(state, rules, skills, options = {}) {
     '',
   ];
   if (leanMode) {
+    const { mandatory, reference } = ruleGroupsForOptions(rules, options);
     lines.push(
+      ...compactRuleKernel(),
+      ...compactReadRouting(),
       '## Active Rule Index',
       '',
       'Full rule content is materialized under `.traffic-one/<path>`.',
-      'Read only the specific rules needed for the current file or task.',
+      'Read only the specific rules needed for the current file or task; the kernel above is the always-on baseline.',
       '',
+      ...renderRuleIndexSection('Mandatory Baseline', mandatory),
+      ...renderRuleIndexSection('Reference On Demand', reference),
     );
     return `${lines.join('\n')}\n`;
   }
 
+  const root = pluginRoot();
   lines.push('## Active Rule Contents', '');
   for (const relPath of rules) {
     const source = readText(path.join(root, templatePath(relPath)));
@@ -288,9 +347,10 @@ function localContextBlocks(cwd) {
   return blocks;
 }
 
-function renderAgentsWithLocalContext(cwd, state, rules, skills) {
+function renderAgentsWithLocalContext(cwd, state, rules, skills, options = {}) {
   const base = renderAgents(state, rules, skills, {
     leanMode: isLeanMaterialization(cwd, state),
+    ...options,
   }).trimEnd();
   const localBlocks = localContextBlocks(cwd);
   if (localBlocks.length === 0) {
@@ -369,14 +429,30 @@ function modeRulesForState(root, state) {
 }
 
 function materializeProjectAssets(cwd, state) {
+  if (isPluginAuthoringRoot(cwd)) {
+    return {
+      rules: 0,
+      skills: 0,
+      written: 0,
+      removed: 0,
+      contextProfile: 'plugin-authoring',
+      skipped: 'plugin-authoring-root',
+    };
+  }
+
   const root = pluginRoot();
   const leanMode = isLeanMaterialization(cwd, state);
   const spec = stackSpecForState(state);
-  const rules = unique([
+  const mandatoryRules = unique([
     ...spec.mandatory,
     ...modeRulesForState(root, state),
-    ...spec.optional,
   ]).filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+  const referenceRules = unique(spec.optional)
+    .filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
+  const rules = unique([
+    ...mandatoryRules,
+    ...referenceRules,
+  ]);
   const skills = [...activeSkillsFor(state)].filter((name) => fs.existsSync(path.join(root, 'skills-templates', name, 'SKILL.md'))).sort();
   const nextRulePaths = new Set(rules);
   const nextSkillNames = new Set(skills);
@@ -403,7 +479,10 @@ function materializeProjectAssets(cwd, state) {
   if (preserveManualRootContext(cwd, 'AGENTS.md', state)) written += 1;
   if (preserveManualRootContext(cwd, 'CLAUDE.md', state)) written += 1;
 
-  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, skills);
+  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, skills, {
+    mandatoryRules,
+    referenceRules,
+  });
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
 
@@ -537,6 +616,7 @@ module.exports = {
   GENERATED_MARKER,
   materializeProjectAssets,
   hasMaterializedProjectAssets,
+  isPluginAuthoringRoot,
   isLeanMaterialization,
   generateGraphPreview,
   writeGraphPreview,

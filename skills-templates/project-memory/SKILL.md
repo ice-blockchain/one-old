@@ -64,7 +64,7 @@ Create or refresh:
 - `.traffic-one/security.md`
 - `.traffic-one/rules/**` generated active rule files only
 - `.traffic-one/manifest.json` generated active bundle manifest
-- root `AGENTS.md` containing the full active rule bundle
+- root `AGENTS.md` containing the compact active rule kernel/index by default
 - root `CLAUDE.md` symlinked to root `AGENTS.md` when safe for Claude Code
   compatibility
 - `.traffic-one/schema.sql`

@@ -135,9 +135,16 @@ CODEX SUBAGENT PREFLIGHT (popup 3, blocking for non-trivial multi-layer builds):
   Include the plain-text fallback options "1. Run team (Recommended)" and
   "2. Main agent only", then stop for the user's typed reply.
 
-  Stop and wait for the user's answer. If they confirm, use available Codex
-  subagents with the Traffic One role route. If they decline or subagents are
-  unavailable, continue manually in the same role order and say so.
+  Stop and wait for the user's answer. Persist the answer in \`.traffic-one.json\`:
+    - "Run team (Recommended)" → "team": { "mode": "subagents", "source": "prompted" }
+    - "Main agent only" → "team": { "mode": "main-agent", "source": "prompted" }
+
+  If they confirm, use available Codex subagents with the Traffic One role
+  route. The parent/orchestrator must not write feature source files while
+  \`team.mode="subagents"\`; it spawns role agents, coordinates digests, and
+  summarizes. If they decline or subagents are unavailable, continue manually
+  in the same role order, update \`team.mode="main-agent"\` with
+  \`team.source="unavailable"\` when runtime availability is the reason, and say so.
 
 ── Branch on the user's first message ──
 
@@ -239,6 +246,7 @@ GENERAL RULES:
       "technologies": { "frontend": [], "backend": [], "mobile": [] },
       "realtime": "<heavy|light|none>",
       "codeGraphProvider": "<gitnexus|graphify>",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "toolchain": {
         "gitnexus": { "installedVersion": null, "installedAt": null },
         "graphify": { "installedVersion": null, "installedAt": null },
@@ -264,6 +272,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User declined the recommended backend + no backend planned + picked gitnexus:
@@ -273,6 +282,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "gitnexus",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
     User chose Firebase / Mongo / their own Postgres + picked graphify:
@@ -282,6 +292,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": ["other"], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
   Stack ids: minimal · default · custom-frontend · custom-backend · custom-stack.
@@ -311,7 +322,8 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
      product.md, stack.md, coding.md, security.md,
      known-issues.md, agent-log.md, .agentignore, mcp.json, deployments.jsonl,
      schema.sql, decisions/, and skills/ when reusable team commands are
-     needed. Root AGENTS.md contains the active rule bundle. Do not generate
+     needed. Root AGENTS.md contains the compact active rule kernel/index by
+     default. Do not generate
      \`.traffic-one/rules/AGENTS.md\`; \`.traffic-one/rules/\` contains only
      generated rule files. Root CLAUDE.md should symlink to root AGENTS.md when
      safe.
@@ -471,6 +483,7 @@ the matching rule bundle into THIS session — no restart needed.
     "technologies": { "frontend": [], "backend": [], "mobile": [] },
     "realtime": "<heavy|light|none>",
     "codeGraphProvider": "<gitnexus|graphify>",
+    "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
     "toolchain": {
       "gitnexus": { "installedVersion": null, "installedAt": null },
       "graphify": { "installedVersion": null, "installedAt": null },
@@ -486,6 +499,7 @@ Stack ids: minimal · default · custom-frontend · custom-backend · custom-sta
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
 Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
+Team mode: subagents · main-agent (REQUIRED for new-project multi-layer builds — ASK the user).
 Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
 Default complex-project recommendation is stack=default, frontend=react-vite,
@@ -573,6 +587,16 @@ function postWriteIncompleteWarning({
     );
   }
 
+  if (Array.isArray(validationIssues) && validationIssues.some((issue) => issue.includes('`team`'))) {
+    if (lines.length > 2) lines.push('');
+    lines.push(
+      'You also did not persist the Team preflight answer. This is required for',
+      'new-project multi-layer builds so the architecture gate can enforce the',
+      'chosen route: `team.mode="subagents"` for "Run team", or',
+      '`team.mode="main-agent"` for "Main agent only".',
+    );
+  }
+
   lines.push(
     '',
       'Re-write the file with the Write tool using the full required schema:',
@@ -587,6 +611,7 @@ function postWriteIncompleteWarning({
       '    "technologies": { "frontend": [], "backend": [], "mobile": [] },',
       '    "realtime": "<heavy|light|none>",',
       '    "codeGraphProvider": "<gitnexus|graphify>",',
+      '    "team": { "mode": "<subagents|main-agent>", "source": "prompted" },',
       '    "toolchain": { "gitnexus": { "installedVersion": null, "installedAt": null }, "graphify": { "installedVersion": null, "installedAt": null }, "gitleaks": { "installedVersion": null, "installedAt": null }, "trufflehog": { "installedVersion": null, "installedAt": null } },',
       '    "confirmed": true,',
     '    "onboardingComplete": true,',

@@ -44,8 +44,9 @@ Required behavior on Codex:
 7. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
 8. Ask whether to run the role subagents using Codex `request_user_input` when available, with options `Run team (Recommended)` and `Main agent only`.
 9. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate the roles manually before the answer.
-10. If the user confirms, call Codex `spawn_agent` using the role mapping below.
-11. If the user declines, or subagents are unavailable/blocked, continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
+10. Persist the answer before any implementation phase: `Run team (Recommended)` writes `"team": { "mode": "subagents", "source": "prompted" }`; `Main agent only` writes `"team": { "mode": "main-agent", "source": "prompted" }`.
+11. If the user confirms, call Codex `spawn_agent` using the role mapping below. The parent/orchestrator does not write feature source while `team.mode` is `subagents`; it updates run state, spawns role agents, waits/integrates, and summarizes.
+12. If the user declines, or subagents are unavailable/blocked, update the state to `"team": { "mode": "main-agent", "source": "unavailable" }` when runtime availability is the reason, then continue in the same phase order manually and explicitly state that the Traffic One team is being simulated by the main agent.
 
 Recommended prompt, English only:
 
@@ -60,6 +61,7 @@ If work has already started and this gate was missed, pause at the next safe poi
 - Claude Code: auto-spawn the named Traffic One agents with the `Task` tool when this skill triggers.
 - Claude Code agents do not inherit parent skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
 - Codex: when `mode === "new-project"`, switch to Plan mode before onboarding/team questions. Before starting a non-trivial multi-layer build, announce the Traffic One route and automatically ask the user for subagent confirmation. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before calling `spawn_agent`, this confirmation is mandatory and blocking; stop until the user answers. Do not silently simulate the team before asking. If confirmation is granted, spawn available Codex subagents. If confirmation is not granted or subagents are blocked, run the same role prompts manually in dependency order and say that the Traffic One team is being simulated by the main agent.
+- Codex persisted team choice is authoritative after onboarding. If `.traffic-one.json` says `team.mode="subagents"`, the parent/orchestrator must not write feature source files; the architecture hook will deny those writes unless they come through an active Traffic One role session.
 - Cursor: auto-spawn available Cursor/background-agent/task agents when this skill triggers. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
 - Codex role mapping:
   - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
@@ -359,6 +361,7 @@ Next steps:
 - The plan-gate hook (`runCheckArchitectureWrite`) will deny feature writes if `.traffic-one/plan.md` is missing — even if you skipped Phase 1, the implementers will fail fast. Do not try to bypass.
 - The deploy-gate hook (`runCheckLibraryAllowlist`) will deny `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, etc. without both a fresh `lastShipperApprovalAt` stamp and a fresh passing `lastSecurityCheck*` stamp whose fingerprint matches the current worktree. Only `senior-shipper` writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 - When subagents are available and permitted, you do NOT write feature source files. You do NOT run deploy commands. You only spawn subagents and summarise. If subagents are unavailable, unconfirmed, or blocked, execute the same phases manually with the role prompts and clearly say so.
+- If `team.mode="subagents"` and you realize you have started writing feature source in the parent thread, stop immediately, tell the user the run-team enforcement gate was missed, spawn the missing role agents, and move any already-written work into the relevant role review/fix flow.
 
 ## When NOT to use this orchestrator
 

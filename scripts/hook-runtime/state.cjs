@@ -137,6 +137,34 @@ const MOBILE_SOURCE_ALIASES = new Map([
   ['user-requested', 'explicit'],
 ]);
 
+const TEAM_MODE_IDS = new Set(['subagents', 'main-agent']);
+const TEAM_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
+const TEAM_MODE_ALIASES = new Map([
+  ['run-team', 'subagents'],
+  ['team', 'subagents'],
+  ['traffic-one-team', 'subagents'],
+  ['subagent', 'subagents'],
+  ['subagents-only', 'subagents'],
+  ['main', 'main-agent'],
+  ['main-agent-only', 'main-agent'],
+  ['manual', 'main-agent'],
+  ['same-thread', 'main-agent'],
+]);
+const TEAM_SOURCE_ALIASES = new Map([
+  ['chat', 'prompted'],
+  ['fallback-chat', 'prompted'],
+  ['onboarding', 'prompted'],
+  ['popup', 'prompted'],
+  ['prompt', 'prompted'],
+  ['user-onboarding', 'prompted'],
+  ['blocked', 'unavailable'],
+  ['not-available', 'unavailable'],
+  ['runtime-unavailable', 'unavailable'],
+  ['explicit-user-request', 'explicit'],
+  ['requested', 'explicit'],
+  ['user-requested', 'explicit'],
+]);
+
 function canonicalMobileSource(source) {
   if (typeof source !== 'string') {
     return source;
@@ -149,6 +177,31 @@ function canonicalMobileSource(source) {
     return normalized;
   }
   return MOBILE_SOURCE_ALIASES.get(normalized) || source;
+}
+
+function canonicalTeamMode(mode) {
+  if (typeof mode !== 'string') return mode;
+  if (TEAM_MODE_IDS.has(mode)) return mode;
+  const normalized = mode.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (TEAM_MODE_IDS.has(normalized)) return normalized;
+  return TEAM_MODE_ALIASES.get(normalized) || mode;
+}
+
+function canonicalTeamSource(source) {
+  if (typeof source !== 'string') return source;
+  if (TEAM_SOURCE_IDS.has(source)) return source;
+  const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (TEAM_SOURCE_IDS.has(normalized)) return normalized;
+  return TEAM_SOURCE_ALIASES.get(normalized) || source;
+}
+
+function hasValidTeamState(team) {
+  return Boolean(
+    team
+    && typeof team === 'object'
+    && TEAM_MODE_IDS.has(team.mode)
+    && TEAM_SOURCE_IDS.has(team.source)
+  );
 }
 
 function defaultTechnologiesFor(state) {
@@ -350,6 +403,20 @@ function normalizeState(state, defaultMode) {
       }
     }
   }
+  if (state.team && typeof state.team === 'object') {
+    const normalizedTeam = {
+      ...state.team,
+      mode: canonicalTeamMode(state.team.mode),
+      source: canonicalTeamSource(state.team.source || 'prompted'),
+    };
+    if (
+      state.team.mode !== normalizedTeam.mode
+      || state.team.source !== normalizedTeam.source
+    ) {
+      state.team = normalizedTeam;
+      changed = true;
+    }
+  }
   const nextToolchain = initializeToolchainState(state.toolchain);
   if (JSON.stringify(state.toolchain || {}) !== JSON.stringify(nextToolchain)) {
     state.toolchain = nextToolchain;
@@ -494,6 +561,9 @@ module.exports = {
   normalizeState,
   initializeToolchainState,
   defaultTechnologiesFor,
+  hasValidTeamState,
+  TEAM_MODE_IDS,
+  TEAM_SOURCE_IDS,
   requireAddon,
   KNOWN_ADDONS,
   getPluginVersion,  // exported for testing + diagnostic

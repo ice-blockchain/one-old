@@ -28,6 +28,9 @@ const {
   writeState,
   normalizeState,
   initializeToolchainState,
+  hasValidTeamState,
+  TEAM_MODE_IDS,
+  TEAM_SOURCE_IDS,
   stackFingerprint,
   getPluginVersion,
   isMaterialized,
@@ -58,6 +61,7 @@ const { packBundle, packRuleIndex, packFixCycleHeader } = require('./packing.cjs
 const {
   materializeProjectAssets,
   hasMaterializedProjectAssets,
+  isPluginAuthoringRoot,
 } = require('./materialize.cjs');
 const {
   computeProjectFingerprint,
@@ -279,7 +283,7 @@ function materializationSuccessResult(materialized, triggerPath) {
       systemMessage: 'traffic-one — project-local rules/skills materialized',
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains the active rule bundle; root CLAUDE.md symlinks to AGENTS.md when safe.`,
+        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains the compact active rule kernel/index by default; root CLAUDE.md symlinks to AGENTS.md when safe.`,
       },
     }),
     exitCode: 0,
@@ -287,6 +291,8 @@ function materializationSuccessResult(materialized, triggerPath) {
 }
 
 function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
+  if (isPluginAuthoringRoot(cwd)) return null;
+
   const statePath = path.join(cwd, STATE_FILE);
   const state = safeReadJson(statePath, null);
   if (!state || typeof state !== 'object') return null;
@@ -397,6 +403,8 @@ function ensureGitnexusNvmrc(cwd, state) {
 
 function materializeFromProjectMemoryWrite(cwd, filePath) {
   const projectRoot = findProjectRootForHookFile(cwd, filePath);
+  if (isPluginAuthoringRoot(projectRoot)) return null;
+
   const relativePath = projectRelativeHookPath(cwd, projectRoot, filePath);
   if (!isProjectMemoryWritePath(relativePath)) return null;
 
@@ -468,6 +476,23 @@ function hasValidMobileState(mobile) {
     && MOBILE_SOURCE_IDS.has(mobile.source);
 }
 
+function roleCanWriteFeatureSource(role, filePath) {
+  if (role === 'senior-frontend') {
+    return /^(apps\/[^/]+\/(src|app)\/|packages\/(ui|i18n|utils)\/src\/)/.test(filePath);
+  }
+  if (role === 'senior-backend') {
+    return /^(packages\/(api-client|ws-client|utils)\/src\/|services\/[^/]+\/src\/|apps\/[^/]+\/src\/(services|store)\/)/.test(filePath);
+  }
+  return false;
+}
+
+function commandAppearsToWriteFeatureSource(command) {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const hasWritePrimitive = /(?:>|>>|\btee\b|\bcat\b[\s\S]*<<|\bpython3?\b|\bnode\b|\bperl\b|\bsed\b[\s\S]*-i)/.test(command);
+  const mentionsFeaturePath = /(?:^|[\s'"`])(?:apps\/[^/\s'"`]+\/(?:src|app)\/|packages\/[^/\s'"`]+\/src\/|src\/|services\/[^/\s'"`]+\/src\/)/.test(command);
+  return hasWritePrimitive && mentionsFeaturePath;
+}
+
 function formatStateValue(value) {
   return typeof value === 'string' ? `"${value}"` : String(value);
 }
@@ -514,6 +539,10 @@ function trafficOneStateValidationIssues(state, validCodeGraphProviders = ['gitn
     issues.push('`technologies` must contain `frontend`, `backend`, and `mobile` arrays.');
   }
 
+  if (state.mode === 'new-project' && !hasValidTeamState(state.team)) {
+    issues.push(`\`team\` must be an object with valid \`mode\` (${[...TEAM_MODE_IDS].map((id) => `\`${id}\``).join(' · ')}) and \`source\` (${[...TEAM_SOURCE_IDS].map((id) => `\`${id}\``).join(' · ')}).`);
+  }
+
   const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : '';
   if (!cgProvider) {
     issues.push('`codeGraphProvider` is missing.');
@@ -538,6 +567,19 @@ function trafficOneStateValidationIssues(state, validCodeGraphProviders = ['gitn
 }
 
 function materializeProjectFromState(cwd, trigger = 'manual materialize-project') {
+  if (isPluginAuthoringRoot(cwd)) {
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one — plugin authoring root detected; project materialization skipped',
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: 'This directory is the Traffic One plugin source, not a generated Traffic One project. `materialize-project` only rewrites `.traffic-one/**`, root `AGENTS.md`, and root `CLAUDE.md` inside projects created with the plugin.',
+        },
+      }),
+      exitCode: 0,
+    };
+  }
+
   const statePath = path.join(cwd, STATE_FILE);
   const state = safeReadJson(statePath, null);
   const validStackIds = Object.keys(STACKS);
@@ -618,7 +660,7 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
       systemMessage: 'traffic-one — project-local rules/skills already materialized',
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `Project-local rules/skills are current for ${stackFingerprint(state)}. Root AGENTS.md contains the active rule bundle; root CLAUDE.md symlinks to AGENTS.md when safe.`,
+        additionalContext: `Project-local rules/skills are current for ${stackFingerprint(state)}. Root AGENTS.md contains the compact active rule kernel/index by default; root CLAUDE.md symlinks to AGENTS.md when safe.`,
       },
     }),
     exitCode: 0,
@@ -632,12 +674,14 @@ function isNewProjectOnboardingIncomplete(state) {
   const hasGraphProvider = state.codeGraphProvider === 'gitnexus' || state.codeGraphProvider === 'graphify';
   const hasFrontend = typeof state.frontend === 'string' && FRONTEND_IDS.has(state.frontend);
   const hasBackend = typeof state.backend === 'string' && BACKEND_IDS.has(state.backend);
+  const hasTeam = hasValidTeamState(state.team);
   return !hasValidStack
     || !hasFrontend
     || !hasBackend
     || !hasValidMobileState(state.mobile)
     || !hasTechnologyArrays(state.technologies)
     || !hasGraphProvider
+    || !hasTeam
     || !hasInitializedToolchain(state.toolchain)
     || state.confirmed !== true
     || state.onboardingComplete !== true
@@ -654,6 +698,7 @@ function canRepairNewProjectOnboardingState(state) {
   if (typeof state.frontend !== 'string' || !FRONTEND_IDS.has(state.frontend)) return false;
   if (typeof state.backend !== 'string' || !BACKEND_IDS.has(state.backend)) return false;
   if (state.mobile === undefined || state.mobile === null) return false;
+  if (!hasValidTeamState(state.team)) return false;
   if (state.codeGraphProvider !== 'gitnexus' && state.codeGraphProvider !== 'graphify') return false;
 
   const candidate = JSON.parse(JSON.stringify(state));
@@ -682,7 +727,7 @@ function onboardingGateFallbackReason() {
     '',
     codexDefaultModeFallbackMobilePrompt(),
     '',
-    'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, mobile, technologies, codeGraphProvider, toolchain, confirmed, onboardingComplete, and confirmedAt.',
+    'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, mobile, technologies, codeGraphProvider, team, toolchain, confirmed, onboardingComplete, and confirmedAt.',
     'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, or continue implementation until the typed answer is received and the remaining Code Graph and Team prompts are resolved.',
   ].join('\n');
 }
@@ -730,6 +775,7 @@ function readGraphPreview(cwd) {
 }
 
 function ensureSessionMaterialization(cwd, state) {
+  if (isPluginAuthoringRoot(cwd)) return false;
   if (!state || typeof state !== 'object') return false;
   if (state.onboardingComplete !== true) return false;
   if (!state.stack || !STACK_IDS.has(state.stack)) return false;
@@ -739,7 +785,8 @@ function ensureSessionMaterialization(cwd, state) {
   if (hasFreshStamp && hasAssets) return false;
 
   normalizeState(state, state.mode || detectMode(cwd));
-  materializeProjectAssets(cwd, state);
+  const materialized = materializeProjectAssets(cwd, state);
+  if (materialized.skipped) return false;
   state.materializedStack = stackFingerprint(state);
   state.materializedAt = nowIso();
   state.materializedVersion = getPluginVersion();
@@ -859,8 +906,8 @@ function runSessionStart() {
     const skillDirective = pruneSkillsDirective(state, allSkills);
     let sessionMaterialized = false;
     try {
-      materializeProjectAssets(cwd, state);
-      sessionMaterialized = true;
+      const materialized = materializeProjectAssets(cwd, state);
+      sessionMaterialized = !materialized.skipped;
     } catch {
       // Best-effort: SessionStart can still provide the in-memory rule bundle,
       // but it must not stamp .traffic-one.json as materialized unless the
@@ -938,8 +985,8 @@ function runSessionStart() {
       const allSkills = listAllSkills();
       let autoMaterialized = false;
       try {
-        materializeProjectAssets(cwd, state);
-        autoMaterialized = true;
+        const materialized = materializeProjectAssets(cwd, state);
+        autoMaterialized = !materialized.skipped;
       } catch {
         // Best-effort: auto-detection still succeeds, but do not claim the
         // project-local materialization is present when the copy failed.
@@ -1057,6 +1104,8 @@ function runUserPromptSubmit(rawInput = '') {
           'Popup 3: for non-trivial multi-layer builds, ask the Traffic One team/subagent choice with Codex `request_user_input`:',
           'question="Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"',
           'options: Run team (Recommended); Main agent only.',
+          'Persist the answer before implementation: Run team writes `team.mode="subagents"` and Main agent only writes `team.mode="main-agent"`.',
+          'When `team.mode="subagents"`, the parent/orchestrator does not write feature source; it spawns the Traffic One role agents and summarizes.',
           'Ask this only after the codebase graph choice is answered; stop for a typed option if popup is unavailable.',
         ].join(' '),
       ].join('\n')
@@ -1132,6 +1181,7 @@ function runCheckArchitectureWrite(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
   const rawFilePath = (typeof toolInput.file_path === 'string' ? toolInput.file_path : '').replace(/\\/g, '/');
+  const rawCommand = typeof toolInput.command === 'string' ? toolInput.command : '';
   const cwd = process.cwd();
   const projectRoot = findProjectRootForHookFile(cwd, rawFilePath);
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
@@ -1166,7 +1216,8 @@ function runCheckArchitectureWrite(rawInput) {
   const planMissing       = !fs.existsSync(planAbsPath);
   const writingPlan       = PLAN_FILE_RE.test(filePath);
   const writingDoc        = ADR_OR_DOC_RE.test(filePath);
-  const writingFeatureSource = FEATURE_SOURCE_RE.test(filePath);
+  const writingFeatureSourceViaCommand = commandAppearsToWriteFeatureSource(rawCommand);
+  const writingFeatureSource = FEATURE_SOURCE_RE.test(filePath) || writingFeatureSourceViaCommand;
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(stateForPlan);
 
   if (
@@ -1219,6 +1270,25 @@ function runCheckArchitectureWrite(rawInput) {
       + 'Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` '
       + 'from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, '
       + '`.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.'
+    );
+  }
+
+  if (
+    writingFeatureSource
+    && stateForPlan.team
+    && stateForPlan.team.mode === 'subagents'
+    && (
+      !isSubagentSession(stateForPlan)
+      || !roleCanWriteFeatureSource(activeAgentRole(stateForPlan), filePath)
+      || writingFeatureSourceViaCommand
+    )
+  ) {
+    const role = activeAgentRole(stateForPlan) || 'main agent';
+    violations.push(
+      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from the Traffic One role team, not ${role}. `
+      + 'Spawn the appropriate Codex/Claude/Cursor role agents first: senior-frontend owns frontend/UI/i18n files and senior-backend owns backend/API/database files. '
+      + 'Bash-based feature-source writes are denied because the hook cannot verify role ownership from a shell command; use role-scoped Write/Edit tools instead. '
+      + 'If subagents are genuinely unavailable or the user changes their mind, update `.traffic-one.json` to `team.mode="main-agent"` with `team.source="unavailable"` or ask the user to reselect `Main agent only` before continuing manually.'
     );
   }
 
@@ -1924,6 +1994,7 @@ function runPostStackSetup(rawInput) {
   // Stamp the materialization fields after a successful copy so the PreToolUse
   // implementation gate (isMaterialized) sees a fresh fingerprint.
   try {
+    if (materialized && materialized.skipped) return { stdout: '', exitCode: 0 };
     state.materializedStack   = stackFingerprint(state);
     state.materializedAt      = nowIso();
     state.materializedVersion = getPluginVersion();
@@ -1989,7 +2060,7 @@ function runPostStackSetup(rawInput) {
   }
 
   const materializedLine = materialized
-    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Root AGENTS.md contains the active rule bundle; root CLAUDE.md symlinks to AGENTS.md when safe.`
+    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Root AGENTS.md contains the compact active rule kernel/index by default; root CLAUDE.md symlinks to AGENTS.md when safe.`
     : 'Active rules and skills remain loaded from session start.';
   const context = `[traffic-one] stack rules active for ${stack}. ${materializedLine}${nodeWarning}`;
 
