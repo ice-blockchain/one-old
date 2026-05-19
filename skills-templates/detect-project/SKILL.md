@@ -105,6 +105,11 @@ Codex subagent preflight for new projects:
   you want me to run the Traffic One subagent team: architect → frontend/backend
   → reviewer/tester?" Options: `Run team (Recommended)` and
   `Main agent only`.
+- Persist the Team answer in `.traffic-one.json`: `Run team (Recommended)`
+  writes `"team": { "mode": "subagents", "source": "prompted" }`; `Main agent
+  only` writes `"team": { "mode": "main-agent", "source": "prompted" }`.
+  When `team.mode` is `subagents`, the parent/orchestrator coordinates and
+  summarizes only; it must not write feature source files itself.
 - If `request_user_input` is unavailable, ask the same questions in plain text
   with the same numbered options and stop for the user's typed reply.
 - This is a blocking preflight gate on Codex: stop and wait for the user's
