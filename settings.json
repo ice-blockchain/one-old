@@ -6,7 +6,7 @@
           {
             "type": "command",
             "statusMessage": "Detecting project mode...",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" session-start"
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" session-start"
           }
         ]
       }
@@ -17,19 +17,29 @@
           {
             "type": "command",
             "statusMessage": "Applying traffic-one rules...",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" user-prompt-submit"
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" user-prompt-submit"
           }
         ]
       }
     ],
     "PreToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Checking onboarding gate...",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" check-onboarding-gate"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit",
         "hooks": [
           {
             "type": "command",
             "statusMessage": "Validating architecture...",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" check-architecture-write"
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" check-architecture-write"
           }
         ]
       },
@@ -39,19 +49,42 @@
           {
             "type": "command",
             "statusMessage": "Checking library allowlist...",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" check-library-allowlist"
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" check-library-allowlist"
+          }
+        ]
+      },
+      {
+        "matcher": "Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" pre-graphify-hint"
           }
         ]
       }
     ],
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "Loading stack rules...",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/hook-runtime.cjs\" post-stack-setup"
+            "statusMessage": "Checking page-speed gate...",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" post-build-page-speed"
+          },
+          {
+            "type": "command",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" post-build-graphify"
+          }
+        ]
+      },
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Ensuring project materialization...",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" post-stack-setup"
           }
         ]
       }

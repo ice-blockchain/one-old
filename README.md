@@ -11,7 +11,8 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 
 ```
 .
-├── skills/                  ← SHARED across all agents — auto-trigger on semantic match
+├── skills/                  ← Runtime filtered active skills
+├── skills-templates/        ← Full skill source; manifest reads this directly
 │   ├── create-component/
 │   ├── create-feature/
 │   ├── create-page/
@@ -46,8 +47,8 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 │
 ├── CLAUDE.md                ← Claude Code   — entry point, @imports rules/core.md
 ├── AGENTS.md                ← Codex CLI     — entry point, inlines rules/ content
-├── settings.json            ← Claude Code   — hooks (PreToolUse arch + library checks)
-├── hooks/hooks.json         ← Codex CLI     — hooks (PreToolUse arch + library checks)
+├── settings.json            ← Claude Code   — hooks (onboarding, materialization, graph, deploy gates)
+├── hooks/hooks.json         ← Codex CLI     — hooks (onboarding, materialization, graph, deploy gates)
 ├── scripts/hook-runtime.cjs ← Hooks         — dependency-free Node hook runtime
 ├── scripts/sync-cursor.cjs  ← Cursor        — generates .cursor/rules + normalizes manifest
 ├── .githooks/pre-commit     ← Git           — auto-runs Cursor sync and stages generated files
@@ -150,7 +151,7 @@ and the security-check stamp are both fresh and match the current worktree.
 Run the scanner before release work:
 
 ```
-node "${CLAUDE_PLUGIN_ROOT:-.}/scripts/security-check-runner.cjs" --strict --stamp
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp
 ```
 
 CI uses `--strict --no-stamp` with pinned `gitleaks@v8.30.1` and
@@ -214,4 +215,4 @@ Or via Cursor Settings → Plugins → Add.
 | Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md`, then run `node scripts/sync-cursor.cjs` |
 | Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
 | Blocked libraries | Edit the `PreToolUse[Bash]` hook in `settings.json` and `hooks/hooks.json` |
-| Architecture violation checks | Edit the `PreToolUse[Write\|Edit]` hook in `settings.json` |
+| Architecture / onboarding / materialization checks | Edit the matching hook in both `settings.json` and `hooks/hooks.json`, then cover it in `scripts/test-stack-recommendations.cjs` |
