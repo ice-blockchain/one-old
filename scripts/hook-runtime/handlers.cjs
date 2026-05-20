@@ -38,7 +38,14 @@ const {
   activeAgentRole,
   isFixCycleSession,
   getSpawnIndex,
+  VALID_AGENT_ROLES,
 } = require('./state.cjs');
+
+const {
+  PERFORMANCE_LEVEL_IDS,
+  modelForRoleHost,
+  teamModeForLevel,
+} = require('./agents-performance-prompt.cjs');
 
 const { STACKS, stackSpecForState, roleScopedRules } = require('./stacks.cjs');
 
@@ -72,6 +79,7 @@ const {
   autoDetectedAnnouncement,
   onboardingReminderShort,
   postWriteIncompleteWarning,
+  hostPopupInstruction,
   codexDefaultModeFallbackDirective,
   codexDefaultModeFallbackMobilePrompt,
 } = require('./directives.cjs');
@@ -1084,29 +1092,42 @@ function runUserPromptSubmit(rawInput = '') {
         `mobile=${classification.mobile.enabled ? classification.mobile.framework : 'none'}`,
         'mode=new-project: switch Codex and Claude Code to Plan mode before onboarding questions or implementation. If no mode switch is available, stay plan-only, ask fallback chat questions, and stop for typed answers.',
         codexDefaultModeFallbackDirective(),
-        'Onboarding choices must be prompt popups: call Codex `request_user_input` when available; do not print numbered option lists in chat. If the popup tool is unavailable, ask the same question in chat with numbered options, tell the user to reply with the option number or label, and stop; never choose a default or continue implementation while the answer is pending.',
+        `Onboarding choices must be prompt popups. ${hostPopupInstruction()} Do not print numbered option lists in chat when a popup tool is available; never choose a default or continue implementation while an answer is pending.`,
         classification.shouldAskMobile
           ? [
-            'Popup 1: ask the mobile decision with Codex `request_user_input`:',
+            'Popup 1: ask the mobile decision.',
+            hostPopupInstruction(),
             'question="Do you want a mobile app too?"',
             'options: Web only (Recommended); Ionic + Capacitor; React Native / Expo.',
             'Ask this even if the prompt already named web, mobile, Next.js, Ionic, React Native, frontend-only, or no subagents.',
-            'Stop and wait for the popup answer, or for a typed option if popup is unavailable.',
+            'Stop and wait for the answer.',
           ].join(' ')
-          : 'Minimal/static project classification only: mobile popup is not required.',
+          : [
+            'Minimal/static project classification: if you keep the project minimal (no frontend/backend),',
+            'write `mobile: { enabled: false, framework: "none", source: "none" }` WITHOUT asking — the mobile popup is not required.',
+            'BUT if the project upgrades during onboarding (e.g. the user adds a backend/frontend so the stack becomes default/custom),',
+            'you MUST ask the mobile popup FIRST (before writing state) using the host popup tool — never the plain-text "popup unavailable" fallback when a popup tool is working.',
+          ].join(' '),
         [
-          'Popup 2: ask the required codebase graph provider with Codex `request_user_input`:',
+          'Popup 2: ask the required codebase graph provider.',
+          hostPopupInstruction(),
           'question="Which provider should we use for the codebase graph?"',
           'options: GitNexus; graphify.',
-          'Stop and wait for the popup answer, or for a typed option if popup is unavailable; no default and no skip.',
+          'Stop and wait for the answer; no default and no skip.',
         ].join(' '),
         [
-          'Popup 3: for non-trivial multi-layer builds, ask the Traffic One team/subagent choice with Codex `request_user_input`:',
-          'question="Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"',
-          'options: Run team (Recommended); Main agent only.',
-          'Persist the answer before implementation: Run team writes `team.mode="subagents"` and Main agent only writes `team.mode="main-agent"`.',
-          'When `team.mode="subagents"`, the parent/orchestrator does not write feature source; it spawns the Traffic One role agents and summarizes.',
-          'Ask this only after the codebase graph choice is answered; stop for a typed option if popup is unavailable.',
+          'Popup 3: for non-trivial multi-layer builds, ask the Performance level.',
+          hostPopupInstruction(),
+          'header="Performance" question="How do you want to run agents for this build?"',
+          'options: Balanced (Recommended) — subagent team with efficient models;',
+          'High — subagent team with max-power models;',
+          'Low — main agent only with role roadmap checklist.',
+          'Persist before implementation:',
+          'Balanced → performance.level="balanced" + team.mode="subagents";',
+          'High → performance.level="high" + team.mode="subagents";',
+          'Low → performance.level="low" + team.mode="main-agent".',
+          'For Balanced or High, auto-launch the subagent team — no separate Run team? confirmation.',
+          'Ask only after the codebase graph choice is answered; stop for a typed option if popup is unavailable.',
         ].join(' '),
       ].join('\n')
       : '';
@@ -1166,6 +1187,86 @@ function runCheckOnboardingGate(rawInput) {
   const materialized = materializeProjectIfNeeded(cwd, 'generic pre-tool convergence');
   if (materialized && materialized.stdout) {
     return materialized;
+  }
+
+  return { stdout: '', exitCode: 0 };
+}
+
+// ── PreToolUse(Task): enforce per-agent model for the performance level ──────
+// The subagent model is set ONLY by the spawn tool's `model` parameter; the
+// model directive in prompt text has no effect, so without this gate Balanced/
+// High silently inherit the parent model. We block a Traffic One role spawn
+// when the `model` param is missing/wrong for the role's tier.
+function detectHookHost() {
+  if (process.env.CLAUDE_PLUGIN_ROOT) return 'claude';
+  if (process.env.CODEX_PLUGIN_ROOT) return 'codex';
+  if (process.env.CURSOR_PLUGIN_ROOT) return 'cursor';
+  const root = pluginRoot();
+  if (root.includes(`${path.sep}.codex${path.sep}`)) return 'codex';
+  if (root.includes(`${path.sep}.cursor${path.sep}`)) return 'cursor';
+  return 'claude';
+}
+
+function normalizeSubagentRole(subagentType) {
+  if (typeof subagentType !== 'string' || !subagentType) return null;
+  const role = subagentType.includes(':') ? subagentType.split(':').pop() : subagentType;
+  return VALID_AGENT_ROLES.has(role) ? role : null;
+}
+
+function runCheckAgentModel(rawInput) {
+  const data = parseJsonText(rawInput, {});
+  const toolName = data.tool_name || data.toolName || '';
+  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(String(toolName))) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
+  const role = normalizeSubagentRole(
+    toolInput.subagent_type || toolInput.subagentType || toolInput.agent || toolInput.type,
+  );
+  if (!role) {
+    return { stdout: '', exitCode: 0 }; // not a Traffic One role spawn
+  }
+
+  const cwd = process.cwd();
+  const state = safeReadJson(path.join(cwd, STATE_FILE), null);
+  if (!state || typeof state !== 'object') return { stdout: '', exitCode: 0 };
+
+  // Onboarding-only: enforce the performance-level model just for the first
+  // new-project build. Once the project is established, manual agent spawns are
+  // never gated.
+  if (state.mode !== 'new-project') return { stdout: '', exitCode: 0 };
+
+  const performance = state.performance && typeof state.performance === 'object' ? state.performance : null;
+  const level = performance && PERFORMANCE_LEVEL_IDS.has(performance.level) ? performance.level : null;
+  if (!level) return { stdout: '', exitCode: 0 }; // no level recorded → can't enforce
+
+  // Low: the team runs in-thread, not as spawned subagents. Spawning a role
+  // subagent contradicts the recorded level — usually the level was mis-recorded
+  // (e.g. user picked Balanced but state says low). Block and ask to fix first.
+  if (teamModeForLevel(level) === 'main-agent') {
+    return denyPreToolUse(
+      `Performance gate: \`.traffic-one.json\` records performance.level="${level}" (main-agent only), but you are spawning the \`${role}\` subagent. `
+      + 'If the user chose Balanced or High, first correct `.traffic-one.json` (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. '
+      + 'If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.',
+    );
+  }
+
+  // Balanced / High: the spawn MUST pass the model param for the role's tier.
+  const host = detectHookHost();
+  const expected = modelForRoleHost(level, role, host);
+  if (!expected) return { stdout: '', exitCode: 0 };
+
+  const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  if (passedModel !== expected) {
+    return denyPreToolUse(
+      `Performance gate (level=${level}, host=${host}): spawning \`${role}\` requires the \`model\` tool parameter set to "${expected}". `
+      + (passedModel
+        ? `You passed model="${passedModel}". `
+        : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ')
+      + `Re-issue the spawn with \`model: "${expected}"\`. The model is set ONLY by this parameter — a model name in the prompt text has no effect. `
+      + 'Per-role model tiers live in `performance-config.cjs` / `model-tiers.cjs`.',
+    );
   }
 
   return { stdout: '', exitCode: 0 };
@@ -1288,7 +1389,7 @@ function runCheckArchitectureWrite(rawInput) {
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from the Traffic One role team, not ${role}. `
       + 'Spawn the appropriate Codex/Claude/Cursor role agents first: senior-frontend owns frontend/UI/i18n files and senior-backend owns backend/API/database files. '
       + 'Bash-based feature-source writes are denied because the hook cannot verify role ownership from a shell command; use role-scoped Write/Edit tools instead. '
-      + 'If subagents are genuinely unavailable or the user changes their mind, update `.traffic-one.json` to `team.mode="main-agent"` with `team.source="unavailable"` or ask the user to reselect `Main agent only` before continuing manually.'
+      + 'If subagents are genuinely unavailable or the user changes their mind, update `.traffic-one.json` to `team.mode="main-agent"` and `performance.level="low"` with `team.source="unavailable"` or ask the user to reselect the "Low" performance level before continuing manually.'
     );
   }
 
@@ -2213,6 +2314,7 @@ module.exports = {
   runSessionStart,
   runUserPromptSubmit,
   runCheckOnboardingGate,
+  runCheckAgentModel,        // PreToolUse(Task) → enforce performance-level model
   runCheckArchitectureWrite,
   runCheckLibraryAllowlist,
   runPostBuildPageSpeed,
