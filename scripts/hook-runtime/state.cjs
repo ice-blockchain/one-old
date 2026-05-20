@@ -139,6 +139,9 @@ const MOBILE_SOURCE_ALIASES = new Map([
 
 const TEAM_MODE_IDS = new Set(['subagents', 'main-agent']);
 const TEAM_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
+
+const PERFORMANCE_LEVEL_IDS = new Set(['low', 'balanced', 'high']);
+const PERFORMANCE_SOURCE_IDS = new Set(['prompted', 'explicit']);
 const TEAM_MODE_ALIASES = new Map([
   ['run-team', 'subagents'],
   ['team', 'subagents'],
@@ -193,6 +196,22 @@ function canonicalTeamSource(source) {
   const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
   if (TEAM_SOURCE_IDS.has(normalized)) return normalized;
   return TEAM_SOURCE_ALIASES.get(normalized) || source;
+}
+
+function canonicalPerformanceLevel(level) {
+  if (typeof level !== 'string') return level;
+  if (PERFORMANCE_LEVEL_IDS.has(level)) return level;
+  const normalized = level.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  return PERFORMANCE_LEVEL_IDS.has(normalized) ? normalized : level;
+}
+
+function hasValidPerformanceState(performance) {
+  return Boolean(
+    performance
+    && typeof performance === 'object'
+    && PERFORMANCE_LEVEL_IDS.has(performance.level)
+    && PERFORMANCE_SOURCE_IDS.has(performance.source),
+  );
 }
 
 function hasValidTeamState(team) {
@@ -417,6 +436,20 @@ function normalizeState(state, defaultMode) {
       changed = true;
     }
   }
+  if (state.performance && typeof state.performance === 'object') {
+    const normalizedPerformance = {
+      ...state.performance,
+      level: canonicalPerformanceLevel(state.performance.level),
+      source: typeof state.performance.source === 'string' ? state.performance.source : 'prompted',
+    };
+    if (
+      state.performance.level !== normalizedPerformance.level
+      || state.performance.source !== normalizedPerformance.source
+    ) {
+      state.performance = normalizedPerformance;
+      changed = true;
+    }
+  }
   const nextToolchain = initializeToolchainState(state.toolchain);
   if (JSON.stringify(state.toolchain || {}) !== JSON.stringify(nextToolchain)) {
     state.toolchain = nextToolchain;
@@ -564,6 +597,10 @@ module.exports = {
   hasValidTeamState,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
+  PERFORMANCE_LEVEL_IDS,
+  PERFORMANCE_SOURCE_IDS,
+  canonicalPerformanceLevel,
+  hasValidPerformanceState,
   requireAddon,
   KNOWN_ADDONS,
   getPluginVersion,  // exported for testing + diagnostic

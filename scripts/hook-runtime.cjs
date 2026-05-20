@@ -36,6 +36,7 @@ const HANDLERS = {
   'session-start':            ()         => handlers.runSessionStart(),
   'user-prompt-submit':       (rawInput) => handlers.runUserPromptSubmit(rawInput),
   'check-onboarding-gate':     (rawInput) => handlers.runCheckOnboardingGate(rawInput),
+  'check-agent-model':        (rawInput) => handlers.runCheckAgentModel(rawInput),
   'check-architecture-write': (rawInput) => handlers.runCheckArchitectureWrite(rawInput),
   'check-library-allowlist':  (rawInput) => handlers.runCheckLibraryAllowlist(rawInput),
   'post-build-page-speed':    (rawInput) => handlers.runPostBuildPageSpeed(rawInput),

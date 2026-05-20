@@ -45,6 +45,7 @@ const SKILL_FILTERS = {
     'senior-eng-orchestrator',
     'traffic-one-doctor',
     'token-usage-report',
+    'model-tier-sync',
   ]),
   'react-vite': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',

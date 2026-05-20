@@ -12,9 +12,11 @@ const {
   pitchDeployLabel,
 } = require('./config.cjs');
 const {
+  hostPopupInstruction,
   codexDefaultModeFallbackDirective,
   codexDefaultModeFallbackMobilePrompt,
 } = require('./onboarding-prompts.cjs');
+const { performancePopupBlock, performanceChatFallback } = require('./agents-performance-prompt.cjs');
 
 // ── New-project onboarding directive ─────────────────────────────────────────
 // End-to-end default: React monorepo + Supabase backend + our deploy infra.
@@ -58,32 +60,28 @@ NEW-PROJECT PLAN MODE GATE (Codex + Claude Code):
   implementation while \`mode === "new-project"\` and onboarding/plan gates are
   unresolved in normal/default mode.
 
-CODEX ONBOARDING POPUP RULE (blocking):
-  These onboarding choices must be displayed as Codex prompt popups, not as
-  prose questions with numbered options. When \`request_user_input\` is present
-  in the available tools, call that tool and stop. Do NOT print "Options:" or a
-  numbered list in chat. Plain-text options are allowed only when
-  \`request_user_input\` is absent/unavailable; in that case explicitly say the
-  popup tool is unavailable, ask the same blocking question directly in chat
-  with the numbered options, tell the user to reply with the option number or
-  label, and stop. Never choose a default, infer an answer, write
+ONBOARDING POPUP RULE (all hosts, blocking):
+  These onboarding choices must be displayed as host prompt popups, not as
+  prose questions with numbered options. ${hostPopupInstruction()}
+  Do NOT print "Options:" or a numbered list in chat when a popup tool is
+  available. Never choose a default, infer an answer, write
   \`.traffic-one.json\`, scaffold, run installs, or continue implementation
   while an onboarding answer is still pending.
 
   Required popup order for complex new projects:
     1. Mobile App (always; explicit web/mobile/stack requests do not skip it).
     2. Code Graph (always required before \`.traffic-one.json\`).
-    3. Team (for non-trivial multi-layer builds).
+    3. Performance (for non-trivial multi-layer builds).
 
 ${codexDefaultModeFallbackDirective()}
 
-CODEX MOBILE DECISION PREFLIGHT (popup 1, blocking before code graph/team):
+MOBILE DECISION PREFLIGHT (popup 1, blocking before code graph/performance):
   For every complex new project, ask the mobile question before the codebase
-  graph provider and Traffic One subagent questions. Do this even when the
+  graph provider and the performance question. Do this even when the
   first prompt explicitly says web only, site, mobile app, iOS, Android, Ionic,
   Capacitor, React Native, Expo, RN, Next.js, frontend only, no backend, no
   subagents, or "just build it"; those are implementation preferences, not
-  onboarding answers. Use the Codex \`request_user_input\` popup when available:
+  onboarding answers. ${hostPopupInstruction()}
 
     header: "Mobile App"
     question: "Do you want a mobile app too?"
@@ -93,16 +91,22 @@ CODEX MOBILE DECISION PREFLIGHT (popup 1, blocking before code graph/team):
       - "React Native / Expo" — Add an explicit React Native/Expo mobile app stack.
 
   Stop and wait for the user's popup answer before writing
-  \`.traffic-one.json\`, asking for codeGraphProvider, asking the subagent
+  \`.traffic-one.json\`, asking for codeGraphProvider, asking the performance
   preflight, writing a plan, creating files, editing code, scaffolding the
-  repo, or simulating Traffic One roles manually. If the host does not expose
-  \`request_user_input\`, ask the same question in plain text with the same
-  three numbered options as a degraded fallback and stop for the user's typed
-  reply. Do not assume "web only" just because the popup is unavailable.
+  repo, or simulating Traffic One roles manually. Do not assume "web only"
+  just because a popup is unavailable.
 
-CODEX CODEBASE GRAPH PROVIDER PREFLIGHT (popup 2, always required):
-  After the mobile decision is resolved, ask the codebase-graph provider choice with Codex
-  \`request_user_input\` before asking the subagent/team question:
+  If the project is classified minimal/static (a plain landing page with no
+  frontend/backend), you may skip this popup and write
+  \`mobile: { enabled: false, framework: "none", source: "none" }\` directly.
+  But if the project upgrades during onboarding (the user adds a backend or
+  frontend so the stack becomes default/custom), you MUST ask this mobile popup
+  FIRST — before writing state — using the host popup tool, not the plain-text
+  fallback.
+
+CODEBASE GRAPH PROVIDER PREFLIGHT (popup 2, always required):
+  After the mobile decision is resolved, ask the codebase-graph provider choice
+  before asking the performance question. ${hostPopupInstruction()}
 
     header: "Code Graph"
     question: "Which provider should we use for the codebase graph?"
@@ -113,38 +117,9 @@ CODEX CODEBASE GRAPH PROVIDER PREFLIGHT (popup 2, always required):
   This choice is REQUIRED — no skip and no default. Do NOT write
   \`.traffic-one.json\` with \`codeGraphProvider\` absent. If the user expresses
   uncertainty, explain the license/runtime trade-off and ask the popup again.
-  If the popup is unavailable, ask in chat with numbered options and stop for
-  the user's typed reply. Do not pick either provider.
+  Do not pick either provider.
 
-CODEX SUBAGENT PREFLIGHT (popup 3, blocking for non-trivial multi-layer builds):
-  Before writing a plan, creating files, editing code, scaffolding the repo, or
-  simulating Traffic One roles manually, and after the mobile and codebase graph
-  decisions above are already resolved, recommend the Traffic One parallel
-  workflow. Use the Codex \`request_user_input\` popup when available:
-
-    header: "Team"
-    question: "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"
-    options:
-      - "Run team (Recommended)" — Use Codex subagents for architect, frontend/backend, and reviewer/tester roles.
-      - "Main agent only" — Simulate the same roles in this thread without spawned subagents.
-
-  If the host does not expose \`request_user_input\`, ask exactly:
-
-    "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"
-
-  Include the plain-text fallback options "1. Run team (Recommended)" and
-  "2. Main agent only", then stop for the user's typed reply.
-
-  Stop and wait for the user's answer. Persist the answer in \`.traffic-one.json\`:
-    - "Run team (Recommended)" → "team": { "mode": "subagents", "source": "prompted" }
-    - "Main agent only" → "team": { "mode": "main-agent", "source": "prompted" }
-
-  If they confirm, use available Codex subagents with the Traffic One role
-  route. The parent/orchestrator must not write feature source files while
-  \`team.mode="subagents"\`; it spawns role agents, coordinates digests, and
-  summarizes. If they decline or subagents are unavailable, continue manually
-  in the same role order, update \`team.mode="main-agent"\` with
-  \`team.source="unavailable"\` when runtime availability is the reason, and say so.
+${performancePopupBlock()}
 
 ── Branch on the user's first message ──
 
@@ -215,7 +190,7 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
         \`graphify-out/GRAPH_REPORT.md\` + \`graph.json\`. License: MIT.
         Currently auto-runs after first build.
 
-    Ask with the CODEX CODEBASE GRAPH PROVIDER PREFLIGHT popup above. If the
+    Ask with the CODEBASE GRAPH PROVIDER PREFLIGHT popup above. If the
     host cannot show popups, ask verbatim in English: "Which provider should we
     use for the codebase graph: **gitnexus** or **graphify**?"
     Treat as REQUIRED. Do NOT write \`.traffic-one.json\` with
@@ -246,6 +221,7 @@ GENERAL RULES:
       "technologies": { "frontend": [], "backend": [], "mobile": [] },
       "realtime": "<heavy|light|none>",
       "codeGraphProvider": "<gitnexus|graphify>",
+      "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "toolchain": {
         "gitnexus": { "installedVersion": null, "installedAt": null },
@@ -272,6 +248,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
@@ -292,6 +269,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": ["other"], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
 
@@ -483,6 +461,7 @@ the matching rule bundle into THIS session — no restart needed.
     "technologies": { "frontend": [], "backend": [], "mobile": [] },
     "realtime": "<heavy|light|none>",
     "codeGraphProvider": "<gitnexus|graphify>",
+    "performance": { "level": "<low|balanced|high>", "source": "prompted" },
     "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
     "toolchain": {
       "gitnexus": { "installedVersion": null, "installedAt": null },
@@ -499,7 +478,8 @@ Stack ids: minimal · default · custom-frontend · custom-backend · custom-sta
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
 Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
-Team mode: subagents · main-agent (REQUIRED for new-project multi-layer builds — ASK the user).
+Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup).
+Team mode: derived from performance — balanced/high → subagents, low → main-agent. Persist both fields.
 Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
 Default complex-project recommendation is stack=default, frontend=react-vite,
@@ -571,9 +551,10 @@ function postWriteIncompleteWarning({
     if (lines.length > 2) lines.push('');
     lines.push(
       'You also did not set `codeGraphProvider`. This is a REQUIRED field —',
-      'no skip, no default. Ask with Codex `request_user_input` popup when available:',
+      'no skip, no default. Ask with the host popup tool (Codex `request_user_input`,',
+      'Claude Code `AskUserQuestion`, or Cursor task-UI) when available:',
       'header "Code Graph"; question "Which provider should we use for the codebase graph?";',
-      'if the popup is unavailable, ask in chat with numbered options and stop for the typed reply;',
+      'if no popup tool is available, ask in chat with numbered options and stop for the typed reply;',
       `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`,
       'usage 50–70% on multi-file work. See `rules/common/codebase-graph.md`',
       'and the FIRST-RUN ONBOARDING directive for the license trade-off',
@@ -630,6 +611,7 @@ module.exports = {
   autoDetectedAnnouncement,
   onboardingReminderShort,
   postWriteIncompleteWarning,
+  hostPopupInstruction,
   codexDefaultModeFallbackDirective,
   codexDefaultModeFallbackMobilePrompt,
 };

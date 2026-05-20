@@ -10,6 +10,19 @@ const MOBILE_PROMPT_LINES = [
   'Reply with the option number or label.',
 ];
 
+// Host-agnostic popup instruction. Onboarding choices must use the host's
+// native popup tool; the plain-text numbered fallback is a true last resort and
+// must NOT be emitted when a popup tool is working.
+function hostPopupInstruction() {
+  return [
+    'Ask via the host popup tool when available:',
+    'Codex `request_user_input`, Claude Code `AskUserQuestion`, or the Cursor task-UI prompt.',
+    'Only if no popup tool is exposed, ask in plain chat with the numbered options,',
+    'tell the user to reply with the option number or label, and stop.',
+    'Do NOT emit the "Plan mode is required / popup prompt is unavailable" plain-text fallback when a popup tool is working.',
+  ].join(' ');
+}
+
 function codexDefaultModeFallbackMobilePrompt() {
   return [
     'Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable.',
@@ -27,11 +40,12 @@ function codexDefaultModeFallbackDirective() {
     '',
     codexDefaultModeFallbackMobilePrompt(),
     '',
-    'After the user answers, ask the Code Graph fallback prompt next, then the Team fallback prompt for non-trivial multi-layer builds. Ask only the next unresolved question and stop each time.',
+    'After the user answers, ask the Code Graph fallback prompt next, then the Performance fallback prompt for non-trivial multi-layer builds (options: "1. Balanced (Recommended)", "2. High", "3. Low"). Ask only the next unresolved question and stop each time.',
   ].join('\n');
 }
 
 module.exports = {
+  hostPopupInstruction,
   codexDefaultModeFallbackDirective,
   codexDefaultModeFallbackMobilePrompt,
 };
