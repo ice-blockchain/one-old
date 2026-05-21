@@ -1,23 +1,6 @@
 ---
 name: senior-eng-orchestrator
-description: >
-  PROACTIVELY conduct the traffic-one senior-engineer team (`senior-architect`,
-  `senior-frontend`, `senior-backend`, `senior-reviewer`, `senior-tester`,
-  `senior-shipper`) when the user's request spans multiple layers of a build.
-  TRIGGER on "build me", "make me", "create me", "scaffold a", "ship a",
-  "create the whole thing", "end to end", "I want an app that", "I need a site
-  for", "turn this into a SaaS", "make a habit tracker / dashboard / landing
-  page / API / mobile app", or any phrasing that implies producing UI + API +
-  DB together. Runs the same workflow on Claude Code, Codex, and Cursor:
-  architect to frontend/backend to reviewer/tester to shipper; on all hosts,
-  MUST ask the user for a Performance level (Balanced/High/Low) before starting
-  matching multi-layer builds, then stop and wait for the answer. This happens
-  automatically without waiting for the user to request it.
-  Maintains in-session todos. Reads/writes `.traffic-one/plan.md`,
-  `.traffic-one.json`, and the `.traffic-one/` project-memory baseline. Loops on
-  `CHANGES_REQUESTED` from reviewer with a 2-cycle cap. Do NOT use for
-  single-component / single-skill requests where a direct skill call is more
-  appropriate.
+description: "PROACTIVELY orchestrate the Traffic One senior-engineer team for multi-layer builds spanning UI, API, database, mobile, tests, or deployment. Trigger on build/make/create/scaffold/ship/end-to-end app/site/SaaS/dashboard requests or any UI+API+DB request. Before implementation, require the Performance level (Balanced/High/Low) and wait for the answer; skip single-component or single-skill work."
 metadata:
   source: everything-claude-code
   source_path: skills/senior-eng-orchestrator/SKILL.md

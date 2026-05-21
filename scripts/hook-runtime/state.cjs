@@ -145,6 +145,7 @@ const PERFORMANCE_SOURCE_IDS = new Set(['prompted', 'explicit']);
 const TEAM_MODE_ALIASES = new Map([
   ['run-team', 'subagents'],
   ['team', 'subagents'],
+  ['traffic-one', 'subagents'],
   ['traffic-one-team', 'subagents'],
   ['subagent', 'subagents'],
   ['subagents-only', 'subagents'],
@@ -203,6 +204,112 @@ function canonicalPerformanceLevel(level) {
   if (PERFORMANCE_LEVEL_IDS.has(level)) return level;
   const normalized = level.trim().toLowerCase().replace(/[_\s]+/g, '-');
   return PERFORMANCE_LEVEL_IDS.has(normalized) ? normalized : level;
+}
+
+function normalizedString(value) {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[_\s]+/g, '-')
+    : '';
+}
+
+function mobileStateFromString(value) {
+  const normalized = normalizedString(value);
+  if (!normalized) return null;
+  if (normalized === 'web' || normalized === 'web-only') {
+    return { enabled: false, framework: 'none', source: 'prompted' };
+  }
+  if (normalized === 'none' || normalized === 'no-mobile' || normalized === 'disabled') {
+    return { enabled: false, framework: 'none', source: 'none' };
+  }
+  if (normalized === 'ionic' || normalized === 'ionic-capacitor') {
+    return { enabled: true, framework: 'ionic-capacitor', source: 'prompted' };
+  }
+  if (normalized === 'react-native' || normalized === 'react-native-expo' || normalized === 'expo') {
+    return { enabled: true, framework: 'react-native-expo', source: 'prompted' };
+  }
+  return null;
+}
+
+function teamStateFromString(value) {
+  const mode = canonicalTeamMode(value);
+  return TEAM_MODE_IDS.has(mode)
+    ? { mode, source: 'prompted' }
+    : null;
+}
+
+function codeGraphProviderFromString(value) {
+  const normalized = normalizedString(value);
+  return normalized === 'gitnexus' || normalized === 'graphify' ? normalized : null;
+}
+
+function canonicalizeStateShape(state) {
+  if (!state || typeof state !== 'object') return false;
+
+  let changed = false;
+  const compactStack = state.stack && typeof state.stack === 'object' && !Array.isArray(state.stack)
+    ? state.stack
+    : null;
+
+  if (compactStack) {
+    if (typeof compactStack.id === 'string' && compactStack.id.trim()) {
+      state.stack = compactStack.id.trim();
+      changed = true;
+    }
+    if (!state.frontend && typeof compactStack.frontend === 'string') {
+      state.frontend = compactStack.frontend;
+      changed = true;
+    }
+    if (!state.backend && typeof compactStack.backend === 'string') {
+      state.backend = compactStack.backend;
+      changed = true;
+    }
+    if ((state.mobile === undefined || state.mobile === null) && compactStack.mobile !== undefined) {
+      state.mobile = compactStack.mobile;
+      changed = true;
+    }
+    if (!state.codeGraphProvider) {
+      const codeGraphProvider = codeGraphProviderFromString(compactStack.codeGraph || compactStack.codeGraphProvider);
+      if (codeGraphProvider) {
+        state.codeGraphProvider = codeGraphProvider;
+        changed = true;
+      }
+    }
+    if ((state.team === undefined || state.team === null) && compactStack.team !== undefined) {
+      state.team = compactStack.team;
+      changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(state, 'project')) {
+      delete state.project;
+      changed = true;
+    }
+  }
+
+  if (typeof state.mobile === 'string') {
+    const mobile = mobileStateFromString(state.mobile);
+    if (mobile) {
+      state.mobile = mobile;
+      changed = true;
+    }
+  }
+
+  if (typeof state.team === 'string') {
+    const team = teamStateFromString(state.team);
+    if (team) {
+      state.team = team;
+      changed = true;
+    }
+  }
+
+  if (!state.codeGraphProvider && typeof state.codeGraph === 'string') {
+    const codeGraphProvider = codeGraphProviderFromString(state.codeGraph);
+    if (codeGraphProvider) {
+      state.codeGraphProvider = codeGraphProvider;
+      delete state.codeGraph;
+      changed = true;
+    }
+  }
+
+  return changed;
 }
 
 function hasValidPerformanceState(performance) {
@@ -331,7 +438,10 @@ function writeState(cwd, state) {
   const source = state && typeof state === 'object' ? { ...state } : {};
   delete source.pluginVersion;
   if (source.stack) {
-    normalizeState(source, source.mode || 'new-project');
+    canonicalizeStateShape(source);
+    if (typeof source.stack === 'string') {
+      normalizeState(source, source.mode || 'new-project');
+    }
   }
   const nextState = {
     ...source,
@@ -351,11 +461,19 @@ function writeState(cwd, state) {
 //
 // Returns `true` if any field was added (so the caller knows to write back).
 function normalizeState(state, defaultMode) {
-  if (!state || typeof state !== 'object' || !state.stack) {
+  if (!state || typeof state !== 'object') {
     return false;
   }
 
-  let changed = normalizeLegacyStack(state);
+  let changed = canonicalizeStateShape(state);
+  if (!state.stack) {
+    return changed;
+  }
+
+  changed = normalizeLegacyStack(state) || changed;
+  if (typeof state.stack !== 'string' || !STACK_IDS.has(state.stack)) {
+    return changed;
+  }
 
   if (!state.mode && defaultMode) {
     state.mode = defaultMode;
@@ -375,10 +493,6 @@ function normalizeState(state, defaultMode) {
   }
   if (!state.realtime) {
     state.realtime = 'none';
-    changed = true;
-  }
-  if (!STACK_IDS.has(state.stack)) {
-    state.stack = 'minimal';
     changed = true;
   }
   if (!state.frontend) {
@@ -591,6 +705,7 @@ module.exports = {
   nowIso,
   readState,
   writeState,
+  canonicalizeStateShape,
   normalizeState,
   initializeToolchainState,
   defaultTechnologiesFor,

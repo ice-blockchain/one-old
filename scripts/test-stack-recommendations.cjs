@@ -28,7 +28,7 @@ function withTempDir(fn) {
   try {
     return fn(tempDir);
   } finally {
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
 
@@ -128,7 +128,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   return {
-    version: '2.9.31',
+    version: '2.9.46',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
@@ -143,6 +143,25 @@ function completeDefaultState(overrides = {}) {
     onboardingComplete: true,
     confirmedAt: '2026-05-13T10:00:00Z',
     ...overrides,
+  };
+}
+
+function compactWebdevAcademyState(overrides = {}) {
+  return {
+    version: 1,
+    project: 'webdev-academy',
+    mode: 'new-project',
+    onboardingComplete: true,
+    stack: {
+      id: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: 'web-only',
+      codeGraph: 'gitnexus',
+      team: 'traffic-one',
+      ...(overrides.stack || {}),
+    },
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'stack')),
   };
 }
 
@@ -224,11 +243,12 @@ test('new project onboarding defaults to supabase backend', () => {
   });
 });
 
-test('new project onboarding includes Codex subagent preflight', () => {
+test('new project onboarding includes Codex performance preflight', () => {
   const detectProject = fs.readFileSync(path.join(ROOT, 'skills-templates', 'detect-project', 'SKILL.md'), 'utf8');
   const directives = [
     fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
     fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'onboarding-prompts.cjs'), 'utf8'),
+    fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'agents-performance-prompt.cjs'), 'utf8'),
   ].join('\n');
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   const stackSetup = fs.readFileSync(path.join(ROOT, 'skills-templates', 'stack-setup', 'SKILL.md'), 'utf8');
@@ -248,26 +268,30 @@ test('new project onboarding includes Codex subagent preflight', () => {
   assert.match(detectProject, /Code Graph/);
   assert.match(detectProject, /GitNexus/);
   assert.match(detectProject, /graphify/);
-  assert.match(directives, /CODEX SUBAGENT PREFLIGHT/);
+  assert.match(directives, /AGENT PERFORMANCE PREFLIGHT/);
   assert.match(directives, /NEW-PROJECT PLAN MODE GATE \(Codex \+ Claude Code\)/);
   assert.match(directives, /mode === "new-project"/);
   assert.match(directives, /switch the host to Plan mode/);
-  assert.match(directives, /CODEX ONBOARDING POPUP RULE/);
+  assert.match(directives, /ONBOARDING POPUP RULE/);
   assert.match(directives, /CODEX DEFAULT-MODE FALLBACK \(visible response, blocking\)/);
   assert.match(directives, /Your next visible assistant message must be the plain-chat fallback prompt/);
   assert.match(directives, /mention only the project-detection\/onboarding flow/);
   assert.match(directives, /Do not say you are using create-feature, create-page, frontend-design, tdd-workflow/);
-  assert.match(directives, /CODEX MOBILE DECISION PREFLIGHT/);
+  assert.match(directives, /MOBILE DECISION PREFLIGHT/);
   assert.match(directives, /explicit user requests influence the eventual stack choice/i);
   assert.match(directives, /implementation preferences, not\s+onboarding answers/);
-  assert.match(directives, /CODEX CODEBASE GRAPH PROVIDER PREFLIGHT/);
+  assert.match(directives, /CODEBASE GRAPH PROVIDER PREFLIGHT/);
+  assert.match(directives, /How do you want to run agents for this build\?/);
+  assert.match(directives, /Balanced \(Recommended\)/);
+  assert.match(directives, /High/);
+  assert.match(directives, /Low/);
   assert.match(directives, /request_user_input/);
   assert.match(directives, /Do NOT print "Options:" or a\s+numbered list in chat/);
   assert.match(directives, /reply with the option number or\s+label/);
   assert.match(directives, /Never choose a default/);
+  assert.match(directives, /"performance": \{ "level": "<low\|balanced\|high>", "source": "prompted" \}/);
   assert.match(directives, /"team": \{ "mode": "<subagents\|main-agent>", "source": "prompted" \}/);
   assert.match(directives, /team\.mode="subagents"/);
-  assert.match(directives, /must not write feature source/);
   assert.match(orchestrator, /Codex consent gate — blocking/);
   assert.match(orchestrator, /Plan mode/);
   assert.match(orchestrator, /Codex Default mode fallback is a visible first-response requirement/);
@@ -276,10 +300,13 @@ test('new project onboarding includes Codex subagent preflight', () => {
   assert.match(stackSetup, /before any tool\s+use/);
   assert.match(orchestrator, /Code Graph/);
   assert.match(orchestrator, /reply with the option number or label/);
-  assert.match(orchestrator, /Run team \(Recommended\)/);
-  assert.match(orchestrator, /Main agent only/);
-  assert.match(orchestrator, /"team": \{ "mode": "subagents", "source": "prompted" \}/);
-  assert.match(orchestrator, /must not write feature source/);
+  assert.match(orchestrator, /Performance level/);
+  assert.match(orchestrator, /Balanced \(Recommended\)/);
+  assert.match(orchestrator, /High/);
+  assert.match(orchestrator, /Low/);
+  assert.match(orchestrator, /performance: \{ level: "balanced", source: "prompted" \}/);
+  assert.match(orchestrator, /team: \{ mode: "subagents", source: "prompted" \}/);
+  assert.match(orchestrator, /do NOT write feature source files/i);
   assert.match(stackSetup, /`team\.mode` is the source of truth/);
   assert.match(agentsMirror, /mode === "new-project"/);
   assert.match(agentsMirror, /Codex and Claude Code must switch to Plan mode/);
@@ -303,13 +330,13 @@ test('new project onboarding includes Codex subagent preflight', () => {
     assert.match(context, /NEW-PROJECT PLAN MODE GATE \(Codex \+ Claude Code\)/);
     assert.match(context, /mode === "new-project"/);
     assert.match(context, /Plan mode/);
-    assert.match(context, /CODEX ONBOARDING POPUP RULE/);
+    assert.match(context, /ONBOARDING POPUP RULE/);
     assert.match(context, /CODEX DEFAULT-MODE FALLBACK \(visible response, blocking\)/);
     assert.match(context, /Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable/);
     assert.match(context, /Do not say you are using create-feature, create-page, frontend-design, tdd-workflow/);
-    assert.match(context, /CODEX MOBILE DECISION PREFLIGHT/);
+    assert.match(context, /MOBILE DECISION PREFLIGHT/);
     assert.match(context, /implementation preferences, not\s+onboarding answers/);
-    assert.match(context, /CODEX CODEBASE GRAPH PROVIDER PREFLIGHT/);
+    assert.match(context, /CODEBASE GRAPH PROVIDER PREFLIGHT/);
     assert.match(context, /Do you want a mobile app too\?/);
     assert.match(context, /Web only \(Recommended\)/);
     assert.match(context, /Ionic \+ Capacitor/);
@@ -317,16 +344,20 @@ test('new project onboarding includes Codex subagent preflight', () => {
     assert.match(context, /Which provider should we use for the codebase graph\?/);
     assert.match(context, /GitNexus/);
     assert.match(context, /graphify/);
-    assert.match(context, /Traffic One sees this as a multi-layer build/);
-    assert.match(context, /architect → frontend\/backend → reviewer\/tester/);
+    assert.match(context, /AGENT PERFORMANCE PREFLIGHT/);
+    assert.match(context, /How do you want to run agents for this build\?/);
+    assert.match(context, /Balanced \(Recommended\)/);
+    assert.match(context, /High/);
+    assert.match(context, /Low/);
+    assert.match(context, /"performance": \{ "level": "<low\|balanced\|high>", "source": "prompted" \}/);
     assert.match(context, /"team": \{ "mode": "<subagents\|main-agent>", "source": "prompted" \}/);
-    assert.match(context, /team\.mode="subagents"/);
-    assert.ok(context.indexOf('CODEX MOBILE DECISION PREFLIGHT') < context.indexOf('CODEX CODEBASE GRAPH PROVIDER PREFLIGHT'));
-    assert.ok(context.indexOf('CODEX CODEBASE GRAPH PROVIDER PREFLIGHT') < context.indexOf('CODEX SUBAGENT PREFLIGHT'));
+    assert.match(context, /"team": \{ "mode": "subagents", "source": "prompted" \}/);
+    assert.ok(context.indexOf('MOBILE DECISION PREFLIGHT') < context.indexOf('CODEBASE GRAPH PROVIDER PREFLIGHT'));
+    assert.ok(context.indexOf('CODEBASE GRAPH PROVIDER PREFLIGHT') < context.indexOf('AGENT PERFORMANCE PREFLIGHT'));
   });
 });
 
-test('first prompt reminder asks mobile popup before subagent preflight', () => {
+test('first prompt reminder asks mobile popup before performance preflight', () => {
   withTempDir((cwd) => {
     runHook(cwd, 'session-start');
 
@@ -357,10 +388,12 @@ test('first prompt reminder asks mobile popup before subagent preflight', () => 
     assert.match(context, /GitNexus/);
     assert.match(context, /graphify/);
     assert.match(context, /Popup 3/);
-    assert.match(context, /Run team \(Recommended\)/);
-    assert.match(context, /Main agent only/);
+    assert.match(context, /Performance/);
+    assert.match(context, /Balanced \(Recommended\)/);
+    assert.match(context, /High/);
+    assert.match(context, /Low/);
     assert.match(context, /team\.mode="subagents"/);
-    assert.match(context, /parent\/orchestrator does not write feature source/);
+    assert.match(context, /main-agent/);
   });
 });
 
@@ -549,7 +582,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.31');
+    assert.equal(state.version, '2.9.46');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -557,6 +590,64 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+  });
+});
+
+test('onboarding gate repairs and denies mutating tools once after compact state convergence', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), compactWebdevAcademyState());
+
+    const first = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: { file_path: 'apps/web/src/App.tsx', content: 'export const x = 1;\n' },
+    });
+    const firstPayload = parseStdoutJson(first);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(firstPayload.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(firstPayload.hookSpecificOutput.permissionDecisionReason, /repaired\/materialized/);
+    assert.match(firstPayload.hookSpecificOutput.permissionDecisionReason, /rerun/);
+    assert.equal(state.stack, 'default');
+    assert.equal(state.codeGraphProvider, 'gitnexus');
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+
+    const second = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: { file_path: 'apps/web/src/App.tsx', content: 'export const x = 1;\n' },
+    });
+    assert.equal(second.stdout, '');
+  });
+});
+
+test('agent model gate materializes and denies role spawn once before workers start', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+
+    const first = runHook(cwd, 'check-agent-model', {
+      tool_name: 'Task',
+      tool_input: {
+        subagent_type: 'senior-backend',
+        model: 'sonnet',
+      },
+    });
+    const firstPayload = parseStdoutJson(first);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(firstPayload.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(firstPayload.hookSpecificOutput.permissionDecisionReason, /agent spawn/i);
+    assert.match(firstPayload.hookSpecificOutput.permissionDecisionReason, /repaired\/materialized/);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+
+    const second = runHook(cwd, 'check-agent-model', {
+      tool_name: 'Task',
+      tool_input: {
+        subagent_type: 'senior-backend',
+        model: 'sonnet',
+      },
+    });
+    assert.equal(second.stdout, '');
   });
 });
 
@@ -585,10 +676,26 @@ test('onboarding gate still denies when required graph choice is missing', () =>
   });
 });
 
+test('onboarding gate still denies compact state when graph choice is missing', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), compactWebdevAcademyState({
+      stack: { codeGraph: undefined },
+    }));
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: { file_path: 'apps/web/src/App.tsx', content: 'export const x = 1;\n' },
+    });
+    const parsed = parseStdoutJson(result);
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /codeGraphProvider/);
+  });
+});
+
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.31',
+      version: '2.9.46',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',
@@ -611,6 +718,22 @@ test('onboarding gate still denies when required team choice is missing', () => 
     assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team/);
     assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /remaining Code Graph and Team prompts/);
+  });
+});
+
+test('onboarding gate still denies compact state when team choice is missing', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), compactWebdevAcademyState({
+      stack: { team: undefined },
+    }));
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: { file_path: 'apps/web/src/App.tsx', content: 'export const x = 1;\n' },
+    });
+    const parsed = parseStdoutJson(result);
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team/);
   });
 });
 
@@ -1360,8 +1483,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.31');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.31');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.46');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.46');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -1590,7 +1713,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.31');
+    assert.equal(state.version, '2.9.46');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -1605,6 +1728,80 @@ test('materialize-project normalizes partial state and writes local rules/skills
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'AGENTS.md')), false);
     assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
     assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
+  });
+});
+
+test('materialize-project upgrades compact v1 traffic-one state and writes local rules/skills', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), compactWebdevAcademyState());
+
+    const result = runHook(cwd, 'materialize-project');
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(context, /Project-local rules\/skills/);
+    assert.equal(state.version, '2.9.46');
+    assert.equal(state.project, undefined);
+    assert.equal(state.mode, 'new-project');
+    assert.equal(state.stack, 'default');
+    assert.equal(state.frontend, 'react-vite');
+    assert.equal(state.backend, 'supabase');
+    assert.deepEqual(state.mobile, { enabled: false, framework: 'none', source: 'prompted' });
+    assert.ok(Array.isArray(state.technologies.frontend));
+    assert.equal(state.realtime, 'none');
+    assert.equal(state.codeGraphProvider, 'gitnexus');
+    assert.deepEqual(state.team, { mode: 'subagents', source: 'prompted' });
+    assert.ok(state.toolchain.gitnexus);
+    assert.equal(state.confirmed, true);
+    assert.equal(state.onboardingComplete, true);
+    assert.ok(state.confirmedAt);
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.equal(state.materializedVersion, '2.9.46');
+    assert.ok(state.materializedAt);
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(cwd, 'CLAUDE.md')));
+  });
+});
+
+test('post-stack-setup upgrades compact state written directly to .traffic-one.json', () => {
+  withTempDir((cwd) => {
+    const filePath = path.join(cwd, '.traffic-one.json');
+    writeJson(filePath, compactWebdevAcademyState());
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { file_path: filePath },
+    });
+    const payload = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.equal(state.stack, 'default');
+    assert.equal(state.codeGraphProvider, 'gitnexus');
+    assert.deepEqual(state.team, { mode: 'subagents', source: 'prompted' });
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
+  });
+});
+
+test('generic post-tool convergence upgrades compact traffic-one state', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), compactWebdevAcademyState());
+
+    const result = runHook(cwd, 'post-stack-setup', {
+      tool_input: { tool_name: 'future-host-patch-tool' },
+    });
+    const payload = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
+    assert.equal(state.stack, 'default');
+    assert.equal(state.codeGraphProvider, 'gitnexus');
+    assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
   });
 });
 
@@ -1735,7 +1932,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.31',
+      materializedVersion: '2.9.46',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -1757,7 +1954,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.31',
+      materializedVersion: '2.9.46',
       currentRunId: '2026-05-18T12-04-52Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
@@ -1969,10 +2166,10 @@ test('state-gate denies feature write when project memory exists without state',
 
 test('plan-gate allows feature write when plan exists', () => {
   withTempDir((cwd) => {
-    writeJson(path.join(cwd, '.traffic-one.json'), {
-      mode: 'new-project',
-      stack: 'react-realtime-monorepo',
-    });
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      team: { mode: 'main-agent', source: 'prompted' },
+    }));
+    runHook(cwd, 'materialize-project');
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
 
@@ -1993,7 +2190,7 @@ test('materialization gate blocks forged stamp when local assets are missing', (
       ...completeDefaultState({
         materializedStack: 'default|react-vite|supabase|none',
         materializedAt: '2026-05-13T10:00:00Z',
-        materializedVersion: '2.9.31',
+        materializedVersion: '2.9.46',
       }),
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -2864,10 +3061,6 @@ test('orchestrator verifies materialization after PLAN_READY before Phase 2', ()
   const orchestrator = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   const templates = fs.readFileSync(path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'), 'utf8');
 
-  assert.match(orchestrator, /After `PLAN_READY`, before Phase 2/);
-  assert.match(orchestrator, /materialize-project/);
-  assert.match(orchestrator, /Do not spawn frontend\/backend/);
-  assert.match(orchestrator, /without hand-writing `materializedStack`/);
   assert.match(templates, /Before emitting PLAN_READY, verify project-local context is materialized/);
   assert.match(templates, /\.traffic-one\/manifest\.json/);
   assert.match(templates, /materialize-project/);
@@ -2886,7 +3079,7 @@ test('onboarding directive contains the codeGraphProvider question with gitnexus
   assert.match(directive, /Code Graph/);
   assert.match(directive, /Which provider should we use for the codebase graph\?/);
   assert.match(directive, /Do NOT print "Options:"/);
-  assert.match(directive, /ask in chat with numbered options and stop/);
+  assert.match(directive, /ask in (?:plain )?chat with (?:the )?numbered options.*stop/);
   // gitnexus listed first (per user instruction; no "Recommended" tag).
   const gIdx = directive.indexOf('gitnexus');
   const fIdx = directive.indexOf('graphify');
@@ -3439,7 +3632,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.31) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.46) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -3573,7 +3766,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.31', () => {
+test('manifests bumped to 2.9.46', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -3581,11 +3774,11 @@ test('manifests bumped to 2.9.31', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.31"/, `${rel} must be bumped to 2.9.31`);
+    assert.match(text, /"version":\s*"2\.9\.46"/, `${rel} must be bumped to 2.9.46`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.31) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.46) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -3665,7 +3858,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.31',
+      version: '2.9.46',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -3681,7 +3874,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.31',
+      materializedVersion: '2.9.46',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -3730,7 +3923,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.31',
+      version: '2.9.46',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -3742,7 +3935,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.31',
+      materializedVersion: '2.9.46',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -3762,7 +3955,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.31) ──────────────────────────────────────────────
+// ── Token usage report (2.9.46) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -3987,7 +4180,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.31) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.46) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -4039,7 +4232,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.31',
+      version: '2.9.46',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4051,7 +4244,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.31',
+      materializedVersion: '2.9.46',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -4071,7 +4264,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.31',
+      version: '2.9.46',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4083,7 +4276,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.31',
+      materializedVersion: '2.9.46',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },

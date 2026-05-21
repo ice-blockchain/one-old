@@ -73,6 +73,9 @@ const {
 const {
   computeProjectFingerprint,
 } = require('../security-check-runner.cjs');
+const {
+  maybeStartOneMcpReport,
+} = require('../one-mcp-report.cjs');
 
 const {
   onboardingDirectiveNewProject,
@@ -304,14 +307,52 @@ function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
   const statePath = path.join(cwd, STATE_FILE);
   const state = safeReadJson(statePath, null);
   if (!state || typeof state !== 'object') return null;
-  if (!state.stack || !isKnownStack(state.stack)) return null;
+  const normalized = normalizeState(state, state.mode || detectMode(cwd));
+  if (normalized) {
+    try {
+      writeState(cwd, state);
+    } catch {
+      // Let the materializer surface a validation or write failure below.
+    }
+  }
+  if (!state.stack || !isKnownStack(state.stack)) {
+    if (state.mode === 'new-project' || state.onboardingComplete === true) {
+      return materializeProjectFromState(cwd, trigger);
+    }
+    return null;
+  }
   if (state.onboardingComplete !== true) return null;
 
   if (isMaterialized(state) && hasMaterializedProjectAssets(cwd, state)) {
+    startOneMcpReportBestEffort(cwd, state, trigger);
     return null;
   }
 
   return materializeProjectFromState(cwd, trigger);
+}
+
+function isCompletedTrafficOneState(state) {
+  return state
+    && typeof state === 'object'
+    && state.onboardingComplete === true
+    && typeof state.stack === 'string'
+    && isKnownStack(state.stack);
+}
+
+function isCompletedTrafficOneMaterialization(cwd, state) {
+  return isCompletedTrafficOneState(state)
+    && isMaterialized(state)
+    && hasMaterializedProjectAssets(cwd, state);
+}
+
+function startOneMcpReportBestEffort(cwd, state, trigger) {
+  if (isPluginAuthoringRoot(cwd)) return;
+  if (!isCompletedTrafficOneMaterialization(cwd, state)) return;
+  try {
+    maybeStartOneMcpReport(cwd, { state, trigger });
+  } catch {
+    // Anonymous structural reporting must never block or alter the coding flow.
+  }
 }
 
 const PROJECT_ROOT_HINT_FIELDS = [
@@ -336,23 +377,22 @@ function projectRootForPathHint(cwd, hintPath) {
     .replace(/\\ /g, ' ');
   if (!cleaned || cleaned.startsWith('-') || cleaned.includes('$')) return null;
 
-  const cwdAbs = path.resolve(cwd);
   const absPath = path.isAbsolute(cleaned)
     ? path.resolve(cleaned)
     : path.resolve(cwd, cleaned);
-  if (!absPath.startsWith(cwdAbs)) return null;
 
   let current = absPath;
   if (!fs.existsSync(current) || !fs.lstatSync(current).isDirectory()) {
     current = path.dirname(current);
   }
 
-  while (current.startsWith(cwdAbs)) {
+  while (true) {
     if (fs.existsSync(path.join(current, STATE_FILE))) {
       return current;
     }
-    if (current === cwdAbs) break;
-    current = path.dirname(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
 
   return null;
@@ -389,6 +429,8 @@ function materializeFromToolInputHints(cwd, toolInput, trigger = 'generic post-t
     if (result && result.stdout) {
       return result;
     }
+    const state = readState(projectRoot);
+    startOneMcpReportBestEffort(projectRoot, state, `${trigger}: ${relativeRoot}`);
   }
   return null;
 }
@@ -427,6 +469,13 @@ function materializeFromProjectMemoryWrite(cwd, filePath) {
       writeState(projectRoot, state);
     }
     const materialized = materializeProjectAssets(projectRoot, state);
+    if (!materialized.skipped) {
+      state.materializedStack = stackFingerprint(state);
+      state.materializedAt = nowIso();
+      state.materializedVersion = getPluginVersion();
+      writeState(projectRoot, state);
+    }
+    startOneMcpReportBestEffort(projectRoot, state, `project-memory write: ${relativePath}`);
     return materializationSuccessResult(materialized, relativePath);
   } catch (error) {
     return materializationFailureResult(error);
@@ -606,10 +655,7 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     };
   }
 
-  let normalizedBeforeValidation = false;
-  if (state.stack && isKnownStack(state.stack)) {
-    normalizedBeforeValidation = normalizeState(state, state.mode || detectMode(cwd));
-  }
+  const normalizedBeforeValidation = normalizeState(state, state.mode || detectMode(cwd));
 
   const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const validationIssues = trafficOneStateValidationIssues(state, validCodeGraphProviders);
@@ -661,6 +707,8 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     // best-effort; the copied local assets are still usable.
   }
 
+  startOneMcpReportBestEffort(cwd, state, trigger);
+
   const result = materializationSuccessResult(materialized, trigger);
   if (result.stdout) return result;
   return {
@@ -699,17 +747,18 @@ function isNewProjectOnboardingIncomplete(state) {
 
 function canRepairNewProjectOnboardingState(state) {
   if (!state || typeof state !== 'object') return false;
-  if (state.mode !== 'new-project') return false;
   if (state.onboardingComplete !== true) return false;
   if (state.confirmed === false) return false;
-  if (typeof state.stack !== 'string' || !isKnownStack(state.stack)) return false;
-  if (typeof state.frontend !== 'string' || !FRONTEND_IDS.has(state.frontend)) return false;
-  if (typeof state.backend !== 'string' || !BACKEND_IDS.has(state.backend)) return false;
-  if (state.mobile === undefined || state.mobile === null) return false;
-  if (!hasValidTeamState(state.team)) return false;
-  if (state.codeGraphProvider !== 'gitnexus' && state.codeGraphProvider !== 'graphify') return false;
-
   const candidate = JSON.parse(JSON.stringify(state));
+  normalizeState(candidate, candidate.mode || 'new-project');
+  if (candidate.mode !== 'new-project') return false;
+  if (typeof candidate.stack !== 'string' || !isKnownStack(candidate.stack)) return false;
+  if (typeof candidate.frontend !== 'string' || !FRONTEND_IDS.has(candidate.frontend)) return false;
+  if (typeof candidate.backend !== 'string' || !BACKEND_IDS.has(candidate.backend)) return false;
+  if (candidate.mobile === undefined || candidate.mobile === null) return false;
+  if (!hasValidTeamState(candidate.team)) return false;
+  if (candidate.codeGraphProvider !== 'gitnexus' && candidate.codeGraphProvider !== 'graphify') return false;
+
   normalizeState(candidate, candidate.mode || 'new-project');
   return !isNewProjectOnboardingIncomplete(candidate);
 }
@@ -737,6 +786,53 @@ function onboardingGateFallbackReason() {
     '',
     'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, mobile, technologies, codeGraphProvider, team, toolchain, confirmed, onboardingComplete, and confirmedAt.',
     'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, or continue implementation until the typed answer is received and the remaining Code Graph and Team prompts are resolved.',
+  ].join('\n');
+}
+
+function isMutatingPreToolUse(toolName, toolInput) {
+  const name = String(
+    toolName
+    || (toolInput && (toolInput.tool_name || toolInput.toolName))
+    || '',
+  );
+  if (/^(Write|Edit|MultiEdit)$/i.test(name)) return true;
+  if (toolInput && typeof toolInput === 'object') {
+    if (
+      Object.prototype.hasOwnProperty.call(toolInput, 'content')
+      || Object.prototype.hasOwnProperty.call(toolInput, 'new_string')
+      || Object.prototype.hasOwnProperty.call(toolInput, 'old_string')
+      || Object.prototype.hasOwnProperty.call(toolInput, 'edits')
+    ) {
+      return true;
+    }
+  }
+  if (!/^Bash$/i.test(name)) return false;
+  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  return /(^|[\s;&|])(mkdir|touch|rm|mv|cp|tee|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|git\s+(init|add|commit)|sed\s+-i)\b/.test(command)
+    || />{1,2}/.test(command);
+}
+
+function repairedMaterializationDenyReason() {
+  return [
+    'Traffic One state was repaired/materialized before this tool use.',
+    'The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one.json`, rules, skills, or root agent context.',
+    'rerun the same tool now; the canonical `.traffic-one.json` and project-local materialization are current.',
+  ].join('\n');
+}
+
+function agentMaterializationDenyReason() {
+  return [
+    'Traffic One agent spawn gate: state was repaired/materialized before this agent spawn.',
+    'The role agent has been denied once so frontend/backend workers cannot start against stale `.traffic-one.json`, rules, skills, or root agent context.',
+    'rerun the same agent spawn now; the canonical `.traffic-one.json` and project-local materialization are current.',
+  ].join('\n');
+}
+
+function agentMaterializationMissingReason() {
+  return [
+    'Traffic One agent spawn gate: project-local rules/skills are not materialized yet.',
+    'Do not spawn frontend/backend/reviewer/tester workers until `.traffic-one.json` has current `materializedStack`, `materializedAt`, and `materializedVersion`, and `.traffic-one/manifest.json`, `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root `CLAUDE.md` exist.',
+    'Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root, then retry the agent spawn.',
   ].join('\n');
 }
 
@@ -790,15 +886,22 @@ function ensureSessionMaterialization(cwd, state) {
 
   const hasFreshStamp = isMaterialized(state);
   const hasAssets = hasMaterializedProjectAssets(cwd, state);
-  if (hasFreshStamp && hasAssets) return false;
+  if (hasFreshStamp && hasAssets) {
+    startOneMcpReportBestEffort(cwd, state, 'session materialization already current');
+    return false;
+  }
 
   normalizeState(state, state.mode || detectMode(cwd));
   const materialized = materializeProjectAssets(cwd, state);
-  if (materialized.skipped) return false;
+  if (materialized.skipped) {
+    startOneMcpReportBestEffort(cwd, state, 'session materialization skipped');
+    return false;
+  }
   state.materializedStack = stackFingerprint(state);
   state.materializedAt = nowIso();
   state.materializedVersion = getPluginVersion();
   writeState(cwd, state);
+  startOneMcpReportBestEffort(cwd, state, 'session materialization');
   return true;
 }
 
@@ -941,6 +1044,7 @@ function runSessionStart() {
     const graphPreview = readGraphPreview(cwd);
     const context = `${header}${graphPreview}\n${body}`;
     writeState(cwd, state);
+    startOneMcpReportBestEffort(cwd, state, 'session-start');
     return {
       stdout: JSON.stringify({
         hookSpecificOutput: {
@@ -1005,6 +1109,7 @@ function runSessionStart() {
         state.materializedVersion = getPluginVersion();
       }
       writeState(cwd, state);
+      startOneMcpReportBestEffort(cwd, state, 'session-start auto-detect');
       const skillDirective = pruneSkillsDirective(state, allSkills);
 
       const banner = autoDetectedAnnouncement(detected);
@@ -1163,6 +1268,7 @@ function runUserPromptSubmit(rawInput = '') {
 // ── PreToolUse: new-project onboarding gate ──────────────────────────────────
 function runCheckOnboardingGate(rawInput) {
   const data = parseJsonText(rawInput, {});
+  const toolName = data.tool_name || data.toolName || '';
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
   const cwd = process.cwd();
@@ -1180,12 +1286,20 @@ function runCheckOnboardingGate(rawInput) {
 
   if (mode === 'new-project' && isNewProjectOnboardingIncomplete(effectiveState)) {
     const repaired = repairNewProjectOnboardingState(cwd, effectiveState, 'generic pre-tool onboarding repair');
-    if (repaired) return repaired;
+    if (repaired) {
+      if (isMutatingPreToolUse(toolName, toolInput)) {
+        return denyPreToolUse(repairedMaterializationDenyReason());
+      }
+      return repaired;
+    }
     return denyPreToolUse(onboardingGateFallbackReason());
   }
 
   const materialized = materializeProjectIfNeeded(cwd, 'generic pre-tool convergence');
   if (materialized && materialized.stdout) {
+    if (isMutatingPreToolUse(toolName, toolInput)) {
+      return denyPreToolUse(repairedMaterializationDenyReason());
+    }
     return materialized;
   }
 
@@ -1236,6 +1350,15 @@ function runCheckAgentModel(rawInput) {
   // new-project build. Once the project is established, manual agent spawns are
   // never gated.
   if (state.mode !== 'new-project') return { stdout: '', exitCode: 0 };
+
+  if (!isCompletedTrafficOneMaterialization(cwd, state)) {
+    materializeProjectIfNeeded(cwd, 'agent spawn preflight convergence');
+    const refreshed = readState(cwd);
+    if (isCompletedTrafficOneMaterialization(cwd, refreshed)) {
+      return denyPreToolUse(agentMaterializationDenyReason());
+    }
+    return denyPreToolUse(agentMaterializationMissingReason());
+  }
 
   const performance = state.performance && typeof state.performance === 'object' ? state.performance : null;
   const level = performance && PERFORMANCE_LEVEL_IDS.has(performance.level) ? performance.level : null;
@@ -2010,8 +2133,11 @@ function runPostStackSetup(rawInput) {
     if (memoryResult) return memoryResult;
     const hintedResult = materializeFromToolInputHints(process.cwd(), toolInput);
     if (hintedResult) return hintedResult;
-    return materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence')
-      || { stdout: '', exitCode: 0 };
+    const materializedResult = materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence');
+    if (materializedResult) return materializedResult;
+    const currentState = readState(process.cwd());
+    startOneMcpReportBestEffort(process.cwd(), currentState, 'generic post-tool convergence');
+    return { stdout: '', exitCode: 0 };
   }
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
@@ -2023,10 +2149,9 @@ function runPostStackSetup(rawInput) {
   const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
   const stateDirEarly = path.dirname(path.resolve(filePath));
-  let normalizedBeforeValidation = false;
-  if (state && state.stack && isKnownStack(state.stack)) {
-    normalizedBeforeValidation = normalizeState(state, detectMode(stateDirEarly));
-  }
+  const normalizedBeforeValidation = state && typeof state === 'object'
+    ? normalizeState(state, detectMode(stateDirEarly))
+    : false;
   const stackOk = state && state.stack && STACK_IDS.has(state.stack);
   const cgProvider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
@@ -2095,7 +2220,10 @@ function runPostStackSetup(rawInput) {
   // Stamp the materialization fields after a successful copy so the PreToolUse
   // implementation gate (isMaterialized) sees a fresh fingerprint.
   try {
-    if (materialized && materialized.skipped) return { stdout: '', exitCode: 0 };
+    if (materialized && materialized.skipped) {
+      startOneMcpReportBestEffort(stateDirEarly, state, 'post-stack-setup skipped materialization');
+      return { stdout: '', exitCode: 0 };
+    }
     state.materializedStack   = stackFingerprint(state);
     state.materializedAt      = nowIso();
     state.materializedVersion = getPluginVersion();
@@ -2103,6 +2231,8 @@ function runPostStackSetup(rawInput) {
   } catch {
     // best-effort; stamp failure should not block the user
   }
+
+  startOneMcpReportBestEffort(stateDirEarly, state, 'post-stack-setup');
 
   const stack = state.stack || '(unknown)';
   const stateDir = path.dirname(path.resolve(filePath));
