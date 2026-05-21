@@ -1,6 +1,6 @@
 ---
 name: postgres-review
-description: PROACTIVELY review PostgreSQL/Supabase schemas, migrations, RLS policies, and queries when the user writes SQL, adds a migration, designs a table, mentions Supabase, discusses indexes, RLS, slow queries, PII, pgvector, or database production readiness. Acts as the AI Database Architect review: catches schema design, RLS, indexing, migration safety, tenancy, PII, backup, and performance mistakes before they become production migrations.
+description: "PROACTIVELY review PostgreSQL/Supabase SQL, schemas, migrations, tables, indexes, RLS policies, slow queries, PII, pgvector, and production readiness. Trigger when users write SQL, add migrations, design tables, mention Supabase/Postgres, or ask for database safety or performance review."
 ---
 
 # Postgres Review
