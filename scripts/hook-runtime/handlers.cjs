@@ -29,6 +29,7 @@ const {
   normalizeState,
   initializeToolchainState,
   hasValidTeamState,
+  isTeamApproved,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
   stackFingerprint,
@@ -541,6 +542,29 @@ function roleCanWriteFeatureSource(role, filePath) {
     return /^(packages\/(api-client|ws-client|utils)\/src\/|services\/[^/]+\/src\/|apps\/[^/]+\/src\/(services|store)\/)/.test(filePath);
   }
   return false;
+}
+
+// Parallel-spawn-tolerant ownership check. Background: the orchestrator
+// writes `activeAgentRole` to `.traffic-one.json` immediately before each
+// Task spawn. When frontend + backend are spawned in parallel (the
+// recommended Phase 2 pattern), the file is last-write-wins, so BOTH
+// subagents read the same `activeAgentRole` (whichever spawn was the
+// second `writeState` call). The `senior-eng-orchestrator` skill notes
+// this race for the SessionStart bundle path
+// (skills-templates/senior-eng-orchestrator/SKILL.md:160) and falls back
+// to a slim-but-unscoped bundle there. The source-write gate needs the
+// same forgiveness: if the recorded role doesn't own the file but ANY
+// configured subagent role does, trust that a real subagent is calling
+// (we've already verified isSubagentSession via currentRunId + fresh
+// materialization fingerprint). This still rejects writes to paths no
+// role owns (e.g. `.env`, `.github/workflows/`, build configs) so the
+// gate keeps its teeth against off-target writes by the main agent.
+function subagentMayWriteFeatureSource(state, filePath) {
+  if (!isSubagentSession(state)) return false;
+  const role = activeAgentRole(state);
+  if (role && roleCanWriteFeatureSource(role, filePath)) return true;
+  return roleCanWriteFeatureSource('senior-frontend', filePath)
+      || roleCanWriteFeatureSource('senior-backend', filePath);
 }
 
 function commandAppearsToWriteFeatureSource(command) {
@@ -1224,12 +1248,13 @@ function runUserPromptSubmit(rawInput = '') {
           'Popup 3: for non-trivial multi-layer builds, ask the Performance level.',
           hostPopupInstruction(),
           'header="Performance" question="How do you want to run agents for this build?"',
-          'options: Balanced (Recommended) — subagent team with efficient models;',
-          'High — subagent team with max-power models;',
+          'options (list High first so the default chip is High):',
+          'High (Recommended) — subagent team with max-power models;',
+          'Balanced — subagent team with efficient mid-tier models;',
           'Low — main agent only with role roadmap checklist.',
           'Persist before implementation:',
-          'Balanced → performance.level="balanced" + team.mode="subagents";',
           'High → performance.level="high" + team.mode="subagents";',
+          'Balanced → performance.level="balanced" + team.mode="subagents";',
           'Low → performance.level="low" + team.mode="main-agent".',
           'For Balanced or High, auto-launch the subagent team — no separate Run team? confirmation.',
           'Ask only after the codebase graph choice is answered; stop for a typed option if popup is unavailable.',
@@ -1375,9 +1400,29 @@ function runCheckAgentModel(rawInput) {
     );
   }
 
+  // Popup 4 (Team Confirmation) gate: for balanced/high, the user MUST have
+  // explicitly approved the team line-up by clicking Approve in popup 4,
+  // which writes `team.approved: true`. This denial is the teeth that
+  // prevents the orchestrator from skipping popup 4 with "I'll auto-approve
+  // the default". The escape hatch is `team.source === "unavailable"` for
+  // environments where popup 4 genuinely cannot be shown.
+  const teamSourceUnavailable = state.team && state.team.source === 'unavailable';
+  if (!isTeamApproved(state.team) && !teamSourceUnavailable) {
+    return denyPreToolUse(
+      `Popup 4 gate: performance.level="${level}" requires the user to explicitly approve the subagent team line-up via popup 4 (Team Confirmation) before ANY subagent can be spawned. `
+      + '`.traffic-one.json` currently has `team.approved !== true`, so the user has not yet confirmed. '
+      + 'Ask the host popup tool (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI) with header "Team", question "Here is the subagent team for ' + level + ' mode — approve or change?", body containing the role→tier→model line-up (use `tierModelTable` from `model-tiers.cjs`), and options "Approve" / "Re-pick performance" / "Customise". '
+      + 'When the user replies "Approve", re-write `.traffic-one.json` with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
+      + 'If popup 4 is genuinely impossible (no popup tool AND no user available), set `team.source: "unavailable"` to bypass this gate — but only do that with explicit user direction, never on your own.',
+    );
+  }
+
   // Balanced / High: the spawn MUST pass the model param for the role's tier.
   const host = detectHookHost();
-  const expected = modelForRoleHost(level, role, host);
+  const overrides = state.team && typeof state.team === 'object' && state.team.overrides && typeof state.team.overrides === 'object'
+    ? state.team.overrides
+    : null;
+  const expected = modelForRoleHost(level, role, host, overrides);
   if (!expected) return { stdout: '', exitCode: 0 };
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
@@ -1497,23 +1542,40 @@ function runCheckArchitectureWrite(rawInput) {
     );
   }
 
+  // Escape hatch: when `team.source === "unavailable"`, the user (or the
+  // model on their behalf) explicitly marked the subagent team as not
+  // runnable in this host — popup tool missing, no user present, etc. The
+  // recommended remediation in the gate message below assumes this works,
+  // so the gate must actually honor it. With `unavailable`, the main agent
+  // is allowed to write feature source as if `team.mode === "main-agent"`.
+  const teamSourceUnavailable = stateForPlan.team && stateForPlan.team.source === 'unavailable';
   if (
     writingFeatureSource
     && stateForPlan.team
     && stateForPlan.team.mode === 'subagents'
+    && !teamSourceUnavailable
     && (
-      !isSubagentSession(stateForPlan)
-      || !roleCanWriteFeatureSource(activeAgentRole(stateForPlan), filePath)
+      !subagentMayWriteFeatureSource(stateForPlan, filePath)
       || writingFeatureSourceViaCommand
     )
   ) {
     const role = activeAgentRole(stateForPlan) || 'main agent';
-    violations.push(
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from the Traffic One role team, not ${role}. `
-      + 'Spawn the appropriate Codex/Claude/Cursor role agents first: senior-frontend owns frontend/UI/i18n files and senior-backend owns backend/API/database files. '
-      + 'Bash-based feature-source writes are denied because the hook cannot verify role ownership from a shell command; use role-scoped Write/Edit tools instead. '
-      + 'If subagents are genuinely unavailable or the user changes their mind, update `.traffic-one.json` to `team.mode="main-agent"` and `performance.level="low"` with `team.source="unavailable"` or ask the user to reselect the "Low" performance level before continuing manually.'
-    );
+    const inSubagent = isSubagentSession(stateForPlan);
+    const ownedBySome = roleCanWriteFeatureSource('senior-frontend', filePath)
+      || roleCanWriteFeatureSource('senior-backend', filePath);
+    let reason;
+    if (writingFeatureSourceViaCommand) {
+      reason = 'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.';
+    } else if (!inSubagent) {
+      reason = `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned subagent (currentRunId + activeAgentRole set in \`.traffic-one.json\`), not ${role}. Spawn the appropriate role first — senior-frontend owns \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend owns \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, and \`apps/*/src/(services|store)/\`.`;
+    } else if (!ownedBySome) {
+      reason = `Run-team enforcement gate: the file \`${filePath}\` is not under any Traffic One role's owned path patterns (senior-frontend: \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend: \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, \`apps/*/src/(services|store)/\`). If this is a legitimate project layout (e.g. root \`src/\`), the role-pattern definitions in \`roleCanWriteFeatureSource\` need to be extended.`;
+    } else {
+      // Should not reach: subagentMayWriteFeatureSource would have returned true.
+      reason = `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`;
+    }
+    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to confirm and then update `.traffic-one.json` to `team.source="unavailable"` (the gate honors that escape hatch even with `team.mode="subagents"`).';
+    violations.push(reason);
   }
 
   if (

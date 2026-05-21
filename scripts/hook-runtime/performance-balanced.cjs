@@ -5,14 +5,17 @@
 // Full subagent team; each agent runs at its configured capability tier.
 
 const { PERFORMANCE_CONFIG } = require('./performance-config.cjs');
-const { tierModelTable } = require('./model-tiers.cjs');
+const { canonicalTier, tierModelTable } = require('./model-tiers.cjs');
 
-function balancedModeDirective() {
+function balancedModeDirective(overrides) {
   const config = PERFORMANCE_CONFIG.balanced;
   const agentLines = Object.entries(config.agents)
     .map(([role, cfg]) => {
-      const t = tierModelTable(cfg.tier);
-      return `  ${role}: ${t.tier} → claude:${t.claude} · codex:${t.codex} · cursor:${t.cursor}`;
+      const override = overrides && typeof overrides === 'object' ? canonicalTier(overrides[role]) : null;
+      const tier = override || cfg.tier;
+      const t = tierModelTable(tier);
+      const tag = override ? ' (override)' : '';
+      return `  ${role}: ${t.tier}${tag} → claude:${t.claude} · codex:${t.codex} · cursor:${t.cursor}`;
     })
     .join('\n');
 

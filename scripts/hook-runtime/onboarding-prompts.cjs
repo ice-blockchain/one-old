@@ -40,7 +40,7 @@ function codexDefaultModeFallbackDirective() {
     '',
     codexDefaultModeFallbackMobilePrompt(),
     '',
-    'After the user answers, ask the Code Graph fallback prompt next, then the Performance fallback prompt for non-trivial multi-layer builds (options: "1. Balanced (Recommended)", "2. High", "3. Low"). Ask only the next unresolved question and stop each time.',
+    'After the user answers, ask the Code Graph fallback prompt next, then the Performance fallback prompt for non-trivial multi-layer builds (options: "1. High (Recommended)", "2. Balanced", "3. Low"). For High or Balanced, ALSO ask the Team Confirmation fallback next: list the role → tier (claude/codex/cursor model) line-up for the chosen level and ask "1. Approve, 2. Re-pick performance, 3. Customise". On Customise, ask which roles to retier and merge accepted overrides into `team.overrides`. Ask only the next unresolved question and stop each time.',
   ].join('\n');
 }
 
