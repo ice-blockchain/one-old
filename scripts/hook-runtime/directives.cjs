@@ -17,6 +17,7 @@ const {
   codexDefaultModeFallbackMobilePrompt,
 } = require('./onboarding-prompts.cjs');
 const { performancePopupBlock, performanceChatFallback } = require('./agents-performance-prompt.cjs');
+const { teamConfirmationPopupBlock } = require('./agents-team-confirmation-prompt.cjs');
 
 // ── New-project onboarding directive ─────────────────────────────────────────
 // End-to-end default: React monorepo + Supabase backend + our deploy infra.
@@ -64,14 +65,21 @@ ONBOARDING POPUP RULE (all hosts, blocking):
   These onboarding choices must be displayed as host prompt popups, not as
   prose questions with numbered options. ${hostPopupInstruction()}
   Do NOT print "Options:" or a numbered list in chat when a popup tool is
-  available. Never choose a default, infer an answer, write
-  \`.traffic-one.json\`, scaffold, run installs, or continue implementation
-  while an onboarding answer is still pending.
+  available. Never choose a default, infer an answer, auto-approve a
+  recommendation on the user's behalf, write \`.traffic-one.json\`, scaffold,
+  run installs, spawn subagents, or continue implementation while an onboarding
+  answer is still pending. This includes popup 4 (Team Confirmation): you may
+  NOT auto-approve the default Balanced/High line-up to "keep moving" — wait
+  for the user's explicit reply.
 
   Required popup order for complex new projects:
     1. Mobile App (always; explicit web/mobile/stack requests do not skip it).
     2. Code Graph (always required before \`.traffic-one.json\`).
     3. Performance (for non-trivial multi-layer builds).
+    4. Team Confirmation (MANDATORY for Balanced / High; lists the configured
+       subagent line-up so the user can approve, re-pick, or customise
+       per-role tiers before \`.traffic-one.json\` is written and before ANY
+       subagent is spawned). Auto-approving this popup is a hard violation.
 
 ${codexDefaultModeFallbackDirective()}
 
@@ -120,6 +128,8 @@ CODEBASE GRAPH PROVIDER PREFLIGHT (popup 2, always required):
   Do not pick either provider.
 
 ${performancePopupBlock()}
+
+${teamConfirmationPopupBlock()}
 
 ── Branch on the user's first message ──
 
@@ -222,7 +232,17 @@ GENERAL RULES:
       "realtime": "<heavy|light|none>",
       "codeGraphProvider": "<gitnexus|graphify>",
       "performance": { "level": "<low|balanced|high>", "source": "prompted" },
-      "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
+      // For balanced/high: \`team.approved: true\` is REQUIRED — it is what
+      // unlocks the PreToolUse spawn gate. Set it ONLY after the user has
+      // clicked Approve in popup 4 (Team Confirmation). For low: omit the
+      // field; the in-thread role checklist runs without subagent spawns.
+      "team": { "mode": "<subagents|main-agent>", "source": "prompted",
+                "approved": <true after popup 4 Approve | omit for low> },
+      // Optional \`team.overrides\`: only set when the user customised the
+      // team in popup 4. Keys are subagent role ids; values are canonical
+      // tiers (highest|balanced|cheapest). Omit when there are no overrides.
+      // "team": { "mode": "subagents", "source": "prompted", "approved": true,
+      //           "overrides": { "senior-reviewer": "highest" } },
       "toolchain": {
         "gitnexus": { "installedVersion": null, "installedAt": null },
         "graphify": { "installedVersion": null, "installedAt": null },
@@ -480,6 +500,7 @@ Realtime values: heavy · light · none.
 Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
 Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup).
 Team mode: derived from performance — balanced/high → subagents, low → main-agent. Persist both fields.
+Team confirmation: for balanced/high, ALSO ask the Team popup (popup 4) so the user approves the role→model line-up. On Approve, persist \`team.approved: true\` (REQUIRED — the PreToolUse spawn gate denies every Task/spawn_agent call until this flag is present). Persist per-role overrides as \`team.overrides\` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
 Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
 Default complex-project recommendation is stack=default, frontend=react-vite,

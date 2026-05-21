@@ -14,6 +14,8 @@ const {
   LEGACY_STACK_ALIASES,
   pluginRoot,
 } = require('./config.cjs');
+const { canonicalTier } = require('./model-tiers.cjs');
+const { PERFORMANCE_CONFIG } = require('./performance-config.cjs');
 
 const PLUGIN_MANIFEST_DIRS = ['.codex-plugin', '.claude-plugin', '.cursor-plugin'];
 
@@ -199,6 +201,56 @@ function canonicalTeamSource(source) {
   return TEAM_SOURCE_ALIASES.get(normalized) || source;
 }
 
+// Returns a canonicalised `{ role: tier }` map, or null when the input has no
+// usable overrides (so the field can be omitted from `.traffic-one.json`).
+// - Unknown role names are dropped silently.
+// - Tier strings that don't resolve via `canonicalTier` (highest|balanced|
+//   cheapest plus the well-known aliases in `model-tiers.cjs`) are dropped.
+// - Overrides that match the level's default tier are dropped too — once a
+//   default tier is restored, the role is no longer "customised".
+function canonicalTeamOverrides(overrides, level) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    return null;
+  }
+  const baseAgents = level && PERFORMANCE_CONFIG[level] ? PERFORMANCE_CONFIG[level].agents : null;
+  const validRoles = new Set();
+  if (baseAgents && typeof baseAgents === 'object') {
+    for (const role of Object.keys(baseAgents)) validRoles.add(role);
+  } else {
+    // No level recorded yet: accept any role configured under any level so a
+    // mid-onboarding write isn't lossy.
+    for (const cfg of Object.values(PERFORMANCE_CONFIG)) {
+      if (cfg && cfg.agents) {
+        for (const role of Object.keys(cfg.agents)) validRoles.add(role);
+      }
+    }
+  }
+  const result = {};
+  for (const [role, tier] of Object.entries(overrides)) {
+    if (!validRoles.has(role)) continue;
+    const canonical = canonicalTier(tier);
+    if (!canonical) continue;
+    if (baseAgents && baseAgents[role] && baseAgents[role].tier === canonical) continue;
+    result[role] = canonical;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function overridesEqual(left, right) {
+  if (left === right) return true;
+  const a = left && typeof left === 'object' ? left : null;
+  const b = right && typeof right === 'object' ? right : null;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
 function canonicalPerformanceLevel(level) {
   if (typeof level !== 'string') return level;
   if (PERFORMANCE_LEVEL_IDS.has(level)) return level;
@@ -328,6 +380,13 @@ function hasValidTeamState(team) {
     && TEAM_MODE_IDS.has(team.mode)
     && TEAM_SOURCE_IDS.has(team.source)
   );
+}
+
+// Popup 4 (Team Confirmation) sets `team.approved: true` when the user
+// explicitly Approves the team line-up. Used by the spawn gate to enforce
+// that the model can't bypass popup 4 with "I'll auto-approve the default".
+function isTeamApproved(team) {
+  return Boolean(team && typeof team === 'object' && team.approved === true);
 }
 
 function defaultTechnologiesFor(state) {
@@ -542,9 +601,27 @@ function normalizeState(state, defaultMode) {
       mode: canonicalTeamMode(state.team.mode),
       source: canonicalTeamSource(state.team.source || 'prompted'),
     };
+    const performanceLevel = state.performance && typeof state.performance === 'object'
+      ? canonicalPerformanceLevel(state.performance.level)
+      : null;
+    const normalizedOverrides = canonicalTeamOverrides(state.team.overrides, performanceLevel);
+    if (normalizedOverrides) {
+      normalizedTeam.overrides = normalizedOverrides;
+    } else if ('overrides' in normalizedTeam) {
+      delete normalizedTeam.overrides;
+    }
+    // team.approved is a strict boolean. Anything truthy-but-not-true is
+    // coerced away so the spawn gate can rely on `=== true`.
+    if (state.team.approved === true) {
+      normalizedTeam.approved = true;
+    } else if ('approved' in normalizedTeam) {
+      delete normalizedTeam.approved;
+    }
     if (
       state.team.mode !== normalizedTeam.mode
       || state.team.source !== normalizedTeam.source
+      || !overridesEqual(state.team.overrides, normalizedTeam.overrides)
+      || state.team.approved !== normalizedTeam.approved
     ) {
       state.team = normalizedTeam;
       changed = true;
@@ -710,6 +787,9 @@ module.exports = {
   initializeToolchainState,
   defaultTechnologiesFor,
   hasValidTeamState,
+  isTeamApproved,
+  canonicalTeamOverrides,
+  overridesEqual,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
   PERFORMANCE_LEVEL_IDS,

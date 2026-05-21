@@ -20,7 +20,7 @@ Required behavior on Codex:
 
 1. Do not print numbered options in chat when `request_user_input` is available. Call the popup tool and stop. Plain text fallback is allowed only when the popup tool is unavailable, and the fallback must say that first, ask the same blocking question directly in chat with numbered options, tell the user to reply with the option number or label, and stop. Do not choose a default, infer an answer, write `.traffic-one.json`, scaffold, or continue while the onboarding answer is pending.
 2. If this is a new project, switch Codex and Claude Code to Plan mode before asking onboarding questions. If no mode switch is exposed, say Plan mode is required, stay plan-only, ask fallback chat questions, and stop for typed answers. Do not write `.traffic-one.json`, `.traffic-one/plan.md`, create files, edit code, run commands, or simulate roles until Plan mode/onboarding choices are resolved.
-3. Codex Default mode fallback is a visible first-response requirement. If Plan mode is off or `request_user_input` cannot be called, do not run `detect-project`, Read/LS/Glob/Grep, Bash, `npm view`, scaffolds, or edits. The next assistant message must say: "Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable." Then ask `Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic + Capacitor`, and `3. React Native / Expo`, tell the user to reply with the option number or label, and stop. Ask Code Graph only after that answer, then the Performance question for multi-layer builds (`1. Balanced (Recommended)`, `2. High`, `3. Low`).
+3. Codex Default mode fallback is a visible first-response requirement. If Plan mode is off or `request_user_input` cannot be called, do not run `detect-project`, Read/LS/Glob/Grep, Bash, `npm view`, scaffolds, or edits. The next assistant message must say: "Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable." Then ask `Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic + Capacitor`, and `3. React Native / Expo`, tell the user to reply with the option number or label, and stop. Ask Code Graph only after that answer, then the Performance question for multi-layer builds (`1. High (Recommended)`, `2. Balanced`, `3. Low`).
 4. If this is a new complex project, ask the mobile decision with Codex `request_user_input` even if the first prompt already named web, mobile, iOS, Android, Ionic, Capacitor, React Native, Expo, RN, Next.js, frontend-only, no backend, no subagents, or "just build it": header `Mobile App`, question `Do you want a mobile app too?`, options `Web only (Recommended)`, `Ionic + Capacitor`, and `React Native / Expo`. Stop and wait for the popup answer before continuing.
 5. Ask the required codebase graph provider with Codex `request_user_input`: header `Code Graph`, question `Which provider should we use for the codebase graph?`, options `GitNexus` and `graphify`. Stop and wait for the popup answer before continuing. This is required before `.traffic-one.json`; no default and no skip.
 6. Announce that Traffic One detected a non-trivial multi-layer build.
@@ -31,18 +31,18 @@ Required behavior on Codex:
      - Cursor      : task-UI prompt
      - All fallback: plain chat with the three numbered options below; stop for typed reply.
 9. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate roles before the answer.
-10. Persist the answer in `.traffic-one.json`:
-     - "Balanced" → `performance: { level: "balanced", source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
+10. Persist the answer in `.traffic-one.json` (hold the performance answer in working memory; for High/Balanced, popup 4 confirms the team first — do not write `team.approved: true` until the user clicks Approve):
      - "High"     → `performance: { level: "high",     source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
+     - "Balanced" → `performance: { level: "balanced", source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
      - "Low"      → `performance: { level: "low",      source: "prompted" }`, `team: { mode: "main-agent", source: "prompted" }`
-11. For **Balanced** or **High**: auto-launch the subagent team immediately after writing state — no additional "Run team?" confirmation needed. Spawn phases using the host adapter (Codex `spawn_agent`, Claude Code `Task`, Cursor task adapter). On EACH spawn, pass the `model` tool PARAMETER resolved from the role's capability tier to your host (see the Runtime compatibility tier→model table). The model is set by the parameter, not by prompt text — omitting it makes the subagent inherit the parent model.
+11. For **High** or **Balanced**: ask popup 4 (Team Confirmation) before spawning. List role → tier → model and ask Approve / Re-pick performance / Customise. The PreToolUse spawn gate denies every Task/spawn_agent call until `.traffic-one.json` contains `team: { ..., approved: true }`, so auto-approving is forbidden — wait for the user's explicit Approve, then persist `team.approved: true` (plus any `team.overrides` collected). Then spawn phases using the host adapter (Codex `spawn_agent`, Claude Code `Task`, Cursor task adapter). On EACH spawn, pass the `model` tool PARAMETER resolved from the role's capability tier to your host (see the Runtime compatibility tier→model table). The model is set by the parameter, not by prompt text — omitting it makes the subagent inherit the parent model.
 12. For **Low** or when subagents are unavailable/blocked: run the same phases manually as a role roadmap checklist in this thread and explicitly state the Traffic One team is being simulated by the main agent.
 
 Performance popup question, English only:
 
 > How do you want to run agents for this build?
-> 1. Balanced (Recommended) — Subagent team with efficient models
-> 2. High — Subagent team with max-power models
+> 1. High (Recommended) — Subagent team with max-power models
+> 2. Balanced — Subagent team with efficient mid-tier models
 > 3. Low — Main agent only with role roadmap checklist
 
 If the popup tool is unavailable on any host, ask this in plain text with the three numbered options and stop for the user's typed reply.
