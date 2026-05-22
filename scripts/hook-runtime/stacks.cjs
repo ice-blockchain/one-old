@@ -249,9 +249,9 @@ function stackSpecForState(state) {
 }
 
 // PER-ROLE RULE SCOPING.
-// When the orchestrator signals via `state.activeAgentRole` which subagent is
-// being spawned, the SessionStart hook emits a slim rule index scoped to that
-// role's actual needs — instead of the kitchen-sink mandatory bundle.
+// When the run-state claim identifies which role session is starting, the
+// SessionStart hook emits a slim rule index scoped to that role's actual needs
+// instead of the kitchen-sink mandatory bundle.
 //
 // Each role's base set is small, curated, and supplemented with stack-specific
 // rules computed dynamically (e.g. frontend gets React rules from the active

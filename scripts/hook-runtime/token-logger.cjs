@@ -16,6 +16,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const {
+  safeReadJson,
+  resolveRunAgentContext,
+  hasRunAgentState,
+  legacyRunAgentContext,
+} = require('./state.cjs');
 
 const ENV_FLAG = 'TRAFFIC_ONE_TOKEN_LOG';
 const LOG_REL_PATH = path.join('.traffic-one', 'token-log.jsonl');
@@ -42,14 +48,24 @@ function readSizeFromValue(value) {
 
 // Best-effort phase lookup from .traffic-one.json in cwd. Returns
 // { runId, role } when state is present and onboarded.
-function readPhase(cwd) {
+function readPhase(cwd, payload = null) {
   const statePath = path.join(cwd, '.traffic-one.json');
   if (!fs.existsSync(statePath)) return { runId: null, role: null };
   try {
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const state = safeReadJson(statePath, {});
+    const agentContext = resolveRunAgentContext(cwd, state, payload || {}, { claimPending: false })
+      || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
     return {
-      runId: typeof state.currentRunId === 'string' ? state.currentRunId : null,
-      role:  typeof state.activeAgentRole === 'string' ? state.activeAgentRole : null,
+      runId: agentContext && agentContext.runId
+        ? agentContext.runId
+        : typeof state.currentRunId === 'string'
+          ? state.currentRunId
+          : null,
+      role: agentContext && agentContext.role
+        ? agentContext.role
+        : typeof state.activeAgentRole === 'string'
+          ? state.activeAgentRole
+          : null,
     };
   } catch {
     return { runId: null, role: null };
@@ -65,7 +81,7 @@ function logToolUse(cwd, payload) {
   const toolResp  = payload.tool_response || payload.tool_result;
   const inputBytes = readSizeFromValue(toolInput);
   const outputBytes = readSizeFromValue(toolResp);
-  const phase = readPhase(cwd);
+  const phase = readPhase(cwd, payload);
   const entry = {
     ts: new Date().toISOString(),
     runId: phase.runId,
@@ -91,7 +107,7 @@ function logHookContext(cwd, hookEvent, additionalContext) {
   if (!isEnabled()) return;
   const bytes = readSizeFromValue(additionalContext);
   if (bytes === 0) return;
-  const phase = readPhase(cwd);
+  const phase = readPhase(cwd, { hook_event_name: hookEvent });
   const entry = {
     ts: new Date().toISOString(),
     runId: phase.runId,

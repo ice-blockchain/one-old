@@ -147,7 +147,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   return {
-    version: '2.9.62',
+    version: '2.9.63',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
@@ -906,7 +906,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.62');
+    assert.equal(state.version, '2.9.63');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -1365,7 +1365,7 @@ test('onboarding gate still denies compact state when graph choice is missing', 
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.62',
+      version: '2.9.63',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',
@@ -2167,8 +2167,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.62');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.62');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.63');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.63');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -2399,7 +2399,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.62');
+    assert.equal(state.version, '2.9.63');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -2427,7 +2427,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.62');
+    assert.equal(state.version, '2.9.63');
     assert.equal(state.project, undefined);
     assert.equal(state.mode, 'new-project');
     assert.equal(state.stack, 'default');
@@ -2444,7 +2444,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     assert.equal(state.onboardingComplete, true);
     assert.ok(state.confirmedAt);
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
-    assert.equal(state.materializedVersion, '2.9.62');
+    assert.equal(state.materializedVersion, '2.9.63');
     assert.ok(state.materializedAt);
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
@@ -2620,7 +2620,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.62',
+      materializedVersion: '2.9.63',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -2642,7 +2642,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.62',
+      materializedVersion: '2.9.63',
       currentRunId: '2026-05-18T12-04-52Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
@@ -2879,7 +2879,7 @@ test('materialization gate blocks forged stamp when local assets are missing', (
       ...completeDefaultState({
         materializedStack: 'default|react-vite|supabase|none',
         materializedAt: '2026-05-13T10:00:00Z',
-        materializedVersion: '2.9.62',
+        materializedVersion: '2.9.63',
       }),
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -4607,7 +4607,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.62) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.63) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -4741,7 +4741,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.62', () => {
+test('manifests bumped to 2.9.63', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -4749,11 +4749,11 @@ test('manifests bumped to 2.9.62', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.62"/, `${rel} must be bumped to 2.9.62`);
+    assert.match(text, /"version":\s*"2\.9\.63"/, `${rel} must be bumped to 2.9.63`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.62) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.63) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -4833,7 +4833,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.62',
+      version: '2.9.63',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -4849,7 +4849,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.62',
+      materializedVersion: '2.9.63',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -4861,6 +4861,189 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
     assert.match(context, /senior-frontend/);
     // Should NOT include full rule content (no '# ── rules/' headers from packBundle)
     assert.ok(!context.includes('# ── rules/'), 'subagent bundle leaked rule content');
+  });
+});
+
+test('codex worker spawn creates per-agent run claim without activeAgentRole', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+
+    const prevCodexRoot = process.env.CODEX_PLUGIN_ROOT;
+    process.env.CODEX_PLUGIN_ROOT = ROOT;
+    try {
+      const result = runHook(cwd, 'check-agent-model', {
+        session_id: 'parent-session',
+        tool_name: 'spawn_agent',
+        tool_input: {
+          agent_type: 'worker',
+          model: 'gpt-5-codex',
+          message: 'You are acting as Traffic One senior-backend for this run.',
+        },
+      });
+      assert.equal(result.stdout, '');
+    } finally {
+      if (prevCodexRoot === undefined) delete process.env.CODEX_PLUGIN_ROOT;
+      else process.env.CODEX_PLUGIN_ROOT = prevCodexRoot;
+    }
+
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    assert.ok(state.currentRunId, 'currentRunId should be stamped');
+    assert.equal(state.activeAgentRole, undefined, 'new run claims must not use shared activeAgentRole');
+    assert.equal(state.spawnIndex['senior-backend'], 1);
+
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', state.currentRunId, 'pending');
+    const files = fs.readdirSync(pendingDir).filter((file) => file.endsWith('.json'));
+    assert.equal(files.length, 1);
+    const claim = JSON.parse(fs.readFileSync(path.join(pendingDir, files[0]), 'utf8'));
+    assert.equal(claim.role, 'senior-backend');
+    assert.equal(claim.parentSessionId, 'parent-session');
+  });
+});
+
+test('subagent SessionStart claims pending run state by child session id', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+
+    const prevCodexRoot = process.env.CODEX_PLUGIN_ROOT;
+    process.env.CODEX_PLUGIN_ROOT = ROOT;
+    try {
+      runHook(cwd, 'check-agent-model', {
+        session_id: 'parent-session',
+        tool_name: 'spawn_agent',
+        tool_input: {
+          agent_type: 'worker',
+          model: 'gpt-5-codex',
+          message: 'You are acting as Traffic One senior-backend for this run.',
+        },
+      });
+    } finally {
+      if (prevCodexRoot === undefined) delete process.env.CODEX_PLUGIN_ROOT;
+      else process.env.CODEX_PLUGIN_ROOT = prevCodexRoot;
+    }
+
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    const result = runHook(cwd, 'session-start', {
+      session_id: 'child-backend-session',
+      thread_source: 'subagent',
+      source: {
+        subagent: {
+          thread_spawn: {
+            parent_thread_id: 'parent-session',
+          },
+        },
+      },
+    });
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.match(context, /senior-backend/);
+    assert.match(context, new RegExp(state.currentRunId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+
+    const claimedPath = path.join(cwd, '.traffic-one', 'runs', state.currentRunId, 'child-backend-session.json');
+    assert.ok(fs.existsSync(claimedPath), 'child session claim file should exist');
+    const claimed = JSON.parse(fs.readFileSync(claimedPath, 'utf8'));
+    assert.equal(claimed.status, 'claimed');
+    assert.equal(claimed.role, 'senior-backend');
+  });
+});
+
+test('fresh per-agent run claim survives an older materialization timestamp', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+
+    const statePath = path.join(cwd, '.traffic-one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.materializedAt = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+    writeJson(statePath, state);
+
+    const prevCodexRoot = process.env.CODEX_PLUGIN_ROOT;
+    process.env.CODEX_PLUGIN_ROOT = ROOT;
+    try {
+      runHook(cwd, 'check-agent-model', {
+        session_id: 'parent-session',
+        tool_name: 'spawn_agent',
+        tool_input: {
+          agent_type: 'worker',
+          model: 'gpt-5-codex',
+          message: 'You are acting as Traffic One senior-backend for this run.',
+        },
+      });
+    } finally {
+      if (prevCodexRoot === undefined) delete process.env.CODEX_PLUGIN_ROOT;
+      else process.env.CODEX_PLUGIN_ROOT = prevCodexRoot;
+    }
+
+    const result = runHook(cwd, 'session-start', {
+      session_id: 'child-backend-session',
+      thread_source: 'subagent',
+      source: { subagent: { thread_spawn: { parent_thread_id: 'parent-session' } } },
+    });
+    const payload = parseStdoutJson(result);
+    const context = payload.hookSpecificOutput.additionalContext;
+    assert.match(context, /senior-backend/);
+    assert.match(context, /\[subagent\] Full rules already loaded by parent session/);
+  });
+});
+
+test('per-agent run state allows claimed role writes and blocks parent writes', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    runHook(cwd, 'check-onboarding-gate', {
+      tool_input: { command: 'ls -la' },
+    });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'), '# Plan\n', 'utf8');
+
+    const prevCodexRoot = process.env.CODEX_PLUGIN_ROOT;
+    process.env.CODEX_PLUGIN_ROOT = ROOT;
+    try {
+      runHook(cwd, 'check-agent-model', {
+        session_id: 'parent-session',
+        tool_name: 'spawn_agent',
+        tool_input: {
+          agent_type: 'worker',
+          model: 'gpt-5-codex',
+          message: 'You are acting as Traffic One senior-backend for this run.',
+        },
+      });
+    } finally {
+      if (prevCodexRoot === undefined) delete process.env.CODEX_PLUGIN_ROOT;
+      else process.env.CODEX_PLUGIN_ROOT = prevCodexRoot;
+    }
+
+    runHook(cwd, 'session-start', {
+      session_id: 'child-backend-session',
+      thread_source: 'subagent',
+      source: { subagent: { thread_spawn: { parent_thread_id: 'parent-session' } } },
+    });
+
+    const apiPath = ['packages', 'api-client', 'src', 'index.ts'].join('/');
+    const childWrite = runHook(cwd, 'check-architecture-write', {
+      session_id: 'child-backend-session',
+      thread_source: 'subagent',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: `*** Begin Patch\n*** Add File: ${apiPath}\n+export const ok = true;\n*** End Patch\n`,
+      },
+    });
+    assert.equal(childWrite.stdout, '');
+
+    const parentWrite = runHook(cwd, 'check-architecture-write', {
+      session_id: 'parent-session',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: `*** Begin Patch\n*** Add File: ${apiPath}\n+export const nope = true;\n*** End Patch\n`,
+      },
+    });
+    assert.match(parentWrite.stdout, /permissionDecision/);
+    assert.match(parentWrite.stdout, /Run-team enforcement gate/);
   });
 });
 
@@ -4898,7 +5081,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.62',
+      version: '2.9.63',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4910,7 +5093,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.62',
+      materializedVersion: '2.9.63',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -4930,7 +5113,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.62) ──────────────────────────────────────────────
+// ── Token usage report (2.9.63) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -5155,7 +5338,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.62) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.63) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -5207,7 +5390,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.62',
+      version: '2.9.63',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -5219,7 +5402,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.62',
+      materializedVersion: '2.9.63',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -5239,7 +5422,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.62',
+      version: '2.9.63',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -5251,7 +5434,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.62',
+      materializedVersion: '2.9.63',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
