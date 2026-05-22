@@ -45,7 +45,7 @@ function codexDefaultModeFallbackDirective() {
     '',
     codexDefaultModeFallbackAgentModePrompt(),
     '',
-    'After the user answers, ask Team Confirmation for High/Balanced, then show "Traffic One was successfully set up. Let\'s collect the project details next.", collect project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.',
+    'After the user answers, ask Team Confirmation for High/Balanced, then show "Traffic One was successfully set up. Let\'s collect the project details next.", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.',
   ].join('\n');
 }
 

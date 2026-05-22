@@ -146,6 +146,7 @@ function onboardingStateIssues(rawState, state) {
   if (!state || typeof state !== 'object') return ['state file is not a JSON object'];
   const mode = state.mode || rawState?.projectMode;
   if (mode !== 'new-project') return issues;
+  const persistedState = rawState && typeof rawState === 'object' ? rawState : state;
 
   if (state.mode !== 'new-project') issues.push('mode');
   if (typeof state.stack !== 'string' || !STACK_IDS.has(state.stack)) issues.push('stack');
@@ -169,9 +170,9 @@ function onboardingStateIssues(rawState, state) {
       issues.push('team.approved (Team Confirmation)');
     }
   }
-  if (state.confirmed !== true) issues.push('confirmed');
-  if (state.onboardingComplete !== true) issues.push('onboardingComplete');
-  if (typeof state.confirmedAt !== 'string' || state.confirmedAt.trim() === '') issues.push('confirmedAt');
+  if (persistedState.confirmed !== true) issues.push('confirmed');
+  if (persistedState.onboardingComplete !== true) issues.push('onboardingComplete');
+  if (typeof persistedState.confirmedAt !== 'string' || persistedState.confirmedAt.trim() === '') issues.push('confirmedAt');
   return [...new Set(issues)];
 }
 

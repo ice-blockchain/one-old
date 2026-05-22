@@ -87,18 +87,42 @@ ${teamConfirmationPopupBlock()}
 PROJECT CONTEXT PREFLIGHT (after Traffic One setup success, blocking before mobile):
   After Agent Mode and any required Team Confirmation are resolved, say:
   "Traffic One was successfully set up. Let's collect the project details next."
-  Then ask dynamic project-context questions based on the user's original
-  request. For example, if they ask for a job website, ask what kind of job
-  marketplace it is, whether employers/candidates/admins authenticate, which
-  v1 features matter, and what business model or success metric should shape
-  the build.
+  Then ask one rich, dynamic MVP-context questionnaire based on the user's
+  original request. Collect target users, core jobs, v1 feature priorities,
+  user roles/auth, key data entities, admin/ops needs, business model, payment
+  needs, integrations, content/data source, notifications/search/uploads/
+  realtime, success metrics, launch constraints, and visual/product tone.
+  Add domain-specific questions when the request implies a learning platform,
+  marketplace, ecommerce, booking product, SaaS/admin tool, community,
+  content/media product, portfolio, or internal tool. Ask payment-provider
+  details only when the product may charge money. Ask admin-area questions
+  when the app has managed content, users, transactions, moderation, reporting,
+  or operational workflows, even if the first request did not mention admin.
+  For a learning platform, ask about course structure, lessons/progress,
+  free vs paid courses, enrollment, learner/admin roles, admin CRUD, seeded
+  demo content, analytics, and whether payments are in or out for v1.
 
   Persist this in \`.traffic-one.json\` as:
     "projectContext": {
       "source": "prompted",
       "originalPrompt": "<user's original request>",
       "summary": "<short product summary>",
-      "answers": { "<question-id>": "<answer>", "...": "..." },
+      "answers": {
+        "audience": "<answer>",
+        "coreFlows": "<answer>",
+        "v1Features": "<answer>",
+        "rolesAuth": "<answer>",
+        "businessModel": "<answer>",
+        "payments": "<answer>",
+        "admin": "<answer>",
+        "dataModel": "<answer>",
+        "contentSource": "<answer>",
+        "integrations": "<answer>",
+        "engagement": "<answer>",
+        "successMetrics": "<answer>",
+        "constraints": "<answer>",
+        "domainSpecific": "<answer>"
+      },
       "collectedAt": "<ISO-8601 UTC>"
     }
 
@@ -527,7 +551,7 @@ Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user
 Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup).
 Team mode: derived from performance — balanced/high → subagents, low → main-agent. Persist both fields. Omit \`team.approved\` for low.
 Team confirmation: for balanced/high, ALSO ask the Team popup (popup 2) so the user approves the role→model line-up. On Approve, persist \`team.approved: true\` (REQUIRED — the PreToolUse spawn gate denies every Task/spawn_agent call until this flag is present). Persist per-role overrides as \`team.overrides\` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
-Project context: REQUIRED after the Traffic One setup success message and before the Mobile App prompt.
+Project context: REQUIRED after the Traffic One setup success message and before the Mobile App prompt. Ask the rich dynamic MVP questionnaire and save answers with suggested keys: audience, coreFlows, v1Features, rolesAuth, businessModel, payments, admin, dataModel, contentSource, integrations, engagement, successMetrics, constraints, domainSpecific.
 Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
 Default complex-project recommendation is stack=default, frontend=react-vite,
@@ -631,9 +655,13 @@ function postWriteIncompleteWarning({
     lines.push(
       'You also did not persist `projectContext`. After Agent Mode and any',
       'Team Confirmation are resolved, say "Traffic One was successfully set',
-      'up. Let\'s collect the project details next.", ask product-specific',
-      'questions, and save `source`, `originalPrompt`, `summary`, `answers`,',
-      'and `collectedAt` before the Mobile App prompt.',
+      'up. Let\'s collect the project details next.", ask a rich dynamic',
+      'MVP questionnaire tailored to the original request, including audience,',
+      'core flows, v1 features, roles/auth, data model, admin/ops, business',
+      'model, payments when applicable, integrations, engagement, success',
+      'metrics, constraints, and domain-specific needs. Save `source`,',
+      '`originalPrompt`, `summary`, `answers`, and `collectedAt` before the',
+      'Mobile App prompt.',
     );
   }
 

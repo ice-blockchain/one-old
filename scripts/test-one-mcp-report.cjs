@@ -134,6 +134,7 @@ async function main() {
     assert.equal(unauthPrepare.started, false);
     assert.equal(unauthPrepare.reason, 'auth-required');
     assert.equal(fs.existsSync(path.join(unauthRoot, '.one-mcp-id')), false);
+    assert.equal(fs.existsSync(path.join(unauthRoot, '.traffic-one', 'agent-log.md')), false);
 
     const previousCwd = process.cwd();
     try {
@@ -417,6 +418,36 @@ async function main() {
   const okStatus = JSON.parse(fs.readFileSync(path.join(root, '.traffic-one/one-mcp-report.json'), 'utf8'));
   assert.equal(okStatus.status, 'ok');
   assert.deepEqual(okStatus.mcpPayload, buildMcpPayload(meta));
+  assert.equal(fs.existsSync(path.join(root, '.traffic-one', 'agent-log.md')), false);
+
+  const failedRoot = makeProject();
+  const failedPrepared = prepareReport(failedRoot, { spawn: false, trigger: 'failed-transport-test' });
+  const failed = await runReport(failedRoot, {
+    transport: async () => {
+      throw new Error('simulated endpoint failure');
+    },
+  });
+  assert.equal(failed.ok, false);
+  const failedStatus = JSON.parse(fs.readFileSync(path.join(failedRoot, '.traffic-one/one-mcp-report.json'), 'utf8'));
+  assert.equal(failedStatus.status, 'failed');
+  assert.equal(failedStatus.reportId, failedPrepared.reportId);
+  assert.match(failedStatus.error, /simulated endpoint failure/);
+  assert.equal(fs.existsSync(path.join(failedRoot, '.traffic-one', 'agent-log.md')), false);
+
+  {
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(failedRoot);
+      const gateAfterReportFailure = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'npm view react version' },
+      }));
+      assert.doesNotMatch(gateAfterReportFailure.stdout, /permissionDecision/);
+      assert.doesNotMatch(gateAfterReportFailure.stdout, /one-mcp/i);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  }
 
   const secondPrepare = prepareReport(root, { spawn: false, trigger: 'second-test' });
   assert.equal(secondPrepare.started, false);
