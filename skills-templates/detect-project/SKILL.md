@@ -121,9 +121,15 @@ Codex Performance/Team preflight for new projects:
   summarizes only; it must not write feature source files itself.
 - After Agent Mode and any required Team Confirmation are resolved, show:
   "Traffic One was successfully set up. Let's collect the project details
-  next." Then ask dynamic project-context questions based on the user's first
-  prompt and persist `projectContext` with `source`, `originalPrompt`,
-  `summary`, `answers`, and `collectedAt`.
+  next." Then ask one rich, dynamic MVP-context questionnaire based on the
+  user's first prompt and persist `projectContext` with `source`,
+  `originalPrompt`, `summary`, `answers`, and `collectedAt`. Cover audience,
+  core flows, v1 features, roles/auth, data model, admin/ops needs, business
+  model, payments when applicable, integrations, content/data source,
+  engagement, success metrics, constraints, visual/product tone, and
+  domain-specific questions. Ask admin-area questions when the app has managed
+  content/users/transactions/moderation/reporting/operations even if the user
+  did not ask for admin.
 - Then ask the mobile decision with a Codex `request_user_input` popup even if
   the first prompt explicitly requested web, mobile, React Native, Ionic,
   Next.js, or another stack. Use header `Mobile App`, question `Do you want a
@@ -166,8 +172,8 @@ State clearly:
 6. For new-project non-trivial multi-layer builds on Codex: ask Performance /
    Agent Mode first, then Team Confirmation for High/Balanced, and stop until
    the user answers before scaffolding.
-7. Show the setup-success message, ask project-context questions, and persist
-   `projectContext`.
+7. Show the setup-success message, ask the rich dynamic MVP-context
+   questionnaire, and persist `projectContext`.
 8. Ask the `Do you want a mobile app too?` popup, then ask the required
    `Code Graph` popup with `GitNexus` and `graphify` before writing final
    `.traffic-one.json`.

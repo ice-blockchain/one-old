@@ -99,9 +99,15 @@ Ask onboarding prompts in this order and stop after each unresolved answer:
    and wait for explicit `Approve`; skip this for `Low`.
 3. Show: "Traffic One was successfully set up. Let's collect the project
    details next."
-4. Ask dynamic project-context questions based on the user's original request
-   and save `projectContext` with `source`, `originalPrompt`, `summary`,
-   `answers`, and `collectedAt`.
+4. Ask one rich, dynamic MVP-context questionnaire based on the user's original
+   request and save `projectContext` with `source`, `originalPrompt`,
+   `summary`, `answers`, and `collectedAt`. Cover audience, core flows, v1
+   features, roles/auth, data model, admin/ops needs, business model, payments
+   when applicable, integrations, content/data source, engagement, success
+   metrics, constraints, visual/product tone, and domain-specific questions.
+   Ask admin-area questions when the app has managed content/users/
+   transactions/moderation/reporting/operations even if the user did not ask
+   for admin.
 5. Ask the mobile decision. If the user already asked for
    mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only, Next.js,
    frontend-only, no backend, no subagents, or "just build it", treat that as

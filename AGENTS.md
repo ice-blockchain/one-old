@@ -9,7 +9,7 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 - Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
 - Treat explicit user requests as implementation intent, not onboarding answers.
 - Persist Agent Mode/Performance in `.traffic-one.json`; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
-- After Agent Mode and Team Confirmation, collect `projectContext`, then ask Mobile App, then Code Graph.
+- After Agent Mode and Team Confirmation, collect a rich dynamic MVP `projectContext`, then ask Mobile App, then Code Graph.
 - `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
 
 ## Active Rules
@@ -51,5 +51,6 @@ Traffic One hooks handle the one-mcp first-look report in the background for ful
 - The reporter is skipped until `one-mcp-key` authentication succeeds; `.one-mcp-id` must not be created before auth.
 - If `.one-mcp-id` exists at the project root, the background reporter stops and makes no additional report attempt for that project.
 - If `.one-mcp-id` does not exist and the project has real codebase markers, the hook writes a UUID v7 as the only line of `.one-mcp-id`, stages that file when the project is a git repository, gathers anonymous structural metadata, and sends one background HTTPS request to the one-mcp endpoint.
+- The report is fire-and-forget. Success, failure, timeout, invalid response, or skipped submission must stay silent and must never block onboarding completion, materialization, tool use, scaffolding, or development.
 - The reporter is not run during plugin install and is not used for snippets, examples, or single files.
 - The payload is limited to `report_id`, `technologies`, `file_extensions`, `architecture_components`, and `infrastructure_vendor`; it must never include source code, file contents, file paths, repository URLs, organization names, emails, secrets, API keys, user data, or any PII.

@@ -70,16 +70,6 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function appendAgentLog(cwd, line) {
-  try {
-    const logPath = path.join(cwd, '.traffic-one', 'agent-log.md');
-    fs.mkdirSync(path.dirname(logPath), { recursive: true });
-    fs.appendFileSync(logPath, `\n- ${nowIso()} ${line}\n`, 'utf8');
-  } catch {
-    // best-effort only; telemetry must never block development.
-  }
-}
-
 function uuidV7(date = new Date()) {
   const millis = BigInt(date.getTime()).toString(16).padStart(12, '0').slice(-12);
   const random = crypto.randomBytes(10);
@@ -433,7 +423,6 @@ function prepareReport(cwd, options = {}) {
     return { started: false, reason: 'disabled' };
   }
   if (!isAuthenticatedLocal()) {
-    appendAgentLog(cwd, 'one-mcp report skipped: Traffic One authentication is required first.');
     return { started: false, reason: 'auth-required' };
   }
   const root = path.resolve(cwd);
@@ -547,11 +536,9 @@ async function runReport(cwd, options = {}) {
   const endpoint = options.endpoint || process.env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || DEFAULT_ENDPOINT;
   const idState = readReportIdState(root);
   if (!idState) {
-    appendAgentLog(root, 'one-mcp report skipped: .one-mcp-id was not prepared.');
     return { ok: false, skipped: 'missing-report-id' };
   }
   if (idState.invalid) {
-    appendAgentLog(root, 'one-mcp report skipped: invalid .one-mcp-id format.');
     return { ok: false, skipped: 'invalid-report-id' };
   }
 
@@ -593,7 +580,6 @@ async function runReport(cwd, options = {}) {
       trigger: previous && previous.trigger ? previous.trigger : null,
       mcpPayload,
     });
-    appendAgentLog(root, `one-mcp structural metadata report accepted for report_id ${idState.id}.`);
     return { ok: true, reportId: idState.id };
   } catch (error) {
     writeJson(statusPath, {
@@ -607,7 +593,6 @@ async function runReport(cwd, options = {}) {
       mcpPayload,
       error: error && error.message ? error.message : String(error || 'unknown error'),
     });
-    appendAgentLog(root, 'one-mcp structural metadata report failed after .one-mcp-id was created; automatic hooks will not submit another request for this project.');
     return { ok: false, error };
   }
 }
@@ -616,7 +601,6 @@ function maybeStartOneMcpReport(cwd, options = {}) {
   try {
     return prepareReport(cwd, options);
   } catch (error) {
-    appendAgentLog(cwd, `one-mcp report preparation failed: ${error.message}`);
     return { started: false, reason: 'error', error };
   }
 }
