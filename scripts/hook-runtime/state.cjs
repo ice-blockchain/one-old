@@ -14,6 +14,8 @@ const {
   LEGACY_STACK_ALIASES,
   pluginRoot,
 } = require('./config.cjs');
+const { canonicalTier } = require('./model-tiers.cjs');
+const { PERFORMANCE_CONFIG } = require('./performance-config.cjs');
 
 const PLUGIN_MANIFEST_DIRS = ['.codex-plugin', '.claude-plugin', '.cursor-plugin'];
 
@@ -139,12 +141,22 @@ const MOBILE_SOURCE_ALIASES = new Map([
 
 const TEAM_MODE_IDS = new Set(['subagents', 'main-agent']);
 const TEAM_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
+
+const PERFORMANCE_LEVEL_IDS = new Set(['low', 'balanced', 'high']);
+const PERFORMANCE_SOURCE_IDS = new Set(['prompted', 'explicit']);
 const TEAM_MODE_ALIASES = new Map([
+  ['enabled', 'subagents'],
+  ['true', 'subagents'],
+  ['yes', 'subagents'],
   ['run-team', 'subagents'],
   ['team', 'subagents'],
+  ['traffic-one', 'subagents'],
   ['traffic-one-team', 'subagents'],
   ['subagent', 'subagents'],
   ['subagents-only', 'subagents'],
+  ['disabled', 'main-agent'],
+  ['false', 'main-agent'],
+  ['no', 'main-agent'],
   ['main', 'main-agent'],
   ['main-agent-only', 'main-agent'],
   ['manual', 'main-agent'],
@@ -195,6 +207,246 @@ function canonicalTeamSource(source) {
   return TEAM_SOURCE_ALIASES.get(normalized) || source;
 }
 
+// Returns a canonicalised `{ role: tier }` map, or null when the input has no
+// usable overrides (so the field can be omitted from `.traffic-one.json`).
+// - Unknown role names are dropped silently.
+// - Tier strings that don't resolve via `canonicalTier` (highest|balanced|
+//   cheapest plus the well-known aliases in `model-tiers.cjs`) are dropped.
+// - Overrides that match the level's default tier are dropped too — once a
+//   default tier is restored, the role is no longer "customised".
+function canonicalTeamOverrides(overrides, level) {
+  if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) {
+    return null;
+  }
+  const baseAgents = level && PERFORMANCE_CONFIG[level] ? PERFORMANCE_CONFIG[level].agents : null;
+  const validRoles = new Set();
+  if (baseAgents && typeof baseAgents === 'object') {
+    for (const role of Object.keys(baseAgents)) validRoles.add(role);
+  } else {
+    // No level recorded yet: accept any role configured under any level so a
+    // mid-onboarding write isn't lossy.
+    for (const cfg of Object.values(PERFORMANCE_CONFIG)) {
+      if (cfg && cfg.agents) {
+        for (const role of Object.keys(cfg.agents)) validRoles.add(role);
+      }
+    }
+  }
+  const result = {};
+  for (const [role, tier] of Object.entries(overrides)) {
+    if (!validRoles.has(role)) continue;
+    const canonical = canonicalTier(tier);
+    if (!canonical) continue;
+    if (baseAgents && baseAgents[role] && baseAgents[role].tier === canonical) continue;
+    result[role] = canonical;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+}
+
+function overridesEqual(left, right) {
+  if (left === right) return true;
+  const a = left && typeof left === 'object' ? left : null;
+  const b = right && typeof right === 'object' ? right : null;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  for (const key of aKeys) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
+}
+
+function canonicalPerformanceLevel(level) {
+  if (typeof level !== 'string') return level;
+  if (PERFORMANCE_LEVEL_IDS.has(level)) return level;
+  const normalized = level.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  return PERFORMANCE_LEVEL_IDS.has(normalized) ? normalized : level;
+}
+
+function normalizedString(value) {
+  return typeof value === 'string'
+    ? value.trim().toLowerCase().replace(/[_\s]+/g, '-')
+    : '';
+}
+
+function mobileStateFromString(value) {
+  const normalized = normalizedString(value);
+  if (!normalized) return null;
+  if (normalized === 'web' || normalized === 'web-only') {
+    return { enabled: false, framework: 'none', source: 'prompted' };
+  }
+  if (normalized === 'none' || normalized === 'no-mobile' || normalized === 'disabled') {
+    return { enabled: false, framework: 'none', source: 'none' };
+  }
+  if (normalized === 'ionic' || normalized === 'ionic-capacitor') {
+    return { enabled: true, framework: 'ionic-capacitor', source: 'prompted' };
+  }
+  if (normalized === 'react-native' || normalized === 'react-native-expo' || normalized === 'expo') {
+    return { enabled: true, framework: 'react-native-expo', source: 'prompted' };
+  }
+  return null;
+}
+
+function teamStateFromString(value) {
+  const mode = canonicalTeamMode(value);
+  return TEAM_MODE_IDS.has(mode)
+    ? { mode, source: 'prompted' }
+    : null;
+}
+
+function codeGraphProviderFromString(value) {
+  const normalized = normalizedString(value);
+  return normalized === 'gitnexus' || normalized === 'graphify' ? normalized : null;
+}
+
+function codeGraphProviderFromValue(value) {
+  const direct = codeGraphProviderFromString(value);
+  if (direct) return direct;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  for (const key of ['provider', 'codeGraphProvider', 'id', 'name']) {
+    const nested = codeGraphProviderFromValue(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function canonicalMode(value) {
+  const normalized = normalizedString(value);
+  if (normalized === 'new-project' || normalized === 'existing-codebase') return normalized;
+  return typeof value === 'string' ? value : null;
+}
+
+function canonicalBackendValue(value) {
+  const normalized = normalizedString(value);
+  if (normalized === 'supabase-ready' || normalized === 'supabase-default' || normalized === 'managed-supabase') {
+    return 'supabase';
+  }
+  return typeof value === 'string' ? value : value;
+}
+
+function canonicalizeStateShape(state) {
+  if (!state || typeof state !== 'object') return false;
+
+  let changed = false;
+  if (!state.mode && typeof state.projectMode === 'string') {
+    const mode = canonicalMode(state.projectMode);
+    if (mode) {
+      state.mode = mode;
+      changed = true;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(state, 'projectMode')) {
+    delete state.projectMode;
+    changed = true;
+  }
+
+  const compactStack = state.stack && typeof state.stack === 'object' && !Array.isArray(state.stack)
+    ? state.stack
+    : null;
+
+  if (compactStack) {
+    if (typeof compactStack.id === 'string' && compactStack.id.trim()) {
+      state.stack = compactStack.id.trim();
+      changed = true;
+    }
+    if (!state.frontend && typeof compactStack.frontend === 'string') {
+      state.frontend = compactStack.frontend;
+      changed = true;
+    }
+    if (!state.backend && typeof compactStack.backend === 'string') {
+      state.backend = compactStack.backend;
+      changed = true;
+    }
+    if ((state.mobile === undefined || state.mobile === null) && compactStack.mobile !== undefined) {
+      state.mobile = compactStack.mobile;
+      changed = true;
+    }
+    if (!state.codeGraphProvider) {
+      const codeGraphProvider = codeGraphProviderFromValue(compactStack.codeGraph || compactStack.codeGraphProvider);
+      if (codeGraphProvider) {
+        state.codeGraphProvider = codeGraphProvider;
+        changed = true;
+      }
+    }
+    if ((state.team === undefined || state.team === null) && compactStack.team !== undefined) {
+      state.team = compactStack.team;
+      changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(state, 'project')) {
+      delete state.project;
+      changed = true;
+    }
+  }
+
+  if (typeof state.backend === 'string') {
+    const backend = canonicalBackendValue(state.backend);
+    if (backend !== state.backend) {
+      state.backend = backend;
+      changed = true;
+    }
+  }
+
+  if (typeof state.mobile === 'string') {
+    const mobile = mobileStateFromString(state.mobile);
+    if (mobile) {
+      state.mobile = mobile;
+      changed = true;
+    }
+  }
+
+  if ((state.team === undefined || state.team === null) && state.subagentTeam !== undefined) {
+    state.team = state.subagentTeam;
+    changed = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(state, 'subagentTeam')) {
+    delete state.subagentTeam;
+    changed = true;
+  }
+
+  if (typeof state.team === 'string') {
+    const team = teamStateFromString(state.team);
+    if (team) {
+      state.team = team;
+      changed = true;
+    }
+  }
+
+  const canonicalCodeGraphProvider = codeGraphProviderFromValue(state.codeGraphProvider);
+  if (canonicalCodeGraphProvider && state.codeGraphProvider !== canonicalCodeGraphProvider) {
+    state.codeGraphProvider = canonicalCodeGraphProvider;
+    changed = true;
+  }
+
+  if (!state.codeGraphProvider && state.codeGraph !== undefined) {
+    const codeGraphProvider = codeGraphProviderFromValue(state.codeGraph);
+    if (codeGraphProvider) {
+      state.codeGraphProvider = codeGraphProvider;
+      delete state.codeGraph;
+      changed = true;
+    }
+  }
+
+  if (typeof state.performance === 'string') {
+    const level = canonicalPerformanceLevel(state.performance);
+    if (PERFORMANCE_LEVEL_IDS.has(level)) {
+      state.performance = { level, source: 'prompted' };
+      changed = true;
+    }
+  }
+
+  return changed;
+}
+
+function hasValidPerformanceState(performance) {
+  return Boolean(
+    performance
+    && typeof performance === 'object'
+    && PERFORMANCE_LEVEL_IDS.has(performance.level)
+    && PERFORMANCE_SOURCE_IDS.has(performance.source),
+  );
+}
+
 function hasValidTeamState(team) {
   return Boolean(
     team
@@ -202,6 +454,31 @@ function hasValidTeamState(team) {
     && TEAM_MODE_IDS.has(team.mode)
     && TEAM_SOURCE_IDS.has(team.source)
   );
+}
+
+function hasValidProjectContext(projectContext) {
+  return Boolean(
+    projectContext
+    && typeof projectContext === 'object'
+    && !Array.isArray(projectContext)
+    && typeof projectContext.source === 'string'
+    && projectContext.source.trim() !== ''
+    && typeof projectContext.originalPrompt === 'string'
+    && typeof projectContext.summary === 'string'
+    && projectContext.summary.trim() !== ''
+    && projectContext.answers
+    && typeof projectContext.answers === 'object'
+    && !Array.isArray(projectContext.answers)
+    && typeof projectContext.collectedAt === 'string'
+    && projectContext.collectedAt.trim() !== ''
+  );
+}
+
+// Team Confirmation sets `team.approved: true` when the user
+// explicitly Approves the team line-up. Used by the spawn gate to enforce
+// that the model can't bypass confirmation with "I'll auto-approve the default".
+function isTeamApproved(team) {
+  return Boolean(team && typeof team === 'object' && team.approved === true);
 }
 
 function defaultTechnologiesFor(state) {
@@ -312,7 +589,10 @@ function writeState(cwd, state) {
   const source = state && typeof state === 'object' ? { ...state } : {};
   delete source.pluginVersion;
   if (source.stack) {
-    normalizeState(source, source.mode || 'new-project');
+    canonicalizeStateShape(source);
+    if (typeof source.stack === 'string') {
+      normalizeState(source, source.mode || 'new-project');
+    }
   }
   const nextState = {
     ...source,
@@ -332,11 +612,19 @@ function writeState(cwd, state) {
 //
 // Returns `true` if any field was added (so the caller knows to write back).
 function normalizeState(state, defaultMode) {
-  if (!state || typeof state !== 'object' || !state.stack) {
+  if (!state || typeof state !== 'object') {
     return false;
   }
 
-  let changed = normalizeLegacyStack(state);
+  let changed = canonicalizeStateShape(state);
+  if (!state.stack) {
+    return changed;
+  }
+
+  changed = normalizeLegacyStack(state) || changed;
+  if (typeof state.stack !== 'string' || !STACK_IDS.has(state.stack)) {
+    return changed;
+  }
 
   if (!state.mode && defaultMode) {
     state.mode = defaultMode;
@@ -358,10 +646,6 @@ function normalizeState(state, defaultMode) {
     state.realtime = 'none';
     changed = true;
   }
-  if (!STACK_IDS.has(state.stack)) {
-    state.stack = 'minimal';
-    changed = true;
-  }
   if (!state.frontend) {
     state.frontend = state.stack === 'default' || state.stack === 'custom-backend'
       ? 'react-vite'
@@ -376,10 +660,18 @@ function normalizeState(state, defaultMode) {
     state.mobile = defaultMobileState();
     changed = true;
   } else {
+    const frameworkAlias = mobileStateFromString(state.mobile.framework);
     const normalizedMobile = {
       ...defaultMobileState(),
       ...state.mobile,
     };
+    if (frameworkAlias) {
+      normalizedMobile.enabled = frameworkAlias.enabled;
+      normalizedMobile.framework = frameworkAlias.framework;
+      if (!state.mobile.source) {
+        normalizedMobile.source = frameworkAlias.source;
+      }
+    }
     normalizedMobile.source = canonicalMobileSource(normalizedMobile.source);
     if (
       state.mobile.enabled !== normalizedMobile.enabled
@@ -409,11 +701,54 @@ function normalizeState(state, defaultMode) {
       mode: canonicalTeamMode(state.team.mode),
       source: canonicalTeamSource(state.team.source || 'prompted'),
     };
+    const performanceLevel = state.performance && typeof state.performance === 'object'
+      ? canonicalPerformanceLevel(state.performance.level)
+      : null;
+    const normalizedOverrides = canonicalTeamOverrides(state.team.overrides, performanceLevel);
+    if (normalizedOverrides) {
+      normalizedTeam.overrides = normalizedOverrides;
+    } else if ('overrides' in normalizedTeam) {
+      delete normalizedTeam.overrides;
+    }
+    // The subagents -> main-agent approval marker is transient. Once the
+    // team is no longer in subagent mode, it must not survive as durable state.
+    if (normalizedTeam.mode !== 'subagents' && 'modeChangeApproval' in normalizedTeam) {
+      delete normalizedTeam.modeChangeApproval;
+    } else if (
+      'modeChangeApproval' in normalizedTeam
+      && (!normalizedTeam.modeChangeApproval || typeof normalizedTeam.modeChangeApproval !== 'object')
+    ) {
+      delete normalizedTeam.modeChangeApproval;
+    }
+    // team.approved is a strict boolean. Anything truthy-but-not-true is
+    // coerced away so the spawn gate can rely on `=== true`.
+    if (state.team.approved === true) {
+      normalizedTeam.approved = true;
+    } else if ('approved' in normalizedTeam) {
+      delete normalizedTeam.approved;
+    }
     if (
       state.team.mode !== normalizedTeam.mode
       || state.team.source !== normalizedTeam.source
+      || !overridesEqual(state.team.overrides, normalizedTeam.overrides)
+      || state.team.modeChangeApproval !== normalizedTeam.modeChangeApproval
+      || state.team.approved !== normalizedTeam.approved
     ) {
       state.team = normalizedTeam;
+      changed = true;
+    }
+  }
+  if (state.performance && typeof state.performance === 'object') {
+    const normalizedPerformance = {
+      ...state.performance,
+      level: canonicalPerformanceLevel(state.performance.level),
+      source: typeof state.performance.source === 'string' ? state.performance.source : 'prompted',
+    };
+    if (
+      state.performance.level !== normalizedPerformance.level
+      || state.performance.source !== normalizedPerformance.source
+    ) {
+      state.performance = normalizedPerformance;
       changed = true;
     }
   }
@@ -558,12 +893,22 @@ module.exports = {
   nowIso,
   readState,
   writeState,
+  canonicalizeStateShape,
   normalizeState,
   initializeToolchainState,
   defaultTechnologiesFor,
   hasValidTeamState,
+  hasValidProjectContext,
+  isTeamApproved,
+  canonicalTeamOverrides,
+  overridesEqual,
+  codeGraphProviderFromValue,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
+  PERFORMANCE_LEVEL_IDS,
+  PERFORMANCE_SOURCE_IDS,
+  canonicalPerformanceLevel,
+  hasValidPerformanceState,
   requireAddon,
   KNOWN_ADDONS,
   getPluginVersion,  // exported for testing + diagnostic

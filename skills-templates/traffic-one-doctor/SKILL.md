@@ -1,6 +1,6 @@
 ---
 name: traffic-one-doctor
-description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.gitnexus/` / `graphify-out/` artefacts, and `.traffic-one.json` integrity. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup". Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
+description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.gitnexus/` / `graphify-out/` artefacts, `.traffic-one.json` integrity, missing `TRAFFIC_ONE_AUTH_KEY` for `mcp-auth`, Codex hook trust, and specific Codex session ids where hooks may not have run. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup", or gives a Codex session id to debug. Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
 ---
 
 # traffic-one Doctor
@@ -35,6 +35,13 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
    `SyntaxError: Cannot use import statement`).
 4. **Project** — `.traffic-one.json` state, `.nvmrc`, `.git/` presence,
    `.gitnexus/` and `graphify-out/GRAPH_REPORT.md` artefact ages.
+5. **Codex/MCP activation** — plugin enabled flag, trusted hook state, trusted
+   workspace coverage, and whether `mcp-auth` is configured without
+   `TRAFFIC_ONE_AUTH_KEY`.
+6. **Session incident debug** — with `--session <id>`, resolves the Codex JSONL
+   transcript and reports hook payload count, prompt requests, Traffic One root
+   instruction injection, auth expiry at session start, and mutating tool use
+   before the auth gate.
 
 It outputs a JSON report with one of three summaries:
 
@@ -51,6 +58,12 @@ Run from the project root:
 
 ```bash
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/doctor.cjs"
+```
+
+For a specific Codex incident:
+
+```bash
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/doctor.cjs" --session <session-id>
 ```
 
 In Codex, prefer `TRAFFIC_ONE_PLUGIN_ROOT` or `CODEX_PLUGIN_ROOT` when the
@@ -79,6 +92,15 @@ fixes that aren't needed.
 | `GITNEXUS_STALE` | `.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
 | `LAST_RUN_FAILED` | Most recent runner stamp shows an error. Surface the message and pair with other findings. | Depends |
 | `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one.json` missing the field. Re-run onboarding. | Via `stack-setup` |
+| `CODEX_TRAFFIC_ONE_PLUGIN_DISABLED` | Codex config does not enable the Traffic One plugin, so hooks will not run. | No (user enables plugin) |
+| `CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED` | Codex hook trust records are missing, disabled, or missing trusted hashes. | No (user re-trusts hooks) |
+| `CODEX_WORKSPACE_UNTRUSTED` | Current workspace is outside trusted Codex project roots, so hooks may be skipped. | No (user trusts workspace/parent) |
+| `MCP_AUTH_ENV_MISSING` | `mcp-auth` is configured but `TRAFFIC_ONE_AUTH_KEY` is not set, so MCP startup is incomplete and Traffic One remains gated. | No (user authenticates/sets env) |
+| `CODEX_SESSION_NOT_FOUND` | `--session` id was not found in `~/.codex/sessions`. | No |
+| `CODEX_HOOKS_NOT_INVOKED_FOR_SESSION` | The transcript has no hook payloads or prompt requests. Hooks likely did not run in that session. | No (restart/trust workspace) |
+| `TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED` | The transcript's session-start instructions did not include Traffic One root instructions. | No (plugin/host activation) |
+| `TRAFFIC_ONE_AUTH_EXPIRED_AT_SESSION_START` | Local auth state was expired before the debugged session started. A working hook should have prompted. | Via auth flow |
+| `SESSION_MUTATED_BEFORE_TRAFFIC_ONE_AUTH_GATE` | A mutating tool was used before any Traffic One auth gate appeared. Treat artifacts from that session as non-Traffic-One output. | Review manually |
 
 ## Reply shape
 

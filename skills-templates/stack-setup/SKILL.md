@@ -1,9 +1,41 @@
 ---
 name: stack-setup
-description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one.json` itself — this skill is NOT needed there.
+description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one.json` itself — this skill is NOT needed there. If hooks are absent or auth status is unknown, do not infer "Traffic One inactive"; ask the auth choice or run doctor, then stop before implementation.
 ---
 
 # traffic-one Stack Setup
+
+## Traffic One Auth Preflight
+
+Before applying this skill, verify Traffic One auth unless the user is explicitly
+asking to authenticate, check auth status, log out, or run doctor.
+
+If status is not authenticated, do not apply this skill yet. Present the auth
+choice as a host modal selector when available:
+- Authenticate Traffic One (Recommended)
+- Continue without Traffic One
+
+If the user chooses Authenticate Traffic One, ask for the API key and run the
+authentication command internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
+internally. Internally means: invoke `scripts/traffic-one-auth.cjs login` (then
+`status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env —
+the pre-tool gate explicitly bypasses `scripts/traffic-one-auth.cjs (login|status|logout)`
+shell invocations even while unauthenticated. Do not Write or Edit `auth.json`
+directly; only the script can mint a valid session token.
+Do not ask the user to run bash or shell commands. If the user chooses
+Continue without Traffic One, continue the user's request without Traffic One
+features and do not repeat the auth prompt while that choice remains active.
+Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
+onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
+Traffic One agents, or use Traffic One reporting unless the user authenticates.
+
+If hooks are absent or auth status is unknown, do not infer "Traffic One
+inactive" and continue. Treat Traffic One as unverified: run or recommend
+`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
+debugging a transcript), ask the auth choice, and stop before scaffolding,
+installs, source edits, Traffic One agents, or implementation skills. Only
+continue ordinary work without Traffic One after the user explicitly chooses
+"Continue without Traffic One".
 
 Persist the user's rule-stack choice into `.traffic-one.json`. The SessionStart
 hook reads this to decide which rules to inject. The PostToolUse hook
@@ -17,19 +49,17 @@ SessionStart shows `═══ traffic-one — FIRST-RUN ONBOARDING (new project)
 The directive itself contains the full pitch script (paths A "features only"
 and B "tech specified"). Follow it. The directive is the source of truth — this
 skill exists so the user can also invoke it explicitly ("set up the stack").
-When this path fires, switch Codex and Claude Code to Plan mode before asking
-onboarding questions or writing files. If the host cannot switch automatically,
-say Plan mode is required, stay plan-only, ask fallback chat questions, and
-stop for the user's typed answers.
+When this path fires, run Traffic One onboarding in the current thread before
+asking implementation questions or writing files. Use the host popup/input
+mechanism when available. If it is unavailable, ask the same next unresolved
+onboarding question in chat and stop for the user's typed answer.
 
-Codex Default mode fallback: if Plan mode is off or `request_user_input` cannot
-be called, the fallback is the next visible assistant response before any tool
-use. Say: "Plan mode is required for Traffic One new-project onboarding, but
-Plan mode is not active here and the popup prompt is unavailable." Then ask
-`Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic +
-Capacitor`, and `3. React Native / Expo`, tell the user to reply with the
-option number or label, and stop. Ask Code Graph only after that answer, then
-Team only after Code Graph for multi-layer builds.
+Codex current-thread fallback: if `request_user_input` cannot be called, the
+fallback is the next visible assistant response before any tool use. Ask the
+Agent Mode question with `1. High (Recommended)`, `2. Balanced`, and `3. Low`,
+tell the user to reply with the option number or label, and stop. Ask Team
+Confirmation only for High/Balanced, then project context, then Mobile App,
+then Code Graph.
 
 ### Path B — Mid-project reconfigure
 User says "switch stack", "change stack", "reconfigure", etc. Read the existing
@@ -60,30 +90,42 @@ chooses another frontend or backend, or an existing repo already uses one, use
 the matching `custom-frontend`, `custom-backend`, or `custom-stack` state and
 load only the selected technology rules.
 
-## Mobile filter
+## Onboarding order
 
 When the resolved project mode is `new-project` (`mode === "new-project"`),
-Plan mode is mandatory for both Codex and Claude Code until onboarding choices
-are answered and the project plan is ready. In Codex, Plan mode enables popup
-prompts; in Claude Code, enter Claude Code Plan Mode before
-Task/Write/Edit/Bash/scaffold actions.
+Traffic One onboarding is mandatory until onboarding choices are answered and
+the project plan is ready. Run it in the current thread, using popup/input
+tools when available and plain-chat fallback when they are not.
 
-Codex onboarding choices must be prompt popups, not prose with numbered
+Codex onboarding choices must use prompt popups when available, not prose with numbered
 options. When `request_user_input` is available, call that tool and stop; do
 not print `Options:` in chat. Plain text fallback is allowed only when the
-popup tool is unavailable, and the fallback must say that first, ask the same
-blocking question directly in chat with numbered options, tell the user to
+popup tool is unavailable: ask the same blocking question directly in chat with numbered options, tell the user to
 reply with the option number or label, and stop. Do not choose a default,
 infer an answer, write `.traffic-one.json`, scaffold, or continue while the
 onboarding answer is pending.
 
-Always ask the mobile decision for a complex new project. If the user already
-asked for mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only,
-Next.js, frontend-only, no backend, no subagents, or "just build it", treat
-that as implementation intent rather than an onboarding answer. Ask before the
-subagent preflight, before the Code Graph popup, and before writing
-`.traffic-one.json`. On Codex, use
-`request_user_input` as a popup:
+Ask onboarding prompts in this order and stop after each unresolved answer:
+
+1. Agent Mode / Performance: `High (Recommended)`, `Balanced`, or `Low`.
+2. Team Confirmation for `High` / `Balanced`: show every role/tier/model row
+   and wait for explicit `Approve`; skip this for `Low`.
+3. Show: "Traffic One was successfully set up. Let's collect the project
+   details next."
+4. Ask one rich, dynamic MVP-context questionnaire based on the user's original
+   request and save `projectContext` with `source`, `originalPrompt`,
+   `summary`, `answers`, and `collectedAt`. Cover audience, core flows, v1
+   features, roles/auth, data model, admin/ops needs, business model, payments
+   when applicable, integrations, content/data source, engagement, success
+   metrics, constraints, visual/product tone, and domain-specific questions.
+   Ask admin-area questions when the app has managed content/users/
+   transactions/moderation/reporting/operations even if the user did not ask
+   for admin.
+5. Ask the mobile decision. If the user already asked for
+   mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only, Next.js,
+   frontend-only, no backend, no subagents, or "just build it", treat that as
+   implementation intent rather than an onboarding answer. On Codex, use
+   `request_user_input` as a popup:
 
 - header: `Mobile App`
 - question: `Do you want a mobile app too?`
@@ -125,8 +167,8 @@ a frontend-only prototype or rejects Supabase.
 
 `gitnexus` · `graphify`
 
-After the mobile popup is answered, ask this provider choice before
-the subagent/team popup. On Codex, use `request_user_input` as a popup:
+After the mobile popup is answered, ask this provider choice. On Codex, use
+`request_user_input` as a popup:
 
 - header: `Code Graph`
 - question: `Which provider should we use for the codebase graph?`
@@ -158,17 +200,22 @@ not add a "(Recommended)" tag.
 ## File shape (write exactly this with the Write tool)
 
 The schema is required for new projects: `mode`, `stack`, `frontend`, `backend`,
-`mobile`, `technologies`, `realtime`, `codeGraphProvider`, `team`, `toolchain`,
-`confirmed`, `onboardingComplete`, `confirmedAt` (`version` is the current
+`projectContext`, `mobile`, `technologies`, `realtime`, `codeGraphProvider`,
+`performance`, `team`, `toolchain`, `confirmed`, `onboardingComplete`,
+`confirmedAt`
+(`version` is the current
 Traffic One plugin version; do not write a separate `pluginVersion` field).
 `mobile.source` is an exact enum: use `prompted` for the required Mobile App
 popup/chat answer, `explicit` for an explicit mobile request, and `none` only
 when no mobile decision has been collected. Do not write descriptive variants.
-`team.mode` is the source of truth for orchestration after onboarding:
-`subagents` means the parent/orchestrator must spawn role agents and must not
-write feature source itself; `main-agent` means the same role phases are
-simulated manually in the current thread. Use `team.source: "prompted"` for
-the Team popup/chat answer.
+`performance.level` is the source of truth for cost/quality. `high` and
+`balanced` require the Team Confirmation popup and must include
+`team.approved: true` only after the user explicitly approves the role/tier/model
+line-up. `team.mode` is the source of truth for orchestration after onboarding:
+`subagents` means the parent/orchestrator must spawn the named senior-role
+agents and must not write feature source itself; `main-agent` means the same
+role phases are simulated manually in the current thread. Use
+`team.source: "prompted"` for the Team Confirmation popup/chat answer.
 
 ```json
 {
@@ -177,11 +224,19 @@ the Team popup/chat answer.
   "stack": "<chosen id>",
   "frontend": "<chosen frontend>",
   "backend": "<chosen backend>",
+  "projectContext": {
+    "source": "prompted",
+    "originalPrompt": "<user's original request>",
+    "summary": "<short product summary>",
+    "answers": {},
+    "collectedAt": "<ISO-8601 UTC>"
+  },
   "mobile": { "enabled": false, "framework": "none", "source": "<explicit|prompted|none>" },
   "technologies": { "frontend": [], "backend": [], "mobile": [] },
   "realtime": "<heavy|light|none>",
   "codeGraphProvider": "<gitnexus|graphify>",
-  "team": { "mode": "<subagents|main-agent>", "source": "prompted" },
+  "performance": { "level": "<low|balanced|high>", "source": "prompted" },
+  "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },
   "toolchain": {
     "gitnexus": { "installedVersion": null, "installedAt": null },
     "graphify": { "installedVersion": null, "installedAt": null },

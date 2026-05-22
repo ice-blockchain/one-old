@@ -7,8 +7,10 @@
 // around them.
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
-const { spawn } = require('child_process');
+const crypto = require('crypto');
+const { spawn, spawnSync } = require('child_process');
 
 const {
   STATE_FILE,
@@ -29,6 +31,9 @@ const {
   normalizeState,
   initializeToolchainState,
   hasValidTeamState,
+  hasValidProjectContext,
+  hasValidPerformanceState,
+  isTeamApproved,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
   stackFingerprint,
@@ -38,7 +43,15 @@ const {
   activeAgentRole,
   isFixCycleSession,
   getSpawnIndex,
+  VALID_AGENT_ROLES,
 } = require('./state.cjs');
+
+const {
+  PERFORMANCE_LEVEL_IDS,
+  performanceChatFallback,
+  modelForRoleHost,
+  teamModeForLevel,
+} = require('./agents-performance-prompt.cjs');
 
 const { STACKS, stackSpecForState, roleScopedRules } = require('./stacks.cjs');
 
@@ -66,15 +79,31 @@ const {
 const {
   computeProjectFingerprint,
 } = require('../security-check-runner.cjs');
+const {
+  maybeStartOneMcpReport,
+} = require('../one-mcp-report.cjs');
+const {
+  authRemoteCheckDue,
+  authRequiredMessage,
+  authStatePath,
+  isAuthenticatedLocal,
+  isTrafficOneAuthCommand,
+  isTrafficOneDoctorCommand,
+  readAuthState: readTrafficOneAuthState,
+} = require('../traffic-one-auth.cjs');
 
 const {
   onboardingDirectiveNewProject,
   autoDetectedAnnouncement,
   onboardingReminderShort,
   postWriteIncompleteWarning,
+  hostPopupInstruction,
   codexDefaultModeFallbackDirective,
   codexDefaultModeFallbackMobilePrompt,
 } = require('./directives.cjs');
+const {
+  teamConfirmationChatFallback,
+} = require('./agents-team-confirmation-prompt.cjs');
 
 const tokenLogger = require('./token-logger.cjs');
 
@@ -152,6 +181,518 @@ function tokenEconomyBanner(cwd) {
 
 function isKnownStack(stack) {
   return STACK_IDS.has(stack) || Object.prototype.hasOwnProperty.call(LEGACY_STACK_ALIASES, stack);
+}
+
+function authChoicePersistenceDiagnostic(writeResult) {
+  if (!writeResult || writeResult.ok !== false) return '';
+  const code = writeResult.code ? ` (${writeResult.code})` : '';
+  return [
+    '',
+    `Diagnostic: Traffic One could not persist the auth choice state${code}.`,
+    'Keep Traffic One inactive and blocked until the user authenticates or chooses to continue without Traffic One. The prompt may repeat until storage is writable.',
+    'Run Traffic One doctor to check hook/auth storage setup if this persists.',
+  ].join('\n');
+}
+
+function authRequiredHookResult(hookEventName, options = {}) {
+  const message = authRequiredMessage();
+  const persistenceDiagnostic = authChoicePersistenceDiagnostic(options.authChoiceWrite);
+  const inactiveMessage = [
+    message,
+    '',
+    'Traffic One is inactive for this prompt because authentication is missing, expired, or rejected.',
+    '',
+    'Your next assistant action must present a host modal selector with exactly two choices when a modal/popup tool is available:',
+    '',
+    'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
+    'Choices:',
+    '- Authenticate Traffic One (Recommended)',
+    '- Continue without Traffic One',
+    '',
+    'If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then run `traffic-one-auth.cjs login` internally with `TRAFFIC_ONE_AUTH_KEY` and verify `traffic-one-auth.cjs status` yourself. Use your own Bash tool — the pre-tool auth gate explicitly bypasses shell invocations of `scripts/traffic-one-auth.cjs (login|status|logout)`, so they will run even while unauthenticated. Do not Write or Edit `auth.json` directly (Write/Edit are blocked, and only the script can mint a valid session token). Do not ask the user to run bash or shell commands.',
+    'If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.',
+    '',
+    'Do not answer pending Traffic One onboarding choices, inspect, scaffold, or build through Traffic One until the user makes this auth choice.',
+    persistenceDiagnostic,
+  ].join('\n');
+  const hookSpecificOutput = {
+    hookEventName,
+    additionalContext: inactiveMessage,
+  };
+  const payload = {
+    systemMessage: 'traffic-one inactive: authentication choice required',
+    promptRequest: authChoicePromptRequest(inactiveMessage),
+    hookSpecificOutput,
+  };
+  return {
+    stdout: JSON.stringify(payload),
+    exitCode: 0,
+  };
+}
+
+function extractPromptText(rawInput) {
+  const parsed = parseJsonText(rawInput, null);
+  if (parsed && typeof parsed === 'object') {
+    return String(parsed.prompt || parsed.user_prompt || parsed.text || '');
+  }
+  return String(rawInput || '');
+}
+
+function normalizedToolName(toolName = '') {
+  const raw = String(toolName || '');
+  return raw.includes('.') ? raw.split('.').pop() : raw;
+}
+
+function isShellToolName(toolName = '') {
+  return /^(Bash|exec_command)$/i.test(normalizedToolName(toolName));
+}
+
+function isWriteLikeToolName(toolName = '') {
+  return /^(Write|Edit|MultiEdit|apply_patch)$/i.test(normalizedToolName(toolName));
+}
+
+function commandFromToolInput(toolInput = {}) {
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  if (typeof toolInput.command === 'string') return toolInput.command;
+  if (typeof toolInput.cmd === 'string') return toolInput.cmd;
+  return '';
+}
+
+const AUTH_CHOICE_STATE_VERSION = 3;
+const AUTH_CHOICE_CONTINUE_TTL_MS = 4 * 60 * 60 * 1000;
+const TEAM_MODE_CHANGE_APPROVAL_TTL_MS = 10 * 60 * 1000;
+
+function authChoiceFallbackStatePath(env = process.env) {
+  if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return null;
+  const source = authStatePath(env);
+  const digest = crypto.createHash('sha256').update(source).digest('hex').slice(0, 16);
+  return path.join(os.tmpdir(), 'traffic-one', `auth-choice-${digest}.json`);
+}
+
+function authChoiceStatePaths(env = process.env) {
+  const primary = authChoiceStatePath(env);
+  const fallback = authChoiceFallbackStatePath(env);
+  return fallback && fallback !== primary ? [primary, fallback] : [primary];
+}
+
+function authChoiceStatePath(env = process.env) {
+  if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) {
+    return path.resolve(env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH);
+  }
+  return path.join(path.dirname(authStatePath(env)), 'auth-choice.json');
+}
+
+function normalizeAuthChoiceState(state) {
+  if (!state || typeof state !== 'object') {
+    return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+  }
+  if (state.version === AUTH_CHOICE_STATE_VERSION) {
+    return {
+      version: AUTH_CHOICE_STATE_VERSION,
+      globalChoice: state.globalChoice && typeof state.globalChoice === 'object' ? state.globalChoice : null,
+      choices: state.choices && typeof state.choices === 'object' ? state.choices : {},
+    };
+  }
+  if (state.choice && typeof state.choice === 'object') {
+    const migrated = { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+    if (state.choice.status === 'authenticate') {
+      migrated.globalChoice = { ...state.choice, scope: 'global' };
+    } else if (typeof state.choice.cwd === 'string' && state.choice.cwd.trim()) {
+      migrated.choices[path.resolve(state.choice.cwd)] = {
+        ...state.choice,
+        scope: 'project',
+        cwd: path.resolve(state.choice.cwd),
+      };
+    }
+    return migrated;
+  }
+  if (state.choices && typeof state.choices === 'object') {
+    const choices = {};
+    let globalChoice = null;
+    for (const [key, record] of Object.entries(state.choices)) {
+      if (!record || typeof record !== 'object' || typeof record.status !== 'string') continue;
+      const cwd = typeof record.cwd === 'string' && record.cwd.trim() ? record.cwd : key;
+      if (record.status === 'authenticate') {
+        if (!globalChoice || Date.parse(record.updatedAt || '') > Date.parse(globalChoice.updatedAt || '')) {
+          globalChoice = { ...record, scope: 'global' };
+        }
+        continue;
+      }
+      choices[path.resolve(cwd)] = { ...record, scope: 'project', cwd: path.resolve(cwd) };
+    }
+    return { version: AUTH_CHOICE_STATE_VERSION, globalChoice, choices };
+  }
+  return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+}
+
+function readAuthChoiceState(env = process.env) {
+  for (const filePath of authChoiceStatePaths(env)) {
+    if (!fs.existsSync(filePath)) continue;
+    const state = safeReadJson(filePath, null);
+    if (state && typeof state === 'object') return normalizeAuthChoiceState(state);
+  }
+  return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+}
+
+function writeAuthChoiceState(state, env = process.env) {
+  const paths = authChoiceStatePaths(env);
+  const errors = [];
+  for (const filePath of paths) {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      try {
+        fs.chmodSync(filePath, 0o600);
+      } catch {
+        // best-effort; some filesystems ignore chmod.
+      }
+      return { ok: true, filePath, fallback: filePath !== paths[0] };
+    } catch (error) {
+      errors.push({ filePath, error });
+    }
+  }
+  const first = errors[0] && errors[0].error ? errors[0].error : new Error('auth choice state write failed');
+  first.authChoiceWriteErrors = errors;
+  throw first;
+}
+
+function readAuthChoice(cwd = process.cwd(), env = process.env) {
+  const state = readAuthChoiceState(env);
+  const key = path.resolve(cwd || process.cwd());
+  const projectChoice = state.choices && state.choices[key] && typeof state.choices[key] === 'object'
+    ? state.choices[key]
+    : null;
+  if (projectChoice && projectChoice.status === 'continue-without-traffic-one') {
+    const expires = Date.parse(projectChoice.expiresAt || '');
+    if (!Number.isFinite(expires) || expires <= Date.now()) {
+      return state.globalChoice || projectChoice;
+    }
+    return projectChoice;
+  }
+  if (state.globalChoice && state.globalChoice.status === 'authenticate') {
+    return state.globalChoice;
+  }
+  return projectChoice || state.globalChoice || null;
+}
+
+function authChoiceStatus(cwd = process.cwd(), env = process.env) {
+  const record = readAuthChoice(cwd, env);
+  return record && typeof record.status === 'string' ? record.status : null;
+}
+
+function writeAuthChoice(status, cwd = process.cwd(), env = process.env) {
+  const state = readAuthChoiceState(env);
+  const now = Date.now();
+  const key = path.resolve(cwd || process.cwd());
+  const record = {
+    status,
+    scope: status === 'authenticate' ? 'global' : 'project',
+    ...(status === 'authenticate' ? {} : { cwd: key }),
+    updatedAt: nowIso(),
+  };
+  if (status === 'continue-without-traffic-one') {
+    record.expiresAt = new Date(now + AUTH_CHOICE_CONTINUE_TTL_MS).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+  state.choices = state.choices && typeof state.choices === 'object' ? state.choices : {};
+  if (status === 'authenticate') {
+    state.globalChoice = record;
+    delete state.choices[key];
+  } else {
+    state.choices[key] = record;
+  }
+  return writeAuthChoiceState(state, env);
+}
+
+function tryWriteAuthChoice(status, cwd = process.cwd(), env = process.env) {
+  try {
+    const result = writeAuthChoice(status, cwd, env);
+    return { ok: true, ...(result || {}) };
+  } catch (error) {
+    return {
+      ok: false,
+      code: error && error.code ? String(error.code) : null,
+      message: error && error.message ? String(error.message) : 'auth choice state write failed',
+    };
+  }
+}
+
+function authChoiceAllowsContinue(cwd = process.cwd(), env = process.env, nowMs = Date.now()) {
+  const record = readAuthChoice(cwd, env);
+  if (!record || record.status !== 'continue-without-traffic-one') return false;
+  const expires = Date.parse(record.expiresAt || '');
+  return Number.isFinite(expires) && expires > nowMs;
+}
+
+function parseUnauthenticatedAuthChoice(rawInput) {
+  const prompt = extractPromptText(rawInput).trim().toLowerCase();
+  if (!prompt) return null;
+  const compact = prompt
+    .replace(/[`"'’]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!compact) return null;
+  const mentionsTrafficOne = /\btraffic one\b/.test(compact);
+  if (/^(1|one)$/.test(compact)) {
+    return 'authenticate';
+  }
+  if (/^(2|two)$/.test(compact)) {
+    return 'continue-without-traffic-one';
+  }
+  if (
+    (mentionsTrafficOne && /\b(authenticate|auth|login|log in|sign in|signin)\b/.test(compact))
+    || /^(authenticate|auth|login|log in|sign in|signin|yes)$/.test(compact)
+  ) {
+    return 'authenticate';
+  }
+  const continueWithout = [
+    /^(continue|proceed|skip|without|no)$/,
+    /\bcontinue without\b/,
+    /\bwithout traffic one\b/,
+    /\bdont use\b/,
+    /\bdo not use\b/,
+    /\bnot use\b/,
+    /\bskip\b/,
+    /\bignore\b/,
+    /\bdisable\b/,
+    /\binactive\b/,
+  ];
+  if (
+    continueWithout.some((pattern) => pattern.test(compact))
+    || (mentionsTrafficOne && /\b(continue|proceed|skip|ignore|without|disable|inactive|no)\b/.test(compact))
+  ) {
+    return 'continue-without-traffic-one';
+  }
+  return null;
+}
+
+function parseTrafficOneApiKey(rawInput) {
+  let prompt = extractPromptText(rawInput).trim();
+  if (!prompt) return null;
+  prompt = prompt
+    .replace(/^```[a-zA-Z0-9_-]*\n?/, '')
+    .replace(/\n?```$/, '')
+    .trim();
+  if (/^(cancel|stop|never mind|nevermind)$/i.test(prompt)) return null;
+  const assignment = prompt.match(/\bTRAFFIC_ONE_AUTH_KEY\s*=\s*([A-Za-z0-9._:-]{8,})\b/);
+  if (assignment) return assignment[1];
+  const keyPhrase = prompt.match(/\b(?:use\s+)?(?:the\s+)?(?:api\s+)?key\s+(?:is\s+)?([A-Za-z0-9][A-Za-z0-9._:-]{7,})\b/i);
+  if (keyPhrase) return keyPhrase[1];
+  if (/^[A-Za-z0-9][A-Za-z0-9._:-]{7,}$/.test(prompt)) return prompt;
+  return null;
+}
+
+function authChoiceHookResult(choice) {
+  if (choice === 'authenticate') {
+    const writeResult = tryWriteAuthChoice('authenticate', process.cwd());
+    return authApiKeyPromptHookResult({ authChoiceWrite: writeResult });
+  }
+
+  const writeResult = tryWriteAuthChoice('continue-without-traffic-one', process.cwd());
+  const rememberedLine = writeResult.ok
+    ? 'This choice has been remembered for this project so the auth prompt is not repeated here while it remains active.'
+    : 'This choice could not be persisted, so the auth prompt may repeat until Traffic One auth-choice storage is writable.';
+  const payload = {
+    systemMessage: 'traffic-one inactive: user chose to continue without Traffic One',
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: [
+        'The user chose to continue without using the Traffic One plugin.',
+        'Proceed with the user request using normal non-Traffic-One behavior only.',
+        'Do not run Traffic One skills, onboarding, setup, reporting, materialization, agents, or hooks for this request.',
+        rememberedLine,
+        authChoicePersistenceDiagnostic(writeResult).trim(),
+      ].join('\n'),
+    },
+  };
+  return { stdout: JSON.stringify(payload), exitCode: 0 };
+}
+
+function authChoiceRequiredDenyReason() {
+  return [
+    'Traffic One authentication choice required before tool use.',
+    '',
+    'Authentication is missing, expired, or rejected. The assistant must not continue with tools until the user chooses one path.',
+    '',
+    'Present this as a host modal selector when a modal/popup tool is available:',
+    'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
+    'Choices: Authenticate Traffic One (Recommended); Continue without Traffic One.',
+    '',
+    'If Authenticate Traffic One is chosen, ask for the API key, then invoke `scripts/traffic-one-auth.cjs login` via your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env (the pre-tool gate bypasses `scripts/traffic-one-auth.cjs (login|status|logout)` while unauthenticated). Do not Write/Edit `auth.json` directly, and do not ask the user to run bash or shell commands.',
+    'If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.',
+    '',
+    'Do not inspect, scaffold, install, edit, or build before the user answers this auth choice.',
+  ].join('\n');
+}
+
+function parseAuthStatusOutput(stdout) {
+  try {
+    const parsed = JSON.parse(String(stdout || '').trim());
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function authApiKeyPromptHookResult(options = {}) {
+  const additionalContext = [
+    'The user chose to authenticate Traffic One. Do not continue implementation yet.',
+    'Ask the user for the Traffic One API key using a secure host input/modal if available.',
+    'After the user enters the key, run authentication internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
+    'Internally means: invoke `scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows these `scripts/traffic-one-auth.cjs (login|status|logout)` shell invocations while unauthenticated, so the call will go through. Do not Write or Edit `auth.json` directly — that path is blocked, and only the script can mint a valid session token.',
+    'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
+    authChoicePersistenceDiagnostic(options.authChoiceWrite).trim(),
+  ].join('\n');
+  const payload = {
+    systemMessage: 'traffic-one authentication key required',
+    promptRequest: authApiKeyPromptRequest(additionalContext),
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext,
+    },
+  };
+  return { stdout: JSON.stringify(payload), exitCode: 0 };
+}
+
+function runInternalAuthLogin(apiKey) {
+  const authScript = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
+  const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_LOGIN_TIMEOUT_MS || '10000', 10);
+  const env = { ...process.env, TRAFFIC_ONE_AUTH_KEY: apiKey };
+  const options = {
+    cwd: process.cwd(),
+    env,
+    encoding: 'utf8',
+    timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 10000,
+    maxBuffer: 64 * 1024,
+  };
+  const loginResult = spawnSync(process.execPath, [authScript, 'login'], options);
+  const loginParsed = parseAuthStatusOutput(loginResult.stdout);
+  if (loginResult.status !== 0 || !loginParsed || loginParsed.ok !== true) {
+    return {
+      ok: false,
+      reason: (loginResult.stderr || '').trim() || (loginParsed && loginParsed.reason) || 'login-failed',
+    };
+  }
+  const statusResult = spawnSync(process.execPath, [authScript, 'status'], {
+    ...options,
+    env: process.env,
+  });
+  const statusParsed = parseAuthStatusOutput(statusResult.stdout);
+  if (statusResult.status === 0 && statusParsed && statusParsed.authenticated === true) {
+    return { ok: true, status: statusParsed };
+  }
+  return {
+    ok: false,
+    reason: (statusResult.stderr || '').trim() || (statusParsed && statusParsed.reason) || 'status-check-failed',
+  };
+}
+
+function authLoginFromPromptHookResult(apiKey) {
+  const result = runInternalAuthLogin(apiKey);
+  if (!result.ok) {
+    const payload = {
+      systemMessage: 'traffic-one authentication failed',
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: [
+          'Traffic One authentication failed while running the internal login/status flow.',
+          result.reason ? `Reason: ${result.reason}` : 'Reason: unknown failure',
+          'Ask the user to re-enter the API key. Do not echo the key and do not ask the user to run shell commands.',
+        ].join('\n'),
+      },
+    };
+    return { stdout: JSON.stringify(payload), exitCode: 0 };
+  }
+  const payload = {
+    systemMessage: 'traffic-one authenticated',
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext: [
+        'Traffic One authentication completed internally and status reports authenticated.',
+        'Continue the user request with Traffic One enabled.',
+      ].join('\n'),
+    },
+  };
+  return { stdout: JSON.stringify(payload), exitCode: 0 };
+}
+
+function authGateForHook({ forceRemote = false } = {}) {
+  const authScript = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
+  const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_REMOTE_CHECK_TIMEOUT_MS || '5000', 10);
+  const runStatus = (statusArgs) => spawnSync(process.execPath, [authScript, ...statusArgs], {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: 'utf8',
+    timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000,
+    maxBuffer: 64 * 1024,
+  });
+
+  if (!isAuthenticatedLocal()) {
+    const refreshResult = runStatus(['status']);
+    const refreshParsed = parseAuthStatusOutput(refreshResult.stdout);
+    if (refreshResult.status === 0 && refreshParsed && refreshParsed.authenticated === true) {
+      return {
+        authenticated: true,
+        checkedRemote: false,
+        reauthenticated: refreshParsed.reauthenticated === true,
+      };
+    }
+    return {
+      authenticated: false,
+      reason: (refreshParsed && refreshParsed.reason) || (refreshResult.error && refreshResult.error.message) || 'local-auth-required',
+    };
+  }
+
+  const authState = readTrafficOneAuthState();
+  if (!forceRemote && !authRemoteCheckDue(authState)) {
+    return { authenticated: true, checkedRemote: false };
+  }
+
+  const result = runStatus(['status', '--remote']);
+  const parsed = parseAuthStatusOutput(result.stdout);
+  if (parsed && parsed.authenticated === false) {
+    return { authenticated: false, reason: parsed.reason || 'remote-auth-required' };
+  }
+  if (!parsed || result.status !== 0 || parsed.remoteChecked === false) {
+    // Test-only escape hatch for deterministic stack tests without a live auth server.
+    if (process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE === '1') {
+      return {
+        authenticated: true,
+        checkedRemote: true,
+        remoteCheckFailed: true,
+      };
+    }
+    return {
+      authenticated: false,
+      reason: (parsed && parsed.reason) || (result.error && result.error.message) || 'remote-auth-check-failed',
+    };
+  }
+  return {
+    authenticated: true,
+    checkedRemote: true,
+    remoteCheckFailed: false,
+  };
+}
+
+function authPreToolGate(toolName, toolInput = {}) {
+  if (isPluginAuthoringRoot(process.cwd())) return null;
+  const authGate = authGateForHook();
+  if (authGate.authenticated) return null;
+  const command = commandFromToolInput(toolInput);
+  if (isShellToolName(toolName) && (
+    isTrafficOneAuthCommand(command) ||
+    isTrafficOneDoctorCommand(command)
+  )) {
+    return { stdout: '', exitCode: 0 };
+  }
+  if (authChoiceAllowsContinue()) {
+    return { stdout: '', exitCode: 0 };
+  }
+  const reason = authChoiceRequiredDenyReason();
+  return denyPreToolUse(reason, authChoicePromptRequest(reason));
 }
 
 function isNativeState(state) {
@@ -249,6 +790,196 @@ function isStateFilePath(filePath) {
   return normalized === STATE_FILE || normalized.endsWith(`/${STATE_FILE}`);
 }
 
+function patchTextFromToolInput(toolInput = {}) {
+  if (typeof toolInput === 'string') return toolInput;
+  if (!toolInput || typeof toolInput !== 'object') return '';
+  for (const key of ['patch', 'input', 'content', 'text']) {
+    if (typeof toolInput[key] === 'string') return toolInput[key];
+  }
+  return '';
+}
+
+function patchTouchedFiles(patchText) {
+  const files = [];
+  for (const line of String(patchText || '').split(/\r?\n/)) {
+    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
+      || line.match(/^\*\*\* Move to: (.+)$/);
+    if (match) files.push(match[1].trim());
+  }
+  return files;
+}
+
+function isStateFileOnlyPatch(toolName, toolInput) {
+  if (!/^apply_patch$/i.test(normalizedToolName(toolName))) return false;
+  const files = patchTouchedFiles(patchTextFromToolInput(toolInput));
+  return files.length > 0 && files.every(isStateFilePath);
+}
+
+function hashPromptText(promptText) {
+  return crypto.createHash('sha256').update(String(promptText || '').trim()).digest('hex');
+}
+
+function isExplicitSubagentsToMainAgentIntent(promptText) {
+  const prompt = String(promptText || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!prompt) return false;
+  const rejectsAsVague = /\b(subagents?\s+(are|is)\s+unavailable|subagents?\s+(are|is)\s+blocked|subagents?\s+(do|does)\s+not\s+work)\b/.test(prompt);
+  const rejectsWithoutChoice = rejectsAsVague && !/\b(i|we)\b/.test(prompt);
+  if (rejectsWithoutChoice) return false;
+  const stopsSubagents = /\b(i|we)\s+(do not|don't|dont|no longer|won't|will not)\s+(want(?:\s+to)?\s+)?(use\s+)?subagents?\b/.test(prompt)
+    || /\b(stop|disable|turn off|drop|remove|skip)\s+(the\s+)?subagents?\b/.test(prompt)
+    || /\b(no more|without)\s+subagents?\b/.test(prompt)
+    || /\b(no longer|do not|don't|dont)\s+use\s+(the\s+)?subagents?\b/.test(prompt);
+  const choosesMainAgent = /\b(switch|change|move|go|fall back|fallback|use)\s+(to\s+)?(low|main[- ]agent|main agent only|main thread|same thread|manual)\b/.test(prompt)
+    || /\b(low|main[- ]agent|main agent only|main thread|same thread|manual)\s+(mode|only)\b/.test(prompt);
+  return stopsSubagents && choosesMainAgent;
+}
+
+function hasFreshTeamModeChangeApproval(state, nowMs = Date.now()) {
+  const approval = state && state.team && typeof state.team === 'object'
+    ? state.team.modeChangeApproval
+    : null;
+  if (!approval || typeof approval !== 'object') return false;
+  if (approval.from !== 'subagents' || approval.to !== 'main-agent') return false;
+  if (approval.source !== 'user-prompt') return false;
+  if (typeof approval.promptHash !== 'string' || !/^[a-f0-9]{64}$/.test(approval.promptHash)) return false;
+  const requestedAt = typeof approval.requestedAt === 'string' ? Date.parse(approval.requestedAt) : NaN;
+  return Number.isFinite(requestedAt)
+    && requestedAt <= nowMs
+    && nowMs - requestedAt <= TEAM_MODE_CHANGE_APPROVAL_TTL_MS;
+}
+
+function setTeamModeChangeApproval(cwd, state, promptText) {
+  if (!state || typeof state !== 'object') return false;
+  if (!state.team || typeof state.team !== 'object') return false;
+  state.team.modeChangeApproval = {
+    from: 'subagents',
+    to: 'main-agent',
+    source: 'user-prompt',
+    requestedAt: nowIso(),
+    promptHash: hashPromptText(promptText),
+  };
+  writeState(cwd, state);
+  return true;
+}
+
+function clearTeamModeChangeApproval(cwd, state) {
+  if (!state || typeof state !== 'object') return false;
+  if (!state.team || typeof state.team !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(state.team, 'modeChangeApproval')) return false;
+  delete state.team.modeChangeApproval;
+  writeState(cwd, state);
+  return true;
+}
+
+function updateTeamModeChangeApprovalFromPrompt(cwd, state, promptText) {
+  if (!promptText || !promptText.trim()) return { recorded: false, cleared: false };
+  if (!state || typeof state !== 'object') return { recorded: false, cleared: false };
+  if (state.onboardingComplete !== true) return { recorded: false, cleared: false };
+  if (!state.team || state.team.mode !== 'subagents') return { recorded: false, cleared: false };
+  if (isExplicitSubagentsToMainAgentIntent(promptText)) {
+    setTeamModeChangeApproval(cwd, state, promptText);
+    return { recorded: true, cleared: false };
+  }
+  return { recorded: false, cleared: clearTeamModeChangeApproval(cwd, state) };
+}
+
+function writeLikeStateFileTarget(toolName, toolInput) {
+  if (!isWriteLikeToolName(toolName)) return false;
+  const filePath = toolInput && typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
+  return isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput);
+}
+
+function replaceOneOrAll(text, oldText, newText, replaceAll = false) {
+  if (typeof oldText !== 'string' || oldText === '') return text;
+  if (typeof newText !== 'string') return text;
+  if (replaceAll) return text.split(oldText).join(newText);
+  const index = text.indexOf(oldText);
+  if (index === -1) return text;
+  return `${text.slice(0, index)}${newText}${text.slice(index + oldText.length)}`;
+}
+
+function proposedStateTextFromToolInput(cwd, toolName, toolInput) {
+  const normalized = normalizedToolName(toolName);
+  const statePath = path.join(cwd, STATE_FILE);
+  const currentText = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf8') : '';
+  if (/^Write$/i.test(normalized)) {
+    return typeof toolInput.content === 'string' ? toolInput.content : null;
+  }
+  if (/^Edit$/i.test(normalized)) {
+    return replaceOneOrAll(currentText, toolInput.old_string, toolInput.new_string, toolInput.replace_all === true);
+  }
+  if (/^MultiEdit$/i.test(normalized)) {
+    let nextText = currentText;
+    const edits = Array.isArray(toolInput.edits) ? toolInput.edits : [];
+    for (const edit of edits) {
+      nextText = replaceOneOrAll(nextText, edit.old_string, edit.new_string, edit.replace_all === true);
+    }
+    return nextText;
+  }
+  return null;
+}
+
+function proposedStateFromStateWrite(cwd, toolName, toolInput) {
+  const text = proposedStateTextFromToolInput(cwd, toolName, toolInput);
+  if (typeof text !== 'string') return null;
+  const proposed = parseJsonText(text, null);
+  if (!proposed || typeof proposed !== 'object') return null;
+  const normalized = JSON.parse(JSON.stringify(proposed));
+  normalizeState(normalized, normalized.mode || detectMode(cwd));
+  return normalized;
+}
+
+function proposedTeamModeFromStateWrite(cwd, toolName, toolInput) {
+  const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
+  if (proposed) {
+    return proposed.team && typeof proposed.team === 'object' ? proposed.team.mode : null;
+  }
+  if (/^apply_patch$/i.test(normalizedToolName(toolName))) {
+    const patchText = patchTextFromToolInput(toolInput);
+    const addedMainAgent = /^\+\s*"mode"\s*:\s*"main-agent"\s*,?\s*$/m.test(patchText);
+    return addedMainAgent ? 'main-agent' : null;
+  }
+  return null;
+}
+
+function proposedStateWritesModeChangeApproval(cwd, toolName, toolInput) {
+  const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
+  if (proposed && proposed.team && typeof proposed.team === 'object') {
+    return Object.prototype.hasOwnProperty.call(proposed.team, 'modeChangeApproval');
+  }
+  if (/^apply_patch$/i.test(normalizedToolName(toolName))) {
+    return /^\+.*"modeChangeApproval"\s*:/m.test(patchTextFromToolInput(toolInput));
+  }
+  return false;
+}
+
+function teamModeApprovalMarkerWriteGuard(cwd, toolName, toolInput) {
+  if (!writeLikeStateFileTarget(toolName, toolInput)) return null;
+  if (!proposedStateWritesModeChangeApproval(cwd, toolName, toolInput)) return null;
+  return denyPreToolUse(
+    'Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. '
+    + 'Do not add or refresh it in `.traffic-one.json` manually.'
+  );
+}
+
+function teamModeDowngradeGuard(cwd, toolName, toolInput, currentState) {
+  if (!writeLikeStateFileTarget(toolName, toolInput)) return null;
+  if (!currentState || typeof currentState !== 'object') return null;
+  if (currentState.onboardingComplete !== true) return null;
+  if (!currentState.team || currentState.team.mode !== 'subagents') return null;
+  if (proposedTeamModeFromStateWrite(cwd, toolName, toolInput) !== 'main-agent') return null;
+  if (hasFreshTeamModeChangeApproval(currentState)) {
+    clearTeamModeChangeApproval(cwd, currentState);
+    return null;
+  }
+  return denyPreToolUse(
+    'Traffic One team mode guard: `.traffic-one.json` currently records `team.mode="subagents"`. '
+    + 'This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. '
+    + 'Ask the user to say that explicitly before rewriting `performance.level="low"` and `team.mode="main-agent"`. '
+    + 'Do not use `team.source="unavailable"` or a state rewrite as a workaround.'
+  );
+}
+
 function isProjectMemoryWritePath(relativePath) {
   const normalized = String(relativePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
   if (!normalized.startsWith('.traffic-one/')) return false;
@@ -296,14 +1027,52 @@ function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
   const statePath = path.join(cwd, STATE_FILE);
   const state = safeReadJson(statePath, null);
   if (!state || typeof state !== 'object') return null;
-  if (!state.stack || !isKnownStack(state.stack)) return null;
+  const normalized = normalizeState(state, state.mode || detectMode(cwd));
+  if (normalized) {
+    try {
+      writeState(cwd, state);
+    } catch {
+      // Let the materializer surface a validation or write failure below.
+    }
+  }
+  if (!state.stack || !isKnownStack(state.stack)) {
+    if (state.mode === 'new-project' || state.onboardingComplete === true) {
+      return materializeProjectFromState(cwd, trigger);
+    }
+    return null;
+  }
   if (state.onboardingComplete !== true) return null;
 
   if (isMaterialized(state) && hasMaterializedProjectAssets(cwd, state)) {
+    startOneMcpReportBestEffort(cwd, state, trigger);
     return null;
   }
 
   return materializeProjectFromState(cwd, trigger);
+}
+
+function isCompletedTrafficOneState(state) {
+  return state
+    && typeof state === 'object'
+    && state.onboardingComplete === true
+    && typeof state.stack === 'string'
+    && isKnownStack(state.stack);
+}
+
+function isCompletedTrafficOneMaterialization(cwd, state) {
+  return isCompletedTrafficOneState(state)
+    && isMaterialized(state)
+    && hasMaterializedProjectAssets(cwd, state);
+}
+
+function startOneMcpReportBestEffort(cwd, state, trigger) {
+  if (!authGateForHook().authenticated) return;
+  if (!isCompletedTrafficOneMaterialization(cwd, state)) return;
+  try {
+    maybeStartOneMcpReport(cwd, { state, trigger });
+  } catch {
+    // Anonymous structural reporting must never block or alter the coding flow.
+  }
 }
 
 const PROJECT_ROOT_HINT_FIELDS = [
@@ -328,23 +1097,22 @@ function projectRootForPathHint(cwd, hintPath) {
     .replace(/\\ /g, ' ');
   if (!cleaned || cleaned.startsWith('-') || cleaned.includes('$')) return null;
 
-  const cwdAbs = path.resolve(cwd);
   const absPath = path.isAbsolute(cleaned)
     ? path.resolve(cleaned)
     : path.resolve(cwd, cleaned);
-  if (!absPath.startsWith(cwdAbs)) return null;
 
   let current = absPath;
   if (!fs.existsSync(current) || !fs.lstatSync(current).isDirectory()) {
     current = path.dirname(current);
   }
 
-  while (current.startsWith(cwdAbs)) {
+  while (true) {
     if (fs.existsSync(path.join(current, STATE_FILE))) {
       return current;
     }
-    if (current === cwdAbs) break;
-    current = path.dirname(current);
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
 
   return null;
@@ -381,6 +1149,8 @@ function materializeFromToolInputHints(cwd, toolInput, trigger = 'generic post-t
     if (result && result.stdout) {
       return result;
     }
+    const state = readState(projectRoot);
+    startOneMcpReportBestEffort(projectRoot, state, `${trigger}: ${relativeRoot}`);
   }
   return null;
 }
@@ -419,6 +1189,13 @@ function materializeFromProjectMemoryWrite(cwd, filePath) {
       writeState(projectRoot, state);
     }
     const materialized = materializeProjectAssets(projectRoot, state);
+    if (!materialized.skipped) {
+      state.materializedStack = stackFingerprint(state);
+      state.materializedAt = nowIso();
+      state.materializedVersion = getPluginVersion();
+      writeState(projectRoot, state);
+    }
+    startOneMcpReportBestEffort(projectRoot, state, `project-memory write: ${relativePath}`);
     return materializationSuccessResult(materialized, relativePath);
   } catch (error) {
     return materializationFailureResult(error);
@@ -476,6 +1253,10 @@ function hasValidMobileState(mobile) {
     && MOBILE_SOURCE_IDS.has(mobile.source);
 }
 
+function hasResolvedNewProjectMobileState(mobile) {
+  return hasValidMobileState(mobile) && mobile.source !== 'none';
+}
+
 function roleCanWriteFeatureSource(role, filePath) {
   if (role === 'senior-frontend') {
     return /^(apps\/[^/]+\/(src|app)\/|packages\/(ui|i18n|utils)\/src\/)/.test(filePath);
@@ -484,6 +1265,29 @@ function roleCanWriteFeatureSource(role, filePath) {
     return /^(packages\/(api-client|ws-client|utils)\/src\/|services\/[^/]+\/src\/|apps\/[^/]+\/src\/(services|store)\/)/.test(filePath);
   }
   return false;
+}
+
+// Parallel-spawn-tolerant ownership check. Background: the orchestrator
+// writes `activeAgentRole` to `.traffic-one.json` immediately before each
+// Task spawn. When frontend + backend are spawned in parallel (the
+// recommended Phase 2 pattern), the file is last-write-wins, so BOTH
+// subagents read the same `activeAgentRole` (whichever spawn was the
+// second `writeState` call). The `senior-eng-orchestrator` skill notes
+// this race for the SessionStart bundle path
+// (skills-templates/senior-eng-orchestrator/SKILL.md:160) and falls back
+// to a slim-but-unscoped bundle there. The source-write gate needs the
+// same forgiveness: if the recorded role doesn't own the file but ANY
+// configured subagent role does, trust that a real subagent is calling
+// (we've already verified isSubagentSession via currentRunId + fresh
+// materialization fingerprint). This still rejects writes to paths no
+// role owns (e.g. `.env`, `.github/workflows/`, build configs) so the
+// gate keeps its teeth against off-target writes by the main agent.
+function subagentMayWriteFeatureSource(state, filePath) {
+  if (!isSubagentSession(state)) return false;
+  const role = activeAgentRole(state);
+  if (role && roleCanWriteFeatureSource(role, filePath)) return true;
+  return roleCanWriteFeatureSource('senior-frontend', filePath)
+      || roleCanWriteFeatureSource('senior-backend', filePath);
 }
 
 function commandAppearsToWriteFeatureSource(command) {
@@ -532,6 +1336,8 @@ function trafficOneStateValidationIssues(state, validCodeGraphProviders = ['gitn
     }
     if (!MOBILE_SOURCE_IDS.has(state.mobile.source)) {
       issues.push(`\`mobile.source\` is ${formatStateValue(state.mobile.source)}; valid values: ${[...MOBILE_SOURCE_IDS].map((id) => `\`${id}\``).join(' · ')}.`);
+    } else if (state.mode === 'new-project' && state.mobile.source === 'none') {
+      issues.push('`mobile.source` must be `prompted` or `explicit` after the Mobile App prompt for new-project onboarding.');
     }
   }
 
@@ -539,8 +1345,33 @@ function trafficOneStateValidationIssues(state, validCodeGraphProviders = ['gitn
     issues.push('`technologies` must contain `frontend`, `backend`, and `mobile` arrays.');
   }
 
+  if (state.mode === 'new-project' && !hasValidProjectContext(state.projectContext)) {
+    issues.push('`projectContext` must be an object with `source`, `originalPrompt`, `summary`, `answers`, and `collectedAt`.');
+  }
+
   if (state.mode === 'new-project' && !hasValidTeamState(state.team)) {
     issues.push(`\`team\` must be an object with valid \`mode\` (${[...TEAM_MODE_IDS].map((id) => `\`${id}\``).join(' · ')}) and \`source\` (${[...TEAM_SOURCE_IDS].map((id) => `\`${id}\``).join(' · ')}).`);
+  }
+
+  if (state.mode === 'new-project' && !hasValidPerformanceState(state.performance)) {
+    issues.push(`\`performance\` must be an object with valid \`level\` (${[...PERFORMANCE_LEVEL_IDS].map((id) => `\`${id}\``).join(' · ')}) and \`source\` (\`prompted\` · \`explicit\`).`);
+  }
+
+  if (
+    state.mode === 'new-project'
+    && hasValidPerformanceState(state.performance)
+    && hasValidTeamState(state.team)
+  ) {
+    const expectedTeamMode = teamModeForLevel(state.performance.level);
+    if (state.team.mode !== expectedTeamMode) {
+      issues.push(`\`team.mode\` is ${formatStateValue(state.team.mode)} but performance.level=${formatStateValue(state.performance.level)} requires ${formatStateValue(expectedTeamMode)}.`);
+    }
+    if (
+      expectedTeamMode === 'subagents'
+      && !isTeamApproved(state.team)
+    ) {
+      issues.push('`team.approved` must be true after Team Confirmation before balanced/high subagents can run.');
+    }
   }
 
   const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : '';
@@ -598,10 +1429,7 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     };
   }
 
-  let normalizedBeforeValidation = false;
-  if (state.stack && isKnownStack(state.stack)) {
-    normalizedBeforeValidation = normalizeState(state, state.mode || detectMode(cwd));
-  }
+  const normalizedBeforeValidation = normalizeState(state, state.mode || detectMode(cwd));
 
   const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const validationIssues = trafficOneStateValidationIssues(state, validCodeGraphProviders);
@@ -653,6 +1481,8 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     // best-effort; the copied local assets are still usable.
   }
 
+  startOneMcpReportBestEffort(cwd, state, trigger);
+
   const result = materializationSuccessResult(materialized, trigger);
   if (result.stdout) return result;
   return {
@@ -675,13 +1505,26 @@ function isNewProjectOnboardingIncomplete(state) {
   const hasFrontend = typeof state.frontend === 'string' && FRONTEND_IDS.has(state.frontend);
   const hasBackend = typeof state.backend === 'string' && BACKEND_IDS.has(state.backend);
   const hasTeam = hasValidTeamState(state.team);
+  const hasPerformance = hasValidPerformanceState(state.performance);
+  const hasProjectContext = hasValidProjectContext(state.projectContext);
+  const teamMatchesPerformance = hasTeam && hasPerformance && state.team.mode === teamModeForLevel(state.performance.level);
+  const hasRequiredTeamApproval = hasTeam
+    && hasPerformance
+    && (
+      teamModeForLevel(state.performance.level) !== 'subagents'
+      || isTeamApproved(state.team)
+    );
   return !hasValidStack
     || !hasFrontend
     || !hasBackend
-    || !hasValidMobileState(state.mobile)
+    || !hasProjectContext
+    || !hasResolvedNewProjectMobileState(state.mobile)
     || !hasTechnologyArrays(state.technologies)
     || !hasGraphProvider
     || !hasTeam
+    || !hasPerformance
+    || !teamMatchesPerformance
+    || !hasRequiredTeamApproval
     || !hasInitializedToolchain(state.toolchain)
     || state.confirmed !== true
     || state.onboardingComplete !== true
@@ -691,17 +1534,26 @@ function isNewProjectOnboardingIncomplete(state) {
 
 function canRepairNewProjectOnboardingState(state) {
   if (!state || typeof state !== 'object') return false;
-  if (state.mode !== 'new-project') return false;
   if (state.onboardingComplete !== true) return false;
   if (state.confirmed === false) return false;
-  if (typeof state.stack !== 'string' || !isKnownStack(state.stack)) return false;
-  if (typeof state.frontend !== 'string' || !FRONTEND_IDS.has(state.frontend)) return false;
-  if (typeof state.backend !== 'string' || !BACKEND_IDS.has(state.backend)) return false;
-  if (state.mobile === undefined || state.mobile === null) return false;
-  if (!hasValidTeamState(state.team)) return false;
-  if (state.codeGraphProvider !== 'gitnexus' && state.codeGraphProvider !== 'graphify') return false;
-
   const candidate = JSON.parse(JSON.stringify(state));
+  normalizeState(candidate, candidate.mode || 'new-project');
+  if (candidate.mode !== 'new-project') return false;
+  if (typeof candidate.stack !== 'string' || !isKnownStack(candidate.stack)) return false;
+  if (typeof candidate.frontend !== 'string' || !FRONTEND_IDS.has(candidate.frontend)) return false;
+  if (typeof candidate.backend !== 'string' || !BACKEND_IDS.has(candidate.backend)) return false;
+  if (!hasValidProjectContext(candidate.projectContext)) return false;
+  if (candidate.mobile === undefined || candidate.mobile === null) return false;
+  if (!hasResolvedNewProjectMobileState(candidate.mobile)) return false;
+  if (!hasValidTeamState(candidate.team)) return false;
+  if (!hasValidPerformanceState(candidate.performance)) return false;
+  if (candidate.team.mode !== teamModeForLevel(candidate.performance.level)) return false;
+  if (
+    teamModeForLevel(candidate.performance.level) === 'subagents'
+    && !isTeamApproved(candidate.team)
+  ) return false;
+  if (candidate.codeGraphProvider !== 'gitnexus' && candidate.codeGraphProvider !== 'graphify') return false;
+
   normalizeState(candidate, candidate.mode || 'new-project');
   return !isNewProjectOnboardingIncomplete(candidate);
 }
@@ -718,17 +1570,428 @@ function repairNewProjectOnboardingState(cwd, state, trigger) {
   }
 }
 
-function onboardingGateFallbackReason() {
+const PROJECT_CONTEXT_ANSWER_KEYS = [
+  'audience',
+  'coreFlows',
+  'v1Features',
+  'rolesAuth',
+  'businessModel',
+  'payments',
+  'admin',
+  'dataModel',
+  'contentSource',
+  'integrations',
+  'engagement',
+  'successMetrics',
+  'constraints',
+  'domainSpecific',
+];
+
+function projectContextOriginalPrompt(state = {}) {
+  const candidates = [
+    state && state.projectContext && state.projectContext.originalPrompt,
+    state && state.originalPrompt,
+    state && state.initialPrompt,
+    state && state.firstPrompt,
+    state && state.userPrompt,
+    state && state.prompt,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate.trim();
+    }
+  }
+  return '';
+}
+
+function promptMatches(prompt, pattern) {
+  return pattern.test(String(prompt || '').toLowerCase());
+}
+
+function projectContextDomainQuestionLines(originalPrompt = '') {
+  const lines = [];
+  const prompt = String(originalPrompt || '').toLowerCase();
+  const isLearning = promptMatches(prompt, /\b(course|courses|lesson|lessons|learn|learning|academy|education|student|students|instructor|teacher|lms|curriculum|cohort|cohorts)\b/);
+  const isMarketplace = promptMatches(prompt, /\b(marketplace|buyer|seller|vendor|provider|providers|freelancer|freelancers|employer|employers|candidate|candidates|job|jobs|listing|listings|commission|payout|payouts)\b/);
+  const isEcommerce = promptMatches(prompt, /\b(ecommerce|e-commerce|shop|store|cart|checkout|product|products|order|orders|inventory|sku|subscription|subscriptions|billing|pricing|paid|payment|payments)\b/);
+  const isBooking = promptMatches(prompt, /\b(booking|bookings|reservation|reservations|appointment|appointments|calendar|availability|schedule|scheduling|slot|slots)\b/);
+  const isSaasAdmin = promptMatches(prompt, /\b(saas|dashboard|crm|erp|admin|administrator|manage|management|analytics|reporting|workflow|workflows|approval|approvals)\b/);
+  const isCommunity = promptMatches(prompt, /\b(community|social|forum|forums|chat|message|messages|member|members|group|groups|moderation|moderator|comments)\b/);
+  const isContent = promptMatches(prompt, /\b(content|cms|blog|article|articles|media|video|videos|audio|podcast|gallery|upload|uploads|asset|assets|newsletter)\b/);
+  const isPortfolio = promptMatches(prompt, /\b(portfolio|personal site|case study|case studies|resume|cv|showcase|gallery|testimonials?)\b/);
+  const isInternal = promptMatches(prompt, /\b(internal|backoffice|back office|operations|ops|employee|employees|staff|team tool|admin tool|intranet)\b/);
+  const mightCharge = isMarketplace
+    || isEcommerce
+    || promptMatches(prompt, /\b(paid|payment|payments|stripe|checkout|subscription|subscriptions|billing|pricing|plan|plans|invoice|invoices|refund|refunds|coupon|coupons|commission|payout|payouts|membership|memberships)\b/);
+
+  if (isLearning) {
+    lines.push('Learning platform specifics: course/module/lesson structure, lesson types, progress/completion rules, enrollment model, free vs paid courses, learner/instructor/admin roles, admin CRUD scope, seeded demo content, analytics, and whether payments are in or out for v1.');
+  }
+  if (isMarketplace) {
+    lines.push('Marketplace specifics: supply/demand sides, listing workflow, matching/search filters, applications/bookings/orders, messaging, reviews, moderation, commission/payout model, disputes, and admin controls.');
+  }
+  if (isEcommerce) {
+    lines.push('Ecommerce specifics: product/catalog structure, inventory, cart/checkout, order statuses, fulfillment, coupons, taxes, refunds, customer accounts, and admin order/product management.');
+  }
+  if (isBooking) {
+    lines.push('Booking specifics: bookable resources, availability rules, calendar sync, deposits/cancellations, reminders, rescheduling, provider/customer roles, and admin scheduling overrides.');
+  }
+  if (isSaasAdmin) {
+    lines.push('SaaS/admin specifics: tenants/workspaces, dashboards, reports, role permissions, audit trail, import/export, approvals, operational queues, and admin analytics.');
+  }
+  if (isCommunity) {
+    lines.push('Community specifics: profiles, posting/commenting, groups, messaging, moderation queues, reporting, notifications, reputation, and admin safety tools.');
+  }
+  if (isContent) {
+    lines.push('Content/media specifics: content types, editorial workflow, uploads/storage, publishing states, tags/search, SEO needs, moderation, and admin CMS controls.');
+  }
+  if (isPortfolio) {
+    lines.push('Portfolio specifics: primary audience, featured work, case-study structure, contact/lead capture, testimonials, CMS needs, analytics, and launch content.');
+  }
+  if (isInternal) {
+    lines.push('Internal-tool specifics: operator roles, approval workflows, data import/export, reporting, audit/history needs, permission boundaries, and admin/support workflows.');
+  }
+  if (mightCharge) {
+    lines.push('Payment integration, if money is in scope: Stripe or other provider, subscriptions vs one-time checkout, webhooks, refunds, invoices, taxes, coupons, and marketplace payouts/commissions if relevant.');
+  }
+  if (lines.length === 0) {
+    lines.push('Domain specifics: based on the product category, name the entities, workflows, admin surfaces, integrations, and edge cases that must exist for a complete MVP.');
+  }
+  return lines;
+}
+
+function projectContextChatFallback(state = {}) {
+  const originalPrompt = projectContextOriginalPrompt(state);
+  const promptIntro = originalPrompt
+    ? [`Original request I should tailor this to: "${originalPrompt}"`, '']
+    : [];
+  return [
+    'Traffic One was successfully set up. Let\'s collect the project details next.',
+    '',
+    ...promptIntro,
+    'Answer these MVP-context questions in one reply so the build plan is complete:',
+    '',
+    '1. Audience and jobs: who uses it, what problem they solve, and the top 2-3 user journeys.',
+    '2. V1 scope: must-have features, nice-to-haves to defer, and any launch deadline or demo expectation.',
+    '3. Roles and auth: anonymous, user, customer, creator/provider, staff/admin, permissions, and profile data.',
+    '4. Data model: core entities and relationships the MVP must store or seed.',
+    '5. Admin and operations: dashboards, CRUD, moderation, user/content/transaction management, analytics, support, and audit needs. Include this when the app has managed content, users, transactions, or operational workflows, even if the first request did not mention admin.',
+    '6. Business model and payments: free, paid, freemium, lead-gen, subscription, one-time purchase, marketplace commission, or internal tool? Are payments in or out for v1?',
+    '7. Content and integrations: source of seed/real data, uploads/files, search, notifications/email, realtime, maps/calendar/AI/external APIs, import/export.',
+    '8. Success criteria and product tone: what makes the MVP feel complete, what metrics matter, and what visual/brand direction should guide the UI.',
+    '',
+    'Use these answer keys where possible: ' + PROJECT_CONTEXT_ANSWER_KEYS.join(', ') + '.',
+    '',
+    'Dynamic questions for this request:',
+    ...projectContextDomainQuestionLines(originalPrompt).map((line) => `- ${line}`),
+    '',
+    'Save the answer in `.traffic-one.json` as `projectContext` with `source`, `originalPrompt`, `summary`, `answers`, and `collectedAt` before asking the Mobile App prompt.',
+  ].join('\n');
+}
+
+function mobileChatFallback() {
+  return [
+    'Traffic One needs the mobile app decision for this project.',
+    '',
+    'Do you want a mobile app too?',
+    '',
+    '1. Web only (Recommended)',
+    '2. Ionic + Capacitor',
+    '3. React Native / Expo',
+    '',
+    'Reply with the option number or label.',
+  ].join('\n');
+}
+
+function codeGraphChatFallback() {
+  return [
+    'Traffic One needs the code graph provider for this project.',
+    '',
+    'Which provider should we use for the codebase graph?',
+    '',
+    '1. GitNexus',
+    '2. graphify',
+    '',
+    'Reply with the option number or label.',
+  ].join('\n');
+}
+
+function singleSelectPromptRequest({ id, title, question, options, fallbackText }) {
+  return {
+    id,
+    kind: 'single_select',
+    title,
+    question,
+    options,
+    blocking: true,
+    ...(fallbackText ? { fallbackText } : {}),
+  };
+}
+
+function secureTextPromptRequest({ id, title, question, fallbackText }) {
+  return {
+    id,
+    kind: 'secure_text',
+    title,
+    question,
+    blocking: true,
+    sensitive: true,
+    ...(fallbackText ? { fallbackText } : {}),
+  };
+}
+
+function authChoicePromptRequest(fallbackText) {
+  return singleSelectPromptRequest({
+    id: 'traffic-one.auth.choice',
+    title: 'Traffic One',
+    question: 'Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
+    options: [
+      { id: 'authenticate', label: 'Authenticate Traffic One (Recommended)' },
+      { id: 'continue_without', label: 'Continue without Traffic One' },
+    ],
+    fallbackText,
+  });
+}
+
+function authApiKeyPromptRequest(fallbackText) {
+  return secureTextPromptRequest({
+    id: 'traffic-one.auth.api-key',
+    title: 'Traffic One API Key',
+    question: 'Enter your Traffic One API key.',
+    fallbackText,
+  });
+}
+
+function performancePromptRequest(fallbackText) {
+  return singleSelectPromptRequest({
+    id: 'traffic-one.onboarding.performance',
+    title: 'Performance',
+    question: 'How do you want to run agents for this build?',
+    options: [
+      { id: 'high', label: 'High (Recommended)' },
+      { id: 'balanced', label: 'Balanced' },
+      { id: 'low', label: 'Low' },
+    ],
+    fallbackText,
+  });
+}
+
+function teamConfirmationPromptRequest(state, fallbackText) {
+  const level = state && state.performance && state.performance.level
+    ? state.performance.level
+    : 'selected';
+  return singleSelectPromptRequest({
+    id: 'traffic-one.onboarding.team-confirmation',
+    title: 'Team',
+    question: `Approve the ${level} team line-up above?`,
+    options: [
+      { id: 'approve', label: 'Approve' },
+      { id: 'repick_performance', label: 'Re-pick performance' },
+      { id: 'customise', label: 'Customise' },
+    ],
+    fallbackText,
+  });
+}
+
+function projectContextPromptRequest(fallbackText) {
+  return {
+    id: 'traffic-one.onboarding.project-context',
+    kind: 'text',
+    title: 'Project Context',
+    question: 'Answer the MVP-context questions in one reply so the build plan is complete.',
+    blocking: true,
+    fallbackText,
+  };
+}
+
+function mobilePromptRequest(fallbackText) {
+  return singleSelectPromptRequest({
+    id: 'traffic-one.onboarding.mobile',
+    title: 'Mobile App',
+    question: 'Do you want a mobile app too?',
+    options: [
+      { id: 'web_only', label: 'Web only (Recommended)' },
+      { id: 'ionic_capacitor', label: 'Ionic + Capacitor' },
+      { id: 'react_native_expo', label: 'React Native / Expo' },
+    ],
+    fallbackText,
+  });
+}
+
+function codeGraphPromptRequest(fallbackText) {
+  return singleSelectPromptRequest({
+    id: 'traffic-one.onboarding.code-graph',
+    title: 'Code Graph',
+    question: 'Which provider should we use for the codebase graph?',
+    options: [
+      { id: 'gitnexus', label: 'GitNexus' },
+      { id: 'graphify', label: 'graphify' },
+    ],
+    fallbackText,
+  });
+}
+
+function nextOnboardingStep(state) {
+  if (!state || typeof state !== 'object' || state.mode !== 'new-project') return null;
+  if (!hasValidPerformanceState(state.performance)) return 'performance';
+  if (needsTeamConfirmation(state)) return 'team-confirmation';
+  if (!hasValidTeamState(state.team)) return 'team';
+  if (!hasValidProjectContext(state.projectContext)) return 'project-context';
+  if (!hasResolvedNewProjectMobileState(state.mobile)) return 'mobile';
+  if (state.codeGraphProvider !== 'gitnexus' && state.codeGraphProvider !== 'graphify') return 'code-graph';
+  return 'state';
+}
+
+function nextOnboardingStepPromptAndRequest(state, source = 'gate') {
+  const step = nextOnboardingStep(state);
+  if (step === 'performance') {
+    const fallbackText = [
+      'Next unresolved Traffic One onboarding step: Agent mode.',
+      '',
+      performanceChatFallback(),
+    ].join('\n');
+    return {
+      fallbackText,
+      promptRequest: performancePromptRequest(fallbackText),
+    };
+  }
+  if (step === 'team-confirmation' || step === 'team') {
+    const fallbackText = teamConfirmationPromptContext(state, source === 'user-prompt' ? 'user-prompt' : 'gate');
+    return {
+      fallbackText,
+      promptRequest: teamConfirmationPromptRequest(state, fallbackText),
+    };
+  }
+  if (step === 'project-context') {
+    const fallbackText = projectContextChatFallback(state);
+    return {
+      fallbackText,
+      promptRequest: projectContextPromptRequest(fallbackText),
+    };
+  }
+  if (step === 'mobile') {
+    const fallbackText = mobileChatFallback();
+    return {
+      fallbackText,
+      promptRequest: mobilePromptRequest(fallbackText),
+    };
+  }
+  if (step === 'code-graph') {
+    const fallbackText = codeGraphChatFallback();
+    return {
+      fallbackText,
+      promptRequest: codeGraphPromptRequest(fallbackText),
+    };
+  }
+  const fallbackText = [
+    'Traffic One onboarding state is still incomplete or noncanonical.',
+    'Re-write `.traffic-one.json` with the full required schema before continuing.',
+  ].join('\n');
+  return { fallbackText, promptRequest: null };
+}
+
+function nextOnboardingStepPrompt(state, source = 'gate') {
+  return nextOnboardingStepPromptAndRequest(state, source).fallbackText;
+}
+
+function nextOnboardingPromptRequest(state, source = 'gate') {
+  return nextOnboardingStepPromptAndRequest(state, source).promptRequest;
+}
+
+function onboardingGateFallbackReason(state = {}) {
   return [
     'Traffic One onboarding gate: mode=new-project and onboarding is not complete.',
-    'Switch Codex/Claude to Plan mode before using tools. If Plan mode is not active or the popup tool is unavailable, the fallback chat prompt must be displayed as the next visible assistant message.',
+    'Complete Traffic One onboarding in the current thread before using tools. If the popup tool is unavailable, the next unresolved fallback prompt must be displayed as the next visible assistant message.',
     '',
-    'The previous assistant turn tried to use tools before displaying the fallback prompt. Stop tool use now. Your next visible assistant message must be:',
+    'The previous assistant turn tried to use tools before completing onboarding. Stop tool use now. Your next visible assistant message must ask only this unresolved step:',
     '',
-    codexDefaultModeFallbackMobilePrompt(),
+    nextOnboardingStepPrompt(state, 'gate'),
     '',
-    'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, mobile, technologies, codeGraphProvider, team, toolchain, confirmed, onboardingComplete, and confirmedAt.',
-    'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, or continue implementation until the typed answer is received and the remaining Code Graph and Team prompts are resolved.',
+    'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, projectContext, mobile, technologies, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), toolchain, confirmed, onboardingComplete, and confirmedAt.',
+    'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, spawn helper agents, or continue implementation until the typed answer is received and the remaining onboarding prompts are resolved.',
+  ].join('\n');
+}
+
+function needsTeamConfirmation(state) {
+  if (!state || typeof state !== 'object') return false;
+  if (state.mode !== 'new-project') return false;
+  if (!hasValidPerformanceState(state.performance)) return false;
+  if (!hasValidTeamState(state.team)) return false;
+  if (teamModeForLevel(state.performance.level) !== 'subagents') return false;
+  if (state.team.mode !== 'subagents') return false;
+  return !isTeamApproved(state.team);
+}
+
+function teamConfirmationPromptContext(state, source = 'gate') {
+  const level = state && state.performance && state.performance.level;
+  const overrides = state && state.team && state.team.overrides && typeof state.team.overrides === 'object'
+    ? state.team.overrides
+    : null;
+  return [
+    `Traffic One Team Confirmation is still required before the ${level} subagent run can start.`,
+    'The user selected a multi-agent performance level, but `.traffic-one.json` does not contain `team.approved: true`.',
+    'Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.',
+    source === 'user-prompt'
+      ? 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first rewrite `.traffic-one.json` with `team.approved: true` (and any collected `team.overrides`), then continue.'
+      : 'Your next visible assistant message must ask this approval question and then stop for the user answer.',
+    'Use the host popup tool when available (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI). This is onboarding popup 2. If no popup tool is exposed, show this plain-chat fallback verbatim:',
+    '',
+    teamConfirmationChatFallback(level, overrides),
+  ].join('\n');
+}
+
+function teamConfirmationGateFallbackReason(state) {
+  return [
+    'Traffic One Team Confirmation gate: the role/model lineup has not been approved.',
+    '',
+    teamConfirmationPromptContext(state, 'gate'),
+  ].join('\n');
+}
+
+function isMutatingPreToolUse(toolName, toolInput) {
+  const name = String(
+    toolName
+    || (toolInput && (toolInput.tool_name || toolInput.toolName))
+    || '',
+  );
+  if (isWriteLikeToolName(name)) return true;
+  if (toolInput && typeof toolInput === 'object') {
+    if (
+      Object.prototype.hasOwnProperty.call(toolInput, 'content')
+      || Object.prototype.hasOwnProperty.call(toolInput, 'new_string')
+      || Object.prototype.hasOwnProperty.call(toolInput, 'old_string')
+      || Object.prototype.hasOwnProperty.call(toolInput, 'edits')
+    ) {
+      return true;
+    }
+  }
+  if (!isShellToolName(name)) return false;
+  const command = commandFromToolInput(toolInput);
+  return /(^|[\s;&|])(mkdir|touch|rm|mv|cp|tee|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|git\s+(init|add|commit)|sed\s+-i)\b/.test(command)
+    || />{1,2}/.test(command);
+}
+
+function repairedMaterializationDenyReason() {
+  return [
+    'Traffic One state was repaired/materialized before this tool use.',
+    'The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one.json`, rules, skills, or root agent context.',
+    'rerun the same tool now; the canonical `.traffic-one.json` and project-local materialization are current.',
+  ].join('\n');
+}
+
+function agentMaterializationDenyReason() {
+  return [
+    'Traffic One agent spawn gate: state was repaired/materialized before this agent spawn.',
+    'The role agent has been denied once so frontend/backend workers cannot start against stale `.traffic-one.json`, rules, skills, or root agent context.',
+    'rerun the same agent spawn now; the canonical `.traffic-one.json` and project-local materialization are current.',
+  ].join('\n');
+}
+
+function agentMaterializationMissingReason() {
+  return [
+    'Traffic One agent spawn gate: project-local rules/skills are not materialized yet.',
+    'Do not spawn frontend/backend/reviewer/tester workers until `.traffic-one.json` has current `materializedStack`, `materializedAt`, and `materializedVersion`, and `.traffic-one/manifest.json`, `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root `CLAUDE.md` exist.',
+    'Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root, then retry the agent spawn.',
   ].join('\n');
 }
 
@@ -782,15 +2045,22 @@ function ensureSessionMaterialization(cwd, state) {
 
   const hasFreshStamp = isMaterialized(state);
   const hasAssets = hasMaterializedProjectAssets(cwd, state);
-  if (hasFreshStamp && hasAssets) return false;
+  if (hasFreshStamp && hasAssets) {
+    startOneMcpReportBestEffort(cwd, state, 'session materialization already current');
+    return false;
+  }
 
   normalizeState(state, state.mode || detectMode(cwd));
   const materialized = materializeProjectAssets(cwd, state);
-  if (materialized.skipped) return false;
+  if (materialized.skipped) {
+    startOneMcpReportBestEffort(cwd, state, 'session materialization skipped');
+    return false;
+  }
   state.materializedStack = stackFingerprint(state);
   state.materializedAt = nowIso();
   state.materializedVersion = getPluginVersion();
   writeState(cwd, state);
+  startOneMcpReportBestEffort(cwd, state, 'session materialization');
   return true;
 }
 
@@ -798,6 +2068,18 @@ function ensureSessionMaterialization(cwd, state) {
 function runSessionStart() {
   const cwd  = process.cwd();
   const root = pluginRoot();
+
+  if (isPluginAuthoringRoot(cwd)) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const authGate = authGateForHook({ forceRemote: true });
+  if (!authGate.authenticated) {
+    if (authChoiceAllowsContinue(cwd)) return { stdout: '', exitCode: 0 };
+    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
+    return authRequiredHookResult('SessionStart', { authChoiceWrite: writeResult });
+  }
+
   const state = readState(cwd);
 
   // MULTI-PROJECT SAFETY: clean non-bootstrap skills left by the previous
@@ -887,9 +2169,12 @@ function runSessionStart() {
   }
 
   const onboardingComplete = Boolean(state.onboardingComplete);
+  const onboardingReady = onboardingComplete
+    && STACK_IDS.has(stackId)
+    && (mode !== 'new-project' || !isNewProjectOnboardingIncomplete(state));
 
   // Flow 1 — already onboarded (or partial state with valid stack) → pack bundle
-  if (onboardingComplete && STACK_IDS.has(stackId)) {
+  if (onboardingReady) {
     const spec = stackSpecForState(state);
 
     // Splice in the mode-specific rule if it exists (e.g. modes/new-project.md
@@ -933,6 +2218,7 @@ function runSessionStart() {
     const graphPreview = readGraphPreview(cwd);
     const context = `${header}${graphPreview}\n${body}`;
     writeState(cwd, state);
+    startOneMcpReportBestEffort(cwd, state, 'session-start');
     return {
       stdout: JSON.stringify({
         hookSpecificOutput: {
@@ -997,6 +2283,7 @@ function runSessionStart() {
         state.materializedVersion = getPluginVersion();
       }
       writeState(cwd, state);
+      startOneMcpReportBestEffort(cwd, state, 'session-start auto-detect');
       const skillDirective = pruneSkillsDirective(state, allSkills);
 
       const banner = autoDetectedAnnouncement(detected);
@@ -1047,6 +2334,26 @@ function runSessionStart() {
 
 // ── UserPromptSubmit ─────────────────────────────────────────────────────────
 function runUserPromptSubmit(rawInput = '') {
+  const cwd = process.cwd();
+  if (isPluginAuthoringRoot(cwd)) {
+    return { stdout: '', exitCode: 0 };
+  }
+  const authGate = authGateForHook();
+  if (!authGate.authenticated) {
+    const authChoice = parseUnauthenticatedAuthChoice(rawInput);
+    if (authChoice) {
+      return authChoiceHookResult(authChoice);
+    }
+    if (authChoiceAllowsContinue(cwd)) return { stdout: '', exitCode: 0 };
+    if (authChoiceStatus(cwd) === 'authenticate') {
+      const apiKey = parseTrafficOneApiKey(rawInput);
+      if (apiKey) return authLoginFromPromptHookResult(apiKey);
+      return authApiKeyPromptHookResult();
+    }
+    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
+    return authRequiredHookResult('UserPromptSubmit', { authChoiceWrite: writeResult });
+  }
+
   const statePath = path.join(process.cwd(), STATE_FILE);
   if (!fs.existsSync(statePath)) {
     return {
@@ -1064,6 +2371,40 @@ function runUserPromptSubmit(rawInput = '') {
   }
 
   const stack = state.stack || state.mode || 'unknown';
+  const normalizedState = JSON.parse(JSON.stringify(state));
+  normalizeState(normalizedState, normalizedState.mode || detectMode(process.cwd()));
+  const promptText = promptTextFromSubmit(rawInput);
+  const teamModeApproval = updateTeamModeChangeApprovalFromPrompt(process.cwd(), normalizedState, promptText);
+  if (teamModeApproval.recorded) {
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one [team mode switch authorized]',
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: '[ACTIVE STACK: ' + stack + ']\n\n'
+            + 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. '
+            + 'The next `.traffic-one.json` write may change `performance.level` to "low" and `team.mode` to "main-agent"; '
+            + 'this authorization is single-use and expires in 10 minutes.',
+        },
+      }),
+      exitCode: 0,
+    };
+  }
+  if (needsTeamConfirmation(normalizedState)) {
+    const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${teamConfirmationPromptContext(normalizedState, 'user-prompt')}`;
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one [team confirmation required]',
+        promptRequest: teamConfirmationPromptRequest(normalizedState, additionalContext),
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext,
+        },
+      }),
+      exitCode: 0,
+    };
+  }
+
   const validStack = state.stack && isKnownStack(state.stack);
   const isIncomplete = !validStack || state.onboardingComplete !== true;
 
@@ -1073,8 +2414,8 @@ function runUserPromptSubmit(rawInput = '') {
   // pointed at the schema until `.traffic-one.json` is fully populated.
   if (isIncomplete && state.mode === 'new-project') {
     const reminder = onboardingReminderShort();
-    const promptText = promptTextFromSubmit(rawInput);
     const classification = promptText ? classifyPromptForStack(promptText) : null;
+    const promptRequest = nextOnboardingPromptRequest(normalizedState, 'user-prompt');
     const classificationContext = classification
       ? [
         '[FIRST PROMPT STACK CLASSIFICATION]',
@@ -1082,37 +2423,18 @@ function runUserPromptSubmit(rawInput = '') {
         `frontend=${classification.frontend}`,
         `backend=${classification.backend}`,
         `mobile=${classification.mobile.enabled ? classification.mobile.framework : 'none'}`,
-        'mode=new-project: switch Codex and Claude Code to Plan mode before onboarding questions or implementation. If no mode switch is available, stay plan-only, ask fallback chat questions, and stop for typed answers.',
+        'mode=new-project: complete Traffic One onboarding in the current thread before implementation. If no popup/input tool is available, ask fallback chat questions and stop for typed answers.',
         codexDefaultModeFallbackDirective(),
-        'Onboarding choices must be prompt popups: call Codex `request_user_input` when available; do not print numbered option lists in chat. If the popup tool is unavailable, ask the same question in chat with numbered options, tell the user to reply with the option number or label, and stop; never choose a default or continue implementation while the answer is pending.',
-        classification.shouldAskMobile
-          ? [
-            'Popup 1: ask the mobile decision with Codex `request_user_input`:',
-            'question="Do you want a mobile app too?"',
-            'options: Web only (Recommended); Ionic + Capacitor; React Native / Expo.',
-            'Ask this even if the prompt already named web, mobile, Next.js, Ionic, React Native, frontend-only, or no subagents.',
-            'Stop and wait for the popup answer, or for a typed option if popup is unavailable.',
-          ].join(' ')
-          : 'Minimal/static project classification only: mobile popup is not required.',
-        [
-          'Popup 2: ask the required codebase graph provider with Codex `request_user_input`:',
-          'question="Which provider should we use for the codebase graph?"',
-          'options: GitNexus; graphify.',
-          'Stop and wait for the popup answer, or for a typed option if popup is unavailable; no default and no skip.',
-        ].join(' '),
-        [
-          'Popup 3: for non-trivial multi-layer builds, ask the Traffic One team/subagent choice with Codex `request_user_input`:',
-          'question="Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?"',
-          'options: Run team (Recommended); Main agent only.',
-          'Persist the answer before implementation: Run team writes `team.mode="subagents"` and Main agent only writes `team.mode="main-agent"`.',
-          'When `team.mode="subagents"`, the parent/orchestrator does not write feature source; it spawns the Traffic One role agents and summarizes.',
-          'Ask this only after the codebase graph choice is answered; stop for a typed option if popup is unavailable.',
-        ].join(' '),
+        `Onboarding choices must be prompt popups. ${hostPopupInstruction()} Do not print numbered option lists in chat when a popup tool is available; never choose a default or continue implementation while an answer is pending.`,
+        'Required order: Agent mode (High/Balanced/Low), Team role/model confirmation for High/Balanced, success message, rich MVP-context questionnaire, Mobile App, then Code Graph provider.',
+        'Ask only the next unresolved onboarding step below:',
+        nextOnboardingStepPrompt(normalizedState, 'user-prompt'),
       ].join('\n')
-      : '';
+      : nextOnboardingStepPrompt(normalizedState, 'user-prompt');
     return {
       stdout: JSON.stringify({
         systemMessage: 'traffic-one [onboarding incomplete]',
+        ...(promptRequest ? { promptRequest } : {}),
         hookSpecificOutput: {
           hookEventName: 'UserPromptSubmit',
           additionalContext: `[ACTIVE STACK: ${stack}]\n\n${classificationContext ? `${classificationContext}\n\n` : ''}${reminder}`,
@@ -1142,9 +2464,14 @@ function runUserPromptSubmit(rawInput = '') {
 // ── PreToolUse: new-project onboarding gate ──────────────────────────────────
 function runCheckOnboardingGate(rawInput) {
   const data = parseJsonText(rawInput, {});
+  const toolName = data.tool_name || data.toolName || '';
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
-  const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
   const cwd = process.cwd();
+  if (isPluginAuthoringRoot(cwd)) return { stdout: '', exitCode: 0 };
+  const authGate = authPreToolGate(toolName, toolInput);
+  if (authGate) return authGate;
+
+  const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
   const statePath = path.join(cwd, STATE_FILE);
   const state = safeReadJson(statePath, {});
   const mode = state.mode || detectMode(cwd);
@@ -1152,20 +2479,150 @@ function runCheckOnboardingGate(rawInput) {
     ...state,
     mode,
   };
+  normalizeState(effectiveState, mode);
 
-  if (isStateFilePath(filePath)) {
+  const teamModeApprovalMarkerGuard = teamModeApprovalMarkerWriteGuard(cwd, toolName, toolInput);
+  if (teamModeApprovalMarkerGuard) return teamModeApprovalMarkerGuard;
+
+  const teamModeGuard = teamModeDowngradeGuard(cwd, toolName, toolInput, effectiveState);
+  if (teamModeGuard) return teamModeGuard;
+
+  if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) {
     return { stdout: '', exitCode: 0 };
   }
 
   if (mode === 'new-project' && isNewProjectOnboardingIncomplete(effectiveState)) {
     const repaired = repairNewProjectOnboardingState(cwd, effectiveState, 'generic pre-tool onboarding repair');
-    if (repaired) return repaired;
-    return denyPreToolUse(onboardingGateFallbackReason());
+    if (repaired) {
+      if (isMutatingPreToolUse(toolName, toolInput)) {
+        return denyPreToolUse(repairedMaterializationDenyReason());
+      }
+      return repaired;
+    }
+    if (needsTeamConfirmation(effectiveState)) {
+      const reason = teamConfirmationGateFallbackReason(effectiveState);
+      return denyPreToolUse(reason, teamConfirmationPromptRequest(effectiveState, reason));
+    }
+    const reason = onboardingGateFallbackReason(effectiveState);
+    return denyPreToolUse(reason, nextOnboardingPromptRequest(effectiveState, 'gate'));
   }
 
   const materialized = materializeProjectIfNeeded(cwd, 'generic pre-tool convergence');
   if (materialized && materialized.stdout) {
+    if (isMutatingPreToolUse(toolName, toolInput)) {
+      return denyPreToolUse(repairedMaterializationDenyReason());
+    }
     return materialized;
+  }
+
+  return { stdout: '', exitCode: 0 };
+}
+
+// ── PreToolUse(Task): enforce per-agent model for the performance level ──────
+// The subagent model is set ONLY by the spawn tool's `model` parameter; the
+// model directive in prompt text has no effect, so without this gate Balanced/
+// High silently inherit the parent model. We block a Traffic One role spawn
+// when the `model` param is missing/wrong for the role's tier.
+function detectHookHost() {
+  if (process.env.CLAUDE_PLUGIN_ROOT) return 'claude';
+  if (process.env.CODEX_PLUGIN_ROOT) return 'codex';
+  if (process.env.CURSOR_PLUGIN_ROOT) return 'cursor';
+  const root = pluginRoot();
+  if (root.includes(`${path.sep}.codex${path.sep}`)) return 'codex';
+  if (root.includes(`${path.sep}.cursor${path.sep}`)) return 'cursor';
+  return 'claude';
+}
+
+function normalizeSubagentRole(subagentType) {
+  if (typeof subagentType !== 'string' || !subagentType) return null;
+  const role = subagentType.includes(':') ? subagentType.split(':').pop() : subagentType;
+  return VALID_AGENT_ROLES.has(role) ? role : null;
+}
+
+function runCheckAgentModel(rawInput) {
+  const data = parseJsonText(rawInput, {});
+  const toolName = data.tool_name || data.toolName || '';
+  const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
+  const authGate = authPreToolGate(toolName, toolInput);
+  if (authGate) return authGate;
+
+  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(String(toolName))) {
+    return { stdout: '', exitCode: 0 };
+  }
+
+  const role = normalizeSubagentRole(
+    toolInput.subagent_type || toolInput.subagentType || toolInput.agent || toolInput.type,
+  );
+  if (!role) {
+    return { stdout: '', exitCode: 0 }; // not a Traffic One role spawn
+  }
+
+  const cwd = process.cwd();
+  const state = safeReadJson(path.join(cwd, STATE_FILE), null);
+  if (!state || typeof state !== 'object') return { stdout: '', exitCode: 0 };
+
+  // Onboarding-only: enforce the performance-level model just for the first
+  // new-project build. Once the project is established, manual agent spawns are
+  // never gated.
+  if (state.mode !== 'new-project') return { stdout: '', exitCode: 0 };
+
+  if (!isCompletedTrafficOneMaterialization(cwd, state)) {
+    materializeProjectIfNeeded(cwd, 'agent spawn preflight convergence');
+    const refreshed = readState(cwd);
+    if (isCompletedTrafficOneMaterialization(cwd, refreshed)) {
+      return denyPreToolUse(agentMaterializationDenyReason());
+    }
+    return denyPreToolUse(agentMaterializationMissingReason());
+  }
+
+  const performance = state.performance && typeof state.performance === 'object' ? state.performance : null;
+  const level = performance && PERFORMANCE_LEVEL_IDS.has(performance.level) ? performance.level : null;
+  if (!level) return { stdout: '', exitCode: 0 }; // no level recorded → can't enforce
+
+  // Low: the team runs in-thread, not as spawned subagents. Spawning a role
+  // subagent contradicts the recorded level — usually the level was mis-recorded
+  // (e.g. user picked Balanced but state says low). Block and ask to fix first.
+  if (teamModeForLevel(level) === 'main-agent') {
+    return denyPreToolUse(
+      `Performance gate: \`.traffic-one.json\` records performance.level="${level}" (main-agent only), but you are spawning the \`${role}\` subagent. `
+      + 'If the user chose Balanced or High, first correct `.traffic-one.json` (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. '
+      + 'If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.',
+    );
+  }
+
+  // Team Confirmation gate: for balanced/high, the user MUST have
+  // explicitly approved the team line-up by clicking Approve in popup 2,
+  // which writes `team.approved: true`. This denial is the teeth that
+  // prevents the orchestrator from skipping confirmation with "I'll auto-approve
+  // the default".
+  if (!isTeamApproved(state.team)) {
+    return denyPreToolUse(
+      `Team Confirmation gate: performance.level="${level}" requires the user to explicitly approve the subagent role/model line-up before ANY subagent can be spawned. `
+      + '`.traffic-one.json` currently has `team.approved !== true`, so the user has not yet confirmed. '
+      + 'Ask the host popup tool (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI) with header "Team", question "Here is the subagent team for ' + level + ' mode — approve or change?", body containing the role→tier→model line-up (use `tierModelTable` from `model-tiers.cjs`), and options "Approve" / "Re-pick performance" / "Customise". '
+      + 'When the user replies "Approve", re-write `.traffic-one.json` with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
+      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one.json`; do not bypass this gate for `team.mode="subagents"`.',
+    );
+  }
+
+  // Balanced / High: the spawn MUST pass the model param for the role's tier.
+  const host = detectHookHost();
+  const overrides = state.team && typeof state.team === 'object' && state.team.overrides && typeof state.team.overrides === 'object'
+    ? state.team.overrides
+    : null;
+  const expected = modelForRoleHost(level, role, host, overrides);
+  if (!expected) return { stdout: '', exitCode: 0 };
+
+  const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  if (passedModel !== expected) {
+    return denyPreToolUse(
+      `Performance gate (level=${level}, host=${host}): spawning \`${role}\` requires the \`model\` tool parameter set to "${expected}". `
+      + (passedModel
+        ? `You passed model="${passedModel}". `
+        : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ')
+      + `Re-issue the spawn with \`model: "${expected}"\`. The model is set ONLY by this parameter — a model name in the prompt text has no effect. `
+      + 'Per-role model tiers live in `performance-config.cjs` / `model-tiers.cjs`.',
+    );
   }
 
   return { stdout: '', exitCode: 0 };
@@ -1180,8 +2637,11 @@ function readStack() {
 function runCheckArchitectureWrite(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
+  const authGate = authPreToolGate(data.tool_name || data.toolName || 'Bash', toolInput);
+  if (authGate) return authGate;
+
   const rawFilePath = (typeof toolInput.file_path === 'string' ? toolInput.file_path : '').replace(/\\/g, '/');
-  const rawCommand = typeof toolInput.command === 'string' ? toolInput.command : '';
+  const rawCommand = commandFromToolInput(toolInput);
   const cwd = process.cwd();
   const projectRoot = findProjectRootForHookFile(cwd, rawFilePath);
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
@@ -1278,18 +2738,27 @@ function runCheckArchitectureWrite(rawInput) {
     && stateForPlan.team
     && stateForPlan.team.mode === 'subagents'
     && (
-      !isSubagentSession(stateForPlan)
-      || !roleCanWriteFeatureSource(activeAgentRole(stateForPlan), filePath)
+      !subagentMayWriteFeatureSource(stateForPlan, filePath)
       || writingFeatureSourceViaCommand
     )
   ) {
     const role = activeAgentRole(stateForPlan) || 'main agent';
-    violations.push(
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from the Traffic One role team, not ${role}. `
-      + 'Spawn the appropriate Codex/Claude/Cursor role agents first: senior-frontend owns frontend/UI/i18n files and senior-backend owns backend/API/database files. '
-      + 'Bash-based feature-source writes are denied because the hook cannot verify role ownership from a shell command; use role-scoped Write/Edit tools instead. '
-      + 'If subagents are genuinely unavailable or the user changes their mind, update `.traffic-one.json` to `team.mode="main-agent"` with `team.source="unavailable"` or ask the user to reselect `Main agent only` before continuing manually.'
-    );
+    const inSubagent = isSubagentSession(stateForPlan);
+    const ownedBySome = roleCanWriteFeatureSource('senior-frontend', filePath)
+      || roleCanWriteFeatureSource('senior-backend', filePath);
+    let reason;
+    if (writingFeatureSourceViaCommand) {
+      reason = 'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.';
+    } else if (!inSubagent) {
+      reason = `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned subagent (currentRunId + activeAgentRole set in \`.traffic-one.json\`), not ${role}. Spawn the appropriate role first — senior-frontend owns \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend owns \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, and \`apps/*/src/(services|store)/\`.`;
+    } else if (!ownedBySome) {
+      reason = `Run-team enforcement gate: the file \`${filePath}\` is not under any Traffic One role's owned path patterns (senior-frontend: \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend: \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, \`apps/*/src/(services|store)/\`). If this is a legitimate project layout (e.g. root \`src/\`), the role-pattern definitions in \`roleCanWriteFeatureSource\` need to be extended.`;
+    } else {
+      // Should not reach: subagentMayWriteFeatureSource would have returned true.
+      reason = `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`;
+    }
+    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one.json`; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
+    violations.push(reason);
   }
 
   if (
@@ -1486,15 +2955,17 @@ const DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-s
 const SHIPPER_APPROVAL_WINDOW_MS = 10 * 60 * 1000;
 const SECURITY_CHECK_WINDOW_MS = 10 * 60 * 1000;
 
-function denyPreToolUse(reason) {
+function denyPreToolUse(reason, promptRequest = null) {
+  const payload = {
+    ...(promptRequest ? { promptRequest } : {}),
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
   return {
-    stdout: JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        permissionDecision: 'deny',
-        permissionDecisionReason: reason,
-      },
-    }),
+    stdout: JSON.stringify(payload),
     exitCode: 0,
   };
 }
@@ -1539,7 +3010,10 @@ function checkSecurityDeployStamp(stateForDeploy, cwd) {
 function runCheckLibraryAllowlist(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
-  const command  = typeof toolInput.command === 'string' ? toolInput.command : '';
+  const authGate = authPreToolGate(data.tool_name || data.toolName || 'Bash', toolInput);
+  if (authGate) return authGate;
+
+  const command  = commandFromToolInput(toolInput);
 
   // Deploy gate runs first — production publishes are gated regardless of
   // whether the command also matches an install regex.
@@ -1602,13 +3076,17 @@ function runCheckLibraryAllowlist(rawInput) {
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
 
 function runPostBuildPageSpeed(rawInput) {
+  if (!isAuthenticatedLocal()) {
+    return { stdout: '', exitCode: 0 };
+  }
+
   const data = parseJsonText(rawInput, {});
 
   // Opt-in per-tool token log (TRAFFIC_ONE_TOKEN_LOG=1). No-op when disabled.
   tokenLogger.logToolUse(process.cwd(), data);
 
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
-  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  const command = commandFromToolInput(toolInput);
   if (!BUILD_COMMAND_RE.test(command)) {
     return { stdout: '', exitCode: 0 };
   }
@@ -1652,6 +3130,10 @@ function runPostBuildPageSpeed(rawInput) {
 let graphifyHintSentForCwd = null;
 
 function runPreGraphifyHint(_rawInput) {
+  if (!isAuthenticatedLocal()) {
+    return { stdout: '', exitCode: 0 };
+  }
+
   const cwd = process.cwd();
   if (graphifyHintSentForCwd === cwd) {
     return { stdout: '', exitCode: 0 };
@@ -1706,9 +3188,13 @@ const GRAPHIFY_FRESH_MS  = 7 * 24 * 60 * 60 * 1000;
 const GRAPHIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 function runPostBuildGraphifyHint(rawInput) {
+  if (!isAuthenticatedLocal()) {
+    return { stdout: '', exitCode: 0 };
+  }
+
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
-  const command = typeof toolInput.command === 'string' ? toolInput.command : '';
+  const command = commandFromToolInput(toolInput);
   if (!BUILD_COMMAND_RE.test(command)) {
     return { stdout: '', exitCode: 0 };
   }
@@ -1849,6 +3335,10 @@ function runPostBuildGraphifyHint(rawInput) {
 
 // ── PostToolUse: stack-rules auto-load on `.traffic-one.json` write ──────────
 function runPostStackSetup(rawInput) {
+  if (!isAuthenticatedLocal()) {
+    return { stdout: '', exitCode: 0 };
+  }
+
   const payload = parseJsonText(rawInput, null);
   if (!payload) return { stdout: '', exitCode: 0 };
 
@@ -1909,8 +3399,11 @@ function runPostStackSetup(rawInput) {
     if (memoryResult) return memoryResult;
     const hintedResult = materializeFromToolInputHints(process.cwd(), toolInput);
     if (hintedResult) return hintedResult;
-    return materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence')
-      || { stdout: '', exitCode: 0 };
+    const materializedResult = materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence');
+    if (materializedResult) return materializedResult;
+    const currentState = readState(process.cwd());
+    startOneMcpReportBestEffort(process.cwd(), currentState, 'generic post-tool convergence');
+    return { stdout: '', exitCode: 0 };
   }
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
@@ -1922,10 +3415,9 @@ function runPostStackSetup(rawInput) {
   const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
   const stateDirEarly = path.dirname(path.resolve(filePath));
-  let normalizedBeforeValidation = false;
-  if (state && state.stack && isKnownStack(state.stack)) {
-    normalizedBeforeValidation = normalizeState(state, detectMode(stateDirEarly));
-  }
+  const normalizedBeforeValidation = state && typeof state === 'object'
+    ? normalizeState(state, detectMode(stateDirEarly))
+    : false;
   const stackOk = state && state.stack && STACK_IDS.has(state.stack);
   const cgProvider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
@@ -1994,7 +3486,10 @@ function runPostStackSetup(rawInput) {
   // Stamp the materialization fields after a successful copy so the PreToolUse
   // implementation gate (isMaterialized) sees a fresh fingerprint.
   try {
-    if (materialized && materialized.skipped) return { stdout: '', exitCode: 0 };
+    if (materialized && materialized.skipped) {
+      startOneMcpReportBestEffort(stateDirEarly, state, 'post-stack-setup skipped materialization');
+      return { stdout: '', exitCode: 0 };
+    }
     state.materializedStack   = stackFingerprint(state);
     state.materializedAt      = nowIso();
     state.materializedVersion = getPluginVersion();
@@ -2002,6 +3497,8 @@ function runPostStackSetup(rawInput) {
   } catch {
     // best-effort; stamp failure should not block the user
   }
+
+  startOneMcpReportBestEffort(stateDirEarly, state, 'post-stack-setup');
 
   const stack = state.stack || '(unknown)';
   const stateDir = path.dirname(path.resolve(filePath));
@@ -2077,6 +3574,15 @@ function runPostStackSetup(rawInput) {
 }
 
 function runMaterializeProject(_rawInput = '') {
+  if (isPluginAuthoringRoot(process.cwd())) {
+    return { stdout: '', exitCode: 0 };
+  }
+  const authGate = authGateForHook();
+  if (!authGate.authenticated) {
+    if (authChoiceAllowsContinue()) return { stdout: '', exitCode: 0 };
+    const writeResult = tryWriteAuthChoice('pending-choice', process.cwd());
+    return authRequiredHookResult('PostToolUse', { authChoiceWrite: writeResult });
+  }
   return materializeProjectFromState(process.cwd(), 'manual materialize-project');
 }
 
@@ -2213,6 +3719,7 @@ module.exports = {
   runSessionStart,
   runUserPromptSubmit,
   runCheckOnboardingGate,
+  runCheckAgentModel,        // PreToolUse(Task) → enforce performance-level model
   runCheckArchitectureWrite,
   runCheckLibraryAllowlist,
   runPostBuildPageSpeed,
@@ -2222,4 +3729,5 @@ module.exports = {
   runPreGraphifyHint,        // PreToolUse(Glob|Grep) → graph hint
   runPostBuildGraphifyHint,  // PostToolUse(Bash) → post-build install/build hint
   forbiddenForStack,         // exported for testing
+  authRequiredHookResult,    // exported for hook-runtime fail-closed fallback
 };

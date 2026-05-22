@@ -36,6 +36,7 @@ const HANDLERS = {
   'session-start':            ()         => handlers.runSessionStart(),
   'user-prompt-submit':       (rawInput) => handlers.runUserPromptSubmit(rawInput),
   'check-onboarding-gate':     (rawInput) => handlers.runCheckOnboardingGate(rawInput),
+  'check-agent-model':        (rawInput) => handlers.runCheckAgentModel(rawInput),
   'check-architecture-write': (rawInput) => handlers.runCheckArchitectureWrite(rawInput),
   'check-library-allowlist':  (rawInput) => handlers.runCheckLibraryAllowlist(rawInput),
   'post-build-page-speed':    (rawInput) => handlers.runPostBuildPageSpeed(rawInput),
@@ -102,12 +103,22 @@ async function main() {
   } catch (error) {
     process.stderr.write(`[traffic-one hook] ${subcommand} failed: ${error.message}\n`);
     if (subcommand === 'session-start') {
-      process.stdout.write(JSON.stringify({
-        hookSpecificOutput: {
-          hookEventName: 'SessionStart',
-          additionalContext: '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.',
-        },
-      }));
+      if (typeof handlers.authRequiredHookResult === 'function') {
+        const fallback = normalizeResult(handlers.authRequiredHookResult('SessionStart', {
+          authChoiceWrite: {
+            ok: false,
+            code: error && error.code ? String(error.code) : 'HOOK_RUNTIME_ERROR',
+          },
+        }));
+        if (fallback.stdout) process.stdout.write(fallback.stdout);
+      } else {
+        process.stdout.write(JSON.stringify({
+          hookSpecificOutput: {
+            hookEventName: 'SessionStart',
+            additionalContext: '[PLUGIN MODE: UNKNOWN] Could not detect project state. Run the detect-project skill manually.',
+          },
+        }));
+      }
     }
     process.exitCode = 0;
   }

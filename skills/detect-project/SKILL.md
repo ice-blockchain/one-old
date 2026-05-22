@@ -7,9 +7,43 @@ description: >
   project situation.
   Triggers: "new project", "existing project", "starting from scratch", "I have a codebase",
   "set up", "initialize", "what stack", "supabase", "migrate".
+  If hooks are absent or auth status is unknown, do not infer "Traffic One inactive";
+  ask the auth choice or run doctor, then stop before implementation.
 ---
 
 # Skill: Detect Project & Route to Correct Mode
+
+## Traffic One Auth Preflight
+
+Before applying this skill, verify Traffic One auth unless the user is explicitly
+asking to authenticate, check auth status, log out, or run doctor.
+
+If status is not authenticated, do not apply this skill yet. Present the auth
+choice as a host modal selector when available:
+- Authenticate Traffic One (Recommended)
+- Continue without Traffic One
+
+If the user chooses Authenticate Traffic One, ask for the API key and run the
+authentication command internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
+internally. Internally means: invoke `scripts/traffic-one-auth.cjs login` (then
+`status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env —
+the pre-tool gate explicitly bypasses `scripts/traffic-one-auth.cjs (login|status|logout)`
+shell invocations even while unauthenticated. Do not Write or Edit `auth.json`
+directly; only the script can mint a valid session token.
+Do not ask the user to run bash or shell commands. If the user chooses
+Continue without Traffic One, continue the user's request without Traffic One
+features and do not repeat the auth prompt while that choice remains active.
+Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
+onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
+Traffic One agents, or use Traffic One reporting unless the user authenticates.
+
+If hooks are absent or auth status is unknown, do not infer "Traffic One
+inactive" and continue. Treat Traffic One as unverified: run or recommend
+`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
+debugging a transcript), ask the auth choice, and stop before scaffolding,
+installs, source edits, Traffic One agents, or implementation skills. Only
+continue ordinary work without Traffic One after the user explicitly chooses
+"Continue without Traffic One".
 
 ## Detection logic (run in this order)
 
@@ -28,25 +62,24 @@ only after the required onboarding gates below are answered.
 Explicit user requests never skip Traffic One onboarding. A prompt such as
 "use Next.js", "web only", "frontend only", "use React Native", "no subagents",
 or "just build it" is implementation intent, not an onboarding answer. Always
-ask the required mobile, code graph, and team preflight questions in order
+ask the required Agent Mode, Team Confirmation, project context, mobile, and
+code graph preflight questions in order
 before `.traffic-one.json`, `.traffic-one/plan.md`, scaffolding, installs, or
 source edits.
 
-When this step returns new-project, switch Codex and Claude Code to Plan mode
-immediately. If the host cannot switch automatically, say Plan mode is required,
-stay plan-only, ask the required onboarding questions in chat, and stop for the
-user's typed answers. Do not write `.traffic-one.json`, `.traffic-one/plan.md`,
-scaffold, edit source, install dependencies, or choose defaults while Plan
-mode/onboarding answers are pending.
+When this step returns new-project, run Traffic One onboarding in the current
+thread. Use the host popup/input mechanism when available; if it is unavailable,
+ask the same next unresolved onboarding question in chat with numbered options
+and stop for the user's typed answer. Do not write `.traffic-one.json`,
+`.traffic-one/plan.md`, scaffold, edit source, install dependencies, inspect
+package versions, or choose defaults while onboarding answers are pending.
 
-Codex Default mode fallback: if Plan mode is off or `request_user_input` cannot
-be called, do not run more detection tools. The next visible assistant message
-must say: "Plan mode is required for Traffic One new-project onboarding, but
-Plan mode is not active here and the popup prompt is unavailable." Then ask
-`Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic +
-Capacitor`, and `3. React Native / Expo`, tell the user to reply with the
-option number or label, and stop. Ask Code Graph only after that answer, then
-Team only after Code Graph for multi-layer builds.
+Codex current-thread fallback: if `request_user_input` cannot be called, do not
+run more detection tools. The next visible assistant message must ask the Agent
+Mode question with `1. High (Recommended)`, `2. Balanced`, and `3. Low`, tell
+the user to reply with the option number or label, and stop. Ask Team
+Confirmation only for High/Balanced, then project context, then Mobile App,
+then Code Graph.
 
 ### Step 2 — Existing project: check for Supabase
 Look for `@supabase/supabase-js` or `@supabase/ssr` in `package.json` dependencies.
@@ -71,13 +104,12 @@ possibly add later. Local mocks or `localStorage` may be used only as temporary
 dev fixtures behind the Supabase contract.
 → Apply everything in rules/core.md + rules/modes/new-project.md
 
-Plan mode is mandatory for both Codex and Claude Code whenever the resolved
-project mode is `new-project` (`mode === "new-project"`) until onboarding
-choices are answered and the project plan is ready. In Codex, use Plan mode so
-popup prompts are available. In Claude Code, enter Claude Code Plan Mode before
-Task/Write/Edit/Bash/scaffold actions.
+Traffic One onboarding is mandatory whenever the resolved project mode is
+`new-project` (`mode === "new-project"`) until onboarding choices are answered
+and the project plan is ready. Run it in the current thread, using popup/input
+tools when available and plain-chat fallback when they are not.
 
-Codex subagent preflight for new projects:
+Codex Performance/Team preflight for new projects:
 - If the user's request is a non-trivial multi-layer build (UI + API/backend +
   database/auth/profile/data, or a full site/app/MVP), recommend Traffic One's
   parallel role workflow before scaffolding or editing files.
@@ -89,27 +121,45 @@ Codex subagent preflight for new projects:
   reply with the option number or label, and stop. Do not choose a default,
   infer an answer, write `.traffic-one.json`, scaffold, or continue while the
   onboarding answer is pending.
-- Ask the mobile decision first with a Codex `request_user_input` popup before
-  asking code graph or subagent preflight, even if the first prompt explicitly
-  requested web, mobile, React Native, Ionic, Next.js, or another stack. Use
-  header `Mobile App`, question `Do you want a mobile app too?`,
-  and options `Web only (Recommended)`, `Ionic + Capacitor`, and
-  `React Native / Expo`. Stop and wait for the popup answer.
-- After the mobile popup is answered, ask the required codebase graph
-  provider with Codex `request_user_input`: header `Code Graph`, question
-  `Which provider should we use for the codebase graph?`, options `GitNexus`
-  and `graphify`. This is required before `.traffic-one.json`; no default and
-  no skip.
-- Then ask the subagent preflight with Codex `request_user_input` when
-  available. Use question: "Traffic One sees this as a multi-layer build. Do
-  you want me to run the Traffic One subagent team: architect → frontend/backend
-  → reviewer/tester?" Options: `Run team (Recommended)` and
-  `Main agent only`.
+- Ask the Performance / Agent Mode popup with Codex `request_user_input` when
+  available. Use question: "How do you want to run agents for this build?"
+  Options: `High (Recommended)`, `Balanced`, and `Low`. `High` and `Balanced`
+  mean the Traffic One subagent team; `Low` means main-agent-only role
+  simulation.
+- For `High` or `Balanced`, ask the mandatory Team Confirmation popup before
+  writing `.traffic-one.json` or spawning anything. Show every role/tier/model
+  row and wait for explicit `Approve`; only then write
+  `"team": { "mode": "subagents", "source": "prompted", "approved": true }`.
+  For `Low`, write `"team": { "mode": "main-agent", "source": "prompted" }`
+  and omit `team.approved`.
+  When `team.mode` is `subagents`, the parent/orchestrator coordinates and
+  summarizes only; it must not write feature source files itself.
+- After Agent Mode and any required Team Confirmation are resolved, show:
+  "Traffic One was successfully set up. Let's collect the project details
+  next." Then ask one rich, dynamic MVP-context questionnaire based on the
+  user's first prompt and persist `projectContext` with `source`,
+  `originalPrompt`, `summary`, `answers`, and `collectedAt`. Cover audience,
+  core flows, v1 features, roles/auth, data model, admin/ops needs, business
+  model, payments when applicable, integrations, content/data source,
+  engagement, success metrics, constraints, visual/product tone, and
+  domain-specific questions. Ask admin-area questions when the app has managed
+  content/users/transactions/moderation/reporting/operations even if the user
+  did not ask for admin.
+- Then ask the mobile decision with a Codex `request_user_input` popup even if
+  the first prompt explicitly requested web, mobile, React Native, Ionic,
+  Next.js, or another stack. Use header `Mobile App`, question `Do you want a
+  mobile app too?`, and options `Web only (Recommended)`, `Ionic + Capacitor`,
+  and `React Native / Expo`. Stop and wait for the popup answer.
+- After the mobile popup is answered, ask the required codebase graph provider
+  with Codex `request_user_input`: header `Code Graph`, question `Which
+  provider should we use for the codebase graph?`, options `GitNexus` and
+  `graphify`. This is required before `.traffic-one.json`; no default and no
+  skip.
 - If `request_user_input` is unavailable, ask the same questions in plain text
   with the same numbered options and stop for the user's typed reply.
 - This is a blocking preflight gate on Codex: stop and wait for the user's
-  answer before writing a plan, creating files, editing code, or simulating the
-  roles manually.
+  answer before writing a plan, creating files, editing code, spawning generic
+  helper agents, or simulating the roles manually.
 
 ### existing-codebase
 Preserve all existing structure. Improve new code only.
@@ -131,19 +181,16 @@ State clearly:
 3. For existing-with-supabase: mention migration offer once
 4. For new-project with backend-backed needs: state `backend=supabase` as the
    default and `stack=default` unless custom tech was requested.
-5. For new-project, switch Codex and Claude Code to Plan mode before asking
-   onboarding questions. If no mode switch is available, say Plan mode is
-   required, stay plan-only, ask fallback chat questions, and stop.
-6. For any complex new project, ask the `Do you want a mobile app too?` popup
-   with the options above before writing `.traffic-one.json`, regardless of
-   whether the user's prompt already said web, mobile, Ionic, Capacitor, React
-   Native, Expo, Next.js, frontend-only, or "just build it". The popup answer
-   is the source of truth for `mobile.framework`.
-7. Ask the required `Code Graph` popup next with `GitNexus` and `graphify`
-   options, before the subagent/team prompt and before writing `.traffic-one.json`.
-8. For new-project non-trivial multi-layer builds on Codex: after the mobile
-   and codebase graph decisions are resolved, recommend the Traffic One subagent
-   team, ask the popup preflight question above, and stop until the user answers
-   before scaffolding.
+5. For new-project, run onboarding in the current thread before asking
+   implementation questions. If popup input is unavailable, ask fallback chat
+   questions and stop.
+6. For new-project non-trivial multi-layer builds on Codex: ask Performance /
+   Agent Mode first, then Team Confirmation for High/Balanced, and stop until
+   the user answers before scaffolding.
+7. Show the setup-success message, ask the rich dynamic MVP-context
+   questionnaire, and persist `projectContext`.
+8. Ask the `Do you want a mobile app too?` popup, then ask the required
+   `Code Graph` popup with `GitNexus` and `graphify` before writing final
+   `.traffic-one.json`.
 9. Ask what they'd like to do next only when they have not already given a build
-   task and the subagent preflight gate does not apply.
+   task and the Performance/Team preflight gate does not apply.
