@@ -41,6 +41,10 @@ const {
   isMaterialized,
   isSubagentSession,
   activeAgentRole,
+  ensureRunAgentClaim,
+  resolveRunAgentContext,
+  hasRunAgentState,
+  legacyRunAgentContext,
   isFixCycleSession,
   getSpawnIndex,
   VALID_AGENT_ROLES,
@@ -1269,22 +1273,13 @@ function roleCanWriteFeatureSource(role, filePath) {
   return false;
 }
 
-// Parallel-spawn-tolerant ownership check. Background: the orchestrator
-// writes `activeAgentRole` to `.traffic-one.json` immediately before each
-// Task spawn. When frontend + backend are spawned in parallel (the
-// recommended Phase 2 pattern), the file is last-write-wins, so BOTH
-// subagents read the same `activeAgentRole` (whichever spawn was the
-// second `writeState` call). The `senior-eng-orchestrator` skill notes
-// this race for the SessionStart bundle path
-// (skills-templates/senior-eng-orchestrator/SKILL.md:160) and falls back
-// to a slim-but-unscoped bundle there. The source-write gate needs the
-// same forgiveness: if the recorded role doesn't own the file but ANY
-// configured subagent role does, trust that a real subagent is calling
-// (we've already verified isSubagentSession via currentRunId + fresh
-// materialization fingerprint). This still rejects writes to paths no
-// role owns (e.g. `.env`, `.github/workflows/`, build configs) so the
-// gate keeps its teeth against off-target writes by the main agent.
-function subagentMayWriteFeatureSource(state, filePath) {
+// Role ownership check. Prefer the per-agent run claim resolved from the
+// current hook session id; fall back to the legacy shared activeAgentRole only
+// for older projects that do not have .traffic-one/runs/<runId>/ state yet.
+function subagentMayWriteFeatureSource(state, filePath, agentContext = null) {
+  if (agentContext && agentContext.role) {
+    return roleCanWriteFeatureSource(agentContext.role, filePath);
+  }
   if (!isSubagentSession(state)) return false;
   const role = activeAgentRole(state);
   if (role && roleCanWriteFeatureSource(role, filePath)) return true;
@@ -1297,6 +1292,19 @@ function commandAppearsToWriteFeatureSource(command) {
   const hasWritePrimitive = /(?:>|>>|\btee\b|\bcat\b[\s\S]*<<|\bpython3?\b|\bnode\b|\bperl\b|\bsed\b[\s\S]*-i)/.test(command);
   const mentionsFeaturePath = /(?:^|[\s'"`])(?:apps\/[^/\s'"`]+\/(?:src|app)\/|packages\/[^/\s'"`]+\/src\/|src\/|services\/[^/\s'"`]+\/src\/)/.test(command);
   return hasWritePrimitive && mentionsFeaturePath;
+}
+
+function applyPatchTargetPaths(patchText) {
+  if (typeof patchText !== 'string' || !patchText.trim()) return [];
+  const paths = [];
+  for (const line of patchText.split(/\r?\n/)) {
+    const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/)
+      || line.match(/^\*\*\* Move to: (.+)$/);
+    if (match && match[1]) {
+      paths.push(match[1].trim().replace(/\\/g, '/').replace(/^\.\//, ''));
+    }
+  }
+  return paths;
 }
 
 function formatStateValue(value) {
@@ -2067,7 +2075,7 @@ function ensureSessionMaterialization(cwd, state) {
 }
 
 // ── SessionStart ─────────────────────────────────────────────────────────────
-function runSessionStart() {
+function runSessionStart(rawInput = '') {
   const cwd  = process.cwd();
   const root = pluginRoot();
 
@@ -2101,16 +2109,15 @@ function runSessionStart() {
     // branch below still provides rule context instead of trusting a stale stamp.
   }
 
-  // SUBAGENT FAST PATH. The orchestrator skill writes `currentRunId` +
-  // `activeAgentRole` to .traffic-one.json before each subagent spawn. When
-  // those signals are present (and materialization is fresh), emit a slim
-  // bundle instead of re-inlining the full 117KB rule set the parent
-  // already loaded. Never trust the JSON stamp alone; the generated manifest,
-  // project-local rules, project-local skills, and root agent files must exist.
-  if (isSubagentSession(state) && hasMaterializedProjectAssets(cwd, state)) {
-    const role = activeAgentRole(state);
-    const runId = state.currentRunId;
-    const spawnIndex = role ? getSpawnIndex(state, role) : 0;
+  // SUBAGENT FAST PATH. Prefer a per-agent run claim resolved from the actual
+  // hook session id. Legacy .traffic-one.json activeAgentRole remains a fallback
+  // only when no per-run agent state exists yet.
+  const agentContext = resolveRunAgentContext(cwd, state, rawInput, { claimPending: true })
+    || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
+  if (agentContext && hasMaterializedProjectAssets(cwd, state)) {
+    const role = agentContext.role;
+    const runId = agentContext.runId;
+    const spawnIndex = agentContext.spawnIndex || 0;
 
     // FIX-CYCLE BRANCH. Same role re-spawned in the same run (spawnIndex > 1)
     // = the reviewer found issues and the orchestrator is looping back. The
@@ -2118,7 +2125,7 @@ function runSessionStart() {
     // orchestrator with EXACT findings to apply. Emit ~500 bytes of pointers
     // and tell the model not to re-explore. Saves ~25-30K tokens vs the
     // already-slim role-scoped index, ~115KB vs the full bundle.
-    if (isFixCycleSession(state)) {
+    if (role && spawnIndex > 1) {
       const { body } = packFixCycleHeader(cwd, role, runId, spawnIndex);
       return {
         stdout: JSON.stringify({
@@ -2544,6 +2551,29 @@ function normalizeSubagentRole(subagentType) {
   return VALID_AGENT_ROLES.has(role) ? role : null;
 }
 
+function inferTrafficOneSpawnRole(toolInput) {
+  const direct = normalizeSubagentRole(
+    toolInput.subagent_type
+    || toolInput.subagentType
+    || toolInput.agent
+    || toolInput.role
+    || toolInput.type,
+  );
+  if (direct) return direct;
+
+  const message = [
+    toolInput.message,
+    toolInput.prompt,
+    toolInput.instructions,
+    toolInput.description,
+  ].filter((value) => typeof value === 'string').join('\n');
+  if (!/\bTraffic One\b/i.test(message)) return null;
+
+  const matches = Array.from(VALID_AGENT_ROLES)
+    .filter((role) => new RegExp(`\\b${role}\\b`, 'i').test(message));
+  return matches.length === 1 ? matches[0] : null;
+}
+
 function runCheckAgentModel(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolName = data.tool_name || data.toolName || '';
@@ -2555,9 +2585,7 @@ function runCheckAgentModel(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const role = normalizeSubagentRole(
-    toolInput.subagent_type || toolInput.subagentType || toolInput.agent || toolInput.type,
-  );
+  const role = inferTrafficOneSpawnRole(toolInput);
   if (!role) {
     return { stdout: '', exitCode: 0 }; // not a Traffic One role spawn
   }
@@ -2630,6 +2658,12 @@ function runCheckAgentModel(rawInput) {
     );
   }
 
+  ensureRunAgentClaim(cwd, state, role, data, {
+    toolName,
+    agentType: toolInput.agent_type || toolInput.agentType || toolInput.subagent_type || toolInput.type || null,
+    model: passedModel,
+  });
+
   return { stdout: '', exitCode: 0 };
 }
 
@@ -2642,13 +2676,17 @@ function readStack() {
 function runCheckArchitectureWrite(rawInput) {
   const data = parseJsonText(rawInput, {});
   const toolInput = data.tool_input && typeof data.tool_input === 'object' ? data.tool_input : {};
-  const authGate = authPreToolGate(data.tool_name || data.toolName || 'Bash', toolInput);
+  const toolName = data.tool_name || data.toolName || 'Bash';
+  const authGate = authPreToolGate(toolName, toolInput);
   if (authGate) return authGate;
 
   const rawFilePath = (typeof toolInput.file_path === 'string' ? toolInput.file_path : '').replace(/\\/g, '/');
   const rawCommand = commandFromToolInput(toolInput);
+  const patchTargetPaths = normalizedToolName(toolName) === 'apply_patch'
+    ? applyPatchTargetPaths(rawCommand)
+    : [];
   const cwd = process.cwd();
-  const projectRoot = findProjectRootForHookFile(cwd, rawFilePath);
+  const projectRoot = findProjectRootForHookFile(cwd, rawFilePath || patchTargetPaths[0] || '');
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
   materializeProjectIfNeeded(projectRoot, 'architecture preflight convergence');
   const content =
@@ -2681,8 +2719,18 @@ function runCheckArchitectureWrite(rawInput) {
   const planMissing       = !fs.existsSync(planAbsPath);
   const writingPlan       = PLAN_FILE_RE.test(filePath);
   const writingDoc        = ADR_OR_DOC_RE.test(filePath);
-  const writingFeatureSourceViaCommand = commandAppearsToWriteFeatureSource(rawCommand);
-  const writingFeatureSource = FEATURE_SOURCE_RE.test(filePath) || writingFeatureSourceViaCommand;
+  const featureTargetPaths = [];
+  if (FEATURE_SOURCE_RE.test(filePath)) {
+    featureTargetPaths.push(filePath);
+  }
+  for (const targetPath of patchTargetPaths) {
+    const relativePath = projectRelativeHookPath(cwd, projectRoot, targetPath);
+    if (FEATURE_SOURCE_RE.test(relativePath) && !featureTargetPaths.includes(relativePath)) {
+      featureTargetPaths.push(relativePath);
+    }
+  }
+  const writingFeatureSourceViaCommand = isShellToolName(toolName) && commandAppearsToWriteFeatureSource(rawCommand);
+  const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(stateForPlan);
 
   if (
@@ -2726,7 +2774,8 @@ function runCheckArchitectureWrite(rawInput) {
   // copied the correct rules and skills to .traffic-one/ for this stack.
   // This ensures the model has full quality/performance context before implementing.
   const hasMaterializedAssets = hasMaterializedProjectAssets(projectRoot, stateForPlan);
-  const featureContextMaterialized = !stateForPlan.onboardingComplete
+  const featureContextMaterialized = isPluginAuthoringRoot(projectRoot)
+    || !stateForPlan.onboardingComplete
     || (isMaterialized(stateForPlan) && hasMaterializedAssets);
 
   if (writingFeatureSource && !featureContextMaterialized) {
@@ -2738,26 +2787,47 @@ function runCheckArchitectureWrite(rawInput) {
     );
   }
 
+  const agentContext = resolveRunAgentContext(projectRoot, stateForPlan, data, { claimPending: true })
+    || (!hasRunAgentState(projectRoot, stateForPlan) ? legacyRunAgentContext(stateForPlan) : null);
+  const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
+  const useLegacySubagentFallback = !agentContext && !hasRunAgentState(projectRoot, stateForPlan);
+  const agentMayWriteFeatureTargets = featureTargetPaths.length > 0
+    ? featureTargetPaths.every((targetPath) => (
+      agentContext
+        ? subagentMayWriteFeatureSource(stateForPlan, targetPath, agentContext)
+        : useLegacySubagentFallback && subagentMayWriteFeatureSource(stateForPlan, targetPath, null)
+    ))
+    : agentContext
+      ? subagentMayWriteFeatureSource(stateForPlan, filePath, agentContext)
+      : useLegacySubagentFallback && subagentMayWriteFeatureSource(stateForPlan, filePath, null);
+
   if (
     writingFeatureSource
     && stateForPlan.team
     && stateForPlan.team.mode === 'subagents'
     && (
-      !subagentMayWriteFeatureSource(stateForPlan, filePath)
+      !agentMayWriteFeatureTargets
       || writingFeatureSourceViaCommand
     )
   ) {
-    const role = activeAgentRole(stateForPlan) || 'main agent';
-    const inSubagent = isSubagentSession(stateForPlan);
-    const ownedBySome = roleCanWriteFeatureSource('senior-frontend', filePath)
-      || roleCanWriteFeatureSource('senior-backend', filePath);
+    const role = (agentContext && agentContext.role) || activeAgentRole(stateForPlan) || 'main agent';
+    const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, stateForPlan) && isSubagentSession(stateForPlan));
+    const ownedBySome = ownershipTargets.every((targetPath) => (
+      roleCanWriteFeatureSource('senior-frontend', targetPath)
+      || roleCanWriteFeatureSource('senior-backend', targetPath)
+    ));
+    const ownedByActiveRole = agentContext && ownershipTargets.every((targetPath) => (
+      roleCanWriteFeatureSource(agentContext.role, targetPath)
+    ));
     let reason;
     if (writingFeatureSourceViaCommand) {
       reason = 'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.';
     } else if (!inSubagent) {
-      reason = `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned subagent (currentRunId + activeAgentRole set in \`.traffic-one.json\`), not ${role}. Spawn the appropriate role first — senior-frontend owns \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend owns \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, and \`apps/*/src/(services|store)/\`.`;
+      reason = `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. Spawn the appropriate role first; senior-frontend and senior-backend ownership is enforced by \`roleCanWriteFeatureSource\`.`;
     } else if (!ownedBySome) {
       reason = `Run-team enforcement gate: the file \`${filePath}\` is not under any Traffic One role's owned path patterns (senior-frontend: \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend: \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, \`apps/*/src/(services|store)/\`). If this is a legitimate project layout (e.g. root \`src/\`), the role-pattern definitions in \`roleCanWriteFeatureSource\` need to be extended.`;
+    } else if (agentContext && !ownedByActiveRole) {
+      reason = `Run-team enforcement gate: the active Traffic One role \`${role}\` does not own \`${ownershipTargets.join(', ')}\`. Use the role that owns the path, or split the patch by role ownership.`;
     } else {
       // Should not reach: subagentMayWriteFeatureSource would have returned true.
       reason = `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`;

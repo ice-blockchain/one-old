@@ -33,7 +33,7 @@ const handlers       = require('./hook-runtime/handlers.cjs');
 const { MAX_STDIN } = config;
 
 const HANDLERS = {
-  'session-start':            ()         => handlers.runSessionStart(),
+  'session-start':            (rawInput) => handlers.runSessionStart(rawInput),
   'user-prompt-submit':       (rawInput) => handlers.runUserPromptSubmit(rawInput),
   'check-onboarding-gate':     (rawInput) => handlers.runCheckOnboardingGate(rawInput),
   'check-agent-model':        (rawInput) => handlers.runCheckAgentModel(rawInput),

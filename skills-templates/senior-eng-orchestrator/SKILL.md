@@ -157,25 +157,41 @@ Expected shape: `2026-05-07T14-23-05Z`. Pass this run-id verbatim to every subag
 
 Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
 
-### Subagent token-economy: write `currentRunId` + `activeAgentRole` before each spawn
+### Subagent token-economy: per-agent run claims
 
-Before EACH subagent spawn, update `.traffic-one.json` with two fields the SessionStart hook reads to emit a slim, role-scoped rule bundle (~5KB instead of ~117KB). This saves roughly 28K tokens per subagent SessionStart:
+After computing `RUN_ID`, persist only the active run pointer in `.traffic-one.json`:
 
 ```jsonc
 {
   // ...existing fields...
-  "currentRunId": "<the RUN_ID computed above>",
-  "activeAgentRole": "senior-architect"   // or senior-frontend / -backend / -reviewer / -tester / -shipper
+  "currentRunId": "<the RUN_ID computed above>"
 }
 ```
 
-Write order:
+Do **not** write `activeAgentRole` for new runs. It is a legacy fallback only.
+The spawn preflight hook creates a pending per-agent claim for each valid role
+spawn at:
 
-1. After computing `RUN_ID`, write `currentRunId` once.
-2. Before each `Task` (Claude Code) / `spawn_agent` (Codex) / Cursor task call, overwrite `activeAgentRole` with the role you're about to spawn.
-3. After the orchestrator run finishes (Phase 5), clear both fields (or leave them — the hook ignores them after 30 minutes).
+```text
+.traffic-one/runs/<runId>/pending/<claimId>.json
+```
 
-For parallel spawns (frontend + backend in Phase 2), write the field for the FIRST role just before that Task call. The second role gets the slim bundle on the next SessionStart even if the field doesn't match — the safety fallback emits a slim-but-unscoped bundle when `currentRunId` is set but `activeAgentRole` is stale, still saving ~115KB vs the full parent bundle.
+When the spawned worker session starts, the SessionStart hook claims that file
+to the real child session id:
+
+```text
+.traffic-one/runs/<runId>/<agentSessionId>.json
+```
+
+That claimed file is the source of truth for role-scoped rule bundles and
+feature-source write permission. Parallel frontend/backend spawns no longer
+race through a shared `activeAgentRole`; each worker gets its own role claim.
+
+If a host bypasses the spawn preflight hook, create the pending claim manually
+before spawning with at least `runId`, `claimId`, `role`, `spawnIndex`,
+`status: "pending"`, `parentSessionId`, `createdAt`, and `stackFingerprint`.
+After the orchestrator run finishes (Phase 5), clear `currentRunId` or leave it;
+the hook ignores stale runs after 30 minutes.
 
 ### Fix-cycle re-spawn (CHANGES_REQUESTED loop)
 
@@ -196,7 +212,6 @@ Instead, follow this protocol for each fix-cycle re-spawn:
    ```jsonc
    {
      "currentRunId": "<unchanged>",
-     "activeAgentRole": "senior-frontend",
      "spawnIndex": { "senior-frontend": 2 }   // was 1, now 2 for fix-1
    }
    ```
