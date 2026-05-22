@@ -1,0 +1,16 @@
+---
+description: "Traffic One must authenticate with one-mcp-key before onboarding, setup, reporting, or implementation."
+alwaysApply: true
+---
+
+# Traffic One Authentication
+
+Before using Traffic One, authenticate with the `one-mcp-key` server through a
+host modal selector with two choices: Authenticate Traffic One or Continue
+without Traffic One. If the user chooses Authenticate Traffic One, ask for the
+API key and run authentication internally with `TRAFFIC_ONE_AUTH_KEY`; then
+verify status internally. Do not ask the user to run shell commands.
+
+Do not run Traffic One onboarding, materialization, reporting, agent orchestration, or feature implementation until status is authenticated. If auth is missing or expired, present the modal selector, keep Traffic One inactive, and continue without Traffic One features when the user chooses that path and the request is actionable outside Traffic One; do not continue a pending onboarding answer or prior Traffic One flow. Do not write API keys or session tokens into project files, prompts, commits, `.traffic-one/`, or `.traffic-one.json`.
+
+Cursor currently enforces this as an always-applied rule; Codex and Claude Code also enforce it with hooks that call remote `auth_status` on session start and daily during ongoing sessions.

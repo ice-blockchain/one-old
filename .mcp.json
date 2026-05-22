@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "one-mcp-key": {
+      "type": "http",
+      "url": "http://localhost:54321/functions/v1/one-mcp-key",
+      "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
+      "headers": {
+        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY}"
+      }
+    }
+  }
+}

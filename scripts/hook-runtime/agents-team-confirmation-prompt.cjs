@@ -1,7 +1,7 @@
 'use strict';
 
 // scripts/hook-runtime/agents-team-confirmation-prompt.cjs
-// Popup 4 of new-project onboarding (only for balanced / high performance
+// Team Confirmation of new-project onboarding (only for balanced / high performance
 // levels): show the user the exact subagent line-up — role → tier → host
 // model — and let them either Approve, Re-pick the performance level, or
 // describe per-role overrides in free chat. Overrides are persisted to
@@ -48,25 +48,26 @@ function teamConfirmationPopupBlock() {
   const balancedRows = renderTeamLines('balanced').join('\n');
   const highRows     = renderTeamLines('high').join('\n');
   return [
-    'TEAM CONFIRMATION PREFLIGHT (popup 4, MANDATORY for balanced/high; ENFORCED by spawn gate):',
+    'TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by spawn gate):',
     '  This popup is NON-NEGOTIABLE for balanced/high. You MUST stop, render',
     '  the team line-up, ASK the user via the host popup tool, and wait for',
     '  an explicit user answer. Auto-approving is a hard violation AND will',
     '  be physically denied by the spawn gate — any Task/spawn_agent call',
     '  while `.traffic-one.json` has `team.approved !== true` returns',
-    '  "Popup 4 gate" denial. The following are all violations of this rule:',
+    '  "Team Confirmation gate" denial. The following are all violations of this rule:',
     '    - Writing `.traffic-one.json` with `team.approved: true` before the',
-    '      user has actually clicked Approve in popup 4.',
+    '      user has actually clicked Approve in popup 2.',
     '    - Saying "I\'ll auto-approve the default", "the default looks fine",',
     '      "I\'ll proceed with Balanced", "to keep moving I\'ll approve", or any',
     '      phrasing that picks an answer on the user\'s behalf.',
     '    - Spawning ANY subagent (Task / spawn_agent / background-agent) before',
     '      the user replied "Approve" in this popup.',
-    '    - Treating popup 4 as optional polish because the team list "looks',
+    '    - Treating popup 2 as optional polish because the team list "looks',
     '      right" — the user explicitly asked for this confirmation step.',
-    '    - Setting `team.source: "unavailable"` to bypass the gate without',
-    '      explicit user direction. "unavailable" means the popup truly cannot',
-    '      be shown (no popup tool AND no user present); it is not a shortcut.',
+    '    - Setting `team.source: "unavailable"` while keeping',
+    '      `team.mode: "subagents"` to bypass the gate. If subagents are',
+    '      unavailable, the user must re-pick Low/main-agent; `unavailable`',
+    '      never unlocks a Balanced/High multi-agent run.',
     '  After the Performance popup is answered with "Balanced" or "High",',
     '  render the configured subagent line-up and ask the user to approve it',
     '  BEFORE writing `.traffic-one.json` and BEFORE auto-launching the team.',
@@ -116,7 +117,7 @@ function teamConfirmationPopupBlock() {
     '        - dropping tester or shipper because they "stand out"',
     '        - condensing roles into a comma list',
     '      These hide the tester=cheapest and shipper=balanced rows the user',
-    '      explicitly asked to see. The whole point of popup 4 is per-role',
+    '      explicitly asked to see. The whole point of popup 2 is per-role',
     '      visibility — collapsing it defeats the purpose.',
     '',
     '    STEP 2 (call the host popup tool):',
@@ -145,7 +146,7 @@ function teamConfirmationPopupBlock() {
     '      it, every Task/spawn_agent call will be denied. Then auto-launch',
     '      the Traffic One subagent team.',
     '    - "Re-pick performance" → discard any pending overrides and re-show',
-    '      the Performance popup (popup 3). Do NOT write `.traffic-one.json`',
+    '      the Performance popup (popup 1). Do NOT write `.traffic-one.json`',
     '      until the user has approved a team for the new level.',
     '    - "Customise" → ask the user which roles/tiers to change',
     '      (e.g. "senior-reviewer = highest, senior-tester = balanced").',

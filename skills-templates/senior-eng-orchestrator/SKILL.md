@@ -10,33 +10,55 @@ metadata:
 
 # Senior Engineering Orchestrator
 
+## Traffic One Auth Preflight
+
+Before applying this skill, verify Traffic One auth unless the user is explicitly
+asking to authenticate, check auth status, log out, or run doctor.
+
+If status is not authenticated, do not apply this skill yet. Present the auth
+choice as a host modal selector when available:
+- Authenticate Traffic One
+- Continue without Traffic One
+
+If the user chooses Authenticate Traffic One, ask for the API key and run the
+authentication command internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
+internally. Do not ask the user to run bash or shell commands. If the user chooses
+Continue without Traffic One, continue the user's request without Traffic One
+features and do not repeat the auth prompt while that choice remains active.
+Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
+onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
+Traffic One agents, or use Traffic One reporting unless the user authenticates.
+
 You are the conductor. The Traffic One workflow is identical across runtimes: same phase order, same parallelism, same verdict tokens, same loop caps, same deploy gate, same final summary. Only the host-specific subagent adapter and consent step change.
 
-## Codex consent gate — blocking
+## Current-thread onboarding and consent gate — blocking
 
-When the host is Codex and this skill triggers, the first action is always to ensure the thread is in Plan mode for new projects, then run the required onboarding popup sequence before any implementation work. For new projects, resolve the mobile-app decision first even when the initial prompt already named web, mobile, Next.js, Ionic, React Native, frontend-only, no backend, no subagents, or "just build it"; those are implementation preferences, not onboarding answers. Then resolve the codebase graph provider, then ask for the subagent team. Claude Code follows the same Plan Mode requirement before Task/Write/Edit/Bash/scaffold actions.
+When this skill triggers for a new project, the first action is always to run the required Traffic One onboarding sequence in the current thread before any implementation work. Ask Performance / Agent Mode first. For High/Balanced ask Team Confirmation next, then show the Traffic One setup-success message, collect project context, ask Mobile App, and finally ask Code Graph. Explicit web/mobile/stack/no-subagents wording is implementation preference, not an onboarding answer.
 
 Required behavior on Codex:
 
 1. Do not print numbered options in chat when `request_user_input` is available. Call the popup tool and stop. Plain text fallback is allowed only when the popup tool is unavailable, and the fallback must say that first, ask the same blocking question directly in chat with numbered options, tell the user to reply with the option number or label, and stop. Do not choose a default, infer an answer, write `.traffic-one.json`, scaffold, or continue while the onboarding answer is pending.
-2. If this is a new project, switch Codex and Claude Code to Plan mode before asking onboarding questions. If no mode switch is exposed, say Plan mode is required, stay plan-only, ask fallback chat questions, and stop for typed answers. Do not write `.traffic-one.json`, `.traffic-one/plan.md`, create files, edit code, run commands, or simulate roles until Plan mode/onboarding choices are resolved.
-3. Codex Default mode fallback is a visible first-response requirement. If Plan mode is off or `request_user_input` cannot be called, do not run `detect-project`, Read/LS/Glob/Grep, Bash, `npm view`, scaffolds, or edits. The next assistant message must say: "Plan mode is required for Traffic One new-project onboarding, but Plan mode is not active here and the popup prompt is unavailable." Then ask `Do you want a mobile app too?` with `1. Web only (Recommended)`, `2. Ionic + Capacitor`, and `3. React Native / Expo`, tell the user to reply with the option number or label, and stop. Ask Code Graph only after that answer, then the Performance question for multi-layer builds (`1. High (Recommended)`, `2. Balanced`, `3. Low`).
-4. If this is a new complex project, ask the mobile decision with Codex `request_user_input` even if the first prompt already named web, mobile, iOS, Android, Ionic, Capacitor, React Native, Expo, RN, Next.js, frontend-only, no backend, no subagents, or "just build it": header `Mobile App`, question `Do you want a mobile app too?`, options `Web only (Recommended)`, `Ionic + Capacitor`, and `React Native / Expo`. Stop and wait for the popup answer before continuing.
-5. Ask the required codebase graph provider with Codex `request_user_input`: header `Code Graph`, question `Which provider should we use for the codebase graph?`, options `GitNexus` and `graphify`. Stop and wait for the popup answer before continuing. This is required before `.traffic-one.json`; no default and no skip.
-6. Announce that Traffic One detected a non-trivial multi-layer build.
-7. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
-8. Ask the **Performance level** using the host's popup/input mechanism:
+2. If this is a new project, complete onboarding in the current thread before implementation. If no popup/input tool is exposed, ask fallback chat questions and stop for typed answers. Do not write `.traffic-one.json`, `.traffic-one/plan.md`, create files, edit code, run commands, or simulate roles until onboarding choices are resolved.
+3. Current-thread fallback is a visible first-response requirement. If `request_user_input` cannot be called, do not run `detect-project`, Read/LS/Glob/Grep, Bash, `npm view`, scaffolds, or edits. The next assistant message must ask the Performance / Agent Mode question (`1. High (Recommended)`, `2. Balanced`, `3. Low`), tell the user to reply with the option number or label, and stop. Resume with only the next unresolved prompt.
+4. After Agent Mode and any Team Confirmation are resolved, say "Traffic One was successfully set up. Let's collect the project details next.", ask dynamic project-context questions, and persist `projectContext`.
+5. Ask the mobile decision with Codex `request_user_input` even if the first prompt already named web, mobile, iOS, Android, Ionic, Capacitor, React Native, Expo, RN, Next.js, frontend-only, no backend, no subagents, or "just build it": header `Mobile App`, question `Do you want a mobile app too?`, options `Web only (Recommended)`, `Ionic + Capacitor`, and `React Native / Expo`. Stop and wait for the popup answer before continuing.
+6. Ask the required codebase graph provider with Codex `request_user_input`: header `Code Graph`, question `Which provider should we use for the codebase graph?`, options `GitNexus` and `graphify`. Stop and wait for the popup answer before continuing. This is required before `.traffic-one.json`; no default and no skip.
+7. Announce that Traffic One detected a non-trivial multi-layer build.
+8. Name the role route: `architect → frontend/backend → reviewer/tester`, plus `shipper` only for explicit deploy intent.
+9. Ask the **Performance level** using the host's popup/input mechanism:
      - Codex       : `request_user_input` popup (header `"Performance"`)
      - Claude Code : `AskUserQuestion` tool
      - Cursor      : task-UI prompt
      - All fallback: plain chat with the three numbered options below; stop for typed reply.
-9. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate roles before the answer.
-10. Persist the answer in `.traffic-one.json` (hold the performance answer in working memory; for High/Balanced, popup 4 confirms the team first — do not write `team.approved: true` until the user clicks Approve):
+10. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate roles before the answer.
+11. Persist the answer in `.traffic-one.json` (hold the performance answer in working memory; for High/Balanced, Team Confirmation confirms the team first — do not write `team.approved: true` until the user clicks Approve):
      - "High"     → `performance: { level: "high",     source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
      - "Balanced" → `performance: { level: "balanced", source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
      - "Low"      → `performance: { level: "low",      source: "prompted" }`, `team: { mode: "main-agent", source: "prompted" }`
-11. For **High** or **Balanced**: ask popup 4 (Team Confirmation) before spawning. List role → tier → model and ask Approve / Re-pick performance / Customise. The PreToolUse spawn gate denies every Task/spawn_agent call until `.traffic-one.json` contains `team: { ..., approved: true }`, so auto-approving is forbidden — wait for the user's explicit Approve, then persist `team.approved: true` (plus any `team.overrides` collected). Then spawn phases using the host adapter (Codex `spawn_agent`, Claude Code `Task`, Cursor task adapter). On EACH spawn, pass the `model` tool PARAMETER resolved from the role's capability tier to your host (see the Runtime compatibility tier→model table). The model is set by the parameter, not by prompt text — omitting it makes the subagent inherit the parent model.
-12. For **Low** or when subagents are unavailable/blocked: run the same phases manually as a role roadmap checklist in this thread and explicitly state the Traffic One team is being simulated by the main agent.
+12. For **High** or **Balanced**: ask Team Confirmation before spawning. List role → tier → model and ask Approve / Re-pick performance / Customise. The PreToolUse spawn gate denies every Task/spawn_agent call until `.traffic-one.json` contains `team: { ..., approved: true }`, so auto-approving is forbidden — wait for the user's explicit Approve, then persist `team.approved: true` (plus any `team.overrides` collected). Then spawn phases using the host adapter (Codex `spawn_agent`, Claude Code `Task`, Cursor task adapter). On EACH spawn, pass the `model` tool PARAMETER resolved from the role's capability tier to your host (see the Runtime compatibility tier→model table). The model is set by the parameter, not by prompt text — omitting it makes the subagent inherit the parent model.
+13. For **Low** or when subagents are unavailable/blocked: run the same phases manually as a role roadmap checklist in this thread and explicitly state the Traffic One team is being simulated by the main agent.
+
+Do not satisfy Traffic One team execution with generic explorer/helper agents. A High/Balanced Traffic One run means the named senior-role workflow below: spawn `senior-architect`, wait for `PLAN_READY`, then spawn `senior-frontend` and `senior-backend`, wait for both to return before Phase 3, then spawn the reviewer/tester roles.
 
 Performance popup question, English only:
 
@@ -57,7 +79,7 @@ If work has already started and this gate was missed, pause at the next safe poi
   - Tier → model: `highest` = claude:`opus` / codex:`gpt-5-codex` / cursor:`opus`; `balanced` = claude:`sonnet` / codex:`gpt-5` / cursor:`sonnet`; `cheapest` = claude:`haiku` / codex:`gpt-5-mini` / cursor:`haiku`.
 - **Claude Code**: auto-spawn with the `Task`/Agent tool and pass `model: "<alias>"` (`opus`|`sonnet`|`haiku`) on EACH spawn per the tier mapping above. The alias auto-tracks the newest model of that family.
 - Claude Code agents do not inherit parent skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
-- **Codex**: switch to Plan mode before onboarding/performance questions when `mode === "new-project"`. Before starting a non-trivial multi-layer build, ask the Performance popup automatically (no waiting for the user to mention subagents). The performance choice (Balanced/High) replaces the old "Run team?" confirmation — it is still mandatory and blocking; stop until the user answers. If Balanced or High is chosen, call Codex `spawn_agent` and pass `model:` set to the codex column for each role's tier. If Low is chosen or subagents are blocked, simulate manually.
+- **Codex**: complete new-project onboarding in the current thread before implementation. Before starting a non-trivial multi-layer build, ask the Performance popup automatically (no waiting for the user to mention subagents). If Balanced or High is chosen, ask Team Confirmation next and wait for explicit approval before spawning. Then call Codex `spawn_agent` and pass `model:` set to the codex column for each role's tier. If Low is chosen or subagents are blocked, simulate manually.
 - **Cursor**: auto-spawn available Cursor/background-agent/task agents when this skill triggers. Include the per-role model directive in each agent prompt header. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
 - Codex role mapping:
   - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
@@ -73,7 +95,7 @@ If work has already started and this gate was missed, pause at the next safe poi
 
 Auto-trigger keywords: "build me", "make me", "create me", "scaffold a", "ship a", "end to end", "I want an app", "I need a site for", "turn this into", "habit tracker", "dashboard", "SaaS", "mobile app", "MVP", "landing page that does X".
 
-On all hosts (Claude Code, Codex, Cursor), these triggers mean "ask the Performance popup automatically, then run the Traffic One workflow at the chosen level." On Codex, the performance question is mandatory and blocking — wait for the answer before any implementation work. On Claude Code and Cursor, auto-proceed after writing `.traffic-one.json` with the chosen level.
+On all hosts (Claude Code, Codex, Cursor), these triggers mean "ask the Performance popup automatically, ask Team Confirmation for Balanced/High, then run the Traffic One workflow at the approved level." On Codex, both questions are mandatory and blocking — wait for the answers before any implementation work. On Claude Code and Cursor, follow the host popup/approval path before writing final `.traffic-one.json` and spawning.
 
 Skip if:
 - The request is for a single component, page, or service ("add a logout button"). Route to the matching specialist skill (`create-component`, `create-page`, `create-service`) directly and do not ask for subagents.

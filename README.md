@@ -7,6 +7,55 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 
 ---
 
+## First action: choose auth mode
+
+Traffic One is gated by the separate `one-mcp-key` MCP server. Before onboarding,
+materialization, background reporting, or normal plugin work, the agent presents
+a two-option modal selector: authenticate Traffic One or continue without Traffic
+One. If the user authenticates, the agent asks for the API key and runs the auth
+client internally, then verifies status itself. Users should not be asked to run
+shell commands for the normal auth flow.
+
+Optional endpoint override for local testing:
+
+```sh
+export TRAFFIC_ONE_MCP_KEY_ENDPOINT=http://localhost:54321/functions/v1/one-mcp-key
+```
+
+The API key is exchanged for a short-lived session token stored in user-level
+state only (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
+or `~/.traffic-one/auth.json`). Do not commit keys or session tokens.
+
+Codex and Claude Code hooks call `auth_status` remotely at every new session
+start and again at most once per day during ongoing sessions. If auth is
+missing, expired, or remotely rejected, Traffic One shows the login instruction
+and then stays inactive; the user's request continues without Traffic One
+features unless they login.
+
+The plugin also declares `one-mcp-key` in `.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "one-mcp-key": {
+      "type": "http",
+      "url": "http://localhost:54321/functions/v1/one-mcp-key",
+      "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
+      "headers": {
+        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY}"
+      }
+    }
+  }
+}
+```
+
+For local testing, set `TRAFFIC_ONE_AUTH_KEY` in your shell before enabling the
+MCP server. Codex reads `bearer_token_env_var`; the explicit header remains for
+hosts that consume `.mcp.json` headers directly. Production can replace this
+test-key path with OAuth when the auth server advertises it.
+
+---
+
 ## File map
 
 ```
@@ -49,7 +98,9 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 ├── AGENTS.md                ← Codex CLI     — entry point, inlines rules/ content
 ├── settings.json            ← Claude Code   — hooks (onboarding, materialization, graph, deploy gates)
 ├── hooks/hooks.json         ← Codex CLI     — hooks (onboarding, materialization, graph, deploy gates)
+├── .mcp.json                ← MCP           — one-mcp-key auth server declaration
 ├── scripts/hook-runtime.cjs ← Hooks         — dependency-free Node hook runtime
+├── scripts/traffic-one-auth.cjs ← Auth      — one-mcp-key login/status/logout
 ├── scripts/sync-cursor.cjs  ← Cursor        — generates .cursor/rules + normalizes manifest
 ├── .githooks/pre-commit     ← Git           — auto-runs Cursor sync and stages generated files
 ├── .githooks/prepare-commit-msg ← Git       — appends Traffic One integration trailer

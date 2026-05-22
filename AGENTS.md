@@ -4,14 +4,17 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 ## New-Project Gate
 
-- When `mode === "new-project"`, Codex and Claude Code must switch to Plan mode before onboarding questions, `.traffic-one.json`, `.traffic-one/plan.md`, subagent prompts, file writes, installs, or scaffolding.
-- Codex default-mode fallback is a visible first-response requirement. If Plan mode or popup input is unavailable, ask the fallback onboarding questions in chat and stop for the user's typed answers.
-- Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not claim that implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow are active yet.
+- When `mode === "new-project"`, Traffic One onboarding runs in the current thread before `.traffic-one.json`, `.traffic-one/plan.md`, subagent prompts, file writes, installs, or scaffolding.
+- Use host popup input for onboarding when available. If popup input is unavailable, ask the same next unresolved onboarding question in chat and stop for the user's typed answer.
+- Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
 - Treat explicit user requests as implementation intent, not onboarding answers.
-- Persist the Team answer in `.traffic-one.json`; `team.mode="subagents"` remains the source of truth for subagent-enabled runs.
+- Persist Agent Mode/Performance in `.traffic-one.json`; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
+- After Agent Mode and Team Confirmation, collect `projectContext`, then ask Mobile App, then Code Graph.
+- `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
 
 ## Active Rules
 
+- .traffic-one/rules/common/auth-gate.md
 - .traffic-one/rules/common/senior-engineer-team.md
 - .traffic-one/rules/common/project-memory.md
 - .traffic-one/rules/common/documentation.md
@@ -34,6 +37,7 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 ## Baseline Requirements
 
+- Authenticate with the `one-mcp-key` server before using Traffic One. Until auth succeeds, hooks surface the auth instruction, keep Traffic One inactive, prevent Traffic One prompt continuation, and let ordinary work proceed without Traffic One features.
 - Run `project-memory` and `auto-documentation-generator` as mandatory baselines for generated projects and reconcile them for existing codebases.
 - Keep `.traffic-one/rules/common/documentation.md` and `.traffic-one/rules/common/seo.md` in the mandatory rule set for web work.
 - Apply `rules/frontend/i18n.md` automatically for UI work, even when the user does not mention translations.
@@ -44,6 +48,7 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 Traffic One hooks handle the one-mcp first-look report in the background for full end-user projects. Do not call `one-mcp.report_codebase_metadata` from the assistant.
 
+- The reporter is skipped until `one-mcp-key` authentication succeeds; `.one-mcp-id` must not be created before auth.
 - If `.one-mcp-id` exists at the project root, the background reporter stops and makes no additional report attempt for that project.
 - If `.one-mcp-id` does not exist and the project has real codebase markers, the hook writes a UUID v7 as the only line of `.one-mcp-id`, stages that file when the project is a git repository, gathers anonymous structural metadata, and sends one background HTTPS request to the one-mcp endpoint.
 - The reporter is not run during plugin install and is not used for snippets, examples, or single files.

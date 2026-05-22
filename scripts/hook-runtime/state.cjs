@@ -145,12 +145,18 @@ const TEAM_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
 const PERFORMANCE_LEVEL_IDS = new Set(['low', 'balanced', 'high']);
 const PERFORMANCE_SOURCE_IDS = new Set(['prompted', 'explicit']);
 const TEAM_MODE_ALIASES = new Map([
+  ['enabled', 'subagents'],
+  ['true', 'subagents'],
+  ['yes', 'subagents'],
   ['run-team', 'subagents'],
   ['team', 'subagents'],
   ['traffic-one', 'subagents'],
   ['traffic-one-team', 'subagents'],
   ['subagent', 'subagents'],
   ['subagents-only', 'subagents'],
+  ['disabled', 'main-agent'],
+  ['false', 'main-agent'],
+  ['no', 'main-agent'],
   ['main', 'main-agent'],
   ['main-agent-only', 'main-agent'],
   ['manual', 'main-agent'],
@@ -294,10 +300,47 @@ function codeGraphProviderFromString(value) {
   return normalized === 'gitnexus' || normalized === 'graphify' ? normalized : null;
 }
 
+function codeGraphProviderFromValue(value) {
+  const direct = codeGraphProviderFromString(value);
+  if (direct) return direct;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  for (const key of ['provider', 'codeGraphProvider', 'id', 'name']) {
+    const nested = codeGraphProviderFromValue(value[key]);
+    if (nested) return nested;
+  }
+  return null;
+}
+
+function canonicalMode(value) {
+  const normalized = normalizedString(value);
+  if (normalized === 'new-project' || normalized === 'existing-codebase') return normalized;
+  return typeof value === 'string' ? value : null;
+}
+
+function canonicalBackendValue(value) {
+  const normalized = normalizedString(value);
+  if (normalized === 'supabase-ready' || normalized === 'supabase-default' || normalized === 'managed-supabase') {
+    return 'supabase';
+  }
+  return typeof value === 'string' ? value : value;
+}
+
 function canonicalizeStateShape(state) {
   if (!state || typeof state !== 'object') return false;
 
   let changed = false;
+  if (!state.mode && typeof state.projectMode === 'string') {
+    const mode = canonicalMode(state.projectMode);
+    if (mode) {
+      state.mode = mode;
+      changed = true;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(state, 'projectMode')) {
+    delete state.projectMode;
+    changed = true;
+  }
+
   const compactStack = state.stack && typeof state.stack === 'object' && !Array.isArray(state.stack)
     ? state.stack
     : null;
@@ -320,7 +363,7 @@ function canonicalizeStateShape(state) {
       changed = true;
     }
     if (!state.codeGraphProvider) {
-      const codeGraphProvider = codeGraphProviderFromString(compactStack.codeGraph || compactStack.codeGraphProvider);
+      const codeGraphProvider = codeGraphProviderFromValue(compactStack.codeGraph || compactStack.codeGraphProvider);
       if (codeGraphProvider) {
         state.codeGraphProvider = codeGraphProvider;
         changed = true;
@@ -336,12 +379,29 @@ function canonicalizeStateShape(state) {
     }
   }
 
+  if (typeof state.backend === 'string') {
+    const backend = canonicalBackendValue(state.backend);
+    if (backend !== state.backend) {
+      state.backend = backend;
+      changed = true;
+    }
+  }
+
   if (typeof state.mobile === 'string') {
     const mobile = mobileStateFromString(state.mobile);
     if (mobile) {
       state.mobile = mobile;
       changed = true;
     }
+  }
+
+  if ((state.team === undefined || state.team === null) && state.subagentTeam !== undefined) {
+    state.team = state.subagentTeam;
+    changed = true;
+  }
+  if (Object.prototype.hasOwnProperty.call(state, 'subagentTeam')) {
+    delete state.subagentTeam;
+    changed = true;
   }
 
   if (typeof state.team === 'string') {
@@ -352,11 +412,25 @@ function canonicalizeStateShape(state) {
     }
   }
 
-  if (!state.codeGraphProvider && typeof state.codeGraph === 'string') {
-    const codeGraphProvider = codeGraphProviderFromString(state.codeGraph);
+  const canonicalCodeGraphProvider = codeGraphProviderFromValue(state.codeGraphProvider);
+  if (canonicalCodeGraphProvider && state.codeGraphProvider !== canonicalCodeGraphProvider) {
+    state.codeGraphProvider = canonicalCodeGraphProvider;
+    changed = true;
+  }
+
+  if (!state.codeGraphProvider && state.codeGraph !== undefined) {
+    const codeGraphProvider = codeGraphProviderFromValue(state.codeGraph);
     if (codeGraphProvider) {
       state.codeGraphProvider = codeGraphProvider;
       delete state.codeGraph;
+      changed = true;
+    }
+  }
+
+  if (typeof state.performance === 'string') {
+    const level = canonicalPerformanceLevel(state.performance);
+    if (PERFORMANCE_LEVEL_IDS.has(level)) {
+      state.performance = { level, source: 'prompted' };
       changed = true;
     }
   }
@@ -382,9 +456,27 @@ function hasValidTeamState(team) {
   );
 }
 
-// Popup 4 (Team Confirmation) sets `team.approved: true` when the user
+function hasValidProjectContext(projectContext) {
+  return Boolean(
+    projectContext
+    && typeof projectContext === 'object'
+    && !Array.isArray(projectContext)
+    && typeof projectContext.source === 'string'
+    && projectContext.source.trim() !== ''
+    && typeof projectContext.originalPrompt === 'string'
+    && typeof projectContext.summary === 'string'
+    && projectContext.summary.trim() !== ''
+    && projectContext.answers
+    && typeof projectContext.answers === 'object'
+    && !Array.isArray(projectContext.answers)
+    && typeof projectContext.collectedAt === 'string'
+    && projectContext.collectedAt.trim() !== ''
+  );
+}
+
+// Team Confirmation sets `team.approved: true` when the user
 // explicitly Approves the team line-up. Used by the spawn gate to enforce
-// that the model can't bypass popup 4 with "I'll auto-approve the default".
+// that the model can't bypass confirmation with "I'll auto-approve the default".
 function isTeamApproved(team) {
   return Boolean(team && typeof team === 'object' && team.approved === true);
 }
@@ -568,10 +660,18 @@ function normalizeState(state, defaultMode) {
     state.mobile = defaultMobileState();
     changed = true;
   } else {
+    const frameworkAlias = mobileStateFromString(state.mobile.framework);
     const normalizedMobile = {
       ...defaultMobileState(),
       ...state.mobile,
     };
+    if (frameworkAlias) {
+      normalizedMobile.enabled = frameworkAlias.enabled;
+      normalizedMobile.framework = frameworkAlias.framework;
+      if (!state.mobile.source) {
+        normalizedMobile.source = frameworkAlias.source;
+      }
+    }
     normalizedMobile.source = canonicalMobileSource(normalizedMobile.source);
     if (
       state.mobile.enabled !== normalizedMobile.enabled
@@ -787,9 +887,11 @@ module.exports = {
   initializeToolchainState,
   defaultTechnologiesFor,
   hasValidTeamState,
+  hasValidProjectContext,
   isTeamApproved,
   canonicalTeamOverrides,
   overridesEqual,
+  codeGraphProviderFromValue,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
   PERFORMANCE_LEVEL_IDS,

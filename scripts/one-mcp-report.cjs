@@ -6,6 +6,9 @@ const fs = require('fs');
 const https = require('https');
 const path = require('path');
 const { spawn, spawnSync } = require('child_process');
+const {
+  isAuthenticatedLocal,
+} = require('./traffic-one-auth.cjs');
 
 const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/one-mcp';
 const ID_FILE = '.one-mcp-id';
@@ -428,6 +431,10 @@ function backfillDebugPayload(root, reportId, options = {}) {
 function prepareReport(cwd, options = {}) {
   if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') {
     return { started: false, reason: 'disabled' };
+  }
+  if (!isAuthenticatedLocal()) {
+    appendAgentLog(cwd, 'one-mcp report skipped: Traffic One authentication is required first.');
+    return { started: false, reason: 'auth-required' };
   }
   const root = path.resolve(cwd);
   if (!hasRealCodebase(root)) {

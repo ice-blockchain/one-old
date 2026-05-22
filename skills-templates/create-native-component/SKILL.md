@@ -1,20 +1,21 @@
 ---
 name: create-native-component
 description: >
-  Use PROACTIVELY only when the user explicitly asks to create, add, build,
-  make, scaffold, or generate a React Native / Expo component, RN UI element,
-  native screen component, card, modal, form, button, list item, or shared
-  React Native primitive.
-  Do not activate during Traffic One new-project onboarding before `.traffic-one.json`
-  has `onboardingComplete: true` and `.traffic-one/plan.md` exists; use
-  `detect-project` / `stack-setup` first.
+  Prerequisite: do not read, invoke, or activate this skill during Traffic One
+  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
+  this skill only after `.traffic-one.json` has `onboardingComplete: true` and
+  `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
+  only when the user explicitly asks to create, add, build, make, scaffold, or
+  generate a React Native / Expo component, RN UI element, native screen
+  component, card, modal, form, button, list item, or shared React Native
+  primitive.
   Triggers: "React Native component", "Expo component",
   "RN UI", "native component in React Native", "React Native form".
 ---
 
 # Skill: Create Native Component
 
-Traffic One onboarding guard: Do not activate during Traffic One new-project
+Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
 onboarding before `.traffic-one.json` has `onboardingComplete: true` and
 `.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
 return here after the stack, mobile, code graph, and team gates are resolved.

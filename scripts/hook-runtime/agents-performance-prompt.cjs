@@ -3,8 +3,8 @@
 // scripts/hook-runtime/agents-performance-prompt.cjs
 // Builds and dispatches performance-level prompts/directives.
 // Replaces the old "Run team / Main agent only" popup with a three-way
-// Low / Balanced / High choice. Balanced and High auto-launch the subagent
-// team without an extra confirmation step.
+// Low / Balanced / High choice. Balanced and High still require popup 2
+// (Team Confirmation) before the subagent team can launch.
 
 const { PERFORMANCE_LEVEL_IDS, PERFORMANCE_CONFIG } = require('./performance-config.cjs');
 const { TIER_IDS, canonicalTier, resolveModel, tierModelTable } = require('./model-tiers.cjs');
@@ -16,8 +16,8 @@ const { highModeDirective }     = require('./performance-high.cjs');
 
 function performancePopupBlock() {
   return [
-    'AGENT PERFORMANCE PREFLIGHT (popup 3, blocking for non-trivial multi-layer builds):',
-    '  After the codebase graph choice is resolved, ask the performance level using',
+    'AGENT PERFORMANCE PREFLIGHT (popup 1, blocking for non-trivial multi-layer builds):',
+    '  After global Traffic One auth is resolved, ask the performance level using',
     '  the host\'s popup/input mechanism:',
     '    - Codex        : use `request_user_input` popup when available.',
     '    - Claude Code  : use the `AskUserQuestion` tool when available.',
@@ -28,29 +28,29 @@ function performancePopupBlock() {
     '',
     '    header: "Performance"',
     '    question: "How do you want to run agents for this build?"',
-    '    options (list "High (Recommended)" FIRST so the popup\'s default chip is High):',
+    '    options (default/recommended is High; list "High (Recommended)" FIRST so the popup\'s default chip is High):',
     '      - "High (Recommended)" — Subagent team with max-power models; best output quality.',
     '      - "Balanced" — Subagent team with efficient mid-tier models; good cost/quality balance.',
     '      - "Low" — Main agent only; all roles run in this thread as a roadmap checklist; lowest cost.',
     '',
-    '  Hold the answer in working memory; do NOT write `.traffic-one.json` yet',
-    '  for Balanced/High — popup 4 (Team Confirmation) still has to confirm the',
+    '  Hold the answer in working memory; do NOT write final `.traffic-one.json` yet',
+    '  for Balanced/High — popup 2 (Team Confirmation) still has to confirm the',
     '  role → model line-up. The intended state per option:',
     '    - "Balanced" → performance.level="balanced", team.mode="subagents"',
     '    - "High"     → performance.level="high",     team.mode="subagents"',
     '    - "Low"      → performance.level="low",      team.mode="main-agent"',
     '',
-    '  For "Balanced" or "High": IMMEDIATELY ask popup 4 (Team Confirmation)',
+    '  For "Balanced" or "High": IMMEDIATELY ask popup 2 (Team Confirmation)',
     '  using the agent line-up defined in `performance-config.cjs` for the',
-    '  chosen level. Popup 4 is MANDATORY — auto-approving it on the user\'s',
+    '  chosen level. Popup 2 is MANDATORY — auto-approving it on the user\'s',
     '  behalf, or skipping it with "the default looks fine / I\'ll proceed",',
     '  is a HARD VIOLATION of this directive. Do NOT write `.traffic-one.json`',
     '  and do NOT spawn any subagent (Task / spawn_agent / background-agent)',
-    '  until the user has replied "Approve" in popup 4. If you cannot ask the',
+    '  until the user has replied "Approve" in popup 2. If you cannot ask the',
     '  popup (no popup tool exposed AND no user available), use the chat',
     '  fallback in `teamConfirmationChatFallback` and STOP for the user reply;',
     '  do not invent an answer.',
-    '  For "Low": skip popup 4, write `.traffic-one.json` with',
+    '  For "Low": skip popup 2, write `.traffic-one.json` with',
     '    "performance": { "level": "low", "source": "prompted" },',
     '    "team": { "mode": "main-agent", "source": "prompted" }',
     '  and continue in this thread using the role roadmap checklist directive.',
@@ -60,6 +60,7 @@ function performancePopupBlock() {
 function performanceChatFallback() {
   return [
     'Traffic One needs to know how you want to run agents for this build.',
+    'How do you want to run agents for this build?',
     '',
     '  1. High (Recommended) — Subagent team with max-power models',
     '  2. Balanced — Subagent team with efficient mid-tier models',
