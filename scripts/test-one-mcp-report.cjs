@@ -11,7 +11,8 @@ const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-$
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
 process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
-process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://localhost:54321/functions/v1/one-mcp-key-test';
+process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+delete process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE;
 fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
 
 const {
@@ -23,6 +24,18 @@ const {
 } = require('./one-mcp-report.cjs');
 const handlers = require('./hook-runtime/handlers.cjs');
 const authClient = require('./traffic-one-auth.cjs');
+
+assert.equal(authClient.authEndpointUrl('http://localhost:8787/mcp').protocol, 'http:');
+assert.equal(authClient.authEndpointUrl('http://127.0.0.1:8787/mcp').protocol, 'http:');
+assert.equal(authClient.authEndpointUrl('https://example.com/mcp').protocol, 'https:');
+assert.throws(
+  () => authClient.authEndpointUrl('http://example.com/mcp'),
+  /non-HTTPS MCP auth endpoint/,
+);
+assert.throws(
+  () => authClient.authEndpointUrl('https://user:pass@example.com/mcp'),
+  /must not include URL credentials/,
+);
 
 function seedAuthState(
   expiresAt = '2099-01-01T00:00:00Z',
@@ -149,6 +162,10 @@ async function main() {
         sessionPayload.promptRequest.options.map((option) => option.id),
         ['authenticate', 'continue_without'],
       );
+      assert.deepEqual(
+        sessionPayload.promptRequest.options.map((option) => option.label),
+        ['Authenticate Traffic One (Recommended)', 'Continue without Traffic One'],
+      );
       assert.match(sessionPayload.promptRequest.fallbackText, /Traffic One authentication is required/);
       assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
       assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Traffic One is inactive/);
@@ -163,6 +180,10 @@ async function main() {
       assert.equal(promptPayload.decision, undefined);
       assert.equal(promptPayload.promptRequest.id, 'traffic-one.auth.choice');
       assert.equal(promptPayload.promptRequest.kind, 'single_select');
+      assert.deepEqual(
+        promptPayload.promptRequest.options.map((option) => option.label),
+        ['Authenticate Traffic One (Recommended)', 'Continue without Traffic One'],
+      );
       assert.equal(promptPayload.hookSpecificOutput.permissionDecision, undefined);
       assert.match(promptPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
       assert.match(promptPayload.hookSpecificOutput.additionalContext, /Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin/);
@@ -195,6 +216,40 @@ async function main() {
         tool_input: { cmd: 'node /tmp/plugin/scripts/traffic-one-auth.cjs status' },
       }));
       assert.equal(allowedCodexAuthCommand.stdout, '');
+
+      {
+        const previousChoiceStatePath = process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
+        const blocker = path.join(os.tmpdir(), `traffic-one-auth-choice-blocker-${process.pid}`);
+        fs.rmSync(blocker, { recursive: true, force: true });
+        fs.writeFileSync(blocker, 'not a directory\n', 'utf8');
+        process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(blocker, 'choice.json');
+        try {
+          const writeFailSession = handlers.runSessionStart();
+          const writeFailSessionPayload = JSON.parse(writeFailSession.stdout);
+          assert.equal(writeFailSessionPayload.promptRequest.id, 'traffic-one.auth.choice');
+          assert.match(writeFailSessionPayload.hookSpecificOutput.additionalContext, /could not persist the auth choice state/i);
+          assert.doesNotMatch(writeFailSessionPayload.hookSpecificOutput.additionalContext, /PLUGIN MODE: UNKNOWN/);
+
+          const writeFailPrompt = handlers.runUserPromptSubmit(JSON.stringify({
+            prompt: 'Build a Traffic One app',
+          }));
+          const writeFailPromptPayload = JSON.parse(writeFailPrompt.stdout);
+          assert.equal(writeFailPromptPayload.promptRequest.id, 'traffic-one.auth.choice');
+          assert.match(writeFailPromptPayload.hookSpecificOutput.additionalContext, /could not persist the auth choice state/i);
+          assert.doesNotMatch(writeFailPromptPayload.hookSpecificOutput.additionalContext, /PLUGIN MODE: UNKNOWN/);
+
+          const writeFailGate = handlers.runCheckOnboardingGate(JSON.stringify({
+            tool_name: 'Write',
+            tool_input: { file_path: 'README.md', content: 'blocked while auth choice storage is unavailable\n' },
+          }));
+          const writeFailGatePayload = JSON.parse(writeFailGate.stdout);
+          assert.equal(writeFailGatePayload.hookSpecificOutput.permissionDecision, 'deny');
+          assert.equal(writeFailGatePayload.promptRequest.id, 'traffic-one.auth.choice');
+        } finally {
+          process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = previousChoiceStatePath;
+          fs.rmSync(blocker, { force: true });
+        }
+      }
 
       fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
       const bareWithoutChoice = handlers.runUserPromptSubmit(JSON.stringify({
@@ -313,6 +368,23 @@ async function main() {
     false,
   );
 
+  {
+    const remoteFailureRoot = makeProject();
+    seedAuthState('2099-01-01T00:00:00Z', '2026-05-20T00:00:00Z');
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(remoteFailureRoot);
+      const remoteFailureSession = handlers.runSessionStart();
+      const remoteFailurePayload = JSON.parse(remoteFailureSession.stdout);
+      assert.equal(remoteFailurePayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.match(remoteFailurePayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
+      assert.doesNotMatch(remoteFailurePayload.hookSpecificOutput.additionalContext, /PLUGIN MODE: UNKNOWN/);
+    } finally {
+      process.chdir(previousCwd);
+      seedAuthState();
+    }
+  }
+
   seedAuthState('2000-01-01T00:00:00Z');
   assert.equal(fs.existsSync(AUTH_STATE_PATH), true);
   fs.writeFileSync(AUTH_CHOICE_STATE_PATH, `${JSON.stringify({
@@ -337,6 +409,27 @@ async function main() {
   assert.equal(loggedOutStatus.reason, 'missing-auth-state');
   seedAuthState();
 
+  {
+    const previousChoiceStatePath = process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
+    const previousAuthStatePath = process.env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    try {
+      delete process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
+      process.env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-fallback-delete-${process.pid}.json`);
+      const authChoicePaths = authClient.authChoiceStatePaths(process.env);
+      assert.equal(authChoicePaths.length, 2);
+      fs.mkdirSync(path.dirname(authChoicePaths[1]), { recursive: true });
+      fs.writeFileSync(authChoicePaths[1], '{"version":3,"choices":{}}\n', 'utf8');
+      assert.equal(fs.existsSync(authChoicePaths[1]), true);
+      const fallbackLogout = await authClient.logout([], process.env);
+      assert.equal(fallbackLogout.ok, true);
+      assert.equal(fs.existsSync(authChoicePaths[1]), false);
+    } finally {
+      process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = previousChoiceStatePath;
+      process.env.TRAFFIC_ONE_AUTH_STATE_PATH = previousAuthStatePath;
+      seedAuthState();
+    }
+  }
+
   const expiredRoot = makeProject();
   seedAuthState('2000-01-01T00:00:00Z');
   try {
@@ -348,6 +441,10 @@ async function main() {
     const previousCwd = process.cwd();
     try {
       process.chdir(expiredRoot);
+      const expiredSessionStart = handlers.runSessionStart();
+      const expiredSessionPayload = JSON.parse(expiredSessionStart.stdout);
+      assert.equal(expiredSessionPayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.match(expiredSessionPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
       const skipped = handlers.runCheckOnboardingGate(JSON.stringify({
         tool_name: 'Write',
         tool_input: { file_path: 'apps/web/src/Expired.tsx', content: 'export const x = 1;\n' },

@@ -9,6 +9,8 @@ description: >
   an endpoint, connect to a backend, or wire up HTTP requests.
   Triggers: "add an API call", "create a service for", "fetch [resource] from the API",
   "connect to the [name] endpoint", "call the API to", "I need to GET/POST/PUT/DELETE".
+  If hooks are absent or auth status is unknown, do not infer "Traffic One inactive";
+  ask the auth choice or run doctor, then stop before implementation.
 ---
 
 # Skill: Create Service
@@ -20,7 +22,7 @@ asking to authenticate, check auth status, log out, or run doctor.
 
 If status is not authenticated, do not apply this skill yet. Present the auth
 choice as a host modal selector when available:
-- Authenticate Traffic One
+- Authenticate Traffic One (Recommended)
 - Continue without Traffic One
 
 If the user chooses Authenticate Traffic One, ask for the API key and run the
@@ -36,6 +38,14 @@ features and do not repeat the auth prompt while that choice remains active.
 Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
 onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
 Traffic One agents, or use Traffic One reporting unless the user authenticates.
+
+If hooks are absent or auth status is unknown, do not infer "Traffic One
+inactive" and continue. Treat Traffic One as unverified: run or recommend
+`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
+debugging a transcript), ask the auth choice, and stop before scaffolding,
+installs, source edits, Traffic One agents, or implementation skills. Only
+continue ordinary work without Traffic One after the user explicitly chooses
+"Continue without Traffic One".
 
 Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
 onboarding before `.traffic-one.json` has `onboardingComplete: true` and

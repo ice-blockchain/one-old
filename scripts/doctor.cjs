@@ -13,6 +13,7 @@
 // state file. The skill (or user) decides what to do with the findings.
 
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
@@ -31,6 +32,7 @@ const {
 const {
   teamModeForLevel,
 } = require('./hook-runtime/agents-performance-prompt.cjs');
+const auth = require('./traffic-one-auth.cjs');
 
 function which(cmd) {
   const r = spawnSync('sh', ['-c', `command -v ${JSON.stringify(cmd)}`], { encoding: 'utf8' });
@@ -47,6 +49,334 @@ function safeRead(filePath) {
 
 function safeStat(p) {
   try { return fs.statSync(p); } catch { return null; }
+}
+
+function safeJsonParse(text, fallback = null) {
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function parseArgs(argv = process.argv.slice(2)) {
+  const out = { session: null };
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--session' && argv[index + 1]) {
+      out.session = argv[index + 1];
+      index += 1;
+    }
+  }
+  return out;
+}
+
+function codexConfigPath(env = process.env) {
+  const codexHome = env.CODEX_HOME || (env.HOME ? path.join(env.HOME, '.codex') : '');
+  return codexHome ? path.join(codexHome, 'config.toml') : null;
+}
+
+function parseTomlScalar(value) {
+  const trimmed = String(value || '').trim();
+  if (trimmed === 'true') return true;
+  if (trimmed === 'false') return false;
+  const quoted = trimmed.match(/^"((?:\\"|[^"])*)"$/);
+  if (quoted) return quoted[1].replace(/\\"/g, '"');
+  return trimmed;
+}
+
+function parseCodexConfigToml(text) {
+  const sections = {};
+  let current = '';
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/);
+    if (sectionMatch) {
+      current = sectionMatch[1];
+      sections[current] = sections[current] || {};
+      continue;
+    }
+    const keyMatch = line.match(/^([A-Za-z0-9_.-]+|"[^"]+")\s*=\s*(.+)$/);
+    if (!keyMatch || !current) continue;
+    const key = keyMatch[1].replace(/^"|"$/g, '');
+    sections[current][key] = parseTomlScalar(keyMatch[2]);
+  }
+  return sections;
+}
+
+function trustedProjectForCwd(cwd, sections) {
+  const resolvedCwd = path.resolve(cwd);
+  let best = null;
+  for (const [section, values] of Object.entries(sections || {})) {
+    const match = section.match(/^projects\."(.+)"$/);
+    if (!match) continue;
+    if (!values || values.trust_level !== 'trusted') continue;
+    const projectRoot = path.resolve(match[1]);
+    const covered = resolvedCwd === projectRoot || resolvedCwd.startsWith(`${projectRoot}${path.sep}`);
+    if (!covered) continue;
+    if (!best || projectRoot.length > best.length) best = projectRoot;
+  }
+  return best;
+}
+
+function probeCodexHooks(cwd, env = process.env) {
+  const configPath = codexConfigPath(env);
+  const text = configPath ? safeRead(configPath) : null;
+  if (!text) {
+    return {
+      host: 'codex',
+      configPath,
+      configExists: false,
+      cwd: path.resolve(cwd),
+    };
+  }
+
+  const sections = parseCodexConfigToml(text);
+  const pluginSection = sections['plugins."traffic-one@traffic-one-local"'] || null;
+  const hookSections = Object.entries(sections)
+    .filter(([section]) => section.startsWith('hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:'));
+  const hookEvents = new Set();
+  let hookStateEnabledCount = 0;
+  let hookStateTrustedHashCount = 0;
+  for (const [section, values] of hookSections) {
+    const eventMatch = section.match(/hooks\/hooks\.json:([^:]+):/);
+    if (eventMatch) hookEvents.add(eventMatch[1]);
+    if (values && values.enabled === true) hookStateEnabledCount += 1;
+    if (values && typeof values.trusted_hash === 'string' && values.trusted_hash.startsWith('sha256:')) {
+      hookStateTrustedHashCount += 1;
+    }
+  }
+  const requiredHookEvents = ['session_start', 'user_prompt_submit', 'pre_tool_use', 'post_tool_use'];
+  const missingHookEvents = requiredHookEvents.filter((event) => !hookEvents.has(event));
+  const trustedProject = trustedProjectForCwd(cwd, sections);
+
+  return {
+    host: 'codex',
+    configPath,
+    configExists: true,
+    cwd: path.resolve(cwd),
+    pluginEnabled: pluginSection ? pluginSection.enabled === true : null,
+    hookStateEntryCount: hookSections.length,
+    hookStateEnabledCount,
+    hookStateTrustedHashCount,
+    hookEvents: [...hookEvents].sort(),
+    missingHookEvents,
+    trustCovered: Boolean(trustedProject),
+    trustedProject,
+  };
+}
+
+function mcpConfigPath() {
+  return path.join(path.resolve(__dirname, '..'), '.mcp.json');
+}
+
+function probeMcpAuth(env = process.env) {
+  const configPath = mcpConfigPath();
+  const raw = safeRead(configPath);
+  const config = raw ? safeJsonParse(raw, null) : null;
+  const server = config
+    && config.mcpServers
+    && typeof config.mcpServers === 'object'
+    ? config.mcpServers['mcp-auth']
+    : null;
+  const bearerTokenEnvVar = server && typeof server.bearer_token_env_var === 'string'
+    ? server.bearer_token_env_var
+    : null;
+  const envPresent = bearerTokenEnvVar
+    ? typeof env[bearerTokenEnvVar] === 'string' && env[bearerTokenEnvVar].trim() !== ''
+    : false;
+  return {
+    configPath,
+    configExists: Boolean(raw),
+    configured: Boolean(server),
+    type: server && typeof server.type === 'string' ? server.type : null,
+    url: server && typeof server.url === 'string' ? server.url : null,
+    bearerTokenEnvVar,
+    envPresent,
+  };
+}
+
+function codexSessionsDir(env = process.env) {
+  const codexHome = env.CODEX_HOME || (env.HOME ? path.join(env.HOME, '.codex') : path.join(os.homedir(), '.codex'));
+  return path.join(codexHome, 'sessions');
+}
+
+function walkJsonlFiles(dir, out = []) {
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return out; }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.')) continue;
+    const fullPath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkJsonlFiles(fullPath, out);
+    } else if (entry.isFile() && entry.name.endsWith('.jsonl')) {
+      out.push(fullPath);
+    }
+  }
+  return out;
+}
+
+function readFirstJsonlObject(filePath) {
+  let text = '';
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(256 * 1024);
+      const bytes = fs.readSync(fd, buffer, 0, buffer.length, 0);
+      text = buffer.subarray(0, bytes).toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const line = text.split(/\r?\n/, 1)[0];
+  return safeJsonParse(line, null);
+}
+
+function sessionIdFromFile(filePath) {
+  const match = path.basename(filePath).match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i);
+  return match ? match[1] : path.basename(filePath).replace(/^rollout-/, '').replace(/\.jsonl$/, '');
+}
+
+function resolveCodexSession(sessionId, env = process.env) {
+  const root = codexSessionsDir(env);
+  const files = walkJsonlFiles(root);
+  const direct = files.find((filePath) => path.basename(filePath).includes(sessionId));
+  if (direct) return direct;
+  for (const filePath of files) {
+    const first = readFirstJsonlObject(filePath);
+    const payload = first && first.payload && typeof first.payload === 'object' ? first.payload : {};
+    if (payload.id === sessionId) return filePath;
+  }
+  return null;
+}
+
+function getPayloadText(payload) {
+  if (!payload || typeof payload !== 'object') return '';
+  return [
+    payload.base_instructions && payload.base_instructions.text,
+    payload.instructions && payload.instructions.text,
+    payload.user_instructions && payload.user_instructions.text,
+  ].filter((value) => typeof value === 'string').join('\n');
+}
+
+function commandLooksMutating(name, rawArgs) {
+  if (name === 'apply_patch') return true;
+  if (name === 'request_plugin_install' || name === 'automation_update') return true;
+  if (name !== 'exec_command') return false;
+  const args = safeJsonParse(rawArgs, {});
+  const command = typeof args.cmd === 'string' ? args.cmd : String(rawArgs || '');
+  return /\b(apply_patch|npm\s+install|pnpm\s+(install|add|approve-builds|rebuild)|yarn\s+(install|add)|bun\s+(install|add)|npx\s+create-|mkdir\b|touch\b|rm\b|mv\b|cp\b|rsync\b|git\s+(init|checkout|reset|clean)|tee\b|cat\s*>|>\s*[^&])/.test(command);
+}
+
+function authProbeForSession(sessionStartedAt, env = process.env) {
+  const filePath = auth.authStatePath(env);
+  const state = auth.readAuthState(env);
+  const startedMs = Date.parse(sessionStartedAt || '');
+  const expiresMs = Date.parse(state && state.expiresAt ? state.expiresAt : '');
+  const expiredAtSessionStart = Boolean(
+    state
+    && Number.isFinite(startedMs)
+    && Number.isFinite(expiresMs)
+    && expiresMs <= startedMs
+  );
+  return {
+    filePath,
+    present: Boolean(state),
+    expiresAt: state && typeof state.expiresAt === 'string' ? state.expiresAt : null,
+    expiredAtSessionStart,
+  };
+}
+
+function analyzeCodexSessionFile(filePath, env = process.env) {
+  let text;
+  try { text = fs.readFileSync(filePath, 'utf8'); } catch { return null; }
+
+  const diagnostics = {
+    id: sessionIdFromFile(filePath),
+    jsonl: filePath,
+    cwd: null,
+    startedAt: null,
+    hookPayloadCount: 0,
+    promptRequestCount: 0,
+    permissionDecisionCount: 0,
+    trafficOneAuthPromptCount: 0,
+    trafficOneInstructionInjected: false,
+    baseInstructionsMentionTrafficOne: false,
+    toolCallCount: 0,
+    mutatingToolCallCount: 0,
+    firstAuthGateAt: null,
+    firstMutatingToolAt: null,
+    mutatingToolBeforeAuthGate: false,
+    authState: null,
+  };
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    const parsed = safeJsonParse(line, null);
+    if (!parsed) continue;
+    const timestamp = parsed.timestamp || null;
+    const serialized = JSON.stringify(parsed);
+    if (serialized.includes('hookSpecificOutput')) diagnostics.hookPayloadCount += 1;
+    if (serialized.includes('promptRequest')) diagnostics.promptRequestCount += 1;
+    if (serialized.includes('permissionDecision')) diagnostics.permissionDecisionCount += 1;
+    if (serialized.includes('traffic-one.auth.choice')) {
+      diagnostics.trafficOneAuthPromptCount += 1;
+      if (!diagnostics.firstAuthGateAt) diagnostics.firstAuthGateAt = timestamp;
+    }
+
+    if (parsed.type === 'session_meta') {
+      const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
+      diagnostics.id = typeof payload.id === 'string' ? payload.id : diagnostics.id;
+      diagnostics.cwd = typeof payload.cwd === 'string' ? payload.cwd : diagnostics.cwd;
+      diagnostics.startedAt = payload.timestamp || timestamp || diagnostics.startedAt;
+      const instructionText = getPayloadText(payload);
+      diagnostics.baseInstructionsMentionTrafficOne = /Traffic One|traffic-one|\.traffic-one/.test(instructionText);
+      diagnostics.trafficOneInstructionInjected = /Traffic One Codex Instructions|\.traffic-one\/rules\/common\/auth-gate\.md|Authenticate with the `mcp-auth` server/.test(instructionText);
+      continue;
+    }
+
+    if (parsed.type !== 'response_item') continue;
+    const payload = parsed.payload && typeof parsed.payload === 'object' ? parsed.payload : {};
+    if (payload.type !== 'function_call' && payload.type !== 'custom_tool_call') continue;
+    const name = typeof payload.name === 'string' ? payload.name : '';
+    diagnostics.toolCallCount += 1;
+    const rawArgs = payload.arguments || payload.input || '';
+    if (commandLooksMutating(name, rawArgs)) {
+      diagnostics.mutatingToolCallCount += 1;
+      if (!diagnostics.firstMutatingToolAt) diagnostics.firstMutatingToolAt = timestamp;
+    }
+  }
+
+  diagnostics.authState = authProbeForSession(diagnostics.startedAt, env);
+  diagnostics.mutatingToolBeforeAuthGate = Boolean(
+    diagnostics.firstMutatingToolAt
+    && (
+      !diagnostics.firstAuthGateAt
+      || diagnostics.firstMutatingToolAt < diagnostics.firstAuthGateAt
+    )
+  );
+  return diagnostics;
+}
+
+function probeSessionDiagnostics(sessionId, env = process.env) {
+  if (!sessionId) return null;
+  const filePath = resolveCodexSession(sessionId, env);
+  if (!filePath) {
+    return {
+      id: sessionId,
+      found: false,
+      sessionsDir: codexSessionsDir(env),
+    };
+  }
+  return {
+    found: true,
+    ...analyzeCodexSessionFile(filePath, env),
+  };
 }
 
 function probeNode() {
@@ -176,11 +506,90 @@ function onboardingStateIssues(rawState, state) {
   return [...new Set(issues)];
 }
 
-function buildFindings({ node, nvm, gitnexus, project }) {
+function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, mcpAuth = null, sessionDiagnostics = null }) {
   const findings = [];
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project);
   const provider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+
+  if (mcpAuth && mcpAuth.configured && mcpAuth.bearerTokenEnvVar && mcpAuth.envPresent === false) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'MCP_AUTH_ENV_MISSING',
+      message: `The mcp-auth MCP server is configured but ${mcpAuth.bearerTokenEnvVar} is not set for this process. Codex can still run, but Traffic One MCP auth startup is incomplete and Traffic One features must stay gated until authentication is resolved.`,
+    });
+  }
+
+  if (sessionDiagnostics) {
+    if (sessionDiagnostics.found === false) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CODEX_SESSION_NOT_FOUND',
+        message: `Could not find Codex session ${sessionDiagnostics.id} under ${sessionDiagnostics.sessionsDir}.`,
+      });
+    } else {
+      if (sessionDiagnostics.hookPayloadCount === 0 && sessionDiagnostics.promptRequestCount === 0) {
+        findings.push({
+          severity: 'fix-needed',
+          code: 'CODEX_HOOKS_NOT_INVOKED_FOR_SESSION',
+          message: `Codex session ${sessionDiagnostics.id} contains no Traffic One hook payloads or prompt requests. Hooks likely did not run for cwd ${sessionDiagnostics.cwd || '(unknown)'}.`,
+        });
+      }
+      if (sessionDiagnostics.trafficOneInstructionInjected === false) {
+        findings.push({
+          severity: 'fix-needed',
+          code: 'TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED',
+          message: `Codex session ${sessionDiagnostics.id} did not receive Traffic One root instructions at session start. Skill metadata may still be visible, but plugin instructions were not active.`,
+        });
+      }
+      if (sessionDiagnostics.authState && sessionDiagnostics.authState.expiredAtSessionStart) {
+        findings.push({
+          severity: 'fix-needed',
+          code: 'TRAFFIC_ONE_AUTH_EXPIRED_AT_SESSION_START',
+          message: `Traffic One auth state expired at ${sessionDiagnostics.authState.expiresAt} before Codex session ${sessionDiagnostics.id} started. A working hook should have shown the re-auth prompt before Traffic One work.`,
+        });
+      }
+      if (sessionDiagnostics.mutatingToolBeforeAuthGate) {
+        findings.push({
+          severity: 'fix-needed',
+          code: 'SESSION_MUTATED_BEFORE_TRAFFIC_ONE_AUTH_GATE',
+          message: `Codex session ${sessionDiagnostics.id} used a mutating tool before any Traffic One auth gate appeared. Treat generated artifacts from that session as untrusted Traffic One output.`,
+        });
+      }
+    }
+  }
+
+  if (codexHooks && codexHooks.configExists) {
+    if (codexHooks.pluginEnabled !== true) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CODEX_TRAFFIC_ONE_PLUGIN_DISABLED',
+        message: 'Traffic One is not enabled in Codex config, so Codex will not invoke Traffic One hooks.',
+      });
+    }
+    if (
+      codexHooks.hookStateEntryCount === 0
+      || codexHooks.hookStateEnabledCount !== codexHooks.hookStateEntryCount
+      || codexHooks.hookStateTrustedHashCount !== codexHooks.hookStateEntryCount
+      || (Array.isArray(codexHooks.missingHookEvents) && codexHooks.missingHookEvents.length > 0)
+    ) {
+      const missing = Array.isArray(codexHooks.missingHookEvents) && codexHooks.missingHookEvents.length > 0
+        ? ` Missing hook events: ${codexHooks.missingHookEvents.join(', ')}.`
+        : '';
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED',
+        message: `Traffic One Codex hook trust records are missing, disabled, or missing trusted hashes; hooks can be skipped or withheld.${missing}`,
+      });
+    }
+    if (codexHooks.trustCovered === false) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CODEX_WORKSPACE_UNTRUSTED',
+        message: `Current workspace (${codexHooks.cwd}) is not covered by a trusted Codex project root. Codex may skip plugin hooks here; trust this workspace or a parent directory before starting Traffic One work.`,
+      });
+    }
+  }
 
   if (rawStateHasLegacyShape(rawState)) {
     findings.push({
@@ -314,12 +723,16 @@ function buildFindings({ node, nvm, gitnexus, project }) {
 }
 
 function main() {
+  const args = parseArgs();
   const cwd = process.cwd();
   const node = probeNode();
   const nvm = probeNvm();
   const gitnexus = probeGitnexus();
   const project = probeProject(cwd);
-  const findings = buildFindings({ node, nvm, gitnexus, project });
+  const codexHooks = probeCodexHooks(cwd);
+  const mcpAuth = probeMcpAuth();
+  const sessionDiagnostics = probeSessionDiagnostics(args.session);
+  const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, mcpAuth, sessionDiagnostics });
   const summary = findings.some((f) => f.severity === 'fix-needed')
     ? 'ACTION_NEEDED'
     : (findings.length > 0 ? 'INFO_ONLY' : 'HEALTHY');
@@ -327,11 +740,22 @@ function main() {
   process.stdout.write(JSON.stringify({
     summary,
     findings,
-    probes: { node, nvm, gitnexus, project },
+    probes: { node, nvm, gitnexus, project, codexHooks, mcpAuth, sessionDiagnostics },
     version: typeof project.state?.version === 'string' ? project.state.version : null,
   }, null, 2) + '\n');
 }
 
 if (require.main === module) main();
 
-module.exports = { probeNode, probeNvm, probeGitnexus, probeProject, buildFindings };
+module.exports = {
+  probeNode,
+  probeNvm,
+  probeGitnexus,
+  probeProject,
+  probeCodexHooks,
+  probeMcpAuth,
+  probeSessionDiagnostics,
+  analyzeCodexSessionFile,
+  resolveCodexSession,
+  buildFindings,
+};

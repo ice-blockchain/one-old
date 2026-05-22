@@ -37,7 +37,9 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 ## Baseline Requirements
 
-- Authenticate with the `one-mcp-key` server before using Traffic One. Until auth succeeds, hooks surface the auth instruction, keep Traffic One inactive, prevent Traffic One prompt continuation, and let ordinary work proceed without Traffic One features.
+- Authenticate with the `mcp-auth` server before using Traffic One. Until auth succeeds, hooks surface the auth instruction, keep Traffic One inactive, prevent Traffic One prompt continuation, and let ordinary work proceed without Traffic One features.
+- If a stored auth session expires, the auth client may call `refresh` internally with `TRAFFIC_ONE_AUTH_KEY` when the key is still available in the current process environment. If refresh fails or the key is unavailable, keep Traffic One gated and ask the user to authenticate again.
+- If Traffic One skills are visible but hooks or these root instructions were not injected, do not infer "Traffic One inactive" and continue. Treat Traffic One as unverified: ask the auth choice, run or recommend `node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` for incident debugging), and stop before scaffolding, installs, source edits, Traffic One agents, or implementation skills. Continue ordinary work without Traffic One only after the user explicitly chooses "Continue without Traffic One".
 - Run `project-memory` and `auto-documentation-generator` as mandatory baselines for generated projects and reconcile them for existing codebases.
 - Keep `.traffic-one/rules/common/documentation.md` and `.traffic-one/rules/common/seo.md` in the mandatory rule set for web work.
 - Apply `rules/frontend/i18n.md` automatically for UI work, even when the user does not mention translations.
@@ -48,7 +50,7 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 Traffic One hooks handle the one-mcp first-look report in the background for full end-user projects. Do not call `one-mcp.report_codebase_metadata` from the assistant.
 
-- The reporter is skipped until `one-mcp-key` authentication succeeds; `.one-mcp-id` must not be created before auth.
+- The reporter is skipped until `mcp-auth` authentication succeeds; `.one-mcp-id` must not be created before auth.
 - If `.one-mcp-id` exists at the project root, the background reporter stops and makes no additional report attempt for that project.
 - If `.one-mcp-id` does not exist and the project has real codebase markers, the hook writes a UUID v7 as the only line of `.one-mcp-id`, stages that file when the project is a git repository, gathers anonymous structural metadata, and sends one background HTTPS request to the one-mcp endpoint.
 - The report is fire-and-forget. Success, failure, timeout, invalid response, or skipped submission must stay silent and must never block onboarding completion, materialization, tool use, scaffolding, or development.

@@ -13,7 +13,8 @@ const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.
 const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
 process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
-process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://localhost:54321/functions/v1/one-mcp-key-test';
+process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE = '1';
 fs.mkdirSync(path.dirname(AUTH_STATE_PATH), { recursive: true });
 fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
 fs.writeFileSync(AUTH_STATE_PATH, `${JSON.stringify({
@@ -146,7 +147,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   return {
-    version: '2.9.59',
+    version: '2.9.62',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
@@ -429,7 +430,7 @@ test('Traffic One entry skills self-disable when auth is missing', () => {
     const body = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
     assert.match(body, /Traffic One Auth Preflight/, relPath);
     assert.match(body, /host modal selector/, relPath);
-    assert.match(body, /Authenticate Traffic One/, relPath);
+    assert.match(body, /Authenticate Traffic One \(Recommended\)/, relPath);
     assert.match(body, /Continue without Traffic One/, relPath);
     assert.match(body, /run the\s+authentication command internally/, relPath);
     assert.match(body, /Do not ask the user to run bash or shell commands/, relPath);
@@ -905,7 +906,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.59');
+    assert.equal(state.version, '2.9.62');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -1136,7 +1137,7 @@ test('onboarding gate still denies compact state when graph choice is missing', 
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.59',
+      version: '2.9.62',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',
@@ -1938,8 +1939,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.59');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.59');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.62');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.62');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -2170,7 +2171,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.59');
+    assert.equal(state.version, '2.9.62');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -2198,7 +2199,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.59');
+    assert.equal(state.version, '2.9.62');
     assert.equal(state.project, undefined);
     assert.equal(state.mode, 'new-project');
     assert.equal(state.stack, 'default');
@@ -2215,7 +2216,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     assert.equal(state.onboardingComplete, true);
     assert.ok(state.confirmedAt);
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
-    assert.equal(state.materializedVersion, '2.9.59');
+    assert.equal(state.materializedVersion, '2.9.62');
     assert.ok(state.materializedAt);
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
@@ -2391,7 +2392,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.59',
+      materializedVersion: '2.9.62',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -2413,7 +2414,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.59',
+      materializedVersion: '2.9.62',
       currentRunId: '2026-05-18T12-04-52Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
@@ -2650,7 +2651,7 @@ test('materialization gate blocks forged stamp when local assets are missing', (
       ...completeDefaultState({
         materializedStack: 'default|react-vite|supabase|none',
         materializedAt: '2026-05-13T10:00:00Z',
-        materializedVersion: '2.9.59',
+        materializedVersion: '2.9.62',
       }),
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -4002,6 +4003,194 @@ test('doctor.cjs flags NVMRC_PINNED_TO_OLD_NODE when project .nvmrc < 22 + provi
   assert.match(f.message, /\.nvmrc/);
 });
 
+test('doctor.cjs flags Codex workspace trust gaps that can skip hooks', () => {
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
+  const { buildFindings } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
+  const findings = buildFindings({
+    node: { runningMajor: 22, requiredMajor: 22 },
+    nvm: { installed: true, hasV22: true },
+    gitnexus: { crashRiskInOldNvm: false },
+    project: {
+      cwd: '/Users/test/Documents/__1',
+      hasState: false,
+      state: null,
+      nvmrc: null,
+      hasGit: true,
+      artefacts: { gitnexus: null, graphify: null },
+    },
+    codexHooks: {
+      configExists: true,
+      cwd: '/Users/test/Documents/__1',
+      pluginEnabled: true,
+      hookStateEntryCount: 4,
+      hookStateEnabledCount: 4,
+      hookStateTrustedHashCount: 4,
+      missingHookEvents: [],
+      trustCovered: false,
+      trustedProject: null,
+    },
+  });
+  const f = findings.find((x) => x.code === 'CODEX_WORKSPACE_UNTRUSTED');
+  assert.ok(f, JSON.stringify(findings, null, 2));
+  assert.equal(f.severity, 'fix-needed');
+  assert.match(f.message, /not covered by a trusted Codex project root/);
+  assert.match(f.message, /\/Users\/test\/Documents\/__1/);
+});
+
+test('doctor.cjs reports missing mcp-auth env without blocking ordinary Codex startup', () => {
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
+  const { probeMcpAuth, buildFindings } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
+  const mcpAuth = probeMcpAuth({});
+  assert.equal(mcpAuth.configured, true);
+  assert.equal(mcpAuth.bearerTokenEnvVar, 'TRAFFIC_ONE_AUTH_KEY');
+  assert.equal(mcpAuth.envPresent, false);
+  const findings = buildFindings({
+    node: { runningMajor: 22, requiredMajor: 22 },
+    nvm: { installed: true, hasV22: true },
+    gitnexus: { crashRiskInOldNvm: false },
+    project: {
+      cwd: '/tmp/project',
+      hasState: true,
+      state: completeDefaultState(),
+      normalizedState: completeDefaultState(),
+      nvmrc: null,
+      hasGit: true,
+      artefacts: { gitnexus: null, graphify: null },
+    },
+    mcpAuth,
+  });
+  const f = findings.find((x) => x.code === 'MCP_AUTH_ENV_MISSING');
+  assert.ok(f, JSON.stringify(findings, null, 2));
+  assert.equal(f.severity, 'fix-needed');
+  assert.match(f.message, /Traffic One features must stay gated/);
+  assert.doesNotMatch(f.message, /test-session-token|tok_/);
+});
+
+test('doctor.cjs diagnoses no-hook Codex sessions and expired auth at session start', () => {
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
+  const {
+    analyzeCodexSessionFile,
+    buildFindings,
+    resolveCodexSession,
+  } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
+
+  withTempDir((home) => {
+    const id = '019e4f97-fca1-7370-819e-03d099ed9f00';
+    const sessionsDir = path.join(home, '.codex', 'sessions', '2026', '05', '22');
+    fs.mkdirSync(sessionsDir, { recursive: true });
+    const jsonl = path.join(sessionsDir, `rollout-2026-05-22T15-10-21-${id}.jsonl`);
+    const authPath = path.join(home, '.traffic-one', 'auth.json');
+    fs.mkdirSync(path.dirname(authPath), { recursive: true });
+    writeJson(authPath, {
+      version: 1,
+      endpoint: process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT,
+      sessionToken: 'tok_fixture-session-token.signature',
+      expiresAt: '2026-05-22T10:59:16Z',
+    });
+    fs.writeFileSync(jsonl, [
+      JSON.stringify({
+        timestamp: '2026-05-22T12:10:26.893Z',
+        type: 'session_meta',
+        payload: {
+          id,
+          timestamp: '2026-05-22T12:10:21.248Z',
+          cwd: '/Users/test/Documents/__@',
+          base_instructions: { text: 'You are Codex.' },
+          user_instructions: { text: '# User Defaults' },
+        },
+      }),
+      JSON.stringify({
+        timestamp: '2026-05-22T12:28:11.219Z',
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call',
+          name: 'apply_patch',
+          input: '*** Begin Patch\n*** Add File: /Users/test/Projects/Codex/fullstack-portfolio/package.json\n+{}\n*** End Patch\n',
+        },
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    assert.equal(resolveCodexSession(id, { HOME: home }), jsonl);
+    const sessionDiagnostics = {
+      found: true,
+      ...analyzeCodexSessionFile(jsonl, {
+        HOME: home,
+        TRAFFIC_ONE_AUTH_STATE_PATH: authPath,
+        TRAFFIC_ONE_MCP_KEY_ENDPOINT: process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT,
+      }),
+    };
+    assert.equal(sessionDiagnostics.hookPayloadCount, 0);
+    assert.equal(sessionDiagnostics.promptRequestCount, 0);
+    assert.equal(sessionDiagnostics.trafficOneInstructionInjected, false);
+    assert.equal(sessionDiagnostics.authState.expiredAtSessionStart, true);
+    assert.equal(sessionDiagnostics.mutatingToolBeforeAuthGate, true);
+
+    const findings = buildFindings({
+      node: { runningMajor: 22, requiredMajor: 22 },
+      nvm: { installed: true, hasV22: true },
+      gitnexus: { crashRiskInOldNvm: false },
+      project: {
+        cwd: '/Users/test/Documents/__@',
+        hasState: true,
+        state: completeDefaultState(),
+        normalizedState: completeDefaultState(),
+        nvmrc: null,
+        hasGit: true,
+        artefacts: { gitnexus: null, graphify: null },
+      },
+      sessionDiagnostics,
+    });
+    for (const code of [
+      'CODEX_HOOKS_NOT_INVOKED_FOR_SESSION',
+      'TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED',
+      'TRAFFIC_ONE_AUTH_EXPIRED_AT_SESSION_START',
+      'SESSION_MUTATED_BEFORE_TRAFFIC_ONE_AUTH_GATE',
+    ]) {
+      assert.ok(findings.some((f) => f.code === code), `${code} missing from ${JSON.stringify(findings, null, 2)}`);
+    }
+  });
+});
+
+test('doctor.cjs parses Codex plugin, hook, and trusted project config', () => {
+  delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
+  const { probeCodexHooks } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
+  withTempDir((home) => {
+    const codexHome = path.join(home, '.codex');
+    fs.mkdirSync(codexHome, { recursive: true });
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), [
+      '[plugins."traffic-one@traffic-one-local"]',
+      'enabled = true',
+      '',
+      '[hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:session_start:0:0"]',
+      'enabled = true',
+      'trusted_hash = "sha256:abc"',
+      '',
+      '[hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:user_prompt_submit:0:0"]',
+      'enabled = true',
+      'trusted_hash = "sha256:def"',
+      '',
+      '[hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:pre_tool_use:0:0"]',
+      'enabled = true',
+      'trusted_hash = "sha256:ghi"',
+      '',
+      '[hooks.state."traffic-one@traffic-one-local:hooks/hooks.json:post_tool_use:0:0"]',
+      'enabled = true',
+      'trusted_hash = "sha256:jkl"',
+      '',
+      `[projects."${path.join(home, 'trusted')}"]`,
+      'trust_level = "trusted"',
+      '',
+    ].join('\n'));
+    const probe = probeCodexHooks(path.join(home, 'trusted', 'child'), { CODEX_HOME: codexHome });
+    assert.equal(probe.configExists, true);
+    assert.equal(probe.pluginEnabled, true);
+    assert.equal(probe.hookStateEntryCount, 4);
+    assert.equal(probe.hookStateTrustedHashCount, 4);
+    assert.equal(probe.trustCovered, true);
+    assert.deepEqual(probe.missingHookEvents, []);
+  });
+});
+
 test('traffic-one-doctor skill exists with required trigger phrases', () => {
   const skillPath = path.join(ROOT, 'skills-templates', 'traffic-one-doctor', 'SKILL.md');
   assert.ok(fs.existsSync(skillPath), 'skill file must exist');
@@ -4014,6 +4203,53 @@ test('traffic-one-doctor skill exists with required trigger phrases', () => {
   assert.match(text, /scripts\/doctor\.cjs/);
   // Must be read-only — no install/modify language.
   assert.match(text, /read-only|never installs/i);
+});
+
+test('Traffic One entry and implementation skills fail closed when hooks are absent', () => {
+  const skillPaths = [
+    path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'),
+    path.join(ROOT, 'skills', 'stack-setup', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'detect-project', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'stack-setup', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'nextjs-turbopack', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'frontend-design', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-service', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-component', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-native-feature', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-native-screen', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-native-service', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'create-native-component', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'tdd-workflow', 'SKILL.md'),
+    path.join(ROOT, 'skills-templates', 'senior-eng-orchestrator', 'SKILL.md'),
+  ];
+  for (const skillPath of skillPaths) {
+    const text = fs.readFileSync(skillPath, 'utf8');
+    assert.match(text, /If hooks are absent or auth status is unknown/i, skillPath);
+    assert.match(text, /do not infer "Traffic One inactive"/i, skillPath);
+    assert.match(text, /continue ordinary work without Traffic One/i, skillPath);
+  }
+});
+
+test('root agent instructions include Traffic One no-hook fallback guard', () => {
+  for (const fileName of ['AGENTS.md', 'CLAUDE.md']) {
+    const text = fs.readFileSync(path.join(ROOT, fileName), 'utf8');
+    assert.match(text, /If Traffic One skills are visible but hooks or these root instructions were not injected/);
+    assert.match(text, /do not infer "Traffic One inactive"/);
+    assert.match(text, /Continue ordinary work without Traffic One only after the user explicitly chooses/);
+  }
+});
+
+test('nextjs-turbopack skill has Traffic One auth and onboarding guards', () => {
+  const skillPath = path.join(ROOT, 'skills-templates', 'nextjs-turbopack', 'SKILL.md');
+  const text = fs.readFileSync(skillPath, 'utf8');
+  assert.match(text, /Traffic One Auth Preflight/);
+  assert.match(text, /verify Traffic One auth/);
+  assert.match(text, /Authenticate Traffic One \(Recommended\)/);
+  assert.match(text, /Continue without Traffic One/);
+  assert.match(text, /onboardingComplete: true/);
+  assert.match(text, /stack-setup/);
 });
 
 test('gitnexus-runner respects codeGraphAutoRun: false (provider-agnostic opt-out)', () => {
@@ -4143,7 +4379,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.59) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.62) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -4277,7 +4513,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.59', () => {
+test('manifests bumped to 2.9.62', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -4285,11 +4521,11 @@ test('manifests bumped to 2.9.59', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.59"/, `${rel} must be bumped to 2.9.59`);
+    assert.match(text, /"version":\s*"2\.9\.62"/, `${rel} must be bumped to 2.9.62`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.59) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.62) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -4369,7 +4605,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.59',
+      version: '2.9.62',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -4385,7 +4621,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.59',
+      materializedVersion: '2.9.62',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -4434,7 +4670,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.59',
+      version: '2.9.62',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4446,7 +4682,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.59',
+      materializedVersion: '2.9.62',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -4466,7 +4702,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.59) ──────────────────────────────────────────────
+// ── Token usage report (2.9.62) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -4691,7 +4927,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.59) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.62) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -4743,7 +4979,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.59',
+      version: '2.9.62',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4755,7 +4991,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.59',
+      materializedVersion: '2.9.62',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -4775,7 +5011,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.59',
+      version: '2.9.62',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -4787,7 +5023,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.59',
+      materializedVersion: '2.9.62',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },

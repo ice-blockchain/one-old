@@ -7,6 +7,8 @@ description: >
   project situation.
   Triggers: "new project", "existing project", "starting from scratch", "I have a codebase",
   "set up", "initialize", "what stack", "supabase", "migrate".
+  If hooks are absent or auth status is unknown, do not infer "Traffic One inactive";
+  ask the auth choice or run doctor, then stop before implementation.
 ---
 
 # Skill: Detect Project & Route to Correct Mode
@@ -18,7 +20,7 @@ asking to authenticate, check auth status, log out, or run doctor.
 
 If status is not authenticated, do not apply this skill yet. Present the auth
 choice as a host modal selector when available:
-- Authenticate Traffic One
+- Authenticate Traffic One (Recommended)
 - Continue without Traffic One
 
 If the user chooses Authenticate Traffic One, ask for the API key and run the
@@ -34,6 +36,14 @@ features and do not repeat the auth prompt while that choice remains active.
 Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
 onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
 Traffic One agents, or use Traffic One reporting unless the user authenticates.
+
+If hooks are absent or auth status is unknown, do not infer "Traffic One
+inactive" and continue. Treat Traffic One as unverified: run or recommend
+`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
+debugging a transcript), ask the auth choice, and stop before scaffolding,
+installs, source edits, Traffic One agents, or implementation skills. Only
+continue ordinary work without Traffic One after the user explicitly chooses
+"Continue without Traffic One".
 
 ## Detection logic (run in this order)
 
