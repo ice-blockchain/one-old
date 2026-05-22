@@ -2,15 +2,41 @@
 'use strict';
 
 const fs = require('fs');
+const crypto = require('crypto');
 const http = require('http');
 const https = require('https');
+const net = require('net');
 const os = require('os');
 const path = require('path');
 
-const DEFAULT_ENDPOINT = 'http://localhost:54321/functions/v1/one-mcp-key';
+const DEFAULT_ENDPOINT = 'http://127.0.0.1:8787/mcp';
 const AUTH_STATE_VERSION = 1;
 const EXPIRY_SKEW_MS = 30 * 1000;
 const REMOTE_AUTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+function isLoopbackHostname(hostname) {
+  const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
+  const ipVersion = net.isIP(host);
+  if (ipVersion === 4) return host === '0.0.0.0' || host.startsWith('127.');
+  if (ipVersion === 6) return host === '::1' || host === '0:0:0:0:0:0:0:1';
+  return host === 'localhost'
+    || host === 'localhost.';
+}
+
+function authEndpointUrl(endpoint) {
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error(`Invalid Traffic One MCP auth endpoint: ${endpoint}`);
+  }
+  if (url.username || url.password) {
+    throw new Error('Traffic One MCP auth endpoint must not include URL credentials.');
+  }
+  if (url.protocol === 'https:') return url;
+  if (url.protocol === 'http:' && isLoopbackHostname(url.hostname)) return url;
+  throw new Error('Refusing to send Traffic One credentials to a non-HTTPS MCP auth endpoint. Use HTTPS for remote endpoints; HTTP is allowed only for loopback local development.');
+}
 
 function nowIso() {
   return new Date().toISOString().replace(/\.\d{3}Z$/, 'Z');
@@ -35,6 +61,18 @@ function authChoiceStatePath(env = process.env) {
     return path.resolve(env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH);
   }
   return path.join(path.dirname(authStatePath(env)), 'auth-choice.json');
+}
+
+function authChoiceFallbackStatePath(env = process.env) {
+  if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return null;
+  const digest = crypto.createHash('sha256').update(authStatePath(env)).digest('hex').slice(0, 16);
+  return path.join(os.tmpdir(), 'traffic-one', `auth-choice-${digest}.json`);
+}
+
+function authChoiceStatePaths(env = process.env) {
+  const primary = authChoiceStatePath(env);
+  const fallback = authChoiceFallbackStatePath(env);
+  return fallback && fallback !== primary ? [primary, fallback] : [primary];
 }
 
 function readJson(filePath, fallback = null) {
@@ -75,12 +113,19 @@ function deleteAuthState(env = process.env) {
 }
 
 function deleteAuthChoiceState(env = process.env) {
-  try {
-    fs.rmSync(authChoiceStatePath(env), { force: true });
-    return true;
-  } catch {
-    return false;
+  let ok = true;
+  for (const filePath of authChoiceStatePaths(env)) {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch {
+      ok = false;
+    }
   }
+  return ok;
+}
+
+function authChoiceStateExists(env = process.env) {
+  return authChoiceStatePaths(env).some((filePath) => fs.existsSync(filePath));
 }
 
 function isAuthStateFresh(state, env = process.env, nowMs = Date.now()) {
@@ -149,7 +194,7 @@ function extractToolText(responseBody) {
 
 function mcpRequest(endpoint, toolName, bearer, args = {}, timeoutMs = 15000) {
   return new Promise((resolve, reject) => {
-    const url = new URL(endpoint);
+    const url = authEndpointUrl(endpoint);
     const body = JSON.stringify(buildMcpPayload(toolName, args));
     const client = url.protocol === 'http:' ? http : https;
     const req = client.request({
@@ -221,17 +266,8 @@ function keyFromArgs(args, env = process.env) {
   return env.TRAFFIC_ONE_AUTH_KEY || '';
 }
 
-async function login(args = process.argv.slice(3), env = process.env) {
-  const apiKey = keyFromArgs(args, env);
-  if (!apiKey) {
-    throw new Error('Missing API key. Set TRAFFIC_ONE_AUTH_KEY or pass --stdin.');
-  }
-  const endpoint = endpointFromEnv(env);
-  const result = await mcpRequest(endpoint, 'authenticate', apiKey, {});
-  if (!result || result.authenticated !== true || typeof result.sessionToken !== 'string') {
-    throw new Error('Authentication response did not include a session token');
-  }
-  const state = {
+function authStateFromResult(endpoint, result) {
+  return {
     version: AUTH_STATE_VERSION,
     endpoint,
     sessionToken: result.sessionToken,
@@ -241,19 +277,101 @@ async function login(args = process.argv.slice(3), env = process.env) {
     lastRemoteCheckedAt: nowIso(),
     lastRemoteCheckOkAt: nowIso(),
   };
+}
+
+function writeSessionResult(endpoint, result, env = process.env) {
+  if (!result || result.authenticated !== true || typeof result.sessionToken !== 'string') {
+    throw new Error('Authentication response did not include a session token');
+  }
+  const state = authStateFromResult(endpoint, result);
   const filePath = writeAuthState(state, env);
   deleteAuthChoiceState(env);
+  return { state, filePath };
+}
+
+async function login(args = process.argv.slice(3), env = process.env) {
+  const apiKey = keyFromArgs(args, env);
+  if (!apiKey) {
+    throw new Error('Missing API key. Set TRAFFIC_ONE_AUTH_KEY or pass --stdin.');
+  }
+  const endpoint = endpointFromEnv(env);
+  const result = await mcpRequest(endpoint, 'authenticate', apiKey, {});
+  const { state, filePath } = writeSessionResult(endpoint, result, env);
   return { ok: true, filePath, keyId: state.keyId, expiresAt: state.expiresAt };
+}
+
+async function refresh(args = process.argv.slice(3), env = process.env, options = {}) {
+  const apiKey = keyFromArgs(args, env);
+  const endpoint = endpointFromEnv(env);
+  const filePath = authStatePath(env);
+  const priorReason = options.priorReason || null;
+  if (!apiKey) {
+    return {
+      ok: false,
+      authenticated: false,
+      reauthenticated: false,
+      reason: 'reauthentication-not-possible',
+      detail: 'missing-api-key',
+      ...(priorReason ? { priorReason } : {}),
+      endpoint,
+      filePath,
+    };
+  }
+
+  let result;
+  try {
+    result = await mcpRequest(endpoint, 'refresh', apiKey, {});
+  } catch (error) {
+    return {
+      ok: false,
+      authenticated: false,
+      reauthenticated: false,
+      reason: 'reauthentication-failed',
+      error: error.message,
+      ...(priorReason ? { priorReason } : {}),
+      endpoint,
+      filePath,
+    };
+  }
+
+  try {
+    const written = writeSessionResult(endpoint, result, env);
+    return {
+      ok: true,
+      authenticated: true,
+      reauthenticated: true,
+      ...(priorReason ? { priorReason } : {}),
+      filePath: written.filePath,
+      keyId: written.state.keyId,
+      expiresAt: written.state.expiresAt,
+      endpoint,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      authenticated: false,
+      reauthenticated: false,
+      reason: 'reauthentication-failed',
+      error: error.message,
+      ...(priorReason ? { priorReason } : {}),
+      endpoint,
+      filePath,
+    };
+  }
 }
 
 async function status(args = process.argv.slice(3), env = process.env) {
   const state = readAuthState(env);
   const local = isAuthStateFresh(state, env);
   if (!local) {
+    const localReason = state ? 'expired-or-endpoint-mismatch' : 'missing-auth-state';
+    if (state) {
+      return refresh(args, env, { priorReason: localReason });
+    }
     return {
       ok: false,
       authenticated: false,
-      reason: state ? 'expired-or-endpoint-mismatch' : 'missing-auth-state',
+      reason: localReason,
       filePath: authStatePath(env),
       endpoint: endpointFromEnv(env),
     };
@@ -273,14 +391,10 @@ async function status(args = process.argv.slice(3), env = process.env) {
     result = await mcpRequest(state.endpoint, 'auth_status', state.sessionToken, {});
   } catch (error) {
     if (isRemoteAuthRejection(error)) {
+      const refreshed = await refresh(args, env, { priorReason: 'remote-auth-rejected' });
+      if (refreshed.ok) return { ...refreshed, remoteChecked: true };
       deleteAuthState(env);
-      return {
-        ok: false,
-        authenticated: false,
-        reason: 'remote-auth-rejected',
-        endpoint: state.endpoint,
-        filePath: authStatePath(env),
-      };
+      return refreshed;
     }
     stampRemoteCheck(state, {
       lastRemoteCheckError: error.message,
@@ -297,6 +411,12 @@ async function status(args = process.argv.slice(3), env = process.env) {
       endpoint: state.endpoint,
       filePath: authStatePath(env),
     };
+  }
+  if (result.authenticated !== true) {
+    const refreshed = await refresh(args, env, { priorReason: result.reason || 'remote-auth-rejected' });
+    if (refreshed.ok) return { ...refreshed, remoteChecked: true };
+    deleteAuthState(env);
+    return refreshed;
   }
   if (result.authenticated === true) {
     stampRemoteCheck(state, {
@@ -338,7 +458,7 @@ async function logout(_args = process.argv.slice(3), env = process.env) {
       filePath,
     };
   }
-  if (!choiceDeleted && fs.existsSync(authChoicePath)) {
+  if (!choiceDeleted && authChoiceStateExists(env)) {
     return {
       ok: false,
       authenticated: true,
@@ -356,11 +476,12 @@ function authRequiredMessage(env = process.env) {
     'Traffic One authentication is required before this plugin can be used.',
     '',
     'Ask the user with a modal selector before continuing:',
-    '  - Authenticate Traffic One',
+    '  - Authenticate Traffic One (Recommended)',
     '  - Continue without Traffic One',
     '',
     'If the user chooses Authenticate Traffic One, ask for the API key and run authentication internally with TRAFFIC_ONE_AUTH_KEY, then verify status internally.',
-    'Internally means: invoke scripts/traffic-one-auth.cjs login (and then status) via your own Bash tool with TRAFFIC_ONE_AUTH_KEY=<key> in env. The pre-tool gate explicitly allows these scripts/traffic-one-auth.cjs (login|status|logout) shell invocations even while unauthenticated, so they will not be denied. Do not try to Write or Edit auth.json directly — only the script can produce a valid session token.',
+    'Internally means: invoke scripts/traffic-one-auth.cjs login (and then status) via your own shell tool with TRAFFIC_ONE_AUTH_KEY=<key> in env. The pre-tool gate explicitly allows these scripts/traffic-one-auth.cjs (login|refresh|status|logout) shell invocations even while unauthenticated, so they will not be denied. Do not try to Write or Edit auth.json directly; only the script can produce a valid session token.',
+    'If a stored session expires and TRAFFIC_ONE_AUTH_KEY is still available, the auth client will try `refresh` before requiring a new key.',
     'Do not ask the user to run bash or shell commands for Traffic One authentication.',
     'If the user chooses Continue without Traffic One, remember that choice for the current project while it remains active and continue without Traffic One features.',
     `Endpoint: ${endpoint}`,
@@ -370,7 +491,7 @@ function authRequiredMessage(env = process.env) {
 
 function isTrafficOneAuthCommand(command) {
   return /\bscripts\/traffic-one-auth\.cjs\b/.test(String(command || ''))
-    && /\b(login|status|logout)\b/.test(String(command || ''));
+    && /\b(login|refresh|status|logout)\b/.test(String(command || ''));
 }
 
 function isTrafficOneDoctorCommand(command) {
@@ -382,6 +503,8 @@ async function main() {
   let result;
   if (command === 'login') {
     result = await login();
+  } else if (command === 'refresh') {
+    result = await refresh();
   } else if (command === 'status') {
     result = await status();
   } else if (command === 'logout') {
@@ -409,7 +532,9 @@ module.exports = {
   AUTH_STATE_VERSION,
   DEFAULT_ENDPOINT,
   REMOTE_AUTH_CHECK_INTERVAL_MS,
+  authEndpointUrl,
   authChoiceStatePath,
+  authChoiceStatePaths,
   authRemoteCheckDue,
   authRequiredMessage,
   authStatePath,
@@ -423,6 +548,7 @@ module.exports = {
   isTrafficOneAuthCommand,
   isTrafficOneDoctorCommand,
   login,
+  refresh,
   logout,
   mcpRequest,
   readAuthState,

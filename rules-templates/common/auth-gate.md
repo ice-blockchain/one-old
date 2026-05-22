@@ -4,16 +4,20 @@
 
 # Traffic One Authentication Gate
 
-Traffic One must be authenticated with `one-mcp-key` before any Traffic One
+Traffic One must be authenticated with `mcp-auth` before any Traffic One
 onboarding, materialization, reporting, project setup, agent orchestration, or
 feature implementation work.
 
 The first Traffic One action in a fresh install is a host modal selector with
-two choices: Authenticate Traffic One or Continue without Traffic One. If the
-user chooses Authenticate Traffic One, ask for the API key and run the auth
-client internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status internally.
+two choices: Authenticate Traffic One (Recommended) or Continue without Traffic
+One. If the user chooses Authenticate Traffic One, ask for the API key and run
+the auth client internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
+internally.
 Do not ask the user to run shell commands. `logout` removes the local session
-token.
+token. When a stored session expires, the auth client may call `refresh`
+internally with `TRAFFIC_ONE_AUTH_KEY` if the key is available in the current
+process environment. If refresh fails or the key is unavailable, keep Traffic
+One gated and ask the user to authenticate again.
 
 Do not place API keys, session tokens, or copied bearer tokens in project files,
 `.traffic-one/`, `.traffic-one.json`, prompts, docs, commits, or generated

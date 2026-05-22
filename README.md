@@ -9,37 +9,64 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and 
 
 ## First action: choose auth mode
 
-Traffic One is gated by the separate `one-mcp-key` MCP server. Before onboarding,
+Traffic One is gated by the separate `mcp-auth` MCP server. Before onboarding,
 materialization, background reporting, or normal plugin work, the agent presents
-a two-option modal selector: authenticate Traffic One or continue without Traffic
-One. If the user authenticates, the agent asks for the API key and runs the auth
-client internally, then verifies status itself. Users should not be asked to run
-shell commands for the normal auth flow.
+a two-option modal selector: authenticate Traffic One (recommended) or continue
+without Traffic One. If the user authenticates, the agent asks for the API key
+and runs the auth client internally, then verifies status itself. Users should
+not be asked to run shell commands for the normal auth flow.
 
 Optional endpoint override for local testing:
 
 ```sh
-export TRAFFIC_ONE_MCP_KEY_ENDPOINT=http://localhost:54321/functions/v1/one-mcp-key
+export TRAFFIC_ONE_MCP_KEY_ENDPOINT=http://127.0.0.1:8787/mcp
 ```
+
+Remote auth endpoints must use HTTPS. The auth client refuses to send API keys
+or session tokens to plain HTTP except for loopback local development
+(`localhost`, `127.0.0.1`, or `::1`).
 
 The API key is exchanged for a short-lived session token stored in user-level
 state only (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
 or `~/.traffic-one/auth.json`). Do not commit keys or session tokens.
+When a stored session expires, the auth client automatically calls `refresh`
+with `TRAFFIC_ONE_AUTH_KEY` if that key is still available in the current
+process environment. If the key is unavailable or rejected, the client returns a
+reauthentication error and keeps Traffic One gated.
 
 Codex and Claude Code hooks call `auth_status` remotely at every new session
 start and again at most once per day during ongoing sessions. If auth is
-missing, expired, or remotely rejected, Traffic One shows the login instruction
-and then stays inactive; the user's request continues without Traffic One
-features unless they login.
+missing, expired, remotely rejected, or the remote status check cannot be
+verified, Traffic One shows the login instruction and then stays inactive; the
+user's request continues without Traffic One features unless they login.
 
-The plugin also declares `one-mcp-key` in `.mcp.json`:
+Codex only invokes plugin hooks inside trusted workspaces. If a project is
+created in an untrusted folder, Traffic One cannot fail closed from inside the
+hook because the hook never starts. Run `node scripts/doctor.cjs` from the
+workspace to verify the Codex plugin is enabled, Traffic One hook trust records
+are present, and the current `cwd` is covered by a trusted project root. Trust
+the generated-project parent or create projects under Codex's trusted default
+project root before starting Traffic One work.
+
+If Traffic One skills are visible but hooks or root instructions were not
+injected, do not treat that as a safe inactive state. Run
+`node scripts/doctor.cjs --session <session-id>` to inspect the Codex transcript.
+Traffic One implementation must remain gated until the user authenticates or
+explicitly chooses to continue ordinary work without Traffic One.
+
+Auth-choice state writes are best-effort. If the user-level auth-choice file is
+not writable, hooks still return the auth prompt and keep Traffic One inactive
+instead of downgrading to unknown plugin mode; doctor will surface the storage or
+hook activation problem.
+
+The plugin also declares `mcp-auth` in `.mcp.json`:
 
 ```json
 {
   "mcpServers": {
-    "one-mcp-key": {
+    "mcp-auth": {
       "type": "http",
-      "url": "http://localhost:54321/functions/v1/one-mcp-key",
+      "url": "http://127.0.0.1:8787/mcp",
       "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
       "headers": {
         "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY}"
@@ -98,9 +125,9 @@ test-key path with OAuth when the auth server advertises it.
 ├── AGENTS.md                ← Codex CLI     — entry point, inlines rules/ content
 ├── settings.json            ← Claude Code   — hooks (onboarding, materialization, graph, deploy gates)
 ├── hooks/hooks.json         ← Codex CLI     — hooks (onboarding, materialization, graph, deploy gates)
-├── .mcp.json                ← MCP           — one-mcp-key auth server declaration
+├── .mcp.json                ← MCP           — mcp-auth auth server declaration
 ├── scripts/hook-runtime.cjs ← Hooks         — dependency-free Node hook runtime
-├── scripts/traffic-one-auth.cjs ← Auth      — one-mcp-key login/status/logout
+├── scripts/traffic-one-auth.cjs ← Auth      — mcp-auth login/refresh/status/logout
 ├── scripts/sync-cursor.cjs  ← Cursor        — generates .cursor/rules + normalizes manifest
 ├── .githooks/pre-commit     ← Git           — auto-runs Cursor sync and stages generated files
 ├── .githooks/prepare-commit-msg ← Git       — appends Traffic One integration trailer

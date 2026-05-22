@@ -7,7 +7,9 @@
 // around them.
 
 const fs   = require('fs');
+const os   = require('os');
 const path = require('path');
+const crypto = require('crypto');
 const { spawn, spawnSync } = require('child_process');
 
 const {
@@ -181,8 +183,20 @@ function isKnownStack(stack) {
   return STACK_IDS.has(stack) || Object.prototype.hasOwnProperty.call(LEGACY_STACK_ALIASES, stack);
 }
 
-function authRequiredHookResult(hookEventName) {
+function authChoicePersistenceDiagnostic(writeResult) {
+  if (!writeResult || writeResult.ok !== false) return '';
+  const code = writeResult.code ? ` (${writeResult.code})` : '';
+  return [
+    '',
+    `Diagnostic: Traffic One could not persist the auth choice state${code}.`,
+    'Keep Traffic One inactive and blocked until the user authenticates or chooses to continue without Traffic One. The prompt may repeat until storage is writable.',
+    'Run Traffic One doctor to check hook/auth storage setup if this persists.',
+  ].join('\n');
+}
+
+function authRequiredHookResult(hookEventName, options = {}) {
   const message = authRequiredMessage();
+  const persistenceDiagnostic = authChoicePersistenceDiagnostic(options.authChoiceWrite);
   const inactiveMessage = [
     message,
     '',
@@ -192,13 +206,14 @@ function authRequiredHookResult(hookEventName) {
     '',
     'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
     'Choices:',
-    '- Authenticate Traffic One',
+    '- Authenticate Traffic One (Recommended)',
     '- Continue without Traffic One',
     '',
     'If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then run `traffic-one-auth.cjs login` internally with `TRAFFIC_ONE_AUTH_KEY` and verify `traffic-one-auth.cjs status` yourself. Use your own Bash tool — the pre-tool auth gate explicitly bypasses shell invocations of `scripts/traffic-one-auth.cjs (login|status|logout)`, so they will run even while unauthenticated. Do not Write or Edit `auth.json` directly (Write/Edit are blocked, and only the script can mint a valid session token). Do not ask the user to run bash or shell commands.',
     'If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.',
     '',
     'Do not answer pending Traffic One onboarding choices, inspect, scaffold, or build through Traffic One until the user makes this auth choice.',
+    persistenceDiagnostic,
   ].join('\n');
   const hookSpecificOutput = {
     hookEventName,
@@ -246,6 +261,19 @@ function commandFromToolInput(toolInput = {}) {
 const AUTH_CHOICE_STATE_VERSION = 3;
 const AUTH_CHOICE_CONTINUE_TTL_MS = 4 * 60 * 60 * 1000;
 
+function authChoiceFallbackStatePath(env = process.env) {
+  if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return null;
+  const source = authStatePath(env);
+  const digest = crypto.createHash('sha256').update(source).digest('hex').slice(0, 16);
+  return path.join(os.tmpdir(), 'traffic-one', `auth-choice-${digest}.json`);
+}
+
+function authChoiceStatePaths(env = process.env) {
+  const primary = authChoiceStatePath(env);
+  const fallback = authChoiceFallbackStatePath(env);
+  return fallback && fallback !== primary ? [primary, fallback] : [primary];
+}
+
 function authChoiceStatePath(env = process.env) {
   if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) {
     return path.resolve(env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH);
@@ -253,8 +281,7 @@ function authChoiceStatePath(env = process.env) {
   return path.join(path.dirname(authStatePath(env)), 'auth-choice.json');
 }
 
-function readAuthChoiceState(env = process.env) {
-  const state = safeReadJson(authChoiceStatePath(env), {});
+function normalizeAuthChoiceState(state) {
   if (!state || typeof state !== 'object') {
     return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
   }
@@ -297,18 +324,38 @@ function readAuthChoiceState(env = process.env) {
   return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
 }
 
-function writeAuthChoiceState(state, env = process.env) {
-  const filePath = authChoiceStatePath(env);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, {
-    encoding: 'utf8',
-    mode: 0o600,
-  });
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // best-effort; some filesystems ignore chmod.
+function readAuthChoiceState(env = process.env) {
+  for (const filePath of authChoiceStatePaths(env)) {
+    if (!fs.existsSync(filePath)) continue;
+    const state = safeReadJson(filePath, null);
+    if (state && typeof state === 'object') return normalizeAuthChoiceState(state);
   }
+  return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+}
+
+function writeAuthChoiceState(state, env = process.env) {
+  const paths = authChoiceStatePaths(env);
+  const errors = [];
+  for (const filePath of paths) {
+    try {
+      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
+      try {
+        fs.chmodSync(filePath, 0o600);
+      } catch {
+        // best-effort; some filesystems ignore chmod.
+      }
+      return { ok: true, filePath, fallback: filePath !== paths[0] };
+    } catch (error) {
+      errors.push({ filePath, error });
+    }
+  }
+  const first = errors[0] && errors[0].error ? errors[0].error : new Error('auth choice state write failed');
+  first.authChoiceWriteErrors = errors;
+  throw first;
 }
 
 function readAuthChoice(cwd = process.cwd(), env = process.env) {
@@ -355,7 +402,20 @@ function writeAuthChoice(status, cwd = process.cwd(), env = process.env) {
   } else {
     state.choices[key] = record;
   }
-  writeAuthChoiceState(state, env);
+  return writeAuthChoiceState(state, env);
+}
+
+function tryWriteAuthChoice(status, cwd = process.cwd(), env = process.env) {
+  try {
+    const result = writeAuthChoice(status, cwd, env);
+    return { ok: true, ...(result || {}) };
+  } catch (error) {
+    return {
+      ok: false,
+      code: error && error.code ? String(error.code) : null,
+      message: error && error.message ? String(error.message) : 'auth choice state write failed',
+    };
+  }
 }
 
 function authChoiceAllowsContinue(cwd = process.cwd(), env = process.env, nowMs = Date.now()) {
@@ -375,6 +435,12 @@ function parseUnauthenticatedAuthChoice(rawInput) {
     .trim();
   if (!compact) return null;
   const mentionsTrafficOne = /\btraffic one\b/.test(compact);
+  if (/^(1|one)$/.test(compact)) {
+    return 'authenticate';
+  }
+  if (/^(2|two)$/.test(compact)) {
+    return 'continue-without-traffic-one';
+  }
   if (
     (mentionsTrafficOne && /\b(authenticate|auth|login|log in|sign in|signin)\b/.test(compact))
     || /^(authenticate|auth|login|log in|sign in|signin|yes)$/.test(compact)
@@ -420,11 +486,14 @@ function parseTrafficOneApiKey(rawInput) {
 
 function authChoiceHookResult(choice) {
   if (choice === 'authenticate') {
-    writeAuthChoice('authenticate', process.cwd());
-    return authApiKeyPromptHookResult();
+    const writeResult = tryWriteAuthChoice('authenticate', process.cwd());
+    return authApiKeyPromptHookResult({ authChoiceWrite: writeResult });
   }
 
-  writeAuthChoice('continue-without-traffic-one', process.cwd());
+  const writeResult = tryWriteAuthChoice('continue-without-traffic-one', process.cwd());
+  const rememberedLine = writeResult.ok
+    ? 'This choice has been remembered for this project so the auth prompt is not repeated here while it remains active.'
+    : 'This choice could not be persisted, so the auth prompt may repeat until Traffic One auth-choice storage is writable.';
   const payload = {
     systemMessage: 'traffic-one inactive: user chose to continue without Traffic One',
     hookSpecificOutput: {
@@ -433,7 +502,8 @@ function authChoiceHookResult(choice) {
         'The user chose to continue without using the Traffic One plugin.',
         'Proceed with the user request using normal non-Traffic-One behavior only.',
         'Do not run Traffic One skills, onboarding, setup, reporting, materialization, agents, or hooks for this request.',
-        'This choice has been remembered for this project so the auth prompt is not repeated here while it remains active.',
+        rememberedLine,
+        authChoicePersistenceDiagnostic(writeResult).trim(),
       ].join('\n'),
     },
   };
@@ -448,7 +518,7 @@ function authChoiceRequiredDenyReason() {
     '',
     'Present this as a host modal selector when a modal/popup tool is available:',
     'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
-    'Choices: Authenticate Traffic One; Continue without Traffic One.',
+    'Choices: Authenticate Traffic One (Recommended); Continue without Traffic One.',
     '',
     'If Authenticate Traffic One is chosen, ask for the API key, then invoke `scripts/traffic-one-auth.cjs login` via your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env (the pre-tool gate bypasses `scripts/traffic-one-auth.cjs (login|status|logout)` while unauthenticated). Do not Write/Edit `auth.json` directly, and do not ask the user to run bash or shell commands.',
     'If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.',
@@ -466,13 +536,14 @@ function parseAuthStatusOutput(stdout) {
   }
 }
 
-function authApiKeyPromptHookResult() {
+function authApiKeyPromptHookResult(options = {}) {
   const additionalContext = [
     'The user chose to authenticate Traffic One. Do not continue implementation yet.',
     'Ask the user for the Traffic One API key using a secure host input/modal if available.',
     'After the user enters the key, run authentication internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
     'Internally means: invoke `scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows these `scripts/traffic-one-auth.cjs (login|status|logout)` shell invocations while unauthenticated, so the call will go through. Do not Write or Edit `auth.json` directly — that path is blocked, and only the script can mint a valid session token.',
     'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
+    authChoicePersistenceDiagnostic(options.authChoiceWrite).trim(),
   ].join('\n');
   const payload = {
     systemMessage: 'traffic-one authentication key required',
@@ -548,8 +619,30 @@ function authLoginFromPromptHookResult(apiKey) {
 }
 
 function authGateForHook({ forceRemote = false } = {}) {
+  const authScript = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
+  const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_REMOTE_CHECK_TIMEOUT_MS || '5000', 10);
+  const runStatus = (statusArgs) => spawnSync(process.execPath, [authScript, ...statusArgs], {
+    cwd: process.cwd(),
+    env: process.env,
+    encoding: 'utf8',
+    timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000,
+    maxBuffer: 64 * 1024,
+  });
+
   if (!isAuthenticatedLocal()) {
-    return { authenticated: false, reason: 'local-auth-required' };
+    const refreshResult = runStatus(['status']);
+    const refreshParsed = parseAuthStatusOutput(refreshResult.stdout);
+    if (refreshResult.status === 0 && refreshParsed && refreshParsed.authenticated === true) {
+      return {
+        authenticated: true,
+        checkedRemote: false,
+        reauthenticated: refreshParsed.reauthenticated === true,
+      };
+    }
+    return {
+      authenticated: false,
+      reason: (refreshParsed && refreshParsed.reason) || (refreshResult.error && refreshResult.error.message) || 'local-auth-required',
+    };
   }
 
   const authState = readTrafficOneAuthState();
@@ -557,23 +650,29 @@ function authGateForHook({ forceRemote = false } = {}) {
     return { authenticated: true, checkedRemote: false };
   }
 
-  const authScript = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
-  const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_REMOTE_CHECK_TIMEOUT_MS || '5000', 10);
-  const result = spawnSync(process.execPath, [authScript, 'status', '--remote'], {
-    cwd: process.cwd(),
-    env: process.env,
-    encoding: 'utf8',
-    timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000,
-    maxBuffer: 64 * 1024,
-  });
+  const result = runStatus(['status', '--remote']);
   const parsed = parseAuthStatusOutput(result.stdout);
   if (parsed && parsed.authenticated === false) {
     return { authenticated: false, reason: parsed.reason || 'remote-auth-required' };
   }
+  if (!parsed || result.status !== 0 || parsed.remoteChecked === false) {
+    // Test-only escape hatch for deterministic stack tests without a live auth server.
+    if (process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE === '1') {
+      return {
+        authenticated: true,
+        checkedRemote: true,
+        remoteCheckFailed: true,
+      };
+    }
+    return {
+      authenticated: false,
+      reason: (parsed && parsed.reason) || (result.error && result.error.message) || 'remote-auth-check-failed',
+    };
+  }
   return {
     authenticated: true,
     checkedRemote: true,
-    remoteCheckFailed: Boolean(parsed && parsed.remoteChecked === false),
+    remoteCheckFailed: false,
   };
 }
 
@@ -801,7 +900,7 @@ function isCompletedTrafficOneMaterialization(cwd, state) {
 }
 
 function startOneMcpReportBestEffort(cwd, state, trigger) {
-  if (!isAuthenticatedLocal()) return;
+  if (!authGateForHook().authenticated) return;
   if (!isCompletedTrafficOneMaterialization(cwd, state)) return;
   try {
     maybeStartOneMcpReport(cwd, { state, trigger });
@@ -1481,7 +1580,7 @@ function authChoicePromptRequest(fallbackText) {
     title: 'Traffic One',
     question: 'Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
     options: [
-      { id: 'authenticate', label: 'Authenticate Traffic One' },
+      { id: 'authenticate', label: 'Authenticate Traffic One (Recommended)' },
       { id: 'continue_without', label: 'Continue without Traffic One' },
     ],
     fallbackText,
@@ -1811,8 +1910,8 @@ function runSessionStart() {
   const authGate = authGateForHook({ forceRemote: true });
   if (!authGate.authenticated) {
     if (authChoiceAllowsContinue(cwd)) return { stdout: '', exitCode: 0 };
-    writeAuthChoice('pending-choice', cwd);
-    return authRequiredHookResult('SessionStart');
+    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
+    return authRequiredHookResult('SessionStart', { authChoiceWrite: writeResult });
   }
 
   const state = readState(cwd);
@@ -2085,8 +2184,8 @@ function runUserPromptSubmit(rawInput = '') {
       if (apiKey) return authLoginFromPromptHookResult(apiKey);
       return authApiKeyPromptHookResult();
     }
-    writeAuthChoice('pending-choice', cwd);
-    return authRequiredHookResult('UserPromptSubmit');
+    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
+    return authRequiredHookResult('UserPromptSubmit', { authChoiceWrite: writeResult });
   }
 
   const statePath = path.join(process.cwd(), STATE_FILE);
@@ -3290,9 +3389,11 @@ function runMaterializeProject(_rawInput = '') {
   if (isPluginAuthoringRoot(process.cwd())) {
     return { stdout: '', exitCode: 0 };
   }
-  if (!isAuthenticatedLocal()) {
+  const authGate = authGateForHook();
+  if (!authGate.authenticated) {
     if (authChoiceAllowsContinue()) return { stdout: '', exitCode: 0 };
-    return authRequiredHookResult('PostToolUse');
+    const writeResult = tryWriteAuthChoice('pending-choice', process.cwd());
+    return authRequiredHookResult('PostToolUse', { authChoiceWrite: writeResult });
   }
   return materializeProjectFromState(process.cwd(), 'manual materialize-project');
 }
@@ -3440,4 +3541,5 @@ module.exports = {
   runPreGraphifyHint,        // PreToolUse(Glob|Grep) → graph hint
   runPostBuildGraphifyHint,  // PostToolUse(Bash) → post-build install/build hint
   forbiddenForStack,         // exported for testing
+  authRequiredHookResult,    // exported for hook-runtime fail-closed fallback
 };
