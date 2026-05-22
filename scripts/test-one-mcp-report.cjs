@@ -252,6 +252,24 @@ async function main() {
       }
 
       fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
+      const bareNumericWithoutPrompt = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: '2',
+      }));
+      const bareNumericPayload = JSON.parse(bareNumericWithoutPrompt.stdout);
+      assert.equal(bareNumericPayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.equal(bareNumericPayload.systemMessage, 'traffic-one inactive: authentication choice required');
+      assert.match(bareNumericPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
+
+      const bareNumericAfterPrompt = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: '2',
+      }));
+      const bareNumericAfterPromptPayload = JSON.parse(bareNumericAfterPrompt.stdout);
+      assert.equal(
+        bareNumericAfterPromptPayload.systemMessage,
+        'traffic-one inactive: user chose to continue without Traffic One',
+      );
+
+      fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
       const bareWithoutChoice = handlers.runUserPromptSubmit(JSON.stringify({
         prompt: 'without',
       }));

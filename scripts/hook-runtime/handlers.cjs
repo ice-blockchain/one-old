@@ -426,7 +426,7 @@ function authChoiceAllowsContinue(cwd = process.cwd(), env = process.env, nowMs 
   return Number.isFinite(expires) && expires > nowMs;
 }
 
-function parseUnauthenticatedAuthChoice(rawInput) {
+function parseUnauthenticatedAuthChoice(rawInput, options = {}) {
   const prompt = extractPromptText(rawInput).trim().toLowerCase();
   if (!prompt) return null;
   const compact = prompt
@@ -436,11 +436,13 @@ function parseUnauthenticatedAuthChoice(rawInput) {
     .trim();
   if (!compact) return null;
   const mentionsTrafficOne = /\btraffic one\b/.test(compact);
-  if (/^(1|one)$/.test(compact)) {
-    return 'authenticate';
-  }
-  if (/^(2|two)$/.test(compact)) {
-    return 'continue-without-traffic-one';
+  if (options.allowNumeric === true) {
+    if (/^(1|one)$/.test(compact)) {
+      return 'authenticate';
+    }
+    if (/^(2|two)$/.test(compact)) {
+      return 'continue-without-traffic-one';
+    }
   }
   if (
     (mentionsTrafficOne && /\b(authenticate|auth|login|log in|sign in|signin)\b/.test(compact))
@@ -2340,12 +2342,15 @@ function runUserPromptSubmit(rawInput = '') {
   }
   const authGate = authGateForHook();
   if (!authGate.authenticated) {
-    const authChoice = parseUnauthenticatedAuthChoice(rawInput);
+    const choiceStatus = authChoiceStatus(cwd);
+    const authChoice = parseUnauthenticatedAuthChoice(rawInput, {
+      allowNumeric: choiceStatus === 'pending-choice',
+    });
     if (authChoice) {
       return authChoiceHookResult(authChoice);
     }
     if (authChoiceAllowsContinue(cwd)) return { stdout: '', exitCode: 0 };
-    if (authChoiceStatus(cwd) === 'authenticate') {
+    if (choiceStatus === 'authenticate') {
       const apiKey = parseTrafficOneApiKey(rawInput);
       if (apiKey) return authLoginFromPromptHookResult(apiKey);
       return authApiKeyPromptHookResult();
