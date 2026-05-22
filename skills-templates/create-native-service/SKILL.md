@@ -1,12 +1,13 @@
 ---
 name: create-native-service
 description: >
-  Use PROACTIVELY only when the user explicitly asks to add a React Native /
-  Expo API call, RN service, Expo service wrapper, RTK Query endpoint, file
-  upload/download, secure storage access, or native WebSocket bridge.
-  Do not activate during Traffic One new-project onboarding before `.traffic-one.json`
-  has `onboardingComplete: true` and `.traffic-one/plan.md` exists; use
-  `detect-project` / `stack-setup` first.
+  Prerequisite: do not read, invoke, or activate this skill during Traffic One
+  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
+  this skill only after `.traffic-one.json` has `onboardingComplete: true` and
+  `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
+  only when the user explicitly asks to add a React Native / Expo API call, RN
+  service, Expo service wrapper, RTK Query endpoint, file upload/download,
+  secure storage access, or native WebSocket bridge.
   Triggers:
   "React Native API call", "Expo service", "fetch from the API in React Native",
   "Expo upload service", "secure store token", "React Native websocket".
@@ -14,7 +15,7 @@ description: >
 
 # Skill: Create Native Service
 
-Traffic One onboarding guard: Do not activate during Traffic One new-project
+Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
 onboarding before `.traffic-one.json` has `onboardingComplete: true` and
 `.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
 return here after the stack, mobile, code graph, and team gates are resolved.

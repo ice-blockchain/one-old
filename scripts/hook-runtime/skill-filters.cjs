@@ -109,9 +109,11 @@ function addSkillSet(out, name) {
 function normalizedSkillState(input) {
   if (input && typeof input === 'object') {
     return {
+      mode: input.mode || 'unknown',
       stack: input.stack || 'minimal',
       frontend: input.frontend || 'none',
       backend: input.backend || 'none',
+      onboardingComplete: input.onboardingComplete === true,
       mobile: input.mobile && typeof input.mobile === 'object'
         ? input.mobile
         : { enabled: false, framework: 'none', source: 'none' },
@@ -119,19 +121,22 @@ function normalizedSkillState(input) {
   }
   const stack = typeof input === 'string' ? input : 'minimal';
   if (stack === 'default' || stack === 'react-realtime-monorepo') {
-    return { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { enabled: false, framework: 'none', source: 'none' } };
+    return { mode: 'unknown', stack: 'default', frontend: 'react-vite', backend: 'supabase', onboardingComplete: true, mobile: { enabled: false, framework: 'none', source: 'none' } };
   }
   if (stack === 'react-frontend-only') {
-    return { stack: 'custom-backend', frontend: 'react-vite', backend: 'none', mobile: { enabled: false, framework: 'none', source: 'none' } };
+    return { mode: 'unknown', stack: 'custom-backend', frontend: 'react-vite', backend: 'none', onboardingComplete: true, mobile: { enabled: false, framework: 'none', source: 'none' } };
   }
   if (stack === 'react-native-expo-monorepo' || stack === 'react-native-expo-app') {
-    return { stack: 'custom-frontend', frontend: 'none', backend: 'supabase', mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' } };
+    return { mode: 'unknown', stack: 'custom-frontend', frontend: 'none', backend: 'supabase', onboardingComplete: true, mobile: { enabled: true, framework: 'react-native-expo', source: 'explicit' } };
   }
-  return { stack, frontend: 'none', backend: 'none', mobile: { enabled: false, framework: 'none', source: 'none' } };
+  return { mode: 'unknown', stack, frontend: 'none', backend: 'none', onboardingComplete: true, mobile: { enabled: false, framework: 'none', source: 'none' } };
 }
 
 function activeSkillsFor(stackOrState) {
   const state = normalizedSkillState(stackOrState);
+  if (state.mode === 'new-project' && state.onboardingComplete !== true) {
+    return new Set(BOOTSTRAP_SKILLS);
+  }
   const out = new Set(SKILL_FILTERS._common);
   if (state.frontend === 'react-vite') {
     addSkillSet(out, 'react-vite');

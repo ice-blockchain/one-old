@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "Detecting project mode...",
+            "statusMessage": "Checking Traffic One auth...",
             "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" session-start"
           }
         ]
@@ -24,7 +24,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep",
+        "matcher": "Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|spawn_agent|send_input|wait_agent|multi_tool_use",
         "hooks": [
           {
             "type": "command",
@@ -34,7 +34,17 @@
         ]
       },
       {
-        "matcher": "Bash|Write|Edit",
+        "matcher": "Task|Agent|spawn_agent",
+        "hooks": [
+          {
+            "type": "command",
+            "statusMessage": "Checking agent model tier...",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" check-agent-model"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Write|Edit|exec_command|apply_patch",
         "hooks": [
           {
             "type": "command",
@@ -44,7 +54,7 @@
         ]
       },
       {
-        "matcher": "Bash",
+        "matcher": "Bash|exec_command",
         "hooks": [
           {
             "type": "command",
@@ -65,7 +75,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "Bash",
+        "matcher": "Bash|exec_command",
         "hooks": [
           {
             "type": "command",

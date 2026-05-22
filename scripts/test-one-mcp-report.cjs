@@ -6,6 +6,14 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 
+const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.json`);
+const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
+const PLUGIN_ROOT = path.resolve(__dirname, '..');
+process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
+process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
+process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://localhost:54321/functions/v1/one-mcp-key-test';
+fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
+
 const {
   buildMcpPayload,
   collectMetadata,
@@ -14,6 +22,26 @@ const {
   uuidV7,
 } = require('./one-mcp-report.cjs');
 const handlers = require('./hook-runtime/handlers.cjs');
+const authClient = require('./traffic-one-auth.cjs');
+
+function seedAuthState(
+  expiresAt = '2099-01-01T00:00:00Z',
+  lastRemoteCheckedAt = '2099-01-01T00:00:00Z',
+) {
+  fs.mkdirSync(path.dirname(AUTH_STATE_PATH), { recursive: true });
+  fs.writeFileSync(AUTH_STATE_PATH, `${JSON.stringify({
+    version: 1,
+    endpoint: process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT,
+    sessionToken: 'tok_test-session-token.signature',
+    expiresAt,
+    keyId: 'test-key',
+    authenticatedAt: '2026-05-21T00:00:00Z',
+    lastRemoteCheckedAt,
+    lastRemoteCheckOkAt: lastRemoteCheckedAt,
+  }, null, 2)}\n`, 'utf8');
+}
+
+seedAuthState();
 
 function tmpProject() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'traffic-one-mcp-'));
@@ -32,6 +60,13 @@ function completedState(mode = 'new-project') {
     stack: 'default',
     frontend: 'react-vite',
     backend: 'supabase',
+    projectContext: {
+      source: 'prompted',
+      originalPrompt: 'Create a Traffic One project',
+      summary: 'Traffic One test project.',
+      answers: { audience: 'test users' },
+      collectedAt: '2026-05-20T00:00:00Z',
+    },
     mobile: {
       enabled: false,
       framework: 'none',
@@ -46,6 +81,11 @@ function completedState(mode = 'new-project') {
     codeGraphProvider: 'gitnexus',
     team: {
       mode: 'subagents',
+      source: 'prompted',
+      approved: true,
+    },
+    performance: {
+      level: 'high',
       source: 'prompted',
     },
     toolchain: {
@@ -86,6 +126,241 @@ function makeProject(options = {}) {
 }
 
 async function main() {
+  const unauthRoot = makeProject();
+  const previousAuthStatePath = process.env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  process.env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-missing-${process.pid}.json`);
+  try {
+    const unauthPrepare = prepareReport(unauthRoot, { spawn: false, trigger: 'unauth-test' });
+    assert.equal(unauthPrepare.started, false);
+    assert.equal(unauthPrepare.reason, 'auth-required');
+    assert.equal(fs.existsSync(path.join(unauthRoot, '.one-mcp-id')), false);
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(unauthRoot);
+      const sessionStart = handlers.runSessionStart();
+      const sessionPayload = JSON.parse(sessionStart.stdout);
+      assert.equal(sessionPayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.equal(sessionPayload.promptRequest.kind, 'single_select');
+      assert.equal(sessionPayload.promptRequest.title, 'Traffic One');
+      assert.equal(sessionPayload.promptRequest.blocking, true);
+      assert.deepEqual(
+        sessionPayload.promptRequest.options.map((option) => option.id),
+        ['authenticate', 'continue_without'],
+      );
+      assert.match(sessionPayload.promptRequest.fallbackText, /Traffic One authentication is required/);
+      assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
+      assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Traffic One is inactive/);
+      assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin/);
+      assert.match(sessionPayload.hookSpecificOutput.additionalContext, /modal selector/);
+      assert.doesNotMatch(sessionPayload.hookSpecificOutput.additionalContext, /TRAFFIC_ONE_AUTH_KEY=<test-key>/);
+
+      const promptSubmit = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: 'Create a Traffic One project',
+      }));
+      const promptPayload = JSON.parse(promptSubmit.stdout);
+      assert.equal(promptPayload.decision, undefined);
+      assert.equal(promptPayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.equal(promptPayload.promptRequest.kind, 'single_select');
+      assert.equal(promptPayload.hookSpecificOutput.permissionDecision, undefined);
+      assert.match(promptPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
+      assert.match(promptPayload.hookSpecificOutput.additionalContext, /Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin/);
+      assert.match(promptPayload.hookSpecificOutput.additionalContext, /Do not answer pending Traffic One onboarding choices/);
+      assert.match(promptPayload.hookSpecificOutput.additionalContext, /until the user makes this auth choice/);
+
+      const deniedBeforeChoice = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: 'apps/web/src/Blocked.tsx', content: 'export const x = 1;\n' },
+      }));
+      const deniedBeforeChoicePayload = JSON.parse(deniedBeforeChoice.stdout);
+      assert.equal(deniedBeforeChoicePayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.equal(deniedBeforeChoicePayload.promptRequest.kind, 'single_select');
+      assert.match(deniedBeforeChoicePayload.promptRequest.fallbackText, /authentication choice required/i);
+      assert.equal(deniedBeforeChoicePayload.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(deniedBeforeChoicePayload.hookSpecificOutput.permissionDecisionReason, /authentication choice required/i);
+      assert.match(deniedBeforeChoicePayload.hookSpecificOutput.permissionDecisionReason, /Do you want to authenticate Traffic One now/);
+
+      const deniedCodexShellBeforeChoice = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'exec_command',
+        tool_input: { cmd: 'sed -n 1,40p package.json' },
+      }));
+      const deniedCodexShellPayload = JSON.parse(deniedCodexShellBeforeChoice.stdout);
+      assert.equal(deniedCodexShellPayload.promptRequest.id, 'traffic-one.auth.choice');
+      assert.equal(deniedCodexShellPayload.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(deniedCodexShellPayload.hookSpecificOutput.permissionDecisionReason, /authentication choice required/i);
+
+      const allowedCodexAuthCommand = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'exec_command',
+        tool_input: { cmd: 'node /tmp/plugin/scripts/traffic-one-auth.cjs status' },
+      }));
+      assert.equal(allowedCodexAuthCommand.stdout, '');
+
+      fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
+      const bareWithoutChoice = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: 'without',
+      }));
+      const bareWithoutPayload = JSON.parse(bareWithoutChoice.stdout);
+      assert.equal(bareWithoutPayload.systemMessage, 'traffic-one inactive: user chose to continue without Traffic One');
+
+      fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
+      const continueChoice = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: "don't use traffic one",
+      }));
+      const continuePayload = JSON.parse(continueChoice.stdout);
+      assert.equal(continuePayload.systemMessage, 'traffic-one inactive: user chose to continue without Traffic One');
+      assert.match(continuePayload.hookSpecificOutput.additionalContext, /Proceed with the user request using normal non-Traffic-One behavior only/);
+      assert.match(continuePayload.hookSpecificOutput.additionalContext, /Do not run Traffic One skills/);
+      assert.match(continuePayload.hookSpecificOutput.additionalContext, /prompt is not repeated/);
+
+      const skipped = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: 'apps/web/src/AllowedAfterChoice.tsx', content: 'export const x = 1;\n' },
+      }));
+      assert.equal(skipped.stdout, '');
+
+      const skippedCodexShell = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'exec_command',
+        tool_input: { cmd: 'sed -n 1,40p package.json' },
+      }));
+      assert.equal(skippedCodexShell.stdout, '');
+
+      const noRepeatPrompt = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: 'Create a normal thing',
+      }));
+      assert.equal(noRepeatPrompt.stdout, '');
+
+      const noRepeatSession = handlers.runSessionStart();
+      assert.equal(noRepeatSession.stdout, '');
+
+      const secondUnauthRoot = makeProject();
+      process.chdir(secondUnauthRoot);
+      const repeatOtherProjectPrompt = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: 'Create a normal thing in a different project',
+      }));
+      const repeatOtherProjectPayload = JSON.parse(repeatOtherProjectPrompt.stdout);
+      assert.match(repeatOtherProjectPayload.hookSpecificOutput.additionalContext, /Traffic One authentication is required/);
+      assert.match(repeatOtherProjectPayload.hookSpecificOutput.additionalContext, /continue without using the Traffic One plugin/);
+      const deniedOtherProjectWrite = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: 'apps/web/src/BlockedInSecondProject.tsx', content: 'export const x = 1;\n' },
+      }));
+      const deniedOtherProjectPayload = JSON.parse(deniedOtherProjectWrite.stdout);
+      assert.equal(deniedOtherProjectPayload.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(deniedOtherProjectPayload.hookSpecificOutput.permissionDecisionReason, /authentication choice required/i);
+
+      process.chdir(unauthRoot);
+      const authenticateChoice = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: 'authenticate Traffic One',
+      }));
+      const authenticatePayload = JSON.parse(authenticateChoice.stdout);
+      assert.equal(authenticatePayload.systemMessage, 'traffic-one authentication key required');
+      assert.equal(authenticatePayload.promptRequest.id, 'traffic-one.auth.api-key');
+      assert.equal(authenticatePayload.promptRequest.kind, 'secure_text');
+      assert.equal(authenticatePayload.promptRequest.sensitive, true);
+      assert.equal(authenticatePayload.promptRequest.blocking, true);
+      assert.doesNotMatch(JSON.stringify(authenticatePayload.promptRequest), /tok_test-session-token|<test-key>/);
+      assert.match(authenticatePayload.hookSpecificOutput.additionalContext, /Do not continue implementation yet/);
+      assert.match(authenticatePayload.hookSpecificOutput.additionalContext, /API key/);
+      assert.match(authenticatePayload.hookSpecificOutput.additionalContext, /run authentication internally/);
+      assert.doesNotMatch(authenticatePayload.hookSpecificOutput.additionalContext, /show the login command|Please run this|To authenticate, run:/);
+
+      const deniedAfterAuthenticateChoice = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: 'apps/web/src/BlockedAfterAuthChoice.tsx', content: 'export const x = 1;\n' },
+      }));
+      const deniedAfterAuthenticatePayload = JSON.parse(deniedAfterAuthenticateChoice.stdout);
+      assert.equal(deniedAfterAuthenticatePayload.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(deniedAfterAuthenticatePayload.hookSpecificOutput.permissionDecisionReason, /authentication choice required/i);
+
+      const allowedAuthCommand = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'node /tmp/plugin/scripts/traffic-one-auth.cjs status' },
+      }));
+      assert.equal(allowedAuthCommand.stdout, '');
+
+      process.chdir(secondUnauthRoot);
+      const authenticateCarriesAcrossProjects = handlers.runUserPromptSubmit(JSON.stringify({
+        prompt: 'continue this second project',
+      }));
+      const authenticateAcrossPayload = JSON.parse(authenticateCarriesAcrossProjects.stdout);
+      assert.equal(authenticateAcrossPayload.systemMessage, 'traffic-one authentication key required');
+      assert.match(authenticateAcrossPayload.hookSpecificOutput.additionalContext, /API key/);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  } finally {
+    process.env.TRAFFIC_ONE_AUTH_STATE_PATH = previousAuthStatePath;
+    seedAuthState();
+  }
+
+  seedAuthState('2099-01-01T00:00:00Z', '2026-05-20T00:00:00Z');
+  assert.equal(
+    authClient.authRemoteCheckDue(
+      authClient.readAuthState(),
+      process.env,
+      Date.parse('2026-05-21T00:00:01Z'),
+    ),
+    true,
+  );
+  seedAuthState('2099-01-01T00:00:00Z', '2026-05-21T00:00:00Z');
+  assert.equal(
+    authClient.authRemoteCheckDue(
+      authClient.readAuthState(),
+      process.env,
+      Date.parse('2026-05-21T12:00:00Z'),
+    ),
+    false,
+  );
+
+  seedAuthState('2000-01-01T00:00:00Z');
+  assert.equal(fs.existsSync(AUTH_STATE_PATH), true);
+  fs.writeFileSync(AUTH_CHOICE_STATE_PATH, `${JSON.stringify({
+    version: 1,
+    choices: {
+      [process.cwd()]: {
+        status: 'continue-without-traffic-one',
+        cwd: process.cwd(),
+        updatedAt: '2026-05-21T00:00:00Z',
+        expiresAt: '2099-01-01T00:00:00Z',
+      },
+    },
+  }, null, 2)}\n`, 'utf8');
+  assert.equal(fs.existsSync(AUTH_CHOICE_STATE_PATH), true);
+  const logoutResult = await authClient.logout([], process.env);
+  assert.equal(logoutResult.ok, true);
+  assert.equal(logoutResult.authenticated, false);
+  assert.equal(fs.existsSync(AUTH_STATE_PATH), false);
+  assert.equal(fs.existsSync(AUTH_CHOICE_STATE_PATH), false);
+  const loggedOutStatus = await authClient.status([], process.env);
+  assert.equal(loggedOutStatus.authenticated, false);
+  assert.equal(loggedOutStatus.reason, 'missing-auth-state');
+  seedAuthState();
+
+  const expiredRoot = makeProject();
+  seedAuthState('2000-01-01T00:00:00Z');
+  try {
+    const expiredPrepare = prepareReport(expiredRoot, { spawn: false, trigger: 'expired-auth-test' });
+    assert.equal(expiredPrepare.started, false);
+    assert.equal(expiredPrepare.reason, 'auth-required');
+    assert.equal(fs.existsSync(path.join(expiredRoot, '.one-mcp-id')), false);
+
+    const previousCwd = process.cwd();
+    try {
+      process.chdir(expiredRoot);
+      const skipped = handlers.runCheckOnboardingGate(JSON.stringify({
+        tool_name: 'Write',
+        tool_input: { file_path: 'apps/web/src/Expired.tsx', content: 'export const x = 1;\n' },
+      }));
+      const skippedPayload = JSON.parse(skipped.stdout);
+      assert.equal(skippedPayload.hookSpecificOutput.permissionDecision, 'deny');
+      assert.match(skippedPayload.hookSpecificOutput.permissionDecisionReason, /authentication choice required/i);
+    } finally {
+      process.chdir(previousCwd);
+    }
+  } finally {
+    seedAuthState();
+  }
+
   assert.match(
     uuidV7(),
     /^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -252,6 +527,31 @@ async function main() {
   assert.equal(absoluteHintStatus.status, 'queued');
   assert.equal(absoluteHintStatus.reportId, absoluteHintId);
   assert.equal(absoluteHintStatus.mcpPayload.params.arguments.report_id, absoluteHintId);
+
+  const pluginCwdHintRoot = makeProject();
+  process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN = '1';
+  try {
+    process.chdir(PLUGIN_ROOT);
+    const hookResult = handlers.runPostStackSetup(JSON.stringify({
+      tool_input: {
+        file_path: path.join(pluginCwdHintRoot, 'package.json'),
+      },
+    }));
+    assert.equal(hookResult.exitCode, 0);
+  } finally {
+    process.chdir(previousCwd);
+    if (previousNoSpawn === undefined) {
+      delete process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN;
+    } else {
+      process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN = previousNoSpawn;
+    }
+  }
+  const pluginCwdHintId = fs.readFileSync(path.join(pluginCwdHintRoot, '.one-mcp-id'), 'utf8').trim();
+  assert.match(pluginCwdHintId, /^[A-Za-z0-9._:-]{1,128}$/);
+  const pluginCwdHintStatus = JSON.parse(fs.readFileSync(path.join(pluginCwdHintRoot, '.traffic-one/one-mcp-report.json'), 'utf8'));
+  assert.equal(pluginCwdHintStatus.status, 'queued');
+  assert.equal(pluginCwdHintStatus.reportId, pluginCwdHintId);
+  assert.equal(pluginCwdHintStatus.mcpPayload.params.arguments.report_id, pluginCwdHintId);
 
   const existingModeRoot = makeProject({ mode: 'existing-codebase' });
   process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN = '1';
