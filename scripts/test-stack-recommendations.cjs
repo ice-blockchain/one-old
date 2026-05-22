@@ -1055,8 +1055,236 @@ test('team.source unavailable does not bypass approval for a selected subagent t
 
     assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(reason, /Team Confirmation gate/);
-    assert.match(reason, /re-pick Low\/main-agent/);
+    assert.match(reason, /explicitly say they no longer want subagents and want Low\/main-agent/);
     assert.match(reason, /Traffic One — confirm the subagent team for HIGH mode/);
+  });
+});
+
+test('team mode guard denies direct subagents to main-agent state write without user intent', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    const proposed = completeDefaultState({
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '.traffic-one.json',
+        content: `${JSON.stringify(proposed, null, 2)}\n`,
+      },
+    });
+    const parsed = parseStdoutJson(result);
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team mode guard/);
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /latest user prompt/);
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team\.source="unavailable"/);
+  });
+});
+
+test('team mode guard denies apply_patch subagents to main-agent rewrite without user intent', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'apply_patch',
+      tool_input: {
+        input: [
+          '*** Begin Patch',
+          '*** Update File: .traffic-one.json',
+          '@@',
+          '-    "mode": "subagents",',
+          '+    "mode": "main-agent",',
+          '*** End Patch',
+          '',
+        ].join('\n'),
+      },
+    });
+    const parsed = parseStdoutJson(result);
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team mode guard/);
+  });
+});
+
+test('team mode guard records explicit user intent and allows one downgrade write', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    const prompt = runHook(cwd, 'user-prompt-submit', {
+      prompt: 'I do not want to use subagents anymore, switch to main-agent.',
+    });
+    const promptPayload = parseStdoutJson(prompt);
+    let state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(promptPayload.systemMessage, 'traffic-one [team mode switch authorized]');
+    assert.equal(state.team.modeChangeApproval.from, 'subagents');
+    assert.equal(state.team.modeChangeApproval.to, 'main-agent');
+    assert.equal(state.team.modeChangeApproval.source, 'user-prompt');
+    assert.match(state.team.modeChangeApproval.promptHash, /^[a-f0-9]{64}$/);
+
+    const proposed = completeDefaultState({
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+    });
+    const allowed = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '.traffic-one.json',
+        content: `${JSON.stringify(proposed, null, 2)}\n`,
+      },
+    });
+    state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(allowed.stdout, '');
+    assert.equal(state.team.modeChangeApproval, undefined);
+  });
+});
+
+test('team mode guard denies manual writes of the internal approval marker', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+    const proposed = completeDefaultState({
+      team: {
+        mode: 'subagents',
+        source: 'prompted',
+        approved: true,
+        modeChangeApproval: {
+          from: 'subagents',
+          to: 'main-agent',
+          source: 'user-prompt',
+          requestedAt: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          promptHash: 'b'.repeat(64),
+        },
+      },
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '.traffic-one.json',
+        content: `${JSON.stringify(proposed, null, 2)}\n`,
+      },
+    });
+    const parsed = parseStdoutJson(result);
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /modeChangeApproval/);
+    assert.equal(state.team.modeChangeApproval, undefined);
+  });
+});
+
+test('team mode guard denies apply_patch writes of the internal approval marker', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'apply_patch',
+      tool_input: {
+        input: [
+          '*** Begin Patch',
+          '*** Update File: .traffic-one.json',
+          '@@',
+          '     "approved": true',
+          '+    "modeChangeApproval": { "from": "subagents", "to": "main-agent" }',
+          '*** End Patch',
+          '',
+        ].join('\n'),
+      },
+    });
+    const parsed = parseStdoutJson(result);
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /modeChangeApproval/);
+  });
+});
+
+test('team mode guard denies downgrade when approval marker is stale', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      team: {
+        mode: 'subagents',
+        source: 'prompted',
+        approved: true,
+        modeChangeApproval: {
+          from: 'subagents',
+          to: 'main-agent',
+          source: 'user-prompt',
+          requestedAt: '2000-01-01T00:00:00Z',
+          promptHash: 'a'.repeat(64),
+        },
+      },
+    }));
+    const proposed = completeDefaultState({
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '.traffic-one.json',
+        content: `${JSON.stringify(proposed, null, 2)}\n`,
+      },
+    });
+    const parsed = parseStdoutJson(result);
+
+    assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /team mode guard/);
+  });
+});
+
+test('team mode guard does not record approval for vague subagent availability text', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState());
+
+    runHook(cwd, 'user-prompt-submit', {
+      prompt: 'Subagents are unavailable right now.',
+    });
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+
+    assert.equal(state.team.modeChangeApproval, undefined);
+  });
+});
+
+test('team mode guard allows initial low onboarding state write', () => {
+  withTempDir((cwd) => {
+    const proposed = completeDefaultState({
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+    });
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '.traffic-one.json',
+        content: `${JSON.stringify(proposed, null, 2)}\n`,
+      },
+    });
+
+    assert.equal(result.stdout, '');
+  });
+});
+
+test('team mode guard allows main-agent to subagents upgrade write', () => {
+  withTempDir((cwd) => {
+    writeJson(path.join(cwd, '.traffic-one.json'), completeDefaultState({
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+    }));
+    const proposed = completeDefaultState();
+
+    const result = runHook(cwd, 'check-onboarding-gate', {
+      tool_name: 'Write',
+      tool_input: {
+        file_path: '.traffic-one.json',
+        content: `${JSON.stringify(proposed, null, 2)}\n`,
+      },
+    });
+
+    assert.equal(result.stdout, '');
   });
 });
 
