@@ -360,6 +360,7 @@ function authRequiredMessage(env = process.env) {
     '  - Continue without Traffic One',
     '',
     'If the user chooses Authenticate Traffic One, ask for the API key and run authentication internally with TRAFFIC_ONE_AUTH_KEY, then verify status internally.',
+    'Internally means: invoke scripts/traffic-one-auth.cjs login (and then status) via your own Bash tool with TRAFFIC_ONE_AUTH_KEY=<key> in env. The pre-tool gate explicitly allows these scripts/traffic-one-auth.cjs (login|status|logout) shell invocations even while unauthenticated, so they will not be denied. Do not try to Write or Edit auth.json directly — only the script can produce a valid session token.',
     'Do not ask the user to run bash or shell commands for Traffic One authentication.',
     'If the user chooses Continue without Traffic One, remember that choice for the current project while it remains active and continue without Traffic One features.',
     `Endpoint: ${endpoint}`,

@@ -9,7 +9,13 @@ Before using Traffic One, authenticate with the `one-mcp-key` server through a
 host modal selector with two choices: Authenticate Traffic One or Continue
 without Traffic One. If the user chooses Authenticate Traffic One, ask for the
 API key and run authentication internally with `TRAFFIC_ONE_AUTH_KEY`; then
-verify status internally. Do not ask the user to run shell commands.
+verify status internally. Internally means: invoke
+`scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool
+with `TRAFFIC_ONE_AUTH_KEY=<key>` in env — the pre-tool gate explicitly bypasses
+`scripts/traffic-one-auth.cjs (login|status|logout)` shell invocations while
+unauthenticated, so they will go through. Do not Write or Edit `auth.json`
+directly; only the script can mint a valid session token. Do not ask the user
+to run shell commands.
 
 Do not run Traffic One onboarding, materialization, reporting, agent orchestration, or feature implementation until status is authenticated. If auth is missing or expired, present the modal selector, keep Traffic One inactive, and continue without Traffic One features when the user chooses that path and the request is actionable outside Traffic One; do not continue a pending onboarding answer or prior Traffic One flow. Do not write API keys or session tokens into project files, prompts, commits, `.traffic-one/`, or `.traffic-one.json`.
 
