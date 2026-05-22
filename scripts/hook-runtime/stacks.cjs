@@ -18,6 +18,7 @@ function templatePath(relPath) {
 }
 
 const COMMON_MANDATORY = [
+  'rules/common/auth-gate.md',
   'rules/common/clean-code.md',
   'rules/common/execution-discipline.md',
   'rules/common/security.md',
@@ -258,6 +259,7 @@ function stackSpecForState(state) {
 // .traffic-one/rules/ and can be read on demand.
 const AGENT_ROLE_BASE_RULES = {
   'senior-architect': [
+    'rules/common/auth-gate.md',
     'rules/common/clean-code.md',
     'rules/common/execution-discipline.md',
     'rules/common/stack-recommendations.md',
@@ -271,6 +273,7 @@ const AGENT_ROLE_BASE_RULES = {
     'rules/core.md',
   ],
   'senior-frontend': [
+    'rules/common/auth-gate.md',
     'rules/common/clean-code.md',
     'rules/common/execution-discipline.md',
     'rules/common/security.md',
@@ -282,6 +285,7 @@ const AGENT_ROLE_BASE_RULES = {
     'rules/frontend/typography.md',
   ],
   'senior-backend': [
+    'rules/common/auth-gate.md',
     'rules/common/clean-code.md',
     'rules/common/execution-discipline.md',
     'rules/common/security.md',
@@ -291,6 +295,7 @@ const AGENT_ROLE_BASE_RULES = {
     'rules/core.md',
   ],
   'senior-reviewer': [
+    'rules/common/auth-gate.md',
     'rules/common/security.md',
     'rules/common/quality-tooling.md',
     'rules/common/clean-code.md',
@@ -299,6 +304,7 @@ const AGENT_ROLE_BASE_RULES = {
     'rules/common/codebase-graph.md',
   ],
   'senior-tester': [
+    'rules/common/auth-gate.md',
     'rules/common/quality-tooling.md',
     'rules/common/execution-discipline.md',
     'rules/common/agent-handoff-digests.md',
@@ -306,6 +312,7 @@ const AGENT_ROLE_BASE_RULES = {
     'rules/frontend/testing.md',
   ],
   'senior-shipper': [
+    'rules/common/auth-gate.md',
     'rules/common/security.md',
     'rules/common/git.md',
     'rules/common/agent-handoff-digests.md',

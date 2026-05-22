@@ -185,8 +185,27 @@ function isLeanMaterialization(cwd, state) {
   return true;
 }
 
+function hasPluginAuthoringMarkers(root) {
+  try {
+    const pluginJsonPath = path.join(root, 'plugin.json');
+    const codexPluginJsonPath = path.join(root, '.codex-plugin', 'plugin.json');
+    const hookRuntimePath = path.join(root, 'scripts', 'hook-runtime', 'handlers.cjs');
+    const authScriptPath = path.join(root, 'scripts', 'traffic-one-auth.cjs');
+    if (!fs.existsSync(hookRuntimePath) || !fs.existsSync(authScriptPath)) {
+      return false;
+    }
+    const manifestPath = fs.existsSync(pluginJsonPath) ? pluginJsonPath : codexPluginJsonPath;
+    if (!fs.existsSync(manifestPath)) return false;
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    return manifest && manifest.name === 'traffic-one';
+  } catch {
+    return false;
+  }
+}
+
 function isPluginAuthoringRoot(cwd) {
-  return path.resolve(cwd) === path.resolve(pluginRoot());
+  const root = path.resolve(cwd);
+  return root === path.resolve(pluginRoot()) || hasPluginAuthoringMarkers(root);
 }
 
 function compactRuleKernel() {

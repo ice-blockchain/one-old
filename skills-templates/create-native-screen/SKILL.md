@@ -1,19 +1,40 @@
 ---
 name: create-native-screen
 description: >
-  Use PROACTIVELY only when the user explicitly asks to create, add, or build a
-  React Native / Expo screen, Expo Router route, RN tab, stack screen, modal
-  route, or deep-linkable native page.
-  Do not activate during Traffic One new-project onboarding before `.traffic-one.json`
-  has `onboardingComplete: true` and `.traffic-one/plan.md` exists; use
-  `detect-project` / `stack-setup` first.
+  Prerequisite: do not read, invoke, or activate this skill during Traffic One
+  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
+  this skill only after `.traffic-one.json` has `onboardingComplete: true` and
+  `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
+  only when the user explicitly asks to create, add, or build a React Native /
+  Expo screen, Expo Router route, RN tab, stack screen, modal route, or
+  deep-linkable native page.
   Triggers: "React Native screen",
   "Expo route", "Expo Router screen", "RN tab", "React Native stack route".
+  If hooks are absent or auth status is unknown, do not infer "Traffic One inactive";
+  ask the auth choice or run doctor, then stop before implementation.
 ---
 
 # Skill: Create Native Screen
 
-Traffic One onboarding guard: Do not activate during Traffic One new-project
+## Traffic One Auth Preflight
+
+Before applying this skill, verify Traffic One auth unless the user is explicitly
+asking to authenticate, check auth status, log out, or run doctor.
+
+If status is not authenticated, do not apply this skill yet. Present the auth
+choice as a host modal selector when available:
+- Authenticate Traffic One (Recommended)
+- Continue without Traffic One
+
+If hooks are absent or auth status is unknown, do not infer "Traffic One
+inactive" and continue. Treat Traffic One as unverified: run or recommend
+`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
+debugging a transcript), ask the auth choice, and stop before scaffolding,
+installs, source edits, Traffic One agents, or implementation skills. Only
+continue ordinary work without Traffic One after the user explicitly chooses
+"Continue without Traffic One".
+
+Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
 onboarding before `.traffic-one.json` has `onboardingComplete: true` and
 `.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
 return here after the stack, mobile, code graph, and team gates are resolved.
