@@ -260,6 +260,7 @@ function commandFromToolInput(toolInput = {}) {
 
 const AUTH_CHOICE_STATE_VERSION = 3;
 const AUTH_CHOICE_CONTINUE_TTL_MS = 4 * 60 * 60 * 1000;
+const TEAM_MODE_CHANGE_APPROVAL_TTL_MS = 10 * 60 * 1000;
 
 function authChoiceFallbackStatePath(env = process.env) {
   if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return null;
@@ -812,6 +813,171 @@ function isStateFileOnlyPatch(toolName, toolInput) {
   if (!/^apply_patch$/i.test(normalizedToolName(toolName))) return false;
   const files = patchTouchedFiles(patchTextFromToolInput(toolInput));
   return files.length > 0 && files.every(isStateFilePath);
+}
+
+function hashPromptText(promptText) {
+  return crypto.createHash('sha256').update(String(promptText || '').trim()).digest('hex');
+}
+
+function isExplicitSubagentsToMainAgentIntent(promptText) {
+  const prompt = String(promptText || '').toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!prompt) return false;
+  const rejectsAsVague = /\b(subagents?\s+(are|is)\s+unavailable|subagents?\s+(are|is)\s+blocked|subagents?\s+(do|does)\s+not\s+work)\b/.test(prompt);
+  const rejectsWithoutChoice = rejectsAsVague && !/\b(i|we)\b/.test(prompt);
+  if (rejectsWithoutChoice) return false;
+  const stopsSubagents = /\b(i|we)\s+(do not|don't|dont|no longer|won't|will not)\s+(want(?:\s+to)?\s+)?(use\s+)?subagents?\b/.test(prompt)
+    || /\b(stop|disable|turn off|drop|remove|skip)\s+(the\s+)?subagents?\b/.test(prompt)
+    || /\b(no more|without)\s+subagents?\b/.test(prompt)
+    || /\b(no longer|do not|don't|dont)\s+use\s+(the\s+)?subagents?\b/.test(prompt);
+  const choosesMainAgent = /\b(switch|change|move|go|fall back|fallback|use)\s+(to\s+)?(low|main[- ]agent|main agent only|main thread|same thread|manual)\b/.test(prompt)
+    || /\b(low|main[- ]agent|main agent only|main thread|same thread|manual)\s+(mode|only)\b/.test(prompt);
+  return stopsSubagents && choosesMainAgent;
+}
+
+function hasFreshTeamModeChangeApproval(state, nowMs = Date.now()) {
+  const approval = state && state.team && typeof state.team === 'object'
+    ? state.team.modeChangeApproval
+    : null;
+  if (!approval || typeof approval !== 'object') return false;
+  if (approval.from !== 'subagents' || approval.to !== 'main-agent') return false;
+  if (approval.source !== 'user-prompt') return false;
+  if (typeof approval.promptHash !== 'string' || !/^[a-f0-9]{64}$/.test(approval.promptHash)) return false;
+  const requestedAt = typeof approval.requestedAt === 'string' ? Date.parse(approval.requestedAt) : NaN;
+  return Number.isFinite(requestedAt)
+    && requestedAt <= nowMs
+    && nowMs - requestedAt <= TEAM_MODE_CHANGE_APPROVAL_TTL_MS;
+}
+
+function setTeamModeChangeApproval(cwd, state, promptText) {
+  if (!state || typeof state !== 'object') return false;
+  if (!state.team || typeof state.team !== 'object') return false;
+  state.team.modeChangeApproval = {
+    from: 'subagents',
+    to: 'main-agent',
+    source: 'user-prompt',
+    requestedAt: nowIso(),
+    promptHash: hashPromptText(promptText),
+  };
+  writeState(cwd, state);
+  return true;
+}
+
+function clearTeamModeChangeApproval(cwd, state) {
+  if (!state || typeof state !== 'object') return false;
+  if (!state.team || typeof state.team !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(state.team, 'modeChangeApproval')) return false;
+  delete state.team.modeChangeApproval;
+  writeState(cwd, state);
+  return true;
+}
+
+function updateTeamModeChangeApprovalFromPrompt(cwd, state, promptText) {
+  if (!promptText || !promptText.trim()) return { recorded: false, cleared: false };
+  if (!state || typeof state !== 'object') return { recorded: false, cleared: false };
+  if (state.onboardingComplete !== true) return { recorded: false, cleared: false };
+  if (!state.team || state.team.mode !== 'subagents') return { recorded: false, cleared: false };
+  if (isExplicitSubagentsToMainAgentIntent(promptText)) {
+    setTeamModeChangeApproval(cwd, state, promptText);
+    return { recorded: true, cleared: false };
+  }
+  return { recorded: false, cleared: clearTeamModeChangeApproval(cwd, state) };
+}
+
+function writeLikeStateFileTarget(toolName, toolInput) {
+  if (!isWriteLikeToolName(toolName)) return false;
+  const filePath = toolInput && typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
+  return isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput);
+}
+
+function replaceOneOrAll(text, oldText, newText, replaceAll = false) {
+  if (typeof oldText !== 'string' || oldText === '') return text;
+  if (typeof newText !== 'string') return text;
+  if (replaceAll) return text.split(oldText).join(newText);
+  const index = text.indexOf(oldText);
+  if (index === -1) return text;
+  return `${text.slice(0, index)}${newText}${text.slice(index + oldText.length)}`;
+}
+
+function proposedStateTextFromToolInput(cwd, toolName, toolInput) {
+  const normalized = normalizedToolName(toolName);
+  const statePath = path.join(cwd, STATE_FILE);
+  const currentText = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf8') : '';
+  if (/^Write$/i.test(normalized)) {
+    return typeof toolInput.content === 'string' ? toolInput.content : null;
+  }
+  if (/^Edit$/i.test(normalized)) {
+    return replaceOneOrAll(currentText, toolInput.old_string, toolInput.new_string, toolInput.replace_all === true);
+  }
+  if (/^MultiEdit$/i.test(normalized)) {
+    let nextText = currentText;
+    const edits = Array.isArray(toolInput.edits) ? toolInput.edits : [];
+    for (const edit of edits) {
+      nextText = replaceOneOrAll(nextText, edit.old_string, edit.new_string, edit.replace_all === true);
+    }
+    return nextText;
+  }
+  return null;
+}
+
+function proposedStateFromStateWrite(cwd, toolName, toolInput) {
+  const text = proposedStateTextFromToolInput(cwd, toolName, toolInput);
+  if (typeof text !== 'string') return null;
+  const proposed = parseJsonText(text, null);
+  if (!proposed || typeof proposed !== 'object') return null;
+  const normalized = JSON.parse(JSON.stringify(proposed));
+  normalizeState(normalized, normalized.mode || detectMode(cwd));
+  return normalized;
+}
+
+function proposedTeamModeFromStateWrite(cwd, toolName, toolInput) {
+  const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
+  if (proposed) {
+    return proposed.team && typeof proposed.team === 'object' ? proposed.team.mode : null;
+  }
+  if (/^apply_patch$/i.test(normalizedToolName(toolName))) {
+    const patchText = patchTextFromToolInput(toolInput);
+    const addedMainAgent = /^\+\s*"mode"\s*:\s*"main-agent"\s*,?\s*$/m.test(patchText);
+    return addedMainAgent ? 'main-agent' : null;
+  }
+  return null;
+}
+
+function proposedStateWritesModeChangeApproval(cwd, toolName, toolInput) {
+  const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
+  if (proposed && proposed.team && typeof proposed.team === 'object') {
+    return Object.prototype.hasOwnProperty.call(proposed.team, 'modeChangeApproval');
+  }
+  if (/^apply_patch$/i.test(normalizedToolName(toolName))) {
+    return /^\+.*"modeChangeApproval"\s*:/m.test(patchTextFromToolInput(toolInput));
+  }
+  return false;
+}
+
+function teamModeApprovalMarkerWriteGuard(cwd, toolName, toolInput) {
+  if (!writeLikeStateFileTarget(toolName, toolInput)) return null;
+  if (!proposedStateWritesModeChangeApproval(cwd, toolName, toolInput)) return null;
+  return denyPreToolUse(
+    'Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. '
+    + 'Do not add or refresh it in `.traffic-one.json` manually.'
+  );
+}
+
+function teamModeDowngradeGuard(cwd, toolName, toolInput, currentState) {
+  if (!writeLikeStateFileTarget(toolName, toolInput)) return null;
+  if (!currentState || typeof currentState !== 'object') return null;
+  if (currentState.onboardingComplete !== true) return null;
+  if (!currentState.team || currentState.team.mode !== 'subagents') return null;
+  if (proposedTeamModeFromStateWrite(cwd, toolName, toolInput) !== 'main-agent') return null;
+  if (hasFreshTeamModeChangeApproval(currentState)) {
+    clearTeamModeChangeApproval(cwd, currentState);
+    return null;
+  }
+  return denyPreToolUse(
+    'Traffic One team mode guard: `.traffic-one.json` currently records `team.mode="subagents"`. '
+    + 'This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. '
+    + 'Ask the user to say that explicitly before rewriting `performance.level="low"` and `team.mode="main-agent"`. '
+    + 'Do not use `team.source="unavailable"` or a state rewrite as a workaround.'
+  );
 }
 
 function isProjectMemoryWritePath(relativePath) {
@@ -1764,7 +1930,7 @@ function teamConfirmationPromptContext(state, source = 'gate') {
   return [
     `Traffic One Team Confirmation is still required before the ${level} subagent run can start.`,
     'The user selected a multi-agent performance level, but `.traffic-one.json` does not contain `team.approved: true`.',
-    'Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to re-pick Low/main-agent instead.',
+    'Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.',
     source === 'user-prompt'
       ? 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first rewrite `.traffic-one.json` with `team.approved: true` (and any collected `team.overrides`), then continue.'
       : 'Your next visible assistant message must ask this approval question and then stop for the user answer.',
@@ -2207,6 +2373,23 @@ function runUserPromptSubmit(rawInput = '') {
   const stack = state.stack || state.mode || 'unknown';
   const normalizedState = JSON.parse(JSON.stringify(state));
   normalizeState(normalizedState, normalizedState.mode || detectMode(process.cwd()));
+  const promptText = promptTextFromSubmit(rawInput);
+  const teamModeApproval = updateTeamModeChangeApprovalFromPrompt(process.cwd(), normalizedState, promptText);
+  if (teamModeApproval.recorded) {
+    return {
+      stdout: JSON.stringify({
+        systemMessage: 'traffic-one [team mode switch authorized]',
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext: '[ACTIVE STACK: ' + stack + ']\n\n'
+            + 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. '
+            + 'The next `.traffic-one.json` write may change `performance.level` to "low" and `team.mode` to "main-agent"; '
+            + 'this authorization is single-use and expires in 10 minutes.',
+        },
+      }),
+      exitCode: 0,
+    };
+  }
   if (needsTeamConfirmation(normalizedState)) {
     const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${teamConfirmationPromptContext(normalizedState, 'user-prompt')}`;
     return {
@@ -2231,7 +2414,6 @@ function runUserPromptSubmit(rawInput = '') {
   // pointed at the schema until `.traffic-one.json` is fully populated.
   if (isIncomplete && state.mode === 'new-project') {
     const reminder = onboardingReminderShort();
-    const promptText = promptTextFromSubmit(rawInput);
     const classification = promptText ? classifyPromptForStack(promptText) : null;
     const promptRequest = nextOnboardingPromptRequest(normalizedState, 'user-prompt');
     const classificationContext = classification
@@ -2298,6 +2480,12 @@ function runCheckOnboardingGate(rawInput) {
     mode,
   };
   normalizeState(effectiveState, mode);
+
+  const teamModeApprovalMarkerGuard = teamModeApprovalMarkerWriteGuard(cwd, toolName, toolInput);
+  if (teamModeApprovalMarkerGuard) return teamModeApprovalMarkerGuard;
+
+  const teamModeGuard = teamModeDowngradeGuard(cwd, toolName, toolInput, effectiveState);
+  if (teamModeGuard) return teamModeGuard;
 
   if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) {
     return { stdout: '', exitCode: 0 };
@@ -2413,7 +2601,7 @@ function runCheckAgentModel(rawInput) {
       + '`.traffic-one.json` currently has `team.approved !== true`, so the user has not yet confirmed. '
       + 'Ask the host popup tool (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI) with header "Team", question "Here is the subagent team for ' + level + ' mode — approve or change?", body containing the role→tier→model line-up (use `tierModelTable` from `model-tiers.cjs`), and options "Approve" / "Re-pick performance" / "Customise". '
       + 'When the user replies "Approve", re-write `.traffic-one.json` with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
-      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to re-pick Low/main-agent and update `.traffic-one.json` accordingly; do not bypass this gate for `team.mode="subagents"`.',
+      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one.json`; do not bypass this gate for `team.mode="subagents"`.',
     );
   }
 
@@ -2569,7 +2757,7 @@ function runCheckArchitectureWrite(rawInput) {
       // Should not reach: subagentMayWriteFeatureSource would have returned true.
       reason = `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`;
     }
-    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to re-pick Low/main-agent and update `.traffic-one.json` before writing feature source; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
+    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one.json`; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
     violations.push(reason);
   }
 

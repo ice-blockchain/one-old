@@ -710,6 +710,16 @@ function normalizeState(state, defaultMode) {
     } else if ('overrides' in normalizedTeam) {
       delete normalizedTeam.overrides;
     }
+    // The subagents -> main-agent approval marker is transient. Once the
+    // team is no longer in subagent mode, it must not survive as durable state.
+    if (normalizedTeam.mode !== 'subagents' && 'modeChangeApproval' in normalizedTeam) {
+      delete normalizedTeam.modeChangeApproval;
+    } else if (
+      'modeChangeApproval' in normalizedTeam
+      && (!normalizedTeam.modeChangeApproval || typeof normalizedTeam.modeChangeApproval !== 'object')
+    ) {
+      delete normalizedTeam.modeChangeApproval;
+    }
     // team.approved is a strict boolean. Anything truthy-but-not-true is
     // coerced away so the spawn gate can rely on `=== true`.
     if (state.team.approved === true) {
@@ -721,6 +731,7 @@ function normalizeState(state, defaultMode) {
       state.team.mode !== normalizedTeam.mode
       || state.team.source !== normalizedTeam.source
       || !overridesEqual(state.team.overrides, normalizedTeam.overrides)
+      || state.team.modeChangeApproval !== normalizedTeam.modeChangeApproval
       || state.team.approved !== normalizedTeam.approved
     ) {
       state.team = normalizedTeam;
