@@ -195,7 +195,7 @@ function authRequiredHookResult(hookEventName) {
     '- Authenticate Traffic One',
     '- Continue without Traffic One',
     '',
-    'If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then run `traffic-one-auth.cjs login` internally with `TRAFFIC_ONE_AUTH_KEY` and verify `traffic-one-auth.cjs status` yourself. Do not ask the user to run bash or shell commands.',
+    'If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then run `traffic-one-auth.cjs login` internally with `TRAFFIC_ONE_AUTH_KEY` and verify `traffic-one-auth.cjs status` yourself. Use your own Bash tool — the pre-tool auth gate explicitly bypasses shell invocations of `scripts/traffic-one-auth.cjs (login|status|logout)`, so they will run even while unauthenticated. Do not Write or Edit `auth.json` directly (Write/Edit are blocked, and only the script can mint a valid session token). Do not ask the user to run bash or shell commands.',
     'If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.',
     '',
     'Do not answer pending Traffic One onboarding choices, inspect, scaffold, or build through Traffic One until the user makes this auth choice.',
@@ -450,7 +450,7 @@ function authChoiceRequiredDenyReason() {
     'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
     'Choices: Authenticate Traffic One; Continue without Traffic One.',
     '',
-    'If Authenticate Traffic One is chosen, ask for the API key and run authentication internally; do not ask the user to run bash or shell commands.',
+    'If Authenticate Traffic One is chosen, ask for the API key, then invoke `scripts/traffic-one-auth.cjs login` via your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env (the pre-tool gate bypasses `scripts/traffic-one-auth.cjs (login|status|logout)` while unauthenticated). Do not Write/Edit `auth.json` directly, and do not ask the user to run bash or shell commands.',
     'If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.',
     '',
     'Do not inspect, scaffold, install, edit, or build before the user answers this auth choice.',
@@ -471,6 +471,7 @@ function authApiKeyPromptHookResult() {
     'The user chose to authenticate Traffic One. Do not continue implementation yet.',
     'Ask the user for the Traffic One API key using a secure host input/modal if available.',
     'After the user enters the key, run authentication internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
+    'Internally means: invoke `scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows these `scripts/traffic-one-auth.cjs (login|status|logout)` shell invocations while unauthenticated, so the call will go through. Do not Write or Edit `auth.json` directly — that path is blocked, and only the script can mint a valid session token.',
     'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
   ].join('\n');
   const payload = {

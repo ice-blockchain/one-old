@@ -17,7 +17,12 @@ choice as a host modal selector when available:
 
 If the user chooses Authenticate Traffic One, ask for the API key and run the
 authentication command internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
-internally. Do not ask the user to run bash or shell commands. If the user chooses
+internally. Internally means: invoke `scripts/traffic-one-auth.cjs login` (then
+`status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env —
+the pre-tool gate explicitly bypasses `scripts/traffic-one-auth.cjs (login|status|logout)`
+shell invocations even while unauthenticated. Do not Write or Edit `auth.json`
+directly; only the script can mint a valid session token.
+Do not ask the user to run bash or shell commands. If the user chooses
 Continue without Traffic One, continue the user's request without Traffic One
 features and do not repeat the auth prompt while that choice remains active.
 Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
