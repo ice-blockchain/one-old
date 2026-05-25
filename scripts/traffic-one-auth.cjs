@@ -281,6 +281,19 @@ function isRemoteAuthRejection(error) {
   return error && (error.statusCode === 401 || error.statusCode === 403);
 }
 
+// Node throws an AggregateError with an empty `.message` when a dual-stack
+// `localhost` connection is refused on both ::1 and 127.0.0.1. Surface a useful
+// string in that case so a failure is never opaque.
+function errorMessage(error) {
+  if (!error) return '';
+  if (error.message) return error.message;
+  if (Array.isArray(error.errors) && error.errors.length) {
+    return error.errors.map((sub) => (sub && sub.message) || String(sub)).join('; ');
+  }
+  if (error.code) return String(error.code);
+  return String(error);
+}
+
 function stampRemoteCheck(state, patch, env = process.env) {
   const next = {
     ...state,
@@ -323,14 +336,48 @@ function writeSessionResult(endpoint, result, env = process.env) {
 }
 
 async function login(args = process.argv.slice(3), env = process.env) {
+  const endpoint = endpointFromEnv(env);
+  const filePath = authStatePath(env);
   const apiKey = keyFromArgs(args, env);
   if (!apiKey) {
-    throw new Error('Missing API key. Set TRAFFIC_ONE_AUTH_KEY or pass --stdin.');
+    return {
+      ok: false,
+      authenticated: false,
+      reason: 'missing-api-key',
+      detail: 'Set TRAFFIC_ONE_AUTH_KEY or pass --stdin.',
+      endpoint,
+      filePath,
+    };
   }
-  const endpoint = endpointFromEnv(env);
-  const result = await mcpRequest(endpoint, 'authenticate', apiKey, {});
-  const { state, filePath } = writeSessionResult(endpoint, result, env);
-  return { ok: true, filePath, keyId: state.keyId, expiresAt: state.expiresAt };
+  let result;
+  try {
+    result = await mcpRequest(endpoint, 'authenticate', apiKey, {});
+  } catch (error) {
+    // Never fail silently: report which endpoint we tried and why it failed so
+    // a wrong/unreachable endpoint (e.g. a stale plugin version) is obvious.
+    return {
+      ok: false,
+      authenticated: false,
+      reason: isRemoteAuthRejection(error) ? 'invalid-api-key' : 'auth-endpoint-unreachable',
+      endpoint,
+      filePath,
+      error: errorMessage(error),
+      ...(error.statusCode ? { statusCode: error.statusCode } : {}),
+    };
+  }
+  try {
+    const { state, filePath: written } = writeSessionResult(endpoint, result, env);
+    return { ok: true, authenticated: true, filePath: written, keyId: state.keyId, expiresAt: state.expiresAt, endpoint };
+  } catch (error) {
+    return {
+      ok: false,
+      authenticated: false,
+      reason: 'invalid-auth-response',
+      endpoint,
+      filePath,
+      error: errorMessage(error),
+    };
+  }
 }
 
 async function refresh(args = process.argv.slice(3), env = process.env, options = {}) {
@@ -360,7 +407,7 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
       authenticated: false,
       reauthenticated: false,
       reason: 'reauthentication-failed',
-      error: error.message,
+      error: errorMessage(error),
       ...(priorReason ? { priorReason } : {}),
       endpoint,
       filePath,
@@ -385,7 +432,7 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
       authenticated: false,
       reauthenticated: false,
       reason: 'reauthentication-failed',
-      error: error.message,
+      error: errorMessage(error),
       ...(priorReason ? { priorReason } : {}),
       endpoint,
       filePath,
@@ -438,7 +485,7 @@ async function status(args = process.argv.slice(3), env = process.env) {
       localAuthenticated: true,
       remoteChecked: false,
       reason: 'remote-check-failed',
-      error: error.message,
+      error: errorMessage(error),
       keyId: state.keyId,
       expiresAt: state.expiresAt,
       endpoint: state.endpoint,
@@ -513,11 +560,12 @@ function authRequiredMessage(env = process.env) {
     '  - Continue without Traffic One',
     '',
     'If the user chooses Authenticate Traffic One, ask for the API key and run authentication internally with TRAFFIC_ONE_AUTH_KEY, then verify status internally.',
-    'Internally means: invoke scripts/traffic-one-auth.cjs login (and then status) via your own shell tool with TRAFFIC_ONE_AUTH_KEY=<key> in env. The pre-tool gate explicitly allows these scripts/traffic-one-auth.cjs (login|refresh|status|logout) shell invocations even while unauthenticated, so they will not be denied. Do not try to Write or Edit auth.json directly; only the script can produce a valid session token.',
+    `Internally means: invoke THIS script at its absolute path via your own shell tool with TRAFFIC_ONE_AUTH_KEY=<key> in env — \`node "${__filename}" login\` then \`node "${__filename}" status\`. The pre-tool gate explicitly allows these scripts/traffic-one-auth.cjs (login|refresh|status|logout) shell invocations even while unauthenticated, so they will not be denied. Do NOT use a cwd-relative path and do NOT search the filesystem for the script — a found copy may be a stale cached plugin version pointing at an outdated endpoint. Do not try to Write or Edit auth.json directly; only the script can produce a valid session token.`,
     'If a stored session expires and TRAFFIC_ONE_AUTH_KEY is still available, the auth client will try `refresh` before requiring a new key.',
     'Do not ask the user to run bash or shell commands for Traffic One authentication.',
     'If the user chooses Continue without Traffic One, remember that choice for the current project while it remains active and continue without Traffic One features.',
     `Endpoint: ${endpoint}`,
+    `Script: ${__filename}`,
     `Auth state: ${authStatePath(env)}`,
   ].join('\n');
 }
