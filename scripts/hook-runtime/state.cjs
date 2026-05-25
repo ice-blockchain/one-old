@@ -145,6 +145,9 @@ const TEAM_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
 
 const PERFORMANCE_LEVEL_IDS = new Set(['low', 'balanced', 'high']);
 const PERFORMANCE_SOURCE_IDS = new Set(['prompted', 'explicit']);
+
+// OpenCode "token economy" opt-in. Same source vocabulary as team/performance.
+const OPEN_CODE_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
 const TEAM_MODE_ALIASES = new Map([
   ['enabled', 'subagents'],
   ['true', 'subagents'],
@@ -206,6 +209,12 @@ function canonicalTeamSource(source) {
   const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
   if (TEAM_SOURCE_IDS.has(normalized)) return normalized;
   return TEAM_SOURCE_ALIASES.get(normalized) || source;
+}
+
+function canonicalOpenCodeSource(source) {
+  if (typeof source !== 'string') return 'prompted';
+  const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  return OPEN_CODE_SOURCE_IDS.has(normalized) ? normalized : 'prompted';
 }
 
 // Returns a canonicalised `{ role: tier }` map, or null when the input has no
@@ -445,6 +454,19 @@ function hasValidPerformanceState(performance) {
     && typeof performance === 'object'
     && PERFORMANCE_LEVEL_IDS.has(performance.level)
     && PERFORMANCE_SOURCE_IDS.has(performance.source),
+  );
+}
+
+// The OpenCode opt-in is "resolved" once the user has answered either way:
+// a strict-boolean `enabled` plus a known `source`. "Not now" resolves it with
+// enabled:false, so onboarding can advance without re-asking.
+function hasResolvedOpenCodeState(openCode) {
+  return Boolean(
+    openCode
+    && typeof openCode === 'object'
+    && !Array.isArray(openCode)
+    && typeof openCode.enabled === 'boolean'
+    && OPEN_CODE_SOURCE_IDS.has(openCode.source),
   );
 }
 
@@ -750,6 +772,27 @@ function normalizeState(state, defaultMode) {
       || state.performance.source !== normalizedPerformance.source
     ) {
       state.performance = normalizedPerformance;
+      changed = true;
+    }
+  }
+  // OpenCode opt-in: coerce `enabled` to a strict boolean (the spawn/routing
+  // logic added in a later task relies on `=== true`), canonicalize `source`,
+  // and stamp `decidedAt`. Only touched when the model has written the field.
+  if (state.openCode && typeof state.openCode === 'object' && !Array.isArray(state.openCode)) {
+    const normalizedOpenCode = {
+      ...state.openCode,
+      enabled: state.openCode.enabled === true,
+      source: canonicalOpenCodeSource(state.openCode.source),
+    };
+    if (typeof normalizedOpenCode.decidedAt !== 'string' || !normalizedOpenCode.decidedAt.trim()) {
+      normalizedOpenCode.decidedAt = nowIso();
+    }
+    if (
+      state.openCode.enabled !== normalizedOpenCode.enabled
+      || state.openCode.source !== normalizedOpenCode.source
+      || state.openCode.decidedAt !== normalizedOpenCode.decidedAt
+    ) {
+      state.openCode = normalizedOpenCode;
       changed = true;
     }
   }
@@ -1226,8 +1269,11 @@ module.exports = {
   TEAM_SOURCE_IDS,
   PERFORMANCE_LEVEL_IDS,
   PERFORMANCE_SOURCE_IDS,
+  OPEN_CODE_SOURCE_IDS,
   canonicalPerformanceLevel,
+  canonicalOpenCodeSource,
   hasValidPerformanceState,
+  hasResolvedOpenCodeState,
   requireAddon,
   KNOWN_ADDONS,
   getPluginVersion,  // exported for testing + diagnostic

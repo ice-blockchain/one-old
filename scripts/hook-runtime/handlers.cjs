@@ -33,6 +33,7 @@ const {
   hasValidTeamState,
   hasValidProjectContext,
   hasValidPerformanceState,
+  hasResolvedOpenCodeState,
   isTeamApproved,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
@@ -56,6 +57,8 @@ const {
   modelForRoleHost,
   teamModeForLevel,
 } = require('./agents-performance-prompt.cjs');
+
+const { openCodeChatFallback, openCodeOptInDirective } = require('./opencode-prompt.cjs');
 
 const { STACKS, stackSpecForState, roleScopedRules } = require('./stacks.cjs');
 
@@ -97,6 +100,15 @@ const {
   isTrafficOneDoctorCommand,
   readAuthState: readTrafficOneAuthState,
 } = require('../traffic-one-auth.cjs');
+
+// Absolute path to THIS plugin version's auth script. Auth instructions must
+// point the agent here (not a cwd-relative `scripts/...` path, which doesn't
+// exist in a user's project and forces a filesystem search that can land on a
+// stale cached plugin version with an out-of-date endpoint).
+const AUTH_SCRIPT_PATH = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
+function authRunHint(command) {
+  return `node "${AUTH_SCRIPT_PATH}" ${command}`;
+}
 
 const {
   onboardingDirectiveNewProject,
@@ -215,7 +227,7 @@ function authRequiredHookResult(hookEventName, options = {}) {
     '- Authenticate Traffic One (Recommended)',
     '- Continue without Traffic One',
     '',
-    'If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then run `traffic-one-auth.cjs login` internally with `TRAFFIC_ONE_AUTH_KEY` and verify `traffic-one-auth.cjs status` yourself. Use your own Bash tool — the pre-tool auth gate explicitly bypasses shell invocations of `scripts/traffic-one-auth.cjs (login|status|logout)`, so they will run even while unauthenticated. Do not Write or Edit `auth.json` directly (Write/Edit are blocked, and only the script can mint a valid session token). Do not ask the user to run bash or shell commands.',
+    `If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then authenticate internally with \`TRAFFIC_ONE_AUTH_KEY\` by running the active plugin's auth script at its ABSOLUTE path — \`${authRunHint('login')}\` then \`${authRunHint('status')}\`. Use your own Bash tool — the pre-tool auth gate explicitly bypasses shell invocations of \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\`, so they run even while unauthenticated. Do NOT use a cwd-relative \`scripts/traffic-one-auth.cjs\` path and do NOT search for the script (a found copy may be a stale cached plugin version with an outdated endpoint). Do not Write or Edit \`auth.json\` directly. Do not ask the user to run bash or shell commands.`,
     'If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.',
     '',
     'Do not answer pending Traffic One onboarding choices, inspect, scaffold, or build through Traffic One until the user makes this auth choice.',
@@ -529,7 +541,7 @@ function authChoiceRequiredDenyReason() {
     'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
     'Choices: Authenticate Traffic One (Recommended); Continue without Traffic One.',
     '',
-    'If Authenticate Traffic One is chosen, ask for the API key, then invoke `scripts/traffic-one-auth.cjs login` via your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env (the pre-tool gate bypasses `scripts/traffic-one-auth.cjs (login|status|logout)` while unauthenticated). Do not Write/Edit `auth.json` directly, and do not ask the user to run bash or shell commands.',
+    `If Authenticate Traffic One is chosen, ask for the API key, then invoke the active plugin's auth script at its ABSOLUTE path via your own Bash tool with \`TRAFFIC_ONE_AUTH_KEY=<key>\` in env — \`${authRunHint('login')}\` then \`${authRunHint('status')}\` (the pre-tool gate bypasses \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\` while unauthenticated). Do NOT use a cwd-relative path or search for the script — a found copy may be a stale cached version. Do not Write/Edit \`auth.json\` directly, and do not ask the user to run bash or shell commands.`,
     'If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.',
     '',
     'Do not inspect, scaffold, install, edit, or build before the user answers this auth choice.',
@@ -552,7 +564,7 @@ function sessionExpiredReauthContext() {
     'This is a session refresh, not first-time setup — the user already authenticated, so only a fresh API key is needed. Do not offer "Continue without Traffic One" here.',
     'Ask the user for their Traffic One API key using a secure host input/modal if available.',
     'After the user provides the key, re-authenticate internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
-    'Internally means: invoke `scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows these `scripts/traffic-one-auth.cjs (login|refresh|status|logout)` shell invocations while unauthenticated, so the call will go through. Do not Write or Edit `auth.json` directly.',
+    `Internally means: invoke the active plugin's auth script at its ABSOLUTE path through your own Bash tool with \`TRAFFIC_ONE_AUTH_KEY=<key>\` in env — \`${authRunHint('login')}\` then \`${authRunHint('status')}\`. The pre-tool gate explicitly allows these \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\` shell invocations while unauthenticated, so the call will go through. Do NOT use a cwd-relative \`scripts/...\` path and do NOT search for the script — a found copy may be a stale cached plugin version with an outdated endpoint. Do not Write or Edit \`auth.json\` directly.`,
     'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
     'Tip: export TRAFFIC_ONE_AUTH_KEY in the environment so the session refreshes automatically without prompting.',
   ].join('\n');
@@ -590,7 +602,7 @@ function authApiKeyPromptHookResult(options = {}) {
     'The user chose to authenticate Traffic One. Do not continue implementation yet.',
     'Ask the user for the Traffic One API key using a secure host input/modal if available.',
     'After the user enters the key, run authentication internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
-    'Internally means: invoke `scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows these `scripts/traffic-one-auth.cjs (login|status|logout)` shell invocations while unauthenticated, so the call will go through. Do not Write or Edit `auth.json` directly — that path is blocked, and only the script can mint a valid session token.',
+    `Internally means: invoke the active plugin's auth script at its ABSOLUTE path through your own Bash tool with \`TRAFFIC_ONE_AUTH_KEY=<key>\` in env — \`${authRunHint('login')}\` then \`${authRunHint('status')}\`. The pre-tool gate explicitly allows these \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\` shell invocations while unauthenticated, so the call will go through. Do NOT use a cwd-relative \`scripts/...\` path and do NOT search for the script — a found copy may be a stale cached plugin version with an outdated endpoint. Do not Write or Edit \`auth.json\` directly — that path is blocked, and only the script can mint a valid session token.`,
     'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
     authChoicePersistenceDiagnostic(options.authChoiceWrite).trim(),
   ].join('\n');
@@ -606,7 +618,7 @@ function authApiKeyPromptHookResult(options = {}) {
 }
 
 function runInternalAuthLogin(apiKey) {
-  const authScript = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
+  const authScript = AUTH_SCRIPT_PATH;
   const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_LOGIN_TIMEOUT_MS || '10000', 10);
   const env = { ...process.env, TRAFFIC_ONE_AUTH_KEY: apiKey };
   const options = {
@@ -668,7 +680,7 @@ function authLoginFromPromptHookResult(apiKey) {
 }
 
 function authGateForHook({ forceRemote = false } = {}) {
-  const authScript = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
+  const authScript = AUTH_SCRIPT_PATH;
   const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_REMOTE_CHECK_TIMEOUT_MS || '5000', 10);
   const runStatus = (statusArgs) => spawnSync(process.execPath, [authScript, ...statusArgs], {
     cwd: process.cwd(),
@@ -1561,6 +1573,7 @@ function isNewProjectOnboardingIncomplete(state) {
   if (!state || typeof state !== 'object') return false;
   if (state.mode !== 'new-project') return false;
   const hasValidStack = typeof state.stack === 'string' && isKnownStack(state.stack);
+  const hasOpenCode = hasResolvedOpenCodeState(state.openCode);
   const hasGraphProvider = state.codeGraphProvider === 'gitnexus' || state.codeGraphProvider === 'graphify';
   const hasFrontend = typeof state.frontend === 'string' && FRONTEND_IDS.has(state.frontend);
   const hasBackend = typeof state.backend === 'string' && BACKEND_IDS.has(state.backend);
@@ -1575,6 +1588,7 @@ function isNewProjectOnboardingIncomplete(state) {
       || isTeamApproved(state.team)
     );
   return !hasValidStack
+    || !hasOpenCode
     || !hasFrontend
     || !hasBackend
     || !hasProjectContext
@@ -1845,6 +1859,19 @@ function performancePromptRequest(fallbackText) {
   });
 }
 
+function openCodePromptRequest(fallbackText) {
+  return singleSelectPromptRequest({
+    id: 'traffic-one.onboarding.open-code',
+    title: 'OpenCode',
+    question: 'Save tokens by delegating coding tasks to OpenCode (a free local agent)?',
+    options: [
+      { id: 'enable', label: 'Enable OpenCode delegation' },
+      { id: 'not_now', label: 'Not now' },
+    ],
+    fallbackText,
+  });
+}
+
 function teamConfirmationPromptRequest(state, fallbackText) {
   const level = state && state.performance && state.performance.level
     ? state.performance.level
@@ -1902,6 +1929,7 @@ function codeGraphPromptRequest(fallbackText) {
 
 function nextOnboardingStep(state) {
   if (!state || typeof state !== 'object' || state.mode !== 'new-project') return null;
+  if (!hasResolvedOpenCodeState(state.openCode)) return 'open-code';
   if (!hasValidPerformanceState(state.performance)) return 'performance';
   if (needsTeamConfirmation(state)) return 'team-confirmation';
   if (!hasValidTeamState(state.team)) return 'team';
@@ -1913,6 +1941,17 @@ function nextOnboardingStep(state) {
 
 function nextOnboardingStepPromptAndRequest(state, source = 'gate') {
   const step = nextOnboardingStep(state);
+  if (step === 'open-code') {
+    const fallbackText = [
+      'Next unresolved Traffic One onboarding step: OpenCode delegation opt-in.',
+      '',
+      openCodeChatFallback(),
+    ].join('\n');
+    return {
+      fallbackText,
+      promptRequest: openCodePromptRequest(fallbackText),
+    };
+  }
   if (step === 'performance') {
     const fallbackText = [
       'Next unresolved Traffic One onboarding step: Agent mode.',
@@ -2523,6 +2562,27 @@ function runUserPromptSubmit(rawInput = '') {
   const materialized = materializeProjectIfNeeded(process.cwd(), 'generic user-prompt convergence');
   if (materialized && materialized.stdout) {
     return materialized;
+  }
+
+  // One-time OpenCode delegation opt-in. New projects ask it inside the
+  // onboarding chain (before the Performance popup); every other session —
+  // existing/auto-detected codebases, and projects onboarded before this
+  // feature existed — gets it here, surfaced until the choice is recorded in
+  // `.traffic-one.json` and then never again. Non-blocking: the user's current
+  // request still proceeds.
+  if (!hasResolvedOpenCodeState(normalizedState.openCode)) {
+    const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${openCodeOptInDirective()}`;
+    return {
+      stdout: JSON.stringify({
+        systemMessage: `traffic-one [${stack}] opencode opt-in`,
+        promptRequest: openCodePromptRequest(additionalContext),
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext,
+        },
+      }),
+      exitCode: 0,
+    };
   }
 
   return {
