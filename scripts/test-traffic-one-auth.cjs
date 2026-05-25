@@ -164,6 +164,14 @@ test('freshness: each failure mode reports a distinct reason', () => {
   assert.equal(authStateFreshness(stateAt(ep, 'tok_x', '2000-01-01T00:00:00Z'), env).reason, FRESHNESS_REASON.EXPIRED);
 });
 
+// ── 1b) auth instructions reference the active script by ABSOLUTE path ───────
+test('authRequiredMessage embeds the absolute script path and forbids searching', () => {
+  const expectedPath = path.join(ROOT, 'scripts', 'traffic-one-auth.cjs');
+  const msg = auth.authRequiredMessage();
+  assert.ok(msg.includes(expectedPath), 'should embed the absolute script path');
+  assert.match(msg, /do not search/i);
+});
+
 // ── 2) script API: login / refresh / status / logout ────────────────────────
 test('simple auth: login with a valid key writes a fresh tok_ session', async () => {
   const sf = tmpStatePath('login-ok');
@@ -174,10 +182,33 @@ test('simple auth: login with a valid key writes a fresh tok_ session', async ()
   assert.ok(state.sessionToken.startsWith('tok_'));
   assert.equal(auth.isAuthStateFresh(state, env), true);
 });
-test('login with an invalid key is rejected and writes no session', async () => {
+test('login with an invalid key returns a structured error (no session written)', async () => {
   const sf = tmpStatePath('login-bad');
   const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: 'tk_wrong' });
-  await assert.rejects(() => auth.login([], env));
+  const result = await auth.login([], env);
+  assert.equal(result.ok, false);
+  assert.equal(result.authenticated, false);
+  assert.equal(result.reason, 'invalid-api-key');
+  assert.equal(result.endpoint, SRV.endpoint);
+  assert.equal(readState(sf), null);
+});
+test('login with no key returns missing-api-key (never throws)', async () => {
+  const sf = tmpStatePath('login-nokey');
+  const env = envFor(sf, SRV.endpoint);
+  const result = await auth.login([], env);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'missing-api-key');
+  assert.equal(readState(sf), null);
+});
+test('login against an unreachable endpoint reports the endpoint + reason (never silent)', async () => {
+  const sf = tmpStatePath('login-unreachable');
+  const dead = 'http://127.0.0.1:59999/mcp';
+  const env = envFor(sf, dead, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
+  const result = await auth.login([], env);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'auth-endpoint-unreachable');
+  assert.equal(result.endpoint, dead, 'failure must name the endpoint it tried');
+  assert.ok(result.error, 'failure must include the underlying error');
   assert.equal(readState(sf), null);
 });
 test('status (fresh, local-only) reports authenticated', async () => {
@@ -270,6 +301,14 @@ test('gate: "continue without traffic one" unblocks normal tools', async () => {
   assert.match(choose.stdout, /continue without/i);
   const gate = await runHook('check-onboarding-gate', { cwd, env, input: { tool_name: 'Read', tool_input: { file_path: 'index.js' } } });
   assert.equal(gate.stdout.trim(), '', 'tools should be allowed after continue-without');
+});
+test('gate: the auth-required prompt embeds the absolute script path (no stale-copy hunt)', async () => {
+  const sf = tmpStatePath('abs-path');
+  const cwd = makeProject('abs-path');
+  const env = envFor(sf, SRV.endpoint); // unauthenticated, no prior choice
+  const gate = await runHook('check-onboarding-gate', { cwd, env, input: { tool_name: 'Read', tool_input: { file_path: 'index.js' } } });
+  const expectedPath = path.join(ROOT, 'scripts', 'traffic-one-auth.cjs');
+  assert.ok(gate.stdout.includes(expectedPath), 'gate deny reason should embed the absolute script path');
 });
 test('gate: simple auth — choose authenticate, paste key, session is created internally', async () => {
   const sf = tmpStatePath('prompt-auth');
