@@ -6,6 +6,9 @@
 
 Preserve all existing structure. New code only.
 
+## OpenCode delegation opt-in (token economy, one-time)
+- If `.traffic-one.json` has no resolved `openCode` field, the UserPromptSubmit hook surfaces a one-time, non-blocking popup asking whether to enable delegating bounded coding tasks to OpenCode (a free local agent) to save paid tokens. Record the answer as `openCode: { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }` and do not re-ask. Delegation itself ships in a later task; this only records the preference. Never auto-pick — wait for the user.
+
 ## Active constraints
 - Do NOT rename, move, or restructure existing files
 - Max function length: 50 lines on new code

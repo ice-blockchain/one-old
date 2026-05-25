@@ -13,7 +13,11 @@ const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.
 const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
 process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
-process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+// Default to :8787 (the value CI uses, where nothing listens). Allow an
+// override so the suite can point at a dead port when a real mcp-auth server is
+// running locally on :8787 — otherwise that live server rejects the fake test
+// fixture and cascades auth failures across the whole suite.
+process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT || 'http://127.0.0.1:8787/mcp';
 process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE = '1';
 fs.mkdirSync(path.dirname(AUTH_STATE_PATH), { recursive: true });
 fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
@@ -40,6 +44,17 @@ function test(name, fn) {
 
 function writeJson(filePath, data) {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+}
+
+// Mark the OpenCode token-economy opt-in (the first new-project onboarding step)
+// as already answered, so tests focused on later steps are not intercepted by it.
+function seedOpenCodeResolved(cwd) {
+  const statePath = path.join(cwd, '.traffic-one.json');
+  const state = fs.existsSync(statePath)
+    ? JSON.parse(fs.readFileSync(statePath, 'utf8'))
+    : { mode: 'new-project' };
+  state.openCode = { enabled: false, source: 'prompted', decidedAt: '2026-05-25T00:00:00Z' };
+  writeJson(statePath, state);
 }
 
 function withTempDir(fn) {
@@ -166,6 +181,7 @@ function completeDefaultState(overrides = {}) {
     technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
     realtime: 'none',
     codeGraphProvider: 'gitnexus',
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
     performance: { level: 'high', source: 'prompted' },
     team: { mode: 'subagents', source: 'prompted', approved: true },
     toolchain: initializeToolchainState({}),
@@ -198,6 +214,7 @@ function compactWebdevAcademyState(overrides = {}) {
       answers: { audience: 'students' },
       collectedAt: '2026-05-13T09:59:00Z',
     },
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
     performance: { level: 'high', source: 'prompted' },
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'stack')),
   };
@@ -439,9 +456,14 @@ test('Traffic One entry skills self-disable when auth is missing', () => {
   }
 });
 
-test('first prompt reminder asks agent mode before project details and mobile', () => {
+test('first prompt reminder asks agent mode before project details and mobile (after OpenCode opt-in)', () => {
   withTempDir((cwd) => {
     runHook(cwd, 'session-start');
+
+    // The OpenCode token-economy opt-in is the first onboarding step (its own
+    // coverage lives in scripts/test-onboarding-token-economy.cjs). Resolve it
+    // here so this test can focus on the agent-mode prompt that follows.
+    seedOpenCodeResolved(cwd);
 
     const result = runHook(cwd, 'user-prompt-submit', {
       prompt: 'create a modern learning platform with courses and an admin area to manage courses and users',
@@ -483,9 +505,12 @@ test('first prompt reminder asks agent mode before project details and mobile', 
   });
 });
 
-test('explicit stack or mobile prompt still starts at agent mode', () => {
+test('explicit stack or mobile prompt still reaches agent mode after the OpenCode opt-in', () => {
   withTempDir((cwd) => {
     runHook(cwd, 'session-start');
+
+    // Resolve the first step (OpenCode opt-in) so the next prompt is agent mode.
+    seedOpenCodeResolved(cwd);
 
     const result = runHook(cwd, 'user-prompt-submit', {
       prompt: 'fa-mi un site complet pentru jobs cu Next.js, web only, fara subagenti',
@@ -677,10 +702,10 @@ test('onboarding gate denies tool use when empty cwd resolves mode=new-project',
     assert.match(reason, /Complete Traffic One onboarding in the current thread/);
     assert.match(reason, /next unresolved fallback prompt must be displayed as the next visible assistant message/);
     assert.match(reason, /Your next visible assistant message must ask only this unresolved step/);
-    assert.match(reason, /How do you want to run agents for this build\?/);
-    assert.match(reason, /High \(Recommended\)/);
-    assert.match(reason, /Balanced/);
-    assert.match(reason, /Low/);
+    // OpenCode token-economy opt-in is the first onboarding step.
+    assert.match(reason, /Save tokens by delegating coding tasks to OpenCode/);
+    assert.match(reason, /Enable OpenCode delegation/);
+    assert.match(reason, /Not now/);
     assert.match(reason, /Reply with the option number or label/);
     assert.match(reason, /remaining onboarding prompts are resolved/);
     assert.match(reason, /Do not choose defaults/);
@@ -715,6 +740,15 @@ test('onboarding gate denies partial new-project state across read and search to
 
 test('onboarding gate fallback resumes at the next missing onboarding step', () => {
   const cases = [
+    {
+      name: 'open code',
+      state: completeDefaultState({ openCode: undefined }),
+      expected: [/Next unresolved Traffic One onboarding step: OpenCode delegation opt-in/, /Save tokens by delegating coding tasks to OpenCode/],
+      absent: /Do you want a mobile app too/,
+      promptId: 'traffic-one.onboarding.open-code',
+      promptKind: 'single_select',
+      optionIds: ['enable', 'not_now'],
+    },
     {
       name: 'performance',
       state: completeDefaultState({ performance: undefined }),
@@ -894,6 +928,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
       projectContext: completeDefaultState().projectContext,
       mobile: { enabled: false, framework: 'none', source: 'prompted' },
       codeGraphProvider: 'gitnexus',
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
       performance: { level: 'high', source: 'prompted' },
       team: { mode: 'subagents', source: 'prompted', approved: true },
       onboardingComplete: true,
@@ -1375,6 +1410,7 @@ test('onboarding gate still denies when required team choice is missing', () => 
       technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
       realtime: 'none',
       codeGraphProvider: 'gitnexus',
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
       performance: { level: 'high', source: 'prompted' },
       toolchain: require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs')).initializeToolchainState({}),
       confirmed: true,
