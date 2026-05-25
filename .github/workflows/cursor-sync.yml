@@ -20,3 +20,6 @@ jobs:
 
       - name: Check security runner fixtures
         run: node scripts/test-security-check-runner.cjs
+
+      - name: Check Traffic One auth flows
+        run: node scripts/test-traffic-one-auth.cjs

@@ -128,15 +128,48 @@ function authChoiceStateExists(env = process.env) {
   return authChoiceStatePaths(env).some((filePath) => fs.existsSync(filePath));
 }
 
-function isAuthStateFresh(state, env = process.env, nowMs = Date.now()) {
-  if (!state || typeof state !== 'object') return false;
-  if (state.version !== AUTH_STATE_VERSION) return false;
-  if (typeof state.sessionToken !== 'string' || !state.sessionToken.startsWith('tok_')) return false;
-  if (typeof state.expiresAt !== 'string') return false;
+const FRESHNESS_REASON = {
+  OK: 'ok',
+  MISSING: 'missing-auth-state',
+  VERSION_MISMATCH: 'version-mismatch',
+  MALFORMED_TOKEN: 'malformed-token',
+  MALFORMED_EXPIRY: 'malformed-expiry',
+  ENDPOINT_MISMATCH: 'endpoint-mismatch',
+  EXPIRED: 'expired',
+};
+
+// Returns the precise reason a stored session is (not) usable. Endpoint mismatch
+// is reported ahead of expiry because it signals a configuration problem (the
+// token belongs to a different server) rather than the ordinary, recoverable
+// "session timed out" case that a refresh with the same key can fix.
+function authStateFreshness(state, env = process.env, nowMs = Date.now()) {
+  if (!state || typeof state !== 'object') {
+    return { fresh: false, reason: FRESHNESS_REASON.MISSING };
+  }
+  if (state.version !== AUTH_STATE_VERSION) {
+    return { fresh: false, reason: FRESHNESS_REASON.VERSION_MISMATCH };
+  }
+  if (typeof state.sessionToken !== 'string' || !state.sessionToken.startsWith('tok_')) {
+    return { fresh: false, reason: FRESHNESS_REASON.MALFORMED_TOKEN };
+  }
+  if (typeof state.expiresAt !== 'string') {
+    return { fresh: false, reason: FRESHNESS_REASON.MALFORMED_EXPIRY };
+  }
   const expires = Date.parse(state.expiresAt);
-  if (!Number.isFinite(expires) || expires - EXPIRY_SKEW_MS <= nowMs) return false;
-  const endpoint = endpointFromEnv(env);
-  return state.endpoint === endpoint;
+  if (!Number.isFinite(expires)) {
+    return { fresh: false, reason: FRESHNESS_REASON.MALFORMED_EXPIRY };
+  }
+  if (state.endpoint !== endpointFromEnv(env)) {
+    return { fresh: false, reason: FRESHNESS_REASON.ENDPOINT_MISMATCH };
+  }
+  if (expires - EXPIRY_SKEW_MS <= nowMs) {
+    return { fresh: false, reason: FRESHNESS_REASON.EXPIRED };
+  }
+  return { fresh: true, reason: FRESHNESS_REASON.OK };
+}
+
+function isAuthStateFresh(state, env = process.env, nowMs = Date.now()) {
+  return authStateFreshness(state, env, nowMs).fresh;
 }
 
 function isAuthenticatedLocal(env = process.env, nowMs = Date.now()) {
@@ -362,9 +395,9 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
 
 async function status(args = process.argv.slice(3), env = process.env) {
   const state = readAuthState(env);
-  const local = isAuthStateFresh(state, env);
-  if (!local) {
-    const localReason = state ? 'expired-or-endpoint-mismatch' : 'missing-auth-state';
+  const freshness = authStateFreshness(state, env);
+  if (!freshness.fresh) {
+    const localReason = freshness.reason;
     if (state) {
       return refresh(args, env, { priorReason: localReason });
     }
@@ -531,8 +564,10 @@ if (require.main === module) {
 module.exports = {
   AUTH_STATE_VERSION,
   DEFAULT_ENDPOINT,
+  FRESHNESS_REASON,
   REMOTE_AUTH_CHECK_INTERVAL_MS,
   authEndpointUrl,
+  authStateFreshness,
   authChoiceStatePath,
   authChoiceStatePaths,
   authRemoteCheckDue,

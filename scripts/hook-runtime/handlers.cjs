@@ -87,8 +87,10 @@ const {
   maybeStartOneMcpReport,
 } = require('../one-mcp-report.cjs');
 const {
+  FRESHNESS_REASON,
   authRemoteCheckDue,
   authRequiredMessage,
+  authStateFreshness,
   authStatePath,
   isAuthenticatedLocal,
   isTrafficOneAuthCommand,
@@ -534,6 +536,46 @@ function authChoiceRequiredDenyReason() {
   ].join('\n');
 }
 
+// True only for a previously-authenticated session that timed out: the stored
+// state is structurally valid and points at the right endpoint, just past its
+// TTL. That is recoverable with the same key, so we ask for only the key
+// instead of the cold "Authenticate / Continue without" first-run modal. A
+// missing state, endpoint mismatch, or malformed token is NOT treated as expiry.
+function isSessionExpiryReauth(authGate, env = process.env) {
+  if (authGate && authGate.priorReason === FRESHNESS_REASON.EXPIRED) return true;
+  return authStateFreshness(readTrafficOneAuthState(env), env).reason === FRESHNESS_REASON.EXPIRED;
+}
+
+function sessionExpiredReauthContext() {
+  return [
+    'Your Traffic One session has expired. Do not continue implementation yet.',
+    'This is a session refresh, not first-time setup — the user already authenticated, so only a fresh API key is needed. Do not offer "Continue without Traffic One" here.',
+    'Ask the user for their Traffic One API key using a secure host input/modal if available.',
+    'After the user provides the key, re-authenticate internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
+    'Internally means: invoke `scripts/traffic-one-auth.cjs login` (then `status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows these `scripts/traffic-one-auth.cjs (login|refresh|status|logout)` shell invocations while unauthenticated, so the call will go through. Do not Write or Edit `auth.json` directly.',
+    'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
+    'Tip: export TRAFFIC_ONE_AUTH_KEY in the environment so the session refreshes automatically without prompting.',
+  ].join('\n');
+}
+
+function sessionExpiredReauthPreToolResult() {
+  const reason = sessionExpiredReauthContext();
+  return denyPreToolUse(reason, sessionExpiredPromptRequest(reason));
+}
+
+function sessionExpiredReauthPromptResult() {
+  const additionalContext = sessionExpiredReauthContext();
+  const payload = {
+    systemMessage: 'traffic-one session expired — re-authentication key required',
+    promptRequest: sessionExpiredPromptRequest(additionalContext),
+    hookSpecificOutput: {
+      hookEventName: 'UserPromptSubmit',
+      additionalContext,
+    },
+  };
+  return { stdout: JSON.stringify(payload), exitCode: 0 };
+}
+
 function parseAuthStatusOutput(stdout) {
   try {
     const parsed = JSON.parse(String(stdout || '').trim());
@@ -649,6 +691,7 @@ function authGateForHook({ forceRemote = false } = {}) {
     return {
       authenticated: false,
       reason: (refreshParsed && refreshParsed.reason) || (refreshResult.error && refreshResult.error.message) || 'local-auth-required',
+      priorReason: (refreshParsed && refreshParsed.priorReason) || null,
     };
   }
 
@@ -660,7 +703,11 @@ function authGateForHook({ forceRemote = false } = {}) {
   const result = runStatus(['status', '--remote']);
   const parsed = parseAuthStatusOutput(result.stdout);
   if (parsed && parsed.authenticated === false) {
-    return { authenticated: false, reason: parsed.reason || 'remote-auth-required' };
+    return {
+      authenticated: false,
+      reason: parsed.reason || 'remote-auth-required',
+      priorReason: parsed.priorReason || null,
+    };
   }
   if (!parsed || result.status !== 0 || parsed.remoteChecked === false) {
     // Test-only escape hatch for deterministic stack tests without a live auth server.
@@ -696,6 +743,9 @@ function authPreToolGate(toolName, toolInput = {}) {
   }
   if (authChoiceAllowsContinue()) {
     return { stdout: '', exitCode: 0 };
+  }
+  if (isSessionExpiryReauth(authGate)) {
+    return sessionExpiredReauthPreToolResult();
   }
   const reason = authChoiceRequiredDenyReason();
   return denyPreToolUse(reason, authChoicePromptRequest(reason));
@@ -1772,6 +1822,15 @@ function authApiKeyPromptRequest(fallbackText) {
   });
 }
 
+function sessionExpiredPromptRequest(fallbackText) {
+  return secureTextPromptRequest({
+    id: 'traffic-one.auth.session-expired',
+    title: 'Traffic One Session Expired',
+    question: 'Your Traffic One session expired. Enter your Traffic One API key to re-authenticate.',
+    fallbackText,
+  });
+}
+
 function performancePromptRequest(fallbackText) {
   return singleSelectPromptRequest({
     id: 'traffic-one.onboarding.performance',
@@ -2357,6 +2416,11 @@ function runUserPromptSubmit(rawInput = '') {
       return authChoiceHookResult(authChoice);
     }
     if (authChoiceAllowsContinue(cwd)) return { stdout: '', exitCode: 0 };
+    if (isSessionExpiryReauth(authGate)) {
+      const apiKey = parseTrafficOneApiKey(rawInput);
+      if (apiKey) return authLoginFromPromptHookResult(apiKey);
+      return sessionExpiredReauthPromptResult();
+    }
     if (choiceStatus === 'authenticate') {
       const apiKey = parseTrafficOneApiKey(rawInput);
       if (apiKey) return authLoginFromPromptHookResult(apiKey);
