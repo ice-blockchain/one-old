@@ -262,6 +262,12 @@ GENERAL RULES:
     or \`none\` when no mobile decision has been collected. Never write
     descriptive variants such as \`user-onboarding\`.
   - Write \`.traffic-one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
+    Use the RELATIVE path \`.traffic-one.json\` so it lands in the project root
+    (your current working directory). Do NOT pass an absolute path and do NOT try
+    to detect/confirm the directory first — the onboarding gate reads
+    \`<cwd>/.traffic-one.json\`, so a relative write always lands where the gate
+    looks. (If you want to confirm the directory, read-only \`pwd\`/\`ls\`/\`Read\`
+    are allowed before onboarding completes.)
     All required top-level fields are REQUIRED — do NOT drop any. Subsequent
     hooks rely on \`onboardingComplete: true\` and \`mode\` being present:
 
@@ -524,9 +530,11 @@ pending.
 
 ${codexDefaultModeFallbackDirective()}
 
-Write \`.traffic-one.json\` (use the Write tool) with the full required schema
-before continuing with feature work. The PostToolUse hook will then auto-load
-the matching rule bundle into THIS session — no restart needed.
+Write \`.traffic-one.json\` (use the Write tool, RELATIVE path
+\`.traffic-one.json\` so it lands in the current working directory — never an
+absolute guess) with the full required schema before continuing with feature
+work. The PostToolUse hook will then auto-load the matching rule bundle into
+THIS session — no restart needed.
 
   {
     "version": "<current-plugin-version>",
