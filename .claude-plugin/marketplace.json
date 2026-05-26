@@ -7,7 +7,7 @@
     {
       "name": "traffic-one",
       "source": "./",
-      "version": "2.9.64",
+      "version": "2.9.65",
       "description": "React + Ionic/Capacitor + explicit React Native TypeScript plugin gated by mcp-auth authentication, with a senior-engineer subagent team (architect / frontend / backend / reviewer / tester / shipper) and auto-orchestration, plus a token-economy layer (per-phase handoff digests + required codebase-graph provider choice at onboarding — GitNexus or graphify — with auto-install + auto-run) that cuts redundant codebase reads across the team by an estimated 50–70%. Modern clean UI design gates, Turborepo, RTK Query, Expo Router, Tailwind + shadcn/ui (web/Ionic), NativeWind + React Native Reusables (RN), Jest, Playwright/Maestro, Lighthouse mobile QA runner, app launch checklist guidance, post-deploy observability guidance, AI fix suggestions with approval gates, WebSocket patterns, accessibility, Gitflow. Auth gate + plan gate + deploy gate enforced via hooks where supported. Compatible with Claude Code, Codex CLI, and Cursor."
     }
   ]
