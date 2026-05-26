@@ -3254,6 +3254,10 @@ test('post-build-graphify hints on first new-project build without report', () =
       mode: 'new-project',
       onboardingComplete: true,
       codeGraphProvider: 'graphify',
+      // Force the manual-hint path without attempting pip install in CI.
+      // graphifyy (the PyPI package) may be installable in some environments,
+      // which causes bootstrap to succeed and skips the hint we're testing.
+      graphifyAutoRun: false,
     });
 
     const result = runHook(cwd, 'post-build-graphify', {
