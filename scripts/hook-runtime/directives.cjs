@@ -18,6 +18,7 @@ const {
 } = require('./onboarding-prompts.cjs');
 const { performancePopupBlock, performanceChatFallback } = require('./agents-performance-prompt.cjs');
 const { teamConfirmationPopupBlock } = require('./agents-team-confirmation-prompt.cjs');
+const { openCodePopupBlock } = require('./opencode-prompt.cjs');
 
 // ── New-project onboarding directive ─────────────────────────────────────────
 // End-to-end default: React monorepo + Supabase backend + our deploy infra.
@@ -67,6 +68,9 @@ ONBOARDING POPUP RULE (all hosts, blocking):
   for the user's explicit reply.
 
   Required popup order for complex new projects:
+    First (before popup 1): OpenCode delegation opt-in (token economy) — asked
+       before Performance so a later performance update can split work across
+       Traffic One subagents and free OpenCode agents. Persist \`openCode\`.
     1. Agent Mode / Performance (High, Balanced, Low).
     2. Team Confirmation (MANDATORY for Balanced / High; lists the configured
        subagent line-up so the user can approve, re-pick, or customise
@@ -79,6 +83,8 @@ ONBOARDING POPUP RULE (all hosts, blocking):
     6. Code Graph (always required before \`.traffic-one.json\` is complete).
 
 ${codexDefaultModeFallbackDirective()}
+
+${openCodePopupBlock()}
 
 ${performancePopupBlock()}
 
@@ -242,6 +248,10 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
 GENERAL RULES:
   - One pitch per layer. If they say no twice, accept it and move on.
   - Don't be pushy; sound like a senior dev recommending what works.
+  - The OpenCode delegation opt-in (token economy) is asked FIRST, before the
+    Performance popup. Persist \`openCode\` with \`enabled\` (true|false),
+    \`source: "prompted"\`, and \`decidedAt\`. Either answer resolves it — never
+    auto-pick on the user's behalf.
   - The codeGraphProvider question above is REQUIRED — no skip, no default.
   - \`projectContext\` is REQUIRED and must be collected after Traffic One setup
     success and before the mobile prompt.
@@ -272,6 +282,7 @@ GENERAL RULES:
       "technologies": { "frontend": [], "backend": [], "mobile": [] },
       "realtime": "<heavy|light|none>",
       "codeGraphProvider": "<gitnexus|graphify>",
+      "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },
       "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       // For balanced/high: \`team.approved: true\` is REQUIRED — it is what
       // unlocks the PreToolUse spawn gate. Set it ONLY after the user has
@@ -309,6 +320,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },
       "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
@@ -320,6 +332,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": [], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "gitnexus",
+      "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },
       "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
@@ -331,6 +344,7 @@ GENERAL RULES:
       "technologies": { "frontend": ["react", "vite"], "backend": ["other"], "mobile": [] },
       "realtime": "none", "toolchain": "<initialized>",
       "codeGraphProvider": "graphify",
+      "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },
       "performance": { "level": "<low|balanced|high>", "source": "prompted" },
       "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },
       "confirmed": true, "onboardingComplete": true, "confirmedAt": "<ISO>" }
@@ -531,6 +545,7 @@ the matching rule bundle into THIS session — no restart needed.
     "technologies": { "frontend": [], "backend": [], "mobile": [] },
     "realtime": "<heavy|light|none>",
     "codeGraphProvider": "<gitnexus|graphify>",
+    "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },
     "performance": { "level": "<low|balanced|high>", "source": "prompted" },
     "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },
     "toolchain": {
@@ -548,6 +563,7 @@ Stack ids: minimal · default · custom-frontend · custom-backend · custom-sta
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
 Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
+OpenCode opt-in: \`openCode.enabled\` true|false (REQUIRED — ask the OpenCode token-economy popup BEFORE Performance; persist source "prompted" + decidedAt).
 Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup).
 Team mode: derived from performance — balanced/high → subagents, low → main-agent. Persist both fields. Omit \`team.approved\` for low.
 Team confirmation: for balanced/high, ALSO ask the Team popup (popup 2) so the user approves the role→model line-up. On Approve, persist \`team.approved: true\` (REQUIRED — the PreToolUse spawn gate denies every Task/spawn_agent call until this flag is present). Persist per-role overrides as \`team.overrides\` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
@@ -559,8 +575,9 @@ backend=supabase. If the user explicitly chose a non-default frontend or
 backend, record the matching custom stack and concrete technology fields.
 
 Use the Codex \`request_user_input\` popup for the next unresolved onboarding
-choice in this order: Agent Mode/Performance, Team Confirmation for
-balanced/high subagents, project context, Mobile App, then Code Graph. Ask the
+choice in this order: OpenCode delegation opt-in (token economy), Agent
+Mode/Performance, Team Confirmation for balanced/high subagents,
+project context, Mobile App, then Code Graph. Ask the
 mobile prompt even when the user's prompt already named web, mobile, Next.js,
 Ionic, React Native, frontend-only, or any other implementation preference. Do
 not print numbered option
@@ -680,6 +697,7 @@ function postWriteIncompleteWarning({
       '    "technologies": { "frontend": [], "backend": [], "mobile": [] },',
       '    "realtime": "<heavy|light|none>",',
       '    "codeGraphProvider": "<gitnexus|graphify>",',
+      '    "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },',
       '    "performance": { "level": "<low|balanced|high>", "source": "prompted" },',
       '    "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },',
       '    "toolchain": { "gitnexus": { "installedVersion": null, "installedAt": null }, "graphify": { "installedVersion": null, "installedAt": null }, "gitleaks": { "installedVersion": null, "installedAt": null }, "trufflehog": { "installedVersion": null, "installedAt": null } },',

@@ -13,7 +13,11 @@ const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.
 const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
 process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
-process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+// Default to :8787 (the value CI uses, where nothing listens). Allow an
+// override so the suite can point at a dead port when a real mcp-auth server is
+// running locally on :8787 — otherwise that live server rejects the fake test
+// fixture and cascades auth failures across the whole suite.
+process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT || 'http://127.0.0.1:8787/mcp';
 process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE = '1';
 fs.mkdirSync(path.dirname(AUTH_STATE_PATH), { recursive: true });
 fs.rmSync(AUTH_CHOICE_STATE_PATH, { force: true });
@@ -40,6 +44,17 @@ function test(name, fn) {
 
 function writeJson(filePath, data) {
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+}
+
+// Mark the OpenCode token-economy opt-in (the first new-project onboarding step)
+// as already answered, so tests focused on later steps are not intercepted by it.
+function seedOpenCodeResolved(cwd) {
+  const statePath = path.join(cwd, '.traffic-one.json');
+  const state = fs.existsSync(statePath)
+    ? JSON.parse(fs.readFileSync(statePath, 'utf8'))
+    : { mode: 'new-project' };
+  state.openCode = { enabled: false, source: 'prompted', decidedAt: '2026-05-25T00:00:00Z' };
+  writeJson(statePath, state);
 }
 
 function withTempDir(fn) {
@@ -147,7 +162,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
   return {
-    version: '2.9.63',
+    version: '2.9.65',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
@@ -166,6 +181,7 @@ function completeDefaultState(overrides = {}) {
     technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
     realtime: 'none',
     codeGraphProvider: 'gitnexus',
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
     performance: { level: 'high', source: 'prompted' },
     team: { mode: 'subagents', source: 'prompted', approved: true },
     toolchain: initializeToolchainState({}),
@@ -198,6 +214,7 @@ function compactWebdevAcademyState(overrides = {}) {
       answers: { audience: 'students' },
       collectedAt: '2026-05-13T09:59:00Z',
     },
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
     performance: { level: 'high', source: 'prompted' },
     ...Object.fromEntries(Object.entries(overrides).filter(([key]) => key !== 'stack')),
   };
@@ -439,9 +456,14 @@ test('Traffic One entry skills self-disable when auth is missing', () => {
   }
 });
 
-test('first prompt reminder asks agent mode before project details and mobile', () => {
+test('first prompt reminder asks agent mode before project details and mobile (after OpenCode opt-in)', () => {
   withTempDir((cwd) => {
     runHook(cwd, 'session-start');
+
+    // The OpenCode token-economy opt-in is the first onboarding step (its own
+    // coverage lives in scripts/test-onboarding-token-economy.cjs). Resolve it
+    // here so this test can focus on the agent-mode prompt that follows.
+    seedOpenCodeResolved(cwd);
 
     const result = runHook(cwd, 'user-prompt-submit', {
       prompt: 'create a modern learning platform with courses and an admin area to manage courses and users',
@@ -483,9 +505,12 @@ test('first prompt reminder asks agent mode before project details and mobile', 
   });
 });
 
-test('explicit stack or mobile prompt still starts at agent mode', () => {
+test('explicit stack or mobile prompt still reaches agent mode after the OpenCode opt-in', () => {
   withTempDir((cwd) => {
     runHook(cwd, 'session-start');
+
+    // Resolve the first step (OpenCode opt-in) so the next prompt is agent mode.
+    seedOpenCodeResolved(cwd);
 
     const result = runHook(cwd, 'user-prompt-submit', {
       prompt: 'fa-mi un site complet pentru jobs cu Next.js, web only, fara subagenti',
@@ -677,10 +702,10 @@ test('onboarding gate denies tool use when empty cwd resolves mode=new-project',
     assert.match(reason, /Complete Traffic One onboarding in the current thread/);
     assert.match(reason, /next unresolved fallback prompt must be displayed as the next visible assistant message/);
     assert.match(reason, /Your next visible assistant message must ask only this unresolved step/);
-    assert.match(reason, /How do you want to run agents for this build\?/);
-    assert.match(reason, /High \(Recommended\)/);
-    assert.match(reason, /Balanced/);
-    assert.match(reason, /Low/);
+    // OpenCode token-economy opt-in is the first onboarding step.
+    assert.match(reason, /Save tokens by delegating coding tasks to OpenCode/);
+    assert.match(reason, /Enable OpenCode delegation/);
+    assert.match(reason, /Not now/);
     assert.match(reason, /Reply with the option number or label/);
     assert.match(reason, /remaining onboarding prompts are resolved/);
     assert.match(reason, /Do not choose defaults/);
@@ -715,6 +740,15 @@ test('onboarding gate denies partial new-project state across read and search to
 
 test('onboarding gate fallback resumes at the next missing onboarding step', () => {
   const cases = [
+    {
+      name: 'open code',
+      state: completeDefaultState({ openCode: undefined }),
+      expected: [/Next unresolved Traffic One onboarding step: OpenCode delegation opt-in/, /Save tokens by delegating coding tasks to OpenCode/],
+      absent: /Do you want a mobile app too/,
+      promptId: 'traffic-one.onboarding.open-code',
+      promptKind: 'single_select',
+      optionIds: ['enable', 'not_now'],
+    },
     {
       name: 'performance',
       state: completeDefaultState({ performance: undefined }),
@@ -894,6 +928,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
       projectContext: completeDefaultState().projectContext,
       mobile: { enabled: false, framework: 'none', source: 'prompted' },
       codeGraphProvider: 'gitnexus',
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
       performance: { level: 'high', source: 'prompted' },
       team: { mode: 'subagents', source: 'prompted', approved: true },
       onboardingComplete: true,
@@ -906,7 +941,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.63');
+    assert.equal(state.version, '2.9.65');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -1365,7 +1400,7 @@ test('onboarding gate still denies compact state when graph choice is missing', 
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.63',
+      version: '2.9.65',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',
@@ -1375,6 +1410,7 @@ test('onboarding gate still denies when required team choice is missing', () => 
       technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
       realtime: 'none',
       codeGraphProvider: 'gitnexus',
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
       performance: { level: 'high', source: 'prompted' },
       toolchain: require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs')).initializeToolchainState({}),
       confirmed: true,
@@ -2167,8 +2203,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.63');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.63');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.65');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.65');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -2399,7 +2435,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.63');
+    assert.equal(state.version, '2.9.65');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -2427,7 +2463,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.63');
+    assert.equal(state.version, '2.9.65');
     assert.equal(state.project, undefined);
     assert.equal(state.mode, 'new-project');
     assert.equal(state.stack, 'default');
@@ -2444,7 +2480,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     assert.equal(state.onboardingComplete, true);
     assert.ok(state.confirmedAt);
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
-    assert.equal(state.materializedVersion, '2.9.63');
+    assert.equal(state.materializedVersion, '2.9.65');
     assert.ok(state.materializedAt);
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
@@ -2620,7 +2656,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.63',
+      materializedVersion: '2.9.65',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -2642,7 +2678,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.63',
+      materializedVersion: '2.9.65',
       currentRunId: '2026-05-18T12-04-52Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
@@ -2879,7 +2915,7 @@ test('materialization gate blocks forged stamp when local assets are missing', (
       ...completeDefaultState({
         materializedStack: 'default|react-vite|supabase|none',
         materializedAt: '2026-05-13T10:00:00Z',
-        materializedVersion: '2.9.63',
+        materializedVersion: '2.9.65',
       }),
     });
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
@@ -3218,6 +3254,10 @@ test('post-build-graphify hints on first new-project build without report', () =
       mode: 'new-project',
       onboardingComplete: true,
       codeGraphProvider: 'graphify',
+      // Force the manual-hint path without attempting pip install in CI.
+      // graphifyy (the PyPI package) may be installable in some environments,
+      // which causes bootstrap to succeed and skips the hint we're testing.
+      graphifyAutoRun: false,
     });
 
     const result = runHook(cwd, 'post-build-graphify', {
@@ -4607,7 +4647,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.63) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.65) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -4741,7 +4781,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.63', () => {
+test('manifests bumped to 2.9.65', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -4749,11 +4789,11 @@ test('manifests bumped to 2.9.63', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.63"/, `${rel} must be bumped to 2.9.63`);
+    assert.match(text, /"version":\s*"2\.9\.65"/, `${rel} must be bumped to 2.9.65`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.63) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.65) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -4833,7 +4873,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.63',
+      version: '2.9.65',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -4849,7 +4889,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.63',
+      materializedVersion: '2.9.65',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -5081,7 +5121,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.63',
+      version: '2.9.65',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -5093,7 +5133,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.63',
+      materializedVersion: '2.9.65',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -5113,7 +5153,7 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.63) ──────────────────────────────────────────────
+// ── Token usage report (2.9.65) ──────────────────────────────────────────────
 
 test('token-report parseJsonlFile extracts usage from assistant messages', () => {
   withTempDir((cwd) => {
@@ -5338,7 +5378,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.63) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.65) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
@@ -5390,7 +5430,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.63',
+      version: '2.9.65',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -5402,7 +5442,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.63',
+      materializedVersion: '2.9.65',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -5422,7 +5462,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
-      version: '2.9.63',
+      version: '2.9.65',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -5434,7 +5474,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.63',
+      materializedVersion: '2.9.65',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
