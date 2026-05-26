@@ -69,17 +69,25 @@ The plugin also declares `mcp-auth` in `.mcp.json`:
       "url": "http://127.0.0.1:8787/mcp",
       "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
       "headers": {
-        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY}"
+        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY:-}"
       }
     }
   }
 }
 ```
 
-For local testing, set `TRAFFIC_ONE_AUTH_KEY` in your shell before enabling the
-MCP server. Codex reads `bearer_token_env_var`; the explicit header remains for
-hosts that consume `.mcp.json` headers directly. Production can replace this
-test-key path with OAuth when the auth server advertises it.
+The `${TRAFFIC_ONE_AUTH_KEY:-}` default is deliberate: it lets the MCP server
+load even when the key is unset, so the plugin does **not** throw a hard
+"Missing environment variables" error at install for end users who haven't set
+the key. Authentication does not depend on this MCP server — the auth gate runs
+`scripts/traffic-one-auth.cjs login` (with the key the user pastes at the
+prompt) to mint a session into `~/.traffic-one/auth.json`, and the gate reads
+that session on every host (Claude Code, Codex, Cursor) via the shared hooks.
+
+For local testing you can still set `TRAFFIC_ONE_AUTH_KEY` in your shell. Codex
+reads `bearer_token_env_var`; the explicit header remains for hosts that consume
+`.mcp.json` headers directly. Production can replace this test-key path with
+OAuth when the auth server advertises it.
 
 ---
 
