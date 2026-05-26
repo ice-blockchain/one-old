@@ -251,7 +251,7 @@ function authRequiredHookResult(hookEventName, options = {}) {
 function extractPromptText(rawInput) {
   const parsed = parseJsonText(rawInput, null);
   if (parsed && typeof parsed === 'object') {
-    return String(parsed.prompt || parsed.user_prompt || parsed.text || '');
+    return String(parsed.prompt || parsed.user_prompt || parsed.userPrompt || parsed.message || parsed.text || '');
   }
   return String(rawInput || '');
 }

@@ -469,7 +469,9 @@ async function main() {
       }));
       const skippedPayload = JSON.parse(skipped.stdout);
       assert.equal(skippedPayload.hookSpecificOutput.permissionDecision, 'deny');
-      assert.match(skippedPayload.hookSpecificOutput.permissionDecisionReason, /authentication choice required/i);
+      assert.equal(skippedPayload.promptRequest.id, 'traffic-one.auth.session-expired');
+      assert.match(skippedPayload.hookSpecificOutput.permissionDecisionReason, /session has expired/i);
+      assert.match(skippedPayload.hookSpecificOutput.permissionDecisionReason, /fresh API key/i);
     } finally {
       process.chdir(previousCwd);
     }
