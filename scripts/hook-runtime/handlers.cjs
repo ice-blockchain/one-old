@@ -106,9 +106,6 @@ const {
 // exist in a user's project and forces a filesystem search that can land on a
 // stale cached plugin version with an out-of-date endpoint).
 const AUTH_SCRIPT_PATH = path.resolve(__dirname, '..', 'traffic-one-auth.cjs');
-function authRunHint(command) {
-  return `node "${AUTH_SCRIPT_PATH}" ${command}`;
-}
 
 const {
   onboardingDirectiveNewProject,
@@ -227,7 +224,7 @@ function authRequiredHookResult(hookEventName, options = {}) {
     '- Authenticate Traffic One (Recommended)',
     '- Continue without Traffic One',
     '',
-    `If the user chooses Authenticate Traffic One, ask for the Traffic One API key, then authenticate internally with \`TRAFFIC_ONE_AUTH_KEY\` by running the active plugin's auth script at its ABSOLUTE path — \`${authRunHint('login')}\` then \`${authRunHint('status')}\`. Use your own Bash tool — the pre-tool auth gate explicitly bypasses shell invocations of \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\`, so they run even while unauthenticated. Do NOT use a cwd-relative \`scripts/traffic-one-auth.cjs\` path and do NOT search for the script (a found copy may be a stale cached plugin version with an outdated endpoint). Do not Write or Edit \`auth.json\` directly. Do not ask the user to run bash or shell commands.`,
+    `If the user chooses Authenticate Traffic One, ask for the Traffic One API key (use a secure host input/modal) and then STOP and wait. When the user pastes the key, Traffic One authenticates it automatically inside the hook (it runs login + status internally). Do NOT run \`traffic-one-auth.cjs\` or any auth command yourself via Bash/shell — Claude Code's security classifier blocks passing a key to a script, and the hook already performs the login. Do not Write or Edit \`auth.json\` directly, do not echo the key, and do not ask the user to run shell commands.`,
     'If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.',
     '',
     'Do not answer pending Traffic One onboarding choices, inspect, scaffold, or build through Traffic One until the user makes this auth choice.',
@@ -541,7 +538,7 @@ function authChoiceRequiredDenyReason() {
     'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
     'Choices: Authenticate Traffic One (Recommended); Continue without Traffic One.',
     '',
-    `If Authenticate Traffic One is chosen, ask for the API key, then invoke the active plugin's auth script at its ABSOLUTE path via your own Bash tool with \`TRAFFIC_ONE_AUTH_KEY=<key>\` in env — \`${authRunHint('login')}\` then \`${authRunHint('status')}\` (the pre-tool gate bypasses \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\` while unauthenticated). Do NOT use a cwd-relative path or search for the script — a found copy may be a stale cached version. Do not Write/Edit \`auth.json\` directly, and do not ask the user to run bash or shell commands.`,
+    `If Authenticate Traffic One is chosen, ask for the API key (secure input) and STOP. When the user pastes the key, Traffic One authenticates it automatically inside the hook — do NOT invoke \`traffic-one-auth.cjs\` or any auth command via Bash/shell yourself (Claude Code's security classifier blocks passing a key to a script; the hook runs login + status internally). Do not Write/Edit \`auth.json\` directly, and do not ask the user to run bash or shell commands.`,
     'If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.',
     '',
     'Do not inspect, scaffold, install, edit, or build before the user answers this auth choice.',
@@ -564,7 +561,7 @@ function sessionExpiredReauthContext() {
     'This is a session refresh, not first-time setup — the user already authenticated, so only a fresh API key is needed. Do not offer "Continue without Traffic One" here.',
     'Ask the user for their Traffic One API key using a secure host input/modal if available.',
     'After the user provides the key, re-authenticate internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
-    `Internally means: invoke the active plugin's auth script at its ABSOLUTE path through your own Bash tool with \`TRAFFIC_ONE_AUTH_KEY=<key>\` in env — \`${authRunHint('login')}\` then \`${authRunHint('status')}\`. The pre-tool gate explicitly allows these \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\` shell invocations while unauthenticated, so the call will go through. Do NOT use a cwd-relative \`scripts/...\` path and do NOT search for the script — a found copy may be a stale cached plugin version with an outdated endpoint. Do not Write or Edit \`auth.json\` directly.`,
+    `Automatically means: when the user pastes the key, Traffic One authenticates it inside the hook (login + status run internally). Do NOT invoke \`traffic-one-auth.cjs\` or any auth command via Bash/shell yourself — Claude Code's security classifier blocks passing a key to a script. Just ask for the key and STOP; the hook completes the refresh. Do not Write or Edit \`auth.json\` directly.`,
     'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
     'Tip: export TRAFFIC_ONE_AUTH_KEY in the environment so the session refreshes automatically without prompting.',
   ].join('\n');
@@ -602,7 +599,7 @@ function authApiKeyPromptHookResult(options = {}) {
     'The user chose to authenticate Traffic One. Do not continue implementation yet.',
     'Ask the user for the Traffic One API key using a secure host input/modal if available.',
     'After the user enters the key, run authentication internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
-    `Internally means: invoke the active plugin's auth script at its ABSOLUTE path through your own Bash tool with \`TRAFFIC_ONE_AUTH_KEY=<key>\` in env — \`${authRunHint('login')}\` then \`${authRunHint('status')}\`. The pre-tool gate explicitly allows these \`scripts/traffic-one-auth.cjs (login|refresh|status|logout)\` shell invocations while unauthenticated, so the call will go through. Do NOT use a cwd-relative \`scripts/...\` path and do NOT search for the script — a found copy may be a stale cached plugin version with an outdated endpoint. Do not Write or Edit \`auth.json\` directly — that path is blocked, and only the script can mint a valid session token.`,
+    `Automatically means: when the user pastes the key, Traffic One authenticates it inside the hook (login + status run internally) — you do NOT run any command. Do NOT invoke \`traffic-one-auth.cjs\` or any auth command via Bash/shell yourself: Claude Code's security classifier blocks passing a key to a script, and the hook already mints the session. Just ask for the key and STOP. Do not Write or Edit \`auth.json\` directly.`,
     'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
     authChoicePersistenceDiagnostic(options.authChoiceWrite).trim(),
   ].join('\n');

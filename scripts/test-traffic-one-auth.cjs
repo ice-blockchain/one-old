@@ -302,13 +302,17 @@ test('gate: "continue without traffic one" unblocks normal tools', async () => {
   const gate = await runHook('check-onboarding-gate', { cwd, env, input: { tool_name: 'Read', tool_input: { file_path: 'index.js' } } });
   assert.equal(gate.stdout.trim(), '', 'tools should be allowed after continue-without');
 });
-test('gate: the auth-required prompt embeds the absolute script path (no stale-copy hunt)', async () => {
+test('gate: the auth-required prompt steers to hook-internal auth (no agent shell-out, no stale-copy hunt)', async () => {
   const sf = tmpStatePath('abs-path');
   const cwd = makeProject('abs-path');
   const env = envFor(sf, SRV.endpoint); // unauthenticated, no prior choice
   const gate = await runHook('check-onboarding-gate', { cwd, env, input: { tool_name: 'Read', tool_input: { file_path: 'index.js' } } });
-  const expectedPath = path.join(ROOT, 'scripts', 'traffic-one-auth.cjs');
-  assert.ok(gate.stdout.includes(expectedPath), 'gate deny reason should embed the absolute script path');
+  // The agent must NOT be told to run the auth script itself — Claude Code's
+  // security classifier blocks passing a key to a script (and a relative/searched
+  // copy could be stale). The hook authenticates the pasted key internally via
+  // the correct absolute AUTH_SCRIPT_PATH, so there is no stale-copy hunt.
+  assert.match(gate.stdout, /authenticates it automatically inside the hook/i, 'deny reason should say the hook authenticates the key');
+  assert.match(gate.stdout, /do NOT invoke/i, 'deny reason should forbid the agent from running the auth script');
 });
 test('gate: simple auth — choose authenticate, paste key, session is created internally', async () => {
   const sf = tmpStatePath('prompt-auth');
