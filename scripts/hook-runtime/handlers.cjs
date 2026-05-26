@@ -2079,6 +2079,26 @@ function isMutatingPreToolUse(toolName, toolInput) {
     || />{1,2}/.test(command);
 }
 
+// Read-only orientation tools the onboarding gate allows even while onboarding
+// is incomplete, so the agent can locate its working directory and read context
+// BEFORE writing `.traffic-one.json`. Without this, the gate denied `pwd`/`Read`
+// — leaving the agent unable to discover where to write the very file that
+// satisfies the gate (a deadlock). Mutating tools, agent spawns (Task/
+// spawn_agent), installs, and scaffolding are NOT orientation and stay gated.
+function isReadOnlyOrientationToolUse(toolName, toolInput) {
+  const name = String(
+    toolName
+    || (toolInput && (toolInput.tool_name || toolInput.toolName))
+    || '',
+  );
+  if (!name) return false;
+  if (/^(Read|Glob|Grep|LS|NotebookRead)$/i.test(normalizedToolName(name))) return true;
+  // Read-only shell (pwd, ls, cat, find, …): a shell tool whose command is not
+  // classified as mutating by isMutatingPreToolUse.
+  if (isShellToolName(name) && !isMutatingPreToolUse(name, toolInput)) return true;
+  return false;
+}
+
 function repairedMaterializationDenyReason() {
   return [
     'Traffic One state was repaired/materialized before this tool use.',
@@ -2634,6 +2654,13 @@ function runCheckOnboardingGate(rawInput) {
         return denyPreToolUse(repairedMaterializationDenyReason());
       }
       return repaired;
+    }
+    // Allow read-only orientation (pwd, ls, Read, Glob, Grep) while onboarding
+    // is incomplete so the agent can locate its cwd and write
+    // `.traffic-one.json` to the right place. Mutating tools, agent spawns, and
+    // installs fall through to the deny below.
+    if (isReadOnlyOrientationToolUse(toolName, toolInput)) {
+      return { stdout: '', exitCode: 0 };
     }
     if (needsTeamConfirmation(effectiveState)) {
       const reason = teamConfirmationGateFallbackReason(effectiveState);
