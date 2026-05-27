@@ -71,6 +71,21 @@ export function hasTechnologyArrays(technologies: unknown): boolean {
   return Boolean(t && Array.isArray(t.frontend) && Array.isArray(t.backend) && Array.isArray(t.mobile));
 }
 
+export function hasValidMobileState(mobile: unknown): boolean {
+  const m = asObject(mobile);
+  return Boolean(m
+    && typeof m.enabled === 'boolean'
+    && inSet(MOBILE_FRAMEWORK_IDS, m.framework)
+    && inSet(MOBILE_SOURCE_IDS, m.source));
+}
+
+// "Resolved" for a new project: a valid mobile object whose source is not "none"
+// (i.e. the Mobile App prompt was actually answered).
+export function hasResolvedNewProjectMobileState(mobile: unknown): boolean {
+  const m = asObject(mobile);
+  return hasValidMobileState(mobile) && Boolean(m && m.source !== 'none');
+}
+
 function formatStateValue(value: unknown): string {
   return typeof value === 'string' ? `"${value}"` : String(value);
 }
