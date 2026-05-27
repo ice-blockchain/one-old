@@ -19,6 +19,10 @@ module.exports = function registerDoctorAgentsTests(ctx) {
     computeProjectFingerprint,
     test,
     writeJson,
+    writeJsonRaw,
+    readProjectState,
+    readEffectiveState,
+    readProjectPrefs,
     seedOpenCodeResolved,
     withTempDir,
     runHook,
@@ -510,9 +514,9 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
       // Must offer the graphify fallback so users on locked Node can switch.
       assert.match(result.error, /graphify/);
 
-      // The runner must stamp `.traffic-one/.one.json` so subsequent runs
-      // surface the error in the orchestrator summary.
-      const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+      // The runner must stamp local prefs so subsequent runs surface the error
+      // in the orchestrator summary without mutating committed project state.
+      const state = readProjectPrefs(cwd);
       assert.match(state.gitnexusLastError, /Node >=22/);
       assert.match(state.gitnexusLastErrorAt, /^\d{4}-\d{2}-\d{2}T/);
     } finally {

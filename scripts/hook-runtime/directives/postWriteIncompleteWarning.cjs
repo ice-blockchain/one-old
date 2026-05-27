@@ -49,7 +49,7 @@ function postWriteIncompleteWarning({
   if (cgMissing) {
     if (lines.length > 2) lines.push('');
     lines.push(
-      'You also did not set `codeGraphProvider`. This is a REQUIRED field —',
+      'You also did not set local `codeGraphProvider`. This is REQUIRED —',
       'no skip, no default. Ask with the host popup tool (Codex `request_user_input`,',
       'Claude Code `AskUserQuestion`, or Cursor task-UI) when available:',
       'header "Code Graph"; question "Which provider should we use for the codebase graph?";',
@@ -70,11 +70,11 @@ function postWriteIncompleteWarning({
   if (Array.isArray(validationIssues) && validationIssues.some((issue) => issue.includes('`team`'))) {
     if (lines.length > 2) lines.push('');
     lines.push(
-      'You also did not persist a valid Team Confirmation state. This is',
+      'You also did not persist a valid local Team Confirmation state. This is',
       'required for new-project multi-layer builds so the architecture gate can',
       'enforce the chosen route: `team.mode="subagents"` for Balanced/High, or',
       '`team.mode="main-agent"` for Low. Balanced/High also require',
-      '`team.approved: true` after the user approves Team Confirmation.',
+      '`team.approved: true` in local preferences after the user approves Team Confirmation.',
     );
   }
 
@@ -95,7 +95,10 @@ function postWriteIncompleteWarning({
 
   lines.push(
     '',
-      'Re-write the file with the Write tool using the full required schema:',
+      'Re-write the onboarding state with the full effective schema below.',
+      'The hook will split local-only fields (`openCode`, `codeGraphProvider`,',
+      '`performance`, `team`, `toolchain`, and graph runner stamps) into per-user preferences',
+      'and keep committed `.traffic-one/.one.json` to shared project facts.',
     '',
     '  {',
       '    "version": "<current-plugin-version>",',

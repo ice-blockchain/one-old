@@ -10,7 +10,10 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
-const { getPluginVersion } = require('../hook-runtime/state/state.cjs');
+const {
+  readEffectiveState,
+  mergeProjectPrefs,
+} = require('../hook-runtime/state/state.cjs');
 const { which } = require('./which.cjs');
 const { findNvmNode22 } = require('./findNvmNode22.cjs');
 
@@ -30,38 +33,12 @@ function runStampForFs() {
 }
 
 function readState(cwd) {
-  const filePath = path.join(cwd, TRAFFIC_ONE);
-  const legacyPath = path.join(cwd, LEGACY_TRAFFIC_ONE);
-  const readablePath = fs.existsSync(filePath) ? filePath : legacyPath;
-  if (!fs.existsSync(readablePath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(readablePath, 'utf8'));
-  } catch {
-    return {};
-  }
+  return readEffectiveState(cwd);
 }
 
 function writeStateMerge(cwd, patch) {
-  const filePath = path.join(cwd, TRAFFIC_ONE);
-  const legacyPath = path.join(cwd, LEGACY_TRAFFIC_ONE);
-  const readablePath = fs.existsSync(filePath) ? filePath : legacyPath;
-  let current = {};
-  if (fs.existsSync(readablePath)) {
-    try {
-      current = JSON.parse(fs.readFileSync(readablePath, 'utf8'));
-    } catch {
-      current = {};
-    }
-  }
-  const merged = { ...current, ...patch };
-  delete merged.pluginVersion;
-  const pluginVersion = getPluginVersion();
-  if (pluginVersion) {
-    merged.version = pluginVersion;
-  }
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    mergeProjectPrefs(cwd, patch);
   } catch {
     // best-effort; the runner never throws
   }

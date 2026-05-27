@@ -31,6 +31,10 @@ const {
   writeState,
   statePath,
   legacyStatePath,
+  readEffectiveState,
+  readProjectPrefs,
+  splitLocalPreferences,
+  effectiveState,
   normalizeState,
   initializeToolchainState,
   hasValidTeamState,
@@ -172,20 +176,17 @@ function tokenEconomyBanner(cwd) {
   // The curated spec lives at `scripts/toolchain-versions.json`; bump it
   // there to update what every project sees on its next SessionStart.
   try {
-    const stateFile = existingStateFilePath(cwd);
-    if (fs.existsSync(stateFile)) {
-      const state = safeReadJson(stateFile, {});
-      const toolchain = (state && state.toolchain) || {};
-      if (Object.keys(toolchain).length > 0) {
-        const tch = require(path.resolve(__dirname, '..', '..', 'toolchain.cjs'));
-        for (const [name, stamp] of Object.entries(toolchain)) {
-          const status = tch.toolStatus(name, stamp && stamp.installedVersion);
-          if (status.status === 'too-old') {
-            const spec = tch.getToolSpec(name) || {};
-            lines.push(`[toolchain] ${name} ${status.installed} is below the minimum supported (${status.minimum}). Upgrade: \`${spec.installCommand || `<upgrade ${name}>`}\`.`);
-          } else if (status.status === 'outdated') {
-            lines.push(`[toolchain] ${name} ${status.installed} installed; recommended is ${status.recommended}.`);
-          }
+    const state = readEffectiveState(cwd);
+    const toolchain = (state && state.toolchain) || {};
+    if (Object.keys(toolchain).length > 0) {
+      const tch = require(path.resolve(__dirname, '..', '..', 'toolchain.cjs'));
+      for (const [name, stamp] of Object.entries(toolchain)) {
+        const status = tch.toolStatus(name, stamp && stamp.installedVersion);
+        if (status.status === 'too-old') {
+          const spec = tch.getToolSpec(name) || {};
+          lines.push(`[toolchain] ${name} ${status.installed} is below the minimum supported (${status.minimum}). Upgrade: \`${spec.installCommand || `<upgrade ${name}>`}\`.`);
+        } else if (status.status === 'outdated') {
+          lines.push(`[toolchain] ${name} ${status.installed} installed; recommended is ${status.recommended}.`);
         }
       }
     }
@@ -521,9 +522,9 @@ function teamModeDowngradeGuard(cwd, toolName, toolInput, currentState) {
     return null;
   }
   return denyPreToolUse(
-    'Traffic One team mode guard: `.traffic-one/.one.json` currently records `team.mode="subagents"`. '
+    'Traffic One team mode guard: local Traffic One preferences currently record `team.mode="subagents"`. '
     + 'This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. '
-    + 'Ask the user to say that explicitly before rewriting `performance.level="low"` and `team.mode="main-agent"`. '
+    + 'Ask the user to say that explicitly before rewriting local `performance.level="low"` and `team.mode="main-agent"`. '
     + 'Do not use `team.source="unavailable"` or a state rewrite as a workaround.'
   );
 }
@@ -572,7 +573,7 @@ function materializationSuccessResult(materialized, triggerPath) {
 function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
   if (isPluginAuthoringRoot(cwd)) return null;
 
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return null;
   const normalized = normalizeState(state, state.mode || detectMode(cwd));
   if (normalized) {
@@ -882,7 +883,7 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     };
   }
 
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
 
@@ -932,8 +933,6 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
       // best-effort; materialization can still proceed with the normalized object.
     }
   }
-
-  ensureGitnexusNvmrc(cwd, state);
 
   let materialized = null;
   try {
@@ -1391,7 +1390,7 @@ function nextOnboardingStepPromptAndRequest(state, source = 'gate') {
   }
   const fallbackText = [
     'Traffic One onboarding state is still incomplete or noncanonical.',
-    'Re-write `.traffic-one/.one.json` with the full required schema before continuing.',
+    'Complete `.traffic-one/.one.json` plus local Traffic One preferences before continuing.',
   ].join('\n');
   return { fallbackText, promptRequest: null };
 }
@@ -1413,7 +1412,7 @@ function onboardingGateFallbackReason(state = {}) {
     '',
     nextOnboardingStepPrompt(state, 'gate'),
     '',
-    'The onboarding state remains incomplete until `.traffic-one/.one.json` contains stack, frontend, backend, projectContext, mobile, technologies, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), toolchain, confirmed, onboardingComplete, and confirmedAt.',
+    'The onboarding state remains incomplete until `.traffic-one/.one.json` contains shared project facts (stack, frontend, backend, projectContext, mobile, technologies, realtime, confirmed, onboardingComplete, confirmedAt) and local Traffic One preferences contain openCode, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), and toolchain stamps.',
     'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, spawn helper agents, or continue implementation until the typed answer is received and the remaining onboarding prompts are resolved.',
   ].join('\n');
 }
@@ -1435,10 +1434,10 @@ function teamConfirmationPromptContext(state, source = 'gate') {
     : null;
   return [
     `Traffic One Team Confirmation is still required before the ${level} subagent run can start.`,
-    'The user selected a multi-agent performance level, but `.traffic-one/.one.json` does not contain `team.approved: true`.',
+    'The user selected a multi-agent performance level, but local Traffic One preferences do not contain `team.approved: true`.',
     'Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.',
     source === 'user-prompt'
-      ? 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first rewrite `.traffic-one/.one.json` with `team.approved: true` (and any collected `team.overrides`), then continue.'
+      ? 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first save local Traffic One preferences with `team.approved: true` (and any collected `team.overrides`), then continue.'
       : 'Your next visible assistant message must ask this approval question and then stop for the user answer.',
     'Use the host popup tool when available (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI). This is onboarding popup 2. If no popup tool is exposed, show this plain-chat fallback verbatim:',
     '',
@@ -1559,6 +1558,10 @@ module.exports = {
   writeState,
   statePath,
   legacyStatePath,
+  readEffectiveState,
+  readProjectPrefs,
+  splitLocalPreferences,
+  effectiveState,
   normalizeState,
   initializeToolchainState,
   hasValidTeamState,

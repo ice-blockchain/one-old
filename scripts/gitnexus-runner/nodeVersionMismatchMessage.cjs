@@ -14,7 +14,7 @@ function nodeVersionMismatchMessage(major) {
     + `  nvm alias default ${GITNEXUS_MIN_NODE_MAJOR}\n`
     + `  nvm use default\n`
     + 'Or pick the `graphify` provider instead (Python; works on any Node) '
-    + 'by editing `.traffic-one/.one.json` -> `codeGraphProvider: "graphify"`.'
+    + 'by updating local Traffic One preferences -> `codeGraphProvider: "graphify"`.'
   );
 }
 

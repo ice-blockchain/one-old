@@ -100,6 +100,18 @@ function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, mcpAut
     });
   }
 
+  const legacyLocalFields = rawState && typeof rawState === 'object'
+    ? ['openCode', 'codeGraphProvider', 'performance', 'team', 'toolchain', 'codeGraphAutoRun', 'graphifyAutoRun']
+      .filter((field) => Object.prototype.hasOwnProperty.call(rawState, field))
+    : [];
+  if (legacyLocalFields.length > 0) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'LOCAL_PREFERENCES_IN_PROJECT_STATE',
+      message: `Project state contains local-only Traffic One fields (${legacyLocalFields.join(', ')}). They should live in the per-user preferences file${project.localPreferencesPath ? ` (${project.localPreferencesPath})` : ''}, not in committed \`.traffic-one/.one.json\`.`,
+    });
+  }
+
   if (rawState && Object.prototype.hasOwnProperty.call(rawState, 'codeGraphProvider')) {
     const canonicalProvider = codeGraphProviderFromValue(rawState.codeGraphProvider);
     if (canonicalProvider && rawState.codeGraphProvider !== canonicalProvider) {
@@ -190,7 +202,7 @@ function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, mcpAut
     findings.push({
       severity: 'fix-needed',
       code: 'MISSING_CODE_GRAPH_PROVIDER',
-      message: 'State file has no `codeGraphProvider` field. Re-run onboarding to add it (gitnexus or graphify).',
+      message: `No local code graph provider is configured for this user/project. Choose GitNexus or graphify and save it to local preferences${project.localPreferencesPath ? ` (${project.localPreferencesPath})` : ''}; do not commit this choice to \`.traffic-one/.one.json\`.`,
     });
   }
 

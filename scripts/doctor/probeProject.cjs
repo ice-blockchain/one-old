@@ -3,6 +3,12 @@
 const path = require('path');
 
 const { safeRead, safeStat, normalizeState } = require('./_helpers.cjs');
+const {
+  effectiveState,
+  projectPrefsPath,
+  readProjectPrefs,
+  stripLocalPreferenceFields,
+} = require('../hook-runtime/state/state.cjs');
 
 function probeProject(cwd) {
   const trafficOne = safeRead(path.join(cwd, '.traffic-one', '.one.json'))
@@ -10,8 +16,12 @@ function probeProject(cwd) {
   let state = null;
   if (trafficOne) { try { state = JSON.parse(trafficOne); } catch { state = null; } }
   let normalizedState = null;
+  let localPreferences = {};
+  let localPreferencesPath = null;
   if (state && typeof state === 'object') {
-    normalizedState = JSON.parse(JSON.stringify(state));
+    localPreferencesPath = projectPrefsPath(cwd);
+    localPreferences = readProjectPrefs(cwd);
+    normalizedState = effectiveState(stripLocalPreferenceFields(state), localPreferences);
     normalizeState(normalizedState, normalizedState.mode || normalizedState.projectMode || 'new-project');
   }
   const nvmrcRaw = safeRead(path.join(cwd, '.nvmrc'));
@@ -22,6 +32,9 @@ function probeProject(cwd) {
     cwd,
     hasState: !!state,
     state,
+    localPreferences,
+    localPreferencesPath,
+    hasLocalPreferences: Object.keys(localPreferences || {}).length > 0,
     normalizedState,
     nvmrc: nvmrcRaw === null ? null : nvmrcRaw.trim(),
     hasGit: !!gitDir && gitDir.isDirectory(),

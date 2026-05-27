@@ -17,11 +17,13 @@ pending.
 
 ${codexDefaultModeFallbackDirective()}
 
-Write \`.traffic-one/.one.json\` (use the Write tool, RELATIVE path
+Write the effective onboarding state to \`.traffic-one/.one.json\` (use the Write tool, RELATIVE path
 \`.traffic-one/.one.json\` so it lands in the current working directory — never an
 absolute guess) with the full required schema before continuing with feature
-work. The PostToolUse hook will then auto-load the matching rule bundle into
-THIS session — no restart needed.
+work. The PostToolUse hook will move local-only fields into per-user
+preferences, rewrite committed \`.traffic-one/.one.json\` with shared project
+facts only, and auto-load the matching rule bundle into THIS session — no
+restart needed.
 
   {
     "version": "<current-plugin-version>",
@@ -57,13 +59,13 @@ THIS session — no restart needed.
 Stack ids: minimal · default · custom-frontend · custom-backend · custom-stack.
 Backend values: supabase · our-fork · self-hosted · managed · other · external-api · none.
 Realtime values: heavy · light · none.
-Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user).
-OpenCode opt-in: \`openCode.enabled\` true|false (REQUIRED — ask the OpenCode token-economy popup BEFORE Performance; persist source "prompted" + decidedAt).
-Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup).
-Team mode: derived from performance — balanced/high → subagents, low → main-agent. Persist both fields. Omit \`team.approved\` for low.
-Team confirmation: for balanced/high, ALSO ask the Team popup (popup 2) so the user approves the role→model line-up. On Approve, persist \`team.approved: true\` (REQUIRED — the PreToolUse spawn gate denies every Task/spawn_agent call until this flag is present). Persist per-role overrides as \`team.overrides\` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
+Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user; stored in local preferences).
+OpenCode opt-in: \`openCode.enabled\` true|false (REQUIRED — ask the OpenCode token-economy popup BEFORE Performance; save source "prompted" + decidedAt in local preferences).
+Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup; stored in local preferences).
+Team mode: derived from performance — balanced/high → subagents, low → main-agent. Save both fields locally. Omit \`team.approved\` for low.
+Team confirmation: for balanced/high, ALSO ask the Team popup (popup 2) so the user approves the role→model line-up. On Approve, save \`team.approved: true\` in local preferences (REQUIRED — the PreToolUse spawn gate denies every Task/spawn_agent call until this flag is present). Save per-role overrides as \`team.overrides\` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
 Project context: REQUIRED after the Traffic One setup success message and before the Mobile App prompt. Ask the rich dynamic MVP questionnaire and save answers with suggested keys: audience, coreFlows, v1Features, rolesAuth, businessModel, payments, admin, dataModel, contentSource, integrations, engagement, successMetrics, constraints, domainSpecific.
-Toolchain: REQUIRED, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
+Toolchain: REQUIRED in local preferences, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
 Default complex-project recommendation is stack=default, frontend=react-vite,
 backend=supabase. If the user explicitly chose a non-default frontend or

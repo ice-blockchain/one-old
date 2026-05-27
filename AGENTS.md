@@ -8,10 +8,10 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 - Use host popup input for onboarding when available. If popup input is unavailable, ask the same next unresolved onboarding question in chat and stop for the user's typed answer.
 - Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
 - Treat explicit user requests as implementation intent, not onboarding answers.
-- The OpenCode delegation opt-in (token economy) is the FIRST onboarding prompt, asked before Agent Mode; persist `openCode` (`enabled`, `source`, `decidedAt`). It also surfaces once (non-blocking) for existing codebases. Delegation itself is a later task — this only records the choice so a future performance update can split work across Traffic One subagents and free OpenCode agents.
-- Persist Agent Mode/Performance in `.traffic-one/.one.json`; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
+- The OpenCode delegation opt-in (token economy) is the FIRST onboarding prompt, asked before Agent Mode; persist local `openCode` (`enabled`, `source`, `decidedAt`). It also surfaces once (non-blocking) for existing codebases. Delegation itself is a later task — this only records the choice so a future performance update can split work across Traffic One subagents and free OpenCode agents.
+- Persist Agent Mode/Performance in local Traffic One preferences; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
 - After Agent Mode and Team Confirmation, collect a rich dynamic MVP `projectContext`, then ask Mobile App, then Code Graph.
-- `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
+- Local `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
 
 ## Active Rules
 

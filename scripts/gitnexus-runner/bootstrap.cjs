@@ -32,7 +32,7 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   // compatibility (it was the only opt-out flag before this PR).
   const state = readState(cwd);
   if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) {
-    return { ok: false, action: 'install-skipped', report: null, error: 'codeGraphAutoRun is false in .traffic-one/.one.json', durationMs: 0 };
+    return { ok: false, action: 'install-skipped', report: null, error: 'codeGraphAutoRun is false in local Traffic One preferences', durationMs: 0 };
   }
 
   // Fresh-cache short-circuit.
@@ -193,7 +193,7 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     return { ok: false, action, report: null, error: 'gitnexus ran but .gitnexus/ was not produced', durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial', backupRoot: backups.backupRoot, restored };
   }
 
-  // Probe the just-run binary's `--version` and stamp `.traffic-one/.one.json`
+  // Probe the just-run binary's `--version` and stamp local preferences
   // → `toolchain.gitnexus` so doctor.cjs + future runners can compare
   // installed-vs-recommended without re-probing. The actual binary used
   // is `run.binUsed` (set by runGitnexus); if absent, fall back to

@@ -44,6 +44,8 @@ function readScriptSource(name) {
 }
 const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.json`);
 const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
+const ORIGINAL_XDG_STATE_HOME = process.env.XDG_STATE_HOME;
+const ORIGINAL_TRAFFIC_ONE_PROJECT_PREFS_PATH = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
 process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
 // Default to :8787 (the value CI uses, where nothing listens). Allow an
@@ -75,9 +77,37 @@ function test(name, fn) {
   tests.push({ name, fn });
 }
 
-function writeJson(filePath, data) {
+function isTrafficOneProjectStatePath(filePath) {
+  return path.basename(filePath) === '.one.json'
+    && path.basename(path.dirname(filePath)) === '.traffic-one';
+}
+
+function writeJsonRaw(filePath, data) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+}
+
+function writeJson(filePath, data) {
+  let next = data;
+  if (isTrafficOneProjectStatePath(filePath) && data && typeof data === 'object' && !Array.isArray(data)) {
+    const { splitLocalPreferences } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
+    const projectRoot = path.dirname(path.dirname(filePath));
+    next = splitLocalPreferences(projectRoot, data).state;
+  }
+  writeJsonRaw(filePath, next);
+}
+
+function readProjectState(cwd) {
+  const filePath = path.join(cwd, '.traffic-one/.one.json');
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function readEffectiveState(cwd) {
+  return require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs')).readEffectiveState(cwd);
+}
+
+function readProjectPrefs(cwd) {
+  return require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs')).readProjectPrefs(cwd);
 }
 
 // Mark the OpenCode token-economy opt-in (the first new-project onboarding step)
@@ -93,9 +123,21 @@ function seedOpenCodeResolved(cwd) {
 
 function withTempDir(fn) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'traffic-one-test-'));
+  process.env.XDG_STATE_HOME = path.join(tempDir, '.xdg-state');
+  delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   try {
     return fn(tempDir);
   } finally {
+    if (ORIGINAL_XDG_STATE_HOME === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = ORIGINAL_XDG_STATE_HOME;
+    }
+    if (ORIGINAL_TRAFFIC_ONE_PROJECT_PREFS_PATH === undefined) {
+      delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    } else {
+      process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = ORIGINAL_TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    }
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
@@ -280,6 +322,10 @@ const context = {
   computeProjectFingerprint,
   test,
   writeJson,
+  writeJsonRaw,
+  readProjectState,
+  readEffectiveState,
+  readProjectPrefs,
   seedOpenCodeResolved,
   withTempDir,
   runHook,

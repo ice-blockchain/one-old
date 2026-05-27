@@ -18,6 +18,9 @@ const {
   parseJsonText,
   safeReadJson,
   readState,
+  readEffectiveState,
+  splitLocalPreferences,
+  effectiveState,
   writeState,
   normalizeState,
   detectMode,
@@ -96,7 +99,7 @@ function materializeFromToolInputHints(cwd, toolInput, trigger = 'generic post-t
     if (result && result.stdout) {
       return result;
     }
-    const state = readState(projectRoot);
+    const state = readEffectiveState(projectRoot);
     startOneMcpReportBestEffort(projectRoot, state, `${trigger}: ${relativeRoot}`);
   }
   return null;
@@ -109,7 +112,7 @@ function materializeFromProjectMemoryWrite(cwd, filePath) {
   const relativePath = projectRelativeHookPath(cwd, projectRoot, filePath);
   if (!isProjectMemoryWritePath(relativePath)) return null;
 
-  const state = readState(projectRoot);
+  const state = readEffectiveState(projectRoot);
   if (!state || !state.stack || !STACK_IDS.has(state.stack) || state.onboardingComplete !== true) {
     return null;
   }
@@ -180,7 +183,7 @@ function runPostBuildPageSpeed(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const state = readState(process.cwd());
+  const state = readEffectiveState(process.cwd());
   const isWebStack = isWebState(state);
   if (!isWebStack) {
     return { stdout: '', exitCode: 0 };
@@ -228,7 +231,7 @@ function runPreGraphifyHint(_rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
 
   // Dispatch by provider. Both branches are silent when the on-disk artefact
@@ -272,7 +275,7 @@ function runPreGraphifyHint(_rawInput) {
 // no fresh graph exists yet. Synchronously installs graphify (pipx | pip
 // --user) if missing, then runs `graphify .` so `graphify-out/GRAPH_REPORT.md`
 // actually lands. The 1-day cooldown stamp prevents re-entry on subsequent
-// builds; opt out by setting `graphifyAutoRun: false` in `.traffic-one/.one.json`.
+// builds; opt out by setting `graphifyAutoRun: false` in local preferences.
 const GRAPHIFY_FRESH_MS  = 7 * 24 * 60 * 60 * 1000;
 const GRAPHIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -289,7 +292,7 @@ function runPostBuildGraphifyHint(rawInput) {
   }
 
   const cwd = process.cwd();
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   if (state.mode !== 'new-project' || state.onboardingComplete !== true) {
     return { stdout: '', exitCode: 0 };
   }
@@ -393,13 +396,13 @@ function runPostBuildGraphifyHint(rawInput) {
           + `${bootstrapResult.error}\n`
           + 'Install nvm first (https://github.com/nvm-sh/nvm), then re-invoke '
           + 'the runner. Or pick `codeGraphProvider: "graphify"` (Python; works '
-          + 'on any Node) by editing `.traffic-one/.one.json`.';
+          + 'on any Node) by updating local Traffic One preferences.';
       } else {
         additionalContext = `[gitnexus] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
           + 'Falling back to a manual hint — install + build once when convenient:\n'
           + '  npm install -g gitnexus   # or: npx gitnexus@latest analyze .\n'
           + '  gitnexus analyze\n'
-          + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in `.traffic-one/.one.json`.';
+          + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in local Traffic One preferences.';
       }
     } else {
       additionalContext = `[graphify] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
@@ -407,7 +410,7 @@ function runPostBuildGraphifyHint(rawInput) {
         + '  pipx install graphifyy   # or: python3 -m pip install --user graphifyy\n'
         + '  graphify update .\n'
         + '  graphify hook install    # optional: regenerate on every git commit\n'
-        + 'To disable auto-bootstrap entirely, set `"codeGraphAutoRun": false` in `.traffic-one/.one.json`.';
+        + 'To disable auto-bootstrap entirely, set `"codeGraphAutoRun": false` in local Traffic One preferences.';
     }
   }
 
@@ -498,28 +501,40 @@ function runPostStackSetup(rawInput) {
     if (hintedResult) return hintedResult;
     const materializedResult = materializeProjectIfNeeded(cwd, 'generic post-tool convergence');
     if (materializedResult) return materializedResult;
-    const currentState = readState(cwd);
+    const currentState = readEffectiveState(cwd);
     startOneMcpReportBestEffort(cwd, currentState, 'generic post-tool convergence');
     return { stdout: '', exitCode: 0 };
   }
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
 
-  const state = safeReadJson(filePath, null);
-  // Accept any state that has a valid `stack` AND `codeGraphProvider`. The
-  // model sometimes writes a partial file (no `onboardingComplete`, no
-  // `codeGraphProvider`). Normalize and treat it as complete only when both
-  // required fields are present + valid.
+  let state = safeReadJson(filePath, null);
+  // Accept any state that has a valid project stack plus resolved local
+  // preferences. Older model writes may still include local fields in
+  // `.traffic-one/.one.json`; split those into the per-user preferences file
+  // before validating the effective state.
   const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
   const stateDirEarly = projectRootFromStateFilePath(filePath);
-  const normalizedBeforeValidation = state && typeof state === 'object'
+  let normalizedBeforeValidation = state && typeof state === 'object'
     ? normalizeState(state, detectMode(stateDirEarly))
     : false;
-  const stackOk = state && state.stack && STACK_IDS.has(state.stack);
-  const cgProvider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  let localSplit = { state, prefs: {}, changed: false };
+  if (state && typeof state === 'object') {
+    localSplit = splitLocalPreferences(stateDirEarly, state);
+    state = localSplit.state;
+  }
+  const effectiveForValidation = state && typeof state === 'object'
+    ? effectiveState(state, localSplit.prefs)
+    : state;
+  if (effectiveForValidation && typeof effectiveForValidation === 'object') {
+    normalizedBeforeValidation = normalizeState(effectiveForValidation, detectMode(stateDirEarly))
+      || normalizedBeforeValidation
+      || localSplit.changed;
+  }
+  const cgProvider = effectiveForValidation && typeof effectiveForValidation.codeGraphProvider === 'string' ? effectiveForValidation.codeGraphProvider : null;
   const cgOk = cgProvider && validCodeGraphProviders.includes(cgProvider);
-  const toolchainOk = state && state.toolchain && typeof state.toolchain === 'object';
-  const validationIssues = state ? trafficOneStateValidationIssues(state, validCodeGraphProviders) : [];
+  const toolchainOk = effectiveForValidation && effectiveForValidation.toolchain && typeof effectiveForValidation.toolchain === 'object';
+  const validationIssues = effectiveForValidation ? trafficOneStateValidationIssues(effectiveForValidation, validCodeGraphProviders) : [];
 
   if (!state || validationIssues.length > 0) {
     // Don't fail silently: emit a system message + reminder so the model can
@@ -544,11 +559,11 @@ function runPostStackSetup(rawInput) {
     } else if (!state.stack) {
       systemMessage = 'traffic-one — `.traffic-one/.one.json` write incomplete (no `stack` field); please re-write with all 8 fields';
     } else if (cgProvider && !cgOk) {
-      systemMessage = `traffic-one — \`.traffic-one/.one.json\` has unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
+      systemMessage = `traffic-one — local Traffic One preferences have unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
     } else if (!toolchainOk) {
-      systemMessage = 'traffic-one — `.traffic-one/.one.json` missing required `toolchain` field; re-write with initialized toolchain';
+      systemMessage = 'traffic-one — local Traffic One preferences are missing required `toolchain` stamps; re-write with initialized toolchain';
     } else if (!cgProvider) {
-      systemMessage = 'traffic-one — `.traffic-one/.one.json` missing required `codeGraphProvider` field; ask the user (gitnexus or graphify) and re-write';
+      systemMessage = 'traffic-one — local Traffic One preferences are missing required `codeGraphProvider`; ask the user (gitnexus or graphify) and re-write';
     } else {
       systemMessage = 'traffic-one — `.traffic-one/.one.json` has invalid required fields; see validation issues and re-write';
     }
@@ -563,6 +578,8 @@ function runPostStackSetup(rawInput) {
       exitCode: 0,
     };
   }
+
+  state = effectiveForValidation;
 
   if (normalizedBeforeValidation || normalizeState(state, detectMode(stateDirEarly))) {
     // Write back the completed state so subsequent hooks see a clean file.
@@ -598,17 +615,8 @@ function runPostStackSetup(rawInput) {
   startOneMcpReportBestEffort(stateDirEarly, state, 'post-stack-setup');
 
   const stack = state.stack || '(unknown)';
-  const stateDir = projectRootFromStateFilePath(filePath);
-
-  // Seamless gitnexus setup. Two things happen when the user just wrote
-  // `codeGraphProvider: "gitnexus"`:
-  //
-  //   (a) Write `.nvmrc` with `22` at the project root for new-project mode
-  //       (don't clobber if it already exists). This locks the project to
-  //       Node 22 so `cd`-into-project triggers `nvm use` to the right
-  //       version going forward.
-  //
-  //   (b) Surface the upgrade banner ONLY when there's no path forward:
+  // GitNexus is a local preference. Do not mutate project files such as
+  // `.nvmrc` based on it; only surface the upgrade banner when needed:
   //       no `~/.nvm/versions/node/v22.*` install at all AND current hook
   //       process is on Node <22. When an nvm-v22 install exists (even if
   //       it's not the active Node), the runner will use the absolute v22
@@ -623,19 +631,6 @@ function runPostStackSetup(rawInput) {
         findNvmNode22,
       } = require(path.resolve(__dirname, '..', '..', 'gitnexus-runner.cjs'));
 
-      // (a) Write `.nvmrc: 22` for new-project mode when it's missing.
-      if (state.mode === 'new-project') {
-        const nvmrcPath = path.join(stateDir, '.nvmrc');
-        if (!fs.existsSync(nvmrcPath)) {
-          try {
-            fs.writeFileSync(nvmrcPath, '22\n', 'utf8');
-          } catch {
-            // best-effort; never block stack-rule loading on .nvmrc write.
-          }
-        }
-      }
-
-      // (b) Conditional Node-22 banner.
       const nvm22 = findNvmNode22();
       const major = currentNodeMajor();
       const tooOldAndNoFallback =
@@ -753,7 +748,7 @@ function runPostFunctionEdit(filePath) {
   const functionName = match[1];
 
   const projectRoot = findProjectRoot(path.dirname(filePath));
-  const state = readState(projectRoot);
+  const state = readEffectiveState(projectRoot);
   if (state.backend !== 'supabase' && state.backend !== 'our-fork') {
     return null; // not a Supabase project
   }

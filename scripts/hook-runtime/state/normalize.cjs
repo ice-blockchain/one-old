@@ -34,6 +34,10 @@ const {
   mobileStateFromString,
 } = require('./canonicalize.cjs');
 const { KNOWN_ADDONS } = require('./constants.cjs');
+const {
+  stripLocalPreferenceFields,
+  splitLocalPreferences,
+} = require('./local-prefs.cjs');
 
 function arrayEqual(left, right) {
   if (!Array.isArray(left) || !Array.isArray(right)) return false;
@@ -167,7 +171,7 @@ function legacyStatePath(cwd) {
 function readState(cwd) {
   const currentPath = statePath(cwd);
   if (fs.existsSync(currentPath)) {
-    return safeReadJson(currentPath, {});
+    return stripLocalPreferenceFields(safeReadJson(currentPath, {}));
   }
 
   const oldPath = legacyStatePath(cwd);
@@ -176,7 +180,7 @@ function readState(cwd) {
     if (legacy && typeof legacy === 'object') {
       legacy.legacyStateFile = LEGACY_STATE_FILE;
     }
-    return legacy;
+    return stripLocalPreferenceFields(legacy);
   }
 
   // Legacy migration: very old projects used a flat .claude-plugin-mode file
@@ -197,7 +201,7 @@ function writeState(cwd, state) {
   // Stamp the plugin version (which build of traffic-one produced this state).
   // It doubles as the project-state version visible to users; the legacy
   // `pluginVersion` field is intentionally stripped.
-  const source = state && typeof state === 'object' ? { ...state } : {};
+  let source = state && typeof state === 'object' ? { ...state } : {};
   delete source.pluginVersion;
   if (source.stack) {
     canonicalizeStateShape(source);
@@ -205,6 +209,8 @@ function writeState(cwd, state) {
       normalizeState(source, source.mode || 'new-project');
     }
   }
+  const split = splitLocalPreferences(cwd, source);
+  source = split.state;
   const nextState = {
     ...source,
     version: getPluginVersion(),

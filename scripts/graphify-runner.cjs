@@ -12,8 +12,8 @@
 //   2. Probe `pipx`. If found, `pipx install graphifyy --quiet`.
 //   3. Else probe `python3 -m pip`. If found, `python3 -m pip install --user graphifyy --quiet`.
 //   4. Run `graphify . --no-viz --code-only --quiet` synchronously.
-//   5. Stamp `.traffic-one/.one.json` with `graphifyLastRunAt` (success) or
-//      `graphifyLastErrorAt` + `graphifyLastError` (failure). Caller decides
+//   5. Stamp local Traffic One preferences with `graphifyLastRunAt` (success)
+//      or `graphifyLastErrorAt` + `graphifyLastError` (failure). Caller decides
 //      what to do with the result; this runner never throws.
 //
 // Output shape:
@@ -23,7 +23,11 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { getPluginVersion } = require('./hook-runtime/state/state.cjs');
+const {
+  getPluginVersion,
+  readEffectiveState,
+  mergeProjectPrefs,
+} = require('./hook-runtime/state/state.cjs');
 
 const TRAFFIC_ONE = path.join('.traffic-one', '.one.json');
 const LEGACY_TRAFFIC_ONE = '.traffic-one.json';
@@ -42,38 +46,12 @@ function which(cmd) {
 }
 
 function readState(cwd) {
-  const filePath = path.join(cwd, TRAFFIC_ONE);
-  const legacyPath = path.join(cwd, LEGACY_TRAFFIC_ONE);
-  const readablePath = fs.existsSync(filePath) ? filePath : legacyPath;
-  if (!fs.existsSync(readablePath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(readablePath, 'utf8'));
-  } catch {
-    return {};
-  }
+  return readEffectiveState(cwd);
 }
 
 function writeStateMerge(cwd, patch) {
-  const filePath = path.join(cwd, TRAFFIC_ONE);
-  const legacyPath = path.join(cwd, LEGACY_TRAFFIC_ONE);
-  const readablePath = fs.existsSync(filePath) ? filePath : legacyPath;
-  let current = {};
-  if (fs.existsSync(readablePath)) {
-    try {
-      current = JSON.parse(fs.readFileSync(readablePath, 'utf8'));
-    } catch {
-      current = {};
-    }
-  }
-  const merged = { ...current, ...patch };
-  delete merged.pluginVersion;
-  const pluginVersion = getPluginVersion();
-  if (pluginVersion) {
-    merged.version = pluginVersion;
-  }
   try {
-    fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    fs.writeFileSync(filePath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
+    mergeProjectPrefs(cwd, patch);
   } catch {
     // best-effort; the runner never throws
   }
@@ -144,11 +122,11 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   const reportRel = path.join('graphify-out', 'GRAPH_REPORT.md');
   const reportAbs = path.join(cwd, reportRel);
 
-  // Opt-out: a future user can set `graphifyAutoRun: false` in .traffic-one/.one.json
+  // Opt-out: a future user can set `graphifyAutoRun: false` in local preferences
   // to disable foreground bootstrap. Today the default is unset (run).
   const state = readState(cwd);
   if (state.graphifyAutoRun === false) {
-    return { ok: false, action: 'install-skipped', report: null, error: 'graphifyAutoRun is false in .traffic-one/.one.json', durationMs: 0 };
+    return { ok: false, action: 'install-skipped', report: null, error: 'graphifyAutoRun is false in local Traffic One preferences', durationMs: 0 };
   }
 
   // Fresh-report short-circuit. Lets the orchestrator's Phase 5 invoke the
@@ -187,7 +165,7 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     return { ok: false, action, report: null, error: 'graphify ran but GRAPH_REPORT.md was not produced', durationMs: Date.now() - startedAt };
   }
 
-  // Probe `graphify --version` and stamp `.traffic-one/.one.json` → `toolchain.graphify`
+  // Probe `graphify --version` and stamp local preferences → `toolchain.graphify`
   // so doctor.cjs + post-build hooks can compare installed vs recommended.
   let installedVersion = null;
   try {

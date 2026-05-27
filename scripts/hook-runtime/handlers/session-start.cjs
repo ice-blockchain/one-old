@@ -10,6 +10,7 @@ const {
   path,
   pluginRoot,
   readState,
+  readEffectiveState,
   writeState,
   normalizeState,
   detectMode,
@@ -138,7 +139,7 @@ function runSessionStart(rawInput = '') {
     return authRequiredHookResult('SessionStart', { authChoiceWrite: writeResult });
   }
 
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
 
   // MULTI-PROJECT SAFETY: clean non-bootstrap skills left by the previous
   // project's session. The plugin cache is shared across all traffic-one

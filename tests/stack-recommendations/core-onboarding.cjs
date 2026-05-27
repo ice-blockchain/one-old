@@ -19,6 +19,10 @@ module.exports = function registerCoreOnboardingTests(ctx) {
     computeProjectFingerprint,
     test,
     writeJson,
+    writeJsonRaw,
+    readProjectState,
+    readEffectiveState,
+    readProjectPrefs,
     seedOpenCodeResolved,
     withTempDir,
     runHook,
@@ -86,7 +90,8 @@ test('supabase project bundle includes supabase auth default', () => {
 
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
     const context = sessionContextWithMaterializedRules(cwd, payload);
 
     assert.equal(state.backend, 'supabase');
@@ -101,13 +106,14 @@ test('new project onboarding defaults to supabase backend', () => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
     const context = sessionContextWithMaterializedRules(cwd, payload);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
 
     assert.equal(defaultBackendValue(), 'supabase');
     assert.equal(state.version, getPluginVersion());
     assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
     assert.equal(state.mode, 'new-project');
-    assert.ok(state.toolchain, 'new-project state should initialize toolchain');
+    assert.ok(effective.toolchain, 'new-project local prefs should initialize toolchain');
     assert.match(context, /backend=supabase/);
     assert.match(context, /Supabase \(managed Postgres with Auth, Storage, Realtime, and RLS\)/);
   });
@@ -191,7 +197,7 @@ test('new project onboarding includes Codex performance preflight', () => {
   assert.match(agentsMirror, /Before onboarding is resolved, mention only the project-detection\/onboarding flow/);
   assert.match(agentsMirror, /Do not read, invoke, announce, or activate implementation skills/);
   assert.match(agentsMirror, /implementation intent, not onboarding answers/);
-  assert.match(agentsMirror, /Persist Agent Mode\/Performance in `\.traffic-one\/\.one\.json`/);
+  assert.match(agentsMirror, /Persist Agent Mode\/Performance in local Traffic One preferences/);
   assert.match(agentsMirror, /collect a rich dynamic MVP `projectContext`, then ask Mobile App, then Code Graph/);
   assert.match(agentsMirror, /team\.approved=true/);
   assert.match(agentsMirror, /team\.mode="subagents"/);
@@ -768,14 +774,15 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
       tool_input: { command: 'ls -la' },
     });
     const parsed = parseStdoutJson(result);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
     assert.equal(state.version, '2.9.67');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
-    assert.ok(state.toolchain.gitnexus);
+    assert.ok(effective.toolchain.gitnexus);
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
@@ -791,7 +798,7 @@ test('onboarding gate repairs and denies mutating tools once after compact state
       tool_input: { file_path: 'apps/web/src/App.tsx', content: 'export const x = 1;\n' },
     });
     const firstPayload = parseStdoutJson(first);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.equal(firstPayload.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(firstPayload.hookSpecificOutput.permissionDecisionReason, /repaired\/materialized/);
@@ -821,7 +828,7 @@ test('onboarding gate repairs nested stack.codeGraph.provider into top-level cod
       tool_input: { file_path: 'apps/web/src/App.tsx', content: 'export const x = 1;\n' },
     });
     const parsed = parseStdoutJson(result);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
     assert.equal(state.codeGraphProvider, 'gitnexus');
@@ -981,7 +988,7 @@ test('team mode guard records explicit user intent and allows one downgrade writ
       prompt: 'I do not want to use subagents anymore, switch to main-agent.',
     });
     const promptPayload = parseStdoutJson(prompt);
-    let state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    let state = readProjectPrefs(cwd);
 
     assert.equal(promptPayload.systemMessage, 'traffic-one [team mode switch authorized]');
     assert.equal(state.team.modeChangeApproval.from, 'subagents');
@@ -1000,7 +1007,7 @@ test('team mode guard records explicit user intent and allows one downgrade writ
         content: `${JSON.stringify(proposed, null, 2)}\n`,
       },
     });
-    state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    state = readProjectPrefs(cwd);
 
     assert.equal(allowed.stdout, '');
     assert.equal(state.team.modeChangeApproval, undefined);
@@ -1033,7 +1040,7 @@ test('team mode guard denies manual writes of the internal approval marker', () 
       },
     });
     const parsed = parseStdoutJson(result);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectPrefs(cwd);
 
     assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
     assert.match(parsed.hookSpecificOutput.permissionDecisionReason, /modeChangeApproval/);
@@ -1108,7 +1115,7 @@ test('team mode guard does not record approval for vague subagent availability t
     runHook(cwd, 'user-prompt-submit', {
       prompt: 'Subagents are unavailable right now.',
     });
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectPrefs(cwd);
 
     assert.equal(state.team.modeChangeApproval, undefined);
   });

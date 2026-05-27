@@ -11,7 +11,7 @@ const {
   path,
   statePath,
   legacyStatePath,
-  readState,
+  readEffectiveState,
   normalizeState,
   detectMode,
   isKnownStack,
@@ -91,7 +91,7 @@ function runUserPromptSubmit(rawInput = '') {
     };
   }
 
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   if (!state) {
     return {
       stdout: JSON.stringify({ systemMessage: 'traffic-one active' }),
@@ -112,7 +112,7 @@ function runUserPromptSubmit(rawInput = '') {
           hookEventName: 'UserPromptSubmit',
           additionalContext: '[ACTIVE STACK: ' + stack + ']\n\n'
             + 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. '
-            + 'The next `.traffic-one/.one.json` write may change `performance.level` to "low" and `team.mode` to "main-agent"; '
+            + 'The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; '
             + 'this authorization is single-use and expires in 10 minutes.',
         },
       }),
@@ -135,7 +135,9 @@ function runUserPromptSubmit(rawInput = '') {
   }
 
   const validStack = state.stack && isKnownStack(state.stack);
-  const isIncomplete = !validStack || state.onboardingComplete !== true;
+  const isIncomplete = !validStack
+    || state.onboardingComplete !== true
+    || (state.mode === 'new-project' && isNewProjectOnboardingIncomplete(normalizedState));
 
   // Re-inject the short onboarding reminder while a new project hasn't yet
   // persisted a valid stack. SessionStart's full directive can scroll out of

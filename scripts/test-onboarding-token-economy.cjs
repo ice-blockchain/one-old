@@ -43,6 +43,9 @@ const {
   normalizeState,
   writeState,
   readState,
+  readEffectiveState,
+  readProjectPrefs,
+  splitLocalPreferences,
   initializeToolchainState,
 } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
 const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives', 'directives.cjs'));
@@ -51,15 +54,40 @@ const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
 function writeJson(filePath, data) {
+  let next = data;
+  if (
+    path.basename(filePath) === '.one.json'
+    && path.basename(path.dirname(filePath)) === '.traffic-one'
+    && data
+    && typeof data === 'object'
+    && !Array.isArray(data)
+  ) {
+    const projectRoot = path.dirname(path.dirname(filePath));
+    next = splitLocalPreferences(projectRoot, data).state;
+  }
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(filePath, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
 }
 
 function withTempDir(fn) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'traffic-one-oc-'));
+  const originalXdgStateHome = process.env.XDG_STATE_HOME;
+  const originalProjectPrefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.XDG_STATE_HOME = path.join(tempDir, '.xdg-state');
+  delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   try {
     return fn(tempDir);
   } finally {
+    if (originalXdgStateHome === undefined) {
+      delete process.env.XDG_STATE_HOME;
+    } else {
+      process.env.XDG_STATE_HOME = originalXdgStateHome;
+    }
+    if (originalProjectPrefsPath === undefined) {
+      delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    } else {
+      process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = originalProjectPrefsPath;
+    }
     fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
   }
 }
@@ -164,10 +192,14 @@ test('normalizeState leaves a missing openCode untouched (model writes it)', () 
   assert.equal(state.openCode, undefined);
 });
 
-test('openCode round-trips through writeState/readState without being dropped', () => {
+test('openCode round-trips through local preferences and effective state', () => {
   withTempDir((cwd) => {
     writeState(cwd, completeNewProjectState());
-    const round = readState(cwd);
+    const project = readState(cwd);
+    const prefs = readProjectPrefs(cwd);
+    const round = readEffectiveState(cwd);
+    assert.equal(project.openCode, undefined, 'openCode is stripped from shared project state');
+    assert.ok(prefs.openCode, 'openCode was saved to local preferences');
     assert.ok(round.openCode, 'openCode survived the write/read cycle');
     assert.equal(round.openCode.enabled, false);
     assert.equal(round.openCode.source, 'prompted');
@@ -257,6 +289,8 @@ test('existing codebase surfaces the OpenCode opt-in once, then never again', ()
     state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.openCode = { enabled: false, source: 'prompted', decidedAt: '2026-05-25T00:00:00Z' };
     writeJson(statePath, state);
+    assert.equal(JSON.parse(fs.readFileSync(statePath, 'utf8')).openCode, undefined, 'openCode is local-only');
+    assert.equal(readProjectPrefs(cwd).openCode.enabled, false);
 
     const second = parseStdoutJson(runHook(cwd, 'user-prompt-submit', { prompt: 'now add a footer' }));
     assert.notEqual(

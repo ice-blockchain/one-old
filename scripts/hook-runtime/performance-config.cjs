@@ -12,7 +12,7 @@
 const PERFORMANCE_LEVEL_IDS = new Set(['low', 'balanced', 'high']);
 
 // Each entry is the authoritative config for that level. Keys:
-//   teamMode            — maps to .traffic-one/.one.json team.mode
+//   teamMode            — maps to local Traffic One preference team.mode
 //   useRoadmapChecklist — only true for low; main agent walks roles as a checklist
 //   agents              — map of role → { tier }; empty for low (no subagents)
 const PERFORMANCE_CONFIG = {

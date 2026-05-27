@@ -4,8 +4,8 @@
 // Team Confirmation of new-project onboarding (only for balanced / high performance
 // levels): show the user the exact subagent line-up — role → tier → host
 // model — and let them either Approve, Re-pick the performance level, or
-// describe per-role overrides in free chat. Overrides are persisted to
-// `.traffic-one/.one.json` as `team.overrides` and read at spawn time so the
+// describe per-role overrides in free chat. Overrides are persisted in local
+// Traffic One preferences as `team.overrides` and read at spawn time so the
 // configured model parameter matches what the user agreed to.
 
 const { PERFORMANCE_CONFIG } = require('./performance-config.cjs');
@@ -43,7 +43,7 @@ function renderTeamLines(level, overrides) {
 
 // Onboarding popup directive. Inserted into the new-project SessionStart
 // directive right after the Performance popup so the orchestrator asks the
-// user to approve / re-pick / customise BEFORE writing `.traffic-one/.one.json`.
+// user to approve / re-pick / customise BEFORE saving final onboarding state.
 function teamConfirmationPopupBlock() {
   const balancedRows = renderTeamLines('balanced').join('\n');
   const highRows     = renderTeamLines('high').join('\n');
@@ -53,9 +53,9 @@ function teamConfirmationPopupBlock() {
     '  the team line-up, ASK the user via the host popup tool, and wait for',
     '  an explicit user answer. Auto-approving is a hard violation AND will',
     '  be physically denied by the spawn gate — any Task/spawn_agent call',
-    '  while `.traffic-one/.one.json` has `team.approved !== true` returns',
+    '  while local Traffic One preferences have `team.approved !== true` returns',
     '  "Team Confirmation gate" denial. The following are all violations of this rule:',
-    '    - Writing `.traffic-one/.one.json` with `team.approved: true` before the',
+    '    - Saving local preferences with `team.approved: true` before the',
     '      user has actually clicked Approve in popup 2.',
     '    - Saying "I\'ll auto-approve the default", "the default looks fine",',
     '      "I\'ll proceed with Balanced", "to keep moving I\'ll approve", or any',
@@ -72,7 +72,7 @@ function teamConfirmationPopupBlock() {
     '      a Balanced/High multi-agent run.',
     '  After the Performance popup is answered with "Balanced" or "High",',
     '  render the configured subagent line-up and ask the user to approve it',
-    '  BEFORE writing `.traffic-one/.one.json` and BEFORE auto-launching the team.',
+    '  BEFORE saving local preferences and BEFORE auto-launching the team.',
     '  Skip this popup entirely ONLY when the Performance answer is "Low" —',
     '  Low runs all roles in this thread with no per-agent model assignment.',
     '',
@@ -135,12 +135,12 @@ function teamConfirmationPopupBlock() {
     '        the assistant message printed in STEP 1. The question MUST NOT',
     '        try to compress the table into the headline.)',
     '      options:',
-    '      - "Approve" — Write `.traffic-one/.one.json` with the listed team and auto-launch the subagents.',
+    '      - "Approve" — Save local preferences with the listed team and auto-launch the subagents.',
     '      - "Re-pick performance" — Reopen the Performance popup so the user can choose a different level.',
     '      - "Customise" — Ask the user (free chat) which roles to override and to which tier (highest|balanced|cheapest).',
     '',
     '  Answer handling:',
-    '    - "Approve" → write `.traffic-one/.one.json` with',
+    '    - "Approve" → save local Traffic One preferences with',
     '          "team": { "mode": "subagents", "source": "prompted",',
     '                    "approved": true,',
     '                    "overrides": <collected overrides or omitted if empty> }',
@@ -148,7 +148,7 @@ function teamConfirmationPopupBlock() {
     '      it, every Task/spawn_agent call will be denied. Then auto-launch',
     '      the Traffic One subagent team.',
     '    - "Re-pick performance" → discard any pending overrides and re-show',
-    '      the Performance popup (popup 1). Do NOT write `.traffic-one/.one.json`',
+    '      the Performance popup (popup 1). Do NOT save final onboarding state',
     '      until the user has approved a team for the new level.',
     '    - "Customise" → ask the user which roles/tiers to change',
     '      (e.g. "senior-reviewer = highest, senior-tester = balanced").',
@@ -158,7 +158,7 @@ function teamConfirmationPopupBlock() {
     '      new line-up so the user can re-approve. Loop until "Approve" or',
     '      "Re-pick performance".',
     '',
-    '  Final schema in `.traffic-one/.one.json` after Approve:',
+    '  Final local preference shape after Approve:',
     '      "team": {',
     '        "mode": "subagents",',
     '        "source": "prompted",',

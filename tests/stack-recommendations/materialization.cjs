@@ -19,6 +19,10 @@ module.exports = function registerMaterializationTests(ctx) {
     computeProjectFingerprint,
     test,
     writeJson,
+    writeJsonRaw,
+    readProjectState,
+    readEffectiveState,
+    readProjectPrefs,
     seedOpenCodeResolved,
     withTempDir,
     runHook,
@@ -206,7 +210,8 @@ test('existing project SessionStart includes docs reconciliation guidance', () =
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
     const context = sessionContextWithMaterializedRules(cwd, payload);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
 
     assert.equal(state.mode, 'existing-codebase');
     assert.match(context, /auto-documentation baseline reconciliation/);
@@ -533,7 +538,8 @@ test('existing React Native project SessionStart includes docs reconciliation gu
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
 
     assert.equal(state.mode, 'existing-codebase');
     assert.equal(state.stack, 'custom-frontend');
@@ -557,7 +563,8 @@ test('existing Go project SessionStart includes docs reconciliation guidance', (
     const result = runHook(cwd, 'session-start', '');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
 
     assert.equal(state.mode, 'existing-codebase');
     assert.equal(state.stack, 'custom-backend');
@@ -902,7 +909,8 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const result = runHook(cwd, 'materialize-project');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
 
     assert.match(context, /Project-local rules\/skills/);
     assert.equal(state.version, '2.9.67');
@@ -911,7 +919,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     assert.equal(state.mobile.framework, 'none');
     assert.equal(state.mobile.enabled, false);
     assert.ok(Array.isArray(state.technologies.frontend));
-    assert.ok(state.toolchain.gitnexus);
+    assert.ok(effective.toolchain.gitnexus);
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
@@ -930,7 +938,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     const result = runHook(cwd, 'materialize-project');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.match(context, /Project-local rules\/skills/);
     assert.equal(state.version, '2.9.67');
@@ -969,7 +977,7 @@ test('post-stack-setup upgrades compact state written directly to .traffic-one/.
       tool_input: { file_path: filePath },
     });
     const payload = parseStdoutJson(result);
-    const state = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
     assert.equal(state.stack, 'default');
@@ -989,7 +997,7 @@ test('generic post-tool convergence upgrades compact traffic-one state', () => {
       tool_input: { tool_name: 'future-host-patch-tool' },
     });
     const payload = parseStdoutJson(result);
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.match(payload.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
     assert.equal(state.stack, 'default');
@@ -1009,7 +1017,7 @@ test('materialize-project canonicalizes mobile source aliases before validation'
     const result = runHook(cwd, 'materialize-project');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.match(context, /Project-local rules\/skills/);
     assert.equal(state.mobile.source, 'prompted');
@@ -1028,7 +1036,7 @@ test('materialize-project canonicalizes team aliases before validation', () => {
     const result = runHook(cwd, 'materialize-project');
     const payload = parseStdoutJson(result);
     const context = payload.hookSpecificOutput.additionalContext;
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readEffectiveState(cwd);
 
     assert.match(context, /Project-local rules\/skills/);
     assert.equal(state.team.mode, 'subagents');
@@ -1075,7 +1083,7 @@ test('post-tool convergence materializes complete state without write-specific p
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'AGENTS.local.md')));
-    assert.match(fs.readFileSync(path.join(cwd, '.nvmrc'), 'utf8'), /^22\n$/);
+    assert.equal(fs.existsSync(path.join(cwd, '.nvmrc')), false);
     assert.match(rootAgents, /Traffic One Local Agent Context/);
     assert.match(rootAgents, /Preserved Project Notes/);
     assert.match(rootAgents, /Keep this note/);

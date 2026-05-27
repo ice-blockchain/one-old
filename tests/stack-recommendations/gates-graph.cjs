@@ -19,6 +19,10 @@ module.exports = function registerGatesGraphTests(ctx) {
     computeProjectFingerprint,
     test,
     writeJson,
+    writeJsonRaw,
+    readProjectState,
+    readEffectiveState,
+    readProjectPrefs,
     seedOpenCodeResolved,
     withTempDir,
     runHook,
@@ -832,14 +836,15 @@ test('writeState stamps plugin version in .traffic-one/.one.json version field',
   const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   withTempDir((cwd) => {
     writeState(cwd, { stack: 'react-realtime-monorepo', mode: 'new-project' });
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
+    const state = readProjectState(cwd);
+    const effective = readEffectiveState(cwd);
     const pluginVersion = getPluginVersion();
     // The plugin version helper reads from the plugin manifest.
     assert.match(pluginVersion, /^\d+\.\d+\.\d+$/);
     assert.equal(state.version, pluginVersion);
     assert.equal(Object.prototype.hasOwnProperty.call(state, 'pluginVersion'), false);
     assert.equal(state.stack, 'default');
-    assert.ok(state.toolchain.gitnexus);
+    assert.ok(effective.toolchain.gitnexus);
   });
 });
 
@@ -1010,7 +1015,7 @@ test('runPostStackSetup warns when codeGraphProvider is missing', () => {
   });
 });
 
-test('runPostStackSetup warns when codeGraphProvider is set to an unknown value', () => {
+test('runPostStackSetup treats unknown local codeGraphProvider as missing', () => {
   withTempDir((cwd) => {
     const filePath = path.join(cwd, '.traffic-one/.one.json');
     writeJson(filePath, {
@@ -1028,9 +1033,8 @@ test('runPostStackSetup warns when codeGraphProvider is set to an unknown value'
       tool_input: { file_path: filePath },
     });
     const parsed = parseStdoutJson(result);
-    assert.match(parsed.systemMessage, /unknown codeGraphProvider/);
-    assert.match(parsed.systemMessage, /bogus-provider/);
-    assert.match(parsed.systemMessage, /gitnexus, graphify/);
+    assert.match(parsed.systemMessage, /missing required `codeGraphProvider`/);
+    assert.doesNotMatch(parsed.systemMessage, /bogus-provider/);
   });
 });
 
@@ -1177,7 +1181,7 @@ test('gitnexus-runner uses absolute nvm-v22 gitnexus binary even when injected n
   });
 });
 
-test('runPostStackSetup auto-writes .nvmrc with `22` when codeGraphProvider is gitnexus on new-project', () => {
+test('runPostStackSetup does NOT auto-write .nvmrc from local gitnexus preference', () => {
   withTempDir((cwd) => {
     const filePath = path.join(cwd, '.traffic-one/.one.json');
     writeJson(filePath, completeDefaultState({
@@ -1190,10 +1194,8 @@ test('runPostStackSetup auto-writes .nvmrc with `22` when codeGraphProvider is g
 
     runHook(cwd, 'post-stack-setup', { tool_input: { file_path: filePath } });
 
-    // .nvmrc must now exist with content `22`.
     const nvmrcPath = path.join(cwd, '.nvmrc');
-    assert.equal(fs.existsSync(nvmrcPath), true, '.nvmrc must be auto-written');
-    assert.equal(fs.readFileSync(nvmrcPath, 'utf8').trim(), '22');
+    assert.equal(fs.existsSync(nvmrcPath), false, '.nvmrc must stay project-owned');
   });
 });
 

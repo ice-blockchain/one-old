@@ -14,6 +14,7 @@ const {
   parseJsonText,
   safeReadJson,
   readState,
+  readEffectiveState,
   statePath,
   legacyStatePath,
   writeState,
@@ -86,7 +87,7 @@ function runCheckOnboardingGate(rawInput) {
   if (authGate) return authGate;
 
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   const mode = state.mode || detectMode(cwd);
   const effectiveState = {
     ...state,
@@ -199,7 +200,7 @@ function runCheckAgentModel(rawInput) {
   }
 
   const cwd = process.cwd();
-  const state = readState(cwd);
+  const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return { stdout: '', exitCode: 0 };
 
   // Onboarding-only: enforce the performance-level model just for the first
@@ -209,7 +210,7 @@ function runCheckAgentModel(rawInput) {
 
   if (!isCompletedTrafficOneMaterialization(cwd, state)) {
     materializeProjectIfNeeded(cwd, 'agent spawn preflight convergence');
-    const refreshed = readState(cwd);
+      const refreshed = readEffectiveState(cwd);
     if (isCompletedTrafficOneMaterialization(cwd, refreshed)) {
       return denyPreToolUse(agentMaterializationDenyReason());
     }
@@ -225,8 +226,8 @@ function runCheckAgentModel(rawInput) {
   // (e.g. user picked Balanced but state says low). Block and ask to fix first.
   if (teamModeForLevel(level) === 'main-agent') {
     return denyPreToolUse(
-      `Performance gate: \`.traffic-one/.one.json\` records performance.level="${level}" (main-agent only), but you are spawning the \`${role}\` subagent. `
-      + 'If the user chose Balanced or High, first correct `.traffic-one/.one.json` (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. '
+      `Performance gate: local Traffic One preferences record performance.level="${level}" (main-agent only), but you are spawning the \`${role}\` subagent. `
+      + 'If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. '
       + 'If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.',
     );
   }
@@ -239,10 +240,10 @@ function runCheckAgentModel(rawInput) {
   if (!isTeamApproved(state.team)) {
     return denyPreToolUse(
       `Team Confirmation gate: performance.level="${level}" requires the user to explicitly approve the subagent role/model line-up before ANY subagent can be spawned. `
-      + '`.traffic-one/.one.json` currently has `team.approved !== true`, so the user has not yet confirmed. '
+      + 'Local Traffic One preferences currently have `team.approved !== true`, so the user has not yet confirmed. '
       + 'Ask the host popup tool (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI) with header "Team", question "Here is the subagent team for ' + level + ' mode — approve or change?", body containing the role→tier→model line-up (use `tierModelTable` from `model-tiers.cjs`), and options "Approve" / "Re-pick performance" / "Customise". '
-      + 'When the user replies "Approve", re-write `.traffic-one/.one.json` with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
-      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one/.one.json`; do not bypass this gate for `team.mode="subagents"`.',
+      + 'When the user replies "Approve", save local Traffic One preferences with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
+      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local preferences; do not bypass this gate for `team.mode="subagents"`.',
     );
   }
 
@@ -277,7 +278,7 @@ function runCheckAgentModel(rawInput) {
 
 // ── PreToolUse: architecture write/edit guard ────────────────────────────────
 function readStack() {
-  const state = readState(process.cwd());
+  const state = readEffectiveState(process.cwd());
   return typeof state.stack === 'string' ? state.stack : null;
 }
 
@@ -303,7 +304,7 @@ function runCheckArchitectureWrite(rawInput) {
       : typeof toolInput.new_string === 'string'
         ? toolInput.new_string
         : '';
-  const stateForArchitecture = readState(projectRoot);
+  const stateForArchitecture = readEffectiveState(projectRoot);
   const isNative = isNativeState(stateForArchitecture);
   const violations = [];
 
@@ -440,7 +441,7 @@ function runCheckArchitectureWrite(rawInput) {
       // Should not reach: subagentMayWriteFeatureSource would have returned true.
       reason = `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`;
     }
-    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one/.one.json`; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
+    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
     violations.push(reason);
   }
 
@@ -686,7 +687,7 @@ function runCheckLibraryAllowlist(rawInput) {
   // Deploy gate runs first — production publishes are gated regardless of
   // whether the command also matches an install regex.
   if (DEPLOY_RE.test(command)) {
-    const stateForDeploy = readState(process.cwd());
+    const stateForDeploy = readEffectiveState(process.cwd());
     const approvedAt = typeof stateForDeploy.lastShipperApprovalAt === 'string'
       ? Date.parse(stateForDeploy.lastShipperApprovalAt)
       : 0;
@@ -709,7 +710,7 @@ function runCheckLibraryAllowlist(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const state = readState(process.cwd());
+  const state = readEffectiveState(process.cwd());
   const stack = typeof state.stack === 'string' ? state.stack : null;
   const hits = forbiddenForStack(state.stack ? state : stack, allowsNextjs(state)).filter(([pattern]) => new RegExp(pattern).test(command));
 
