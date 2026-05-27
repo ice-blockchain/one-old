@@ -117,7 +117,7 @@ function makeExistingProject(cwd) {
 // A complete new-project state, so tests can isolate a single missing field.
 function completeNewProjectState(overrides = {}) {
   return {
-    version: '2.9.67',
+    version: '2.9.69',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',

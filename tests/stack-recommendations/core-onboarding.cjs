@@ -390,7 +390,7 @@ test('incomplete new-project state exposes only bootstrap skills', () => {
     mobile: { enabled: false, framework: 'none', source: 'prompted' },
   });
 
-  assert.deepEqual([...active].sort(), ['detect-project', 'stack-setup', 'traffic-one-doctor']);
+  assert.deepEqual([...active].sort(), ['auth', 'detect-project', 'stack-setup', 'traffic-one-doctor']);
   for (const skillName of [
     'create-component',
     'create-feature',
@@ -778,7 +778,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const effective = readEffectiveState(cwd);
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.67');
+    assert.equal(state.version, '2.9.69');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -1237,7 +1237,7 @@ test('onboarding gate still denies compact state when graph choice is missing', 
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one/.one.json'), {
-      version: '2.9.67',
+      version: '2.9.69',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',

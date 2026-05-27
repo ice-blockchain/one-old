@@ -10,10 +10,11 @@ const path = require('path');
 
 const SKILLS_TEMPLATES_DIR = 'skills-templates';
 const SKILLS_ACTIVE_DIR    = 'skills';
-const BOOTSTRAP_SKILLS     = new Set(['stack-setup', 'detect-project', 'traffic-one-doctor']);
+const BOOTSTRAP_SKILLS     = new Set(['auth', 'stack-setup', 'detect-project', 'traffic-one-doctor']);
 
 const SKILL_FILTERS = {
   _common: new Set([
+    'auth',
     'stack-setup', 'library-pick', 'context-budget', 'execution-discipline',
     'git-commit', 'refactor', 'security-review', 'security-scan',
     'detect-project', 'repo-scan', 'verification-loop', 'tdd-workflow',

@@ -35,6 +35,11 @@ const {
   sessionExpiredPromptRequest,
 } = require('./_helpers.cjs');
 
+// The auth-gate directive WORDING lives in the editable `traffic-one:auth`
+// default skill (skills/auth/SKILL.md). This reads the per-branch text blocks
+// from it; the deterministic decisions + enforcement below stay in JS.
+const { authSkillBlock } = require('./auth-skill.cjs');
+
 // Absolute path to THIS plugin version's auth script. Auth instructions must
 // point the agent here (not a cwd-relative `scripts/...` path, which doesn't
 // exist in a user's project and forces a filesystem search that can land on a
@@ -46,9 +51,8 @@ function authChoicePersistenceDiagnostic(writeResult) {
   const code = writeResult.code ? ` (${writeResult.code})` : '';
   return [
     '',
-    `Diagnostic: Traffic One could not persist the auth choice state${code}.`,
-    'Keep Traffic One inactive and blocked until the user authenticates or chooses to continue without Traffic One. The prompt may repeat until storage is writable.',
-    'Run Traffic One doctor to check hook/auth storage setup if this persists.',
+    authSkillBlock('persistence-diagnostic', { CODE: code },
+      `Diagnostic: Traffic One could not persist the auth choice state${code}. The prompt may repeat until storage is writable.`),
   ].join('\n');
 }
 
@@ -58,19 +62,8 @@ function authRequiredHookResult(hookEventName, options = {}) {
   const inactiveMessage = [
     message,
     '',
-    'Traffic One is inactive for this prompt because authentication is missing, expired, or rejected.',
-    '',
-    'Your next assistant action must present a host modal selector with exactly two choices when a modal/popup tool is available:',
-    '',
-    'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
-    'Choices:',
-    '- Authenticate Traffic One (Recommended)',
-    '- Continue without Traffic One',
-    '',
-    `If the user chooses Authenticate Traffic One, ask for the Traffic One API key (use a secure host input/modal) and then STOP and wait. When the user pastes the key, Traffic One authenticates it automatically inside the hook (it runs login + status internally). Do NOT run \`traffic-one-auth.cjs\` or any auth command yourself via Bash/shell — Claude Code's security classifier blocks passing a key to a script, and the hook already performs the login. Do not Write or Edit \`auth.json\` directly, do not echo the key, and do not ask the user to run shell commands.`,
-    'If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.',
-    '',
-    'Do not answer pending Traffic One onboarding choices, inspect, scaffold, or build through Traffic One until the user makes this auth choice.',
+    authSkillBlock('session-start-gate', {},
+      'Traffic One authentication is required. Ask the user to Authenticate Traffic One (Recommended) or Continue without Traffic One; if authenticating, request the API key via a secure input and stop.'),
     persistenceDiagnostic,
   ].join('\n');
   const hookSpecificOutput = {
@@ -324,16 +317,17 @@ function authChoiceHookResult(choice) {
 
   const writeResult = tryWriteAuthChoice('continue-without-traffic-one', process.cwd());
   const rememberedLine = writeResult.ok
-    ? 'This choice has been remembered for this project so the auth prompt is not repeated here while it remains active.'
-    : 'This choice could not be persisted, so the auth prompt may repeat until Traffic One auth-choice storage is writable.';
+    ? authSkillBlock('remembered-yes', {},
+        'This choice has been remembered for this project so the auth prompt is not repeated here while it remains active.')
+    : authSkillBlock('remembered-no', {},
+        'This choice could not be persisted, so the auth prompt may repeat until Traffic One auth-choice storage is writable.');
   const payload = {
     systemMessage: 'traffic-one inactive: user chose to continue without Traffic One',
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
       additionalContext: [
-        'The user chose to continue without using the Traffic One plugin.',
-        'Proceed with the user request using normal non-Traffic-One behavior only.',
-        'Do not run Traffic One skills, onboarding, setup, reporting, materialization, agents, or hooks for this request.',
+        authSkillBlock('continue-without', {},
+          'The user chose to continue without using the Traffic One plugin. Proceed with the user request using normal non-Traffic-One behavior only.'),
         rememberedLine,
         authChoicePersistenceDiagnostic(writeResult).trim(),
       ].join('\n'),
@@ -343,20 +337,8 @@ function authChoiceHookResult(choice) {
 }
 
 function authChoiceRequiredDenyReason() {
-  return [
-    'Traffic One authentication choice required before tool use.',
-    '',
-    'Authentication is missing, expired, or rejected. The assistant must not continue with tools until the user chooses one path.',
-    '',
-    'Present this as a host modal selector when a modal/popup tool is available:',
-    'Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?',
-    'Choices: Authenticate Traffic One (Recommended); Continue without Traffic One.',
-    '',
-    `If Authenticate Traffic One is chosen, ask for the API key (secure input) and STOP. When the user pastes the key, Traffic One authenticates it automatically inside the hook — do NOT invoke \`traffic-one-auth.cjs\` or any auth command via Bash/shell yourself (Claude Code's security classifier blocks passing a key to a script; the hook runs login + status internally). Do not Write/Edit \`auth.json\` directly, and do not ask the user to run bash or shell commands.`,
-    'If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.',
-    '',
-    'Do not inspect, scaffold, install, edit, or build before the user answers this auth choice.',
-  ].join('\n');
+  return authSkillBlock('pre-tool-deny', {},
+    'Traffic One authentication choice required before tool use. Ask the user to Authenticate Traffic One (Recommended) or Continue without Traffic One.');
 }
 
 // True only for a previously-authenticated session that timed out: the stored
@@ -370,15 +352,8 @@ function isSessionExpiryReauth(authGate, env = process.env) {
 }
 
 function sessionExpiredReauthContext() {
-  return [
-    'Your Traffic One session has expired. Do not continue implementation yet.',
-    'This is a session refresh, not first-time setup — the user already authenticated, so only a fresh API key is needed. Do not offer "Continue without Traffic One" here.',
-    'Ask the user for their Traffic One API key using a secure host input/modal if available.',
-    'After the user provides the key, re-authenticate internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
-    `Automatically means: when the user pastes the key, Traffic One authenticates it inside the hook (login + status run internally). Do NOT invoke \`traffic-one-auth.cjs\` or any auth command via Bash/shell yourself — Claude Code's security classifier blocks passing a key to a script. Just ask for the key and STOP; the hook completes the refresh. Do not Write or Edit \`auth.json\` directly.`,
-    'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
-    'Tip: export TRAFFIC_ONE_AUTH_KEY in the environment so the session refreshes automatically without prompting.',
-  ].join('\n');
+  return authSkillBlock('session-expired', {},
+    'Your Traffic One session has expired. Ask the user for their Traffic One API key to re-authenticate; do not offer Continue without Traffic One.');
 }
 
 function sessionExpiredReauthPreToolResult() {
@@ -410,11 +385,8 @@ function parseAuthStatusOutput(stdout) {
 
 function authApiKeyPromptHookResult(options = {}) {
   const additionalContext = [
-    'The user chose to authenticate Traffic One. Do not continue implementation yet.',
-    'Ask the user for the Traffic One API key using a secure host input/modal if available.',
-    'After the user enters the key, run authentication internally with TRAFFIC_ONE_AUTH_KEY and verify status internally.',
-    `Automatically means: when the user pastes the key, Traffic One authenticates it inside the hook (login + status run internally) — you do NOT run any command. Do NOT invoke \`traffic-one-auth.cjs\` or any auth command via Bash/shell yourself: Claude Code's security classifier blocks passing a key to a script, and the hook already mints the session. Just ask for the key and STOP. Do not Write or Edit \`auth.json\` directly.`,
-    'Do not ask the user to run bash or shell commands. Do not echo the key back to the user.',
+    authSkillBlock('api-key-prompt', {},
+      'The user chose to authenticate Traffic One. Ask for the Traffic One API key via a secure input and STOP; the hook authenticates it internally.'),
     authChoicePersistenceDiagnostic(options.authChoiceWrite).trim(),
   ].join('\n');
   const payload = {
@@ -468,11 +440,8 @@ function authLoginFromPromptHookResult(apiKey) {
       systemMessage: 'traffic-one authentication failed',
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext: [
-          'Traffic One authentication failed while running the internal login/status flow.',
-          result.reason ? `Reason: ${result.reason}` : 'Reason: unknown failure',
-          'Ask the user to re-enter the API key. Do not echo the key and do not ask the user to run shell commands.',
-        ].join('\n'),
+        additionalContext: authSkillBlock('login-failed', { REASON: result.reason || 'unknown failure' },
+          `Traffic One authentication failed (reason: ${result.reason || 'unknown failure'}). Ask the user to re-enter the API key.`),
       },
     };
     return { stdout: JSON.stringify(payload), exitCode: 0 };
@@ -481,10 +450,8 @@ function authLoginFromPromptHookResult(apiKey) {
     systemMessage: 'traffic-one authenticated',
     hookSpecificOutput: {
       hookEventName: 'UserPromptSubmit',
-      additionalContext: [
-        'Traffic One authentication completed internally and status reports authenticated.',
-        'Continue the user request with Traffic One enabled.',
-      ].join('\n'),
+      additionalContext: authSkillBlock('login-success', {},
+        'Traffic One authentication completed internally and status reports authenticated. Continue the user request with Traffic One enabled.'),
     },
   };
   return { stdout: JSON.stringify(payload), exitCode: 0 };

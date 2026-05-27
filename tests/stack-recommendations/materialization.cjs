@@ -680,8 +680,8 @@ test('normalizeState initializes toolchain and preserves existing stamps', () =>
 
 test('plugin cache detection covers both Claude and Codex installs', () => {
   const { isManagedPluginCachePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.67');
-  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.67');
+  const codexCache = path.join(path.sep, 'Users', 'dev', '.codex', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.69');
+  const claudeCache = path.join(path.sep, 'Users', 'dev', '.claude', 'plugins', 'cache', 'traffic-one-local', 'traffic-one', '2.9.69');
   const sourceCheckout = path.join(path.sep, 'Users', 'dev', 'src', 'traffic-one');
 
   assert.equal(isManagedPluginCachePath(codexCache), true);
@@ -913,7 +913,7 @@ test('materialize-project normalizes partial state and writes local rules/skills
     const effective = readEffectiveState(cwd);
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.67');
+    assert.equal(state.version, '2.9.69');
     assert.equal(state.confirmed, true);
     assert.equal(state.onboardingComplete, true);
     assert.equal(state.mobile.framework, 'none');
@@ -941,7 +941,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     const state = readEffectiveState(cwd);
 
     assert.match(context, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.67');
+    assert.equal(state.version, '2.9.69');
     assert.equal(state.project, undefined);
     assert.equal(state.mode, 'new-project');
     assert.equal(state.stack, 'default');
@@ -958,7 +958,7 @@ test('materialize-project upgrades compact v1 traffic-one state and writes local
     assert.equal(state.onboardingComplete, true);
     assert.ok(state.confirmedAt);
     assert.equal(state.materializedStack, 'default|react-vite|supabase|none');
-    assert.equal(state.materializedVersion, '2.9.67');
+    assert.equal(state.materializedVersion, '2.9.69');
     assert.ok(state.materializedAt);
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
@@ -1134,7 +1134,7 @@ test('pre-tool convergence repairs missing materialized assets before feature ga
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: '2026-05-13T10:00:00Z',
-      materializedVersion: '2.9.67',
+      materializedVersion: '2.9.69',
     });
 
     const result = runHook(cwd, 'check-onboarding-gate', {
@@ -1156,7 +1156,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
       ...completeDefaultState(),
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.67',
+      materializedVersion: '2.9.69',
       currentRunId: '2026-05-18T12-04-52Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },
