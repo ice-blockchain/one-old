@@ -27,7 +27,6 @@ files exist:
 5. `.traffic-one/known-issues.md` — avoid re-fixing known bugs in loops.
 6. `.traffic-one/schema.sql` — current DB schema snapshot for DB-backed apps.
 7. `.traffic-one/agent-log.md` — recent session summaries only; scan the tail.
-8. `.traffic-one/mcp.json` — MCP server inventory; env var names only.
 
 Then read `.traffic-one/plan.md`, handoff digests, graphify reports, and raw
 source as needed.
@@ -89,16 +88,17 @@ normal feature work:
   build output, reports, and binary assets.
 - `.traffic-one/agent-log.md`: append a short session summary after meaningful
   work: what changed, decisions made, verification run, and next follow-up.
-- `.traffic-one/mcp.json`: MCP server config inventory. Store server names,
-  commands, scopes, and required env var names; never store token values.
 - `.traffic-one/skills/`: reusable local skills or commands such as
   `security-check` and `deploy-staging` when the project needs them.
 - `.traffic-one/rules/**`, `.traffic-one/manifest.json`, and
   `.traffic-one/skills/`: generated active stack bundle materialized from the
   plugin before feature-source work begins. Root `AGENTS.md` contains the
   compact active rule kernel and index by default, with full rule files under
-  `.traffic-one/rules/**`; root `CLAUDE.md` should symlink to root `AGENTS.md`
-  when safe.
+  `.traffic-one/rules/**`. If root `AGENTS.md` already exists, preserve its
+  current content and merge the Traffic One generated context into a managed
+  block. Root `CLAUDE.md` should symlink to root `AGENTS.md` only when
+  `CLAUDE.md` does not already exist; existing `CLAUDE.md` content must be
+  preserved and merged with a managed Traffic One pointer block.
 
 Active rule/skill materialization is not hand-authored memory. After
 `.traffic-one/.one.json` has the complete state schema and onboarding is complete,
@@ -116,7 +116,9 @@ The expected result is a stamped `.traffic-one/.one.json` with `version`,
 project-local `.traffic-one/rules/**`, `.traffic-one/manifest.json`,
 `.traffic-one/skills/**`, root `AGENTS.md` containing the compact active rule
 kernel/index (or the full bundle only when explicitly opted in), and root
-`CLAUDE.md` symlinked to `AGENTS.md` when safe. Never write the
+`CLAUDE.md` symlinked to `AGENTS.md` only when it did not already exist.
+Existing root `AGENTS.md` and `CLAUDE.md` files are merged in place and never
+replaced. Never write the
 `materialized*` fields by hand; the plugin treats them as valid only when the
 generated manifest, rules, skills, and root context files exist.
 

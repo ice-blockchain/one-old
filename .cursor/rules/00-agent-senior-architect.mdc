@@ -43,8 +43,8 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 - `project-memory` — create or reconcile `.traffic-one/product.md`,
   `.traffic-one/stack.md`, `.traffic-one/rules/*`,
   `.traffic-one/decisions/`, `.traffic-one/known-issues.md`,
-  `.traffic-one/.agentignore`, `.traffic-one/mcp.json`, and
-  `.traffic-one/agent-log.md` before downstream roles run.
+  `.traffic-one/.agentignore`, and `.traffic-one/agent-log.md` before
+  downstream roles run.
 - `architecture-decision-records` — write one ADR per non-default choice into `.traffic-one/decisions/`.
 - `auto-documentation-generator` — mandatory for every `mode: new-project`
   scaffold and every `mode: existing-codebase` / `existing-with-supabase`

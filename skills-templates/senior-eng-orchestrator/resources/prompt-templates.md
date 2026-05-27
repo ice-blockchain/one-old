@@ -240,7 +240,7 @@ Read in priority order:
      report; do not stamp shipper approval.
   2. .traffic-one/plan.md § Risks + § Cut-list.
   3. .traffic-one/deployments.jsonl, .traffic-one/stack.md,
-     .traffic-one/known-issues.md, and .traffic-one/mcp.json if present.
+     and .traffic-one/known-issues.md if present.
   4. .env.example to surface missing env vars.
 
 Run `predeploy-security-check --strict --stamp`, then run the `verification-loop`

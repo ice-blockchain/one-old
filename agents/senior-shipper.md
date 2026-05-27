@@ -33,7 +33,7 @@ The orchestrator passes you `<run-id>`. Read in priority order:
 
 1. `.traffic-one/digests/<run-id>/{reviewer,tester}.md` — must contain `verdict: APPROVED` and `verdict: TESTS_GREEN` respectively. If either is missing or non-green, STOP and report; do not stamp the deploy approval.
 2. `.traffic-one/plan.md` § Risks + § Cut-list — what could blow up in production.
-3. `.traffic-one/deployments.jsonl`, `.traffic-one/stack.md`, `.traffic-one/mcp.json`, and `.traffic-one/known-issues.md` if present.
+3. `.traffic-one/deployments.jsonl`, `.traffic-one/stack.md`, and `.traffic-one/known-issues.md` if present.
 4. `.env.example` — surface missing env vars.
 5. Deploy command output — capture verbatim for the digest.
 

@@ -655,7 +655,7 @@ function runPostStackSetup(rawInput) {
   }
 
   const materializedLine = materialized
-    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Root AGENTS.md contains the compact active rule kernel/index by default; root CLAUDE.md symlinks to AGENTS.md when safe.`
+    ? `Project-local rules/skills materialized: ${materialized.rules} rule files, ${materialized.skills} skills. Root AGENTS.md contains or preserves existing content with the Traffic One active rule kernel/index; root CLAUDE.md symlinks to AGENTS.md only when no CLAUDE.md exists.`
     : 'Active rules and skills remain loaded from session start.';
   const context = `[traffic-one] stack rules active for ${stack}. ${materializedLine}${nodeWarning}`;
 

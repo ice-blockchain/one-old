@@ -53,7 +53,6 @@ contract, env validation, and migrations/RLS baseline are in place.
 │   ├── schema.sql                 current DB schema snapshot
 │   ├── deployments.jsonl          append-only deploy log, no secrets
 │   ├── agent-log.md               short session summaries
-│   ├── mcp.json                   MCP server inventory, env var names only
 │   ├── .agentignore               paths agents avoid unless explicitly asked
 │   ├── decisions/                 ADRs
 │   ├── rules/                     coding/security rules + AGENTS.md source
@@ -171,14 +170,16 @@ contract, env validation, and migrations/RLS baseline are in place.
      `.traffic-one/coding.md`, `.traffic-one/security.md`,
      `.traffic-one/known-issues.md`,
      `.traffic-one/agent-log.md`, `.traffic-one/.agentignore`,
-     `.traffic-one/mcp.json`, `.traffic-one/deployments.jsonl`,
-     `.traffic-one/schema.sql`, `.traffic-one/decisions/`, and
+     `.traffic-one/deployments.jsonl`, `.traffic-one/schema.sql`,
+     `.traffic-one/decisions/`, and
      `.traffic-one/skills/` when reusable commands are needed.
    - Ensure the generated active stack bundle exists before feature-source
      writes: `.traffic-one/rules/**`,
      `.traffic-one/manifest.json`, `.traffic-one/skills/**`, root `AGENTS.md`
      containing the compact active rule kernel/index by default, and root
-     `CLAUDE.md` symlinked to `AGENTS.md` when safe. The generic post-tool hook
+     `CLAUDE.md`. Existing `AGENTS.md` and `CLAUDE.md` files must be preserved
+     and merged with Traffic One managed blocks; symlink `CLAUDE.md` to
+     `AGENTS.md` only when no `CLAUDE.md` exists. The generic post-tool hook
      normally converges this
      after any host tool event once `.traffic-one/.one.json` is complete; if the host
      runtime does not emit the hook, run
@@ -187,11 +188,13 @@ contract, env validation, and migrations/RLS baseline are in place.
      `materializedStack`, `materializedAt`, and `materializedVersion`. Never
      write those `materialized*` fields manually; they are output from the
      materializer and are valid only with the generated manifest, rules, skills,
-     root `AGENTS.md`, and root `CLAUDE.md`.
+     root `AGENTS.md`, and root `CLAUDE.md`. Never replace existing root
+     `AGENTS.md` or `CLAUDE.md`; merge the Traffic One generated context into
+     managed blocks.
    - Root `AGENTS.md` is the canonical active agent context. Do not generate
      `.traffic-one/rules/AGENTS.md`; `.traffic-one/rules/` must contain only
      generated rule files. Root `CLAUDE.md` should be a symlink to root
-     `AGENTS.md` for Claude Code compatibility.
+     `AGENTS.md` for Claude Code compatibility only when `CLAUDE.md` is absent.
    - If the project has no DB yet, `.traffic-one/schema.sql` says
      `Not applicable` with the reason. Once migrations exist, refresh it after
      every migration.

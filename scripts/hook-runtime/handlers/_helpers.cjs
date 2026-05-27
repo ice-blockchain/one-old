@@ -563,7 +563,7 @@ function materializationSuccessResult(materialized, triggerPath) {
       systemMessage: 'traffic-one — project-local rules/skills materialized',
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains the compact active rule kernel/index by default; root CLAUDE.md symlinks to AGENTS.md when safe.`,
+        additionalContext: `Project-local rules/skills materialized after ${triggerPath}: ${materialized.rules} rule files, ${materialized.skills} skills, manifest .traffic-one/manifest.json. Root AGENTS.md contains or preserves existing content with the Traffic One active rule kernel/index; root CLAUDE.md symlinks to AGENTS.md only when no CLAUDE.md exists.`,
       },
     }),
     exitCode: 0,
@@ -959,7 +959,7 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
       systemMessage: 'traffic-one — project-local rules/skills already materialized',
       hookSpecificOutput: {
         hookEventName: 'PostToolUse',
-        additionalContext: `Project-local rules/skills are current for ${stackFingerprint(state)}. Root AGENTS.md contains the compact active rule kernel/index by default; root CLAUDE.md symlinks to AGENTS.md when safe.`,
+        additionalContext: `Project-local rules/skills are current for ${stackFingerprint(state)}. Root AGENTS.md contains or preserves existing content with the Traffic One active rule kernel/index; root CLAUDE.md symlinks to AGENTS.md only when no CLAUDE.md exists.`,
       },
     }),
     exitCode: 0,

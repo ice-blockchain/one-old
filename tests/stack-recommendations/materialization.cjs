@@ -96,7 +96,10 @@ test('project memory baseline is integrated across runtimes', () => {
   assert.match(memoryRules, /\.traffic-one\/decisions\//);
   assert.match(memoryRules, /\.traffic-one\/coding\.md/);
   assert.match(memoryRules, /\.traffic-one\/deployments\.jsonl/);
-  assert.match(memoryRules, /\.traffic-one\/mcp\.json/);
+  assert.doesNotMatch(memoryRules, /\.traffic-one\/mcp\.json/);
+  assert.doesNotMatch(memorySkill, /\.traffic-one\/mcp\.json/);
+  assert.doesNotMatch(newProjectRule, /\.traffic-one\/mcp\.json/);
+  assert.doesNotMatch(directives, /mcp\.json/);
   assert.match(memoryRules, /Root `AGENTS\.md` contains the\s+compact active rule kernel and index by default/);
   assert.doesNotMatch(memoryRules, /Root `AGENTS\.md` should symlink/);
   assert.doesNotMatch(memoryRules, /\.traffic-one\/rules\/AGENTS\.md`: canonical/);
@@ -802,6 +805,69 @@ test('materializeProjectAssets uses compact root AGENTS by default', () => {
   });
 });
 
+test('materializeProjectAssets merges Traffic One context into existing root agent docs', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
+  withTempDir((cwd) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    };
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), '# Existing AGENTS\n\nKeep project-specific agent notes.\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), '# Existing CLAUDE\n\nKeep Claude-specific notes.\n', 'utf8');
+
+    materializeProjectAssets(cwd, state);
+    materializeProjectAssets(cwd, state);
+
+    const rootAgents = fs.readFileSync(path.join(cwd, 'AGENTS.md'), 'utf8');
+    const rootClaude = fs.readFileSync(path.join(cwd, 'CLAUDE.md'), 'utf8');
+
+    assert.match(rootAgents, /^# Existing AGENTS/);
+    assert.match(rootAgents, /Keep project-specific agent notes/);
+    assert.match(rootAgents, /<!-- TRAFFIC_ONE_CONTEXT:BEGIN -->/);
+    assert.match(rootAgents, /Traffic One Local Agent Context/);
+    assert.equal((rootAgents.match(/TRAFFIC_ONE_CONTEXT:BEGIN/g) || []).length, 1);
+
+    assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), false);
+    assert.match(rootClaude, /^# Existing CLAUDE/);
+    assert.match(rootClaude, /Keep Claude-specific notes/);
+    assert.match(rootClaude, /<!-- TRAFFIC_ONE_CONTEXT:BEGIN -->/);
+    assert.match(rootClaude, /Traffic One Claude Context/);
+    assert.match(rootClaude, /@AGENTS\.md/);
+    assert.equal((rootClaude.match(/TRAFFIC_ONE_CONTEXT:BEGIN/g) || []).length, 1);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'AGENTS.local.md')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'CLAUDE.local.md')), false);
+  });
+});
+
+test('materializeProjectAssets preserves an existing in-repo AGENTS symlink', () => {
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
+  withTempDir((cwd) => {
+    const state = {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    };
+    fs.mkdirSync(path.join(cwd, 'docs'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'docs', 'AGENTS.base.md'), '# Shared Agents\n\nKeep shared agent notes.\n', 'utf8');
+    fs.symlinkSync('docs/AGENTS.base.md', path.join(cwd, 'AGENTS.md'));
+
+    materializeProjectAssets(cwd, state);
+
+    assert.equal(fs.lstatSync(path.join(cwd, 'AGENTS.md')).isSymbolicLink(), true);
+    assert.equal(fs.readlinkSync(path.join(cwd, 'AGENTS.md')), 'docs/AGENTS.base.md');
+    const targetAgents = fs.readFileSync(path.join(cwd, 'docs', 'AGENTS.base.md'), 'utf8');
+    assert.match(targetAgents, /^# Shared Agents/);
+    assert.match(targetAgents, /Keep shared agent notes/);
+    assert.match(targetAgents, /<!-- TRAFFIC_ONE_CONTEXT:BEGIN -->/);
+    assert.match(targetAgents, /Traffic One Local Agent Context/);
+  });
+});
+
 test('materializeProjectAssets supports full root AGENTS opt-in', () => {
   const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
   withTempDir((cwd) => {
@@ -1082,10 +1148,11 @@ test('post-tool convergence materializes complete state without write-specific p
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'rules', 'modes', 'new-project.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'skills', 'create-page', 'SKILL.md')));
     assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'manifest.json')));
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'AGENTS.local.md')));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'AGENTS.local.md')), false);
     assert.equal(fs.existsSync(path.join(cwd, '.nvmrc')), false);
+    assert.match(rootAgents, /^# Existing project note/);
     assert.match(rootAgents, /Traffic One Local Agent Context/);
-    assert.match(rootAgents, /Preserved Project Notes/);
+    assert.match(rootAgents, /<!-- TRAFFIC_ONE_CONTEXT:BEGIN -->/);
     assert.match(rootAgents, /Keep this note/);
     assert.equal(fs.lstatSync(path.join(cwd, 'CLAUDE.md')).isSymbolicLink(), true);
   });

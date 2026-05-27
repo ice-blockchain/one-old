@@ -4,9 +4,9 @@ description: >
   Create, refresh, or audit the Traffic One `.traffic-one/` project memory
   folder for persistent AI coding-agent context: product.md, decisions ADRs,
   coding/security rules, schema.sql, deployments.jsonl, known-issues.md,
-  stack.md, .agentignore, agent-log.md, mcp.json, and reusable local skills.
+  stack.md, .agentignore, agent-log.md, and reusable local skills.
   Trigger on "project memory", ".traffic-one folder", "agent memory",
-  "persistent context", "agent-log", "known issues", "mcp.json", or requests
+  "persistent context", "agent-log", "known issues", or requests
   to make agent context survive across Claude Code, Codex, Cursor, or future
   agents.
 metadata:
@@ -33,8 +33,8 @@ another long docs tree.
 - The user asks for project memory, persistent context, or `.traffic-one/`.
 - Starting a new Traffic One project.
 - Reconciling an existing project before normal feature work.
-- A migration, deployment, significant decision, known bug, stack change, or MCP
-  setup changes project context.
+- A migration, deployment, significant decision, known bug, or stack change
+  changes project context.
 
 ## Reconnaissance Workflow
 
@@ -65,15 +65,15 @@ Create or refresh:
 - `.traffic-one/rules/**` generated active rule files only
 - `.traffic-one/manifest.json` generated active bundle manifest
 - root `AGENTS.md` containing the compact active rule kernel/index by default
-- root `CLAUDE.md` symlinked to root `AGENTS.md` when safe for Claude Code
-  compatibility
+- root `CLAUDE.md` symlinked to root `AGENTS.md` only when no `CLAUDE.md`
+  exists; preserve and merge existing `AGENTS.md` and `CLAUDE.md` content in
+  place with Traffic One managed blocks
 - `.traffic-one/schema.sql`
 - `.traffic-one/deployments.jsonl`
 - `.traffic-one/known-issues.md`
 - `.traffic-one/stack.md`
 - `.traffic-one/.agentignore`
 - `.traffic-one/agent-log.md`
-- `.traffic-one/mcp.json`
 - `.traffic-one/skills/` when reusable team commands are needed
 - generated active stack bundle: `.traffic-one/rules/**`,
   `.traffic-one/manifest.json`, `.traffic-one/skills/`, root `AGENTS.md`, and
@@ -109,7 +109,8 @@ Create or refresh:
   Never write those `materialized*` fields by hand; they are valid only when
   the materializer also created `.traffic-one/manifest.json`,
   `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root
-  `CLAUDE.md`.
+  `CLAUDE.md`. Existing root `AGENTS.md` and `CLAUDE.md` files are merged in
+  place and must not be replaced.
 - For user-facing/product work, capture audience, tone, voice, words to avoid,
   and permanent facts only when the user or codebase provides them. Mark guesses
   `Unverified`.
@@ -163,15 +164,6 @@ Create or refresh:
 - No Supabase service-role key outside server-only environments.
 - Do not use `user_metadata` in RLS policies.
 - Secrets are referenced by env var name only.
-```
-
-### `.traffic-one/mcp.json`
-
-```json
-{
-  "servers": [],
-  "notes": "List MCP servers by name, command/scope, and required env var names only. No secret values."
-}
 ```
 
 ### `.traffic-one/deployments.jsonl`
