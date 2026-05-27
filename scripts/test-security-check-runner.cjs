@@ -11,7 +11,7 @@ const {
   missingToolInstallPrompt,
   runSecurityCheck,
 } = require('./security-check-runner.cjs');
-const { getPluginVersion } = require('./hook-runtime/state.cjs');
+const { getPluginVersion } = require('./hook-runtime/state/state.cjs');
 
 const tests = [];
 

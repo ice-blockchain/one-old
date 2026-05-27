@@ -9,6 +9,39 @@ const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');
 const HOOK_RUNTIME = path.join(ROOT, 'scripts', 'hook-runtime.cjs');
+
+// Read a hook-runtime module's source whether it lives as a single .cjs file or
+// has been split into a folder (concatenate every .cjs in that folder). Lets
+// content-assertion tests stay agnostic to the file/folder layout.
+function readHookModuleSource(name) {
+  const filePath = path.join(ROOT, 'scripts', 'hook-runtime', `${name}.cjs`);
+  if (fs.existsSync(filePath)) {
+    return fs.readFileSync(filePath, 'utf8');
+  }
+  const dirPath = path.join(ROOT, 'scripts', 'hook-runtime', name);
+  return fs.readdirSync(dirPath)
+    .filter((f) => f.endsWith('.cjs'))
+    .sort()
+    .map((f) => fs.readFileSync(path.join(dirPath, f), 'utf8'))
+    .join('\n');
+}
+
+// Read a top-level CLI script's source. After a Pattern-B split the entry file
+// `scripts/<name>.cjs` stays put but its functions move into a sibling
+// `scripts/<name>/` folder; concatenate both so content-assertion tests stay
+// agnostic to whether the script has been split.
+function readScriptSource(name) {
+  const parts = [];
+  const filePath = path.join(ROOT, 'scripts', `${name}.cjs`);
+  if (fs.existsSync(filePath)) parts.push(fs.readFileSync(filePath, 'utf8'));
+  const dirPath = path.join(ROOT, 'scripts', name);
+  if (fs.existsSync(dirPath) && fs.statSync(dirPath).isDirectory()) {
+    for (const f of fs.readdirSync(dirPath).filter((n) => n.endsWith('.cjs')).sort()) {
+      parts.push(fs.readFileSync(path.join(dirPath, f), 'utf8'));
+    }
+  }
+  return parts.join('\n');
+}
 const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.json`);
 const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
@@ -32,8 +65,8 @@ fs.writeFileSync(AUTH_STATE_PATH, `${JSON.stringify({
   lastRemoteCheckOkAt: '2099-01-01T00:00:00Z',
 }, null, 2)}\n`, 'utf8');
 const { defaultBackendValue } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'config.cjs'));
-const { STACKS, stackSpecForState, templatePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
-const { activeSkillsFor } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'));
+const { STACKS, stackSpecForState, templatePath } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks', 'stacks.cjs'));
+const { activeSkillsFor } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters', 'skill-filters.cjs'));
 const { computeProjectFingerprint } = require(path.join(ROOT, 'scripts', 'security-check-runner.cjs'));
 
 const tests = [];
@@ -160,7 +193,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 }
 
 function completeDefaultState(overrides = {}) {
-  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   return {
     version: '2.9.67',
     mode: 'new-project',
@@ -281,7 +314,7 @@ test('supabase project bundle includes supabase auth default', () => {
 });
 
 test('new project onboarding defaults to supabase backend', () => {
-  const { getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   withTempDir((cwd) => {
     const result = runHook(cwd, 'session-start');
     const payload = parseStdoutJson(result);
@@ -301,7 +334,7 @@ test('new project onboarding defaults to supabase backend', () => {
 test('new project onboarding includes Codex performance preflight', () => {
   const detectProject = fs.readFileSync(path.join(ROOT, 'skills-templates', 'detect-project', 'SKILL.md'), 'utf8');
   const directives = [
-    fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    readHookModuleSource('directives'),
     fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'onboarding-prompts.cjs'), 'utf8'),
     fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'agents-performance-prompt.cjs'), 'utf8'),
     fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'agents-team-confirmation-prompt.cjs'), 'utf8'),
@@ -1427,7 +1460,7 @@ test('onboarding gate still denies when required team choice is missing', () => 
       codeGraphProvider: 'gitnexus',
       openCode: { enabled: false, source: 'prompted', decidedAt: '2026-05-13T09:58:00Z' },
       performance: { level: 'high', source: 'prompted' },
-      toolchain: require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs')).initializeToolchainState({}),
+      toolchain: require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs')).initializeToolchainState({}),
       confirmed: true,
       onboardingComplete: true,
       confirmedAt: '2026-05-13T10:00:00Z',
@@ -1526,8 +1559,8 @@ test('Supabase missing-config setup CTAs must route through Traffic', () => {
   const sources = {
     supabaseRule: readRule('rules/frontend/react/supabase-client.md'),
     newProjectRule: readRule('rules/modes/new-project.md'),
-    stacks: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8'),
-    directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    stacks: readHookModuleSource('stacks'),
+    directives: readHookModuleSource('directives'),
     createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
     createPage: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8'),
     createService: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-service', 'SKILL.md'), 'utf8'),
@@ -1583,8 +1616,8 @@ test('SessionStart bundle includes Supabase Traffic setup CTA rule', () => {
 test('new projects must include the auto-documentation baseline', () => {
   const documentationRules = readRule('rules/common/documentation.md');
   const newProjectRule = readRule('rules/modes/new-project.md');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
-  const stacks = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8');
+  const directives = readHookModuleSource('directives');
+  const stacks = readHookModuleSource('stacks');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const promptTemplates = fs.readFileSync(
@@ -1617,9 +1650,9 @@ test('project memory baseline is integrated across runtimes', () => {
   const memorySkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'project-memory', 'SKILL.md'), 'utf8');
   const newProjectRule = readRule('rules/modes/new-project.md');
   const existingRule = readRule('rules/modes/existing-codebase.md');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
-  const stacks = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'), 'utf8');
-  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const directives = readHookModuleSource('directives');
+  const stacks = readHookModuleSource('stacks');
+  const skillFilters = readHookModuleSource('skill-filters');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const backend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-backend.md'), 'utf8');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
@@ -1711,7 +1744,7 @@ test('SessionStart bundle includes mandatory auto-docs guidance', () => {
 test('existing projects must reconcile the auto-documentation baseline', () => {
   const documentationRules = readRule('rules/common/documentation.md');
   const existingRule = readRule('rules/modes/existing-codebase.md');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const directives = readHookModuleSource('directives');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const autoDocs = fs.readFileSync(path.join(ROOT, 'skills-templates', 'auto-documentation-generator', 'SKILL.md'), 'utf8');
@@ -1776,7 +1809,7 @@ test('SEO baseline is mandatory for generated and existing web projects', () => 
   const seoSkill = fs.readFileSync(path.join(ROOT, 'skills-templates', 'seo', 'SKILL.md'), 'utf8');
   const newProjectRule = readRule('rules/modes/new-project.md');
   const existingRule = readRule('rules/modes/existing-codebase.md');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const directives = readHookModuleSource('directives');
   const architect = fs.readFileSync(path.join(ROOT, 'agents', 'senior-architect.md'), 'utf8');
   const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
@@ -1878,7 +1911,7 @@ test('frontend i18n baseline is mandatory and automatic for UI work', () => {
   const createComponent = fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-component', 'SKILL.md'), 'utf8');
   const newProjectRule = readRule('rules/modes/new-project.md');
   const existingRule = readRule('rules/modes/existing-codebase.md');
-  const directives = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8');
+  const directives = readHookModuleSource('directives');
   const frontend = fs.readFileSync(path.join(ROOT, 'agents', 'senior-frontend.md'), 'utf8');
   const reviewer = fs.readFileSync(path.join(ROOT, 'agents', 'senior-reviewer.md'), 'utf8');
   const tester = fs.readFileSync(path.join(ROOT, 'agents', 'senior-tester.md'), 'utf8');
@@ -2038,7 +2071,7 @@ test('frontend design gate rejects sparse config-banner-dominated generated UI',
     uiQuality: readRule('rules/frontend/ui-quality.md'),
     reactDesign: readRule('rules/frontend/react/design-quality.md'),
     newProjectRule: readRule('rules/modes/new-project.md'),
-    directives: fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'), 'utf8'),
+    directives: readHookModuleSource('directives'),
     frontendSkill: fs.readFileSync(path.join(ROOT, 'skills-templates', 'frontend-design', 'SKILL.md'), 'utf8'),
     createPage: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-page', 'SKILL.md'), 'utf8'),
     createFeature: fs.readFileSync(path.join(ROOT, 'skills-templates', 'create-feature', 'SKILL.md'), 'utf8'),
@@ -2158,7 +2191,7 @@ test('next project detects frontend without react stack', () => {
 });
 
 test('first-prompt classifier resolves stack, tech, and mobile prompt defaults', () => {
-  const { classifyPromptForStack } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'detection.cjs'));
+  const { classifyPromptForStack } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'detection', 'detection.cjs'));
 
   assert.equal(classifyPromptForStack('simple static landing page for a conference').stack, 'minimal');
 
@@ -2193,7 +2226,7 @@ test('first-prompt classifier resolves stack, tech, and mobile prompt defaults',
 });
 
 test('normalizeState initializes toolchain and preserves existing stamps', () => {
-  const { normalizeState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { normalizeState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   const state = {
     stack: 'default',
     backend: 'supabase',
@@ -2228,7 +2261,7 @@ test('plugin cache detection covers both Claude and Codex installs', () => {
 });
 
 test('materializeProjectAssets copies only active local rules and skills', () => {
-  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
   withTempDir((cwd) => {
     const state = {
       stack: 'custom-frontend',
@@ -2272,7 +2305,7 @@ test('materializeProjectAssets copies only active local rules and skills', () =>
 });
 
 test('materializeProjectAssets includes mode-specific local rules', () => {
-  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
   withTempDir((cwd) => {
     const state = {
       mode: 'new-project',
@@ -2306,7 +2339,7 @@ test('materializeProjectAssets includes mode-specific local rules', () => {
 });
 
 test('materializeProjectAssets uses compact root AGENTS by default', () => {
-  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
   withTempDir((root) => {
     const cwd = path.join(root, 'careerforge');
     fs.mkdirSync(cwd, { recursive: true });
@@ -2341,7 +2374,7 @@ test('materializeProjectAssets uses compact root AGENTS by default', () => {
 });
 
 test('materializeProjectAssets supports full root AGENTS opt-in', () => {
-  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
   withTempDir((cwd) => {
     const state = {
       mode: 'new-project',
@@ -2366,7 +2399,7 @@ test('materializeProjectAssets supports full root AGENTS opt-in', () => {
 });
 
 test('materializeProjectAssets skips the plugin authoring root', () => {
-  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+  const { materializeProjectAssets } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
   const before = readRootAgentContext();
   const result = materializeProjectAssets(ROOT, completeDefaultState());
   const after = readRootAgentContext();
@@ -2394,7 +2427,7 @@ test('Codex manifest discovers full skill templates without cache writes', () =>
 });
 
 test('post-stack-setup materializes local rules after project-memory writes', () => {
-  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
       version: 3,
@@ -2717,7 +2750,7 @@ test('session-start repairs fake materialization stamps before subagent fast pat
 });
 
 test('post-stack-setup reports local materialization failures', () => {
-  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one.json'), {
       version: 3,
@@ -3456,7 +3489,7 @@ test('post-deploy observability guidance is integrated, not duplicated', () => {
   const ionicSecurity = readRule('rules/frontend/ionic/security.md');
   const postgresRules = readRule('rules/backend/postgres.md');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
-  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const skillFilters = readHookModuleSource('skill-filters');
   const agentsMirror = readRootAgentContext();
   const cursorStackRecommendations = readCursorRule('common-stack-recommendations.mdc', 'rules/common/stack-recommendations.md');
 
@@ -3495,7 +3528,7 @@ test('app launch checklist guidance is integrated, not duplicated', () => {
   const performance = readRule('rules/frontend/performance.md');
   const ionicCapacitor = readRule('rules/frontend/ionic/capacitor.md');
   const shipper = fs.readFileSync(path.join(ROOT, 'agents', 'senior-shipper.md'), 'utf8');
-  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const skillFilters = readHookModuleSource('skill-filters');
   const agentsMirror = readRootAgentContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
   const ref = fs.readFileSync(path.join(ROOT, 'ref.md'), 'utf8');
@@ -3545,7 +3578,7 @@ test('auto documentation generator guidance is present and not duplicated', () =
   const agentsMirror = readRootAgentContext();
   const claude = readClaudeContext();
   const readme = fs.readFileSync(path.join(ROOT, 'README.md'), 'utf8');
-  const skillFilters = fs.readFileSync(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'), 'utf8');
+  const skillFilters = readHookModuleSource('skill-filters');
 
   assert.equal(skillNames.includes('auto-documentation-generator'), true);
   assert.equal(skillNames.includes('documentation-generator'), false);
@@ -3678,7 +3711,7 @@ test('graphify-runner uses `graphify update .` (not the outdated `graphify .`)',
 });
 
 test('writeState stamps plugin version in .traffic-one.json version field', () => {
-  const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { writeState, getPluginVersion } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   withTempDir((cwd) => {
     writeState(cwd, { stack: 'react-realtime-monorepo', mode: 'new-project' });
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
@@ -3808,7 +3841,7 @@ test('orchestrator verifies materialization after PLAN_READY before Phase 2', ()
 // ── codeGraphProvider onboarding question + state-shape enforcement ────────
 
 test('onboarding directive contains the codeGraphProvider question with gitnexus listed first', () => {
-  const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'));
+  const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives', 'directives.cjs'));
   const directive = onboardingDirectiveNewProject();
   // The question must exist as a required onboarding field.
   assert.match(directive, /codeGraphProvider/);
@@ -3828,7 +3861,7 @@ test('onboarding directive contains the codeGraphProvider question with gitnexus
 });
 
 test('onboarding directive surfaces the PolyForm Noncommercial license for gitnexus', () => {
-  const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'));
+  const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives', 'directives.cjs'));
   const directive = onboardingDirectiveNewProject();
   assert.match(directive, /PolyForm Noncommercial/);
   // graphify license also mentioned so the user can compare.
@@ -4558,7 +4591,7 @@ test('gitnexus-runner auto-passes --skip-git when project has no .git directory 
   // so users saw an opaque "gitnexus exited non-zero" with no clue why.
   // Two fixes: auto-pass `--skip-git` when `.git/` is absent, AND fall back
   // to `run.stdout` in the error message when stderr is empty.
-  const runnerSrc = fs.readFileSync(path.join(ROOT, 'scripts', 'gitnexus-runner.cjs'), 'utf8');
+  const runnerSrc = readScriptSource('gitnexus-runner');
 
   // The runner must conditionally append `--skip-git` based on a `.git/`
   // existence check at the project root. Match flexibly to keep the assert
@@ -4811,7 +4844,7 @@ test('manifests bumped to 2.9.67', () => {
 // ── Per-subagent rule scoping (2.9.67) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
-  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   const fresh = new Date().toISOString();
   const state = {
     stack: 'default', frontend: 'react-vite', backend: 'supabase',
@@ -4824,7 +4857,7 @@ test('isSubagentSession returns true when currentRunId + fresh materialization m
 });
 
 test('isSubagentSession returns false when materialization is stale (>30 min)', () => {
-  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   const stale = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const state = {
     stack: 'default', frontend: 'react-vite', backend: 'supabase',
@@ -4837,7 +4870,7 @@ test('isSubagentSession returns false when materialization is stale (>30 min)', 
 });
 
 test('isSubagentSession returns false when currentRunId is missing', () => {
-  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   const state = {
     stack: 'default', frontend: 'react-vite', backend: 'supabase',
     mobile: { framework: 'none' },
@@ -4848,7 +4881,7 @@ test('isSubagentSession returns false when currentRunId is missing', () => {
 });
 
 test('AGENT_ROLE_BASE_RULES covers all 6 senior roles with curated sets', () => {
-  const { AGENT_ROLE_BASE_RULES } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+  const { AGENT_ROLE_BASE_RULES } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks', 'stacks.cjs'));
   const roles = ['senior-architect', 'senior-frontend', 'senior-backend',
                  'senior-reviewer', 'senior-tester', 'senior-shipper'];
   for (const role of roles) {
@@ -4858,7 +4891,7 @@ test('AGENT_ROLE_BASE_RULES covers all 6 senior roles with curated sets', () => 
 });
 
 test('roleScopedRules excludes non-relevant rules per role', () => {
-  const { roleScopedRules } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks.cjs'));
+  const { roleScopedRules } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'stacks', 'stacks.cjs'));
   const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
   const frontendRules = roleScopedRules('senior-frontend', state);
   const backendRules  = roleScopedRules('senior-backend', state);
@@ -5162,7 +5195,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
 
 test('generateGraphPreview returns null when graph artefact is missing', () => {
   withTempDir((cwd) => {
-    const { generateGraphPreview } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize.cjs'));
+    const { generateGraphPreview } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'materialize', 'materialize.cjs'));
     assert.equal(generateGraphPreview(cwd, 'graphify'), null);
     assert.equal(generateGraphPreview(cwd, 'gitnexus'), null);
   });
@@ -5389,14 +5422,14 @@ test('token-usage-report skill exists with required trigger phrases', () => {
 });
 
 test('token-usage-report is in SKILL_FILTERS._common', () => {
-  const { SKILL_FILTERS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters.cjs'));
+  const { SKILL_FILTERS } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'skill-filters', 'skill-filters.cjs'));
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
 // ── Fix-cycle slim bundle (2.9.67) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
-  const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   assert.equal(getSpawnIndex({}, 'senior-frontend'), 0);
   assert.equal(getSpawnIndex({ spawnIndex: {} }, 'senior-frontend'), 0);
   assert.equal(getSpawnIndex({ spawnIndex: { 'senior-frontend': 1 } }, 'senior-frontend'), 1);
@@ -5404,7 +5437,7 @@ test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () =
 });
 
 test('isFixCycleSession requires subagent + spawnIndex > 1', () => {
-  const { isFixCycleSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
+  const { isFixCycleSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   const fresh = new Date().toISOString();
   const base = {
     stack: 'default', frontend: 'react-vite', backend: 'supabase',

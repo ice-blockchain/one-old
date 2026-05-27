@@ -267,13 +267,13 @@ line-verifiable source files.
 | `.github/workflows/traffic-one-security-check.yml` | CI pre-deployment security scanner with pinned `gitleaks` and `trufflehog`. |
 | `scripts/hook-runtime.cjs` | Dependency-free hook runtime entrypoint. |
 | `scripts/hook-runtime/config.cjs` | Hook runtime config constants. |
-| `scripts/hook-runtime/detection.cjs` | Project mode/stack detection helpers. |
-| `scripts/hook-runtime/directives.cjs` | Hook-time instruction/directive rendering. |
-| `scripts/hook-runtime/handlers.cjs` | Main hook handlers, including plan gate, deploy gate, and package checks. |
+| `scripts/hook-runtime/detection/detection.cjs` | Project mode/stack detection helpers (one-file-per-function folder). |
+| `scripts/hook-runtime/directives/directives.cjs` | Hook-time instruction/directive rendering (one-file-per-function folder). |
+| `scripts/hook-runtime/handlers/handlers.cjs` | Main hook handlers, including plan gate, deploy gate, and package checks (one-file-per-function folder). |
 | `scripts/hook-runtime/packing.cjs` | Rule/skill packing helpers. |
-| `scripts/hook-runtime/skill-filters.cjs` | Skill filtering and cache mutation helpers. |
-| `scripts/hook-runtime/stacks.cjs` | Stack-specific rule mapping. |
-| `scripts/hook-runtime/state.cjs` | `.traffic-one.json` state helpers. |
+| `scripts/hook-runtime/skill-filters/skill-filters.cjs` | Skill filtering and cache mutation helpers (one-file-per-function folder). |
+| `scripts/hook-runtime/stacks/stacks.cjs` | Stack-specific rule mapping (one-file-per-function folder). |
+| `scripts/hook-runtime/state/state.cjs` | `.traffic-one.json` state helpers (one-file-per-function folder). |
 | `scripts/graphify-runner.cjs` | Codebase graph cache runner. |
 | `scripts/lighthouse-runner.mjs` | Mobile Lighthouse production-preview runner. |
 | `scripts/security-check-runner.cjs` | Traffic One pre-deployment security scanner. |

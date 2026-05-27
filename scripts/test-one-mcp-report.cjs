@@ -22,7 +22,7 @@ const {
   runReport,
   uuidV7,
 } = require('./one-mcp-report.cjs');
-const handlers = require('./hook-runtime/handlers.cjs');
+const handlers = require('./hook-runtime/handlers/handlers.cjs');
 const authClient = require('./traffic-one-auth.cjs');
 
 assert.equal(authClient.authEndpointUrl('http://localhost:8787/mcp').protocol, 'http:');

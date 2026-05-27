@@ -21,7 +21,7 @@ const {
   resolveRunAgentContext,
   hasRunAgentState,
   legacyRunAgentContext,
-} = require('./state.cjs');
+} = require('./state/state.cjs');
 
 const ENV_FLAG = 'TRAFFIC_ONE_TOKEN_LOG';
 const LOG_REL_PATH = path.join('.traffic-one', 'token-log.jsonl');

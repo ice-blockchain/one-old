@@ -3,7 +3,7 @@
 
 // Comprehensive tests for the Traffic One auth system:
 //   - scripts/traffic-one-auth.cjs      (login / refresh / status / logout)
-//   - scripts/hook-runtime/handlers.cjs (the pre-tool auth gate + prompt flow)
+//   - scripts/hook-runtime/handlers/handlers.cjs (the pre-tool auth gate + prompt flow)
 //
 // A tiny in-process mock MCP auth server makes the suite deterministic: it needs
 // no real API key and no real server on :8787. Run:

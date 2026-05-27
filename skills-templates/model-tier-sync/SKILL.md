@@ -82,7 +82,7 @@ reorder or rename the tiers, and never change `performance-config.cjs`.
 5. **Validate**:
    ```bash
    node -e "const m=require('./scripts/hook-runtime/model-tiers.cjs'); for (const t of m.TIER_IDS) for (const h of m.HOST_IDS) { const v=m.resolveModel(t,h); if(!v) throw new Error('missing '+t+'/'+h); console.log(t,h,v); }"
-   node -e "require('./scripts/hook-runtime/agents-performance-prompt.cjs'); require('./scripts/hook-runtime/directives.cjs'); require('./scripts/hook-runtime/handlers.cjs'); console.log('load OK')"
+   node -e "require('./scripts/hook-runtime/agents-performance-prompt.cjs'); require('./scripts/hook-runtime/directives/directives.cjs'); require('./scripts/hook-runtime/handlers/handlers.cjs'); console.log('load OK')"
    ```
 
 6. **Bump the plugin version** (patch) in all three manifests so a reload picks

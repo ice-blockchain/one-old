@@ -23,7 +23,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { getPluginVersion } = require('./hook-runtime/state.cjs');
+const { getPluginVersion } = require('./hook-runtime/state/state.cjs');
 
 const TRAFFIC_ONE = '.traffic-one.json';
 
@@ -205,7 +205,7 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
   // a ~500-token module listing instead of forcing each subagent to Read the
   // full GRAPH_REPORT.md to scope its work.
   try {
-    const { writeGraphPreview } = require(path.resolve(__dirname, 'hook-runtime', 'materialize.cjs'));
+    const { writeGraphPreview } = require(path.resolve(__dirname, 'hook-runtime', 'materialize', 'materialize.cjs'));
     writeGraphPreview(cwd, 'graphify');
   } catch {
     // best-effort; never fail the run because preview write glitched.

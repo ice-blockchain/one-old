@@ -19,16 +19,16 @@
 //   └── handlers.cjs       the five hook handlers, all pure functions
 //
 // Add a new subcommand by appending to HANDLERS below and adding the matching
-// handler in `hook-runtime/handlers.cjs`.
+// handler in `hook-runtime/handlers/handlers.cjs`.
 
 const config         = require('./hook-runtime/config.cjs');
-const state          = require('./hook-runtime/state.cjs');
-const stacks         = require('./hook-runtime/stacks.cjs');
-const skillFilters   = require('./hook-runtime/skill-filters.cjs');
-const detection      = require('./hook-runtime/detection.cjs');
+const state          = require('./hook-runtime/state/state.cjs');
+const stacks         = require('./hook-runtime/stacks/stacks.cjs');
+const skillFilters   = require('./hook-runtime/skill-filters/skill-filters.cjs');
+const detection      = require('./hook-runtime/detection/detection.cjs');
 const packing        = require('./hook-runtime/packing.cjs');
-const directives     = require('./hook-runtime/directives.cjs');
-const handlers       = require('./hook-runtime/handlers.cjs');
+const directives     = require('./hook-runtime/directives/directives.cjs');
+const handlers       = require('./hook-runtime/handlers/handlers.cjs');
 
 const { MAX_STDIN } = config;
 

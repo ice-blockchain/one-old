@@ -2,9 +2,9 @@
 'use strict';
 
 // Tests for the OpenCode "token economy" opt-in:
-//   - scripts/hook-runtime/state.cjs        (validator + normalizeState + round-trip)
-//   - scripts/hook-runtime/directives.cjs   (onboarding directive content)
-//   - scripts/hook-runtime/handlers.cjs     (onboarding gate order + existing-codebase surfacing)
+//   - scripts/hook-runtime/state/state.cjs        (validator + normalizeState + round-trip)
+//   - scripts/hook-runtime/directives/directives.cjs   (onboarding directive content)
+//   - scripts/hook-runtime/handlers/handlers.cjs     (onboarding gate order + existing-codebase surfacing)
 //
 // Run: node scripts/test-onboarding-token-economy.cjs
 // Endpoint defaults to a dead port so a real mcp-auth server on :8787 cannot
@@ -44,8 +44,8 @@ const {
   writeState,
   readState,
   initializeToolchainState,
-} = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state.cjs'));
-const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives.cjs'));
+} = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
+const { onboardingDirectiveNewProject } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'directives', 'directives.cjs'));
 
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }

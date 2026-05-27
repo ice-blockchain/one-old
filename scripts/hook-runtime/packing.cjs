@@ -19,7 +19,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { templatePath } = require('./stacks.cjs');
+const { templatePath } = require('./stacks/stacks.cjs');
 
 // Parent SessionStart: rule pointer list with mandatory + optional sections.
 // `budget` is accepted but unused (pointers are tiny — no need to truncate).
