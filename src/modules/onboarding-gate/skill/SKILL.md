@@ -284,3 +284,71 @@ Required order: Agent mode (High/Balanced/Low), Team role/model confirmation for
 Ask only the next unresolved onboarding step below:
 {{NEXT_STEP}}
 <!-- T1BLOCK:END first-prompt-classification -->
+
+<!-- T1BLOCK:BEGIN perf-low -->
+═══ traffic-one — performance: LOW (main agent + role checklist) ═══
+
+Performance level: LOW. Team mode: main-agent.
+All Traffic One agent roles run in this single thread.
+
+Work through the following role checklist in order, marking each [x] before advancing:
+{{CHECKLIST}}
+
+Role responsibilities:
+  senior-architect  — Write .traffic-one/plan.md before any feature source.
+  senior-frontend   — Implement all UI/frontend changes.
+  senior-backend    — Implement all server/API/database changes.
+  senior-reviewer   — Review the diff for correctness, security, and style.
+  senior-tester     — Add/update tests. End with TESTS_GREEN or TESTS_FAILING.
+
+Complete each role scope fully before ticking it off and moving to the next.
+<!-- T1BLOCK:END perf-low -->
+
+<!-- T1BLOCK:BEGIN perf-balanced -->
+═══ traffic-one — performance: BALANCED (subagent team, mid-tier models) ═══
+
+Performance level: BALANCED. Team mode: subagents.
+Cost-optimised team: implementation + review on the balanced tier, QA on the cheapest tier.
+
+Agent model assignments (tier → host model):
+{{AGENT_LINES}}
+
+Auto-launching the Traffic One subagent team (no extra confirmation needed):
+  architect → frontend/backend (parallel) → reviewer/tester (parallel)
+
+HOW TO ACTUALLY SET THE MODEL — mandatory, not advisory:
+  The subagent model is set ONLY by the spawn tool's `model` PARAMETER. A
+  model name written in the prompt text has ZERO effect — the subagent will
+  silently inherit the parent model if you omit the param.
+  Pass the value from YOUR host's column above:
+    Claude Code : `Task`/Agent tool — `model: "<claude value>"` (opus|sonnet|haiku).
+    Codex       : `spawn_agent` — `model: "<codex value>"`.
+    Cursor      : background-agent/task adapter — set `<cursor value>` per role.
+
+The orchestrator MUST NOT write feature source files.
+<!-- T1BLOCK:END perf-balanced -->
+
+<!-- T1BLOCK:BEGIN perf-high -->
+═══ traffic-one — performance: HIGH (subagent team, highest-tier models) ═══
+
+Performance level: HIGH. Team mode: subagents.
+Maximum-performance team: architect, frontend, backend, and reviewer on the highest tier.
+QA (senior-tester) uses the cheapest tier to contain cost.
+
+Agent model assignments (tier → host model):
+{{AGENT_LINES}}
+
+Auto-launching the Traffic One subagent team (no extra confirmation needed):
+  architect → frontend/backend (parallel) → reviewer/tester (parallel)
+
+HOW TO ACTUALLY SET THE MODEL — mandatory, not advisory:
+  The subagent model is set ONLY by the spawn tool's `model` PARAMETER. A
+  model name written in the prompt text has ZERO effect — the subagent will
+  silently inherit the parent model if you omit the param.
+  Pass the value from YOUR host's column above:
+    Claude Code : `Task`/Agent tool — `model: "<claude value>"` (opus|sonnet|haiku).
+    Codex       : `spawn_agent` — `model: "<codex value>"`.
+    Cursor      : background-agent/task adapter — set `<cursor value>` per role.
+
+The orchestrator MUST NOT write feature source files.
+<!-- T1BLOCK:END perf-high -->
