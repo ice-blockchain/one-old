@@ -266,3 +266,21 @@ OPENCODE DELEGATION OPT-IN (one-time, non-blocking):
 
 {{OPENCODE_CHAT}}
 <!-- T1BLOCK:END opencode-optin -->
+
+<!-- T1BLOCK:BEGIN team-mode-switch-authorized -->
+The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.
+<!-- T1BLOCK:END team-mode-switch-authorized -->
+
+<!-- T1BLOCK:BEGIN first-prompt-classification -->
+[FIRST PROMPT STACK CLASSIFICATION]
+stack={{STACK}}
+frontend={{FRONTEND}}
+backend={{BACKEND}}
+mobile={{MOBILE}}
+mode=new-project: complete Traffic One onboarding in the current thread before implementation. If no popup/input tool is available, ask fallback chat questions and stop for typed answers.
+{{CODEX_FALLBACK}}
+Onboarding choices must be prompt popups. {{HOST_POPUP}} Do not print numbered option lists in chat when a popup tool is available; never choose a default or continue implementation while an answer is pending.
+Required order: Agent mode (High/Balanced/Low), Team role/model confirmation for High/Balanced, success message, rich MVP-context questionnaire, Mobile App, then Code Graph provider.
+Ask only the next unresolved onboarding step below:
+{{NEXT_STEP}}
+<!-- T1BLOCK:END first-prompt-classification -->
