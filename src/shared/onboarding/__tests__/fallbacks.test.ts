@@ -4,9 +4,12 @@ import assert from 'node:assert/strict';
 import {
   OPEN_CODE_INSTALL,
   nextOnboardingStepPromptAndRequest,
+  onboardingGateFallbackReason,
   openCodeChatFallback,
   projectContextChatFallback,
+  repairedMaterializationDenyReason,
   teamConfirmationChatFallback,
+  teamConfirmationGateFallbackReason,
   teamConfirmationPromptContext,
   type OnboardingBlock,
 } from '../fallbacks';
@@ -66,4 +69,16 @@ test('nextOnboardingStepPromptAndRequest routes to the first unresolved step', (
   // not a new project → no prompt
   const none = nextOnboardingStepPromptAndRequest({ mode: 'existing-codebase' }, 'gate', skill);
   assert.equal(none.promptRequest, null);
+});
+
+test('gate deny-reason composers embed the next-step prompt / context', () => {
+  for (const block of [skill, verbatim]) {
+    const reason = onboardingGateFallbackReason({ mode: 'new-project' }, block);
+    assert.ok(reason.includes('onboarding gate: mode=new-project'));
+    assert.ok(reason.includes('OpenCode')); // the embedded next-step prompt
+    const team = teamConfirmationGateFallbackReason({ performance: { level: 'high' }, team: { mode: 'subagents' } }, block);
+    assert.ok(team.includes('lineup has not been approved'));
+    assert.ok(team.includes('Team Confirmation is still required'));
+    assert.ok(repairedMaterializationDenyReason(block).includes('repaired/materialized before this tool use'));
+  }
 });

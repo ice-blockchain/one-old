@@ -202,3 +202,39 @@ export function nextOnboardingStepPrompt(state: unknown, source: 'gate' | 'user-
 export function nextOnboardingPromptRequest(state: unknown, source: 'gate' | 'user-prompt', block: OnboardingBlock): PromptRequest | null {
   return nextOnboardingStepPromptAndRequest(state, source, block).promptRequest;
 }
+
+// ── Gate deny reasons (compose the prose blocks above) ───────────────────────
+
+export function onboardingGateFallbackReason(state: unknown, block: OnboardingBlock): string {
+  const nextStepPrompt = nextOnboardingStepPrompt(state, 'gate', block);
+  const verbatim = [
+    'Traffic One onboarding gate: mode=new-project and onboarding is not complete.',
+    'Complete Traffic One onboarding in the current thread before using tools. If the popup tool is unavailable, the next unresolved fallback prompt must be displayed as the next visible assistant message.',
+    '',
+    'The previous assistant turn tried to use tools before completing onboarding. Stop tool use now. Your next visible assistant message must ask only this unresolved step:',
+    '',
+    nextStepPrompt,
+    '',
+    'The onboarding state remains incomplete until `.traffic-one/.one.json` contains shared project facts (stack, frontend, backend, projectContext, mobile, technologies, realtime, confirmed, onboardingComplete, confirmedAt) and local Traffic One preferences contain openCode, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), and toolchain stamps.',
+    'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, spawn helper agents, or continue implementation until the typed answer is received and the remaining onboarding prompts are resolved.',
+  ].join('\n');
+  return block('gate-fallback-reason', { NEXT_STEP_PROMPT: nextStepPrompt }, verbatim);
+}
+
+export function teamConfirmationGateFallbackReason(state: unknown, block: OnboardingBlock): string {
+  const context = teamConfirmationPromptContext(state, 'gate', block);
+  const verbatim = [
+    'Traffic One Team Confirmation gate: the role/model lineup has not been approved.',
+    '',
+    context,
+  ].join('\n');
+  return block('team-confirmation-gate-reason', { CONTEXT: context }, verbatim);
+}
+
+export function repairedMaterializationDenyReason(block: OnboardingBlock): string {
+  return block('repaired-materialization', {}, [
+    'Traffic One state was repaired/materialized before this tool use.',
+    'The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one/.one.json`, rules, skills, or root agent context.',
+    'rerun the same tool now; the canonical `.traffic-one/.one.json` and project-local materialization are current.',
+  ].join('\n'));
+}
