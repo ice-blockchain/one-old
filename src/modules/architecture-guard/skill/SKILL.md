@@ -10,6 +10,26 @@ Enforcement (the actual conditions + `permissionDecision:"deny"`) lives in
 `src/modules/architecture-guard/`. `{{PLACEHOLDER}}` tokens are filled by the gate.
 Each block has a verbatim fallback in code, so a missing block never disables a gate.
 
+<!-- T1BLOCK:BEGIN monorepo-package-json -->
+New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: `private: true`, `packageManager: pnpm@...`, and workspaces for `apps/*` and `packages/*`. Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.
+<!-- T1BLOCK:END monorepo-package-json -->
+
+<!-- T1BLOCK:BEGIN monorepo-root-vite -->
+New-project monorepo gate: root Vite app files are not allowed for this stack. Use `apps/web/` for the React app and create the required `packages/*` workspaces first; see `rules/modes/new-project.md`.
+<!-- T1BLOCK:END monorepo-root-vite -->
+
+<!-- T1BLOCK:BEGIN state-gate -->
+State gate: root .traffic-one/.one.json is missing or incomplete. Write the Traffic One state file with mode, stack, backend, realtime, confirmed, onboardingComplete, and confirmedAt before writing feature source. The .traffic-one/ folder is project memory, not the stack-selection state file.
+<!-- T1BLOCK:END state-gate -->
+
+<!-- T1BLOCK:BEGIN materialization-gate -->
+Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
+<!-- T1BLOCK:END materialization-gate -->
+
+<!-- T1BLOCK:BEGIN plan-gate -->
+Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.
+<!-- T1BLOCK:END plan-gate -->
+
 <!-- T1BLOCK:BEGIN pages-service-files -->
 Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.
 <!-- T1BLOCK:END pages-service-files -->
