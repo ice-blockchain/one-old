@@ -4,7 +4,7 @@
 // Single source of truth for "what version of <tool> is installed on this
 // machine" and "what does the plugin recommend?" Both gitnexus-runner.cjs
 // and graphify-runner.cjs use the probe + stamp helpers to write the
-// `toolchain` field into `.traffic-one.json` after a successful run.
+// `toolchain` field into `.traffic-one/.one.json` after a successful run.
 // doctor.cjs uses the same helpers to surface a `TOOLCHAIN_OUTDATED`
 // finding when the installed version drifts behind `recommended` or sits
 // below `minimum`.

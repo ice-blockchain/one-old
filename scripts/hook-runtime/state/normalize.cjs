@@ -1,7 +1,7 @@
 'use strict';
 
 // scripts/hook-runtime/state/normalize.cjs
-// The .traffic-one.json read/write API plus partial-state normalization,
+// The .traffic-one/.one.json read/write API plus partial-state normalization,
 // toolchain seeding, default technologies, legacy-stack migration, and the
 // Supabase add-on approval gate.
 
@@ -10,6 +10,7 @@ const path = require('path');
 
 const {
   STATE_FILE,
+  LEGACY_STATE_FILE,
   LEGACY_LOCK_FILE,
   STACK_IDS,
   LEGACY_STACK_ALIASES,
@@ -154,11 +155,28 @@ function normalizeLegacyStack(state) {
   return true;
 }
 
-// ── .traffic-one.json read / write ───────────────────────────────────────────
+// ── .traffic-one/.one.json read / write ───────────────────────────────────────────
+function statePath(cwd) {
+  return path.join(cwd, STATE_FILE);
+}
+
+function legacyStatePath(cwd) {
+  return path.join(cwd, LEGACY_STATE_FILE);
+}
+
 function readState(cwd) {
-  const statePath = path.join(cwd, STATE_FILE);
-  if (fs.existsSync(statePath)) {
-    return safeReadJson(statePath, {});
+  const currentPath = statePath(cwd);
+  if (fs.existsSync(currentPath)) {
+    return safeReadJson(currentPath, {});
+  }
+
+  const oldPath = legacyStatePath(cwd);
+  if (fs.existsSync(oldPath)) {
+    const legacy = safeReadJson(oldPath, {});
+    if (legacy && typeof legacy === 'object') {
+      legacy.legacyStateFile = LEGACY_STATE_FILE;
+    }
+    return legacy;
   }
 
   // Legacy migration: very old projects used a flat .claude-plugin-mode file
@@ -191,11 +209,11 @@ function writeState(cwd, state) {
     ...source,
     version: getPluginVersion(),
   };
-  writeJson(path.join(cwd, STATE_FILE), nextState);
+  writeJson(statePath(cwd), nextState);
 }
 
 // ── Tolerate partial state ───────────────────────────────────────────────────
-// The model sometimes writes `.traffic-one.json` with just `{stack, backend,
+// The model sometimes writes `.traffic-one/.one.json` with just `{stack, backend,
 // realtime, version}`, dropping `mode`, `confirmed`, `onboardingComplete`,
 // `confirmedAt`. We treat that as "the user picked a stack, we just need to
 // fill in the bookkeeping" rather than restart onboarding from scratch.
@@ -414,6 +432,8 @@ function requireAddon(state, name) {
 module.exports = {
   initializeToolchainState,
   defaultTechnologiesFor,
+  statePath,
+  legacyStatePath,
   readState,
   writeState,
   normalizeState,

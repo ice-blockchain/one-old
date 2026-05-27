@@ -2,7 +2,7 @@
 # Always loaded. Tells every agent / skill / subagent to consult the
 # active codebase-graph provider's report before falling back to broad
 # Glob/Grep. The provider is chosen at onboarding and recorded as
-# `codeGraphProvider` in `.traffic-one.json` (required field).
+# `codeGraphProvider` in `.traffic-one/.one.json` (required field).
 ---
 
 # Codebase graph — token-cheap structure cache
@@ -14,7 +14,7 @@ calls and cuts cross-session token usage by an estimated 50–70% on multi-file
 work.
 
 The active provider is selected at onboarding and stored as
-`codeGraphProvider` in `.traffic-one.json`. Valid values: `gitnexus`,
+`codeGraphProvider` in `.traffic-one/.one.json`. Valid values: `gitnexus`,
 `graphify`. Both produce different on-disk artefacts; the read protocol below
 covers each.
 
@@ -85,7 +85,7 @@ on `mode: 'new-project'`; you don't need to nag the user every session.
 
 ## Opt-out
 
-Set `"codeGraphAutoRun": false` in `.traffic-one.json` to disable
+Set `"codeGraphAutoRun": false` in `.traffic-one/.one.json` to disable
 auto-build/auto-install for the active provider. (Legacy
 `"graphifyAutoRun": false` is honoured for one version of forward
 compatibility.)

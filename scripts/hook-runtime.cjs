@@ -10,7 +10,7 @@
 // `scripts/hook-runtime/`, organised by concern:
 //
 //   ├── config.cjs         constants, INFRA_CONFIG, pitch helpers, paths
-//   ├── state.cjs          JSON I/O + .traffic-one.json read/write
+//   ├── state.cjs          JSON I/O + .traffic-one/.one.json read/write
 //   ├── stacks.cjs         per-stack rule manifests (mandatory + optional)
 //   ├── skill-filters.cjs  SKILL_FILTERS + cache surgery (prune/restore)
 //   ├── detection.cjs      package.json probes + stack auto-detection

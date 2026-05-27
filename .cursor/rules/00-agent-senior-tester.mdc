@@ -30,7 +30,7 @@ Token budget: ~8k. You can `Read` test files broadly (your scope is restricted t
 ## What you read first
 
 1. `.traffic-one/plan.md` — the Public contracts section is the contract you assert against.
-2. `.traffic-one.json` — pick up `stack`. Your test-runner dispatch depends on it.
+2. `.traffic-one/.one.json` — pick up `stack`. Your test-runner dispatch depends on it.
 3. `.traffic-one/known-issues.md` — verify new tests do not duplicate accepted known issues unless the task is to fix them.
 4. `git diff --name-only HEAD` — what changed; tests focus on the changed surface.
 5. Existing test layout: `tests/`, `e2e/`, `__tests__/`, `cypress/`, `playwright/`, `*.test.{ts,tsx,py,go,rs,java,kt,cs,php,pl}`.

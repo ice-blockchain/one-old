@@ -28,7 +28,7 @@
 // LICENSE NOTICE
 // GitNexus is PolyForm Noncommercial-licensed. This runner only fires when
 // the user has explicitly picked `codeGraphProvider: "gitnexus"` during
-// onboarding — that choice in `.traffic-one.json` is the consent record.
+// onboarding — that choice in `.traffic-one/.one.json` is the consent record.
 // The runner emits a license reminder in its return payload so the calling
 // hook can surface it in the agent's context.
 //

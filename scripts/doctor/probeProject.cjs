@@ -5,7 +5,8 @@ const path = require('path');
 const { safeRead, safeStat, normalizeState } = require('./_helpers.cjs');
 
 function probeProject(cwd) {
-  const trafficOne = safeRead(path.join(cwd, '.traffic-one.json'));
+  const trafficOne = safeRead(path.join(cwd, '.traffic-one', '.one.json'))
+    || safeRead(path.join(cwd, '.traffic-one.json'));
   let state = null;
   if (trafficOne) { try { state = JSON.parse(trafficOne); } catch { state = null; } }
   let normalizedState = null;

@@ -1,6 +1,6 @@
 ---
 name: senior-frontend
-description: Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the UI layer — pages, components, features, design system, accessibility, i18n. Triggers on "build the UI", "scaffold the screens", "wire the pages", "make the frontend", or any feature implementation that touches `apps/*/src/`, `packages/ui*`, or `src/components/`. Spawned in parallel with `senior-backend`. Reads `.traffic-one.json` to dispatch to the right stack-specific skills (web React, React Native, Ionic).
+description: Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the UI layer — pages, components, features, design system, accessibility, i18n. Triggers on "build the UI", "scaffold the screens", "wire the pages", "make the frontend", or any feature implementation that touches `apps/*/src/`, `packages/ui*`, or `src/components/`. Spawned in parallel with `senior-backend`. Reads `.traffic-one/.one.json` to dispatch to the right stack-specific skills (web React, React Native, Ionic).
 tools: Read, Grep, Glob, Bash, Write, Edit
 skills:
   - create-component
@@ -46,7 +46,7 @@ Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase readin
 ## What you read first
 
 1. `.traffic-one/plan.md` — abort with a one-line message if it does not exist (the plan-gate hook will deny your writes anyway).
-2. `.traffic-one.json` — pick up `stack`, `frontend`, `backend`. Your skill dispatch depends on this.
+2. `.traffic-one/.one.json` — pick up `stack`, `frontend`, `backend`. Your skill dispatch depends on this.
 3. `.traffic-one/product.md`, `.traffic-one/coding.md`, and `.traffic-one/known-issues.md` if present.
 4. The plan's Module map and Public contracts sections — your scope is "frontend only"; do not implement anything in the backend's modules.
 5. `packages/ui*/src/components/ui/` — what shadcn / RNR primitives already exist.

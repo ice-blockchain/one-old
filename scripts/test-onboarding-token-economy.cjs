@@ -51,6 +51,7 @@ const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
 
 function writeJson(filePath, data) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
 }
 
@@ -194,7 +195,7 @@ test('new-project onboarding directive presents the OpenCode opt-in before Perfo
 test('onboarding gate asks the OpenCode opt-in first, then Performance', () => {
   // Missing both openCode and performance -> OpenCode is surfaced first.
   withTempDir((cwd) => {
-    writeJson(path.join(cwd, '.traffic-one.json'), completeNewProjectState({
+    writeJson(path.join(cwd, '.traffic-one/.one.json'), completeNewProjectState({
       openCode: undefined,
       performance: undefined,
       team: { mode: 'subagents', source: 'prompted' },
@@ -209,7 +210,7 @@ test('onboarding gate asks the OpenCode opt-in first, then Performance', () => {
 
   // OpenCode resolved, performance still missing -> Performance comes next.
   withTempDir((cwd) => {
-    writeJson(path.join(cwd, '.traffic-one.json'), completeNewProjectState({
+    writeJson(path.join(cwd, '.traffic-one/.one.json'), completeNewProjectState({
       performance: undefined,
       team: { mode: 'subagents', source: 'prompted' },
     }));
@@ -221,7 +222,7 @@ test('onboarding gate asks the OpenCode opt-in first, then Performance', () => {
 
 test('onboarding gate allows once every required choice incl. openCode exists', () => {
   withTempDir((cwd) => {
-    writeJson(path.join(cwd, '.traffic-one.json'), completeNewProjectState());
+    writeJson(path.join(cwd, '.traffic-one/.one.json'), completeNewProjectState());
     const result = runHook(cwd, 'check-onboarding-gate', { tool_input: { command: 'ls -la' } });
     // A fully complete state is not denied for a missing onboarding answer.
     if (result.stdout.trim() !== '') {
@@ -241,7 +242,7 @@ test('existing codebase surfaces the OpenCode opt-in once, then never again', ()
     // intercepted by materialization convergence.
     runHook(cwd, 'session-start');
 
-    const statePath = path.join(cwd, '.traffic-one.json');
+    const statePath = path.join(cwd, '.traffic-one/.one.json');
     let state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     assert.equal(state.mode, 'existing-codebase');
     assert.equal(hasResolvedOpenCodeState(state.openCode), false, 'auto-detect must not invent an openCode answer');

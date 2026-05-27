@@ -8,7 +8,10 @@ const path = require('path');
 
 // ── Runtime constants ────────────────────────────────────────────────────────
 const MAX_STDIN          = 1024 * 1024;
-const STATE_FILE         = '.traffic-one.json';
+const STATE_DIR          = '.traffic-one';
+const STATE_BASENAME     = '.one.json';
+const STATE_FILE         = path.join(STATE_DIR, STATE_BASENAME);
+const LEGACY_STATE_FILE  = '.traffic-one.json';
 const LEGACY_LOCK_FILE   = '.claude-plugin-mode';
 const BUDGET_CHARS       = 9500;
 
@@ -73,7 +76,10 @@ function isInPluginCache() {
 
 module.exports = {
   MAX_STDIN,
+  STATE_DIR,
+  STATE_BASENAME,
   STATE_FILE,
+  LEGACY_STATE_FILE,
   LEGACY_LOCK_FILE,
   BUDGET_CHARS,
   STACK_IDS,

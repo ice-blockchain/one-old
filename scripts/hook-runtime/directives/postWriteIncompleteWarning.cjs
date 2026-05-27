@@ -1,6 +1,6 @@
 'use strict';
 
-// ── PostToolUse warning when `.traffic-one.json` is written without a stack ──
+// ── PostToolUse warning when `.traffic-one/.one.json` is written without a stack ──
 // Returns the additionalContext block paired with a systemMessage when the
 // model writes a partial state file. The PostToolUse hook silently ignored
 // this case before, leaving the user's stack choice unpersisted.
@@ -11,7 +11,7 @@ function postWriteIncompleteWarning({
   validCodeGraphProviders,
   validationIssues = [],
 }) {
-  const header = '═══ traffic-one — `.traffic-one.json` write incomplete ═══';
+  const header = '═══ traffic-one — `.traffic-one/.one.json` write incomplete ═══';
   const lines = [header, ''];
   const providers = Array.isArray(validCodeGraphProviders) && validCodeGraphProviders.length > 0
     ? validCodeGraphProviders
@@ -33,7 +33,7 @@ function postWriteIncompleteWarning({
   if (stackMissing) {
     if (lines.length > 2) lines.push('');
     lines.push(
-      'You wrote `.traffic-one.json` without a `stack` field. The PostToolUse',
+      'You wrote `.traffic-one/.one.json` without a `stack` field. The PostToolUse',
       'hook cannot auto-load any rule bundle until `stack` is set.',
     );
   } else if (stackUnknown) {

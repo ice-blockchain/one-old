@@ -93,5 +93,5 @@ non-PKCE mobile auth.
 
 Passing `--stamp` writes `lastSecurityCheckAt`, `lastSecurityCheckStatus`,
 `lastSecurityCheckFingerprint`, and `lastSecurityCheckReport` to
-`.traffic-one.json`. The deploy hook denies production commands if the stamp is
+`.traffic-one/.one.json`. The deploy hook denies production commands if the stamp is
 missing, stale, failed, or its fingerprint no longer matches the worktree.

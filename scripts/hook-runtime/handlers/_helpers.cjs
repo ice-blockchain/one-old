@@ -14,6 +14,7 @@ const { spawn, spawnSync } = require('child_process');
 
 const {
   STATE_FILE,
+  LEGACY_STATE_FILE,
   BUDGET_CHARS,
   RN_STACKS,
   WEB_STACKS,
@@ -28,6 +29,8 @@ const {
   nowIso,
   readState,
   writeState,
+  statePath,
+  legacyStatePath,
   normalizeState,
   initializeToolchainState,
   hasValidTeamState,
@@ -139,7 +142,7 @@ function tokenEconomyBanner(cwd) {
   }
   // Codebase-graph banner. Both providers can show simultaneously if both
   // artefacts exist on disk (e.g. user switched provider mid-project); the
-  // active one per `.traffic-one.json` is what subagents will read.
+  // active one per `.traffic-one/.one.json` is what subagents will read.
   const graphifyPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
   if (fs.existsSync(graphifyPath)) {
     lines.push('[graph: graphify] graphify-out/GRAPH_REPORT.md present — consult before grep/glob for module/structure questions.');
@@ -163,13 +166,13 @@ function tokenEconomyBanner(cwd) {
   } catch {
     // best-effort; banner is informational
   }
-  // Toolchain drift hints. Walk `.traffic-one.json` → `toolchain.*` and
+  // Toolchain drift hints. Walk `.traffic-one/.one.json` → `toolchain.*` and
   // surface a one-line nudge per tool whose installed version sits below
   // the plugin's curated `recommended` (or below `minimum` — louder).
   // The curated spec lives at `scripts/toolchain-versions.json`; bump it
   // there to update what every project sees on its next SessionStart.
   try {
-    const stateFile = path.join(cwd, '.traffic-one.json');
+    const stateFile = existingStateFilePath(cwd);
     if (fs.existsSync(stateFile)) {
       const state = safeReadJson(stateFile, {});
       const toolchain = (state && state.toolchain) || {};
@@ -259,7 +262,7 @@ function findProjectRootForHookFile(cwd, filePath) {
   let current = path.dirname(absPath);
 
   while (current.startsWith(cwdAbs)) {
-    if (fs.existsSync(path.join(current, STATE_FILE))) {
+    if (hasStateFile(current)) {
       return current;
     }
     if (current === cwdAbs) break;
@@ -316,7 +319,21 @@ function promptTextFromSubmit(rawInput) {
 
 function isStateFilePath(filePath) {
   const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
-  return normalized === STATE_FILE || normalized.endsWith(`/${STATE_FILE}`);
+  return normalized === STATE_FILE
+    || normalized.endsWith(`/${STATE_FILE}`)
+    || normalized === LEGACY_STATE_FILE
+    || normalized.endsWith(`/${LEGACY_STATE_FILE}`);
+}
+
+function hasStateFile(cwd) {
+  return fs.existsSync(path.join(cwd, STATE_FILE))
+    || fs.existsSync(path.join(cwd, LEGACY_STATE_FILE));
+}
+
+function existingStateFilePath(cwd) {
+  const nextPath = statePath(cwd);
+  if (fs.existsSync(nextPath)) return nextPath;
+  return legacyStatePath(cwd);
 }
 
 function patchTextFromToolInput(toolInput = {}) {
@@ -431,8 +448,8 @@ function replaceOneOrAll(text, oldText, newText, replaceAll = false) {
 
 function proposedStateTextFromToolInput(cwd, toolName, toolInput) {
   const normalized = normalizedToolName(toolName);
-  const statePath = path.join(cwd, STATE_FILE);
-  const currentText = fs.existsSync(statePath) ? fs.readFileSync(statePath, 'utf8') : '';
+  const currentStatePath = existingStateFilePath(cwd);
+  const currentText = fs.existsSync(currentStatePath) ? fs.readFileSync(currentStatePath, 'utf8') : '';
   if (/^Write$/i.test(normalized)) {
     return typeof toolInput.content === 'string' ? toolInput.content : null;
   }
@@ -489,7 +506,7 @@ function teamModeApprovalMarkerWriteGuard(cwd, toolName, toolInput) {
   if (!proposedStateWritesModeChangeApproval(cwd, toolName, toolInput)) return null;
   return denyPreToolUse(
     'Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. '
-    + 'Do not add or refresh it in `.traffic-one.json` manually.'
+    + 'Do not add or refresh it in `.traffic-one/.one.json` manually.'
   );
 }
 
@@ -504,7 +521,7 @@ function teamModeDowngradeGuard(cwd, toolName, toolInput, currentState) {
     return null;
   }
   return denyPreToolUse(
-    'Traffic One team mode guard: `.traffic-one.json` currently records `team.mode="subagents"`. '
+    'Traffic One team mode guard: `.traffic-one/.one.json` currently records `team.mode="subagents"`. '
     + 'This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. '
     + 'Ask the user to say that explicitly before rewriting `performance.level="low"` and `team.mode="main-agent"`. '
     + 'Do not use `team.source="unavailable"` or a state rewrite as a workaround.'
@@ -555,8 +572,7 @@ function materializationSuccessResult(materialized, triggerPath) {
 function materializeProjectIfNeeded(cwd, trigger = 'generic hook convergence') {
   if (isPluginAuthoringRoot(cwd)) return null;
 
-  const statePath = path.join(cwd, STATE_FILE);
-  const state = safeReadJson(statePath, null);
+  const state = readState(cwd);
   if (!state || typeof state !== 'object') return null;
   const normalized = normalizeState(state, state.mode || detectMode(cwd));
   if (normalized) {
@@ -626,7 +642,7 @@ function projectRootForPathHint(cwd, hintPath) {
   }
 
   while (true) {
-    if (fs.existsSync(path.join(current, STATE_FILE))) {
+    if (hasStateFile(current)) {
       return current;
     }
     const parent = path.dirname(current);
@@ -759,7 +775,7 @@ function formatStateValue(value) {
 function trafficOneStateValidationIssues(state, validCodeGraphProviders = ['gitnexus', 'graphify']) {
   const issues = [];
   if (!state || typeof state !== 'object') {
-    return ['`.traffic-one.json` must contain a JSON object.'];
+    return ['`.traffic-one/.one.json` must contain a JSON object.'];
   }
 
   if (!state.stack) {
@@ -866,15 +882,14 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     };
   }
 
-  const statePath = path.join(cwd, STATE_FILE);
-  const state = safeReadJson(statePath, null);
+  const state = readState(cwd);
   const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
 
   if (!state || typeof state !== 'object') {
     return {
       stdout: JSON.stringify({
-        systemMessage: 'traffic-one — `.traffic-one.json` is missing or invalid; cannot materialize project rules',
+        systemMessage: 'traffic-one — `.traffic-one/.one.json` is missing or invalid; cannot materialize project rules',
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
           additionalContext: 'Write the complete Traffic One state file first, then run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root.',
@@ -900,7 +915,7 @@ function materializeProjectFromState(cwd, trigger = 'manual materialize-project'
     });
     return {
       stdout: JSON.stringify({
-        systemMessage: 'traffic-one — `.traffic-one.json` is incomplete; cannot materialize project rules yet',
+        systemMessage: 'traffic-one — `.traffic-one/.one.json` is incomplete; cannot materialize project rules yet',
         hookSpecificOutput: {
           hookEventName: 'PostToolUse',
           additionalContext,
@@ -1142,7 +1157,7 @@ function projectContextChatFallback(state = {}) {
     'Dynamic questions for this request:',
     ...projectContextDomainQuestionLines(originalPrompt).map((line) => `- ${line}`),
     '',
-    'Save the answer in `.traffic-one.json` as `projectContext` with `source`, `originalPrompt`, `summary`, `answers`, and `collectedAt` before asking the Mobile App prompt.',
+    'Save the answer in `.traffic-one/.one.json` as `projectContext` with `source`, `originalPrompt`, `summary`, `answers`, and `collectedAt` before asking the Mobile App prompt.',
   ].join('\n');
 }
 
@@ -1376,7 +1391,7 @@ function nextOnboardingStepPromptAndRequest(state, source = 'gate') {
   }
   const fallbackText = [
     'Traffic One onboarding state is still incomplete or noncanonical.',
-    'Re-write `.traffic-one.json` with the full required schema before continuing.',
+    'Re-write `.traffic-one/.one.json` with the full required schema before continuing.',
   ].join('\n');
   return { fallbackText, promptRequest: null };
 }
@@ -1398,7 +1413,7 @@ function onboardingGateFallbackReason(state = {}) {
     '',
     nextOnboardingStepPrompt(state, 'gate'),
     '',
-    'The onboarding state remains incomplete until `.traffic-one.json` contains stack, frontend, backend, projectContext, mobile, technologies, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), toolchain, confirmed, onboardingComplete, and confirmedAt.',
+    'The onboarding state remains incomplete until `.traffic-one/.one.json` contains stack, frontend, backend, projectContext, mobile, technologies, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), toolchain, confirmed, onboardingComplete, and confirmedAt.',
     'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, spawn helper agents, or continue implementation until the typed answer is received and the remaining onboarding prompts are resolved.',
   ].join('\n');
 }
@@ -1420,10 +1435,10 @@ function teamConfirmationPromptContext(state, source = 'gate') {
     : null;
   return [
     `Traffic One Team Confirmation is still required before the ${level} subagent run can start.`,
-    'The user selected a multi-agent performance level, but `.traffic-one.json` does not contain `team.approved: true`.',
+    'The user selected a multi-agent performance level, but `.traffic-one/.one.json` does not contain `team.approved: true`.',
     'Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.',
     source === 'user-prompt'
-      ? 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first rewrite `.traffic-one.json` with `team.approved: true` (and any collected `team.overrides`), then continue.'
+      ? 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first rewrite `.traffic-one/.one.json` with `team.approved: true` (and any collected `team.overrides`), then continue.'
       : 'Your next visible assistant message must ask this approval question and then stop for the user answer.',
     'Use the host popup tool when available (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI). This is onboarding popup 2. If no popup tool is exposed, show this plain-chat fallback verbatim:',
     '',
@@ -1464,7 +1479,7 @@ function isMutatingPreToolUse(toolName, toolInput) {
 
 // Read-only orientation tools the onboarding gate allows even while onboarding
 // is incomplete, so the agent can locate its working directory and read context
-// BEFORE writing `.traffic-one.json`. Without this, the gate denied `pwd`/`Read`
+// BEFORE writing `.traffic-one/.one.json`. Without this, the gate denied `pwd`/`Read`
 // — leaving the agent unable to discover where to write the very file that
 // satisfies the gate (a deadlock). Mutating tools, agent spawns (Task/
 // spawn_agent), installs, and scaffolding are NOT orientation and stay gated.
@@ -1485,23 +1500,23 @@ function isReadOnlyOrientationToolUse(toolName, toolInput) {
 function repairedMaterializationDenyReason() {
   return [
     'Traffic One state was repaired/materialized before this tool use.',
-    'The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one.json`, rules, skills, or root agent context.',
-    'rerun the same tool now; the canonical `.traffic-one.json` and project-local materialization are current.',
+    'The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one/.one.json`, rules, skills, or root agent context.',
+    'rerun the same tool now; the canonical `.traffic-one/.one.json` and project-local materialization are current.',
   ].join('\n');
 }
 
 function agentMaterializationDenyReason() {
   return [
     'Traffic One agent spawn gate: state was repaired/materialized before this agent spawn.',
-    'The role agent has been denied once so frontend/backend workers cannot start against stale `.traffic-one.json`, rules, skills, or root agent context.',
-    'rerun the same agent spawn now; the canonical `.traffic-one.json` and project-local materialization are current.',
+    'The role agent has been denied once so frontend/backend workers cannot start against stale `.traffic-one/.one.json`, rules, skills, or root agent context.',
+    'rerun the same agent spawn now; the canonical `.traffic-one/.one.json` and project-local materialization are current.',
   ].join('\n');
 }
 
 function agentMaterializationMissingReason() {
   return [
     'Traffic One agent spawn gate: project-local rules/skills are not materialized yet.',
-    'Do not spawn frontend/backend/reviewer/tester workers until `.traffic-one.json` has current `materializedStack`, `materializedAt`, and `materializedVersion`, and `.traffic-one/manifest.json`, `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root `CLAUDE.md` exist.',
+    'Do not spawn frontend/backend/reviewer/tester workers until `.traffic-one/.one.json` has current `materializedStack`, `materializedAt`, and `materializedVersion`, and `.traffic-one/manifest.json`, `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root `CLAUDE.md` exist.',
     'Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root, then retry the agent spawn.',
   ].join('\n');
 }
@@ -1530,6 +1545,7 @@ module.exports = {
   spawn,
   spawnSync,
   STATE_FILE,
+  LEGACY_STATE_FILE,
   BUDGET_CHARS,
   RN_STACKS,
   WEB_STACKS,
@@ -1541,6 +1557,8 @@ module.exports = {
   nowIso,
   readState,
   writeState,
+  statePath,
+  legacyStatePath,
   normalizeState,
   initializeToolchainState,
   hasValidTeamState,

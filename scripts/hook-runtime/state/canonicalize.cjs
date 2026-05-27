@@ -2,7 +2,7 @@
 
 // scripts/hook-runtime/state/canonicalize.cjs
 // Canonicalization of state field vocabularies (mobile/team/performance/openCode
-// sources, code-graph provider, backend) and the `.traffic-one.json` shape
+// sources, code-graph provider, backend) and the `.traffic-one/.one.json` shape
 // migration (`canonicalizeStateShape`).
 
 const { canonicalTier } = require('../model-tiers.cjs');
@@ -55,7 +55,7 @@ function canonicalOpenCodeSource(source) {
 }
 
 // Returns a canonicalised `{ role: tier }` map, or null when the input has no
-// usable overrides (so the field can be omitted from `.traffic-one.json`).
+// usable overrides (so the field can be omitted from `.traffic-one/.one.json`).
 // - Unknown role names are dropped silently.
 // - Tier strings that don't resolve via `canonicalTier` (highest|balanced|
 //   cheapest plus the well-known aliases in `model-tiers.cjs`) are dropped.

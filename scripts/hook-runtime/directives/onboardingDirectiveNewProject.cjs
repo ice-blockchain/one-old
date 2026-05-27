@@ -24,7 +24,7 @@ function onboardingDirectiveNewProject() {
   return `═══ traffic-one — FIRST-RUN ONBOARDING (new project) ═══
 
 This is a new project. Before writing any feature code, briefly understand
-what the user is building, recommend our stack, and write \`.traffic-one.json\`.
+what the user is building, recommend our stack, and write \`.traffic-one/.one.json\`.
 A PostToolUse hook will auto-load the matching rule bundle into THIS session
 once the file is written — no restart needed.
 
@@ -40,7 +40,7 @@ installing, editing files, or simulating roles.
 CURRENT-THREAD ONBOARDING GATE (all hosts):
   When project mode resolves to \`new-project\` (\`mode === "new-project"\`),
   complete Traffic One onboarding in the current thread before writing
-  \`.traffic-one.json\`, writing \`.traffic-one/plan.md\`, spawning/simulating
+  \`.traffic-one/.one.json\`, writing \`.traffic-one/plan.md\`, spawning/simulating
   subagents, creating files, editing code, running installs, or scaffolding.
 
   Use the host popup/input mechanism when available. If no popup/input tool is
@@ -54,7 +54,7 @@ ONBOARDING POPUP RULE (all hosts, blocking):
   prose questions with numbered options. ${hostPopupInstruction()}
   Do NOT print "Options:" or a numbered list in chat when a popup tool is
   available. Never choose a default, infer an answer, auto-approve a
-  recommendation on the user's behalf, write \`.traffic-one.json\`, scaffold,
+  recommendation on the user's behalf, write \`.traffic-one/.one.json\`, scaffold,
   run installs, spawn subagents, or continue implementation while an onboarding
   answer is still pending. This includes popup 2 (Team Confirmation): you may
   NOT auto-approve the default Balanced/High line-up to "keep moving" — wait
@@ -67,13 +67,13 @@ ONBOARDING POPUP RULE (all hosts, blocking):
     1. Agent Mode / Performance (High, Balanced, Low).
     2. Team Confirmation (MANDATORY for Balanced / High; lists the configured
        subagent line-up so the user can approve, re-pick, or customise
-       per-role tiers before \`.traffic-one.json\` is written and before ANY
+       per-role tiers before \`.traffic-one/.one.json\` is written and before ANY
        subagent is spawned). Auto-approving this popup is a hard violation.
     3. Success message: "Traffic One was successfully set up. Let's collect
        the project details next."
     4. Project Context (dynamic questions based on the user's original request).
     5. Mobile App (always; explicit web/mobile/stack requests do not skip it).
-    6. Code Graph (always required before \`.traffic-one.json\` is complete).
+    6. Code Graph (always required before \`.traffic-one/.one.json\` is complete).
 
 ${codexDefaultModeFallbackDirective()}
 
@@ -101,7 +101,7 @@ PROJECT CONTEXT PREFLIGHT (after Traffic One setup success, blocking before mobi
   free vs paid courses, enrollment, learner/admin roles, admin CRUD, seeded
   demo content, analytics, and whether payments are in or out for v1.
 
-  Persist this in \`.traffic-one.json\` as:
+  Persist this in \`.traffic-one/.one.json\` as:
     "projectContext": {
       "source": "prompted",
       "originalPrompt": "<user's original request>",
@@ -141,7 +141,7 @@ MOBILE DECISION PREFLIGHT (popup 5, blocking before code graph):
       - "React Native / Expo" — Add an explicit React Native/Expo mobile app stack.
 
   Stop and wait for the user's popup answer before writing
-  final \`.traffic-one.json\`, asking for codeGraphProvider, writing a plan,
+  final \`.traffic-one/.one.json\`, asking for codeGraphProvider, writing a plan,
   creating files, editing code, scaffolding the
   repo, or simulating Traffic One roles manually. Do not assume "web only"
   just because a popup is unavailable.
@@ -157,7 +157,7 @@ CODEBASE GRAPH PROVIDER PREFLIGHT (popup 6, always required):
       - "graphify" — Python CLI; writes graphify-out/GRAPH_REPORT.md + graph.json; MIT license.
 
   This choice is REQUIRED — no skip and no default. Do NOT write
-  \`.traffic-one.json\` with \`codeGraphProvider\` absent. If the user expresses
+  \`.traffic-one/.one.json\` with \`codeGraphProvider\` absent. If the user expresses
   uncertainty, explain the license/runtime trade-off and ask the popup again.
   Do not pick either provider.
 
@@ -175,7 +175,7 @@ PATH A — User mentioned only FEATURES (no specific tech stack):
   Confirmation for High/Balanced, then project context, then mobile, then code
   graph. Do not skip these because the first prompt already requested web,
   mobile, Ionic, Capacitor, React Native, Expo, or another stack. Then write
-  \`.traffic-one.json\` with
+  \`.traffic-one/.one.json\` with
                 stack=default, frontend=react-vite, backend=${defaultBackend}, realtime=none
                 (ask only if real-time matters: gameplay/markets/trading).
 
@@ -234,7 +234,7 @@ PATH B — User mentioned a SPECIFIC TECH STACK:
     Ask with the CODEBASE GRAPH PROVIDER PREFLIGHT popup above. If the
     host cannot show popups, ask verbatim in English: "Which provider should we
     use for the codebase graph: **gitnexus** or **graphify**?"
-    Treat as REQUIRED. Do NOT write \`.traffic-one.json\` with
+    Treat as REQUIRED. Do NOT write \`.traffic-one/.one.json\` with
     \`codeGraphProvider\` absent. If the user expresses uncertainty, repeat the
     one-line license trade-off above and ask again. NEVER default-pick.
 
@@ -254,11 +254,11 @@ GENERAL RULES:
     Mobile App popup/chat answer, \`explicit\` for an explicit mobile request,
     or \`none\` when no mobile decision has been collected. Never write
     descriptive variants such as \`user-onboarding\`.
-  - Write \`.traffic-one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
-    Use the RELATIVE path \`.traffic-one.json\` so it lands in the project root
+  - Write \`.traffic-one/.one.json\` (use the Write tool) with EXACTLY THIS SHAPE.
+    Use the RELATIVE path \`.traffic-one/.one.json\` so it lands in the project root
     (your current working directory). Do NOT pass an absolute path and do NOT try
     to detect/confirm the directory first — the onboarding gate reads
-    \`<cwd>/.traffic-one.json\`, so a relative write always lands where the gate
+    \`<cwd>/.traffic-one/.one.json\`, so a relative write always lands where the gate
     looks. (If you want to confirm the directory, read-only \`pwd\`/\`ls\`/\`Read\`
     are allowed before onboarding completes.)
     All required top-level fields are REQUIRED — do NOT drop any. Subsequent
@@ -371,7 +371,7 @@ For the recommended default stack (\`default\` with frontend=react-vite and back
      \`npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator\`.
   3. Project memory baseline: create \`.traffic-one/\` and run
      \`project-memory\`. Verify the root companion state file
-     \`.traffic-one.json\` exists with the full onboarding schema, then write
+     \`.traffic-one/.one.json\` exists with the full onboarding schema, then write
      product.md, stack.md, coding.md, security.md,
      known-issues.md, agent-log.md, .agentignore, mcp.json, deployments.jsonl,
      schema.sql, decisions/, and skills/ when reusable team commands are
@@ -459,10 +459,10 @@ writing any code that uses \`@supabase/supabase-js\`:
      that asserts that exact href.
   3. Treat add-ons (storage / auth / realtime / vector / pg_cron / pg_net) as
      gated. The \`requireAddon\` helper in \`scripts/hook-runtime/state.cjs\` reads
-     \`.traffic-one.json\` → \`supabaseAddons[<name>]\`. Ask the user once before
+     \`.traffic-one/.one.json\` → \`supabaseAddons[<name>]\`. Ask the user once before
      enabling, then write \`approved\` and proceed silently for that add-on.
   4. Edge Functions auto-deploy on save when
-     \`.traffic-one.json\` → \`supabaseFunctionsAutoDeploy: true\`. The PostToolUse
+     \`.traffic-one/.one.json\` → \`supabaseFunctionsAutoDeploy: true\`. The PostToolUse
      hook prompts the user the first time and stores their preference.
 
 After the scaffold is in place, address the user's original feature request inside

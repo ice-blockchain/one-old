@@ -1,0 +1,38 @@
+<!-- GENERATED FROM: rules-templates/frontend/react-native/testing.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "React Native Testing — Jest + RNTL + Maestro. Generated from rules-templates/frontend/react-native/testing.md."
+globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/.maestro/**", "apps/**/src/test/**", "packages/**/test/**"]
+alwaysApply: false
+---
+
+# React Native Testing — Jest + RNTL + Maestro
+
+Framework-agnostic test layering lives in `frontend/testing.md`. This file
+covers native-specific tools.
+
+## Unit and integration
+- Use jest + jest-expo.
+- Use `@testing-library/react-native` for components and hooks.
+- Query order: role -> label text -> visible text -> placeholder -> testID last.
+- Use `userEvent` from RNTL when available; otherwise use `fireEvent` sparingly.
+- Render with the real provider chain: Redux, theme, safe area, and router mocks.
+
+## Test helper
+- Every app exports `renderWithProviders` from `apps/mobile/src/test/render.tsx`.
+- Tests must not assemble ad-hoc provider stacks.
+- Mock native modules at the boundary, not inside components.
+
+## Services
+- Use msw or typed service fakes for HTTP.
+- Use in-memory WS fake for real-time.
+- Never hit real devices, sockets, or network services in unit/integration tests.
+
+## Maestro E2E
+- Device flows live in `.maestro/*.yml`.
+- Cover critical journeys: onboarding/login, core navigation, primary mutation, offline/reconnect behavior.
+- E2E builds use an EAS profile that creates simulator/emulator artifacts.
+- Prefer stable accessibility labels over brittle text when selecting controls.
+
+## Coverage
+- Aim for >=80% coverage on `apps/*/src/features/` and every `packages/*` library.
+- Coverage does not replace device smoke testing on iOS and Android before release.

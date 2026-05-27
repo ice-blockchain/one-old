@@ -2,7 +2,7 @@
 
 // scripts/hook-runtime/state/materialization.cjs
 // Stack fingerprinting, materialization-freshness checks, and subagent / fix-cycle
-// signal derivation from the shared `.traffic-one.json` state.
+// signal derivation from the shared `.traffic-one/.one.json` state.
 
 const { VALID_AGENT_ROLES, SUBAGENT_STALE_MS } = require('./constants.cjs');
 
@@ -19,7 +19,7 @@ function stackFingerprint(state) {
   ].join('|');
 }
 
-// Returns true when .traffic-one.json already carries a valid materialization
+// Returns true when .traffic-one/.one.json already carries a valid materialization
 // stamp that matches the current stack. If not, implementation tools should be
 // blocked until the stamp is written by SessionStart.
 function isMaterialized(state) {
@@ -34,7 +34,7 @@ function isMaterialized(state) {
 //   .traffic-one/runs/<runId>/pending/<claimId>.json
 //   .traffic-one/runs/<runId>/<agentSessionId>.json
 //
-// The shared .traffic-one.json `currentRunId` field remains the active run
+// The shared .traffic-one/.one.json `currentRunId` field remains the active run
 // pointer; `activeAgentRole` remains a legacy fallback for projects created by
 // older plugin builds. New Codex/Claude/Cursor spawns should not rely on a
 // single shared role marker because parallel agents overwrite each other.

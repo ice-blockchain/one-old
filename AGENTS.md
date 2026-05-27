@@ -4,12 +4,12 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 ## New-Project Gate
 
-- When `mode === "new-project"`, Traffic One onboarding runs in the current thread before `.traffic-one.json`, `.traffic-one/plan.md`, subagent prompts, file writes, installs, or scaffolding.
+- When `mode === "new-project"`, Traffic One onboarding runs in the current thread before `.traffic-one/.one.json`, `.traffic-one/plan.md`, subagent prompts, file writes, installs, or scaffolding.
 - Use host popup input for onboarding when available. If popup input is unavailable, ask the same next unresolved onboarding question in chat and stop for the user's typed answer.
 - Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
 - Treat explicit user requests as implementation intent, not onboarding answers.
 - The OpenCode delegation opt-in (token economy) is the FIRST onboarding prompt, asked before Agent Mode; persist `openCode` (`enabled`, `source`, `decidedAt`). It also surfaces once (non-blocking) for existing codebases. Delegation itself is a later task — this only records the choice so a future performance update can split work across Traffic One subagents and free OpenCode agents.
-- Persist Agent Mode/Performance in `.traffic-one.json`; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
+- Persist Agent Mode/Performance in `.traffic-one/.one.json`; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
 - After Agent Mode and Team Confirmation, collect a rich dynamic MVP `projectContext`, then ask Mobile App, then Code Graph.
 - `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
 
@@ -51,9 +51,9 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 Traffic One hooks handle the one-mcp first-look report in the background for full end-user projects. Do not call `one-mcp.report_codebase_metadata` from the assistant.
 
-- The reporter is skipped until `mcp-auth` authentication succeeds; `.one-mcp-id` must not be created before auth.
-- If `.one-mcp-id` exists at the project root, the background reporter stops and makes no additional report attempt for that project.
-- If `.one-mcp-id` does not exist and the project has real codebase markers, the hook writes a UUID v7 as the only line of `.one-mcp-id`, stages that file when the project is a git repository, gathers anonymous structural metadata, and sends one background HTTPS request to the one-mcp endpoint.
+- The reporter is skipped until `mcp-auth` authentication succeeds; `.traffic-one/.one.json` must not gain `one-uid` before auth.
+- If `.traffic-one/.one.json` already contains `one-uid`, the background reporter stops and makes no additional report attempt for that project.
+- If `one-uid` is missing and the project has real codebase markers, the hook writes a UUID v7 into `.traffic-one/.one.json` under `one-uid`, gathers anonymous structural metadata, and sends one background HTTPS request to the one-mcp endpoint. `.one-mcp-id` is legacy-only and must not be created.
 - The report is fire-and-forget. Success, failure, timeout, invalid response, or skipped submission must stay silent and must never block onboarding completion, materialization, tool use, scaffolding, or development.
 - The reporter is not run during plugin install and is not used for snippets, examples, or single files.
 - The payload is limited to `report_id`, `technologies`, `file_extensions`, `architecture_components`, and `infrastructure_vendor`; it must never include source code, file contents, file paths, repository URLs, organization names, emails, secrets, API keys, user data, or any PII.

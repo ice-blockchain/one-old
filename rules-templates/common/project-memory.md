@@ -8,10 +8,10 @@ Every Traffic One project keeps a small, versioned `.traffic-one/` folder for
 agent-readable context that survives across sessions, tools, and subagents. It
 is not a dumping ground; keep each file short, current, and source-backed.
 
-The folder does not replace root `.traffic-one.json`. That JSON file is the
+The folder does not replace root `.traffic-one/.one.json`. That JSON file is the
 Traffic One state file for mode, stack, backend, realtime, onboarding, and
-deployment/security stamps. If project memory exists but `.traffic-one.json` is
-missing or lacks a valid `stack`, create or repair `.traffic-one.json` before
+deployment/security stamps. If project memory exists but `.traffic-one/.one.json` is
+missing or lacks a valid `stack`, create or repair `.traffic-one/.one.json` before
 writing feature source.
 
 ## Read Protocol
@@ -60,7 +60,7 @@ dedicated repo-scan outputs.
 Create or reconcile these files for new projects and existing projects before
 normal feature work:
 
-- Root `.traffic-one.json`: companion state file with `version`, `mode`, `stack`,
+- Root `.traffic-one/.one.json`: companion state file with `version`, `mode`, `stack`,
   `backend`, `realtime`, `confirmed`, `onboardingComplete`, and `confirmedAt`.
   Keep deploy/security stamps here, not in `.traffic-one/`.
 - `.traffic-one/product.md`: one-page PRD with user, job-to-be-done, core
@@ -101,7 +101,7 @@ normal feature work:
   when safe.
 
 Active rule/skill materialization is not hand-authored memory. After
-`.traffic-one.json` has the complete state schema and onboarding is complete,
+`.traffic-one/.one.json` has the complete state schema and onboarding is complete,
 the generic post-tool hook must materialize the local bundle on the next host
 tool event. If a host runtime does not emit that hook, or an agent manually
 repairs project memory, run this from the project root before writing feature
@@ -111,7 +111,7 @@ source:
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
 ```
 
-The expected result is a stamped `.traffic-one.json` with `version`,
+The expected result is a stamped `.traffic-one/.one.json` with `version`,
 `materializedStack`, `materializedAt`, and `materializedVersion`, plus
 project-local `.traffic-one/rules/**`, `.traffic-one/manifest.json`,
 `.traffic-one/skills/**`, root `AGENTS.md` containing the compact active rule
@@ -143,7 +143,7 @@ Keep persistent memory useful, not encyclopedic:
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
   `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
   asks to preserve a report. The codebase-graph artefact location depends on
-  `codeGraphProvider` in `.traffic-one.json`.
+  `codeGraphProvider` in `.traffic-one/.one.json`.
 - Do not place secrets, service-role keys, database passwords, raw customer data,
   or production connection strings in project memory.
 - Append to `agent-log.md` and `deployments.jsonl`; do not rewrite history except

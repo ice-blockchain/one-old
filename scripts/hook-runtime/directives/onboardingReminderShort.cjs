@@ -5,7 +5,7 @@ const { codexDefaultModeFallbackDirective } = require('../onboarding-prompts.cjs
 // ── Condensed reminder for UserPromptSubmit while onboarding is incomplete ───
 // SessionStart's full directive can scroll out of context across long onboarding
 // turns or compaction. This short reminder is re-injected on every prompt
-// while `.traffic-one.json` still lacks a valid `stack`.
+// while `.traffic-one/.one.json` still lacks a valid `stack`.
 function onboardingReminderShort() {
   return `═══ traffic-one — onboarding still incomplete ═══
 
@@ -17,8 +17,8 @@ pending.
 
 ${codexDefaultModeFallbackDirective()}
 
-Write \`.traffic-one.json\` (use the Write tool, RELATIVE path
-\`.traffic-one.json\` so it lands in the current working directory — never an
+Write \`.traffic-one/.one.json\` (use the Write tool, RELATIVE path
+\`.traffic-one/.one.json\` so it lands in the current working directory — never an
 absolute guess) with the full required schema before continuing with feature
 work. The PostToolUse hook will then auto-load the matching rule bundle into
 THIS session — no restart needed.

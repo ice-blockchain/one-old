@@ -2,13 +2,13 @@
 .idea/
 .vscode/
 *.iml
-tests/
 
 # Claude Code local session settings — never commit these
 .claude/settings.local.json
 .claude/
 
 # traffic-one per-project state — written at session start, not committed
+.traffic-one/.one.json
 .traffic-one.json
 .traffic-one/
 .claude-plugin-mode

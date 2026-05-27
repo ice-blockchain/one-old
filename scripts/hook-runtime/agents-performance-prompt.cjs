@@ -33,7 +33,7 @@ function performancePopupBlock() {
     '      - "Balanced" — Subagent team with efficient mid-tier models; good cost/quality balance.',
     '      - "Low" — Main agent only; all roles run in this thread as a roadmap checklist; lowest cost.',
     '',
-    '  Hold the answer in working memory; do NOT write final `.traffic-one.json` yet',
+    '  Hold the answer in working memory; do NOT write final `.traffic-one/.one.json` yet',
     '  for Balanced/High — popup 2 (Team Confirmation) still has to confirm the',
     '  role → model line-up. The intended state per option:',
     '    - "Balanced" → performance.level="balanced", team.mode="subagents"',
@@ -44,13 +44,13 @@ function performancePopupBlock() {
     '  using the agent line-up defined in `performance-config.cjs` for the',
     '  chosen level. Popup 2 is MANDATORY — auto-approving it on the user\'s',
     '  behalf, or skipping it with "the default looks fine / I\'ll proceed",',
-    '  is a HARD VIOLATION of this directive. Do NOT write `.traffic-one.json`',
+    '  is a HARD VIOLATION of this directive. Do NOT write `.traffic-one/.one.json`',
     '  and do NOT spawn any subagent (Task / spawn_agent / background-agent)',
     '  until the user has replied "Approve" in popup 2. If you cannot ask the',
     '  popup (no popup tool exposed AND no user available), use the chat',
     '  fallback in `teamConfirmationChatFallback` and STOP for the user reply;',
     '  do not invent an answer.',
-    '  For "Low": skip popup 2, write `.traffic-one.json` with',
+    '  For "Low": skip popup 2, write `.traffic-one/.one.json` with',
     '    "performance": { "level": "low", "source": "prompted" },',
     '    "team": { "mode": "main-agent", "source": "prompted" }',
     '  and continue in this thread using the role roadmap checklist directive.',
@@ -93,7 +93,7 @@ function autoLaunchesTeam(level) {
 }
 
 // Returns the effective tier for a role at a level, honoring any user
-// `team.overrides` from `.traffic-one.json`. Returns null when the level has
+// `team.overrides` from `.traffic-one/.one.json`. Returns null when the level has
 // no subagents (low) or the role isn't configured.
 function effectiveTierForRole(level, role, overrides) {
   const cfg = PERFORMANCE_CONFIG[level];

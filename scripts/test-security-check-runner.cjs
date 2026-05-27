@@ -234,14 +234,14 @@ test('clean web project passes and writes reports', () => {
 test('passing stamp writes lastSecurityCheck fields', () => {
   withTempDir((cwd) => {
     makeCleanWebProject(cwd);
-    writeFile(cwd, '.traffic-one.json', JSON.stringify({
+    writeFile(cwd, '.traffic-one/.one.json', JSON.stringify({
       stack: 'react-realtime-monorepo',
       version: 3,
       pluginVersion: '2.0.0',
     }, null, 2));
 
     const result = runWithFakeTools(cwd, { stamp: true });
-    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one.json'), 'utf8'));
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one/.one.json'), 'utf8'));
 
     assert.equal(result.report.status, 'passed');
     assert.equal(state.version, getPluginVersion());
@@ -254,9 +254,9 @@ test('passing stamp writes lastSecurityCheck fields', () => {
 
 test('traffic-one stamp fields do not change project fingerprint', () => {
   withTempDir((cwd) => {
-    writeFile(cwd, '.traffic-one.json', JSON.stringify({ stack: 'react-realtime-monorepo' }, null, 2));
+    writeFile(cwd, '.traffic-one/.one.json', JSON.stringify({ stack: 'react-realtime-monorepo' }, null, 2));
     const before = computeProjectFingerprint(cwd).fingerprint;
-    writeFile(cwd, '.traffic-one.json', JSON.stringify({
+    writeFile(cwd, '.traffic-one/.one.json', JSON.stringify({
       stack: 'react-realtime-monorepo',
       lastShipperApprovalAt: new Date().toISOString(),
       lastSecurityCheckAt: new Date().toISOString(),
@@ -273,7 +273,7 @@ test('traffic-one stamp fields do not change project fingerprint', () => {
 test('stamp-only traffic-one state is ignored by fingerprint', () => {
   withTempDir((cwd) => {
     const before = computeProjectFingerprint(cwd).fingerprint;
-    writeFile(cwd, '.traffic-one.json', JSON.stringify({
+    writeFile(cwd, '.traffic-one/.one.json', JSON.stringify({
       lastSecurityCheckAt: new Date().toISOString(),
       lastSecurityCheckStatus: 'passed',
       lastSecurityCheckFingerprint: before,

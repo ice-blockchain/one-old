@@ -1,6 +1,6 @@
 ---
 name: traffic-one-doctor
-description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.gitnexus/` / `graphify-out/` artefacts, `.traffic-one.json` integrity, missing `TRAFFIC_ONE_AUTH_KEY` for `mcp-auth`, Codex hook trust, and specific Codex session ids where hooks may not have run. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup", or gives a Codex session id to debug. Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
+description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.gitnexus/` / `graphify-out/` artefacts, `.traffic-one/.one.json` integrity, missing `TRAFFIC_ONE_AUTH_KEY` for `mcp-auth`, Codex hook trust, and specific Codex session ids where hooks may not have run. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup", or gives a Codex session id to debug. Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
 ---
 
 # traffic-one Doctor
@@ -33,7 +33,7 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
 3. **gitnexus** — binary on PATH, absolute v22 path, **crash-risk flag**
    (binary lives inside an old nvm Node folder → will crash with
    `SyntaxError: Cannot use import statement`).
-4. **Project** — `.traffic-one.json` state, `.nvmrc`, `.git/` presence,
+4. **Project** — `.traffic-one/.one.json` state, `.nvmrc`, `.git/` presence,
    `.gitnexus/` and `graphify-out/GRAPH_REPORT.md` artefact ages.
 5. **Codex/MCP activation** — plugin enabled flag, trusted hook state, trusted
    workspace coverage, and whether `mcp-auth` is configured without
@@ -91,7 +91,7 @@ fixes that aren't needed.
 | `NO_GIT_DIR` | No `.git/` at project root. Runner handles via `--skip-git`; informational. | n/a (info) |
 | `GITNEXUS_STALE` | `.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
 | `LAST_RUN_FAILED` | Most recent runner stamp shows an error. Surface the message and pair with other findings. | Depends |
-| `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one.json` missing the field. Re-run onboarding. | Via `stack-setup` |
+| `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one/.one.json` missing the field. Re-run onboarding. | Via `stack-setup` |
 | `CODEX_TRAFFIC_ONE_PLUGIN_DISABLED` | Codex config does not enable the Traffic One plugin, so hooks will not run. | No (user enables plugin) |
 | `CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED` | Codex hook trust records are missing, disabled, or missing trusted hashes. | No (user re-trusts hooks) |
 | `CODEX_WORKSPACE_UNTRUSTED` | Current workspace is outside trusted Codex project roots, so hooks may be skipped. | No (user trusts workspace/parent) |
@@ -128,7 +128,7 @@ the Bash tool's permission prompt is the consent gate.
 
 - Never auto-run `npm install` / `nvm install` / `git init` without explicit
   user approval in this turn.
-- Never modify `.traffic-one.json` directly from this skill; route field
+- Never modify `.traffic-one/.one.json` directly from this skill; route field
   changes through `stack-setup`.
 - Never delete `.gitnexus/`, `.traffic-one/backups/`, or any project file.
 - Never share the user's filesystem layout to a remote endpoint.

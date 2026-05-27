@@ -7,7 +7,7 @@
 Preserve all existing structure. New code only.
 
 ## OpenCode delegation opt-in (token economy, one-time)
-- If `.traffic-one.json` has no resolved `openCode` field, the UserPromptSubmit hook surfaces a one-time, non-blocking popup asking whether to enable delegating bounded coding tasks to OpenCode (a free local agent) to save paid tokens. Record the answer as `openCode: { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }` and do not re-ask. Delegation itself ships in a later task; this only records the preference. Never auto-pick — wait for the user.
+- If `.traffic-one/.one.json` has no resolved `openCode` field, the UserPromptSubmit hook surfaces a one-time, non-blocking popup asking whether to enable delegating bounded coding tasks to OpenCode (a free local agent) to save paid tokens. Record the answer as `openCode: { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }` and do not re-ask. Delegation itself ships in a later task; this only records the preference. Never auto-pick — wait for the user.
 
 ## Active constraints
 - Do NOT rename, move, or restructure existing files
@@ -16,7 +16,7 @@ Preserve all existing structure. New code only.
 - No `any`, no inline styles, named exports only — on new code
 - No backend or infrastructure suggestions
 - Before normal feature work, run the `project-memory` baseline reconciliation:
-  - Confirm root `.traffic-one.json` exists and has a valid `mode` and `stack`;
+  - Confirm root `.traffic-one/.one.json` exists and has a valid `mode` and `stack`;
     `.traffic-one/` memory does not replace stack/state selection.
   - If `.traffic-one/` is missing, create it from verified repo facts.
   - If memory files already exist, update them in place.

@@ -14,7 +14,8 @@ const { getPluginVersion } = require('../hook-runtime/state/state.cjs');
 const { which } = require('./which.cjs');
 const { findNvmNode22 } = require('./findNvmNode22.cjs');
 
-const TRAFFIC_ONE = '.traffic-one.json';
+const TRAFFIC_ONE = path.join('.traffic-one', '.one.json');
+const LEGACY_TRAFFIC_ONE = '.traffic-one.json';
 const GITNEXUS_DIR = '.gitnexus';
 const REPORT_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 const CONFLICT_PATHS = ['AGENTS.md', 'CLAUDE.md', '.claude/skills'];
@@ -30,9 +31,11 @@ function runStampForFs() {
 
 function readState(cwd) {
   const filePath = path.join(cwd, TRAFFIC_ONE);
-  if (!fs.existsSync(filePath)) return {};
+  const legacyPath = path.join(cwd, LEGACY_TRAFFIC_ONE);
+  const readablePath = fs.existsSync(filePath) ? filePath : legacyPath;
+  if (!fs.existsSync(readablePath)) return {};
   try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+    return JSON.parse(fs.readFileSync(readablePath, 'utf8'));
   } catch {
     return {};
   }
@@ -40,10 +43,12 @@ function readState(cwd) {
 
 function writeStateMerge(cwd, patch) {
   const filePath = path.join(cwd, TRAFFIC_ONE);
+  const legacyPath = path.join(cwd, LEGACY_TRAFFIC_ONE);
+  const readablePath = fs.existsSync(filePath) ? filePath : legacyPath;
   let current = {};
-  if (fs.existsSync(filePath)) {
+  if (fs.existsSync(readablePath)) {
     try {
-      current = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      current = JSON.parse(fs.readFileSync(readablePath, 'utf8'));
     } catch {
       current = {};
     }
@@ -55,6 +60,7 @@ function writeStateMerge(cwd, patch) {
     merged.version = pluginVersion;
   }
   try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, `${JSON.stringify(merged, null, 2)}\n`, 'utf8');
   } catch {
     // best-effort; the runner never throws

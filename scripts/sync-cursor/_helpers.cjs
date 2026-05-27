@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
-const RULES_ROOT = path.join(ROOT, 'rules');
+const RULES_ROOT = path.join(ROOT, 'rules-templates');
 const AGENTS_ROOT = path.join(ROOT, 'agents');
 const CURSOR_RULES_ROOT = path.join(ROOT, '.cursor', 'rules');
 const CURSOR_PLUGIN_MANIFEST = path.join(ROOT, '.cursor-plugin', 'plugin.json');
@@ -165,6 +165,9 @@ function titleFromBody(body, fallback) {
 function slugForSource(sourcePath) {
   const sourceWithoutSuffix = path.relative(RULES_ROOT, sourcePath).replace(/\.md$/, '');
   let parts = toPosix(sourceWithoutSuffix).split('/');
+  if (parts[0] === 'common' && parts[1] === 'auth-gate') {
+    return 'auth-required';
+  }
 
   if (parts[0] === 'frontend' && parts[1] === 'react') {
     parts = parts.slice(1);

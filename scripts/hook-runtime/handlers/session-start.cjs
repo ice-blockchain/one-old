@@ -158,7 +158,7 @@ function runSessionStart(rawInput = '') {
   }
 
   // SUBAGENT FAST PATH. Prefer a per-agent run claim resolved from the actual
-  // hook session id. Legacy .traffic-one.json activeAgentRole remains a fallback
+  // hook session id. Legacy .traffic-one/.one.json activeAgentRole remains a fallback
   // only when no per-run agent state exists yet.
   const agentContext = resolveRunAgentContext(cwd, state, rawInput, { claimPending: true })
     || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
@@ -252,7 +252,7 @@ function runSessionStart(rawInput = '') {
       sessionMaterialized = !materialized.skipped;
     } catch {
       // Best-effort: SessionStart can still provide the in-memory rule bundle,
-      // but it must not stamp .traffic-one.json as materialized unless the
+      // but it must not stamp .traffic-one/.one.json as materialized unless the
       // project-local rules, skills, manifest, and root context files exist.
     }
     if (sessionMaterialized) {

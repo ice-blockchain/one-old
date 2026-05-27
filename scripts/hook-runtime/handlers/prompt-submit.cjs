@@ -9,8 +9,9 @@
 const {
   fs,
   path,
-  STATE_FILE,
-  safeReadJson,
+  statePath,
+  legacyStatePath,
+  readState,
   normalizeState,
   detectMode,
   isKnownStack,
@@ -81,15 +82,16 @@ function runUserPromptSubmit(rawInput = '') {
     return authRequiredHookResult('UserPromptSubmit', { authChoiceWrite: writeResult });
   }
 
-  const statePath = path.join(process.cwd(), STATE_FILE);
-  if (!fs.existsSync(statePath)) {
+  const currentStatePath = statePath(cwd);
+  const currentLegacyStatePath = legacyStatePath(cwd);
+  if (!fs.existsSync(currentStatePath) && !fs.existsSync(currentLegacyStatePath)) {
     return {
       stdout: JSON.stringify({ systemMessage: 'traffic-one active' }),
       exitCode: 0,
     };
   }
 
-  const state = safeReadJson(statePath, null);
+  const state = readState(cwd);
   if (!state) {
     return {
       stdout: JSON.stringify({ systemMessage: 'traffic-one active' }),
@@ -110,7 +112,7 @@ function runUserPromptSubmit(rawInput = '') {
           hookEventName: 'UserPromptSubmit',
           additionalContext: '[ACTIVE STACK: ' + stack + ']\n\n'
             + 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. '
-            + 'The next `.traffic-one.json` write may change `performance.level` to "low" and `team.mode` to "main-agent"; '
+            + 'The next `.traffic-one/.one.json` write may change `performance.level` to "low" and `team.mode` to "main-agent"; '
             + 'this authorization is single-use and expires in 10 minutes.',
         },
       }),
@@ -138,7 +140,7 @@ function runUserPromptSubmit(rawInput = '') {
   // Re-inject the short onboarding reminder while a new project hasn't yet
   // persisted a valid stack. SessionStart's full directive can scroll out of
   // context across long onboarding turns or compaction; this keeps the model
-  // pointed at the schema until `.traffic-one.json` is fully populated.
+  // pointed at the schema until `.traffic-one/.one.json` is fully populated.
   if (isIncomplete && state.mode === 'new-project') {
     const reminder = onboardingReminderShort();
     const classification = promptText ? classifyPromptForStack(promptText) : null;
@@ -180,7 +182,7 @@ function runUserPromptSubmit(rawInput = '') {
   // onboarding chain (before the Performance popup); every other session —
   // existing/auto-detected codebases, and projects onboarded before this
   // feature existed — gets it here, surfaced until the choice is recorded in
-  // `.traffic-one.json` and then never again. Non-blocking: the user's current
+  // `.traffic-one/.one.json` and then never again. Non-blocking: the user's current
   // request still proceeds.
   if (!hasResolvedOpenCodeState(normalizedState.openCode)) {
     const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${openCodeOptInDirective()}`;

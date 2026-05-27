@@ -1,0 +1,48 @@
+<!-- GENERATED FROM: rules-templates/common/senior-engineer-team.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "Senior-engineer team orchestration. Generated from rules-templates/common/senior-engineer-team.md."
+alwaysApply: true
+---
+
+# Senior-engineer team orchestration
+
+- For non-trivial multi-layer builds, all supported runtimes mirror Claude Code's Traffic One flow exactly: architect first, frontend and backend in parallel, reviewer and tester in parallel, shipper only on explicit deploy intent.
+- Claude Code auto-spawns the named agents from `agents/*.md` when the orchestrator triggers.
+- Claude Code subagents do not inherit the parent agent's skills; each `agents/senior-*.md` frontmatter must declare its needed `skills:` explicitly.
+- When `mode === "new-project"`, Traffic One onboarding runs in the current thread before `.traffic-one/.one.json`, `.traffic-one/plan.md`, subagent prompts, file writes, installs, or scaffolding. Do not continue while onboarding answers or the post-onboarding architecture plan gate are unresolved.
+- Current-thread fallback is a visible first-response requirement, not a hidden hook instruction. If `mode === "new-project"` is known or strongly implied by the first-run onboarding context and `request_user_input` cannot be called, do not run `detect-project`, Read/LS/Glob/Grep, Bash, `npm view`, scaffolds, or edits. Ask only the next unresolved onboarding question in plain chat, tell the user to reply with the option number or label, and stop. Resume with the remaining onboarding order: Agent Mode, Team Confirmation for High/Balanced, rich dynamic MVP project context, Mobile App, then Code Graph.
+- Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate `create-feature`, `create-page`, `frontend-design`, `tdd-workflow`, or other implementation skills yet; those activate only after `.traffic-one/.one.json` has `onboardingComplete: true` and the architect plan exists.
+- Codex onboarding choices must use prompt popups when available, not prose with numbered options. When `request_user_input` is available, call that tool and stop; do not print `Options:` in chat. Plain text fallback is allowed only when the popup tool is unavailable: ask the same blocking question directly in chat with numbered options, tell the user to reply with the option number or label, and stop. Do not choose a default, infer an answer, write `.traffic-one/.one.json`, scaffold, run installs, or continue while the onboarding answer is pending.
+- For every new complex project, Codex asks the mobile decision before the codebase graph and subagent preflights. Explicit user requests for web, mobile, React Native, Ionic, Next.js, custom backend, no subagents, or "just build it" are implementation intent, not onboarding answers. Use `request_user_input` with header `Mobile App`, question `Do you want a mobile app too?`, and options `Web only (Recommended)`, `Ionic + Capacitor`, and `React Native / Expo`. Stop and wait for the popup answer before writing `.traffic-one/.one.json`, writing a plan, creating files, editing code, or asking later popups.
+- Codex asks the required codebase graph provider next, before the subagent/team prompt. Use `request_user_input` with header `Code Graph`, question `Which provider should we use for the codebase graph?`, and options `GitNexus` and `graphify`. This is required before `.traffic-one/.one.json`; no default and no skip.
+- Codex must announce the Traffic One team before starting a non-trivial multi-layer build and automatically ask the user whether to run the role subagents. Do this without waiting for the user to mention subagents. Because Codex requires explicit user intent before `spawn_agent`, this is a blocking preflight gate: ask first, then stop and wait for the user's answer before writing a plan, creating files, editing code, or simulating the roles manually. Do not silently simulate the team before asking. If the user declines, subagents are unavailable, or subagents are blocked, continue with per-role prompts in the same thread and state that the Traffic One team is being simulated by the main agent.
+- Codex preflight wording for matching builds: "Traffic One sees this as a multi-layer build. Do you want me to run the Traffic One subagent team: architect → frontend/backend → reviewer/tester?" Use this wording in English; do not translate this confirmation question based on the user's language. Use `request_user_input` when available with options `Run team (Recommended)` and `Main agent only`; if the popup tool is unavailable, ask the same wording in plain text with numbered options and stop for the user's typed reply.
+- Persist the Team answer in `.traffic-one/.one.json` before implementation: `Run team (Recommended)` writes `"team": { "mode": "subagents", "source": "prompted" }`; `Main agent only` writes `"team": { "mode": "main-agent", "source": "prompted" }`. This state is authoritative after onboarding.
+- When `team.mode="subagents"`, the parent/orchestrator must not write feature source files. It coordinates only: updates run state, spawns Traffic One role agents, integrates their results, and summarizes. The architecture hook denies feature-source writes unless they come from an active allowed role session. If subagents are genuinely unavailable or blocked, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one/.one.json`; `team.source="unavailable"` is not an authorization to downgrade.
+- Codex uses available Codex subagents to emulate the Traffic One roles after confirmation/runtime approval:
+  - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
+  - `senior-frontend` → `worker`, owned write scope frontend/UI/i18n files only.
+  - `senior-backend` → `worker`, owned write scope backend/API/database files only.
+  - `senior-reviewer` → `explorer` or `default`, read-only.
+  - `senior-tester` → `worker`, owned write scope test files and test infrastructure only.
+  - `senior-shipper` → `worker`, deploy/release only after the shipper gate is satisfied.
+- Cursor uses available Cursor/background-agent/task facilities to run the same roles. If Cursor exposes no callable agent facility, keep the same phase order manually with the mirrored `00-agent-senior-*.mdc` role contexts and state that the Traffic One team is being simulated by the main agent because the runtime has no subagent adapter.
+- Include the relevant Traffic One role instructions from `agents/senior-*.md` or a concise equivalent in every Codex/Cursor subagent prompt.
+- Every frontend role prompt must include the automatic baselines even when the
+  user did not mention them: i18n integration with existing/new catalogs and
+  `<Trans>` for rich copy, SEO metadata/tests for every created or changed
+  public route, and `https://traffic.io/` setup CTA href regression for touched
+  missing-config surfaces.
+- If subagents are unavailable or blocked in any runtime, continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
+- Do not ask for subagents on single-component, single-page, single-service, read-only audit, or small refactor tasks; route those directly to the matching specialist skill.
+- If a Codex agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.
+- Shipper remains gated: deploy/release/publish actions require explicit deploy intent, reviewer `APPROVED`, tester `TESTS_GREEN`, a passing `predeploy-security-check` stamp for the current worktree, and user confirmation in the same turn. The deploy hook denies production commands unless `lastShipperApprovalAt` is fresh (≤10 min) and `lastSecurityCheckStatus: "passed"` is fresh with a matching fingerprint.
+- Project memory requests route through `project-memory`; architect owns
+  `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/decisions/`,
+  and `.traffic-one/rules/*`, backend refreshes `.traffic-one/schema.sql` after
+  migrations, every role appends concise session notes to
+  `.traffic-one/agent-log.md`, and shipper appends `.traffic-one/deployments.jsonl`.
+- Documentation requests route through `auto-documentation-generator`; architect
+  owns plan/architecture/docs, reviewer checks docs and memory for accuracy and
+  placeholder/secrets risk, and shipper verifies release-facing docs and memory
+  before production deploy.

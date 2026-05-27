@@ -96,7 +96,7 @@ function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, mcpAut
     findings.push({
       severity: 'fix-needed',
       code: 'LEGACY_TRAFFIC_ONE_STATE',
-      message: '`.traffic-one.json` uses legacy/ad hoc fields such as `projectMode`, `subagentTeam`, root `codeGraph`, or nested `stack`. Rewrite it to the canonical top-level Traffic One schema.',
+      message: '`.traffic-one/.one.json` uses legacy/ad hoc fields such as `projectMode`, `subagentTeam`, root `codeGraph`, or nested `stack`. Rewrite it to the canonical top-level Traffic One schema.',
     });
   }
 

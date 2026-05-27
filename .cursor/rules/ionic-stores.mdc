@@ -1,0 +1,32 @@
+<!-- GENERATED FROM: rules-templates/frontend/ionic/stores.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "Ionic State Management. Generated from rules-templates/frontend/ionic/stores.md."
+globs: ["apps/**/src/store/**", "apps/**/src/features/**/slice.ts", "apps/**/src/features/**/store.ts", "src/store/**", "src/features/**/slice.ts", "src/features/**/store.ts"]
+alwaysApply: false
+---
+
+# Ionic State Management
+
+React state rules still apply. Ionic-specific state should describe mobile shell
+and native capability concerns without duplicating server data.
+
+## Ownership
+
+- Server data stays in RTK Query or Redux slices fed by services.
+- Cross-feature business state stays in Redux Toolkit.
+- Ephemeral mobile shell state may use zustand: active sheet, transient scanner
+  state, dismissed permission explainer, or temporary keyboard layout state.
+- Native capability state is normalized before it enters Redux/zustand.
+
+## Persistence
+
+- Persist only intentional preferences and session-safe shell state.
+- Do not persist raw plugin payloads, secrets, tokens, or server entities.
+- Hydrated state exposes loading and error states; never assume native storage
+  or persisted state is available.
+
+## Selectors
+
+- Use typed `useAppSelector` / `useAppDispatch`.
+- Use `createSelector` for derived mobile shell state that combines route,
+  network, permission, or auth state.

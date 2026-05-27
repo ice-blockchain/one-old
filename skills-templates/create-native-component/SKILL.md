@@ -3,7 +3,7 @@ name: create-native-component
 description: >
   Prerequisite: do not read, invoke, or activate this skill during Traffic One
   new-project onboarding. Use `detect-project` / `stack-setup` first, then use
-  this skill only after `.traffic-one.json` has `onboardingComplete: true` and
+  this skill only after `.traffic-one/.one.json` has `onboardingComplete: true` and
   `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
   only when the user explicitly asks to create, add, build, make, scaffold, or
   generate a React Native / Expo component, RN UI element, native screen
@@ -36,7 +36,7 @@ continue ordinary work without Traffic One after the user explicitly chooses
 "Continue without Traffic One".
 
 Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
-onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and
 `.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
 return here after the stack, mobile, code graph, and team gates are resolved.
 

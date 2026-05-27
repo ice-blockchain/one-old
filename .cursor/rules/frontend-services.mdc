@@ -1,0 +1,76 @@
+<!-- GENERATED FROM: rules-templates/frontend/services.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "Service Layer — framework-agnostic. Generated from rules-templates/frontend/services.md."
+globs: ["apps/**/src/services/**", "apps/**/src/features/**/services/**", "packages/api-client/**", "packages/ws-client/**", "src/services/**", "src/features/**/services/**"]
+alwaysApply: false
+---
+
+# Service Layer — framework-agnostic
+
+Two service flavours: REST and real-time (WebSocket). Both are isolated from UI code.
+Framework-specific RTK Query primitives and generated hooks live in
+`frontend/react/services.md` and `frontend/react-native/services.md`.
+
+## REST
+
+### When to wrap responses
+- **Cache-friendly reads** → use the active stack's RTK Query slice.
+- **One-off mutations, file uploads, anything where caching adds no value** → plain async service function.
+
+### Plain async service rules
+- Plain async functions — not hooks, not classes.
+- Explicit return type. No `any`, no implicit `unknown`.
+- One file per domain: `users.ts`, `bets.ts`, `markets.ts`.
+- Shared HTTP client lives in `packages/api-client` (or `apps/<name>/src/services/http.ts` for app-only).
+- Never access localStorage, cookies, or auth tokens inside service functions — pass as arguments, or read in the request interceptor.
+- Wrap in try/catch only when you're transforming the error.
+
+### Shared HTTP client baseline
+
+```ts
+// packages/api-client/src/instance.ts
+import axios from "axios";
+
+export const apiClient = axios.create({
+  baseURL: import.meta.env.VITE_API_URL,
+  headers: { "Content-Type": "application/json" },
+  timeout: 10_000,
+});
+
+apiClient.interceptors.request.use((config) => {
+  const token = readAuthToken();
+  if (token) config.headers.Authorization = `Bearer ${token}`;
+  return config;
+});
+
+apiClient.interceptors.response.use(
+  (res) => res,
+  (err) => Promise.reject(toAppError(err)),
+);
+```
+
+## Error contract
+
+Every service surface (REST + WS) maps transport errors to a typed `AppError` discriminated union:
+
+```ts
+type AppError =
+  | { kind: "network"; retryable: true }
+  | { kind: "auth"; status: 401 | 403 }
+  | { kind: "validation"; issues: ZodIssue[] }
+  | { kind: "server"; status: number; message: string };
+```
+
+UI code branches on `error.kind` — never on `error.message` or `error.status`.
+
+## Validation
+
+- Validate every response body with zod at the service boundary. Treat as `unknown` until validated.
+- Trust no payload from the server, even on 200.
+- Reject malformed payloads and surface them as `kind: "validation"` errors.
+
+## WebSocket
+
+WebSocket service rules — connection lifecycle, back-pressure, consistency, security —
+live in `frontend/realtime.md`. Components subscribe via framework-specific hooks; never
+call `new WebSocket()` outside the `ws-client` package or `services/ws/` folder.

@@ -24,14 +24,14 @@ You decide the stack, module boundaries, and public contracts before anyone touc
 
 ## When you run
 
-- The orchestrator (`senior-eng-orchestrator` skill) spawned you because `.traffic-one/plan.md` is missing or `.traffic-one.json.mode === "new-project"`.
+- The orchestrator (`senior-eng-orchestrator` skill) spawned you because `.traffic-one/plan.md` is missing or `.traffic-one/.one.json.mode === "new-project"`.
 - The user invoked you directly with phrases like "design the architecture", "what stack should we use", "plan this build", "write the ADR".
 
 ## Read protocol & token budget
 
 You're the *first* subagent in the run, so the read order is the simplest:
 
-1. `.traffic-one.json` — required.
+1. `.traffic-one/.one.json` — required.
 2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/known-issues.md`, `.traffic-one/rules/*.md` if present — persistent project memory.
 3. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.gitnexus/` when `codeGraphProvider: "gitnexus"`, `graphify-out/GRAPH_REPORT.md` when `codeGraphProvider: "graphify"`. Read it if it exists (existing-codebase mode where the user pre-built the graph). Skip silently if missing.
 4. The user's last 1–3 messages — extract verb, audience, primary action.
@@ -41,14 +41,14 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 
 ## What you read first
 
-1. `.traffic-one.json` — pick up `mode`, `stack`, `backend`, `realtime`, `frontend`. If the file is empty or pre-onboarding, run `stack-setup` first.
+1. `.traffic-one/.one.json` — pick up `mode`, `stack`, `backend`, `realtime`, `frontend`. If the file is empty or pre-onboarding, run `stack-setup` first.
 2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/coding.md`, `.traffic-one/security.md`, and `.traffic-one/known-issues.md` if present.
 3. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
 4. The user's last 1–3 messages — extract the actual product intent (verb, audience, primary action).
 
 ## Skills you consult (in this order)
 
-- `stack-setup` — only if `.traffic-one.json` is empty or `confirmed !== true`.
+- `stack-setup` — only if `.traffic-one/.one.json` is empty or `confirmed !== true`.
 - `monorepo-architecture` — **mandatory** when `stack === "default"` or `frontend === "react-vite"`. Produces the `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, `apps/web/`, and `packages/{ui,tailwind-config,i18n}` skeleton before the Module map is finalised. Skip only for `stack === "minimal"` single-app projects with no shared code.
 - `detect-project` — to confirm we're greenfield vs. extending an existing repo.
 - `library-pick` — for every non-default library decision; document the chosen + rejected with reasons.
@@ -126,7 +126,7 @@ Plan sections in order:
 - Storage / auth: <id>.
 - Real-time: heavy / light / none.
 - Deploy: <target> — static-host manifest / CI / env / migration artifacts.
-Reference the Traffic One stack id from `.traffic-one.json`. Note any deviation explicitly.
+Reference the Traffic One stack id from `.traffic-one/.one.json`. Note any deviation explicitly.
 
 ## Module map
 List every package / app / service. One line each: name, responsibility, public API surface.

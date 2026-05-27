@@ -9,6 +9,7 @@ const path = require('path');
 const AUTH_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-${process.pid}.json`);
 const AUTH_CHOICE_STATE_PATH = path.join(os.tmpdir(), `traffic-one-auth-choice-${process.pid}.json`);
 const PLUGIN_ROOT = path.resolve(__dirname, '..');
+const STATE_REL_PATH = path.join('.traffic-one', '.one.json');
 process.env.TRAFFIC_ONE_AUTH_STATE_PATH = AUTH_STATE_PATH;
 process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = AUTH_CHOICE_STATE_PATH;
 process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
@@ -64,6 +65,22 @@ function writeFile(root, relPath, body) {
   const filePath = path.join(root, relPath);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, body, 'utf8');
+}
+
+function stateFile(root) {
+  return path.join(root, STATE_REL_PATH);
+}
+
+function readState(root) {
+  return JSON.parse(fs.readFileSync(stateFile(root), 'utf8'));
+}
+
+function readOneUid(root) {
+  return readState(root)['one-uid'];
+}
+
+function legacyIdPath(root) {
+  return path.join(root, '.one-mcp-id');
 }
 
 function completedState(mode = 'new-project') {
@@ -127,7 +144,7 @@ function makeProject(options = {}) {
     },
   }, null, 2)}\n`);
   writeFile(root, 'pnpm-workspace.yaml', 'packages:\n  - apps/*\n');
-  writeFile(root, '.traffic-one.json', `${JSON.stringify(completedState(options.mode), null, 2)}\n`);
+  writeFile(root, STATE_REL_PATH, `${JSON.stringify(completedState(options.mode), null, 2)}\n`);
   writeFile(root, 'apps/web/src/App.tsx', [
     'export function App() {',
     '  return <main>Hello</main>;',
@@ -146,7 +163,7 @@ async function main() {
     const unauthPrepare = prepareReport(unauthRoot, { spawn: false, trigger: 'unauth-test' });
     assert.equal(unauthPrepare.started, false);
     assert.equal(unauthPrepare.reason, 'auth-required');
-    assert.equal(fs.existsSync(path.join(unauthRoot, '.one-mcp-id')), false);
+    assert.equal(fs.existsSync(legacyIdPath(unauthRoot)), false);
     assert.equal(fs.existsSync(path.join(unauthRoot, '.traffic-one', 'agent-log.md')), false);
 
     const previousCwd = process.cwd();
@@ -454,7 +471,7 @@ async function main() {
     const expiredPrepare = prepareReport(expiredRoot, { spawn: false, trigger: 'expired-auth-test' });
     assert.equal(expiredPrepare.started, false);
     assert.equal(expiredPrepare.reason, 'auth-required');
-    assert.equal(fs.existsSync(path.join(expiredRoot, '.one-mcp-id')), false);
+    assert.equal(fs.existsSync(legacyIdPath(expiredRoot)), false);
 
     const previousCwd = process.cwd();
     try {
@@ -489,7 +506,7 @@ async function main() {
     started: false,
     reason: 'no-codebase',
   });
-  assert.equal(fs.existsSync(path.join(empty, '.one-mcp-id')), false);
+  assert.equal(fs.existsSync(legacyIdPath(empty)), false);
 
   const root = makeProject();
   const prepared = prepareReport(root, { spawn: false, trigger: 'test' });
@@ -497,8 +514,8 @@ async function main() {
   assert.equal(prepared.spawned, false);
   assert.match(prepared.reportId, /^[A-Za-z0-9._:-]{1,128}$/);
 
-  const idText = fs.readFileSync(path.join(root, '.one-mcp-id'), 'utf8');
-  assert.equal(idText, `${prepared.reportId}\n`);
+  assert.equal(readOneUid(root), prepared.reportId);
+  assert.equal(fs.existsSync(legacyIdPath(root)), false);
 
   const status = JSON.parse(fs.readFileSync(path.join(root, '.traffic-one/one-mcp-report.json'), 'utf8'));
   assert.equal(status.status, 'queued');
@@ -508,7 +525,7 @@ async function main() {
   assert.equal(status.mcpPayload.params.name, 'report_codebase_metadata');
   assert.equal(status.mcpPayload.params.arguments.report_id, prepared.reportId);
 
-  const meta = collectMetadata(root, JSON.parse(fs.readFileSync(path.join(root, '.traffic-one.json'), 'utf8')), prepared.reportId);
+  const meta = collectMetadata(root, readState(root), prepared.reportId);
   assert.equal(meta.report_id, prepared.reportId);
   assert(meta.technologies.includes('react'));
   assert(meta.technologies.includes('vite'));
@@ -571,10 +588,13 @@ async function main() {
   assert.equal(secondPrepare.reason, 'already-registered');
 
   const existingIdRoot = makeProject();
-  writeFile(existingIdRoot, '.one-mcp-id', `${uuidV7()}\n`);
+  const existingLegacyId = uuidV7();
+  writeFile(existingIdRoot, '.one-mcp-id', `${existingLegacyId}\n`);
   const existingPrepare = prepareReport(existingIdRoot, { spawn: false, trigger: 'existing-id-test' });
   assert.equal(existingPrepare.started, false);
   assert.equal(existingPrepare.reason, 'already-registered');
+  assert.equal(readOneUid(existingIdRoot), existingLegacyId);
+  assert.equal(fs.existsSync(legacyIdPath(existingIdRoot)), false);
   let called = false;
   const notQueued = await runReport(existingIdRoot, {
     transport: async () => {
@@ -596,6 +616,8 @@ async function main() {
   assert.equal(backfilled.started, false);
   assert.equal(backfilled.reason, 'already-registered');
   assert.equal(backfilled.debugPayloadSaved, true);
+  assert.equal(readOneUid(backfillRoot), backfillId);
+  assert.equal(fs.existsSync(legacyIdPath(backfillRoot)), false);
   const backfilledStatus = JSON.parse(fs.readFileSync(path.join(backfillRoot, '.traffic-one/one-mcp-report.json'), 'utf8'));
   assert.equal(backfilledStatus.mcpPayload.params.arguments.report_id, backfillId);
 
@@ -625,7 +647,7 @@ async function main() {
       process.env.TRAFFIC_ONE_DISABLE_ONE_MCP = previousDisable;
     }
   }
-  const hookId = fs.readFileSync(path.join(hookRoot, '.one-mcp-id'), 'utf8').trim();
+  const hookId = readOneUid(hookRoot);
   assert.match(hookId, /^[A-Za-z0-9._:-]{1,128}$/);
   const hookStatus = JSON.parse(fs.readFileSync(path.join(hookRoot, '.traffic-one/one-mcp-report.json'), 'utf8'));
   assert.equal(hookStatus.status, 'queued');
@@ -639,14 +661,15 @@ async function main() {
     process.chdir(absoluteHintRoot);
     handlers.runPostStackSetup(JSON.stringify({
       tool_input: {
-        file_path: path.join(absoluteHintRoot, '.traffic-one.json'),
+        file_path: stateFile(absoluteHintRoot),
       },
     }));
   } finally {
     process.chdir(previousCwd);
     delete process.env.TRAFFIC_ONE_DISABLE_ONE_MCP;
   }
-  assert.equal(fs.existsSync(path.join(absoluteHintRoot, '.one-mcp-id')), false);
+  assert.equal(fs.existsSync(legacyIdPath(absoluteHintRoot)), false);
+  assert.equal(readOneUid(absoluteHintRoot), undefined);
 
   try {
     process.chdir(os.tmpdir());
@@ -669,7 +692,7 @@ async function main() {
       process.env.TRAFFIC_ONE_DISABLE_ONE_MCP = previousDisable;
     }
   }
-  const absoluteHintId = fs.readFileSync(path.join(absoluteHintRoot, '.one-mcp-id'), 'utf8').trim();
+  const absoluteHintId = readOneUid(absoluteHintRoot);
   assert.match(absoluteHintId, /^[A-Za-z0-9._:-]{1,128}$/);
   const absoluteHintStatus = JSON.parse(fs.readFileSync(path.join(absoluteHintRoot, '.traffic-one/one-mcp-report.json'), 'utf8'));
   assert.equal(absoluteHintStatus.status, 'queued');
@@ -694,7 +717,7 @@ async function main() {
       process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN = previousNoSpawn;
     }
   }
-  const pluginCwdHintId = fs.readFileSync(path.join(pluginCwdHintRoot, '.one-mcp-id'), 'utf8').trim();
+  const pluginCwdHintId = readOneUid(pluginCwdHintRoot);
   assert.match(pluginCwdHintId, /^[A-Za-z0-9._:-]{1,128}$/);
   const pluginCwdHintStatus = JSON.parse(fs.readFileSync(path.join(pluginCwdHintRoot, '.traffic-one/one-mcp-report.json'), 'utf8'));
   assert.equal(pluginCwdHintStatus.status, 'queued');
@@ -707,7 +730,7 @@ async function main() {
     process.chdir(existingModeRoot);
     const hookResult = handlers.runPostStackSetup(JSON.stringify({
       tool_input: {
-        file_path: path.join(existingModeRoot, '.traffic-one.json'),
+        file_path: stateFile(existingModeRoot),
       },
     }));
     assert.equal(hookResult.exitCode, 0);
@@ -719,7 +742,7 @@ async function main() {
       process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN = previousNoSpawn;
     }
   }
-  const existingModeId = fs.readFileSync(path.join(existingModeRoot, '.one-mcp-id'), 'utf8').trim();
+  const existingModeId = readOneUid(existingModeRoot);
   assert.match(existingModeId, /^[A-Za-z0-9._:-]{1,128}$/);
 
   console.log('one-mcp report tests passed');

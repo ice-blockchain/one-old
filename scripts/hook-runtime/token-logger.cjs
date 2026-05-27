@@ -17,7 +17,9 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  safeReadJson,
+  readState,
+  statePath,
+  legacyStatePath,
   resolveRunAgentContext,
   hasRunAgentState,
   legacyRunAgentContext,
@@ -46,13 +48,14 @@ function readSizeFromValue(value) {
   }
 }
 
-// Best-effort phase lookup from .traffic-one.json in cwd. Returns
+// Best-effort phase lookup from .traffic-one/.one.json in cwd. Returns
 // { runId, role } when state is present and onboarded.
 function readPhase(cwd, payload = null) {
-  const statePath = path.join(cwd, '.traffic-one.json');
-  if (!fs.existsSync(statePath)) return { runId: null, role: null };
+  if (!fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd))) {
+    return { runId: null, role: null };
+  }
   try {
-    const state = safeReadJson(statePath, {});
+    const state = readState(cwd);
     const agentContext = resolveRunAgentContext(cwd, state, payload || {}, { claimPending: false })
       || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
     return {

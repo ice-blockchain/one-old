@@ -3,7 +3,7 @@ name: create-service
 description: >
   Prerequisite: do not read, invoke, or activate this skill during Traffic One
   new-project onboarding. Use `detect-project` / `stack-setup` first, then use
-  this skill only after `.traffic-one.json` has `onboardingComplete: true` and
+  this skill only after `.traffic-one/.one.json` has `onboardingComplete: true` and
   `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
   whenever the user asks to add an API call, create a service, fetch data from
   an endpoint, connect to a backend, or wire up HTTP requests.
@@ -36,7 +36,7 @@ Do not ask the user to run bash or shell commands. If the user chooses
 Continue without Traffic One, continue the user's request without Traffic One
 features and do not repeat the auth prompt while that choice remains active.
 Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
-onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
+onboarding questions, write `.traffic-one/.one.json`, create `.traffic-one/`, run
 Traffic One agents, or use Traffic One reporting unless the user authenticates.
 
 If hooks are absent or auth status is unknown, do not infer "Traffic One
@@ -48,14 +48,14 @@ continue ordinary work without Traffic One after the user explicitly chooses
 "Continue without Traffic One".
 
 Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
-onboarding before `.traffic-one.json` has `onboardingComplete: true` and
+onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and
 `.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
 return here after the stack, mobile, code graph, and team gates are resolved.
 
 Confirm the service function and hook before creating any files.
 
 ## Step 1 — Identify the backend
-Read `.traffic-one.json` → `state.backend`. Drives the scaffold:
+Read `.traffic-one/.one.json` → `state.backend`. Drives the scaffold:
 - `supabase` / `our-fork` → use `getSupabase()` from `packages/api-client/src/supabase.ts` per `rules/frontend/react/supabase-client.md`. **Never** call `createClient` at module top level. **Never** assume `getSupabase()` returns non-null.
 - `external-api` / `self-hosted` / `managed` / `other` → use the axios instance + RTK Query baseQuery from `packages/api-client`.
 
@@ -69,7 +69,7 @@ Plus the typed return value and the RTK Query hook (or React Query hook if non-R
 
 ## Step 3 — Add-on gate (Supabase only)
 
-If using a Supabase feature that needs an add-on, check `.traffic-one.json` → `supabaseAddons[<name>]` via the `requireAddon` helper in `scripts/hook-runtime/state.cjs`. Statuses:
+If using a Supabase feature that needs an add-on, check `.traffic-one/.one.json` → `supabaseAddons[<name>]` via the `requireAddon` helper in `scripts/hook-runtime/state.cjs`. Statuses:
 
 | Status | Action |
 |---|---|

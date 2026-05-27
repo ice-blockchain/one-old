@@ -3,7 +3,7 @@
 // scripts/hook-runtime/state/run-agent.cjs
 // Per-agent run-claim machinery: writes/reads `.traffic-one/runs/<runId>/...`
 // claim files so parallel subagents resolve their own role context instead of
-// fighting over a single shared marker in `.traffic-one.json`.
+// fighting over a single shared marker in `.traffic-one/.one.json`.
 
 const fs = require('fs');
 const path = require('path');

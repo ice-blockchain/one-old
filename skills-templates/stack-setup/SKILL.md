@@ -1,6 +1,6 @@
 ---
 name: stack-setup
-description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one.json` itself — this skill is NOT needed there. If hooks are absent or auth status is unknown, do not infer "Traffic One inactive"; ask the auth choice or run doctor, then stop before implementation.
+description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one/.one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one/.one.json` itself — this skill is NOT needed there. If hooks are absent or auth status is unknown, do not infer "Traffic One inactive"; ask the auth choice or run doctor, then stop before implementation.
 ---
 
 # traffic-one Stack Setup
@@ -26,7 +26,7 @@ Do not ask the user to run bash or shell commands. If the user chooses
 Continue without Traffic One, continue the user's request without Traffic One
 features and do not repeat the auth prompt while that choice remains active.
 Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
-onboarding questions, write `.traffic-one.json`, create `.traffic-one/`, run
+onboarding questions, write `.traffic-one/.one.json`, create `.traffic-one/`, run
 Traffic One agents, or use Traffic One reporting unless the user authenticates.
 
 If hooks are absent or auth status is unknown, do not infer "Traffic One
@@ -37,7 +37,7 @@ installs, source edits, Traffic One agents, or implementation skills. Only
 continue ordinary work without Traffic One after the user explicitly chooses
 "Continue without Traffic One".
 
-Persist the user's rule-stack choice into `.traffic-one.json`. The SessionStart
+Persist the user's rule-stack choice into `.traffic-one/.one.json`. The SessionStart
 hook reads this to decide which rules to inject. The PostToolUse hook
 (`scripts/hook-runtime.cjs post-stack-setup`) auto-loads the matching bundle the moment the
 file is written — **no session restart required**.
@@ -63,12 +63,12 @@ then Code Graph.
 
 ### Path B — Mid-project reconfigure
 User says "switch stack", "change stack", "reconfigure", etc. Read the existing
-`.traffic-one.json`, ask only what they want to change, preserve `mode`, bump
+`.traffic-one/.one.json`, ask only what they want to change, preserve `mode`, bump
 `confirmedAt`. Same write target, same auto-load behaviour.
 
 ### NOT this skill: existing project on first session
 For existing codebases the SessionStart hook does the detection itself
-(scans `package.json` deps + workspace config) and writes `.traffic-one.json`
+(scans `package.json` deps + workspace config) and writes `.traffic-one/.one.json`
 without any Q&A. Don't trigger here. The user only sees a one-line confirmation
 on the model's first reply (auto-detected stack: X, backend: Y, realtime: Z).
 
@@ -102,7 +102,7 @@ options. When `request_user_input` is available, call that tool and stop; do
 not print `Options:` in chat. Plain text fallback is allowed only when the
 popup tool is unavailable: ask the same blocking question directly in chat with numbered options, tell the user to
 reply with the option number or label, and stop. Do not choose a default,
-infer an answer, write `.traffic-one.json`, scaffold, or continue while the
+infer an answer, write `.traffic-one/.one.json`, scaffold, or continue while the
 onboarding answer is pending.
 
 Ask onboarding prompts in this order and stop after each unresolved answer:
@@ -141,7 +141,7 @@ original prompt.
 
 ## Stack lock rule
 
-Once `.traffic-one.json` and `.traffic-one/stack.md` exist, treat them as the
+Once `.traffic-one/.one.json` and `.traffic-one/stack.md` exist, treat them as the
 project's locked stack. Do not suggest alternate frameworks, package managers,
 databases, auth providers, test runners, or deploy targets unless the user asks
 to reconfigure or an existing tool is impossible to use. If a locked choice
@@ -192,7 +192,7 @@ and stop for the user's typed reply:
 > - **graphify** — Python CLI (`pipx install graphifyy`); writes
 >   `graphify-out/GRAPH_REPORT.md` + `graph.json`. **License: MIT.**
 
-Treat the answer as required. Do NOT write `.traffic-one.json` with
+Treat the answer as required. Do NOT write `.traffic-one/.one.json` with
 `codeGraphProvider` absent. If the user expresses uncertainty, explain the
 license trade-off above; do not default-pick. List `gitnexus` first — do
 not add a "(Recommended)" tag.
@@ -270,7 +270,7 @@ feature work:
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
 ```
 
-Do not continue until `.traffic-one.json` has `version`, `materializedStack`,
+Do not continue until `.traffic-one/.one.json` has `version`, `materializedStack`,
 `materializedAt`, and `materializedVersion`, and the project has
 `.traffic-one/rules/**`, `.traffic-one/manifest.json`, `.traffic-one/skills/**`,
 root `AGENTS.md`, and root `CLAUDE.md`. Do not write the `materialized*` fields

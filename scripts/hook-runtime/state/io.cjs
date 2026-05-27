@@ -12,7 +12,7 @@ const { pluginRoot } = require('../config.cjs');
 const PLUGIN_MANIFEST_DIRS = ['.codex-plugin', '.claude-plugin', '.cursor-plugin'];
 
 // Cache the plugin's own version so we can stamp it into every
-// `.traffic-one.json` write. The cache is set once at module load; the plugin
+// `.traffic-one/.one.json` write. The cache is set once at module load; the plugin
 // version doesn't change mid-session.
 let cachedPluginVersion = null;
 function getPluginVersion() {
@@ -62,6 +62,7 @@ function safeReadJson(filePath, fallback = {}) {
 }
 
 function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 

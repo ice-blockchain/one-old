@@ -3,7 +3,11 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { getPluginVersion } = require('../hook-runtime/state/state.cjs');
+const {
+  getPluginVersion,
+  statePath,
+  legacyStatePath,
+} = require('../hook-runtime/state/state.cjs');
 
 const { parseAuditJson } = require('./parseAuditJson.cjs');
 
@@ -17,6 +21,8 @@ function missingToolInstallPrompt(...args) {
 }
 
 const DEFAULT_REPORT_DIR = path.join('.traffic-one', 'reports', 'security');
+const STATE_REL_PATH = '.traffic-one/.one.json';
+const LEGACY_STATE_REL_PATH = '.traffic-one.json';
 const SECURITY_STAMP_FIELDS = [
   'lastSecurityCheckAt',
   'lastSecurityCheckStatus',
@@ -118,7 +124,8 @@ function shouldIgnoreFingerprint(relPath) {
 }
 
 function trafficStateHasOnlyStampFields(cwd, relPath) {
-  if (toPosix(relPath) !== '.traffic-one.json') {
+  const normalized = toPosix(relPath);
+  if (normalized !== STATE_REL_PATH && normalized !== LEGACY_STATE_REL_PATH) {
     return false;
   }
   try {
@@ -157,7 +164,8 @@ function hashFileForFingerprint(cwd, relPath) {
     return '<deleted>';
   }
   const bytes = fs.readFileSync(absPath);
-  if (toPosix(relPath) === '.traffic-one.json') {
+  const normalized = toPosix(relPath);
+  if (normalized === STATE_REL_PATH || normalized === LEGACY_STATE_REL_PATH) {
     return normalizeTrafficState(bytes.toString('utf8'));
   }
   return bytes;
@@ -275,8 +283,8 @@ function helpText() {
     '',
     'Runs the Traffic One pre-deployment security scanner.',
     '--strict     Fail on high-confidence security issues and missing required scanners.',
-    '--stamp      On a passing run, write lastSecurityCheck* fields to .traffic-one.json.',
-    '--no-stamp   Do not write .traffic-one.json. This is the CI default.',
+    '--stamp      On a passing run, write lastSecurityCheck* fields to .traffic-one/.one.json.',
+    '--no-stamp   Do not write .traffic-one/.one.json. This is the CI default.',
   ].join('\n');
 }
 
@@ -946,10 +954,12 @@ function renderMarkdownReport(report) {
 }
 
 function stampState(cwd, report, relativeReportPath) {
-  const statePath = path.join(cwd, '.traffic-one.json');
+  const nextStatePath = statePath(cwd);
+  const oldStatePath = legacyStatePath(cwd);
   let state = {};
   try {
-    state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    const readableStatePath = fs.existsSync(nextStatePath) ? nextStatePath : oldStatePath;
+    state = JSON.parse(fs.readFileSync(readableStatePath, 'utf8'));
   } catch {
     state = {};
   }
@@ -962,7 +972,8 @@ function stampState(cwd, report, relativeReportPath) {
   if (pluginVersion) {
     state.version = pluginVersion;
   }
-  fs.writeFileSync(statePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+  fs.mkdirSync(path.dirname(nextStatePath), { recursive: true });
+  fs.writeFileSync(nextStatePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
 }
 
 module.exports = {

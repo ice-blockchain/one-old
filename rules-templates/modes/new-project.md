@@ -163,8 +163,8 @@ contract, env validation, and migrations/RLS baseline are in place.
 
 2. **Project memory baseline**
    - Create `.traffic-one/` before feature work and invoke `project-memory`.
-   - Confirm root `.traffic-one.json` exists with the full Traffic One state
-     schema. `.traffic-one/` is memory; `.traffic-one.json` is stack/state.
+   - Confirm root `.traffic-one/.one.json` exists with the full Traffic One state
+     schema. `.traffic-one/` is memory; `.traffic-one/.one.json` is stack/state.
    - Write `.traffic-one/product.md`, `.traffic-one/stack.md`,
      `.traffic-one/coding.md`, `.traffic-one/security.md`,
      `.traffic-one/known-issues.md`,
@@ -178,10 +178,10 @@ contract, env validation, and migrations/RLS baseline are in place.
      containing the compact active rule kernel/index by default, and root
      `CLAUDE.md` symlinked to `AGENTS.md` when safe. The generic post-tool hook
      normally converges this
-     after any host tool event once `.traffic-one.json` is complete; if the host
+     after any host tool event once `.traffic-one/.one.json` is complete; if the host
      runtime does not emit the hook, run
      `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`
-     from the project root and verify `.traffic-one.json` has `version`,
+     from the project root and verify `.traffic-one/.one.json` has `version`,
      `materializedStack`, `materializedAt`, and `materializedVersion`. Never
      write those `materialized*` fields manually; they are output from the
      materializer and are valid only with the generated manifest, rules, skills,
@@ -412,17 +412,17 @@ contract, env validation, and migrations/RLS baseline are in place.
 
    f. Add-ons (storage, auth, realtime, vector, pg_cron, pg_net) are gated. The
       `requireAddon` helper in `scripts/hook-runtime/state.cjs` reads
-      `.traffic-one.json` → `supabaseAddons[<name>]`. Ask the user once before
+      `.traffic-one/.one.json` → `supabaseAddons[<name>]`. Ask the user once before
       enabling each, then write `approved` and proceed silently for that add-on.
 
    g. Edge Functions (`supabase/functions/<name>/`) auto-deploy on save when
-      `.traffic-one.json` → `supabaseFunctionsAutoDeploy: true`. The
+      `.traffic-one/.one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
 12. **Codebase graph (after first successful build, REQUIRED at onboarding)**
 
    The user picks `codeGraphProvider: "gitnexus" | "graphify"` during
-   onboarding (8th required field in `.traffic-one.json`). After the
+   onboarding (8th required field in `.traffic-one/.one.json`). After the
    workspace scaffolds and the first `pnpm build` passes, the post-build
    hook auto-installs and runs the chosen provider. Subagents
    (`senior-architect`, `senior-frontend`, `senior-backend`,
@@ -454,7 +454,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    successful build on `mode: new-project` + `onboardingComplete: true` and
    dispatches to the right runner. You don't have to remember to nag the
    user. Opt out per-project with `"codeGraphAutoRun": false` in
-   `.traffic-one.json` (provider-agnostic; legacy `"graphifyAutoRun": false`
+   `.traffic-one/.one.json` (provider-agnostic; legacy `"graphifyAutoRun": false`
    honoured for one version).
 
    **Add to `.gitignore`:**

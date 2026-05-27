@@ -4,10 +4,14 @@ const crypto = require('crypto');
 const fs = require('fs');
 const https = require('https');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const {
+  STATE_FILE,
+  LEGACY_STATE_FILE,
+} = require('../hook-runtime/config.cjs');
 
 const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/one-mcp';
-const ID_FILE = '.one-mcp-id';
+const ONE_UID_FIELD = 'one-uid';
+const LEGACY_ID_FILE = '.one-mcp-id';
 const STATUS_FILE = path.join('.traffic-one', 'one-mcp-report.json');
 const QUEUED_RETRY_MS = 5 * 60 * 1000;
 const FAILED_RETRY_MS = 60 * 60 * 1000;
@@ -66,28 +70,34 @@ function writeJson(filePath, value) {
   fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
+function statePath(cwd) {
+  return path.join(cwd, STATE_FILE);
+}
+
+function legacyStatePath(cwd) {
+  return path.join(cwd, LEGACY_STATE_FILE);
+}
+
+function readProjectState(cwd) {
+  const nextState = readJson(statePath(cwd), null);
+  if (nextState && typeof nextState === 'object') return nextState;
+  const legacyState = readJson(legacyStatePath(cwd), null);
+  return legacyState && typeof legacyState === 'object' ? legacyState : {};
+}
+
+function writeProjectState(cwd, state) {
+  writeJson(statePath(cwd), state && typeof state === 'object' ? state : {});
+}
+
 function createReportId(cwd) {
-  const idPath = path.join(cwd, ID_FILE);
+  const existing = readReportIdState(cwd);
+  if (existing) return existing;
+
   const id = uuidV7();
-  let fd = null;
-  try {
-    fd = fs.openSync(idPath, 'wx');
-    fs.writeFileSync(fd, `${id}\n`, 'utf8');
-    return { id, created: true };
-  } catch (error) {
-    if (error && error.code === 'EEXIST') {
-      return readReportIdState(cwd) || { id: '', created: false, invalid: true };
-    }
-    throw error;
-  } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // best-effort close
-      }
-    }
-  }
+  const state = readProjectState(cwd);
+  state[ONE_UID_FIELD] = id;
+  writeProjectState(cwd, state);
+  return { id, created: true };
 }
 
 function ensureReportId(cwd) {
@@ -221,7 +231,7 @@ function parseTimestamp(value) {
 function stateForReport(root, options = {}) {
   return options.state && typeof options.state === 'object'
     ? options.state
-    : readJson(path.join(root, '.traffic-one.json'), {});
+    : readProjectState(root);
 }
 
 function debugPayloadForReport(root, state, reportId) {
@@ -305,7 +315,8 @@ function collectMetadata(...args) {
 
 module.exports = {
   DEFAULT_ENDPOINT,
-  ID_FILE,
+  ONE_UID_FIELD,
+  LEGACY_ID_FILE,
   STATUS_FILE,
   QUEUED_RETRY_MS,
   FAILED_RETRY_MS,
@@ -315,6 +326,10 @@ module.exports = {
   readText,
   readJson,
   writeJson,
+  statePath,
+  legacyStatePath,
+  readProjectState,
+  writeProjectState,
   createReportId,
   ensureReportId,
   shouldSkipFile,

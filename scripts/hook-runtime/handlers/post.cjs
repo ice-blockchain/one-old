@@ -3,7 +3,7 @@
 // scripts/hook-runtime/handlers/post.cjs
 // PostToolUse handlers + the manual materialize-project entrypoint: page-speed
 // gate reminder, graphify pre/post-build hints, stack-rules auto-load on
-// `.traffic-one.json` write, Supabase edge-function auto-deploy, and the
+// `.traffic-one/.one.json` write, Supabase edge-function auto-deploy, and the
 // project-root hint convergence helpers. Function bodies are moved verbatim
 // from the original single-file handlers.cjs.
 
@@ -12,6 +12,7 @@ const {
   path,
   spawn,
   STATE_FILE,
+  LEGACY_STATE_FILE,
   STACKS,
   STACK_IDS,
   parseJsonText,
@@ -22,6 +23,7 @@ const {
   detectMode,
   nowIso,
   isKnownStack,
+  isStateFilePath,
   isWebState,
   isMaterialized,
   isPluginAuthoringRoot,
@@ -107,8 +109,7 @@ function materializeFromProjectMemoryWrite(cwd, filePath) {
   const relativePath = projectRelativeHookPath(cwd, projectRoot, filePath);
   if (!isProjectMemoryWritePath(relativePath)) return null;
 
-  const statePath = path.join(projectRoot, STATE_FILE);
-  const state = safeReadJson(statePath, null);
+  const state = readState(projectRoot);
   if (!state || !state.stack || !STACK_IDS.has(state.stack) || state.onboardingComplete !== true) {
     return null;
   }
@@ -129,6 +130,15 @@ function materializeFromProjectMemoryWrite(cwd, filePath) {
   } catch (error) {
     return materializationFailureResult(error);
   }
+}
+
+function projectRootFromStateFilePath(filePath) {
+  const absolute = path.resolve(filePath);
+  const parent = path.dirname(absolute);
+  if (path.basename(absolute) === '.one.json' && path.basename(parent) === '.traffic-one') {
+    return path.dirname(parent);
+  }
+  return parent;
 }
 
 function isProjectMemoryWritePath(relativePath) {
@@ -170,7 +180,7 @@ function runPostBuildPageSpeed(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+  const state = readState(process.cwd());
   const isWebStack = isWebState(state);
   if (!isWebStack) {
     return { stdout: '', exitCode: 0 };
@@ -218,7 +228,7 @@ function runPreGraphifyHint(_rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const state = safeReadJson(path.join(cwd, STATE_FILE), {});
+  const state = readState(cwd);
   const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
 
   // Dispatch by provider. Both branches are silent when the on-disk artefact
@@ -262,7 +272,7 @@ function runPreGraphifyHint(_rawInput) {
 // no fresh graph exists yet. Synchronously installs graphify (pipx | pip
 // --user) if missing, then runs `graphify .` so `graphify-out/GRAPH_REPORT.md`
 // actually lands. The 1-day cooldown stamp prevents re-entry on subsequent
-// builds; opt out by setting `graphifyAutoRun: false` in `.traffic-one.json`.
+// builds; opt out by setting `graphifyAutoRun: false` in `.traffic-one/.one.json`.
 const GRAPHIFY_FRESH_MS  = 7 * 24 * 60 * 60 * 1000;
 const GRAPHIFY_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
@@ -279,7 +289,7 @@ function runPostBuildGraphifyHint(rawInput) {
   }
 
   const cwd = process.cwd();
-  const state = safeReadJson(path.join(cwd, STATE_FILE), {});
+  const state = readState(cwd);
   if (state.mode !== 'new-project' || state.onboardingComplete !== true) {
     return { stdout: '', exitCode: 0 };
   }
@@ -383,13 +393,13 @@ function runPostBuildGraphifyHint(rawInput) {
           + `${bootstrapResult.error}\n`
           + 'Install nvm first (https://github.com/nvm-sh/nvm), then re-invoke '
           + 'the runner. Or pick `codeGraphProvider: "graphify"` (Python; works '
-          + 'on any Node) by editing `.traffic-one.json`.';
+          + 'on any Node) by editing `.traffic-one/.one.json`.';
       } else {
         additionalContext = `[gitnexus] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
           + 'Falling back to a manual hint — install + build once when convenient:\n'
           + '  npm install -g gitnexus   # or: npx gitnexus@latest analyze .\n'
           + '  gitnexus analyze\n'
-          + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in `.traffic-one.json`.';
+          + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in `.traffic-one/.one.json`.';
       }
     } else {
       additionalContext = `[graphify] Auto-bootstrap failed (${seconds}s): ${bootstrapResult.error || 'unknown error'}. `
@@ -397,7 +407,7 @@ function runPostBuildGraphifyHint(rawInput) {
         + '  pipx install graphifyy   # or: python3 -m pip install --user graphifyy\n'
         + '  graphify update .\n'
         + '  graphify hook install    # optional: regenerate on every git commit\n'
-        + 'To disable auto-bootstrap entirely, set `"codeGraphAutoRun": false` in `.traffic-one.json`.';
+        + 'To disable auto-bootstrap entirely, set `"codeGraphAutoRun": false` in `.traffic-one/.one.json`.';
     }
   }
 
@@ -412,7 +422,7 @@ function runPostBuildGraphifyHint(rawInput) {
   };
 }
 
-// ── PostToolUse: stack-rules auto-load on `.traffic-one.json` write ──────────
+// ── PostToolUse: stack-rules auto-load on `.traffic-one/.one.json` write ──────────
 function runPostStackSetup(rawInput) {
   if (!isAuthenticatedLocal()) {
     return { stdout: '', exitCode: 0 };
@@ -426,11 +436,19 @@ function runPostStackSetup(rawInput) {
 
   const toolInput = payload.tool_input && typeof payload.tool_input === 'object' ? payload.tool_input : {};
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
+  const cwd = process.cwd();
+  const targetPath = filePath
+    ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(cwd, filePath))
+    : '';
+  const targetInsideCwd = targetPath && (targetPath === path.resolve(cwd) || targetPath.startsWith(`${path.resolve(cwd)}${path.sep}`));
+  if (isPluginAuthoringRoot(cwd) && (!targetPath || targetInsideCwd)) {
+    return { stdout: '', exitCode: 0 };
+  }
 
   // PostToolUse may be configured broadly by different host runtimes. Dispatch:
   //   1. supabase/functions/<name>/index.ts            → runPostFunctionEdit (auto-deploy)
   //   2. .traffic-one/digests/<run-id>/<role>.md       → digest-size warning
-  //   3. .traffic-one.json                             → existing stack-rules auto-load
+  //   3. .traffic-one/.one.json                        → existing stack-rules auto-load
   //   4. project-memory writes                         → local materialization
   //   5. anything else                                 → converge from complete state if needed
   if (filePath.replace(/\\/g, '/').match(FUNCTION_PATH_RE)) {
@@ -473,15 +491,15 @@ function runPostStackSetup(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  if (!filePath.endsWith(STATE_FILE)) {
-    const memoryResult = materializeFromProjectMemoryWrite(process.cwd(), filePath);
+  if (!isStateFilePath(filePath)) {
+    const memoryResult = materializeFromProjectMemoryWrite(cwd, filePath);
     if (memoryResult) return memoryResult;
-    const hintedResult = materializeFromToolInputHints(process.cwd(), toolInput);
+    const hintedResult = materializeFromToolInputHints(cwd, toolInput);
     if (hintedResult) return hintedResult;
-    const materializedResult = materializeProjectIfNeeded(process.cwd(), 'generic post-tool convergence');
+    const materializedResult = materializeProjectIfNeeded(cwd, 'generic post-tool convergence');
     if (materializedResult) return materializedResult;
-    const currentState = readState(process.cwd());
-    startOneMcpReportBestEffort(process.cwd(), currentState, 'generic post-tool convergence');
+    const currentState = readState(cwd);
+    startOneMcpReportBestEffort(cwd, currentState, 'generic post-tool convergence');
     return { stdout: '', exitCode: 0 };
   }
   if (!fs.existsSync(filePath))      return { stdout: '', exitCode: 0 };
@@ -493,7 +511,7 @@ function runPostStackSetup(rawInput) {
   // required fields are present + valid.
   const validStackIds = Object.keys(STACKS);
   const validCodeGraphProviders = ['gitnexus', 'graphify'];
-  const stateDirEarly = path.dirname(path.resolve(filePath));
+  const stateDirEarly = projectRootFromStateFilePath(filePath);
   const normalizedBeforeValidation = state && typeof state === 'object'
     ? normalizeState(state, detectMode(stateDirEarly))
     : false;
@@ -522,17 +540,17 @@ function runPostStackSetup(rawInput) {
     });
     let systemMessage;
     if (invalidStack) {
-      systemMessage = `traffic-one — \`.traffic-one.json\` has unknown stack id "${invalidStack}"; please re-write with a valid stack`;
+      systemMessage = `traffic-one — \`.traffic-one/.one.json\` has unknown stack id "${invalidStack}"; please re-write with a valid stack`;
     } else if (!state.stack) {
-      systemMessage = 'traffic-one — `.traffic-one.json` write incomplete (no `stack` field); please re-write with all 8 fields';
+      systemMessage = 'traffic-one — `.traffic-one/.one.json` write incomplete (no `stack` field); please re-write with all 8 fields';
     } else if (cgProvider && !cgOk) {
-      systemMessage = `traffic-one — \`.traffic-one.json\` has unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
+      systemMessage = `traffic-one — \`.traffic-one/.one.json\` has unknown codeGraphProvider "${cgProvider}"; valid: gitnexus, graphify`;
     } else if (!toolchainOk) {
-      systemMessage = 'traffic-one — `.traffic-one.json` missing required `toolchain` field; re-write with initialized toolchain';
+      systemMessage = 'traffic-one — `.traffic-one/.one.json` missing required `toolchain` field; re-write with initialized toolchain';
     } else if (!cgProvider) {
-      systemMessage = 'traffic-one — `.traffic-one.json` missing required `codeGraphProvider` field; ask the user (gitnexus or graphify) and re-write';
+      systemMessage = 'traffic-one — `.traffic-one/.one.json` missing required `codeGraphProvider` field; ask the user (gitnexus or graphify) and re-write';
     } else {
-      systemMessage = 'traffic-one — `.traffic-one.json` has invalid required fields; see validation issues and re-write';
+      systemMessage = 'traffic-one — `.traffic-one/.one.json` has invalid required fields; see validation issues and re-write';
     }
     return {
       stdout: JSON.stringify({
@@ -580,7 +598,7 @@ function runPostStackSetup(rawInput) {
   startOneMcpReportBestEffort(stateDirEarly, state, 'post-stack-setup');
 
   const stack = state.stack || '(unknown)';
-  const stateDir = path.dirname(path.resolve(filePath));
+  const stateDir = projectRootFromStateFilePath(filePath);
 
   // Seamless gitnexus setup. Two things happen when the user just wrote
   // `codeGraphProvider: "gitnexus"`:
@@ -683,11 +701,12 @@ const DIGEST_PATH_RE = /(?:^|\/)\.traffic-one\/digests\/[^/]+\/(architect|fronte
 const DIGEST_HARD_BYTES = 3 * 1024;  // warn over 3 KB; target is ≤2 KB
 
 function findProjectRoot(startDir) {
-  // Walk up to find the directory that owns `.traffic-one.json` or `package.json`
+  // Walk up to find the directory that owns Traffic One state or `package.json`
   let dir = path.resolve(startDir);
   for (let i = 0; i < 8; i += 1) {
     if (
       fs.existsSync(path.join(dir, STATE_FILE)) ||
+      fs.existsSync(path.join(dir, LEGACY_STATE_FILE)) ||
       fs.existsSync(path.join(dir, 'package.json'))
     ) {
       return dir;
@@ -734,8 +753,7 @@ function runPostFunctionEdit(filePath) {
   const functionName = match[1];
 
   const projectRoot = findProjectRoot(path.dirname(filePath));
-  const statePath = path.join(projectRoot, STATE_FILE);
-  const state = safeReadJson(statePath, {});
+  const state = readState(projectRoot);
   if (state.backend !== 'supabase' && state.backend !== 'our-fork') {
     return null; // not a Supabase project
   }
@@ -779,7 +797,7 @@ function runPostFunctionEdit(filePath) {
         `[traffic-one] First edit to a Supabase Edge Function (\`${functionName}\`).`,
         '',
         'Choose an auto-deploy policy. Reply with one of:',
-        '  • "yes, auto-deploy"   → I update `.traffic-one.json` to set',
+        '  • "yes, auto-deploy"   → I update `.traffic-one/.one.json` to set',
         '       `supabaseFunctionsAutoDeploy: true` AND deploy this function once now',
         '       (`pnpm functions:deploy ' + functionName + '`). Future edits deploy silently.',
         '  • "ask each time"      → I leave the flag as "ask"; I\'ll prompt before',
@@ -788,7 +806,7 @@ function runPostFunctionEdit(filePath) {
         '       auto-deploys; you run `pnpm functions:deploy <name>` yourself.',
         '',
         'You can change this later by editing `supabaseFunctionsAutoDeploy` in',
-        '`.traffic-one.json`.',
+        '`.traffic-one/.one.json`.',
       ].join('\n'),
     },
   };

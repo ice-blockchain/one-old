@@ -10,6 +10,7 @@ const {
   nowIso,
   readJson,
   writeJson,
+  stateForReport,
   mcpRequest,
 } = require('./_helpers.cjs');
 
@@ -24,7 +25,7 @@ async function runReport(cwd, options = {}) {
     return { ok: false, skipped: 'invalid-report-id' };
   }
 
-  const state = readJson(path.join(root, '.traffic-one.json'), {});
+  const state = stateForReport(root, options);
   const statusPath = path.join(root, STATUS_FILE);
   const previous = readJson(statusPath, {});
   if (options.requireQueued !== false) {

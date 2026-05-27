@@ -82,7 +82,7 @@ metadata from shipping.
 
 ## Stamp Contract
 
-A passing `--stamp` run writes these fields to `.traffic-one.json`:
+A passing `--stamp` run writes these fields to `.traffic-one/.one.json`:
 
 - `lastSecurityCheckAt`
 - `lastSecurityCheckStatus`

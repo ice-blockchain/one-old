@@ -1,0 +1,38 @@
+<!-- GENERATED FROM: rules-templates/frontend/react-native/accessibility.md; run `node scripts/sync-cursor.cjs` to update. -->
+---
+description: "React Native Accessibility Rules. Generated from rules-templates/frontend/react-native/accessibility.md."
+globs: ["apps/**/app/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
+alwaysApply: false
+---
+
+# React Native Accessibility Rules
+
+## Screen readers
+- Support VoiceOver and TalkBack for every critical journey.
+- Interactive controls expose `accessibilityRole`, `accessibilityLabel`, and state where needed.
+- Icon-only controls need accessible labels.
+- Hide decorative images from assistive tech; label meaningful images.
+- Accessibility labels, hints, validation errors, and state copy come from translation keys.
+
+## Touch and focus
+- Minimum touch target: 44x44 points.
+- Use `hitSlop` for compact controls.
+- Preserve logical focus order and avoid moving focus on real-time updates.
+- Manage focus after modals, auth redirects, and destructive confirmations.
+
+## Text and motion
+- Respect dynamic type; do not lock text into fixed-height containers.
+- Never use color alone to communicate state.
+- Respect reduce-motion settings; disable large looping animations when requested.
+- Avoid flashes at or above 3 Hz.
+- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+
+## Forms and errors
+- Every input has a visible label or a clear accessibility label.
+- Validation errors are announced and associated with the field.
+- Disabled controls must make the reason clear nearby.
+
+## Testing
+- RNTL tests assert roles/labels for important controls.
+- Maestro flows prefer accessibility selectors where possible.
+- Release smoke includes manual VoiceOver/TalkBack checks for login and the primary flow.

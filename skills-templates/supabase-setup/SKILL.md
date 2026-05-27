@@ -5,7 +5,7 @@ description: PROACTIVELY walk a beginner through getting a real Supabase backend
 
 # Supabase setup — get keys, link, and push migrations
 
-Goal: take a project that has `backend=supabase` in `.traffic-one.json` plus
+Goal: take a project that has `backend=supabase` in `.traffic-one/.one.json` plus
 local migrations under `supabase/migrations/`, and end with a Supabase
 project provisioned, keys pasted, **migrations applied to that project**,
 types generated, and the `<EnvBanner />` gone.
@@ -22,7 +22,7 @@ types generated, and the `<EnvBanner />` gone.
 
 ## Pre-flight
 
-1. Confirm `.traffic-one.json` has `backend: "supabase"`. If not, this skill
+1. Confirm `.traffic-one/.one.json` has `backend: "supabase"`. If not, this skill
    isn't the right call — invoke `stack-setup` first.
 2. Confirm `package.json` has `supabase` as a `devDependency` and the standard
    scripts (`db:start`, `db:push`, `db:reset`, `gen:types`, `functions:deploy`,
@@ -214,7 +214,7 @@ Settings → API).
 ### "I want to use our own Supabase fork"
 Path A. The fork's API is identical to vanilla Supabase. Set
 `VITE_SUPABASE_URL` to the fork URL and use the fork's keys. State file
-`.traffic-one.json` should have `backend: "our-fork"` instead of `"supabase"`.
+`.traffic-one/.one.json` should have `backend: "our-fork"` instead of `"supabase"`.
 
 ### "Migrations changed — re-apply"
 - Cloud (linked): `pnpm db:push`.

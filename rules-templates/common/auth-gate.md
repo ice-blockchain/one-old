@@ -20,7 +20,7 @@ process environment. If refresh fails or the key is unavailable, keep Traffic
 One gated and ask the user to authenticate again.
 
 Do not place API keys, session tokens, or copied bearer tokens in project files,
-`.traffic-one/`, `.traffic-one.json`, prompts, docs, commits, or generated
+`.traffic-one/`, `.traffic-one/.one.json`, prompts, docs, commits, or generated
 artifacts. The auth client stores only a short-lived session token in user-level
 state (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
 or `~/.traffic-one/auth.json`).

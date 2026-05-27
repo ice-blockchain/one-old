@@ -11,10 +11,11 @@ const {
   fs,
   path,
   spawn,
-  STATE_FILE,
   parseJsonText,
   safeReadJson,
   readState,
+  statePath,
+  legacyStatePath,
   writeState,
   normalizeState,
   detectMode,
@@ -85,8 +86,7 @@ function runCheckOnboardingGate(rawInput) {
   if (authGate) return authGate;
 
   const filePath = typeof toolInput.file_path === 'string' ? toolInput.file_path : '';
-  const statePath = path.join(cwd, STATE_FILE);
-  const state = safeReadJson(statePath, {});
+  const state = readState(cwd);
   const mode = state.mode || detectMode(cwd);
   const effectiveState = {
     ...state,
@@ -114,7 +114,7 @@ function runCheckOnboardingGate(rawInput) {
     }
     // Allow read-only orientation (pwd, ls, Read, Glob, Grep) while onboarding
     // is incomplete so the agent can locate its cwd and write
-    // `.traffic-one.json` to the right place. Mutating tools, agent spawns, and
+    // `.traffic-one/.one.json` to the right place. Mutating tools, agent spawns, and
     // installs fall through to the deny below.
     if (isReadOnlyOrientationToolUse(toolName, toolInput)) {
       return { stdout: '', exitCode: 0 };
@@ -199,7 +199,7 @@ function runCheckAgentModel(rawInput) {
   }
 
   const cwd = process.cwd();
-  const state = safeReadJson(path.join(cwd, STATE_FILE), null);
+  const state = readState(cwd);
   if (!state || typeof state !== 'object') return { stdout: '', exitCode: 0 };
 
   // Onboarding-only: enforce the performance-level model just for the first
@@ -225,8 +225,8 @@ function runCheckAgentModel(rawInput) {
   // (e.g. user picked Balanced but state says low). Block and ask to fix first.
   if (teamModeForLevel(level) === 'main-agent') {
     return denyPreToolUse(
-      `Performance gate: \`.traffic-one.json\` records performance.level="${level}" (main-agent only), but you are spawning the \`${role}\` subagent. `
-      + 'If the user chose Balanced or High, first correct `.traffic-one.json` (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. '
+      `Performance gate: \`.traffic-one/.one.json\` records performance.level="${level}" (main-agent only), but you are spawning the \`${role}\` subagent. `
+      + 'If the user chose Balanced or High, first correct `.traffic-one/.one.json` (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. '
       + 'If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.',
     );
   }
@@ -239,10 +239,10 @@ function runCheckAgentModel(rawInput) {
   if (!isTeamApproved(state.team)) {
     return denyPreToolUse(
       `Team Confirmation gate: performance.level="${level}" requires the user to explicitly approve the subagent role/model line-up before ANY subagent can be spawned. `
-      + '`.traffic-one.json` currently has `team.approved !== true`, so the user has not yet confirmed. '
+      + '`.traffic-one/.one.json` currently has `team.approved !== true`, so the user has not yet confirmed. '
       + 'Ask the host popup tool (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI) with header "Team", question "Here is the subagent team for ' + level + ' mode — approve or change?", body containing the role→tier→model line-up (use `tierModelTable` from `model-tiers.cjs`), and options "Approve" / "Re-pick performance" / "Customise". '
-      + 'When the user replies "Approve", re-write `.traffic-one.json` with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
-      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one.json`; do not bypass this gate for `team.mode="subagents"`.',
+      + 'When the user replies "Approve", re-write `.traffic-one/.one.json` with `team.approved: true` (and any `team.overrides` collected), then re-spawn. '
+      + 'If subagents or popup confirmation are genuinely unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one/.one.json`; do not bypass this gate for `team.mode="subagents"`.',
     );
   }
 
@@ -277,7 +277,7 @@ function runCheckAgentModel(rawInput) {
 
 // ── PreToolUse: architecture write/edit guard ────────────────────────────────
 function readStack() {
-  const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+  const state = readState(process.cwd());
   return typeof state.stack === 'string' ? state.stack : null;
 }
 
@@ -303,7 +303,7 @@ function runCheckArchitectureWrite(rawInput) {
       : typeof toolInput.new_string === 'string'
         ? toolInput.new_string
         : '';
-  const stateForArchitecture = safeReadJson(path.join(projectRoot, STATE_FILE), {});
+  const stateForArchitecture = readState(projectRoot);
   const isNative = isNativeState(stateForArchitecture);
   const violations = [];
 
@@ -315,9 +315,9 @@ function runCheckArchitectureWrite(rawInput) {
   const PLAN_FILE_RE      = /(^|\/)\.traffic-one\/plan\.md$/;
   const ADR_OR_DOC_RE     = /(^|\/)(docs|architecture|README|ADR)/i;
 
-  const statePath         = path.join(projectRoot, STATE_FILE);
   const stateForPlan      = stateForArchitecture;
-  const stateMissing      = !fs.existsSync(statePath);
+  const stateMissing      = !fs.existsSync(statePath(projectRoot))
+    && !fs.existsSync(legacyStatePath(projectRoot));
   const validStateStack   = stateForPlan.stack && isKnownStack(stateForPlan.stack);
   const memoryPresent     = fs.existsSync(path.join(projectRoot, '.traffic-one', 'plan.md'))
     || fs.existsSync(path.join(projectRoot, '.traffic-one', 'stack.md'));
@@ -370,7 +370,7 @@ function runCheckArchitectureWrite(rawInput) {
     && (detectedModeForState === 'new-project' || memoryPresent)
   ) {
     violations.push(
-      'State gate: root .traffic-one.json is missing or incomplete. Write the '
+      'State gate: root .traffic-one/.one.json is missing or incomplete. Write the '
       + 'Traffic One state file with mode, stack, backend, realtime, confirmed, '
       + 'onboardingComplete, and confirmedAt before writing feature source. '
       + 'The .traffic-one/ folder is project memory, not the stack-selection '
@@ -440,7 +440,7 @@ function runCheckArchitectureWrite(rawInput) {
       // Should not reach: subagentMayWriteFeatureSource would have returned true.
       reason = `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`;
     }
-    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one.json`; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
+    reason += ' If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting `.traffic-one/.one.json`; `team.source="unavailable"` does not bypass `team.mode="subagents"`.';
     violations.push(reason);
   }
 
@@ -631,7 +631,7 @@ function forbiddenForStack(stackOrState, allowNextjs) {
 }
 
 // Deploy gate: production-publishing commands need a fresh shipper-approval
-// stamp in .traffic-one.json (written by the senior-shipper subagent during
+// stamp in .traffic-one/.one.json (written by the senior-shipper subagent during
 // pre-flight). Without the stamp, deny — forces the orchestrator → shipper
 // flow rather than ad-hoc deploys.
 const DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-submit|eas\s+submit|supabase\s+db\s+push\s+--linked|supabase\s+functions\s+deploy\s+\S+\s+--linked|gh\s+release\s+create|fly\s+deploy|wrangler\s+deploy|npm\s+publish|pnpm\s+publish)\b/;
@@ -686,7 +686,7 @@ function runCheckLibraryAllowlist(rawInput) {
   // Deploy gate runs first — production publishes are gated regardless of
   // whether the command also matches an install regex.
   if (DEPLOY_RE.test(command)) {
-    const stateForDeploy = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+    const stateForDeploy = readState(process.cwd());
     const approvedAt = typeof stateForDeploy.lastShipperApprovalAt === 'string'
       ? Date.parse(stateForDeploy.lastShipperApprovalAt)
       : 0;
@@ -694,7 +694,7 @@ function runCheckLibraryAllowlist(rawInput) {
     if (!fresh) {
       const reason = 'Deploy gate: this command publishes to production. Run '
         + 'the `senior-shipper` subagent first; it stamps `lastShipperApprovalAt` '
-        + 'in .traffic-one.json after pre-flight (reviewer APPROVED, tests green, '
+        + 'in .traffic-one/.one.json after pre-flight (reviewer APPROVED, tests green, '
         + 'user confirmed). The stamp grants a 10-minute deploy window.';
       return denyPreToolUse(reason);
     }
@@ -709,7 +709,7 @@ function runCheckLibraryAllowlist(rawInput) {
     return { stdout: '', exitCode: 0 };
   }
 
-  const state = safeReadJson(path.join(process.cwd(), STATE_FILE), {});
+  const state = readState(process.cwd());
   const stack = typeof state.stack === 'string' ? state.stack : null;
   const hits = forbiddenForStack(state.stack ? state : stack, allowsNextjs(state)).filter(([pattern]) => new RegExp(pattern).test(command));
 

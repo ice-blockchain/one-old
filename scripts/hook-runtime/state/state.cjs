@@ -1,7 +1,7 @@
 'use strict';
 
 // scripts/hook-runtime/state/state.cjs
-// Low-level JSON / file I/O helpers and the .traffic-one.json read/write API.
+// Low-level JSON / file I/O helpers and the .traffic-one/.one.json read/write API.
 // Every module that needs to touch the state file goes through here.
 //
 // Implementation is split into cohesive sub-modules; this is the aggregating
@@ -47,6 +47,8 @@ const {
   normalizeState,
   initializeToolchainState,
   defaultTechnologiesFor,
+  statePath,
+  legacyStatePath,
   requireAddon,
 } = require('./normalize.cjs');
 const {
@@ -78,6 +80,8 @@ module.exports = {
   normalizeState,
   initializeToolchainState,
   defaultTechnologiesFor,
+  statePath,
+  legacyStatePath,
   hasValidTeamState,
   hasValidProjectContext,
   isTeamApproved,

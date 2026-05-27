@@ -19,7 +19,7 @@ Run-id: <run-id>. The user's request is:
 
 > <user-request quoted verbatim>
 
-Read .traffic-one.json plus existing project memory:
+Read .traffic-one/.one.json plus existing project memory:
 .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/*.md,
 .traffic-one/known-issues.md, and .traffic-one/agent-log.md when present.
 Also read the codebase-graph artefact at the active provider's location (per
@@ -251,7 +251,7 @@ If release-facing docs or project memory changed or are missing, run
 `project-memory` and `auto-documentation-generator` before stamping shipper
 approval.
 
-Stamp .traffic-one.json's `lastShipperApprovalAt` field with `nowIso()` BEFORE
+Stamp .traffic-one/.one.json's `lastShipperApprovalAt` field with `nowIso()` BEFORE
 running any deploy command (the deploy-gate hook reads this stamp; 10-min
 window).
 

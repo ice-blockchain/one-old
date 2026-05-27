@@ -56,7 +56,7 @@ For an existing project, build memory from verified local facts:
 
 Create or refresh:
 
-- root `.traffic-one.json` with the Traffic One state schema when it is missing
+- root `.traffic-one/.one.json` with the Traffic One state schema when it is missing
   or incomplete
 - `.traffic-one/product.md`
 - `.traffic-one/decisions/README.md` and ADR files as needed
@@ -82,7 +82,7 @@ Create or refresh:
 ## Guardrails
 
 - Keep files concise and source-backed. Mark unknown facts `Unverified`.
-- `.traffic-one/` does not replace root `.traffic-one.json`; create or repair
+- `.traffic-one/` does not replace root `.traffic-one/.one.json`; create or repair
   the root state file before feature-source work so hooks and agents know the
   project mode, stack, backend, and deploy/security stamps.
 - Never write secret values, service-role keys, DB passwords, production
@@ -96,15 +96,15 @@ Create or refresh:
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
   `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
   asks to preserve a report. The codebase-graph artefact location depends on
-  `codeGraphProvider` in `.traffic-one.json`.
+  `codeGraphProvider` in `.traffic-one/.one.json`.
 - Treat memory as continuity, not a transcript. Store stable facts, decisions,
   failed approaches, current work state, and "next session" handoffs; do not
   paste chat history or bulky generated output.
 - Do not hand-create active rule or skill bundles. After the complete
-  `.traffic-one.json` state exists, rely on the generic post-tool materializer
+  `.traffic-one/.one.json` state exists, rely on the generic post-tool materializer
   hook or run
   `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project`
-  from the project root. Feature-source work must wait until `.traffic-one.json`
+  from the project root. Feature-source work must wait until `.traffic-one/.one.json`
   has `materializedStack`, `materializedAt`, and `materializedVersion`.
   Never write those `materialized*` fields by hand; they are valid only when
   the materializer also created `.traffic-one/manifest.json`,

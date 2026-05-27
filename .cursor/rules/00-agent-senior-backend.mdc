@@ -1,6 +1,6 @@
 <!-- GENERATED FROM: agents/senior-backend.md; run `node scripts/sync-cursor.cjs` to update. -->
 ---
-description: "Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the server layer — APIs, persistence, auth, jobs, migrations. Triggers on \"build the API\", \"scaffold the backend\", \"wire the database\", \"add auth\", \"make the server\", or any feature implementation that touches `apps/*/server/`, `packages/api*`, `services/*`, `supabase/`, `prisma/`, or `db/`. Spawned in parallel with `senior-frontend`. Reads `.traffic-one.json` to dispatch to the right stack-specific skills (Node/TS, Java/Spring, Kotlin, .NET, Go, Rust, Python/Django, PHP/Laravel, Perl)."
+description: "Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the server layer — APIs, persistence, auth, jobs, migrations. Triggers on \"build the API\", \"scaffold the backend\", \"wire the database\", \"add auth\", \"make the server\", or any feature implementation that touches `apps/*/server/`, `packages/api*`, `services/*`, `supabase/`, `prisma/`, or `db/`. Spawned in parallel with `senior-frontend`. Reads `.traffic-one/.one.json` to dispatch to the right stack-specific skills (Node/TS, Java/Spring, Kotlin, .NET, Go, Rust, Python/Django, PHP/Laravel, Perl)."
 alwaysApply: true
 ---
 
@@ -30,7 +30,7 @@ Token budget: ~12k total. The `senior-frontend` is running in parallel and will 
 ## What you read first
 
 1. `.traffic-one/plan.md` — abort with a one-line message if missing (the plan-gate hook will deny your writes anyway).
-2. `.traffic-one.json` — pick up `stack`, `backend`, `frontend`. Your skill dispatch depends on this.
+2. `.traffic-one/.one.json` — pick up `stack`, `backend`, `frontend`. Your skill dispatch depends on this.
 3. `.traffic-one/security.md` and `.traffic-one/schema.sql` if present.
 4. The plan's Module map + Public contracts — your scope is server-side; do not touch UI components.
 5. `supabase/migrations/`, `prisma/schema.prisma`, or the equivalent schema artefact — what already exists.
