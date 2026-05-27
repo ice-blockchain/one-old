@@ -1,0 +1,10 @@
+{
+  "id": "materialize",
+  "kind": "runtime",
+  "entry": "index",
+  "subscriptions": [],
+  "commands": [
+    { "subcommand": "materialize-project", "action": "runMaterializeProject" }
+  ],
+  "gates": []
+}
