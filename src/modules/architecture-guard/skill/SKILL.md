@@ -30,6 +30,30 @@ Materialization gate: stack context for {{FINGERPRINT}} has not been materialize
 Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.
 <!-- T1BLOCK:END plan-gate -->
 
+<!-- T1BLOCK:BEGIN run-team-shell -->
+Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.
+<!-- T1BLOCK:END run-team-shell -->
+
+<!-- T1BLOCK:BEGIN run-team-not-subagent -->
+Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. Spawn the appropriate role first; senior-frontend and senior-backend ownership is enforced by `roleCanWriteFeatureSource`.
+<!-- T1BLOCK:END run-team-not-subagent -->
+
+<!-- T1BLOCK:BEGIN run-team-not-owned -->
+Run-team enforcement gate: the file `{{FILEPATH}}` is not under any Traffic One role's owned path patterns (senior-frontend: `apps/*/src|app/` + `packages/(ui|i18n|utils)/src/`; senior-backend: `packages/(api-client|ws-client|utils)/src/`, `services/*/src/`, `apps/*/src/(services|store)/`). If this is a legitimate project layout (e.g. root `src/`), the role-pattern definitions in `roleCanWriteFeatureSource` need to be extended.
+<!-- T1BLOCK:END run-team-not-owned -->
+
+<!-- T1BLOCK:BEGIN run-team-wrong-role -->
+Run-team enforcement gate: the active Traffic One role `{{ROLE}}` does not own `{{TARGETS}}`. Use the role that owns the path, or split the patch by role ownership.
+<!-- T1BLOCK:END run-team-wrong-role -->
+
+<!-- T1BLOCK:BEGIN run-team-unexpected -->
+Run-team enforcement gate: unexpected denial for {{ROLE}} writing `{{FILEPATH}}`. This is a gate bug — please report.
+<!-- T1BLOCK:END run-team-unexpected -->
+
+<!-- T1BLOCK:BEGIN run-team-suffix -->
+If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.
+<!-- T1BLOCK:END run-team-suffix -->
+
 <!-- T1BLOCK:BEGIN pages-service-files -->
 Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.
 <!-- T1BLOCK:END pages-service-files -->
