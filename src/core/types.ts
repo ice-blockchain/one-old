@@ -1,0 +1,144 @@
+// src/core/types.ts
+// Canonical engine types shared by core, adapters, shared services, and modules.
+// The whole point of this file: feature code speaks ONLY these types and never
+// branches on host. Adapters translate each host's raw shape to/from here.
+
+export type HostId = 'claude' | 'codex' | 'cursor';
+
+export type CanonicalEvent =
+  | 'SessionStart'
+  | 'UserPromptSubmit'
+  | 'PreToolUse'
+  | 'PostToolUse';
+
+// Gates match these classes, never raw per-host tool names.
+export type ToolClass =
+  | 'shell'
+  | 'file-write'
+  | 'file-edit'
+  | 'file-read'
+  | 'spawn-agent'
+  | 'search'
+  | 'other';
+
+export interface ToolInput {
+  readonly class: ToolClass;
+  readonly rawName: string;
+  readonly command?: string;
+  readonly filePath?: string;
+  readonly content?: string;
+}
+
+// The canonical, host-agnostic hook input. `raw` carries the original host
+// payload for adapters/diagnostics; feature code should not read it.
+export interface HookInput {
+  readonly event: CanonicalEvent;
+  readonly host: HostId;
+  readonly cwd: string;
+  readonly tool?: ToolInput;
+  readonly prompt?: string;
+  readonly raw: unknown;
+}
+
+// The canonical decision. The adapter serialises it to each host's wire shape;
+// e.g. a Cursor afterFileEdit (a post-event) downgrades `deny` to a warning.
+export type HookResult =
+  | { readonly kind: 'noop' }
+  | { readonly kind: 'context'; readonly context: string }
+  | { readonly kind: 'deny'; readonly reason: string; readonly context?: string };
+
+export type MaybeAsync<T> = T | Promise<T>;
+
+// A unified runnable. A PreToolUse gate (which may deny) and a SessionStart /
+// UserPromptSubmit / PostToolUse action (context + side-effects) are both
+// Handlers — the pipeline treats them uniformly.
+export interface Handler {
+  readonly id: string;
+  readonly event: CanonicalEvent;
+  // For PreToolUse: the tool classes this handler applies to. Empty/undefined
+  // means "all tools for this event".
+  readonly tools?: readonly ToolClass[];
+  // Lower runs first; a deny short-circuits the rest.
+  readonly priority: number;
+  run(ctx: Ctx): MaybeAsync<HookResult>;
+}
+
+// ── Module descriptor (authored as module.json; handlers come from code) ──
+export interface SkillRef {
+  readonly id: string;
+  readonly path: string; // relative to the module dir, e.g. "skill/SKILL.md"
+  readonly shipped?: boolean; // gathered into skills/ + skills-templates/ by gen
+  readonly bootstrap?: boolean; // one of the 4 always-present skills
+}
+
+export interface Subscription {
+  readonly event: CanonicalEvent;
+  readonly subcommand: string; // hook subcommand name (drives generated configs)
+  readonly tools?: readonly ToolClass[];
+  readonly statusMessage?: string;
+}
+
+export interface ModuleDescriptor {
+  readonly id: string;
+  readonly kind: 'runtime' | 'content';
+  // Runtime modules: the file (relative to the module dir, extensionless) that
+  // exports `handlers: Handler[]`. Defaults to "index".
+  readonly entry?: string;
+  readonly skills?: readonly SkillRef[];
+  readonly rules?: readonly string[];
+  readonly agents?: readonly string[];
+  readonly subscriptions?: readonly Subscription[];
+}
+
+// ── Service interfaces (implemented in src/shared, wired by buildContext) ──
+export interface Logger {
+  debug(msg: string): void;
+  warn(msg: string): void;
+}
+
+export interface FsJson {
+  readText(filePath: string): string | null;
+  readJson<T = unknown>(filePath: string, fallback: T): T;
+  writeJson(filePath: string, value: unknown): void;
+}
+
+export interface ExecResult {
+  readonly code: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+export interface Exec {
+  which(bin: string): string | null;
+  run(cmd: string, args: readonly string[], opts?: { cwd?: string }): ExecResult;
+}
+
+export interface Paths {
+  pluginRoot(): string;
+  projectRoot(input: HookInput): string;
+  stateFile(projectRoot: string): string;
+}
+
+// Generalised auth `T1AUTH` bridge: read a directive PROSE block from a module's
+// skill/SKILL.md, substitute {{vars}}, fall back to `fallback` if missing.
+export type SkillBlockFn = (
+  moduleId: string,
+  blockName: string,
+  vars?: Record<string, string | number | null | undefined>,
+  fallback?: string,
+) => string;
+
+// The DI root passed to every handler — assembled once per invocation by
+// buildContext(). Services are added here (not require()d ad hoc), which is what
+// removes the duplicated helpers and the circular "hoisted forwarder" requires.
+export interface Ctx {
+  readonly input: HookInput;
+  readonly host: HostId;
+  readonly cwd: string;
+  now(): string;
+  readonly log: Logger;
+  readonly fsjson: FsJson;
+  readonly exec: Exec;
+  readonly paths: Paths;
+  readonly skillBlock: SkillBlockFn;
+}

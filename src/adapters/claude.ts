@@ -1,0 +1,80 @@
+// src/adapters/claude.ts
+// Claude + Codex share the nested `hookSpecificOutput` wire shape, and the
+// raw→canonical tool map already folds both tool vocabularies (Bash/Edit vs
+// exec_command/apply_patch) into one set of tool classes — so one adapter serves
+// both nested hosts. Cursor (flat JSON) is the separate outlier.
+
+import { toolClassForRawName } from '../core/events';
+import type { CanonicalEvent, HostId, ToolInput } from '../core/types';
+import { parseJson } from '../shared/fsjson';
+import { asRecord, asString } from './coerce';
+import type { HostAdapter, RawInvocation } from './types';
+
+function normalizeEvent(value: unknown): CanonicalEvent {
+  switch (asString(value)) {
+    case 'SessionStart':
+      return 'SessionStart';
+    case 'UserPromptSubmit':
+      return 'UserPromptSubmit';
+    case 'PostToolUse':
+      return 'PostToolUse';
+    default:
+      return 'PreToolUse';
+  }
+}
+
+export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'claude'): HostAdapter {
+  return {
+    id,
+    parse(raw: RawInvocation) {
+      const data = asRecord(parseJson<Record<string, unknown>>(raw.stdin, {}));
+      const event = normalizeEvent(data.hook_event_name ?? data.hookEventName);
+      const rawName = asString(data.tool_name ?? data.toolName);
+      const toolInput = asRecord(data.tool_input ?? data.toolInput);
+
+      let tool: ToolInput | undefined;
+      if (rawName) {
+        const command = asString(toolInput.command);
+        const filePath = asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
+        const content = asString(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
+        tool = {
+          class: toolClassForRawName(rawName),
+          rawName,
+          ...(command ? { command } : {}),
+          ...(filePath ? { filePath } : {}),
+          ...(content ? { content } : {}),
+        };
+      }
+
+      const prompt = asString(data.prompt);
+      return {
+        event,
+        host: id,
+        cwd: asString(data.cwd) || process.cwd(),
+        raw: data,
+        ...(tool ? { tool } : {}),
+        ...(prompt ? { prompt } : {}),
+      };
+    },
+
+    serialize(result, input) {
+      if (result.kind === 'noop') return '';
+      if (result.kind === 'context') {
+        return JSON.stringify({
+          hookSpecificOutput: { hookEventName: input.event, additionalContext: result.context },
+        });
+      }
+      return JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: result.reason,
+          ...(result.context ? { additionalContext: result.context } : {}),
+        },
+      });
+    },
+  };
+}
+
+export const claudeAdapter = makeClaudeAdapter('claude');
+export const codexAdapter = makeClaudeAdapter('codex');

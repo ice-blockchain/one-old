@@ -26,3 +26,7 @@ Thumbs.db
 # Python tooling
 __pycache__/
 *.pyc
+
+# Node build tooling (devDeps only; never shipped — the plugin runs the committed scripts/ directly)
+node_modules/
+*.tsbuildinfo

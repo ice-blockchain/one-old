@@ -1,0 +1,16 @@
+{
+  "//": "Runtime build config. Compiles the readable engine in src/ down onto the legacy runnable layout at scripts/ (no dist). Used at cutover (Step 7); during the alongside phase we validate with `npm run typecheck` + tsx. Note: emitting the exact legacy `.cjs` entry names (scripts/hook-runtime.cjs, scripts/cursor-hook-runtime.cjs, scripts/<runner>.cjs) is finalized at cutover — tsc emits .js, so the entry files are authored as .cts (→ .cjs) while internals emit .js and are resolved by extensionless require.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "scripts",
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "removeComments": false,
+    "newLine": "lf"
+  },
+  "include": ["src/**/*.ts", "src/**/*.cts"],
+  "exclude": ["src/**/*.test.ts", "src/gen/**", "src/**/__tests__/**"]
+}
