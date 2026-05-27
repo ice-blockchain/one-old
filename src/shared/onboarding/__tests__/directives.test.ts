@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { agentModePrompt, codexDefaultModeFallbackDirective, hostPopupInstruction } from '../directives';
+import { agentModePrompt, codexDefaultModeFallbackDirective, hostPopupInstruction, onboardingReminderShort, openCodeOptInDirective } from '../directives';
+import { OPEN_CODE_INSTALL } from '../fallbacks';
 import type { OnboardingBlock } from '../fallbacks';
 import { makeSkillBlock } from '../../skill-block';
 import { pluginRoot } from '../../paths';
@@ -44,4 +45,23 @@ test('promptTextFromSubmit reads the prompt from host field-name variants', () =
   assert.equal(promptTextFromSubmit(JSON.stringify({})), '');
   assert.equal(promptTextFromSubmit('not json'), '');
   assert.equal(promptTextFromSubmit({ text: 'obj form' }), 'obj form');
+});
+
+test('onboardingReminderShort embeds the codex fallback + points at the state schema', () => {
+  const out = onboardingReminderShort(skill);
+  assert.ok(out.includes('onboarding still incomplete'));
+  assert.ok(out.includes('CURRENT-THREAD ONBOARDING FALLBACK')); // embedded codex fallback
+  assert.ok(out.includes('.traffic-one/.one.json'));
+  // verbatim fallback path still renders the codex fallback
+  assert.ok(onboardingReminderShort(verbatim).includes('CURRENT-THREAD ONBOARDING FALLBACK'));
+});
+
+test('openCodeOptInDirective composes the install command + host popup + chat fallback', () => {
+  for (const block of [skill, verbatim]) {
+    const out = openCodeOptInDirective(block);
+    assert.ok(out.includes('OPENCODE DELEGATION OPT-IN'));
+    assert.ok(out.includes(OPEN_CODE_INSTALL));
+    assert.ok(out.includes('request_user_input')); // host popup instruction
+    assert.ok(out.includes('Enable OpenCode delegation')); // chat fallback options
+  }
 });

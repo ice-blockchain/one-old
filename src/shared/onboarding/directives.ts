@@ -5,7 +5,7 @@
 // onboarding-gate skill; these assemblers fill the composition vars. Ported 1:1
 // from onboarding-prompts.cjs.
 
-import type { OnboardingBlock } from './fallbacks';
+import { OPEN_CODE_INSTALL, openCodeChatFallback, type OnboardingBlock } from './fallbacks';
 
 const AGENT_MODE_PROMPT_VERBATIM = [
   'Traffic One needs to know how you want to run agents for this build.',
@@ -48,4 +48,47 @@ export function codexDefaultModeFallbackDirective(block: OnboardingBlock): strin
     "After the user answers, ask Team Confirmation for High/Balanced, then show \"Traffic One was successfully set up. Let's collect the project details next.\", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.",
   ].join('\n');
   return block('codex-fallback', { AGENT_MODE_PROMPT: agentMode }, verbatim);
+}
+
+// Condensed reminder re-injected on UserPromptSubmit while a new project hasn't
+// persisted a valid stack (SessionStart's full directive can scroll out). The
+// full prose + required-state schema live in the skill; this fills the embedded
+// Codex fallback. Concise verbatim fallback: this is injected context, not deny
+// enforcement, so a degraded prose-less fallback never breaks any gate.
+export function onboardingReminderShort(block: OnboardingBlock): string {
+  const codexFallback = codexDefaultModeFallbackDirective(block);
+  const fallback = [
+    '═══ traffic-one — onboarding still incomplete ═══',
+    '',
+    'mode=new-project: complete Traffic One onboarding in the current thread before implementation. Do not scaffold, install, edit source, or choose defaults while answers are pending.',
+    '',
+    codexFallback,
+    '',
+    'Write the full required schema to `.traffic-one/.one.json` (RELATIVE path) before feature work; the PostToolUse hook splits local fields out and auto-loads the rule bundle. See the onboarding-gate skill for the complete schema + field reference.',
+  ].join('\n');
+  return block('onboarding-reminder', { CODEX_FALLBACK: codexFallback }, fallback);
+}
+
+// One-time OpenCode delegation opt-in directive (surfaced for existing/auto-
+// detected codebases via UserPromptSubmit). Composes the host-popup instruction
+// + the OpenCode chat fallback.
+export function openCodeOptInDirective(block: OnboardingBlock): string {
+  const hostPopup = hostPopupInstruction(block);
+  const openCodeChat = openCodeChatFallback(block);
+  const fallback = [
+    'OPENCODE DELEGATION OPT-IN (one-time, non-blocking):',
+    '  Traffic One can delegate bounded implementation tasks to OpenCode, a free',
+    '  local AI coding agent, so it plans/supervises/verifies while OpenCode executes',
+    '  — cutting paid token usage. Every delegated change stays in a reviewable',
+    `  digest. To use it the user installs OpenCode (\`${OPEN_CODE_INSTALL}\`) and`,
+    '  signs in; the delegation wiring ships in a later update.',
+    `  ${hostPopup}`,
+    '  Then record the answer in local Traffic One preferences:',
+    '    "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }',
+    '  "Enable" -> enabled: true; "Not now" -> enabled: false. Do NOT re-ask once it is',
+    "  recorded, and do NOT let this block the user's current request.",
+    '',
+    openCodeChat,
+  ].join('\n');
+  return block('opencode-optin', { INSTALL: OPEN_CODE_INSTALL, HOST_POPUP: hostPopup, OPENCODE_CHAT: openCodeChat }, fallback);
 }
