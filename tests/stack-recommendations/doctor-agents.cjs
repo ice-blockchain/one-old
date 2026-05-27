@@ -110,8 +110,8 @@ test('doctor.cjs flags GITNEXUS_IN_OLD_NVM_NODE when gitnexus on PATH lives in o
     const node = { runningMajor: 22, runningVersion: '22.0.0', onPath: '/x/v22.0.0/bin/node', requiredMajor: 22 };
     const nvm = { installed: true, hasV22: true, v22Paths: { version: 'v22.0.0' }, installCommand: null };
     const gitnexus = {
-      onPath: '/Users/cosmin/.nvm/versions/node/v20.18.3/bin/gitnexus',
-      absoluteV22: '/Users/cosmin/.nvm/versions/node/v22.0.0/bin/gitnexus',
+      onPath: '/Users/john/.nvm/versions/node/v20.18.3/bin/gitnexus',
+      absoluteV22: '/Users/john/.nvm/versions/node/v22.0.0/bin/gitnexus',
       crashRiskInOldNvm: true,
     };
     const project = {

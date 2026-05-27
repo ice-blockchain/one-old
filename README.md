@@ -259,23 +259,45 @@ If Homebrew is missing, Traffic One asks the user to install Homebrew first.
 
 ## Installation
 
+Until Traffic One is published to the public plugin marketplace, install it from
+a local checkout of this repository. Replace `/absolute/path/to/traffic-one`
+with this repo's absolute path, for example `/Users/John/Projects/traffic-one`.
+
 ### Claude Code
+
 ```
-/plugin marketplace add cosminturcin/claude-plug
-/plugin install traffic-one@traffic-one
+claude plugin marketplace add /absolute/path/to/traffic-one --scope user
+claude plugin install traffic-one@traffic-one --scope user
 ```
 
 ### Codex CLI
+
 ```
-codex marketplace add cosminturcin/claude-plug
-codex plugin install traffic-one
+codex plugin marketplace add /absolute/path/to/traffic-one
+codex plugin add traffic-one@traffic-one-local
 ```
 
 ### Cursor
+
 ```
-/add-plugin cosminturcin/claude-plug
+/add-plugin /absolute/path/to/traffic-one
 ```
 Or via Cursor Settings → Plugins → Add.
+
+### Marketplace install after publication
+
+After the marketplace listing is live, use the published marketplace source
+instead of the local path:
+
+```
+claude plugin marketplace add traffic-one/traffic-one
+claude plugin install traffic-one@traffic-one
+
+codex plugin marketplace add traffic-one/traffic-one
+codex plugin add traffic-one
+
+/add-plugin traffic-one/traffic-one
+```
 
 ---
 

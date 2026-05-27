@@ -79,7 +79,7 @@ bloat directly defeats the token-economy layer.
 **BAD** (counted: ~280 chars per line, parenthetical bloat):
 
 ```
-- /Users/cosminturcin/Documents/projects/job-site-v9/packages/ui/{package.json,tsconfig.json,src/globals.css,src/lib/utils.ts,src/index.ts,src/components/ui/*.tsx} (24 shadcn primitives + Toaster + Spinner + EmptyState + Form helpers)
+- /Users/john/Documents/projects/test-project/packages/ui/{package.json,tsconfig.json,src/globals.css,src/lib/utils.ts,src/index.ts,src/components/ui/*.tsx} (24 shadcn primitives + Toaster + Spinner + EmptyState + Form helpers)
 ```
 
 **GOOD** (~70 chars; repo-relative; no annotation):
