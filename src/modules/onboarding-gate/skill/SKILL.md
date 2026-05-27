@@ -137,3 +137,11 @@ Traffic One state was repaired/materialized before this tool use.
 The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one/.one.json`, rules, skills, or root agent context.
 rerun the same tool now; the canonical `.traffic-one/.one.json` and project-local materialization are current.
 <!-- T1BLOCK:END repaired-materialization -->
+
+<!-- T1BLOCK:BEGIN team-mode-marker-guard -->
+Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. Do not add or refresh it in `.traffic-one/.one.json` manually.
+<!-- T1BLOCK:END team-mode-marker-guard -->
+
+<!-- T1BLOCK:BEGIN team-mode-downgrade-guard -->
+Traffic One team mode guard: local Traffic One preferences currently record `team.mode="subagents"`. This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. Ask the user to say that explicitly before rewriting local `performance.level="low"` and `team.mode="main-agent"`. Do not use `team.source="unavailable"` or a state rewrite as a workaround.
+<!-- T1BLOCK:END team-mode-downgrade-guard -->

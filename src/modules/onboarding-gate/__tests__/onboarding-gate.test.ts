@@ -1,0 +1,91 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { onboardingGate } from '../handler';
+import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import { initializeToolchainState } from '../../../shared/state/toolchain';
+
+function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-'));
+  const env = process.env;
+  const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  if (state) {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+  }
+  try { fn(dir); } finally {
+    if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('noop inside the plugin authoring root', () => {
+  assert.equal(onboardingGate(ctx(process.cwd(), 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
+});
+
+test('incomplete new project: a mutating feature write is denied with the onboarding prompt', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const r = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('onboarding gate'));
+      assert.ok(r.promptRequest); // the next-step popup request is attached
+    }
+  });
+});
+
+test('incomplete new project: read-only orientation (ls) is allowed', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+  });
+});
+
+test('writing the canonical state file itself is always allowed', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const tool = { file_path: '.traffic-one/.one.json', content: JSON.stringify({ mode: 'new-project', stack: 'default' }) };
+    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', tool)).kind, 'noop');
+  });
+});
+
+test('hand-writing the team modeChangeApproval marker is denied (team-mode guard)', () => {
+  withProject({ mode: 'new-project', team: { mode: 'subagents', source: 'prompted' } }, (cwd) => {
+    const tool = { file_path: '.traffic-one/.one.json', content: JSON.stringify({ mode: 'new-project', team: { mode: 'subagents', source: 'prompted', modeChangeApproval: { from: 'subagents', to: 'main-agent' } } }) };
+    const r = onboardingGate(ctx(cwd, 'Write', 'file-write', tool));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(r.reason.includes('team mode guard'));
+  });
+});
+
+test('a fully materialized, complete new project lets tool use through (noop)', () => {
+  const TOOLCHAIN = Object.fromEntries(Object.keys(initializeToolchainState({})).map((k) => [k, { installedVersion: '1', installedAt: 'now' }]));
+  const complete = {
+    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
+    projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
+    openCode: { enabled: false, source: 'prompted' }, codeGraphProvider: 'graphify',
+    team: { mode: 'subagents', source: 'prompted', approved: true }, performance: { level: 'high', source: 'prompted' },
+    toolchain: TOOLCHAIN, confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
+    materializedStack: 'default|react-vite|supabase|none',
+  };
+  withProject(complete, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
+    fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'rules', 'common', 'auth-gate.md'), 'r', 'utf8');
+    fs.writeFileSync(path.join(t1, 'skills', 'project-memory', 'SKILL.md'), 's', 'utf8');
+    fs.writeFileSync(path.join(t1, 'manifest.json'), JSON.stringify({ generatedBy: 'traffic-one', stack: 'default', rules: ['rules/common/auth-gate.md'], skills: ['project-memory'] }), 'utf8');
+    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'x\n<!-- GENERATED BY traffic-one: project-local active rules -->\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'see agents', 'utf8');
+    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'apps/web/src/x.ts', content: 'export const x = 1;' })).kind, 'noop');
+  });
+});
