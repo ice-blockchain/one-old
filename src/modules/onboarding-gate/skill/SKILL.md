@@ -145,3 +145,29 @@ Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-us
 <!-- T1BLOCK:BEGIN team-mode-downgrade-guard -->
 Traffic One team mode guard: local Traffic One preferences currently record `team.mode="subagents"`. This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. Ask the user to say that explicitly before rewriting local `performance.level="low"` and `team.mode="main-agent"`. Do not use `team.source="unavailable"` or a state rewrite as a workaround.
 <!-- T1BLOCK:END team-mode-downgrade-guard -->
+
+<!-- T1BLOCK:BEGIN agent-mode-prompt -->
+Traffic One needs to know how you want to run agents for this build.
+How do you want to run agents for this build?
+
+1. High (Recommended) — Subagent team with max-power models
+2. Balanced — Subagent team with efficient mid-tier models
+3. Low — Main agent only with role roadmap checklist
+
+Reply with the option number or label.
+<!-- T1BLOCK:END agent-mode-prompt -->
+
+<!-- T1BLOCK:BEGIN host-popup-instruction -->
+Ask via the host popup tool when available: Codex `request_user_input`, Claude Code `AskUserQuestion`, or the Cursor task-UI prompt. Only if no popup tool is exposed, ask in plain chat with the numbered options, tell the user to reply with the option number or label, and stop. Do NOT emit the plain-text fallback when a popup tool is working.
+<!-- T1BLOCK:END host-popup-instruction -->
+
+<!-- T1BLOCK:BEGIN codex-fallback -->
+CURRENT-THREAD ONBOARDING FALLBACK (visible response, blocking):
+If `request_user_input` cannot be called, do not use tools and do not keep detecting/scaffolding.
+Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate create-feature, create-page, frontend-design, tdd-workflow, or other implementation skills yet.
+Your next visible assistant message must be the plain-chat fallback prompt below, then you must stop for the user answer:
+
+{{AGENT_MODE_PROMPT}}
+
+After the user answers, ask Team Confirmation for High/Balanced, then show "Traffic One was successfully set up. Let's collect the project details next.", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.
+<!-- T1BLOCK:END codex-fallback -->
