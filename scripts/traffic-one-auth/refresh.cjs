@@ -1,6 +1,6 @@
 'use strict';
 
-const { keyFromArgs, errorMessage, writeSessionResult } = require('./_helpers.cjs');
+const { keyFromArgsOrCredential, errorMessage, writeSessionResult } = require('./_helpers.cjs');
 
 // Hoisted forwarders: resolve sibling exports lazily so a load-time cycle never
 // captures a partial module, while the function body stays verbatim.
@@ -10,12 +10,17 @@ function endpointFromEnv(...args) {
 function authStatePath(...args) {
   return require('./authStatePath.cjs').authStatePath(...args);
 }
+function readAuthState(...args) {
+  return require('./readAuthState.cjs').readAuthState(...args);
+}
 function mcpRequest(...args) {
   return require('./mcpRequest.cjs').mcpRequest(...args);
 }
 
 async function refresh(args = process.argv.slice(3), env = process.env, options = {}) {
-  const apiKey = keyFromArgs(args, env);
+  const previousState = readAuthState(env);
+  const keyLookup = keyFromArgsOrCredential(args, env, previousState, options);
+  const apiKey = keyLookup.key;
   const endpoint = endpointFromEnv(env);
   const filePath = authStatePath(env);
   const priorReason = options.priorReason || null;
@@ -25,7 +30,7 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
       authenticated: false,
       reauthenticated: false,
       reason: 'reauthentication-not-possible',
-      detail: 'missing-api-key',
+      detail: keyLookup.reason || 'missing-api-key',
       ...(priorReason ? { priorReason } : {}),
       endpoint,
       filePath,
@@ -49,7 +54,7 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
   }
 
   try {
-    const written = writeSessionResult(endpoint, result, env);
+    const written = writeSessionResult(endpoint, result, env, { apiKey, previousState });
     return {
       ok: true,
       authenticated: true,
@@ -59,6 +64,10 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
       keyId: written.state.keyId,
       expiresAt: written.state.expiresAt,
       endpoint,
+      keySource: keyLookup.source,
+      credentialStored: written.credential && written.credential.ok === true && written.credential.stored === true,
+      ...(written.credential && written.credential.store ? { credentialStore: written.credential.store } : {}),
+      ...(written.credential && written.credential.ok === false ? { credentialStoreReason: written.credential.reason || 'credential-store-failed' } : {}),
     };
   } catch (error) {
     return {

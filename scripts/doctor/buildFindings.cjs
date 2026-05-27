@@ -13,14 +13,6 @@ function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, mcpAut
   const state = normalizedProjectState(project);
   const provider = state && typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
 
-  if (mcpAuth && mcpAuth.configured && mcpAuth.bearerTokenEnvVar && mcpAuth.envPresent === false) {
-    findings.push({
-      severity: 'fix-needed',
-      code: 'MCP_AUTH_ENV_MISSING',
-      message: `The mcp-auth MCP server is configured but ${mcpAuth.bearerTokenEnvVar} is not set for this process. Codex can still run, but Traffic One MCP auth startup is incomplete and Traffic One features must stay gated until authentication is resolved.`,
-    });
-  }
-
   if (sessionDiagnostics) {
     if (sessionDiagnostics.found === false) {
       findings.push({

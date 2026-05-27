@@ -249,7 +249,7 @@ test('new project onboarding includes Codex performance preflight', () => {
   });
 });
 
-test('Traffic One entry skills self-disable when auth is missing', () => {
+test('Traffic One entry skills do not embed auth gate wording', () => {
   const relPaths = [
     'skills/detect-project/SKILL.md',
     'skills/stack-setup/SKILL.md',
@@ -266,14 +266,12 @@ test('Traffic One entry skills self-disable when auth is missing', () => {
 
   for (const relPath of relPaths) {
     const body = fs.readFileSync(path.join(ROOT, relPath), 'utf8');
-    assert.match(body, /Traffic One Auth Preflight/, relPath);
-    assert.match(body, /host modal selector/, relPath);
-    assert.match(body, /Authenticate Traffic One \(Recommended\)/, relPath);
-    assert.match(body, /Continue without Traffic One/, relPath);
-    assert.match(body, /run the\s+authentication command internally/, relPath);
-    assert.match(body, /Do not ask the user to run bash or shell commands/, relPath);
-    assert.match(body, /do not repeat the auth prompt/, relPath);
-    assert.match(body, /Stop and wait for the choice or API key/, relPath);
+    assert.doesNotMatch(body, /Auth gate:/, relPath);
+    assert.doesNotMatch(body, /scripts\/traffic-one-auth/, relPath);
+    assert.doesNotMatch(body, /Traffic One Auth Preflight/, relPath);
+    assert.doesNotMatch(body, /host modal selector/, relPath);
+    assert.doesNotMatch(body, /mcp__mcp_auth__auth_status/, relPath);
+    assert.doesNotMatch(body, /hook runs login and\s+status internally/, relPath);
   }
 });
 
@@ -778,7 +776,7 @@ test('onboarding gate repairs missing bookkeeping after required choices exist',
     const effective = readEffectiveState(cwd);
 
     assert.match(parsed.hookSpecificOutput.additionalContext, /Project-local rules\/skills/);
-    assert.equal(state.version, '2.9.69');
+    assert.equal(state.version, '2.9.70');
     assert.equal(state.confirmed, true);
     assert.ok(state.confirmedAt);
     assert.ok(Array.isArray(state.technologies.frontend));
@@ -1237,7 +1235,7 @@ test('onboarding gate still denies compact state when graph choice is missing', 
 test('onboarding gate still denies when required team choice is missing', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one/.one.json'), {
-      version: '2.9.69',
+      version: '2.9.70',
       mode: 'new-project',
       stack: 'default',
       frontend: 'react-vite',

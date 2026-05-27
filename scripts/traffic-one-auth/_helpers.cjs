@@ -8,6 +8,12 @@ const net = require('net');
 const os = require('os');
 const path = require('path');
 
+const {
+  credentialRefFor,
+  readCredential,
+  storeCredential,
+} = require('./credentialStore.cjs');
+
 // Exported functions that these private helpers call live in sibling files
 // that, in turn, require this module. Resolving them lazily through hoisted
 // forwarders keeps each function body byte-for-byte identical while avoiding a
@@ -127,13 +133,39 @@ function stampRemoteCheck(state, patch, env = process.env) {
   return writeAuthState(next, env);
 }
 
-function keyFromArgs(args, env = process.env) {
-  const keyIndex = args.indexOf('--key');
-  if (keyIndex >= 0 && args[keyIndex + 1]) return args[keyIndex + 1];
+function keyLookupFromArgs(args, _env = process.env, options = {}) {
+  if (options.apiKey) return { key: options.apiKey, source: 'internal' };
   if (args.includes('--stdin')) {
-    return fs.readFileSync(0, 'utf8').trim();
+    return { key: fs.readFileSync(0, 'utf8').trim(), source: 'stdin' };
   }
-  return env.TRAFFIC_ONE_AUTH_KEY || '';
+  return { key: '', source: 'none' };
+}
+
+function keyFromArgs(args, env = process.env, options = {}) {
+  return keyLookupFromArgs(args, env, options).key || '';
+}
+
+function keyFromArgsOrCredential(args, env = process.env, state = null, options = {}) {
+  const direct = keyLookupFromArgs(args, env, options);
+  if (direct.key) return direct;
+  const ref = state && state.credentialRef && typeof state.credentialRef === 'object'
+    ? state.credentialRef
+    : null;
+  if (!ref) return { key: '', source: 'none', reason: 'missing-api-key' };
+  const credential = readCredential(ref, env);
+  if (!credential.ok || !credential.secret) {
+    return {
+      key: '',
+      source: 'credential-store',
+      reason: credential.reason || 'credential-not-found',
+      credentialRef: ref,
+    };
+  }
+  return {
+    key: credential.secret,
+    source: 'credential-store',
+    credentialRef: ref,
+  };
 }
 
 function authStateFromResult(endpoint, result) {
@@ -149,14 +181,36 @@ function authStateFromResult(endpoint, result) {
   };
 }
 
-function writeSessionResult(endpoint, result, env = process.env) {
+function writeSessionResult(endpoint, result, env = process.env, options = {}) {
   if (!result || result.authenticated !== true || typeof result.sessionToken !== 'string') {
     throw new Error('Authentication response did not include a session token');
   }
   const state = authStateFromResult(endpoint, result);
+  let credential = { ok: false, stored: false, reason: 'missing-api-key' };
+  const previousRef = options.previousState && options.previousState.credentialRef
+    && typeof options.previousState.credentialRef === 'object'
+    ? options.previousState.credentialRef
+    : null;
+  if (options.apiKey) {
+    const ref = credentialRefFor(endpoint, state.keyId, env);
+    if (ref) {
+      credential = storeCredential(ref, options.apiKey, env);
+      if (credential.ok) {
+        state.credentialRef = ref;
+      } else if (previousRef) {
+        state.credentialRef = previousRef;
+      }
+    } else {
+      credential = { ok: false, stored: false, reason: 'credential-store-unavailable' };
+      if (previousRef) state.credentialRef = previousRef;
+    }
+  } else if (previousRef) {
+    state.credentialRef = previousRef;
+    credential = { ok: true, stored: false, reused: true, store: previousRef.store };
+  }
   const filePath = writeAuthState(state, env);
   deleteAuthChoiceState(env);
-  return { state, filePath };
+  return { state, filePath, credential };
 }
 
 module.exports = {
@@ -175,6 +229,8 @@ module.exports = {
   errorMessage,
   stampRemoteCheck,
   keyFromArgs,
+  keyFromArgsOrCredential,
+  keyLookupFromArgs,
   authStateFromResult,
   writeSessionResult,
 };

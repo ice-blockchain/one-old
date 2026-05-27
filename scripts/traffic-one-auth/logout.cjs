@@ -3,6 +3,7 @@
 const fs = require('fs');
 
 const { authChoiceStateExists } = require('./_helpers.cjs');
+const { deleteCredential } = require('./credentialStore.cjs');
 
 // Hoisted forwarders: resolve sibling exports lazily so a load-time cycle never
 // captures a partial module, while the function body stays verbatim.
@@ -27,8 +28,12 @@ function authChoiceStatePath(...args) {
 function deleteAuthChoiceState(...args) {
   return require('./deleteAuthChoiceState.cjs').deleteAuthChoiceState(...args);
 }
+function readAuthState(...args) {
+  return require('./readAuthState.cjs').readAuthState(...args);
+}
 
 async function logout(_args = process.argv.slice(3), env = process.env) {
+  const state = readAuthState(env);
   const token = currentSessionToken(env);
   const endpoint = endpointFromEnv(env);
   const filePath = authStatePath(env);
@@ -39,6 +44,7 @@ async function logout(_args = process.argv.slice(3), env = process.env) {
       // Stateless server sessions; local deletion is the important part.
     }
   }
+  const credentialDeleted = deleteCredential(state && state.credentialRef, env);
   const deleted = deleteAuthState(env);
   const authChoicePath = authChoiceStatePath(env);
   const choiceDeleted = deleteAuthChoiceState(env);
@@ -59,7 +65,14 @@ async function logout(_args = process.argv.slice(3), env = process.env) {
       authChoicePath,
     };
   }
-  return { ok: true, authenticated: false, filePath, authChoicePath };
+  return {
+    ok: true,
+    authenticated: false,
+    filePath,
+    authChoicePath,
+    credentialDeleted: credentialDeleted.deleted === true,
+    ...(credentialDeleted.store ? { credentialStore: credentialDeleted.store } : {}),
+  };
 }
 
 module.exports = { logout };

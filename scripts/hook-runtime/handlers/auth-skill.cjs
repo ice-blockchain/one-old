@@ -1,12 +1,12 @@
 'use strict';
 
 // scripts/hook-runtime/handlers/auth-skill.cjs
-// Reads the editable `traffic-one:auth` skill markdown and extracts the
-// per-branch directive text the auth gate emits. This is the bridge that lets
-// the auth FLOW WORDING live in the `skills/auth/SKILL.md` default skill (easily
-// customised) while the deterministic decision + enforcement stays in auth.cjs.
+// Reads the auth-client directive markdown and extracts the per-branch
+// directive text the auth gate emits. This is the bridge that lets the auth
+// FLOW WORDING live in a non-user-visible markdown file while the deterministic
+// decision + enforcement stays in auth.cjs.
 //
-// The skill carries the verbatim directive text inside fenced markers:
+// The directive file carries the verbatim text inside fenced markers:
 //   <!-- T1AUTH:BEGIN <name> -->
 //   ...exact text, may contain {{PLACEHOLDER}} tokens...
 //   <!-- T1AUTH:END <name> -->
@@ -20,19 +20,16 @@ const path = require('path');
 
 const { pluginRoot } = require('../config.cjs');
 
-// The auth skill is a DEFAULT (registered + bootstrap) plugin skill, so it
-// lives in the plugin's `skills/` dir (declared via plugin.json "skills":
-// "./skills/") and is always present — including before any project
-// materialization, which is exactly when the auth gate first fires. It is NOT
-// in skills-templates/ (that library only becomes active post-materialization).
-const SKILL_REL_PATH = path.join('skills', 'auth', 'SKILL.md');
+// This file is intentionally outside `skills/`, so the auth gate remains
+// available even if user-visible skills are disabled or hidden.
+const AUTH_DIRECTIVE_REL_PATH = path.join('scripts', 'traffic-one-auth', 'auth-gate.md');
 
 let cachedSource;
 
 function authSkillSource() {
   if (cachedSource !== undefined) return cachedSource;
   try {
-    cachedSource = fs.readFileSync(path.join(pluginRoot(), SKILL_REL_PATH), 'utf8');
+    cachedSource = fs.readFileSync(path.join(pluginRoot(), AUTH_DIRECTIVE_REL_PATH), 'utf8');
   } catch {
     cachedSource = '';
   }
@@ -61,10 +58,25 @@ function applyVars(text, vars) {
   return out;
 }
 
+function commonVars(source) {
+  return {
+    MCP_TOOL_WARNING: extractBlock(source, 'common-mcp-tool-warning') || '',
+  };
+}
+
 function authSkillBlock(name, vars = {}, fallback = '') {
   const source = authSkillSource();
   const body = source ? extractBlock(source, name) : null;
-  return applyVars(body == null ? fallback : body, vars);
+  return applyVars(body == null ? fallback : body, {
+    ...(source ? commonVars(source) : {}),
+    ...vars,
+  });
 }
 
-module.exports = { authSkillBlock, authSkillSource, extractBlock };
+module.exports = {
+  AUTH_DIRECTIVE_REL_PATH,
+  authSkillBlock,
+  authSkillSource,
+  commonVars,
+  extractBlock,
+};

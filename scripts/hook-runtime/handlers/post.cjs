@@ -96,7 +96,9 @@ function materializeFromToolInputHints(cwd, toolInput, trigger = 'generic post-t
   for (const projectRoot of projectRootsFromToolInputHints(cwd, toolInput)) {
     const relativeRoot = path.relative(cwd, projectRoot).replace(/\\/g, '/') || '.';
     const result = materializeProjectIfNeeded(projectRoot, `${trigger}: ${relativeRoot}`);
-    if (result && result.stdout) {
+    if (result) {
+      const state = readEffectiveState(projectRoot);
+      startOneMcpReportBestEffort(projectRoot, state, `${trigger}: ${relativeRoot}`);
       return result;
     }
     const state = readEffectiveState(projectRoot);
@@ -500,7 +502,11 @@ function runPostStackSetup(rawInput) {
     const hintedResult = materializeFromToolInputHints(cwd, toolInput);
     if (hintedResult) return hintedResult;
     const materializedResult = materializeProjectIfNeeded(cwd, 'generic post-tool convergence');
-    if (materializedResult) return materializedResult;
+    if (materializedResult) {
+      const currentState = readEffectiveState(cwd);
+      startOneMcpReportBestEffort(cwd, currentState, 'generic post-tool convergence');
+      return materializedResult;
+    }
     const currentState = readEffectiveState(cwd);
     startOneMcpReportBestEffort(cwd, currentState, 'generic post-tool convergence');
     return { stdout: '', exitCode: 0 };

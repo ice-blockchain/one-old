@@ -185,13 +185,13 @@ test('doctor.cjs flags Codex workspace trust gaps that can skip hooks', () => {
   assert.match(f.message, /\/Users\/test\/Documents\/__1/);
 });
 
-test('doctor.cjs reports missing mcp-auth env without blocking ordinary Codex startup', () => {
+test('doctor.cjs reports mcp-auth config without requiring process secrets', () => {
   delete require.cache[require.resolve(path.join(ROOT, 'scripts', 'doctor.cjs'))];
   const { probeMcpAuth, buildFindings } = require(path.join(ROOT, 'scripts', 'doctor.cjs'));
   const mcpAuth = probeMcpAuth({});
   assert.equal(mcpAuth.configured, true);
-  assert.equal(mcpAuth.bearerTokenEnvVar, 'TRAFFIC_ONE_AUTH_KEY');
-  assert.equal(mcpAuth.envPresent, false);
+  assert.equal(mcpAuth.bearerTokenEnvVar, undefined);
+  assert.equal(mcpAuth.envPresent, undefined);
   const findings = buildFindings({
     node: { runningMajor: 22, requiredMajor: 22 },
     nvm: { installed: true, hasV22: true },
@@ -207,11 +207,7 @@ test('doctor.cjs reports missing mcp-auth env without blocking ordinary Codex st
     },
     mcpAuth,
   });
-  const f = findings.find((x) => x.code === 'MCP_AUTH_ENV_MISSING');
-  assert.ok(f, JSON.stringify(findings, null, 2));
-  assert.equal(f.severity, 'fix-needed');
-  assert.match(f.message, /Traffic One features must stay gated/);
-  assert.doesNotMatch(f.message, /test-session-token|tok_/);
+  assert.ok(findings.every((x) => !/MCP_AUTH/.test(x.code)), JSON.stringify(findings, null, 2));
 });
 
 test('doctor.cjs diagnoses no-hook Codex sessions and expired auth at session start', () => {
@@ -353,7 +349,7 @@ test('traffic-one-doctor skill exists with required trigger phrases', () => {
   assert.match(text, /read-only|never installs/i);
 });
 
-test('Traffic One entry and implementation skills fail closed when hooks are absent', () => {
+test('Traffic One entry and implementation skills do not embed auth gate wording', () => {
   const skillPaths = [
     path.join(ROOT, 'skills', 'detect-project', 'SKILL.md'),
     path.join(ROOT, 'skills', 'stack-setup', 'SKILL.md'),
@@ -374,10 +370,19 @@ test('Traffic One entry and implementation skills fail closed when hooks are abs
   ];
   for (const skillPath of skillPaths) {
     const text = fs.readFileSync(skillPath, 'utf8');
-    assert.match(text, /If hooks are absent or auth status is unknown/i, skillPath);
-    assert.match(text, /do not infer "Traffic One inactive"/i, skillPath);
-    assert.match(text, /continue ordinary work without Traffic One/i, skillPath);
+    assert.doesNotMatch(text, /Auth gate:/i, skillPath);
+    assert.doesNotMatch(text, /scripts\/traffic-one-auth/i, skillPath);
+    assert.doesNotMatch(text, /Traffic One Auth Preflight/i, skillPath);
+    assert.doesNotMatch(text, /If hooks are absent or auth status is unknown/i, skillPath);
+    assert.doesNotMatch(text, /mcp__mcp_auth__auth_status/i, skillPath);
+    assert.doesNotMatch(text, /checks run silently behind the scenes/i, skillPath);
   }
+
+  const authDirective = fs.readFileSync(path.join(ROOT, 'scripts', 'traffic-one-auth', 'auth-gate.md'), 'utf8');
+  assert.match(authDirective, /single source of truth/i);
+  assert.match(authDirective, /mcp__mcp_auth__auth_status/i);
+  assert.match(authDirective, /host modal selector/i);
+  assert.equal(fs.existsSync(path.join(ROOT, 'skills', 'auth', 'SKILL.md')), false);
 });
 
 test('root agent instructions include Traffic One no-hook fallback guard', () => {
@@ -386,16 +391,18 @@ test('root agent instructions include Traffic One no-hook fallback guard', () =>
     assert.match(text, /If Traffic One skills are visible but hooks or these root instructions were not injected/);
     assert.match(text, /do not infer "Traffic One inactive"/);
     assert.match(text, /Continue ordinary work without Traffic One only after the user explicitly chooses/);
+    assert.match(text, /Do not call the exposed `mcp-auth` MCP tools/);
+    assert.match(text, /auth_status` and `refresh` must happen through the hook\/auth client path/);
   }
 });
 
-test('nextjs-turbopack skill has Traffic One auth and onboarding guards', () => {
+test('nextjs-turbopack skill keeps onboarding guard without auth gate wording', () => {
   const skillPath = path.join(ROOT, 'skills-templates', 'nextjs-turbopack', 'SKILL.md');
   const text = fs.readFileSync(skillPath, 'utf8');
-  assert.match(text, /Traffic One Auth Preflight/);
-  assert.match(text, /verify Traffic One auth/);
-  assert.match(text, /Authenticate Traffic One \(Recommended\)/);
-  assert.match(text, /Continue without Traffic One/);
+  assert.doesNotMatch(text, /Auth gate:/);
+  assert.doesNotMatch(text, /scripts\/traffic-one-auth/);
+  assert.doesNotMatch(text, /Traffic One Auth Preflight/);
+  assert.doesNotMatch(text, /mcp__mcp_auth__auth_status/);
   assert.match(text, /onboardingComplete: true/);
   assert.match(text, /stack-setup/);
 });
@@ -527,7 +534,7 @@ test('gitnexus-runner refuses on Node <22 with the actionable upgrade command', 
   });
 });
 
-// ── Toolchain version tracking (2.9.69) ────────────────────────────────────
+// ── Toolchain version tracking (2.9.70) ────────────────────────────────────
 
 test('toolchain spec lists gitnexus + graphify + security scanners with valid semver', () => {
   const tch = require(path.join(ROOT, 'scripts', 'toolchain.cjs'));
@@ -661,7 +668,7 @@ test('SessionStart tokenEconomyBanner surfaces a one-line toolchain nudge per dr
   });
 });
 
-test('manifests bumped to 2.9.69', () => {
+test('manifests bumped to 2.9.70', () => {
   for (const rel of [
     '.claude-plugin/plugin.json',
     '.claude-plugin/marketplace.json',
@@ -669,11 +676,11 @@ test('manifests bumped to 2.9.69', () => {
     '.cursor-plugin/plugin.json',
   ]) {
     const text = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-    assert.match(text, /"version":\s*"2\.9\.69"/, `${rel} must be bumped to 2.9.69`);
+    assert.match(text, /"version":\s*"2\.9\.70"/, `${rel} must be bumped to 2.9.70`);
   }
 });
 
-// ── Per-subagent rule scoping (2.9.69) ──────────────────────────────────────
+// ── Per-subagent rule scoping (2.9.70) ──────────────────────────────────────
 
 test('isSubagentSession returns true when currentRunId + fresh materialization match', () => {
   const { isSubagentSession } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
@@ -753,7 +760,7 @@ test('packRuleIndex emits bullet list of paths, no rule content', () => {
 test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one/.one.json'), {
-      version: '2.9.69',
+      version: '2.9.70',
       stack: 'default',
       frontend: 'react-vite',
       backend: 'supabase',
@@ -769,7 +776,7 @@ test('runSessionStart emits slim bundle when state.currentRunId is set', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.69',
+      materializedVersion: '2.9.70',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-frontend',
     });
@@ -1001,7 +1008,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
       '## Codebase graph preview\n\nProvider: test · 3 modules:\n- apps/web\n- packages/ui\n- packages/api\n',
     );
     writeJson(path.join(cwd, '.traffic-one/.one.json'), {
-      version: '2.9.69',
+      version: '2.9.70',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -1013,7 +1020,7 @@ test('graph-preview is included in subagent SessionStart when present', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.69',
+      materializedVersion: '2.9.70',
       currentRunId: '2026-05-17T11-00-00Z',
       activeAgentRole: 'senior-architect',
     });
@@ -1033,6 +1040,6 @@ test('generateGraphPreview returns null when graph artefact is missing', () => {
   });
 });
 
-// ── Token usage report (2.9.69) ──────────────────────────────────────────────
+// ── Token usage report (2.9.70) ──────────────────────────────────────────────
 
 };

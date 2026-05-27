@@ -2,11 +2,7 @@
   "mcpServers": {
     "mcp-auth": {
       "type": "http",
-      "url": "http://127.0.0.1:8787/mcp",
-      "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
-      "headers": {
-        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY:-}"
-      }
+      "url": "http://127.0.0.1:8787/mcp"
     }
   }
 }

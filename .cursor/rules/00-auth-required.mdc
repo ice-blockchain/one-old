@@ -8,15 +8,12 @@ alwaysApply: true
 Before using Traffic One, authenticate with the `mcp-auth` server through a
 host modal selector with two choices: Authenticate Traffic One (Recommended) or
 Continue without Traffic One. If the user chooses Authenticate Traffic One, ask
-for the API key and run authentication internally with `TRAFFIC_ONE_AUTH_KEY`;
-then verify status internally. Internally means: invoke
-`scripts/traffic-one-auth.cjs login` (then `status`) through your own shell tool
-with `TRAFFIC_ONE_AUTH_KEY=<key>` in env. The pre-tool gate explicitly allows
-`scripts/traffic-one-auth.cjs (login|refresh|status|logout)` shell invocations
-while unauthenticated, so they will go through. Do not Write or Edit `auth.json`
-directly; only the script can mint a valid session token. Do not ask the user
-to run shell commands.
+for the API key with secure host input and stop; the hook runs authentication
+internally, stores the key in the OS credential manager when available, and
+verifies status internally. Do not invoke `scripts/traffic-one-auth.cjs` through
+your own shell tool, do not Write or Edit `auth.json` directly, and do not ask
+the user to run shell commands.
 
-Do not run Traffic One onboarding, materialization, reporting, agent orchestration, or feature implementation until status is authenticated. If a stored session expired, the auth client may call `refresh` internally with `TRAFFIC_ONE_AUTH_KEY` when the key is still available in the current process environment. If auth is missing, expired, or refresh is not possible, present the modal selector, keep Traffic One inactive, and continue without Traffic One features when the user chooses that path and the request is actionable outside Traffic One; do not continue a pending onboarding answer or prior Traffic One flow. Do not write API keys or session tokens into project files, prompts, commits, `.traffic-one/`, or `.traffic-one/.one.json`.
+Do not run Traffic One onboarding, materialization, reporting, agent orchestration, or feature implementation until status is authenticated. If a stored session expired, the auth client may call `refresh` internally with the OS credential manager key. If auth is missing, expired, or refresh is not possible, present the modal selector, keep Traffic One inactive, and continue without Traffic One features when the user chooses that path and the request is actionable outside Traffic One; do not continue a pending onboarding answer or prior Traffic One flow. Do not write API keys or session tokens into project files, prompts, commits, `.traffic-one/`, or `.traffic-one/.one.json`.
 
 Cursor currently enforces this as an always-applied rule; Codex and Claude Code also enforce it with hooks that call remote `auth_status` on session start and daily during ongoing sessions.

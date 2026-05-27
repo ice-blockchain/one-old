@@ -6,8 +6,6 @@ description: >
   common app builds such as blogs and SaaS apps.
   Triggers: "Next.js", "NextJS", "next app", "Next.js blog", "App Router",
   "Turbopack", "NextAuth", "Auth.js", "next-auth".
-  If hooks are absent or auth status is unknown, do not infer "Traffic One inactive";
-  ask the auth choice or run doctor, then stop before implementation.
 metadata:
   source: everything-claude-code
   source_path: skills/nextjs-turbopack/SKILL.md
@@ -16,33 +14,6 @@ metadata:
 ---
 
 Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
-
-## Traffic One Auth Preflight
-
-Before applying this skill, verify Traffic One auth unless the user is explicitly
-asking to authenticate, check auth status, log out, or run doctor.
-
-If status is not authenticated, do not apply this skill yet. Present the auth
-choice as a host modal selector when available:
-- Authenticate Traffic One (Recommended)
-- Continue without Traffic One
-
-If the user chooses Authenticate Traffic One, ask for the API key and run the
-authentication command internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
-internally. Do not ask the user to run bash or shell commands. If the user chooses
-Continue without Traffic One, continue the user's request without Traffic One
-features and do not repeat the auth prompt while that choice remains active.
-Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
-onboarding questions, write `.traffic-one/.one.json`, create `.traffic-one/`, run
-Traffic One agents, or use Traffic One reporting unless the user authenticates.
-
-If hooks are absent or auth status is unknown, do not infer "Traffic One
-inactive" and continue. Treat Traffic One as unverified: run or recommend
-`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
-debugging a transcript), ask the auth choice, and stop before scaffolding,
-installs, source edits, Traffic One agents, or implementation skills. Only
-continue ordinary work without Traffic One after the user explicitly chooses
-"Continue without Traffic One".
 
 Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
 onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and

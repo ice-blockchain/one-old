@@ -258,7 +258,7 @@ test('token-usage-report is in SKILL_FILTERS._common', () => {
   assert.ok(SKILL_FILTERS._common.has('token-usage-report'), 'token-usage-report not in _common');
 });
 
-// ── Fix-cycle slim bundle (2.9.69) ───────────────────────────────────────────
+// ── Fix-cycle slim bundle (2.9.70) ───────────────────────────────────────────
 
 test('getSpawnIndex returns 0 when spawnIndex missing or role not present', () => {
   const { getSpawnIndex } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
@@ -310,7 +310,7 @@ test('roleDigestName maps senior-* to short digest filename', () => {
 test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one/.one.json'), {
-      version: '2.9.69',
+      version: '2.9.70',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -322,7 +322,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.69',
+      materializedVersion: '2.9.70',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 2 },
@@ -342,7 +342,7 @@ test('runSessionStart emits ultra-slim bundle for fix-cycle re-spawn', () => {
 test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
   withTempDir((cwd) => {
     writeJson(path.join(cwd, '.traffic-one/.one.json'), {
-      version: '2.9.69',
+      version: '2.9.70',
       stack: 'default', frontend: 'react-vite', backend: 'supabase',
       mobile: { enabled: false, framework: 'none', source: 'none' },
       confirmed: true, onboardingComplete: true,
@@ -354,7 +354,7 @@ test('runSessionStart emits standard slim bundle when spawnIndex is 1', () => {
                    trufflehog: { installedVersion: null, installedAt: null } },
       materializedStack: 'default|react-vite|supabase|none',
       materializedAt: new Date().toISOString(),
-      materializedVersion: '2.9.69',
+      materializedVersion: '2.9.70',
       currentRunId: '2026-05-18T11-00-00Z',
       activeAgentRole: 'senior-frontend',
       spawnIndex: { 'senior-frontend': 1 },

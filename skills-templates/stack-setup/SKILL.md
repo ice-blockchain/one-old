@@ -1,41 +1,9 @@
 ---
 name: stack-setup
-description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one/.one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one/.one.json` itself — this skill is NOT needed there. If hooks are absent or auth status is unknown, do not infer "Traffic One inactive"; ask the auth choice or run doctor, then stop before implementation.
+description: PROACTIVELY drive the traffic-one onboarding when SessionStart shows the "FIRST-RUN ONBOARDING" directive (new project, no auto-detection possible) — pitch our stack and write `.traffic-one/.one.json` based on the user's first message. Also TRIGGER when the user says "change stack", "switch stack", "reconfigure", "redo setup", "use a different stack", "I picked the wrong one". For existing projects with a detectable stack, the SessionStart hook auto-writes `.traffic-one/.one.json` itself — this skill is NOT needed there.
 ---
 
 # traffic-one Stack Setup
-
-## Traffic One Auth Preflight
-
-Before applying this skill, verify Traffic One auth unless the user is explicitly
-asking to authenticate, check auth status, log out, or run doctor.
-
-If status is not authenticated, do not apply this skill yet. Present the auth
-choice as a host modal selector when available:
-- Authenticate Traffic One (Recommended)
-- Continue without Traffic One
-
-If the user chooses Authenticate Traffic One, ask for the API key and run the
-authentication command internally with `TRAFFIC_ONE_AUTH_KEY`; then verify status
-internally. Internally means: invoke `scripts/traffic-one-auth.cjs login` (then
-`status`) through your own Bash tool with `TRAFFIC_ONE_AUTH_KEY=<key>` in env —
-the pre-tool gate explicitly bypasses `scripts/traffic-one-auth.cjs (login|status|logout)`
-shell invocations even while unauthenticated. Do not Write or Edit `auth.json`
-directly; only the script can mint a valid session token.
-Do not ask the user to run bash or shell commands. If the user chooses
-Continue without Traffic One, continue the user's request without Traffic One
-features and do not repeat the auth prompt while that choice remains active.
-Stop and wait for the choice or API key as appropriate. Do not ask Traffic One
-onboarding questions, write `.traffic-one/.one.json`, create `.traffic-one/`, run
-Traffic One agents, or use Traffic One reporting unless the user authenticates.
-
-If hooks are absent or auth status is unknown, do not infer "Traffic One
-inactive" and continue. Treat Traffic One as unverified: run or recommend
-`node scripts/doctor.cjs` (or `node scripts/doctor.cjs --session <id>` when
-debugging a transcript), ask the auth choice, and stop before scaffolding,
-installs, source edits, Traffic One agents, or implementation skills. Only
-continue ordinary work without Traffic One after the user explicitly chooses
-"Continue without Traffic One".
 
 Persist the user's rule-stack choice into `.traffic-one/.one.json`. The SessionStart
 hook reads this to decide which rules to inject. The PostToolUse hook

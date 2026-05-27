@@ -13,8 +13,9 @@ Traffic One is gated by the separate `mcp-auth` MCP server. Before onboarding,
 materialization, background reporting, or normal plugin work, the agent presents
 a two-option modal selector: authenticate Traffic One (recommended) or continue
 without Traffic One. If the user authenticates, the agent asks for the API key
-and runs the auth client internally, then verifies status itself. Users should
-not be asked to run shell commands for the normal auth flow.
+using a secure host input/modal; the hook runs the auth client internally, then
+verifies status itself. Users should not be asked to run shell commands for the
+normal auth flow.
 
 Optional endpoint override for local testing:
 
@@ -27,18 +28,25 @@ or session tokens to plain HTTP except for loopback local development
 (`localhost`, `127.0.0.1`, or `::1`).
 
 The API key is exchanged for a short-lived session token stored in user-level
-state only (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
-or `~/.traffic-one/auth.json`). Do not commit keys or session tokens.
+state (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
+or `~/.traffic-one/auth.json`). The raw API key is stored outside `auth.json` in
+the OS credential manager when available; `auth.json` stores only session
+metadata plus a credential reference. Do not commit keys or session tokens.
 When a stored session expires, the auth client automatically calls `refresh`
-with `TRAFFIC_ONE_AUTH_KEY` if that key is still available in the current
-process environment. If the key is unavailable or rejected, the client returns a
-reauthentication error and keeps Traffic One gated.
+with the OS credential manager key. If no credential is available or refresh is
+rejected, the client returns a reauthentication error and keeps Traffic One
+gated.
 
 Codex and Claude Code hooks call `auth_status` remotely at every new session
-start and again at most once per day during ongoing sessions. If auth is
-missing, expired, remotely rejected, or the remote status check cannot be
-verified, Traffic One shows the login instruction and then stays inactive; the
-user's request continues without Traffic One features unless they login.
+start and again at most once per day during ongoing sessions through the local
+auth client. The assistant must not call the exposed `mcp-auth` MCP tools
+(`mcp__mcp_auth__auth_status`, `mcp__mcp_auth__refresh`,
+`mcp__mcp_auth__authenticate`, or `mcp__mcp_auth__logout`) for routine auth gate
+checks; status and refresh should stay silent behind the hook/client boundary.
+If auth is missing, expired, remotely rejected, or the remote status check
+cannot be verified, Traffic One shows the login instruction and then stays
+inactive; the user's request continues without Traffic One features unless they
+login.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
@@ -66,28 +74,18 @@ The plugin also declares `mcp-auth` in `.mcp.json`:
   "mcpServers": {
     "mcp-auth": {
       "type": "http",
-      "url": "http://127.0.0.1:8787/mcp",
-      "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
-      "headers": {
-        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY:-}"
-      }
+      "url": "http://127.0.0.1:8787/mcp"
     }
   }
 }
 ```
 
-The `${TRAFFIC_ONE_AUTH_KEY:-}` default is deliberate: it lets the MCP server
-load even when the key is unset, so the plugin does **not** throw a hard
-"Missing environment variables" error at install for end users who haven't set
-the key. Authentication does not depend on this MCP server — the auth gate runs
-`scripts/traffic-one-auth.cjs login` (with the key the user pastes at the
-prompt) to mint a session into `~/.traffic-one/auth.json`, and the gate reads
-that session on every host (Claude Code, Codex, Cursor) via the shared hooks.
-
-For local testing you can still set `TRAFFIC_ONE_AUTH_KEY` in your shell. Codex
-reads `bearer_token_env_var`; the explicit header remains for hosts that consume
-`.mcp.json` headers directly. Production can replace this test-key path with
-OAuth when the auth server advertises it.
+Authentication does not depend on the exposed `mcp-auth` MCP tools. The auth
+gate runs `scripts/traffic-one-auth.cjs login` internally with the key the user
+pastes at the prompt, passes that key to the auth client through stdin, stores
+the raw key in the OS credential manager when available, mints a session into
+`~/.traffic-one/auth.json`, and reads that session on every host (Claude Code,
+Codex, Cursor) via the shared hooks.
 
 ---
 

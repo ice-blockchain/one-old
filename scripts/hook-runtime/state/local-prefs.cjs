@@ -24,6 +24,10 @@ const {
   overridesEqual,
 } = require('./canonicalize.cjs');
 const {
+  STATE_FILE,
+  LEGACY_STATE_FILE,
+} = require('../config.cjs');
+const {
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
   PERFORMANCE_LEVEL_IDS,
@@ -227,8 +231,7 @@ function mergePlainObject(current, patch) {
   return { ...current, ...patch };
 }
 
-function mergeProjectPrefs(cwd, patch, env = process.env) {
-  const current = readProjectPrefs(cwd, env);
+function mergeProjectPrefsObject(current, patch) {
   const next = { ...current, ...(patch || {}) };
   if (patch && typeof patch === 'object' && !Array.isArray(patch)) {
     if (Object.prototype.hasOwnProperty.call(patch, 'performance')) {
@@ -266,7 +269,11 @@ function mergeProjectPrefs(cwd, patch, env = process.env) {
       }
     }
   }
-  return writeProjectPrefs(cwd, next, env);
+  return normalizeProjectPrefs(next);
+}
+
+function mergeProjectPrefs(cwd, patch, env = process.env) {
+  return writeProjectPrefs(cwd, mergeProjectPrefsObject(readProjectPrefs(cwd, env), patch), env);
 }
 
 function hasLocalPreferenceFields(value) {
@@ -328,12 +335,21 @@ function splitLocalPreferences(cwd, state, env = process.env) {
     return { state, prefs: readProjectPrefs(cwd, env), changed: false };
   }
   const localPatch = extractProjectPrefs(state);
-  const prefs = mergeProjectPrefs(cwd, localPatch, env);
-  return {
-    state: stripLocalPreferenceFields(state),
-    prefs,
-    changed: true,
-  };
+  try {
+    const prefs = mergeProjectPrefs(cwd, localPatch, env);
+    return {
+      state: stripLocalPreferenceFields(state),
+      prefs,
+      changed: true,
+    };
+  } catch {
+    const prefs = mergeProjectPrefsObject(readProjectPrefs(cwd, env), localPatch);
+    return {
+      state,
+      prefs,
+      changed: false,
+    };
+  }
 }
 
 function effectiveState(projectState, prefs) {
@@ -351,9 +367,32 @@ function effectiveState(projectState, prefs) {
   return state;
 }
 
-function readEffectiveState(cwd, env = process.env) {
+function readRawState(cwd) {
+  const currentPath = path.join(cwd, STATE_FILE);
+  if (fs.existsSync(currentPath)) {
+    return safeReadJson(currentPath, {});
+  }
+
+  const oldPath = path.join(cwd, LEGACY_STATE_FILE);
+  if (fs.existsSync(oldPath)) {
+    const legacy = safeReadJson(oldPath, {});
+    if (legacy && typeof legacy === 'object') {
+      legacy.legacyStateFile = LEGACY_STATE_FILE;
+    }
+    return legacy;
+  }
+
   const { readState } = require('./normalize.cjs');
-  return effectiveState(stripLocalPreferenceFields(readState(cwd)), readProjectPrefs(cwd, env));
+  return readState(cwd);
+}
+
+function readEffectiveState(cwd, env = process.env) {
+  const state = readRawState(cwd);
+  const embeddedPrefs = extractProjectPrefs(state);
+  const prefs = Object.keys(embeddedPrefs).length > 0
+    ? mergeProjectPrefsObject(readProjectPrefs(cwd, env), embeddedPrefs)
+    : readProjectPrefs(cwd, env);
+  return effectiveState(stripLocalPreferenceFields(state), prefs);
 }
 
 module.exports = {

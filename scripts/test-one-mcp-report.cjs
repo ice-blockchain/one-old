@@ -188,7 +188,7 @@ async function main() {
       assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Traffic One is inactive/);
       assert.match(sessionPayload.hookSpecificOutput.additionalContext, /Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin/);
       assert.match(sessionPayload.hookSpecificOutput.additionalContext, /modal selector/);
-      assert.doesNotMatch(sessionPayload.hookSpecificOutput.additionalContext, /TRAFFIC_ONE_AUTH_KEY=<test-key>/);
+      assert.doesNotMatch(sessionPayload.hookSpecificOutput.additionalContext, /<test-key>/);
 
       const promptSubmit = handlers.runUserPromptSubmit(JSON.stringify({
         prompt: 'Create a Traffic One project',

@@ -96,10 +96,11 @@ function tmpStatePath(label) {
 }
 function envFor(stateFile, endpoint, extra = {}) {
   const env = { ...process.env };
-  delete env.TRAFFIC_ONE_AUTH_KEY; // never leak an ambient key into "no key" cases
   return Object.assign(env, {
     TRAFFIC_ONE_AUTH_STATE_PATH: stateFile,
     TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: `${stateFile}.choice`,
+    TRAFFIC_ONE_AUTH_CREDENTIAL_STORE: 'file',
+    TRAFFIC_ONE_AUTH_CREDENTIAL_STORE_PATH: `${stateFile}.credentials`,
     TRAFFIC_ONE_MCP_KEY_ENDPOINT: endpoint,
   }, extra);
 }
@@ -165,27 +166,34 @@ test('freshness: each failure mode reports a distinct reason', () => {
 });
 
 // ── 1b) auth instructions reference the active script by ABSOLUTE path ───────
-test('authRequiredMessage embeds the absolute script path and forbids searching', () => {
+test('authRequiredMessage embeds the absolute script path and keeps auth checks internal', () => {
   const expectedPath = path.join(ROOT, 'scripts', 'traffic-one-auth.cjs');
   const msg = auth.authRequiredMessage();
   assert.ok(msg.includes(expectedPath), 'should embed the absolute script path');
   assert.match(msg, /do not search/i);
+  assert.match(msg, /mcp__mcp_auth__auth_status/);
+  assert.match(msg, /status and refresh silently behind the scenes/i);
+  assert.doesNotMatch(msg, /via your own shell tool/i);
+  assert.doesNotMatch(msg, /node ".*traffic-one-auth\.cjs" login/);
 });
 
 // ── 2) script API: login / refresh / status / logout ────────────────────────
 test('simple auth: login with a valid key writes a fresh tok_ session', async () => {
   const sf = tmpStatePath('login-ok');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  const result = await auth.login([], env);
+  const env = envFor(sf, SRV.endpoint);
+  const result = await auth.login([], env, { apiKey: VALID_KEY });
   assert.equal(result.ok, true);
+  assert.equal(result.credentialStored, true);
   const state = readState(sf);
   assert.ok(state.sessionToken.startsWith('tok_'));
+  assert.ok(state.credentialRef, 'auth.json should contain a credential reference');
+  assert.doesNotMatch(JSON.stringify(state), new RegExp(VALID_KEY), 'auth.json must not contain the raw API key');
   assert.equal(auth.isAuthStateFresh(state, env), true);
 });
 test('login with an invalid key returns a structured error (no session written)', async () => {
   const sf = tmpStatePath('login-bad');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: 'tk_wrong' });
-  const result = await auth.login([], env);
+  const env = envFor(sf, SRV.endpoint);
+  const result = await auth.login([], env, { apiKey: 'tk_wrong' });
   assert.equal(result.ok, false);
   assert.equal(result.authenticated, false);
   assert.equal(result.reason, 'invalid-api-key');
@@ -203,8 +211,8 @@ test('login with no key returns missing-api-key (never throws)', async () => {
 test('login against an unreachable endpoint reports the endpoint + reason (never silent)', async () => {
   const sf = tmpStatePath('login-unreachable');
   const dead = 'http://127.0.0.1:59999/mcp';
-  const env = envFor(sf, dead, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  const result = await auth.login([], env);
+  const env = envFor(sf, dead);
+  const result = await auth.login([], env, { apiKey: VALID_KEY });
   assert.equal(result.ok, false);
   assert.equal(result.reason, 'auth-endpoint-unreachable');
   assert.equal(result.endpoint, dead, 'failure must name the endpoint it tried');
@@ -213,35 +221,38 @@ test('login against an unreachable endpoint reports the endpoint + reason (never
 });
 test('status (fresh, local-only) reports authenticated', async () => {
   const sf = tmpStatePath('status-fresh');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  await auth.login([], env);
+  const env = envFor(sf, SRV.endpoint);
+  await auth.login([], env, { apiKey: VALID_KEY });
   const result = await auth.status([], env);
   assert.equal(result.authenticated, true);
 });
 test('refresh with a key mints a brand-new session token', async () => {
   const sf = tmpStatePath('refresh');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  await auth.login([], env);
+  const env = envFor(sf, SRV.endpoint);
+  await auth.login([], env, { apiKey: VALID_KEY });
   const before = readState(sf).sessionToken;
-  const result = await auth.refresh([], env);
+  const result = await auth.refresh([], env, { apiKey: VALID_KEY });
   assert.equal(result.ok, true);
   assert.equal(result.authenticated, true);
   assert.equal(result.reauthenticated, true);
   assert.notEqual(readState(sf).sessionToken, before);
 });
 
-// ── 3) DEV auto-refresh: expired token + key in env → silent, no user prompt ─
-test('DEV auto-refresh: expired token + key in env refreshes silently (status)', async () => {
-  const sf = tmpStatePath('auto-refresh');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  await auth.login([], env);
+// ── 3) Stored credential auto-refresh: expired token → silent, no user prompt ─
+test('expired token + stored credential refreshes silently (status)', async () => {
+  const sf = tmpStatePath('auto-refresh-credential');
+  const env = envFor(sf, SRV.endpoint);
+  await auth.login([], env, { apiKey: VALID_KEY });
   const before = readState(sf);
   writeState(sf, { ...before, expiresAt: '2000-01-01T00:00:00Z' }); // force expiry
   const result = await auth.status([], env);
-  assert.equal(result.authenticated, true, 'expired session should auto-refresh');
+  assert.equal(result.authenticated, true, 'expired session should auto-refresh from credential store');
   assert.equal(result.reauthenticated, true, 'a refresh should have happened');
+  assert.equal(result.keySource, 'credential-store');
   const after = readState(sf);
   assert.notEqual(after.sessionToken, before.sessionToken, 'a new token was minted');
+  assert.ok(after.credentialRef, 'credential reference should survive refresh');
+  assert.doesNotMatch(JSON.stringify(after), new RegExp(VALID_KEY), 'auth.json must not contain the raw API key after refresh');
   assert.equal(authStateFreshness(after, env).fresh, true);
 });
 test('expired token + NO key → precise "expired" reason, session preserved (not deleted)', async () => {
@@ -257,37 +268,40 @@ test('expired token + NO key → precise "expired" reason, session preserved (no
 // ── 4) remote validation: status --remote ───────────────────────────────────
 test('status --remote accepts a token the server still recognizes', async () => {
   const sf = tmpStatePath('remote-ok');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  await auth.login([], env);
+  const env = envFor(sf, SRV.endpoint);
+  await auth.login([], env, { apiKey: VALID_KEY });
   const result = await auth.status(['--remote'], env);
   assert.equal(result.authenticated, true);
 });
-test('status --remote on a server-revoked token + key → silent refresh', async () => {
-  const sf = tmpStatePath('remote-revoked-key');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  await auth.login([], env);
+test('status --remote on a server-revoked token + stored credential → silent refresh', async () => {
+  const sf = tmpStatePath('remote-revoked-credential');
+  await auth.login([], envFor(sf, SRV.endpoint), { apiKey: VALID_KEY });
   const revoked = readState(sf).sessionToken;
   SRV.revoke(revoked);
-  const result = await auth.status(['--remote'], env);
+  const result = await auth.status(['--remote'], envFor(sf, SRV.endpoint));
   assert.equal(result.authenticated, true);
   assert.equal(result.reauthenticated, true);
+  assert.equal(result.keySource, 'credential-store');
   assert.notEqual(readState(sf).sessionToken, revoked);
 });
-test('status --remote on a revoked token + NO key → state deleted, unauthenticated', async () => {
+test('status --remote on a revoked token + NO key and NO stored credential → state deleted, unauthenticated', async () => {
   const sf = tmpStatePath('remote-revoked-nokey');
-  await auth.login([], envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY }));
-  SRV.revoke(readState(sf).sessionToken);
+  await auth.login([], envFor(sf, SRV.endpoint), { apiKey: VALID_KEY });
+  const state = readState(sf);
+  SRV.revoke(state.sessionToken);
+  writeState(sf, { ...state, credentialRef: undefined });
   const result = await auth.status(['--remote'], envFor(sf, SRV.endpoint));
   assert.equal(result.authenticated, false);
   assert.equal(readState(sf), null, 'a definitive remote rejection clears the local session');
 });
 test('logout clears the local session', async () => {
   const sf = tmpStatePath('logout');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  await auth.login([], env);
+  const env = envFor(sf, SRV.endpoint);
+  await auth.login([], env, { apiKey: VALID_KEY });
   assert.ok(readState(sf));
   const result = await auth.logout([], env);
   assert.equal(result.authenticated, false);
+  assert.equal(result.credentialDeleted, true);
   assert.equal(readState(sf), null);
 });
 
@@ -313,6 +327,7 @@ test('gate: the auth-required prompt steers to hook-internal auth (no agent shel
   // the correct absolute AUTH_SCRIPT_PATH, so there is no stale-copy hunt.
   assert.match(gate.stdout, /authenticates it automatically inside the hook/i, 'deny reason should say the hook authenticates the key');
   assert.match(gate.stdout, /do NOT invoke/i, 'deny reason should forbid the agent from running the auth script');
+  assert.match(gate.stdout, /mcp__mcp_auth__auth_status/, 'deny reason should forbid direct mcp-auth tool calls');
 });
 test('gate: simple auth — choose authenticate, paste key, session is created internally', async () => {
   const sf = tmpStatePath('prompt-auth');
@@ -332,16 +347,18 @@ test('gate: expired session + NO key → focused session-expired re-auth prompt'
   assert.match(gate.stdout, /traffic-one\.auth\.session-expired/);
   assert.doesNotMatch(gate.stdout, /traffic-one\.auth\.choice/);
 });
-test('gate (DEV): expired session + key in env auto-refreshes silently, no auth prompt', async () => {
-  const sf = tmpStatePath('gate-expired-key');
-  const cwd = makeProject('gate-expired-key');
-  const env = envFor(sf, SRV.endpoint, { TRAFFIC_ONE_AUTH_KEY: VALID_KEY });
-  writeState(sf, stateAt(SRV.endpoint, 'tok_old', '2000-01-01T00:00:00Z'));
+test('gate: expired session + stored credential auto-refreshes silently, no auth prompt', async () => {
+  const sf = tmpStatePath('gate-expired-credential');
+  const cwd = makeProject('gate-expired-credential');
+  const env = envFor(sf, SRV.endpoint);
+  await auth.login([], env, { apiKey: VALID_KEY });
+  const before = readState(sf);
+  writeState(sf, { ...before, expiresAt: '2000-01-01T00:00:00Z' });
   const gate = await runHook('check-onboarding-gate', { cwd, env, input: { tool_name: 'Read', tool_input: { file_path: 'index.js' } } });
   assert.doesNotMatch(gate.stdout, /traffic-one\.auth\.(choice|session-expired|api-key)/, 'must not prompt the user');
   const after = readState(sf);
   assert.ok(after, 'session preserved');
-  assert.notEqual(after.sessionToken, 'tok_old', 'token was auto-refreshed in the background');
+  assert.notEqual(after.sessionToken, before.sessionToken, 'token was auto-refreshed from the credential store');
   assert.equal(authStateFreshness(after, env).fresh, true);
 });
 

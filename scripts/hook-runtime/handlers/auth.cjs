@@ -35,8 +35,8 @@ const {
   sessionExpiredPromptRequest,
 } = require('./_helpers.cjs');
 
-// The auth-gate directive WORDING lives in the editable `traffic-one:auth`
-// default skill (skills/auth/SKILL.md). This reads the per-branch text blocks
+// The auth-gate directive WORDING lives in
+// scripts/traffic-one-auth/auth-gate.md. This reads the per-branch text blocks
 // from it; the deterministic decisions + enforcement below stay in JS.
 const { authSkillBlock } = require('./auth-skill.cjs');
 
@@ -301,8 +301,6 @@ function parseTrafficOneApiKey(rawInput) {
     .replace(/\n?```$/, '')
     .trim();
   if (/^(cancel|stop|never mind|nevermind)$/i.test(prompt)) return null;
-  const assignment = prompt.match(/\bTRAFFIC_ONE_AUTH_KEY\s*=\s*([A-Za-z0-9._:-]{8,})\b/);
-  if (assignment) return assignment[1];
   const keyPhrase = prompt.match(/\b(?:use\s+)?(?:the\s+)?(?:api\s+)?key\s+(?:is\s+)?([A-Za-z0-9][A-Za-z0-9._:-]{7,})\b/i);
   if (keyPhrase) return keyPhrase[1];
   if (/^[A-Za-z0-9][A-Za-z0-9._:-]{7,}$/.test(prompt)) return prompt;
@@ -403,15 +401,17 @@ function authApiKeyPromptHookResult(options = {}) {
 function runInternalAuthLogin(apiKey) {
   const authScript = AUTH_SCRIPT_PATH;
   const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_LOGIN_TIMEOUT_MS || '10000', 10);
-  const env = { ...process.env, TRAFFIC_ONE_AUTH_KEY: apiKey };
   const options = {
     cwd: process.cwd(),
-    env,
+    env: process.env,
     encoding: 'utf8',
     timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 10000,
     maxBuffer: 64 * 1024,
   };
-  const loginResult = spawnSync(process.execPath, [authScript, 'login'], options);
+  const loginResult = spawnSync(process.execPath, [authScript, 'login', '--stdin'], {
+    ...options,
+    input: apiKey,
+  });
   const loginParsed = parseAuthStatusOutput(loginResult.stdout);
   if (loginResult.status !== 0 || !loginParsed || loginParsed.ok !== true) {
     return {

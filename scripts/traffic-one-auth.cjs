@@ -15,6 +15,13 @@ const { authRemoteCheckDue } = require('./traffic-one-auth/authRemoteCheckDue.cj
 const { authRequiredMessage } = require('./traffic-one-auth/authRequiredMessage.cjs');
 const { authStatePath } = require('./traffic-one-auth/authStatePath.cjs');
 const { buildMcpPayload } = require('./traffic-one-auth/buildMcpPayload.cjs');
+const {
+  credentialRefFor,
+  credentialStoreKind,
+  deleteCredential,
+  readCredential,
+  storeCredential,
+} = require('./traffic-one-auth/credentialStore.cjs');
 const { currentSessionToken } = require('./traffic-one-auth/currentSessionToken.cjs');
 const { deleteAuthChoiceState } = require('./traffic-one-auth/deleteAuthChoiceState.cjs');
 const { deleteAuthState } = require('./traffic-one-auth/deleteAuthState.cjs');
@@ -74,6 +81,11 @@ module.exports = {
   authRequiredMessage,
   authStatePath,
   buildMcpPayload,
+  credentialRefFor,
+  credentialStoreKind,
+  deleteCredential,
+  readCredential,
+  storeCredential,
   currentSessionToken,
   deleteAuthChoiceState,
   deleteAuthState,

@@ -238,7 +238,7 @@ function sessionContextWithMaterializedRules(cwd, payload) {
 function completeDefaultState(overrides = {}) {
   const { initializeToolchainState } = require(path.join(ROOT, 'scripts', 'hook-runtime', 'state', 'state.cjs'));
   return {
-    version: '2.9.69',
+    version: '2.9.70',
     mode: 'new-project',
     stack: 'default',
     frontend: 'react-vite',
