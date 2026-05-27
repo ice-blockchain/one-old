@@ -6,6 +6,13 @@ import * as path from 'path';
 
 export const RUNS_REL_DIR = path.join('.traffic-one', 'runs');
 
+export const FRONTEND_IDS = new Set(['none', 'react-vite', 'nextjs', 'vue', 'svelte', 'angular', 'astro', 'solid', 'remix', 'other']);
+export const BACKEND_IDS = new Set([
+  'none', 'supabase', 'external-api', 'node', 'nestjs', 'python', 'django', 'fastapi',
+  'go', 'rust', 'java', 'kotlin', 'php', 'laravel', 'dotnet', 'firebase', 'mongo', 'other',
+]);
+export const MOBILE_FRAMEWORK_IDS = new Set(['ionic-capacitor', 'react-native-expo', 'none']);
+
 export const MOBILE_SOURCE_IDS = new Set(['explicit', 'prompted', 'none']);
 export const MOBILE_SOURCE_ALIASES = new Map<string, string>([
   ['asked', 'prompted'],
