@@ -36,7 +36,11 @@ export function promptSubmitGroup(withStatus: boolean): HookGroup {
 
 export const PRE_TOOL_USE: HookGroup[] = [
   {
-    matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|spawn_agent|send_input|wait_agent|multi_tool_use',
+    // Includes the subagent-spawn names (Task|Agent for Claude, spawn_agent for
+    // Codex) so the onboarding gate blocks subagent spawns on a new project too —
+    // not just the agent-model gate. Without Task|Agent, a Claude `Task` spawn
+    // skipped the onboarding gate and surfaced onboarding inside the subagent.
+    matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|Task|Agent|spawn_agent|send_input|wait_agent|multi_tool_use',
     entries: [{ subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' }],
   },
   {

@@ -37,7 +37,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FRESHNESS_REASON = exports.REMOTE_AUTH_CHECK_INTERVAL_MS = exports.EXPIRY_SKEW_MS = exports.AUTH_STATE_VERSION = exports.DEFAULT_ENDPOINT = void 0;
+exports.FRESHNESS_REASON = exports.REFRESH_BACKOFF_CAP_MS = exports.REFRESH_FAILURE_THRESHOLD = exports.REMOTE_AUTH_CHECK_INTERVAL_MS = exports.EXPIRY_SKEW_MS = exports.AUTH_STATE_VERSION = exports.DEFAULT_ENDPOINT = void 0;
 exports.isLoopbackHostname = isLoopbackHostname;
 exports.authEndpointUrl = authEndpointUrl;
 exports.endpointFromEnv = endpointFromEnv;
@@ -47,6 +47,10 @@ exports.authStateFreshness = authStateFreshness;
 exports.isAuthStateFresh = isAuthStateFresh;
 exports.isAuthenticatedLocal = isAuthenticatedLocal;
 exports.authRemoteCheckDue = authRemoteCheckDue;
+exports.refreshFailureCount = refreshFailureCount;
+exports.refreshBackoffMs = refreshBackoffMs;
+exports.refreshBackoffActive = refreshBackoffActive;
+exports.refreshAttemptsExhausted = refreshAttemptsExhausted;
 exports.isTrafficOneAuthCommand = isTrafficOneAuthCommand;
 exports.isTrafficOneDoctorCommand = isTrafficOneDoctorCommand;
 exports.authRequiredMessage = authRequiredMessage;
@@ -59,6 +63,14 @@ exports.DEFAULT_ENDPOINT = 'http://127.0.0.1:8787/mcp';
 exports.AUTH_STATE_VERSION = 1;
 exports.EXPIRY_SKEW_MS = 30 * 1000;
 exports.REMOTE_AUTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// Silent-refresh resilience. When a stale/expired session cannot refresh (a
+// transient network blip or server hiccup), retry INVISIBLY with a small
+// exponential backoff for up to REFRESH_FAILURE_THRESHOLD consecutive failures
+// before surfacing a re-auth prompt. The consecutive-failure count and the
+// next-eligible-attempt time are persisted on the auth state (`refreshFailures`
+// / `nextRefreshAt`) and reset to zero on any successful (re)authentication.
+exports.REFRESH_FAILURE_THRESHOLD = 5;
+exports.REFRESH_BACKOFF_CAP_MS = 64 * 1000;
 exports.FRESHNESS_REASON = {
     OK: 'ok',
     MISSING: 'missing-auth-state',
@@ -146,6 +158,29 @@ function authRemoteCheckDue(state = readAuthState(), env = process.env, nowMs = 
         return false;
     const lastChecked = Date.parse((state && typeof state.lastRemoteCheckedAt === 'string' ? state.lastRemoteCheckedAt : '') || '');
     return !Number.isFinite(lastChecked) || nowMs - lastChecked >= exports.REMOTE_AUTH_CHECK_INTERVAL_MS;
+}
+// ── Silent-refresh backoff (pure; read the persisted auth state) ──────────────
+function refreshFailureCount(state) {
+    const n = state && typeof state.refreshFailures === 'number' ? state.refreshFailures : 0;
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+// Exponential backoff for the Nth consecutive refresh failure: 2s, 4s, 8s, 16s,
+// 32s, then capped. Keeps silent retries from hammering the endpoint or stalling
+// every hook on the remote-check timeout.
+function refreshBackoffMs(failures) {
+    const n = Math.max(1, Math.floor(failures) || 1);
+    return Math.min(2 ** n * 1000, exports.REFRESH_BACKOFF_CAP_MS);
+}
+// True while the next silent refresh attempt is still backing off — skip the
+// remote call and keep the user on the last-known session in the meantime.
+function refreshBackoffActive(state, nowMs = Date.now()) {
+    const next = Date.parse((state && typeof state.nextRefreshAt === 'string' ? state.nextRefreshAt : '') || '');
+    return Number.isFinite(next) && nowMs < next;
+}
+// True once silent refresh has failed MORE than the threshold — stop retrying
+// and prompt the user to re-authenticate.
+function refreshAttemptsExhausted(state) {
+    return refreshFailureCount(state) > exports.REFRESH_FAILURE_THRESHOLD;
 }
 function isTrafficOneAuthCommand(command) {
     const c = String(command || '');

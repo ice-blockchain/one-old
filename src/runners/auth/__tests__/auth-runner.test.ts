@@ -19,12 +19,22 @@ import {
   isRemoteAuthRejection,
   keyFromArgsOrCredential,
   keyLookupFromArgs,
+  recordRefreshFailure,
   writeAuthState,
   writeSessionResult,
 } from '../lib';
 import { login, logout, refresh, status } from '../commands';
+import {
+  refreshAttemptsExhausted,
+  refreshBackoffActive,
+  refreshBackoffMs,
+  refreshFailureCount,
+} from '../../../shared/auth';
 
 const DEAD_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+// A port with nothing listening: refresh attempts here fail fast (ECONNREFUSED),
+// which is what drives the silent-refresh backoff/grace tests deterministically.
+const UNREACHABLE_ENDPOINT = 'http://127.0.0.1:59999/mcp';
 
 // Isolate ALL auth paths into a temp dir; force the file credential store.
 // NEVER points at a live :8787 server (a real one deletes the fixture); the
@@ -195,6 +205,79 @@ test('logout() with no live session deletes local state without network', async 
     assert.equal(r.authenticated, false);
     assert.equal(fs.existsSync(path.join(dir, 'auth.json')), false);
     assert.equal(fs.existsSync(path.join(dir, 'auth-choice.json')), false);
+  });
+});
+
+// ── Silent-refresh backoff ────────────────────────────────────────────────────
+test('refresh backoff helpers: count, exponential curve, active window, threshold', () => {
+  assert.equal(refreshFailureCount(null), 0);
+  assert.equal(refreshFailureCount({ refreshFailures: 3 }), 3);
+  assert.equal(refreshFailureCount({ refreshFailures: -2 }), 0);
+  assert.equal(refreshBackoffMs(1), 2000);
+  assert.equal(refreshBackoffMs(5), 32000);
+  assert.equal(refreshBackoffMs(99), 64000); // capped
+  assert.equal(refreshAttemptsExhausted({ refreshFailures: 5 }), false);
+  assert.equal(refreshAttemptsExhausted({ refreshFailures: 6 }), true);
+  assert.equal(refreshBackoffActive({ nextRefreshAt: new Date(Date.now() + 5000).toISOString() }), true);
+  assert.equal(refreshBackoffActive({ nextRefreshAt: new Date(Date.now() - 5000).toISOString() }), false);
+  assert.equal(refreshBackoffActive({}), false);
+});
+
+test('recordRefreshFailure increments + arms backoff, preserving session token + credentialRef', () => {
+  withAuthEnv((dir) => {
+    const ref = credentialRefFor(DEAD_ENDPOINT, 'k1');
+    storeCredential(ref, 'sk-stored');
+    const stateFile = path.join(dir, 'auth.json');
+    const seed = { version: 1, endpoint: DEAD_ENDPOINT, sessionToken: 'tok_x.sig', expiresAt: '2000-01-01T00:00:00Z', keyId: 'k1', credentialRef: ref };
+    const r1 = recordRefreshFailure(seed);
+    assert.equal(r1.failures, 1);
+    assert.equal(r1.exhausted, false);
+    let cur = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+    assert.equal(cur.refreshFailures, 1);
+    assert.equal(typeof cur.nextRefreshAt, 'string');
+    assert.equal(cur.sessionToken, 'tok_x.sig'); // session token NOT discarded
+    assert.ok(cur.credentialRef);                 // keychain ref NOT discarded
+    let last = r1;
+    for (let i = 2; i <= 6; i++) {
+      last = recordRefreshFailure(cur);
+      cur = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+    }
+    assert.equal(cur.refreshFailures, 6);
+    assert.equal(last.exhausted, true);
+    assert.equal(refreshAttemptsExhausted(cur), true);
+  });
+});
+
+test('status() expired + failing refresh: silent grace under threshold, re-auth once exhausted, no attempt within backoff', async () => {
+  await withAuthEnvAsync(async (dir) => {
+    process.env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = UNREACHABLE_ENDPOINT; // restored by withAuthEnvAsync
+    const ref = credentialRefFor(UNREACHABLE_ENDPOINT, 'k1');
+    storeCredential(ref, 'sk-stored');
+    const stateFile = path.join(dir, 'auth.json');
+    const writeExpired = (extra: Record<string, unknown> = {}): void => fs.writeFileSync(stateFile, JSON.stringify({
+      version: 1, endpoint: UNREACHABLE_ENDPOINT, sessionToken: 'tok_x.sig',
+      expiresAt: '2000-01-01T00:00:00Z', lastRemoteCheckedAt: '2000-01-01T00:00:00Z', keyId: 'k1', credentialRef: ref, ...extra,
+    }), 'utf8');
+
+    // 1st failed silent refresh → grace: still authenticated, no prompt.
+    writeExpired();
+    const r1 = await status([]);
+    assert.equal(r1.authenticated, true);
+    assert.equal(r1.refreshPending, true);
+    assert.equal(r1.refreshFailures, 1);
+
+    // Already past the threshold → re-authentication required (stop retrying).
+    writeExpired({ refreshFailures: 6 });
+    const r2 = await status([]);
+    assert.equal(r2.authenticated, false);
+    assert.equal(r2.reason, 'reauthentication-required');
+
+    // Inside the backoff window → grace WITHOUT another remote attempt (count unchanged).
+    writeExpired({ refreshFailures: 2, nextRefreshAt: new Date(Date.now() + 60000).toISOString() });
+    const r3 = await status([]);
+    assert.equal(r3.authenticated, true);
+    assert.equal(r3.refreshPending, true);
+    assert.equal(r3.refreshFailures, 2);
   });
 });
 

@@ -1,7 +1,7 @@
 'use strict';
 // Transitional authoring-root marker for pre-cutover Traffic One installs.
 //
-// The installed Traffic One plugin (<= 2.9.70) detects THIS repository as its own
+// The installed Traffic One plugin (<= 2.9.71) detects THIS repository as its own
 // authoring root by the existence of this file. That detection suppresses
 // auth-gating, new-project onboarding, and self-materialization while the plugin
 // is developed in-place. The post-cutover runtime resolves the authoring root via

@@ -36,20 +36,32 @@ import {
   authApiKeyPromptHookResult,
   authChoiceHookResult,
   authGateForHook,
-  authLoginFromPromptHookResult,
   authRequiredHookResult,
   isSessionExpiryReauth,
   parseTrafficOneApiKey,
   parseUnauthenticatedAuthChoice,
+  runInternalAuthLogin,
   sessionExpiredReauthPromptResult,
 } from './auth-gate';
 import { authChoiceAllowsContinue, authChoiceStatus, tryWriteAuthChoice } from './auth-choice';
+import { runSessionStartAuthed } from './session-start';
 import * as fs from 'fs';
 
 type Rec = Record<string, unknown>;
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
+const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
+
+// Prepend a note (e.g. the login-success line) to a context result, leaving
+// non-context results untouched.
+function prependContext(prefix: string, result: HookResult): HookResult {
+  if (!prefix || result.kind !== 'context') return result;
+  return context(`${prefix}${result.context}`, {
+    ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
+    ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
+  });
+}
 
 const TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK = 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.';
 
@@ -62,24 +74,43 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
 
   // ── Auth gate / auth-choice flow ──
   const authGate = authGateForHook();
+  let loginSucceeded = false;
   if (!authGate.authenticated) {
     const choiceStatus = authChoiceStatus(cwd);
     const authChoice = parseUnauthenticatedAuthChoice(promptText, { allowNumeric: choiceStatus === 'pending-choice' });
     if (authChoice) return authChoiceHookResult(authChoice, cwd);
     if (authChoiceAllowsContinue(cwd)) return noop();
     const promptApiKey = parseTrafficOneApiKey(promptText);
-    if (promptApiKey) return authLoginFromPromptHookResult(promptApiKey);
-    if (isSessionExpiryReauth(authGate)) return sessionExpiredReauthPromptResult();
-    if (choiceStatus === 'authenticate') return authApiKeyPromptHookResult();
-    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
-    return authRequiredHookResult('UserPromptSubmit', { authChoiceWrite: writeResult });
+    if (promptApiKey) {
+      const login = runInternalAuthLogin(promptApiKey);
+      if (!login.ok) {
+        return context(sessionBlock('login-failed', { REASON: login.reason || 'unknown failure' }), { systemMessage: 'traffic-one authentication failed' });
+      }
+      // Authenticated this turn → fall through and run the authed SessionStart
+      // body now, so onboarding starts in the SAME response. (Mid-session auth
+      // otherwise never reaches that body, so onboarding never starts.)
+      loginSucceeded = true;
+    } else if (isSessionExpiryReauth(authGate)) {
+      return sessionExpiredReauthPromptResult();
+    } else if (choiceStatus === 'authenticate') {
+      return authApiKeyPromptHookResult();
+    } else {
+      const writeResult = tryWriteAuthChoice('pending-choice', cwd);
+      return authRequiredHookResult('UserPromptSubmit', { authChoiceWrite: writeResult });
+    }
   }
 
-  if (!fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd))) {
-    return context('', { systemMessage: 'traffic-one active' });
+  // A fresh login, or any authenticated interaction on a not-yet-initialized
+  // project (auth completed mid-session, so SessionStart returned the gate and
+  // never ran the authed body), runs that authed SessionStart body now — this is
+  // where new-project onboarding / existing-codebase auto-detect actually starts.
+  const uninitialized = !fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd));
+  if (loginSucceeded || uninitialized) {
+    const bootstrapped = runSessionStartAuthed(ctx);
+    return loginSucceeded ? prependContext(`${sessionBlock('login-success')}\n\n`, bootstrapped) : bootstrapped;
   }
   const state = readEffectiveState(cwd);
-  if (!state || typeof state !== 'object') return context('', { systemMessage: 'traffic-one active' });
+  if (!state || typeof state !== 'object') return runSessionStartAuthed(ctx);
 
   const stack = (state.stack as string) || (state.mode as string) || 'unknown';
   const normalizedState = JSON.parse(JSON.stringify(state)) as Rec;

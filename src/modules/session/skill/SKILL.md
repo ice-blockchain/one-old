@@ -20,7 +20,9 @@ Do NOT call the exposed `mcp-auth` MCP tools (`mcp__mcp_auth__auth_status`, `mcp
 <!-- T1BLOCK:END common-mcp-tool-warning -->
 
 <!-- T1BLOCK:BEGIN session-start-gate -->
-Traffic One is inactive for this prompt because authentication is missing, expired, or rejected.
+Traffic One is inactive for this prompt because it is not yet authenticated.
+
+This is Traffic One's own first-run login. The API key authenticates only to your configured Traffic One endpoint, is stored in your OS keychain (macOS Keychain / Linux libsecret), and is read from there for silent background refresh — it is never written to a file in plaintext and never sent to any third-party service. Authenticating is recommended so Traffic One's rules, skills, and gates are active for this project.
 
 Your next assistant action must present a host modal selector with exactly two choices when a modal/popup tool is available:
 
@@ -29,7 +31,7 @@ Choices:
 - Authenticate Traffic One (Recommended)
 - Continue without Traffic One
 
-If the user chooses Authenticate Traffic One, ask for the Traffic One API key (use a secure host input/modal) and then STOP and wait. When the user pastes the key, Traffic One authenticates it automatically inside the hook (it runs login + status internally). Do NOT run `traffic-one-auth.cjs` or any auth command yourself via Bash/shell — Claude Code's security classifier blocks passing a key to a script, and the hook already performs the login. Do not Write or Edit `auth.json` directly, do not echo the key, and do not ask the user to run shell commands.
+If the user chooses Authenticate Traffic One, ask for the Traffic One API key (prefer a secure host input/modal) and then STOP and wait. The hook authenticates the key internally and stores it in the OS keychain — you do NOT run anything. The host's security classifier intentionally blocks an assistant from passing a secret to a shell script, so the hook (not you) performs the login and keychain storage; that is a safety feature, not a reason for suspicion. Do not run `traffic-one-auth.cjs` or any auth command, do not Write or Edit `auth.json`, do not echo the key, and do not ask the user to run shell commands.
 {{MCP_TOOL_WARNING}}
 If the user chooses Continue without Traffic One, continue the user request with Traffic One disabled and remember that choice for this project so this prompt is not repeated here while it remains active.
 
@@ -59,23 +61,18 @@ Do not inspect, scaffold, install, edit, or build before the user answers this a
 <!-- T1BLOCK:END pre-tool-deny -->
 
 <!-- T1BLOCK:BEGIN session-expired -->
-Your Traffic One session has expired. Do not continue implementation yet.
-This is a session refresh, not first-time setup — the user already authenticated, so only a fresh API key is needed. Do not offer "Continue without Traffic One" here.
-Ask the user for their Traffic One API key using a secure host input/modal if available.
-After the user provides the key, re-authenticate internally, store the API key in the OS credential manager when available, and verify status internally.
-Automatically means: when the user pastes the key, Traffic One authenticates it inside the hook (login + status run internally). Do NOT invoke `traffic-one-auth.cjs` or any auth command via Bash/shell yourself — Claude Code's security classifier blocks passing a key to a script. Just ask for the key and STOP; the hook completes the refresh. Do not Write or Edit `auth.json` directly.
+Your Traffic One session expired and the silent background refresh from your keychain key did not recover after several retries, so a fresh key is needed. Do not continue implementation yet.
+This is a re-authentication, not first-time setup — the user already opted in, so "Continue without Traffic One" is intentionally NOT offered here (it is not a contradiction; it is the next step of the flow the user already chose).
+Ask the user for their Traffic One API key, preferring a secure host input/modal. The hook re-authenticates internally and refreshes the key in your OS keychain; normal sessions refresh silently from the keychain with no prompt — you are only being asked now because that silent refresh repeatedly failed (an expired/rotated key, or the endpoint was unreachable).
+You do NOT run any command: the host's security classifier blocks passing a secret to a shell script, so the hook (not you) completes the refresh and keychain update. Just ask for the key and STOP. Do not run `traffic-one-auth.cjs`, do not Write or Edit `auth.json`, do not echo the key, and do not ask the user to run shell commands.
 {{MCP_TOOL_WARNING}}
-Do not ask the user to run bash or shell commands. Do not echo the key back to the user.
-Tip: after a successful login, the OS credential manager is the silent-refresh path.
 <!-- T1BLOCK:END session-expired -->
 
 <!-- T1BLOCK:BEGIN api-key-prompt -->
-The user chose to authenticate Traffic One. Do not continue implementation yet.
-Ask the user for the Traffic One API key using a secure host input/modal if available.
-After the user enters the key, run authentication internally, store the API key in the OS credential manager when available, and verify status internally.
-Automatically means: when the user pastes the key, Traffic One authenticates it inside the hook (login + status run internally) — you do NOT run any command. Do NOT invoke `traffic-one-auth.cjs` or any auth command via Bash/shell yourself: Claude Code's security classifier blocks passing a key to a script, and the hook already mints the session. Just ask for the key and STOP. Do not Write or Edit `auth.json` directly.
+The user already chose to authenticate Traffic One, so this step only collects the key — "Continue without Traffic One" is intentionally NOT re-offered here because they opted in (this is the next step of that choice, not a contradiction). Do not continue implementation yet.
+Ask the user for the Traffic One API key, preferring a secure host input/modal. The hook then authenticates it internally and stores it in your OS keychain; from then on the session refreshes silently from the keychain with no further prompts.
+You do NOT run any command: the host's security classifier blocks passing a secret to a shell script, so the hook (not you) mints the session and stores the key in the keychain. Just ask for the key and STOP. Do not run `traffic-one-auth.cjs`, do not Write or Edit `auth.json`, do not echo the key, and do not ask the user to run shell commands.
 {{MCP_TOOL_WARNING}}
-Do not ask the user to run bash or shell commands. Do not echo the key back to the user.
 <!-- T1BLOCK:END api-key-prompt -->
 
 <!-- T1BLOCK:BEGIN continue-without -->
@@ -99,6 +96,6 @@ Ask the user to re-enter the API key. Do not echo the key and do not ask the use
 <!-- T1BLOCK:END login-failed -->
 
 <!-- T1BLOCK:BEGIN login-success -->
-Traffic One authentication completed internally and status reports authenticated.
+Traffic One authentication completed internally; the API key is stored in your OS keychain and the session will refresh from it silently — no further auth prompts unless that silent refresh repeatedly fails.
 Continue the user request with Traffic One enabled.
 <!-- T1BLOCK:END login-success -->
