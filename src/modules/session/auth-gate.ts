@@ -19,6 +19,7 @@ import {
   isTrafficOneAuthCommand,
   isTrafficOneDoctorCommand,
   readAuthState,
+  refreshAttemptsExhausted,
 } from '../../shared/auth';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
@@ -116,7 +117,11 @@ export function runInternalAuthLogin(apiKey: string): LoginResult {
 
 export function isSessionExpiryReauth(authGate: AuthGate, env: NodeJS.ProcessEnv = process.env): boolean {
   if (authGate && authGate.priorReason === FRESHNESS_REASON.EXPIRED) return true;
-  return authStateFreshness(readAuthState(env), env).reason === FRESHNESS_REASON.EXPIRED;
+  if (authGate && authGate.reason === 'reauthentication-required') return true;
+  const state = readAuthState(env);
+  // Silent refresh gave up after the threshold → this is a re-auth, not first-time.
+  if (refreshAttemptsExhausted(state)) return true;
+  return authStateFreshness(state, env).reason === FRESHNESS_REASON.EXPIRED;
 }
 
 export function parseUnauthenticatedAuthChoice(prompt: string, options: { allowNumeric?: boolean } = {}): string | null {

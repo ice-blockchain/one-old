@@ -15,6 +15,15 @@ export const AUTH_STATE_VERSION = 1;
 export const EXPIRY_SKEW_MS = 30 * 1000;
 export const REMOTE_AUTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
+// Silent-refresh resilience. When a stale/expired session cannot refresh (a
+// transient network blip or server hiccup), retry INVISIBLY with a small
+// exponential backoff for up to REFRESH_FAILURE_THRESHOLD consecutive failures
+// before surfacing a re-auth prompt. The consecutive-failure count and the
+// next-eligible-attempt time are persisted on the auth state (`refreshFailures`
+// / `nextRefreshAt`) and reset to zero on any successful (re)authentication.
+export const REFRESH_FAILURE_THRESHOLD = 5;
+export const REFRESH_BACKOFF_CAP_MS = 64 * 1000;
+
 export const FRESHNESS_REASON = {
   OK: 'ok',
   MISSING: 'missing-auth-state',
@@ -105,6 +114,33 @@ export function authRemoteCheckDue(state: AuthState | null = readAuthState(), en
   if (!isAuthStateFresh(state, env, nowMs)) return false;
   const lastChecked = Date.parse((state && typeof state.lastRemoteCheckedAt === 'string' ? state.lastRemoteCheckedAt : '') || '');
   return !Number.isFinite(lastChecked) || nowMs - lastChecked >= REMOTE_AUTH_CHECK_INTERVAL_MS;
+}
+
+// ── Silent-refresh backoff (pure; read the persisted auth state) ──────────────
+export function refreshFailureCount(state: AuthState | null): number {
+  const n = state && typeof state.refreshFailures === 'number' ? state.refreshFailures : 0;
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+// Exponential backoff for the Nth consecutive refresh failure: 2s, 4s, 8s, 16s,
+// 32s, then capped. Keeps silent retries from hammering the endpoint or stalling
+// every hook on the remote-check timeout.
+export function refreshBackoffMs(failures: number): number {
+  const n = Math.max(1, Math.floor(failures) || 1);
+  return Math.min(2 ** n * 1000, REFRESH_BACKOFF_CAP_MS);
+}
+
+// True while the next silent refresh attempt is still backing off — skip the
+// remote call and keep the user on the last-known session in the meantime.
+export function refreshBackoffActive(state: AuthState | null, nowMs = Date.now()): boolean {
+  const next = Date.parse((state && typeof state.nextRefreshAt === 'string' ? state.nextRefreshAt : '') || '');
+  return Number.isFinite(next) && nowMs < next;
+}
+
+// True once silent refresh has failed MORE than the threshold — stop retrying
+// and prompt the user to re-authenticate.
+export function refreshAttemptsExhausted(state: AuthState | null): boolean {
+  return refreshFailureCount(state) > REFRESH_FAILURE_THRESHOLD;
 }
 
 export function isTrafficOneAuthCommand(command: unknown): boolean {

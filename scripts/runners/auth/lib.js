@@ -44,6 +44,7 @@ exports.deleteAuthState = deleteAuthState;
 exports.isRemoteAuthRejection = isRemoteAuthRejection;
 exports.errorMessage = errorMessage;
 exports.stampRemoteCheck = stampRemoteCheck;
+exports.recordRefreshFailure = recordRefreshFailure;
 exports.keyLookupFromArgs = keyLookupFromArgs;
 exports.keyFromArgs = keyFromArgs;
 exports.keyFromArgsOrCredential = keyFromArgsOrCredential;
@@ -99,6 +100,25 @@ function errorMessage(error) {
 function stampRemoteCheck(state, patch, env = process.env) {
     const next = { ...state, ...patch, lastRemoteCheckedAt: (0, text_1.nowIsoNoMs)() };
     return writeAuthState(next, env);
+}
+// Record a failed SILENT refresh: bump the consecutive-failure count and arm the
+// exponential backoff, WITHOUT discarding the session token or credentialRef.
+// Keeping them means the next attempt can retry from the keychain, and an
+// exhausted state still reads as EXPIRED (→ the "re-authenticate" prompt, not the
+// first-time auth gate). A successful (re)auth writes a fresh state via
+// writeSessionResult, which omits these fields and so resets the counter to zero.
+function recordRefreshFailure(state, env = process.env) {
+    const failures = (0, auth_1.refreshFailureCount)(state) + 1;
+    if (state && typeof state === 'object') {
+        const next = {
+            ...state,
+            refreshFailures: failures,
+            nextRefreshAt: new Date(Date.now() + (0, auth_1.refreshBackoffMs)(failures)).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+            lastRefreshFailureAt: (0, text_1.nowIsoNoMs)(),
+        };
+        writeAuthState(next, env);
+    }
+    return { failures, exhausted: failures > auth_1.REFRESH_FAILURE_THRESHOLD };
 }
 function keyLookupFromArgs(args, _env = process.env, options = {}) {
     if (options.apiKey)

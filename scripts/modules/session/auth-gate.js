@@ -130,7 +130,13 @@ function runInternalAuthLogin(apiKey) {
 function isSessionExpiryReauth(authGate, env = process.env) {
     if (authGate && authGate.priorReason === auth_1.FRESHNESS_REASON.EXPIRED)
         return true;
-    return (0, auth_1.authStateFreshness)((0, auth_1.readAuthState)(env), env).reason === auth_1.FRESHNESS_REASON.EXPIRED;
+    if (authGate && authGate.reason === 'reauthentication-required')
+        return true;
+    const state = (0, auth_1.readAuthState)(env);
+    // Silent refresh gave up after the threshold → this is a re-auth, not first-time.
+    if ((0, auth_1.refreshAttemptsExhausted)(state))
+        return true;
+    return (0, auth_1.authStateFreshness)(state, env).reason === auth_1.FRESHNESS_REASON.EXPIRED;
 }
 function parseUnauthenticatedAuthChoice(prompt, options = {}) {
     const text = String(prompt || '').trim().toLowerCase();

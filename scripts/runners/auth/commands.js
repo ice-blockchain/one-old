@@ -170,15 +170,57 @@ async function refresh(args = process.argv.slice(3), env = process.env, options 
         };
     }
 }
+// ── Silent-refresh-with-backoff (the invisible refresh path) ──────────────────
+// A stale/expired session re-mints itself from the keychain key. Transient
+// failures retry invisibly with exponential backoff; only after MORE than
+// REFRESH_FAILURE_THRESHOLD consecutive failures does the caller surface a
+// re-auth prompt. The session token + credentialRef are preserved across
+// failures, so the gate keeps working in the meantime and an exhausted state
+// still reads as a re-authentication (not a first-time login).
+function graceAuthenticated(state, env) {
+    return {
+        ok: true,
+        authenticated: true,
+        refreshPending: true,
+        refreshFailures: (0, auth_1.refreshFailureCount)(state),
+        keyId: state.keyId,
+        expiresAt: state.expiresAt,
+        endpoint: state.endpoint,
+        filePath: (0, auth_1.authStatePath)(env),
+    };
+}
+function reauthRequired(state, priorReason, env) {
+    return {
+        ok: false,
+        authenticated: false,
+        reason: 'reauthentication-required',
+        priorReason: priorReason || 'session-refresh-exhausted',
+        refreshFailures: (0, auth_1.refreshFailureCount)(state),
+        endpoint: (0, auth_1.endpointFromEnv)(env),
+        filePath: (0, auth_1.authStatePath)(env),
+    };
+}
+async function silentRefreshWithBackoff(args, env, state, priorReason) {
+    if ((0, auth_1.refreshAttemptsExhausted)(state))
+        return reauthRequired(state, priorReason, env);
+    if ((0, auth_1.refreshBackoffActive)(state))
+        return graceAuthenticated(state, env);
+    const refreshed = await refresh(args, env, { priorReason });
+    if (refreshed.ok)
+        return refreshed; // success writes a fresh state → counter reset
+    const rec = (0, lib_1.recordRefreshFailure)(state, env);
+    const current = (0, auth_1.readAuthState)(env) || state;
+    return rec.exhausted ? reauthRequired(current, priorReason, env) : graceAuthenticated(current, env);
+}
 async function status(args = process.argv.slice(3), env = process.env) {
     const state = (0, auth_1.readAuthState)(env);
     const freshness = (0, auth_1.authStateFreshness)(state, env);
     if (!freshness.fresh) {
-        const localReason = freshness.reason;
-        if (state) {
-            return refresh(args, env, { priorReason: localReason });
+        if (!state) {
+            return { ok: false, authenticated: false, reason: freshness.reason, filePath: (0, auth_1.authStatePath)(env), endpoint: (0, auth_1.endpointFromEnv)(env) };
         }
-        return { ok: false, authenticated: false, reason: localReason, filePath: (0, auth_1.authStatePath)(env), endpoint: (0, auth_1.endpointFromEnv)(env) };
+        // Stale/expired session → invisible refresh from the keychain key.
+        return silentRefreshWithBackoff(args, env, state, freshness.reason);
     }
     const s = state;
     if (!args.includes('--remote')) {
@@ -190,12 +232,10 @@ async function status(args = process.argv.slice(3), env = process.env) {
     }
     catch (error) {
         if ((0, lib_1.isRemoteAuthRejection)(error)) {
-            const refreshed = await refresh(args, env, { priorReason: 'remote-auth-rejected' });
-            if (refreshed.ok)
-                return { ...refreshed, remoteChecked: true };
-            (0, lib_1.deleteAuthState)(env);
-            return refreshed;
+            return { ...(await silentRefreshWithBackoff(args, env, s, 'remote-auth-rejected')), remoteChecked: true };
         }
+        // Transient network error on a locally-fresh session: not a refresh failure —
+        // stay locally authenticated, no counter, no prompt.
         (0, lib_1.stampRemoteCheck)(s, { lastRemoteCheckError: (0, lib_1.errorMessage)(error) }, env);
         return {
             ok: false,
@@ -211,21 +251,15 @@ async function status(args = process.argv.slice(3), env = process.env) {
         };
     }
     if (result.authenticated !== true) {
-        const refreshed = await refresh(args, env, { priorReason: result.reason || 'remote-auth-rejected' });
-        if (refreshed.ok)
-            return { ...refreshed, remoteChecked: true };
-        (0, lib_1.deleteAuthState)(env);
-        return refreshed;
+        return { ...(await silentRefreshWithBackoff(args, env, s, result.reason || 'remote-auth-rejected')), remoteChecked: true };
     }
-    if (result.authenticated === true) {
-        (0, lib_1.stampRemoteCheck)(s, {
-            keyId: result.keyId || s.keyId,
-            expiresAt: result.expiresAt || s.expiresAt,
-            lastRemoteCheckOkAt: (0, text_1.nowIsoNoMs)(),
-            lastRemoteCheckError: null,
-        }, env);
-    }
-    return { ok: result.authenticated === true, authenticated: result.authenticated === true, keyId: result.keyId, expiresAt: result.expiresAt, endpoint: s.endpoint, filePath: (0, auth_1.authStatePath)(env) };
+    (0, lib_1.stampRemoteCheck)(s, {
+        keyId: result.keyId || s.keyId,
+        expiresAt: result.expiresAt || s.expiresAt,
+        lastRemoteCheckOkAt: (0, text_1.nowIsoNoMs)(),
+        lastRemoteCheckError: null,
+    }, env);
+    return { ok: true, authenticated: true, keyId: result.keyId, expiresAt: result.expiresAt, endpoint: s.endpoint, filePath: (0, auth_1.authStatePath)(env) };
 }
 async function logout(_args = process.argv.slice(3), env = process.env) {
     const state = (0, auth_1.readAuthState)(env);

@@ -9,7 +9,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { deleteAuthChoiceState } from '../../modules/session/auth-choice';
-import { AUTH_STATE_VERSION, authStatePath } from '../../shared/auth';
+import {
+  AUTH_STATE_VERSION,
+  REFRESH_FAILURE_THRESHOLD,
+  authStatePath,
+  refreshBackoffMs,
+  refreshFailureCount,
+} from '../../shared/auth';
 import { nowIsoNoMs } from '../../shared/text';
 import {
   type CredentialRef,
@@ -64,6 +70,28 @@ export function errorMessage(error: unknown): string {
 export function stampRemoteCheck(state: Rec, patch: Rec, env: NodeJS.ProcessEnv = process.env): string {
   const next = { ...state, ...patch, lastRemoteCheckedAt: nowIsoNoMs() };
   return writeAuthState(next, env);
+}
+
+export interface RefreshFailureRecord { failures: number; exhausted: boolean; }
+
+// Record a failed SILENT refresh: bump the consecutive-failure count and arm the
+// exponential backoff, WITHOUT discarding the session token or credentialRef.
+// Keeping them means the next attempt can retry from the keychain, and an
+// exhausted state still reads as EXPIRED (→ the "re-authenticate" prompt, not the
+// first-time auth gate). A successful (re)auth writes a fresh state via
+// writeSessionResult, which omits these fields and so resets the counter to zero.
+export function recordRefreshFailure(state: Rec | null, env: NodeJS.ProcessEnv = process.env): RefreshFailureRecord {
+  const failures = refreshFailureCount(state) + 1;
+  if (state && typeof state === 'object') {
+    const next: Rec = {
+      ...state,
+      refreshFailures: failures,
+      nextRefreshAt: new Date(Date.now() + refreshBackoffMs(failures)).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      lastRefreshFailureAt: nowIsoNoMs(),
+    };
+    writeAuthState(next, env);
+  }
+  return { failures, exhausted: failures > REFRESH_FAILURE_THRESHOLD };
 }
 
 export interface KeyLookup { key: string; source: string; reason?: string; credentialRef?: CredentialRef; }
