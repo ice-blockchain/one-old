@@ -2,7 +2,10 @@
   "id": "materialize",
   "kind": "runtime",
   "entry": "index",
-  "subscriptions": [],
+  "skills": [{ "id": "materialize", "path": "skill/SKILL.md", "shipped": false }],
+  "subscriptions": [
+    { "event": "PostToolUse", "subcommand": "post-stack-setup", "tools": ["file-write", "file-edit", "shell"] }
+  ],
   "commands": [
     { "subcommand": "materialize-project", "action": "runMaterializeProject" }
   ],
