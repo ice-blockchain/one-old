@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { balancedModeDirective, highModeDirective, lowModeDirective, performanceLevelDirective } from '../perf-directives';
+import { balancedModeDirective, highModeDirective, lowModeDirective, performanceLevelDirective, performancePopupBlock, teamConfirmationPopupBlock } from '../perf-directives';
 import type { OnboardingBlock } from '../fallbacks';
 import { makeSkillBlock } from '../../skill-block';
 import { pluginRoot } from '../../paths';
@@ -45,4 +45,22 @@ test('performanceLevelDirective dispatches by level', () => {
   assert.ok(performanceLevelDirective('balanced', null, skill).includes('performance: BALANCED'));
   assert.ok(performanceLevelDirective('high', null, skill).includes('performance: HIGH'));
   assert.equal(performanceLevelDirective('bogus', null, skill), '');
+});
+
+test('performancePopupBlock renders popup 1 (skill + verbatim)', () => {
+  for (const block of [skill, verbatim]) {
+    assert.ok(performancePopupBlock(block).includes('AGENT PERFORMANCE PREFLIGHT'));
+  }
+  assert.ok(performancePopupBlock(skill).includes('popup 2'));
+});
+
+test('teamConfirmationPopupBlock renders popup 2 with the HIGH + BALANCED tables', () => {
+  for (const block of [skill, verbatim]) {
+    const out = teamConfirmationPopupBlock(block);
+    assert.ok(out.includes('TEAM CONFIRMATION PREFLIGHT'));
+    assert.ok(out.includes('--- HIGH ---'));
+    assert.ok(out.includes('--- BALANCED ---'));
+    assert.ok(out.includes('senior-architect: highest')); // HIGH rows
+    assert.ok(out.includes('senior-tester: cheapest'));
+  }
 });

@@ -94,3 +94,32 @@ export function performanceLevelDirective(level: string, overrides: unknown, blo
     default: return '';
   }
 }
+
+// SessionStart "popup 1": the Performance preflight. Full prose in the skill;
+// concise verbatim fallback (injected onboarding context, not deny enforcement).
+export function performancePopupBlock(block: OnboardingBlock): string {
+  return block('performance-popup', {},
+    'AGENT PERFORMANCE PREFLIGHT (popup 1): after auth, ask the performance level (High recommended / Balanced / Low) via the host popup tool. High/Balanced → team.mode=subagents and MUST also pass popup 2 (Team Confirmation) before any subagent spawn; Low → team.mode=main-agent role checklist.');
+}
+
+// SessionStart "popup 2": the Team Confirmation preflight, with the canonical
+// HIGH/BALANCED role line-up tables rendered from the config.
+export function teamConfirmationPopupBlock(block: OnboardingBlock): string {
+  const highRows = renderTeamLines('high').join('\n');
+  const balancedRows = renderTeamLines('balanced').join('\n');
+  const fallback = [
+    'TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by spawn gate):',
+    '  Render the team line-up VERBATIM and ask the user to Approve before saving preferences or spawning subagents. The spawn gate denies every Task/spawn_agent call until `team.approved: true`.',
+    '',
+    '  --- HIGH ---',
+    highRows,
+    '  --- end HIGH ---',
+    '',
+    '  --- BALANCED ---',
+    balancedRows,
+    '  --- end BALANCED ---',
+    '',
+    '  Options: Approve (save team.approved:true + auto-launch) / Re-pick performance / Customise (per-role tier overrides). Never auto-approve on the user\'s behalf.',
+  ].join('\n');
+  return block('team-confirmation-popup', { HIGH_ROWS: highRows, BALANCED_ROWS: balancedRows }, fallback);
+}
