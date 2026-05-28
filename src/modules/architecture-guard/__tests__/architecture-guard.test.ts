@@ -55,3 +55,25 @@ test('native stack: denies react-router-dom (Expo Router instead)', () => {
     if (r.kind === 'deny') assert.ok(r.reason.includes('Expo Router'));
   });
 });
+
+// Stack-aware Next.js gating (ported behaviors from the legacy core-onboarding suite).
+test('react/vite stack: denies next packages (Next.js not chosen)', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, (cwd) => {
+    const r = libraryAllowlistGate(ctxFor(cwd, 'pnpm add next'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(r.reason.includes('NextAuth/Auth.js'));
+  });
+});
+
+test('explicit nextjs frontend: allows next', () => {
+  withProject({ stack: 'default', frontend: 'nextjs' }, (cwd) => {
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add next')).kind, 'noop');
+  });
+});
+
+test('existing next dependency: allows next-auth', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ dependencies: { next: '15.0.0' } }), 'utf8');
+    assert.equal(libraryAllowlistGate(ctxFor(cwd, 'pnpm add next-auth')).kind, 'noop');
+  });
+});
