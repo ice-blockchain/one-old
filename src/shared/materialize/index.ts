@@ -7,3 +7,4 @@ export * from './render-agents';
 export * from './cleanup';
 export * from './materialize';
 export * from './converge';
+export * from './graph-preview';
