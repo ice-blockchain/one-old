@@ -20,6 +20,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { isAuthenticatedLocal } from '../../shared/auth';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
+import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
 import {
@@ -66,7 +67,9 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   if (!isAuthenticatedLocal()) return noop();
 
   const raw = obj(ctx.input.raw) || {};
-  if (deps.logTokenUse) deps.logTokenUse(cwd, raw);
+  // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
+  // logger by default; tests inject a spy/no-op via deps.
+  (deps.logTokenUse ?? logToolUse)(cwd, raw);
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const filePath = asString(toolInput.file_path);
