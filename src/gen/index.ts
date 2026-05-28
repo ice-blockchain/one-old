@@ -5,10 +5,13 @@
 // drift, so CI fails when the committed output is stale.
 //
 // Currently wired: the 5 manifests + .mcp.json + the 3 hook configs
-// (settings.json, hooks/hooks.json, hooks/hooks-cursor.json). The .cursor/rules,
-// AGENTS.md regions, and content trees land here as their emitters are built.
+// (settings.json, hooks/hooks.json, hooks/hooks-cursor.json) + agents/ (from
+// the agent content modules) + .cursor/rules. The AGENTS.md regions + the
+// remaining content trees (skills, skills-templates, rules-templates) land here
+// as their content modules + emitters are built.
 
 import { pluginRoot } from '../shared/paths';
+import { emitAgents } from './emit/agents';
 import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
@@ -19,6 +22,7 @@ export function runGen(opts: { check: boolean; root?: string }): GenRun {
   emitManifests(run);
   emitMcp(run);
   emitHooks(run);
+  emitAgents(run); // before cursor-rules: the cursor mirror reads agents/
   emitCursorRules(run);
   return run;
 }
