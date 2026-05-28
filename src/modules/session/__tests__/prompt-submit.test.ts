@@ -57,11 +57,19 @@ test('noop inside the plugin authoring root', () => {
   assert.equal(runUserPromptSubmit(ctx(process.cwd(), 'hello')).kind, 'noop');
 });
 
-test('authed + no state file → "traffic-one active"', () => {
+test('authed + no state file → bootstraps new-project onboarding (mid-session auth)', () => {
   withAuthedProject(null, (cwd) => {
     const r = runUserPromptSubmit(ctx(cwd, 'hi'));
     assert.equal(r.kind, 'context');
-    if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one active');
+    // Greenfield + authenticated (e.g. auth completed mid-session, so SessionStart
+    // returned the auth gate and never ran the authed body) → run that body now →
+    // the new-project onboarding directive, NOT the old empty "traffic-one active".
+    if (r.kind === 'context') {
+      assert.ok(
+        r.context.includes('Baseline rules') || r.context.toLowerCase().includes('onboarding'),
+        'expected the new-project onboarding bootstrap, got an empty/active noop',
+      );
+    }
   });
 });
 

@@ -58,9 +58,21 @@ const skill_block_1 = require("../../shared/skill-block");
 const state_1 = require("../../shared/state");
 const auth_gate_1 = require("./auth-gate");
 const auth_choice_1 = require("./auth-choice");
+const session_start_1 = require("./session-start");
 const fs = __importStar(require("fs"));
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 const block = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
+const sessionBlock = (name, vars = {}) => skillBlock('session', name, vars);
+// Prepend a note (e.g. the login-success line) to a context result, leaving
+// non-context results untouched.
+function prependContext(prefix, result) {
+    if (!prefix || result.kind !== 'context')
+        return result;
+    return (0, result_1.context)(`${prefix}${result.context}`, {
+        ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
+        ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
+    });
+}
 const TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK = 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.';
 function runUserPromptSubmit(ctx) {
     const cwd = ctx.cwd;
@@ -70,6 +82,7 @@ function runUserPromptSubmit(ctx) {
     const promptText = ctx.input.prompt || (0, prompt_input_1.promptTextFromSubmit)(raw);
     // ── Auth gate / auth-choice flow ──
     const authGate = (0, auth_gate_1.authGateForHook)();
+    let loginSucceeded = false;
     if (!authGate.authenticated) {
         const choiceStatus = (0, auth_choice_1.authChoiceStatus)(cwd);
         const authChoice = (0, auth_gate_1.parseUnauthenticatedAuthChoice)(promptText, { allowNumeric: choiceStatus === 'pending-choice' });
@@ -78,21 +91,39 @@ function runUserPromptSubmit(ctx) {
         if ((0, auth_choice_1.authChoiceAllowsContinue)(cwd))
             return (0, result_1.noop)();
         const promptApiKey = (0, auth_gate_1.parseTrafficOneApiKey)(promptText);
-        if (promptApiKey)
-            return (0, auth_gate_1.authLoginFromPromptHookResult)(promptApiKey);
-        if ((0, auth_gate_1.isSessionExpiryReauth)(authGate))
+        if (promptApiKey) {
+            const login = (0, auth_gate_1.runInternalAuthLogin)(promptApiKey);
+            if (!login.ok) {
+                return (0, result_1.context)(sessionBlock('login-failed', { REASON: login.reason || 'unknown failure' }), { systemMessage: 'traffic-one authentication failed' });
+            }
+            // Authenticated this turn → fall through and run the authed SessionStart
+            // body now, so onboarding starts in the SAME response. (Mid-session auth
+            // otherwise never reaches that body, so onboarding never starts.)
+            loginSucceeded = true;
+        }
+        else if ((0, auth_gate_1.isSessionExpiryReauth)(authGate)) {
             return (0, auth_gate_1.sessionExpiredReauthPromptResult)();
-        if (choiceStatus === 'authenticate')
+        }
+        else if (choiceStatus === 'authenticate') {
             return (0, auth_gate_1.authApiKeyPromptHookResult)();
-        const writeResult = (0, auth_choice_1.tryWriteAuthChoice)('pending-choice', cwd);
-        return (0, auth_gate_1.authRequiredHookResult)('UserPromptSubmit', { authChoiceWrite: writeResult });
+        }
+        else {
+            const writeResult = (0, auth_choice_1.tryWriteAuthChoice)('pending-choice', cwd);
+            return (0, auth_gate_1.authRequiredHookResult)('UserPromptSubmit', { authChoiceWrite: writeResult });
+        }
     }
-    if (!fs.existsSync((0, state_1.statePath)(cwd)) && !fs.existsSync((0, state_1.legacyStatePath)(cwd))) {
-        return (0, result_1.context)('', { systemMessage: 'traffic-one active' });
+    // A fresh login, or any authenticated interaction on a not-yet-initialized
+    // project (auth completed mid-session, so SessionStart returned the gate and
+    // never ran the authed body), runs that authed SessionStart body now — this is
+    // where new-project onboarding / existing-codebase auto-detect actually starts.
+    const uninitialized = !fs.existsSync((0, state_1.statePath)(cwd)) && !fs.existsSync((0, state_1.legacyStatePath)(cwd));
+    if (loginSucceeded || uninitialized) {
+        const bootstrapped = (0, session_start_1.runSessionStartAuthed)(ctx);
+        return loginSucceeded ? prependContext(`${sessionBlock('login-success')}\n\n`, bootstrapped) : bootstrapped;
     }
     const state = (0, state_1.readEffectiveState)(cwd);
     if (!state || typeof state !== 'object')
-        return (0, result_1.context)('', { systemMessage: 'traffic-one active' });
+        return (0, session_start_1.runSessionStartAuthed)(ctx);
     const stack = state.stack || state.mode || 'unknown';
     const normalizedState = JSON.parse(JSON.stringify(state));
     (0, state_1.normalizeState)(normalizedState, normalizedState.mode || (0, detection_1.detectMode)(cwd));
