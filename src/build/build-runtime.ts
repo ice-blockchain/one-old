@@ -1,0 +1,82 @@
+// src/build/build-runtime.ts
+// The cutover runtime build: compile src/ → <outDir> (the nested core/shared/
+// modules/adapters/hooks/runners tree), copy the module.json descriptors, and
+// write the legacy-named .cjs SHIMS at the root so the host configs + skills +
+// spawns keep invoking the SAME paths they do today (scripts/hook-runtime.cjs,
+// scripts/traffic-one-auth.cjs, …). Each shim is a 1-liner that require()s the
+// real compiled entry and calls its main() — needed because the entry's own
+// `require.main === module` guard does not fire when it is require()d.
+//
+// This script NEVER targets scripts/ implicitly — the caller passes an explicit
+// outDir. At the manual cutover the user deletes the legacy hand-authored
+// scripts/** first, then runs this with outDir=scripts, golden-diffs, and
+// cross-host verifies. `npm run smoke` exercises the whole thing into a temp dir.
+
+import { spawnSync } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { copyModuleDescriptors } from './copy-module-assets';
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
+
+// Legacy CLI path → compiled entry it forwards to. toolchain is a library (no
+// CLI), sync-cursor is absorbed by `npm run gen`, and lighthouse-runner.mjs is
+// ESM emitted separately — none get a CJS shim here.
+export const SHIMS: Readonly<Record<string, string>> = {
+  'hook-runtime.cjs': './hooks/claude-entry.js',
+  'cursor-hook-runtime.cjs': './hooks/cursor-entry.js',
+  'traffic-one-auth.cjs': './runners/auth/index.js',
+  'doctor.cjs': './runners/doctor/index.js',
+  'security-check-runner.cjs': './runners/security-check/index.js',
+  'token-report.cjs': './runners/token-report/index.js',
+  'one-mcp-report.cjs': './runners/one-mcp-report/index.js',
+  'gitnexus-runner.cjs': './runners/gitnexus/index.js',
+  'graphify-runner.cjs': './runners/graphify/index.js',
+};
+
+function shimSource(target: string): string {
+  return [
+    "'use strict';",
+    '// GENERATED cutover shim — preserves the legacy CLI path; the compiled runtime',
+    '// lives in the nested tree. Regenerate via src/build/build-runtime.ts.',
+    `const m = require('${target}');`,
+    "const r = typeof m.main === 'function' ? m.main() : undefined;",
+    "if (typeof r === 'number') process.exitCode = r;",
+    "else if (r && typeof r.catch === 'function') r.catch(() => {});",
+    '',
+  ].join('\n');
+}
+
+export function writeShims(outDir: string): string[] {
+  const written: string[] = [];
+  for (const [name, target] of Object.entries(SHIMS)) {
+    fs.writeFileSync(path.join(outDir, name), shimSource(target), 'utf8');
+    written.push(name);
+  }
+  return written.sort();
+}
+
+export interface BuildResult { modulesCopied: number; shimsWritten: string[]; }
+
+export function buildRuntime(outDir: string): BuildResult {
+  const tsc = spawnSync('npx', ['tsc', '-p', 'tsconfig.build.json', '--outDir', outDir], {
+    cwd: REPO_ROOT, encoding: 'utf8', timeout: 180000,
+  });
+  if (tsc.status !== 0) {
+    throw new Error(`tsc failed:\n${tsc.stdout || ''}${tsc.stderr || ''}`);
+  }
+  const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(outDir, 'modules'));
+  const shimsWritten = writeShims(outDir);
+  return { modulesCopied: copied.length, shimsWritten };
+}
+
+if (require.main === module) {
+  const outDir = process.argv[2];
+  if (!outDir) {
+    process.stderr.write('Usage: tsx src/build/build-runtime.ts <outDir>\n(At cutover: delete legacy scripts/** first, then pass outDir=scripts.)\n');
+    process.exit(1);
+  }
+  const result = buildRuntime(path.resolve(outDir));
+  process.stdout.write(`build-runtime: compiled to ${outDir}; ${result.modulesCopied} module descriptors; shims: ${result.shimsWritten.join(', ')}\n`);
+}

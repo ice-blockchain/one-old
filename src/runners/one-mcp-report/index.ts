@@ -21,7 +21,7 @@ export { shouldAttempt } from './shouldAttempt';
 export { uuidV7 } from './uuidV7';
 export { validReportId } from './validReportId';
 
-async function main(): Promise<void> {
+export async function main(): Promise<void> {
   const cwd = process.argv[2] || process.cwd();
   await runReport(cwd);
 }

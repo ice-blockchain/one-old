@@ -1,20 +1,23 @@
 // src/build/compiled-smoke.ts
-// Cutover-readiness smoke (run via `npm run smoke`). Compiles src/ to a scratch
-// dir with the SAME config the cutover uses (tsconfig.build.json), copies the
-// module descriptors, then runs the COMPILED host entries under bare `node` and
-// asserts the engine dispatches correctly: an unauthed tool use is denied by
-// the priority-0 auth gate, serialized into each host's wire shape. This proves
-// — without touching scripts/ — that the TypeScript engine compiles to a
-// working runtime, the single biggest cutover risk. Non-destructive: the scratch
-// dir is removed at the end. Exits non-zero on any failure.
+// Cutover-readiness smoke (run via `npm run smoke`). Runs the FULL cutover build
+// (buildRuntime: tsc → scratch with tsconfig.build.json + copy module
+// descriptors + write the legacy-named .cjs shims), then invokes the runtime
+// THROUGH the legacy-path shims (scratch/hook-runtime.cjs,
+// scratch/cursor-hook-runtime.cjs) under bare `node` and asserts an unauthed
+// tool use is denied by the priority-0 auth gate in each host's wire shape.
+// This proves — without touching scripts/ — that the TypeScript engine compiles
+// to a working runtime AND the legacy-path entry naming dispatches correctly
+// (the two biggest cutover risks). Non-destructive: the scratch dir is removed.
+// Exits non-zero on any failure.
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { copyModuleDescriptors } from './copy-module-assets';
+import { buildRuntime } from './build-runtime';
 
+// The repo root — where src/modules/<id>/skill lives for skillBlock to read.
 const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 function fail(msg: string): never {
@@ -22,11 +25,12 @@ function fail(msg: string): never {
   process.exit(1);
 }
 
-function runEntry(scratch: string, entry: string, subcommand: string, stdin: string, env: NodeJS.ProcessEnv): string {
-  const result = spawnSync(process.execPath, [path.join(scratch, 'hooks', entry), subcommand], {
+// Invoke a legacy-path shim (e.g. hook-runtime.cjs) at the scratch root.
+function runShim(scratch: string, shim: string, subcommand: string, stdin: string, env: NodeJS.ProcessEnv): string {
+  const result = spawnSync(process.execPath, [path.join(scratch, shim), subcommand], {
     input: stdin, encoding: 'utf8', env, timeout: 20000,
   });
-  if (result.status !== 0) fail(`${entry} ${subcommand} exited ${result.status}: ${result.stderr || ''}`);
+  if (result.status !== 0 && result.status !== null) fail(`${shim} ${subcommand} exited ${result.status}: ${result.stderr || ''}`);
   return result.stdout || '';
 }
 
@@ -34,19 +38,15 @@ function main(): void {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-'));
   const authTmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-auth-'));
   try {
-    // 1. Compile src/ → scratch with the cutover build config.
-    const tsc = spawnSync('npx', ['tsc', '-p', 'tsconfig.build.json', '--outDir', scratch], {
-      cwd: REPO_ROOT, encoding: 'utf8', timeout: 120000,
-    });
-    if (tsc.status !== 0) fail(`tsc failed:\n${tsc.stdout || ''}${tsc.stderr || ''}`);
-    if (!fs.existsSync(path.join(scratch, 'hooks', 'claude-entry.js'))) fail('compiled claude-entry.js missing');
+    // 1. Full cutover build: compile + descriptors + legacy-named shims.
+    const built = buildRuntime(scratch);
+    if (built.modulesCopied < 6) fail(`expected module descriptors copied, got ${built.modulesCopied}`);
+    for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs']) {
+      if (!fs.existsSync(path.join(scratch, shim))) fail(`missing shim ${shim}`);
+    }
 
-    // 2. Copy module.json descriptors into the compiled tree (the cutover step).
-    const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(scratch, 'modules'));
-    if (copied.length < 6) fail(`expected module descriptors copied, got ${copied.length}`);
-
-    // 3. Run the compiled entries under bare node. UNAUTHENTICATED tool use must
-    //    be denied. pluginRoot=REPO so skillBlock reads the shipped src skills.
+    // 2. Invoke through the legacy-path shims under bare node. UNAUTHENTICATED
+    //    tool use must be denied. pluginRoot=REPO so skillBlock reads src skills.
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:8787/mcp',
@@ -57,14 +57,14 @@ function main(): void {
     };
 
     const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(authTmp, 'x.ts'), content: 'export const x = 1;' }, cwd: authTmp });
-    const claudeOut = JSON.parse(runEntry(scratch, 'claude-entry.js', 'check-architecture-write', claudeStdin, env) || '{}');
-    if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('compiled claude entry did not deny an unauthed write');
+    const claudeOut = JSON.parse(runShim(scratch, 'hook-runtime.cjs', 'check-architecture-write', claudeStdin, env) || '{}');
+    if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('hook-runtime.cjs shim did not deny an unauthed write');
 
-    const cursorOut = JSON.parse(runEntry(scratch, 'cursor-entry.js', 'before-shell-execution', JSON.stringify({ cwd: authTmp, command: 'npm run build' }), env) || '{}');
-    if (cursorOut.permission !== 'deny') fail('compiled cursor entry did not deny an unauthed shell');
-    if (!cursorOut.user_message) fail('compiled cursor deny had no user_message (skillBlock did not resolve from src)');
+    const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: authTmp, command: 'npm run build' }), env) || '{}');
+    if (cursorOut.permission !== 'deny') fail('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
+    if (!cursorOut.user_message) fail('cursor deny had no user_message (skillBlock did not resolve from src)');
 
-    process.stdout.write(`compiled-smoke: PASS — compiled ${copied.length} modules; both host entries deny unauthed tool use under bare node.\n`);
+    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; both legacy-path shims (hook-runtime.cjs, cursor-hook-runtime.cjs) deny unauthed tool use under bare node.\n`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
     fs.rmSync(authTmp, { recursive: true, force: true });
