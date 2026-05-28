@@ -9,6 +9,7 @@
 // AGENTS.md regions, and content trees land here as their emitters are built.
 
 import { pluginRoot } from '../shared/paths';
+import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
 import { GenRun } from './lib/run';
@@ -18,6 +19,7 @@ export function runGen(opts: { check: boolean; root?: string }): GenRun {
   emitManifests(run);
   emitMcp(run);
   emitHooks(run);
+  emitCursorRules(run);
   return run;
 }
 
