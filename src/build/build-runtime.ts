@@ -57,7 +57,27 @@ export function writeShims(outDir: string): string[] {
   return written.sort();
 }
 
-export interface BuildResult { modulesCopied: number; shimsWritten: string[]; }
+// Non-.ts runtime assets a runner reads relative to its own __dirname (tsc only
+// emits compiled .ts, so these must be copied alongside). Currently just the
+// toolchain spec; add here if a runner gains a sibling data file.
+const RUNNER_ASSETS: ReadonlyArray<string> = [
+  path.join('runners', 'toolchain', 'toolchain-versions.json'),
+];
+
+export function copyRunnerAssets(outDir: string): string[] {
+  const copied: string[] = [];
+  for (const rel of RUNNER_ASSETS) {
+    const src = path.join(REPO_ROOT, 'src', rel);
+    if (!fs.existsSync(src)) continue;
+    const dest = path.join(outDir, rel);
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.copyFileSync(src, dest);
+    copied.push(rel);
+  }
+  return copied.sort();
+}
+
+export interface BuildResult { modulesCopied: number; assetsCopied: string[]; shimsWritten: string[]; }
 
 export function buildRuntime(outDir: string): BuildResult {
   const tsc = spawnSync('npx', ['tsc', '-p', 'tsconfig.build.json', '--outDir', outDir], {
@@ -67,8 +87,9 @@ export function buildRuntime(outDir: string): BuildResult {
     throw new Error(`tsc failed:\n${tsc.stdout || ''}${tsc.stderr || ''}`);
   }
   const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(outDir, 'modules'));
+  const assetsCopied = copyRunnerAssets(outDir);
   const shimsWritten = writeShims(outDir);
-  return { modulesCopied: copied.length, shimsWritten };
+  return { modulesCopied: copied.length, assetsCopied, shimsWritten };
 }
 
 if (require.main === module) {
@@ -78,5 +99,5 @@ if (require.main === module) {
     process.exit(1);
   }
   const result = buildRuntime(path.resolve(outDir));
-  process.stdout.write(`build-runtime: compiled to ${outDir}; ${result.modulesCopied} module descriptors; shims: ${result.shimsWritten.join(', ')}\n`);
+  process.stdout.write(`build-runtime: compiled to ${outDir}; ${result.modulesCopied} module descriptors; ${result.assetsCopied.length} runner assets; shims: ${result.shimsWritten.join(', ')}\n`);
 }
