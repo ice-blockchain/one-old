@@ -519,3 +519,34 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
     resulting model parameter per host — a model id written in prompt text
     has no effect.
 <!-- T1BLOCK:END team-confirmation-popup -->
+
+<!-- T1BLOCK:BEGIN opencode-popup -->
+OPENCODE DELEGATION PREFLIGHT (asked first, before the Performance popup; blocking):
+  After global Traffic One auth is resolved and before the Performance popup,
+  offer the OpenCode token-economy opt-in using the host popup/input mechanism.
+  {{HOST_POPUP}}
+
+  What to tell the user: Traffic One can delegate bounded implementation tasks
+  (features, UI changes, bug fixes, refactors, test/build fixes) to OpenCode — a
+  free, local AI coding agent. Traffic One still plans, supervises, and verifies;
+  OpenCode executes. Every delegated change is kept in a reviewable digest
+  (changed files + run summary) before it is accepted. Enabling this can cut your
+  paid Claude/Codex token usage.
+  Prerequisite to actually use it: install OpenCode with `{{INSTALL}}`
+  and sign in. The delegation wiring ships in a later update — for now this only
+  records your preference so a future performance update can split work between
+  Traffic One subagents and free OpenCode agents.
+
+    header: "OpenCode"
+    question: "Save tokens by delegating coding tasks to OpenCode (a free local agent)?"
+    options:
+      - "Enable OpenCode delegation" — Allow Traffic One to hand bounded tasks to OpenCode later (requires installing OpenCode).
+      - "Not now" — Keep everything on Traffic One's own agents for now; you can enable this later.
+
+  Persist the answer in local Traffic One preferences as:
+    "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }
+  "Enable OpenCode delegation" -> enabled: true; "Not now" -> enabled: false.
+  This step is REQUIRED to be asked, but either answer resolves it. Do NOT pick a
+  default or auto-answer on the user's behalf. After it is recorded, continue to
+  the Performance popup.
+<!-- T1BLOCK:END opencode-popup -->

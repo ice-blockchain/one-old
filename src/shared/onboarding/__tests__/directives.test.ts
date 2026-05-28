@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { agentModePrompt, codexDefaultModeFallbackDirective, hostPopupInstruction, onboardingReminderShort, openCodeOptInDirective } from '../directives';
+import { agentModePrompt, codexDefaultModeFallbackDirective, hostPopupInstruction, onboardingReminderShort, openCodeOptInDirective, openCodePopupBlock } from '../directives';
 import { OPEN_CODE_INSTALL } from '../fallbacks';
 import type { OnboardingBlock } from '../fallbacks';
 import { makeSkillBlock } from '../../skill-block';
@@ -63,5 +63,14 @@ test('openCodeOptInDirective composes the install command + host popup + chat fa
     assert.ok(out.includes(OPEN_CODE_INSTALL));
     assert.ok(out.includes('request_user_input')); // host popup instruction
     assert.ok(out.includes('Enable OpenCode delegation')); // chat fallback options
+  }
+});
+
+test('openCodePopupBlock renders the SessionStart OpenCode preflight (popup 0)', () => {
+  for (const block of [skill, verbatim]) {
+    const out = openCodePopupBlock(block);
+    assert.ok(out.includes('OPENCODE DELEGATION PREFLIGHT'));
+    assert.ok(out.includes(OPEN_CODE_INSTALL));
+    assert.ok(out.includes('request_user_input'));
   }
 });

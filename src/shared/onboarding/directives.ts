@@ -92,3 +92,19 @@ export function openCodeOptInDirective(block: OnboardingBlock): string {
   ].join('\n');
   return block('opencode-optin', { INSTALL: OPEN_CODE_INSTALL, HOST_POPUP: hostPopup, OPENCODE_CHAT: openCodeChat }, fallback);
 }
+
+// SessionStart "popup 0": the OpenCode delegation preflight (asked first, before
+// the Performance popup). Full prose in the skill; concise verbatim fallback.
+export function openCodePopupBlock(block: OnboardingBlock): string {
+  const hostPopup = hostPopupInstruction(block);
+  const fallback = [
+    'OPENCODE DELEGATION PREFLIGHT (asked first, before the Performance popup; blocking):',
+    '  Offer the OpenCode token-economy opt-in via the host popup before the Performance popup.',
+    `  ${hostPopup}`,
+    `  Traffic One can later delegate bounded tasks to OpenCode (a free local agent; install \`${OPEN_CODE_INSTALL}\`); it plans/supervises/verifies while OpenCode executes. This only records the preference.`,
+    '    header: "OpenCode"; question: "Save tokens by delegating coding tasks to OpenCode (a free local agent)?"',
+    '    options: "Enable OpenCode delegation" / "Not now".',
+    '  Persist "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }. Do NOT auto-answer; either choice resolves it, then continue to the Performance popup.',
+  ].join('\n');
+  return block('opencode-popup', { INSTALL: OPEN_CODE_INSTALL, HOST_POPUP: hostPopup }, fallback);
+}
