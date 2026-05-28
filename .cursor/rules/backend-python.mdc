@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/python.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/python.md; run `npm run gen` to update. -->
 ---
 description: "Python Backend Rules. Generated from rules-templates/backend/python.md."
 globs: ["**/*.py", "**/*.pyi", "**/pyproject.toml", "**/requirements*.txt"]

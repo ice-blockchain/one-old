@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/common/package-architecture.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/common/package-architecture.md; run `npm run gen` to update. -->
 ---
 description: "`packages/<name>/architecture.md` — required, always. Generated from rules-templates/common/package-architecture.md."
 globs: ["packages/**", "**/architecture.md"]

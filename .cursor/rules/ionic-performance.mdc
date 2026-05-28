@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/performance.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/ionic/performance.md; run `npm run gen` to update. -->
 ---
 description: "Ionic Performance Rules. Generated from rules-templates/frontend/ionic/performance.md."
 globs: ["apps/**/src/**", "src/**", "capacitor.config.*", "apps/**/capacitor.config.*"]

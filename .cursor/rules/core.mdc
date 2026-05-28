@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/core.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/core.md; run `npm run gen` to update. -->
 ---
 description: "Project Core (framework-agnostic). Generated from rules-templates/core.md."
 alwaysApply: true

@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/common/senior-engineer-team.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/common/senior-engineer-team.md; run `npm run gen` to update. -->
 ---
 description: "Senior-engineer team orchestration. Generated from rules-templates/common/senior-engineer-team.md."
 alwaysApply: true

@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/components.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/ionic/components.md; run `npm run gen` to update. -->
 ---
 description: "Ionic Component Rules. Generated from rules-templates/frontend/ionic/components.md."
 globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui/**", "src/components/**", "src/features/**/components/**"]

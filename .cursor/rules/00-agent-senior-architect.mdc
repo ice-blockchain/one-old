@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: agents/senior-architect.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: agents/senior-architect.md; run `npm run gen` to update. -->
 ---
 description: "Use PROACTIVELY at the start of any non-trivial build, scaffold, or \"build me / make me / create the whole / end-to-end\" request when `mode === \"new-project\"` or `.traffic-one/plan.md` is missing. MUST run before any frontend or backend implementation subagent. Produces `.traffic-one/plan.md` (Goal · Stack · Module map · Public contracts · Risks · Cut-list) plus an ADR for any non-default architectural choice. Never writes feature source code itself; ends every successful run with the literal token `PLAN_READY` so the orchestrator can detect completion."
 alwaysApply: true

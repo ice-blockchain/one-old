@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/common/dependencies.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/common/dependencies.md; run `npm run gen` to update. -->
 ---
 description: "Dependencies — library-first, with a quality gate. Generated from rules-templates/common/dependencies.md."
 globs: ["package.json", "**/package.json", "pnpm-workspace.yaml"]

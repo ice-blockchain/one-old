@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/node.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/node.md; run `npm run gen` to update. -->
 ---
 description: "Node.js Backend Rules. Generated from rules-templates/backend/node.md."
 globs: ["src/services/**", "src/api/**", "server/**", "api/**", "**/*.route.ts", "**/*.controller.ts"]

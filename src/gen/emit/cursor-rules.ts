@@ -1,10 +1,8 @@
 // src/gen/emit/cursor-rules.ts
 // Emits .cursor/rules/*.mdc from the rule templates (rules-templates/**) and the
-// agent role docs (agents/*.md). Absorbs scripts/sync-cursor.cjs. Byte-identical
+// agent role docs (agents/*.md). Absorbs the legacy Cursor sync task. Byte-identical
 // to the committed .mdc files (golden-verified). The "GENERATED FROM … run
-// `node scripts/sync-cursor.cjs`" header text is preserved verbatim so the bytes
-// don't change at cutover (the script is gone, but the marker is load-bearing
-// for stale-rule detection + the snapshot).
+// `npm run gen`" header is load-bearing for stale-rule detection + the snapshot.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -67,7 +65,7 @@ function renderCursorRule(sourcePath: string, repoRoot: string, rulesRoot: strin
   const relPath = path.join('.cursor', 'rules', `${slugForSource(sourcePath, rulesRoot)}.mdc`);
 
   const contentLines = [
-    `<!-- GENERATED FROM: ${sourceRelative}; run \`node scripts/sync-cursor.cjs\` to update. -->`,
+    `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     ...cursorFrontmatter(description, paths, alwaysApply),
     '',
     body.trimEnd(),
@@ -92,7 +90,7 @@ function renderAgentRule(sourcePath: string, repoRoot: string): RuleDocument {
     + '(`senior-eng-orchestrator`) describes how the roles compose.';
 
   const contentLines = [
-    `<!-- GENERATED FROM: ${sourceRelative}; run \`node scripts/sync-cursor.cjs\` to update. -->`,
+    `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     ...cursorFrontmatter(description, [], true),
     '',
     note,

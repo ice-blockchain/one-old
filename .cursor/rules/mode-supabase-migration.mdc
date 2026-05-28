@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/modes/supabase-migration.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/modes/supabase-migration.md; run `npm run gen` to update. -->
 ---
 description: "Mode: Existing Codebase + Supabase Migration Offer. Generated from rules-templates/modes/supabase-migration.md."
 alwaysApply: false

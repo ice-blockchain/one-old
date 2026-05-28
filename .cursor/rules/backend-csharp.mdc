@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/csharp.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/csharp.md; run `npm run gen` to update. -->
 ---
 description: "C#/.NET Backend Rules. Generated from rules-templates/backend/csharp.md."
 globs: ["**/*.cs", "**/*.csx", "**/*.csproj", "**/appsettings*.json"]

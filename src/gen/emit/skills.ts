@@ -2,7 +2,7 @@
 // Re-gathers BOTH skill trees the hosts read: skills/ (Claude/Cursor — the
 // bootstrap skills) and skills-templates/ (Codex + the set materialised into
 // .traffic-one/skills/). The two trees are NOT identical even for the shared
-// bootstrap skills (the skills/ copies carry the legacy .traffic-one.json path),
+// bootstrap skills (the skills/ copies are host-facing bootstrap documents),
 // so each content module ships them as separate subtrees:
 //   src/modules/<id>/skills/**            → skills/**
 //   src/modules/<id>/skills-templates/**  → skills-templates/**

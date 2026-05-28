@@ -106,8 +106,7 @@ export interface ProjectProbe {
   artefacts: { gitnexus: { mtimeMs: number } | null; graphify: { mtimeMs: number } | null };
 }
 export function probeProject(cwd: string): ProjectProbe {
-  const trafficOne = safeRead(path.join(cwd, '.traffic-one', '.one.json'))
-    || safeRead(path.join(cwd, '.traffic-one.json'));
+  const trafficOne = safeRead(path.join(cwd, '.traffic-one', '.one.json'));
   let state: Rec | null = null;
   if (trafficOne) { try { state = JSON.parse(trafficOne) as Rec; } catch { state = null; } }
   let normalizedState: Rec | null = null;

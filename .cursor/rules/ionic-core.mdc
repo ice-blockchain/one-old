@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/core.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/ionic/core.md; run `npm run gen` to update. -->
 ---
 description: "Ionic Framework — Stack Core. Generated from rules-templates/frontend/ionic/core.md."
 globs: ["capacitor.config.*", "ionic.config.json", "apps/**/capacitor.config.*", "apps/**/ionic.config.json", "apps/**/src/**", "src/**"]

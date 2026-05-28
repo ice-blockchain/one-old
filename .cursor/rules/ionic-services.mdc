@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/services.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/ionic/services.md; run `npm run gen` to update. -->
 ---
 description: "Ionic Service Layer. Generated from rules-templates/frontend/ionic/services.md."
 globs: ["apps/**/src/services/**", "apps/**/src/features/**/api.ts", "apps/**/src/features/**/services/**", "packages/api-client/**", "src/services/**", "src/features/**/api.ts", "src/features/**/services/**"]

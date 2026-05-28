@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/stores.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/react-native/stores.md; run `npm run gen` to update. -->
 ---
 description: "React Native State Management — Redux Toolkit + zustand. Generated from rules-templates/frontend/react-native/stores.md."
 globs: ["apps/**/src/stores/**", "apps/**/src/features/**/stores/**", "apps/**/src/store/**", "src/stores/**", "src/features/**/stores/**", "src/store/**"]

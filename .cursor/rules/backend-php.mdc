@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/php.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/php.md; run `npm run gen` to update. -->
 ---
 description: "PHP Backend Rules. Generated from rules-templates/backend/php.md."
 globs: ["**/*.php", "**/composer.json", "**/composer.lock", "**/phpunit.xml", "**/phpunit.xml.dist"]

@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/navigation.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/react-native/navigation.md; run `npm run gen` to update. -->
 ---
 description: "React Native Navigation — Expo Router. Generated from rules-templates/frontend/react-native/navigation.md."
 globs: ["apps/**/app/**", "app/**", "**/*Screen.tsx", "**/*Route.tsx"]

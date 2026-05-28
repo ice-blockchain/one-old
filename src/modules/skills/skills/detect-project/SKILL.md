@@ -30,13 +30,13 @@ Explicit user requests never skip Traffic One onboarding. A prompt such as
 or "just build it" is implementation intent, not an onboarding answer. Always
 ask the required Agent Mode, Team Confirmation, project context, mobile, and
 code graph preflight questions in order
-before `.traffic-one.json`, `.traffic-one/plan.md`, scaffolding, installs, or
+before `.traffic-one/.one.json`, `.traffic-one/plan.md`, scaffolding, installs, or
 source edits.
 
 When this step returns new-project, run Traffic One onboarding in the current
 thread. Use the host popup/input mechanism when available; if it is unavailable,
 ask the same next unresolved onboarding question in chat with numbered options
-and stop for the user's typed answer. Do not write `.traffic-one.json`,
+and stop for the user's typed answer. Do not write `.traffic-one/.one.json`,
 `.traffic-one/plan.md`, scaffold, edit source, install dependencies, inspect
 package versions, or choose defaults while onboarding answers are pending.
 
@@ -85,7 +85,7 @@ Codex Performance/Team preflight for new projects:
   popup tool is unavailable, and the fallback must say that first, ask the same
   blocking question directly in chat with numbered options, tell the user to
   reply with the option number or label, and stop. Do not choose a default,
-  infer an answer, write `.traffic-one.json`, scaffold, or continue while the
+  infer an answer, write `.traffic-one/.one.json`, scaffold, or continue while the
   onboarding answer is pending.
 - Ask the Performance / Agent Mode popup with Codex `request_user_input` when
   available. Use question: "How do you want to run agents for this build?"
@@ -93,7 +93,7 @@ Codex Performance/Team preflight for new projects:
   mean the Traffic One subagent team; `Low` means main-agent-only role
   simulation.
 - For `High` or `Balanced`, ask the mandatory Team Confirmation popup before
-  writing `.traffic-one.json` or spawning anything. Show every role/tier/model
+  writing `.traffic-one/.one.json` or spawning anything. Show every role/tier/model
   row and wait for explicit `Approve`; only then write
   `"team": { "mode": "subagents", "source": "prompted", "approved": true }`.
   For `Low`, write `"team": { "mode": "main-agent", "source": "prompted" }`
@@ -119,7 +119,7 @@ Codex Performance/Team preflight for new projects:
 - After the mobile popup is answered, ask the required codebase graph provider
   with Codex `request_user_input`: header `Code Graph`, question `Which
   provider should we use for the codebase graph?`, options `GitNexus` and
-  `graphify`. This is required before `.traffic-one.json`; no default and no
+  `graphify`. This is required before `.traffic-one/.one.json`; no default and no
   skip.
 - If `request_user_input` is unavailable, ask the same questions in plain text
   with the same numbered options and stop for the user's typed reply.
@@ -157,6 +157,6 @@ State clearly:
    questionnaire, and persist `projectContext`.
 8. Ask the `Do you want a mobile app too?` popup, then ask the required
    `Code Graph` popup with `GitNexus` and `graphify` before writing final
-   `.traffic-one.json`.
+   `.traffic-one/.one.json`.
 9. Ask what they'd like to do next only when they have not already given a build
    task and the Performance/Team preflight gate does not apply.

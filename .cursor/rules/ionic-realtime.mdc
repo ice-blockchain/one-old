@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/realtime.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/ionic/realtime.md; run `npm run gen` to update. -->
 ---
 description: "Ionic Real-time Rules. Generated from rules-templates/frontend/ionic/realtime.md."
 globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/realtime/**", "packages/ws-client/**", "src/services/ws/**", "src/features/**/realtime/**"]

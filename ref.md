@@ -32,7 +32,7 @@ line-verifiable source files.
 - Skills: 101 `skills/*/SKILL.md` files.
 - Skill support files: `skills/security-review/cloud-infrastructure-security.md` and `skills/senior-eng-orchestrator/resources/prompt-templates.md`.
 - Senior-agent role files: 6 files under `agents/`.
-- Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `scripts/sync-cursor.cjs`.
+- Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `npm run gen`.
 - Hook/runtime scripts: 15 files under `scripts/` excluding `__pycache__`.
 - Harness manifests: `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`.
 - Hook configs: `settings.json`, `hooks/hooks.json`, `.githooks/pre-commit`, `.githooks/prepare-commit-msg`.
@@ -261,7 +261,7 @@ line-verifiable source files.
 | --- | --- |
 | `settings.json` | Claude hook config for session start, prompt submit, write/edit checks, bash library allowlist, and post-write stack loading. |
 | `hooks/hooks.json` | Codex hook config for session start, prompt submit, write/edit checks, bash library allowlist, graphify hints, page-speed gate, and stack loading. |
-| `.githooks/pre-commit` | Regenerates Cursor mirrors and stages generated Cursor files. |
+| `.githooks/pre-commit` | Regenerates and stages generated plugin files. |
 | `.githooks/prepare-commit-msg` | Adds `Integrated-With: Traffic One plugin <noreply@traffic.io>` commit trailer. |
 | `.github/workflows/cursor-sync.yml` | CI check for generated Cursor artifacts, stack recommendation fixtures, and security runner fixtures. |
 | `.github/workflows/traffic-one-security-check.yml` | CI pre-deployment security scanner with pinned `gitleaks` and `trufflehog`. |
@@ -273,17 +273,17 @@ line-verifiable source files.
 | `scripts/hook-runtime/packing.cjs` | Rule/skill packing helpers. |
 | `scripts/hook-runtime/skill-filters/skill-filters.cjs` | Skill filtering and cache mutation helpers (one-file-per-function folder). |
 | `scripts/hook-runtime/stacks/stacks.cjs` | Stack-specific rule mapping (one-file-per-function folder). |
-| `scripts/hook-runtime/state/state.cjs` | `.traffic-one.json` state helpers (one-file-per-function folder). |
+| `scripts/hook-runtime/state/state.cjs` | `.traffic-one/.one.json` state helpers (one-file-per-function folder). |
 | `scripts/graphify-runner.cjs` | Codebase graph cache runner. |
 | `scripts/lighthouse-runner.mjs` | Mobile Lighthouse production-preview runner. |
 | `scripts/security-check-runner.cjs` | Traffic One pre-deployment security scanner. |
-| `scripts/sync-cursor.cjs` | Generates `.cursor/rules/*.mdc` and Cursor manifest. |
+| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, and `.cursor/rules/*.mdc`. |
 | `scripts/test-security-check-runner.cjs` | Security scanner fixture tests. |
 | `scripts/test-stack-recommendations.cjs` | Stack recommendation and hook fixture tests. |
 
 ## Generated Cursor Mirrors
 
-Generated from `rules/*.md` and `agents/*.md` by `scripts/sync-cursor.cjs`.
+Generated from `src/modules/**` content by `npm run gen`.
 Do not edit these directly; update the source rule or agent file first.
 
 - `.cursor/rules/00-agent-senior-architect.mdc`

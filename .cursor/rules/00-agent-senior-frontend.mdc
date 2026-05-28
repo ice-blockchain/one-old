@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: agents/senior-frontend.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: agents/senior-frontend.md; run `npm run gen` to update. -->
 ---
 description: "Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the UI layer — pages, components, features, design system, accessibility, i18n. Triggers on \"build the UI\", \"scaffold the screens\", \"wire the pages\", \"make the frontend\", or any feature implementation that touches `apps/*/src/`, `packages/ui*`, or `src/components/`. Spawned in parallel with `senior-backend`. Reads `.traffic-one/.one.json` to dispatch to the right stack-specific skills (web React, React Native, Ionic)."
 alwaysApply: true

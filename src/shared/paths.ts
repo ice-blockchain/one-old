@@ -37,7 +37,7 @@ export function isInPluginCache(): boolean {
   return isManagedPluginCachePath(pluginRoot());
 }
 
-const PROJECT_MARKERS = ['.git', 'package.json', '.traffic-one', '.traffic-one.json'];
+const PROJECT_MARKERS = ['.git', 'package.json', '.traffic-one', path.join('.traffic-one', '.one.json')];
 
 function findUp(startDir: string): string | null {
   let dir = startDir;

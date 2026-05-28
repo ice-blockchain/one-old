@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/core.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/react-native/core.md; run `npm run gen` to update. -->
 ---
 description: "React Native (Expo) — Stack Core. Generated from rules-templates/frontend/react-native/core.md."
 globs: ["apps/**/app/**", "apps/**/src/**", "packages/ui-native/**", "src/**"]

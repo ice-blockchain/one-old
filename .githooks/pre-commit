@@ -4,5 +4,24 @@ set -eu
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-node scripts/sync-cursor.cjs
-git add -A .cursor/rules .cursor-plugin/plugin.json
+if [ ! -x node_modules/.bin/tsx ]; then
+  echo "pre-commit: missing node_modules/.bin/tsx; run npm install before committing." >&2
+  exit 1
+fi
+
+node_modules/.bin/tsx src/gen/index.ts
+git add -A \
+  .agents/plugins/marketplace.json \
+  .claude-plugin/plugin.json \
+  .claude-plugin/marketplace.json \
+  .codex-plugin/plugin.json \
+  .cursor-plugin/plugin.json \
+  .cursor/rules \
+  .mcp.json \
+  agents \
+  hooks/hooks.json \
+  hooks/hooks-cursor.json \
+  rules-templates \
+  settings.json \
+  skills \
+  skills-templates

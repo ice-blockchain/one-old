@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/perl.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/perl.md; run `npm run gen` to update. -->
 ---
 description: "Perl Backend Rules. Generated from rules-templates/backend/perl.md."
 globs: ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi", "**/*.cgi"]

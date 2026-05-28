@@ -97,8 +97,7 @@ function probeGitnexus() {
     };
 }
 function probeProject(cwd) {
-    const trafficOne = (0, lib_1.safeRead)(path.join(cwd, '.traffic-one', '.one.json'))
-        || (0, lib_1.safeRead)(path.join(cwd, '.traffic-one.json'));
+    const trafficOne = (0, lib_1.safeRead)(path.join(cwd, '.traffic-one', '.one.json'));
     let state = null;
     if (trafficOne) {
         try {

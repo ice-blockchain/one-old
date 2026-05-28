@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/cpp.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/cpp.md; run `npm run gen` to update. -->
 ---
 description: "C++ Backend Rules. Generated from rules-templates/backend/cpp.md."
 globs: ["**/*.cpp", "**/*.hpp", "**/*.cc", "**/*.hh", "**/*.cxx", "**/*.h", "**/CMakeLists.txt"]

@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/common/seo.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/common/seo.md; run `npm run gen` to update. -->
 ---
 description: "SEO Baseline. Generated from rules-templates/common/seo.md."
 alwaysApply: true

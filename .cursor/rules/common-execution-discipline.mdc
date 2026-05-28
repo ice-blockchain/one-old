@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/common/execution-discipline.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/common/execution-discipline.md; run `npm run gen` to update. -->
 ---
 description: "Execution Discipline. Generated from rules-templates/common/execution-discipline.md."
 alwaysApply: true

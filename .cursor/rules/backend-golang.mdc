@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/golang.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/golang.md; run `npm run gen` to update. -->
 ---
 description: "Go Backend Rules. Generated from rules-templates/backend/golang.md."
 globs: ["**/*.go", "**/go.mod", "**/go.sum"]

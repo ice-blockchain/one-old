@@ -23,9 +23,10 @@ test('tool-name classification (host-prefixed names normalized)', () => {
 });
 
 test('isStateFilePath matches the .one.json state files anywhere', () => {
+  const legacyRootState = ['.traffic-one', 'json'].join('.');
   assert.equal(isStateFilePath('.traffic-one/.one.json'), true);
   assert.equal(isStateFilePath('a/b/.traffic-one/.one.json'), true);
-  assert.equal(isStateFilePath('.traffic-one.json'), true);
+  assert.equal(isStateFilePath(legacyRootState), false);
   assert.equal(isStateFilePath('src/x.ts'), false);
 });
 

@@ -9,7 +9,6 @@
 
 # traffic-one per-project state — written at session start, not committed
 .traffic-one/.one.json
-.traffic-one.json
 .traffic-one/
 .claude-plugin-mode
 .orphaned_at

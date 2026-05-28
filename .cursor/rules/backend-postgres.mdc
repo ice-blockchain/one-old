@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/backend/postgres.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/backend/postgres.md; run `npm run gen` to update. -->
 ---
 description: "PostgreSQL Rules. Generated from rules-templates/backend/postgres.md."
 globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema.prisma", "src/services/**", "src/lib/db/**"]

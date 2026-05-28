@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/react/design-quality.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/react/design-quality.md; run `npm run gen` to update. -->
 ---
 description: "React Web Design Quality. Generated from rules-templates/frontend/react/design-quality.md."
 globs: ["apps/web/src/**", "packages/ui/**", "src/components/**", "src/features/**/components/**", "src/pages/**"]

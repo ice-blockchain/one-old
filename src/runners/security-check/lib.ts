@@ -15,7 +15,7 @@ type Rec = Record<string, unknown>;
 
 export const DEFAULT_REPORT_DIR = path.join('.traffic-one', 'reports', 'security');
 const STATE_REL_PATH = '.traffic-one/.one.json';
-const LEGACY_STATE_REL_PATH = '.traffic-one.json';
+const LEGACY_STATE_REL_PATH = STATE_REL_PATH;
 export const SECURITY_STAMP_FIELDS = [
   'lastSecurityCheckAt',
   'lastSecurityCheckStatus',

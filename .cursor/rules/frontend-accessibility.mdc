@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/accessibility.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/accessibility.md; run `npm run gen` to update. -->
 ---
 description: "Accessibility — framework-agnostic. Generated from rules-templates/frontend/accessibility.md."
 globs: ["apps/**/src/**", "packages/ui/**", "src/**"]

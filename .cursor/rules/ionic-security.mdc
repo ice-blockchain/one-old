@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/security.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/frontend/ionic/security.md; run `npm run gen` to update. -->
 ---
 description: "Ionic Security Rules. Generated from rules-templates/frontend/ionic/security.md."
 globs: ["capacitor.config.*", "ionic.config.json", "apps/**/capacitor.config.*", "apps/**/ionic.config.json", "apps/**/src/services/**", "apps/**/src/features/**/services/**", "src/services/**", "src/features/**/services/**"]

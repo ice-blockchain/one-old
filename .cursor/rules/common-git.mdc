@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: rules-templates/common/git.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: rules-templates/common/git.md; run `npm run gen` to update. -->
 ---
 description: "Git Conventions. Generated from rules-templates/common/git.md."
 alwaysApply: true
