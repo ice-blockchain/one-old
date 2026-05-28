@@ -1,13 +1,13 @@
 ---
-name: traffic-one-architecture-guard
-description: Wording source for the Traffic One architecture-write gate deny reasons. Read at runtime via skillBlock(); the deny conditions live in TS.
+name: traffic-one-plan-guard
+description: Wording source for the Traffic One plan-write gate deny reasons. Read at runtime via skillBlock(); the deny conditions live in TS.
 ---
 
-# Traffic One Architecture Guard
+# Traffic One Plan Guard
 
-Deny-reason wording for the PreToolUse file-write/file-edit architecture gate.
+Deny-reason wording for the PreToolUse file-write/file-edit plan gate.
 Enforcement (the actual conditions + `permissionDecision:"deny"`) lives in
-`src/modules/architecture-guard/`. `{{PLACEHOLDER}}` tokens are filled by the gate.
+`src/modules/plan-guard/`. `{{PLACEHOLDER}}` tokens are filled by the gate.
 Each block has a verbatim fallback in code, so a missing block never disables a gate.
 
 <!-- T1BLOCK:BEGIN monorepo-package-json -->

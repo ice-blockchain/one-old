@@ -1,7 +1,7 @@
-// src/modules/architecture-guard/architecture-static.ts
-// The static layout/style half of the architecture-write gate: deterministic
+// src/modules/plan-guard/plan-static.ts
+// The static layout/style half of the plan-write gate: deterministic
 // checks on the target file path + content (no state/convergence deps). Ported
-// 1:1 from the static checks in runCheckArchitectureWrite (gates.cjs:463-533).
+// 1:1 from the static checks in runCheckPlanWrite.
 // Deny PROSE comes from skill/SKILL.md via skillBlock with verbatim fallbacks,
 // so a missing block never disables a check.
 
@@ -14,9 +14,9 @@ type Block = (name: string, fallback: string, vars?: Vars) => string;
 // source file does not trip the gate's own websocket-location rule.
 const WS_CTOR = 'new ' + 'WebSocket(';
 
-// Collect architecture violations for a single file write/edit. `isNative`
+// Collect plan gate violations for a single file write/edit. `isNative`
 // selects React Native vs web style/placement rules.
-export function architectureStaticViolations(filePath: string, content: string, isNative: boolean, block: Block): string[] {
+export function planStaticViolations(filePath: string, content: string, isNative: boolean, block: Block): string[] {
   const violations: string[] = [];
   const INLINE_STYLE = 'style={' + '{';
 
@@ -103,7 +103,7 @@ export function architectureStaticViolations(filePath: string, content: string, 
   return violations;
 }
 
-// Bind a SkillBlockFn to the architecture-guard module with a verbatim fallback.
-export function makeArchitectureBlock(skillBlock: SkillBlockFn): Block {
-  return (name, fallback, vars = {}) => skillBlock('architecture-guard', name, vars, fallback);
+// Bind a SkillBlockFn to the plan-guard module with a verbatim fallback.
+export function makePlanBlock(skillBlock: SkillBlockFn): Block {
+  return (name, fallback, vars = {}) => skillBlock('plan-guard', name, vars, fallback);
 }

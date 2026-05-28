@@ -13,6 +13,7 @@ const performance_1 = require("../../shared/performance");
 const performance_config_1 = require("../../shared/performance-config");
 const skill_block_1 = require("../../shared/skill-block");
 const state_1 = require("../../shared/state");
+const auth_choice_1 = require("../session/auth-choice");
 const converge_1 = require("./converge");
 const role_infer_1 = require("./role-infer");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
@@ -24,6 +25,8 @@ function asString(value) {
     return typeof value === 'string' ? value : '';
 }
 function agentModelGate(ctx) {
+    if ((0, auth_choice_1.authChoiceAllowsContinue)(ctx.cwd))
+        return (0, result_1.noop)();
     const raw = obj(ctx.input.raw) || {};
     const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
     if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(toolName))

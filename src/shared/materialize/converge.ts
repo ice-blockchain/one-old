@@ -25,6 +25,7 @@ import {
 } from '../state';
 import { hasMaterializedProjectAssets } from './has-assets';
 import { materializeProjectAssets, type MaterializeResult } from './materialize';
+import { migrateArchitectureDocsToPlan } from './plan-migration';
 
 type Rec = Record<string, unknown>;
 
@@ -111,6 +112,8 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
     }
   }
 
+  migrateArchitectureDocsToPlan(cwd);
+
   let materialized: MaterializeResult | null = null;
   try {
     materialized = materializeProjectAssets(cwd, state);
@@ -162,6 +165,8 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
 
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return null;
+
+  migrateArchitectureDocsToPlan(cwd);
 
   const normalized = normalizeState(state, (state.mode as string) || detectMode(cwd));
   if (normalized) {

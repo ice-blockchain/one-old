@@ -12,6 +12,7 @@ import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../shared/performance-config';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
+import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
 
@@ -28,6 +29,8 @@ function asString(value: unknown): string {
 }
 
 export function agentModelGate(ctx: Ctx): HookResult {
+  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
   if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(toolName)) return noop();

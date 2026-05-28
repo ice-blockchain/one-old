@@ -1,5 +1,5 @@
 "use strict";
-// src/modules/architecture-guard/deploy-gate.ts
+// src/modules/plan-guard/deploy-gate.ts
 // PreToolUse(shell) deploy gate: a production publish is denied unless a fresh
 // senior-shipper approval stamp AND a fresh, fingerprint-matching pre-deployment
 // security check are present. Ported 1:1 from the deploy half of
@@ -14,6 +14,7 @@ exports.deployGate = deployGate;
 const result_1 = require("../../core/result");
 const security_check_1 = require("../../runners/security-check");
 const state_1 = require("../../shared/state");
+const auth_choice_1 = require("../session/auth-choice");
 exports.DEPLOY_RE = /(^|[\s;&|])(vercel\s+(deploy|--prod)|eas\s+build\s+.*--auto-submit|eas\s+submit|supabase\s+db\s+push\s+--linked|supabase\s+functions\s+deploy\s+\S+\s+--linked|gh\s+release\s+create|fly\s+deploy|wrangler\s+deploy|npm\s+publish|pnpm\s+publish)\b/;
 const SHIPPER_APPROVAL_WINDOW_MS = 10 * 60 * 1000;
 const SECURITY_CHECK_WINDOW_MS = 10 * 60 * 1000;
@@ -50,6 +51,8 @@ function checkSecurityDeployStamp(state, cwd) {
     return { ok: true };
 }
 function deployGate(ctx) {
+    if ((0, auth_choice_1.authChoiceAllowsContinue)(ctx.cwd))
+        return (0, result_1.noop)();
     const command = ctx.input.tool?.command ?? '';
     if (!exports.DEPLOY_RE.test(command))
         return (0, result_1.noop)();

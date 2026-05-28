@@ -34,8 +34,9 @@ file.
   linter or full style guide.
 - `.cursor/rules/*.mdc`: Cursor-specific project rules; keep each rule short,
   scoped, and version-controlled with `description`, `globs`, and `alwaysApply`.
-- `architecture.md`: root-level folder map, data flow diagram, key
-  dependencies, and why major choices were made. Link ADRs.
+- `.traffic-one/plan.md`: Traffic One plan containing the current goal, module
+  map, public contracts, risks, and cut-list. Legacy `architecture.md` files are
+  migration-only.
 - `.traffic-one/decisions/`: one short Nygard-style ADR per significant
   decision. Use Context, Decision, Status, and Consequences.
 - `api.md`: generated from OpenAPI or source routes/Edge Functions; include

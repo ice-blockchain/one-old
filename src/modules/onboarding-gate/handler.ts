@@ -26,6 +26,7 @@ import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { normalizeState, readEffectiveState } from '../../shared/state';
 import { isMutatingPreToolUse, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
+import { authChoiceAllowsContinue } from '../session/auth-choice';
 
 type Rec = Record<string, unknown>;
 
@@ -49,6 +50,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
 
   if (isPluginAuthoringRoot(cwd)) return noop();
+  if (authChoiceAllowsContinue(cwd)) return noop();
   // Auth is enforced by the priority-0 session gate before this gate runs.
 
   const filePath = asString(toolInput.file_path);

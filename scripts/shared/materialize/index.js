@@ -24,3 +24,4 @@ __exportStar(require("./cleanup"), exports);
 __exportStar(require("./materialize"), exports);
 __exportStar(require("./converge"), exports);
 __exportStar(require("./graph-preview"), exports);
+__exportStar(require("./plan-migration"), exports);

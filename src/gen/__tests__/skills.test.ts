@@ -20,3 +20,12 @@ test('generatedSkillDocs re-gathers both skill trees (107 templates + 3 bootstra
   assert.deepEqual(docs.map((d) => d.relPath), sorted);
   for (const doc of docs) assert.ok(doc.content.length > 0, `empty: ${doc.relPath}`);
 });
+
+test('generated skills do not require architecture.md artifacts', () => {
+  const docs = generatedSkillDocs(REPO_ROOT);
+  for (const doc of docs) {
+    assert.doesNotMatch(doc.content, /\b(write|create|ship|include)\s+`?architecture\.md`?/i, doc.relPath);
+    assert.doesNotMatch(doc.content, /architecture\.md`\s*\(REQUIRED\)/i, doc.relPath);
+    assert.doesNotMatch(doc.content, /package-architecture/i, doc.relPath);
+  }
+});

@@ -1,9 +1,8 @@
 "use strict";
-// src/modules/architecture-guard/architecture-runteam.ts
+// src/modules/plan-guard/plan-runteam.ts
 // Run-team enforcement gate: when a project was onboarded with
 // team.mode="subagents", feature-source writes must come from the spawned role
-// session that owns the path. Ported 1:1 from runCheckArchitectureWrite
-// (gates.cjs:399-446). Returns a single deny reason (or null). Deny PROSE comes
+// session that owns the path. Returns a single deny reason (or null). Deny PROSE comes
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runTeamEnforcementViolation = runTeamEnforcementViolation;

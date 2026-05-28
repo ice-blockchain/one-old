@@ -162,7 +162,7 @@ CHANGES_REQUESTED — <one line summary>.
 - Any of the above failed.
 - The implementer wrote feature code outside their scope (frontend touched backend, or vice versa).
 - The diff regresses an existing test or rule.
-- The change introduces a forbidden library that the architecture-write hook already denies.
+- The change introduces a forbidden library that the plan-write hook already denies.
 
 ## Digest output (REQUIRED)
 

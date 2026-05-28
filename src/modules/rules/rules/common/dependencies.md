@@ -22,7 +22,7 @@ When you need a capability not covered by the active stack core:
    channel is unavailable, say so instead of claiming full coverage.
 3. **Apply the quality gate**: maintained (commit ≤ 6 months old) · adopted (≥ 1k stars OR ≥ 100k weekly downloads) · permissive license (MIT/Apache/BSD/ISC) · ships types · no high+ `npm audit` advisories. Frontend extras: bundle ≤ 30 KB gz feature / 100 KB heavy, ESM treeshakeable.
 4. **If a candidate passes** → install + lock major. Note the decision (chosen + rejected with reason) in the commit body.
-5. **If none pass** → build it under `packages/<name>` and write `architecture.md` **before** code. Full template loads from `rules/common/package-architecture.md` when you touch `packages/**`.
+5. **If none pass** → build it under `packages/<name>` and update `.traffic-one/plan.md` **before** code with the package responsibility, boundaries, public API, and ADR link when needed.
 
 Hard "no" regardless of metrics: anything contradicting the active stack core; GPL/AGPL/SSPL; lone-maintainer libs idle 12+ months.
 

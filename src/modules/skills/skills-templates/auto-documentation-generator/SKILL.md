@@ -2,12 +2,12 @@
 name: auto-documentation-generator
 description: >
   Generate or refresh the documentation humans and agents actually read:
-  README.md, AGENTS.md, CLAUDE.md, Cursor .mdc rules, architecture.md, ADRs,
+  README.md, AGENTS.md, CLAUDE.md, Cursor .mdc rules, `.traffic-one/plan.md`, ADRs,
   api.md, database.md, deployment.md, security.md, CHANGELOG.md,
   environment-setup.md, CONTRIBUTING.md, and llms.txt for SPA + Supabase,
   Ionic/Capacitor, React Native, and backend projects. Trigger on "generate
   docs", "auto-documentation", "document this project", "write project docs",
-  "create AGENTS.md", "create llms.txt", "update architecture docs", or
+  "create AGENTS.md", "create llms.txt", "update the project plan", or
   release-readiness documentation requests.
 metadata:
   source: everything-claude-code
@@ -35,7 +35,7 @@ Use this skill when the user asks to:
 - Generate, refresh, audit, or repair project documentation.
 - Prepare launch, handoff, onboarding, or production-readiness docs.
 - Create or update `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
-  `architecture.md`, `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
+  `.traffic-one/plan.md`, `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
   `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`, or
   `llms.txt`.
 
@@ -91,7 +91,7 @@ signals:
 - Known hazards: env requirements, generated files, vendor folders, risky
   migrations, external side effects, and protected deploy paths.
 
-Keep the artifact navigational. Link to graph reports, architecture docs, ADRs,
+Keep the artifact navigational. Link to graph reports, `.traffic-one/plan.md`, ADRs,
 and project memory for detail instead of copying large inventories into
 README/AGENTS/CLAUDE.
 
@@ -105,7 +105,7 @@ Create or refresh these files when relevant:
 | `AGENTS.md` | Agent entry point | Build/test commands, code-style rules, gotchas, repo map, security/deploy warnings. Root file first; nested files only for large subprojects. |
 | `CLAUDE.md` | Claude-specific memory | Symlink to `AGENTS.md` or keep under ~300 lines; include only project-specific traps and pointers. Do not duplicate linter rules. |
 | `.cursor/rules/*.mdc` | Cursor-specific guidance | Short scoped rules with `description`, `globs`, and `alwaysApply`; split large rules by domain. |
-| `architecture.md` | System map | Root-level folder map, data flow diagram in text or Mermaid, key dependencies, and why major choices were made. Link ADRs. Package-level `packages/*/architecture.md` still follows `rules/common/package-architecture.md`. |
+| `.traffic-one/plan.md` | Plan and system map | Current goal, module map, public contracts, risks, cut-list, key dependencies, and links to ADRs. Legacy `architecture.md` files are migration-only. |
 | `.traffic-one/decisions/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
 | `api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
 | `database.md` | Schema/RLS reference | Generate from migrations or `pg_dump --schema-only --no-owner --no-privileges`; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
@@ -125,7 +125,7 @@ Keep it human-first:
 - One paragraph explaining what the product does and who it serves.
 - One-command local setup when possible, such as `pnpm install && pnpm dev`.
 - Link to live deploy or write `Live deploy: not configured yet`.
-- Link to `AGENTS.md`, `architecture.md`, `deployment.md`, and
+- Link to `AGENTS.md`, `.traffic-one/plan.md`, `deployment.md`, and
   `environment-setup.md` instead of repeating their full content.
 
 ### AGENTS.md and CLAUDE.md
@@ -136,10 +136,10 @@ Keep it human-first:
   Claude-specific differences. Otherwise keep it concise and link outward.
 - Do not paste the full lint rules; name the deterministic command.
 
-### Architecture and ADRs
+### Plan and ADRs
 
-- `architecture.md` explains the current shape, not an aspirational future.
-- Include a folder map and one data-flow diagram. Mermaid is fine.
+- `.traffic-one/plan.md` explains the current shape and active implementation plan, not an aspirational future.
+- Include a module map and one data-flow diagram when the project shape is non-trivial. Mermaid is fine.
 - Use the `architecture-decision-records` skill for significant choices. If the
   user explicitly requested docs generation, that counts as approval to create
   a missing `.traffic-one/decisions/` scaffold; otherwise ask before
@@ -173,7 +173,7 @@ Create a concise Markdown file with:
 
 ## Canonical docs
 - [README](https://example.com/README.md): human overview and setup.
-- [Architecture](https://example.com/architecture.md): system map.
+- [Plan](https://example.com/.traffic-one/plan.md): module map and public contracts.
 - [API](https://example.com/api.md): endpoints and auth.
 
 ## Optional

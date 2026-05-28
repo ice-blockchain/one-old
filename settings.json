@@ -48,8 +48,8 @@
         "hooks": [
           {
             "type": "command",
-            "statusMessage": "Validating architecture...",
-            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" check-architecture-write"
+            "statusMessage": "Validating plan gate...",
+            "command": "node \"${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs\" check-plan-write"
           }
         ]
       },

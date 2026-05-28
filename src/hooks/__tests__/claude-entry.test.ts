@@ -21,10 +21,10 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   // (so the pipeline checks auth first, matching the legacy per-gate auth check).
   assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth']);
   assert.deepEqual(idsFor('check-agent-model'), ['agent-model.spawn', 'session.auth']);
-  assert.deepEqual(idsFor('check-architecture-write'), ['architecture-guard.write', 'session.auth']);
+  assert.deepEqual(idsFor('check-plan-write'), ['plan-guard.write', 'session.auth']);
   // check-library-allowlist runs the deploy gate (25) + the install allowlist (30)
   // after auth (0) — the legacy "deploy gate runs first" ordering inside the gate.
-  assert.deepEqual(idsFor('check-library-allowlist'), ['architecture-guard.deploy', 'architecture-guard.library', 'session.auth']);
+  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'session.auth']);
   // Hints + post-build handlers route to exactly one handler (no cross-fire —
   // critical so the two PostToolUse entries don't double-emit context).
   assert.deepEqual(idsFor('pre-graphify-hint'), ['graphify.hint']);
@@ -69,10 +69,10 @@ test('unknown subcommand → empty stdout, exit 0', async () => {
   assert.equal(r.exitCode, 0);
 });
 
-test('check-architecture-write UNAUTHED denies via the priority-0 auth gate', async () => {
+test('check-plan-write UNAUTHED denies via the priority-0 auth gate', async () => {
   await withEnv({ authed: false }, async (cwd) => {
     const stdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(cwd, 'x.ts'), content: 'export const x = 1;' }, cwd });
-    const r = await runClaudeHook('check-architecture-write', stdin);
+    const r = await runClaudeHook('check-plan-write', stdin);
     assert.equal(r.exitCode, 0);
     assert.ok(r.stdout.length > 0, 'expected a deny payload');
     const out = JSON.parse(r.stdout);

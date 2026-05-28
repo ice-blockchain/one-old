@@ -1,5 +1,5 @@
 "use strict";
-// src/modules/architecture-guard/handler.ts
+// src/modules/plan-guard/handler.ts
 // PreToolUse(shell) forbidden-library gate: deny `npm/pnpm/yarn/bun add <lib>`
 // for libraries that conflict with the active stack. Ported from
 // runCheckLibraryAllowlist in gates.cjs (the install-allowlist half; the deploy
@@ -9,8 +9,11 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.libraryAllowlistGate = libraryAllowlistGate;
 const result_1 = require("../../core/result");
 const state_1 = require("../../shared/state");
+const auth_choice_1 = require("../session/auth-choice");
 const forbidden_1 = require("./forbidden");
 function libraryAllowlistGate(ctx) {
+    if ((0, auth_choice_1.authChoiceAllowsContinue)(ctx.cwd))
+        return (0, result_1.noop)();
     const command = ctx.input.tool?.command ?? '';
     if (!forbidden_1.INSTALL_RE.test(command))
         return (0, result_1.noop)();

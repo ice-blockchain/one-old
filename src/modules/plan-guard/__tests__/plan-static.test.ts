@@ -1,17 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { architectureStaticViolations } from '../architecture-static';
+import { planStaticViolations } from '../plan-static';
 
 // Fake block fn: return the block name so assertions check WHICH rules fired,
 // independent of prose wording.
 const names = (name: string): string => name;
 function check(filePath: string, content: string, isNative = false): string[] {
-  return architectureStaticViolations(filePath, content, isNative, names);
+  return planStaticViolations(filePath, content, isNative, names);
 }
 
 // Trigger tokens built by concatenation so this test source does not itself
-// trip the live architecture gate when written into the plugin repo.
+// trip the live plan gate when written into the plugin repo.
 const INLINE = 'style={' + '{ color: 1 }}';
 const WS = 'new ' + 'WebSocket("/x")';
 const ANY = ': ' + 'any';

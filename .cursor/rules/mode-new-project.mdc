@@ -345,7 +345,7 @@ contract, env validation, and migrations/RLS baseline are in place.
      docs.
    - Create or refresh the relevant root-level canonical docs from
      `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
-     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `architecture.md`,
+     `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `.traffic-one/plan.md`,
      `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
      `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`,
      and served `/llms.txt` for web surfaces.

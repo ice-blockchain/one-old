@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { architectureReadinessViolations } from '../architecture-readiness';
+import { planReadinessViolations } from '../plan-readiness';
 
 const names = (name: string): string => name;
 
@@ -51,7 +51,7 @@ const DEFAULT_STATE = {
 
 test('monorepo-package-json: a non-workspace root package.json on a monorepo stack is blocked', () => {
   withProject((dir) => {
-    const v = architectureReadinessViolations({
+    const v = planReadinessViolations({
       filePath: 'package.json', content: '{"name":"x"}', projectRoot: dir,
       state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
     });
@@ -61,7 +61,7 @@ test('monorepo-package-json: a non-workspace root package.json on a monorepo sta
 
 test('monorepo-root-vite: a root src/ Vite file on a monorepo stack is blocked', () => {
   withProject((dir) => {
-    const v = architectureReadinessViolations({
+    const v = planReadinessViolations({
       filePath: 'src/main.tsx', content: '', projectRoot: dir,
       state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
     });
@@ -71,7 +71,7 @@ test('monorepo-root-vite: a root src/ Vite file on a monorepo stack is blocked',
 
 test('state-gate: feature write with a missing/incomplete state file on a new project', () => {
   withProject((dir) => {
-    const v = architectureReadinessViolations({
+    const v = planReadinessViolations({
       filePath: 'apps/web/src/x.ts', content: '', projectRoot: dir,
       state: { mode: 'new-project' }, writingFeatureSource: true, block: names,
     });
@@ -83,7 +83,7 @@ test('materialization-gate: onboarded + valid stack but assets not on disk yet',
   withProject((dir) => {
     writeStateFile(dir, { ...DEFAULT_STATE, onboardingComplete: true });
     writePlan(dir); // present so the plan-gate does not also fire
-    const v = architectureReadinessViolations({
+    const v = planReadinessViolations({
       filePath: 'apps/web/src/x.ts', content: '', projectRoot: dir,
       state: { ...DEFAULT_STATE, onboardingComplete: true }, writingFeatureSource: true, block: names,
     });
@@ -94,7 +94,18 @@ test('materialization-gate: onboarded + valid stack but assets not on disk yet',
 test('plan-gate: new project, no plan.md, writing feature source', () => {
   withProject((dir) => {
     // onboardingComplete:false makes featureContextMaterialized true → only the plan-gate fires.
-    const v = architectureReadinessViolations({
+    const v = planReadinessViolations({
+      filePath: 'apps/web/src/x.ts', content: '', projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: false }, writingFeatureSource: true, block: names,
+    });
+    assert.deepEqual(v, ['plan-gate']);
+  });
+});
+
+test('plan-gate: legacy architecture.md does not satisfy readiness', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, 'architecture.md'), '# Legacy architecture', 'utf8');
+    const v = planReadinessViolations({
       filePath: 'apps/web/src/x.ts', content: '', projectRoot: dir,
       state: { ...DEFAULT_STATE, onboardingComplete: false }, writingFeatureSource: true, block: names,
     });
@@ -108,7 +119,7 @@ test('a fully materialized project with a plan emits no readiness violations', (
     writePlan(dir);
     const state = { ...DEFAULT_STATE, onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none' };
     writeStateFile(dir, state);
-    const v = architectureReadinessViolations({
+    const v = planReadinessViolations({
       filePath: 'apps/web/src/components/Button.tsx', content: 'export const Button = () => null;',
       projectRoot: dir, state, writingFeatureSource: true, block: names,
     });

@@ -1,7 +1,7 @@
-// src/modules/architecture-guard/architecture-readiness.ts
-// The project-readiness half of the architecture-write gate: monorepo scaffold,
+// src/modules/plan-guard/plan-readiness.ts
+// The project-readiness half of the plan-write gate: monorepo scaffold,
 // state-file presence, materialization, and plan gates. Ported 1:1 from
-// runCheckArchitectureWrite (gates.cjs:345-461), minus the run-team enforcement
+// runCheckPlanWrite, minus the run-team enforcement
 // gate (which lands separately). `writingFeatureSource` is precomputed by the
 // caller from the feature-source helpers — this keeps the readiness logic
 // independently testable. Deny PROSE comes from skill/SKILL.md via skillBlock.
@@ -34,7 +34,7 @@ export interface ReadinessArgs {
 }
 
 // Readiness violations for a single write/edit. Empty array == nothing to block.
-export function architectureReadinessViolations(args: ReadinessArgs): string[] {
+export function planReadinessViolations(args: ReadinessArgs): string[] {
   const { filePath, content, projectRoot, state, writingFeatureSource, block } = args;
   const violations: string[] = [];
 

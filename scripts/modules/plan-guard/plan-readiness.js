@@ -1,8 +1,8 @@
 "use strict";
-// src/modules/architecture-guard/architecture-readiness.ts
-// The project-readiness half of the architecture-write gate: monorepo scaffold,
+// src/modules/plan-guard/plan-readiness.ts
+// The project-readiness half of the plan-write gate: monorepo scaffold,
 // state-file presence, materialization, and plan gates. Ported 1:1 from
-// runCheckArchitectureWrite (gates.cjs:345-461), minus the run-team enforcement
+// runCheckPlanWrite, minus the run-team enforcement
 // gate (which lands separately). `writingFeatureSource` is precomputed by the
 // caller from the feature-source helpers — this keeps the readiness logic
 // independently testable. Deny PROSE comes from skill/SKILL.md via skillBlock.
@@ -40,7 +40,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.architectureReadinessViolations = architectureReadinessViolations;
+exports.planReadinessViolations = planReadinessViolations;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const config_1 = require("../../shared/config");
@@ -53,7 +53,7 @@ const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
 // Readiness violations for a single write/edit. Empty array == nothing to block.
-function architectureReadinessViolations(args) {
+function planReadinessViolations(args) {
     const { filePath, content, projectRoot, state, writingFeatureSource, block } = args;
     const violations = [];
     const requiresMonorepoScaffold = (0, hook_paths_1.stateRequiresNewProjectMonorepo)(state);

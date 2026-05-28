@@ -1,23 +1,23 @@
-// src/modules/architecture-guard/index.ts
+// src/modules/plan-guard/index.ts
 import type { Handler } from '../../core/types';
-import { architectureWriteGate } from './architecture-write';
+import { planWriteGate } from './plan-write';
 import { deployGate } from './deploy-gate';
 import { libraryAllowlistGate } from './handler';
 
 export const handlers: Handler[] = [
   {
-    id: 'architecture-guard.write',
+    id: 'plan-guard.write',
     event: 'PreToolUse',
     tools: ['shell', 'file-write', 'file-edit'],
-    subcommands: ['check-architecture-write'],
+    subcommands: ['check-plan-write'],
     priority: 20,
-    run: (ctx) => architectureWriteGate(ctx),
+    run: (ctx) => planWriteGate(ctx),
   },
   {
     // Deploy gate shares the check-library-allowlist subcommand; priority 25 runs
     // it after auth (0) and before the install-allowlist (30), reproducing the
     // legacy "deploy gate runs first" ordering inside runCheckLibraryAllowlist.
-    id: 'architecture-guard.deploy',
+    id: 'plan-guard.deploy',
     event: 'PreToolUse',
     tools: ['shell'],
     subcommands: ['check-library-allowlist'],
@@ -25,7 +25,7 @@ export const handlers: Handler[] = [
     run: (ctx) => deployGate(ctx),
   },
   {
-    id: 'architecture-guard.library',
+    id: 'plan-guard.library',
     event: 'PreToolUse',
     tools: ['shell'],
     subcommands: ['check-library-allowlist'],

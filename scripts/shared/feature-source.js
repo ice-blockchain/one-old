@@ -1,6 +1,6 @@
 "use strict";
 // src/shared/feature-source.ts
-// Feature-source write-ownership helpers used by the architecture-write gate:
+// Feature-source write-ownership helpers used by the plan-write gate:
 // which paths count as feature source, which Traffic One role owns a path, and
 // how to extract write targets from apply_patch text / shell commands.
 // Ported 1:1 from scripts/hook-runtime/handlers/_helpers.cjs.

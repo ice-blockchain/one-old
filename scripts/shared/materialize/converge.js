@@ -20,6 +20,7 @@ const text_1 = require("../text");
 const state_1 = require("../state");
 const has_assets_1 = require("./has-assets");
 const materialize_1 = require("./materialize");
+const plan_migration_1 = require("./plan-migration");
 const noopReporter = () => { };
 function outcome(status, systemMessage, context, result = null) {
     return { status, systemMessage, context, result };
@@ -60,6 +61,7 @@ function materializeProjectFromState(cwd, opts = {}) {
             // best-effort; materialization can still proceed with the normalized object.
         }
     }
+    (0, plan_migration_1.migrateArchitectureDocsToPlan)(cwd);
     let materialized = null;
     try {
         materialized = (0, materialize_1.materializeProjectAssets)(cwd, state);
@@ -94,6 +96,7 @@ function materializeProjectIfNeeded(cwd, opts = {}) {
     const state = (0, state_1.readEffectiveState)(cwd);
     if (!state || typeof state !== 'object')
         return null;
+    (0, plan_migration_1.migrateArchitectureDocsToPlan)(cwd);
     const normalized = (0, state_1.normalizeState)(state, state.mode || (0, detection_1.detectMode)(cwd));
     if (normalized) {
         try {

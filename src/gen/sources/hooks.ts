@@ -45,7 +45,7 @@ export const PRE_TOOL_USE: HookGroup[] = [
   },
   {
     matcher: 'Bash|Write|Edit|exec_command|apply_patch',
-    entries: [{ subcommand: 'check-architecture-write', statusMessage: 'Validating architecture...' }],
+    entries: [{ subcommand: 'check-plan-write', statusMessage: 'Validating plan gate...' }],
   },
   {
     matcher: 'Bash|exec_command',

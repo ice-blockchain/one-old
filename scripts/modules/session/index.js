@@ -24,7 +24,7 @@ exports.handlers = [
         id: 'session.auth',
         event: 'PreToolUse',
         tools: ['shell', 'file-write', 'file-edit', 'file-read', 'spawn-agent', 'search'],
-        subcommands: ['check-onboarding-gate', 'check-agent-model', 'check-architecture-write', 'check-library-allowlist'],
+        subcommands: ['check-onboarding-gate', 'check-agent-model', 'check-plan-write', 'check-library-allowlist'],
         priority: 0,
         run: (ctx) => (0, auth_gate_1.authPreToolGate)(ctx),
     },

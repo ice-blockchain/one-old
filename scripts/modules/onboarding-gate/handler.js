@@ -21,6 +21,7 @@ const paths_1 = require("../../shared/paths");
 const skill_block_1 = require("../../shared/skill-block");
 const state_1 = require("../../shared/state");
 const tool_classify_1 = require("../../shared/tool-classify");
+const auth_choice_1 = require("../session/auth-choice");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 const block = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
 const MARKER_GUARD_FALLBACK = 'Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. Do not add or refresh it in `.traffic-one/.one.json` manually.';
@@ -37,6 +38,8 @@ function onboardingGate(ctx) {
     const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
     const cwd = ctx.cwd;
     if ((0, authoring_root_1.isPluginAuthoringRoot)(cwd))
+        return (0, result_1.noop)();
+    if ((0, auth_choice_1.authChoiceAllowsContinue)(cwd))
         return (0, result_1.noop)();
     // Auth is enforced by the priority-0 session gate before this gate runs.
     const filePath = asString(toolInput.file_path);

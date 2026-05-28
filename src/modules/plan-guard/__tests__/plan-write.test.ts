@@ -4,14 +4,17 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { architectureWriteGate } from '../architecture-write';
+import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import { writeAuthChoice } from '../../session/auth-choice';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-archwrite-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevChoice = env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
   fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
@@ -31,6 +34,7 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
     fn(dir);
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevChoice === undefined) delete env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH; else env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = prevChoice;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -46,7 +50,7 @@ function writeCtx(cwd: string, rawName: string, cls: ToolClass, toolInput: Recor
 
 test('clean write in a materialized main-agent project → noop', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
-    const r = architectureWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'apps/web/src/components/Button.tsx', content: 'export const Button = () => null;',
     }));
     assert.equal(r.kind, 'noop');
@@ -55,7 +59,7 @@ test('clean write in a materialized main-agent project → noop', () => {
 
 test('subagents project: a feature write outside any role session is denied (run-team)', () => {
   withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
-    const r = architectureWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'apps/web/src/featureThing.ts', content: 'export const x = 1;',
     }));
     assert.equal(r.kind, 'deny');
@@ -68,17 +72,28 @@ test('subagents project: a feature write outside any role session is denied (run
 
 test('static layout violation is denied even in a clean main-agent project', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
-    const r = architectureWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'packages/ui/src/components/Btn.tsx', content: 'export default function Btn() { return null; }',
     }));
     assert.equal(r.kind, 'deny');
-    if (r.kind === 'deny') assert.ok(r.reason.includes('architecture violation'));
+    if (r.kind === 'deny') assert.ok(r.reason.includes('plan gate violation'));
   });
 });
 
 test('non-file, non-feature shell command in a clean project → noop', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
-    const r = architectureWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('continue-without-Traffic-One choice bypasses the plan gate', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    fs.rmSync(path.join(cwd, '.traffic-one', 'plan.md'), { force: true });
+    writeAuthChoice('continue-without-traffic-one', cwd);
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/x.ts', content: 'export const x = 1;',
+    }));
     assert.equal(r.kind, 'noop');
   });
 });

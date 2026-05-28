@@ -132,7 +132,7 @@ If a design improvement requires a functional change, flag it explicitly:
 
 ## After implementation
 1. Confirm changes match the approved phase exactly — no scope creep.
-2. Note any tokens added in `packages/tailwind-config/architecture.md` (or, for app-local tokens, in the app's `tailwind.config.ts`).
+2. Note any shared token additions in `.traffic-one/plan.md` (or, for app-local tokens, in the app's `tailwind.config.ts`).
 3. Flag remaining approved-but-not-implemented phases for follow-up.
 4. Show before/after snapshots (Storybook stories or screenshots) when possible,
    including mobile and the important UI states.

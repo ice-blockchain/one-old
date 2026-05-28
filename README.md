@@ -321,4 +321,4 @@ codex plugin add traffic-one
 | Agent behavior, assumptions, surgical edits | Source common rule under `src/modules/`, then run `npm run gen` |
 | Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
 | Blocked libraries | Edit the `PreToolUse[Bash]` hook in `settings.json` and `hooks/hooks.json` |
-| Architecture / onboarding / materialization checks | Edit the matching hook in both `settings.json` and `hooks/hooks.json`, then cover it in `scripts/test-stack-recommendations.cjs` |
+| Architecture / onboarding / materialization checks | Edit the matching source under `src/modules/`, then cover it with `npm test` |

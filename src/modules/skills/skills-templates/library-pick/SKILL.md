@@ -108,8 +108,8 @@ Recommend the lightest passing candidate. State *why* the others were rejected. 
 ### If nothing passed
 - Do **not** silently start writing inline code.
 - Propose a new package: `packages/<name>`.
-- **Write `architecture.md` first** using the template from `rules/common/package-architecture.md`. Do NOT begin implementation until the user has acknowledged the design.
-- After implementation, the package PR must include `architecture.md` from its first commit.
+- **Update `.traffic-one/plan.md` first** with the package responsibility, boundaries, public API, and ADR link when needed. Do NOT begin implementation until the user has acknowledged the design.
+- After implementation, the package PR must include the matching `.traffic-one/plan.md` update from its first commit.
 
 ## Don't
 - Don't recommend a library you haven't actually checked the gate for.

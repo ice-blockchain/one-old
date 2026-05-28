@@ -1,5 +1,5 @@
 "use strict";
-// src/modules/architecture-guard/forbidden.ts
+// src/modules/plan-guard/forbidden.ts
 // Per-stack forbidden-library tables + allowlist helpers. Ported 1:1 from
 // scripts/hook-runtime/handlers/gates.cjs (INSTALL_RE, forbiddenForStack,
 // stateFromStackForAllowlist, allowsNextjs, packageJsonHasNext).

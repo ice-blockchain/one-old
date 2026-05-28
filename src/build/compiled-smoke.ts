@@ -57,7 +57,7 @@ function main(): void {
     };
 
     const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(authTmp, 'x.ts'), content: 'export const x = 1;' }, cwd: authTmp });
-    const claudeOut = JSON.parse(runShim(scratch, 'hook-runtime.cjs', 'check-architecture-write', claudeStdin, env) || '{}');
+    const claudeOut = JSON.parse(runShim(scratch, 'hook-runtime.cjs', 'check-plan-write', claudeStdin, env) || '{}');
     if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('hook-runtime.cjs shim did not deny an unauthed write');
 
     const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: authTmp, command: 'npm run build' }), env) || '{}');

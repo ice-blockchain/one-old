@@ -920,7 +920,8 @@ For the recommended default stack (`default` with frontend=react-vite and backen
   4. `packages/`: ui/ (shadcn components live here), tailwind-config/ (shared
      Tailwind preset + `globals.css`), i18n/ (typed i18next/react-i18next
      resources and provider), api-client/, ws-client/, utils/, tsconfig/,
-     eslint-config/. Each gets package.json + README.md + `architecture.md` (REQUIRED).
+     eslint-config/. Each gets package.json + README.md; package responsibilities,
+     boundaries, and public APIs live in `.traffic-one/plan.md`.
      Do NOT create a `packages/design-tokens` package — design tokens live in the
      Tailwind preset and the HSL CSS variables in `globals.css`.
   5. Mandatory design gate: before writing any generated UI, invoke
@@ -951,7 +952,7 @@ For the recommended default stack (`default` with frontend=react-vite and backen
      the scaffold complete. New generated sites/apps/services MUST include the
      relevant root-level canonical docs from `rules/common/documentation.md`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
-     architecture.md, .traffic-one/decisions/, api.md, database.md,
+     .traffic-one/plan.md, .traffic-one/decisions/, api.md, database.md,
      deployment.md, security.md, CHANGELOG.md, environment-setup.md,
      CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
      as Unverified; do not leave only a lightweight README.

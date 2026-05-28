@@ -1,4 +1,4 @@
-// src/modules/architecture-guard/deploy-gate.ts
+// src/modules/plan-guard/deploy-gate.ts
 // PreToolUse(shell) deploy gate: a production publish is denied unless a fresh
 // senior-shipper approval stamp AND a fresh, fingerprint-matching pre-deployment
 // security check are present. Ported 1:1 from the deploy half of
@@ -11,6 +11,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { computeProjectFingerprint } from '../../runners/security-check';
 import { readEffectiveState } from '../../shared/state';
+import { authChoiceAllowsContinue } from '../session/auth-choice';
 
 type Rec = Record<string, unknown>;
 
@@ -58,6 +59,8 @@ export function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
 }
 
 export function deployGate(ctx: Ctx): HookResult {
+  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+
   const command = ctx.input.tool?.command ?? '';
   if (!DEPLOY_RE.test(command)) return noop();
 

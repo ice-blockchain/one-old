@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { GENERATED_MARKER, copySkillDir, isGenerated, removeGeneratedFile, removeGeneratedSkillDir } from '../generated';
 import { hasMaterializedProjectAssets, isLeanMaterialization } from '../has-assets';
+import { migrateArchitectureDocsToPlan } from '../plan-migration';
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 't1-mat-'));
@@ -82,4 +83,50 @@ test('isLeanMaterialization defaults to true; full-mode flags turn it off', () =
   assert.equal(isLeanMaterialization('/x', { leanMode: false }), false);
   assert.equal(isLeanMaterialization('/x', { contextMode: 'full' }), false);
   assert.equal(isLeanMaterialization('/x', { tokenProfile: 'full' }), false);
+});
+
+test('migrateArchitectureDocsToPlan: .traffic-one/architecture.md becomes plan.md and is removed', () => {
+  const dir = tmp();
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, 'architecture.md'), '# Legacy\n\nModule map from old file.', 'utf8');
+
+    const result = migrateArchitectureDocsToPlan(dir);
+    assert.deepEqual(result?.migrated, ['.traffic-one/architecture.md']);
+    assert.equal(fs.existsSync(path.join(t1, 'architecture.md')), false);
+
+    const plan = fs.readFileSync(path.join(t1, 'plan.md'), 'utf8');
+    assert.ok(plan.includes('# Traffic One Plan'));
+    assert.ok(plan.includes('### .traffic-one/architecture.md'));
+    assert.ok(plan.includes('Module map from old file.'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('migrateArchitectureDocsToPlan: root and package architecture docs append to existing plan then are removed', () => {
+  const dir = tmp();
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'packages', 'ui'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), '# Existing Plan\n\n## Module map\nCanonical package map.', 'utf8');
+    fs.writeFileSync(path.join(dir, 'architecture.md'), '# Root Architecture\n\nRoot data flow.', 'utf8');
+    fs.writeFileSync(path.join(dir, 'packages', 'ui', 'architecture.md'), '# UI Package\n\nButton boundary.', 'utf8');
+
+    const result = migrateArchitectureDocsToPlan(dir);
+    assert.deepEqual(result?.migrated, ['architecture.md', 'packages/ui/architecture.md']);
+    assert.equal(fs.existsSync(path.join(dir, 'architecture.md')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'packages', 'ui', 'architecture.md')), false);
+
+    const plan = fs.readFileSync(path.join(dir, '.traffic-one', 'plan.md'), 'utf8');
+    assert.ok(plan.startsWith('# Existing Plan'));
+    assert.ok(plan.includes('Canonical package map.'));
+    assert.ok(plan.includes('### architecture.md'));
+    assert.ok(plan.includes('Root data flow.'));
+    assert.ok(plan.includes('### packages/ui/architecture.md'));
+    assert.ok(plan.includes('Button boundary.'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

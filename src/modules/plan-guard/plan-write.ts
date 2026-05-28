@@ -1,6 +1,6 @@
-// src/modules/architecture-guard/architecture-write.ts
-// PreToolUse file-write/file-edit architecture gate (priority 20). Assembles the
-// decomposed checks ported from runCheckArchitectureWrite (gates.cjs:285-550):
+// src/modules/plan-guard/plan-write.ts
+// PreToolUse file-write/file-edit plan gate (priority 20). Assembles the
+// decomposed checks ported from runCheckPlanWrite:
 //   1. preflight convergence (materialize the project on disk if needed)
 //   2. project-readiness gates (monorepo / state / materialization / plan)
 //   3. run-team ownership enforcement
@@ -15,24 +15,25 @@
 
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { authChoiceAllowsContinue } from '../session/auth-choice';
 import {
   applyPatchTargetPaths,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
 } from '../../shared/feature-source';
 import { findProjectRootForHookFile, projectRelativeHookPath } from '../../shared/hook-paths';
-import { materializeProjectIfNeeded } from '../../shared/materialize';
+import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isNativeState, readEffectiveState } from '../../shared/state';
 import { commandFromToolInput, isShellToolName, normalizedToolName } from '../../shared/tool-classify';
-import { architectureReadinessViolations } from './architecture-readiness';
-import { runTeamEnforcementViolation } from './architecture-runteam';
-import { architectureStaticViolations, makeArchitectureBlock } from './architecture-static';
+import { planReadinessViolations } from './plan-readiness';
+import { runTeamEnforcementViolation } from './plan-runteam';
+import { planStaticViolations, makePlanBlock } from './plan-static';
 
 type Rec = Record<string, unknown>;
 
-const block = makeArchitectureBlock(makeSkillBlock(pluginRoot));
+const block = makePlanBlock(makeSkillBlock(pluginRoot));
 
 function obj(value: unknown): Rec | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
@@ -41,7 +42,7 @@ function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-export function architectureWriteGate(ctx: Ctx): HookResult {
+export function planWriteGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName) || 'Bash';
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
@@ -53,12 +54,15 @@ export function architectureWriteGate(ctx: Ctx): HookResult {
     : [];
 
   const cwd = ctx.cwd;
+  if (authChoiceAllowsContinue(cwd)) return noop();
+
   const projectRoot = findProjectRootForHookFile(cwd, rawFilePath || patchTargetPaths[0] || '');
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
 
   // Preflight convergence: ensure .traffic-one/** is current for this project
   // before we judge it (side-effect only; the outcome is intentionally ignored).
-  materializeProjectIfNeeded(projectRoot, { trigger: 'architecture preflight convergence' });
+  migrateArchitectureDocsToPlan(projectRoot);
+  materializeProjectIfNeeded(projectRoot, { trigger: 'plan preflight convergence' });
 
   const content = asString(toolInput.content) || asString(toolInput.new_string) || '';
   const state = readEffectiveState(projectRoot);
@@ -75,13 +79,13 @@ export function architectureWriteGate(ctx: Ctx): HookResult {
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
 
   const violations: string[] = [];
-  violations.push(...architectureReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, block }));
+  violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, block }));
   const runTeam = runTeamEnforcementViolation({
     projectRoot, filePath, state, rawData: raw, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
   });
   if (runTeam) violations.push(runTeam);
-  violations.push(...architectureStaticViolations(filePath, content, isNative, block));
+  violations.push(...planStaticViolations(filePath, content, isNative, block));
 
   if (violations.length === 0) return noop();
-  return deny(`traffic-one — architecture violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);
+  return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);
 }

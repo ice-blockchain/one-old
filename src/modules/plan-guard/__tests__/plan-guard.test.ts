@@ -8,7 +8,7 @@ import { libraryAllowlistGate } from '../handler';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 function withProject(stateObj: Record<string, unknown>, fn: (cwd: string) => void): void {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-arch-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-plan-'));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
