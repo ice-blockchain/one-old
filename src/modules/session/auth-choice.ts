@@ -33,6 +33,26 @@ export function authChoiceStatePaths(env: NodeJS.ProcessEnv = process.env): stri
   return fallback && fallback !== primary ? [primary, fallback] : [primary];
 }
 
+// Whether any auth-choice state file is present (primary or tmpdir fallback).
+export function authChoiceStateExists(env: NodeJS.ProcessEnv = process.env): boolean {
+  return authChoiceStatePaths(env).some((filePath) => fs.existsSync(filePath));
+}
+
+// Clear the auth-choice state (both primary + fallback). Returns false if any
+// removal threw. Called by the auth CLI on login (a fresh session supersedes a
+// prior "continue without" choice) and on logout.
+export function deleteAuthChoiceState(env: NodeJS.ProcessEnv = process.env): boolean {
+  let ok = true;
+  for (const filePath of authChoiceStatePaths(env)) {
+    try {
+      fs.rmSync(filePath, { force: true });
+    } catch {
+      ok = false;
+    }
+  }
+  return ok;
+}
+
 interface AuthChoiceState {
   version: number;
   globalChoice: Rec | null;
