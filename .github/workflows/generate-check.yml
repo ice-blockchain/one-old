@@ -2,9 +2,10 @@ name: Generate check
 
 # Verifies the TypeScript engine typechecks, the committed generated artifacts
 # (manifests, hook configs, .cursor/rules) are in sync with their single
-# sources, and the full test suite (incl. the byte-identical golden snapshot)
-# is green. Runs alongside the legacy cursor-sync.yml during the src/ migration;
-# replaces it at cutover.
+# sources, the full test suite (incl. the byte-identical golden snapshot) is
+# green, the compiled runtime dispatches under bare node, and the committed
+# scripts/ runtime is exactly what a fresh build emits (no hand-edits / drift).
+# Replaced the legacy cursor-sync.yml at the src/ cutover.
 
 on:
   push:
@@ -38,3 +39,6 @@ jobs:
 
       - name: Compiled-runtime smoke (bare-node dispatch)
         run: npm run smoke
+
+      - name: Committed scripts/ is the deterministic build output (no drift)
+        run: npm run build:verify
