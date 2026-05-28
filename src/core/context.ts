@@ -15,10 +15,11 @@ import { nowIso } from '../shared/text';
 const skillBlock = makeSkillBlock(pluginRoot);
 
 export function buildContext(input: HookInput, opts: { debug?: boolean } = {}): Ctx {
+  const projectRoot = paths.projectRoot(input);
   return {
     input,
     host: input.host,
-    cwd: input.cwd,
+    cwd: projectRoot,
     now: nowIso,
     log: makeLogger({ debug: opts.debug ?? false }),
     fsjson,

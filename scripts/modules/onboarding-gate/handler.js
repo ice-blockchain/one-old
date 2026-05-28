@@ -17,6 +17,7 @@ const predicates_1 = require("../../shared/onboarding/predicates");
 const prompts_1 = require("../../shared/onboarding/prompts");
 const repair_1 = require("../../shared/onboarding/repair");
 const team_mode_approval_1 = require("../../shared/onboarding/team-mode-approval");
+const local_prefs_1 = require("../../shared/onboarding/local-prefs");
 const paths_1 = require("../../shared/paths");
 const skill_block_1 = require("../../shared/skill-block");
 const state_1 = require("../../shared/state");
@@ -42,7 +43,7 @@ function onboardingGate(ctx) {
     if ((0, auth_choice_1.authChoiceAllowsContinue)(cwd))
         return (0, result_1.noop)();
     // Auth is enforced by the priority-0 session gate before this gate runs.
-    const filePath = asString(toolInput.file_path);
+    const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
     const state = (0, state_1.readEffectiveState)(cwd);
     const mode = state.mode || (0, detection_1.detectMode)(cwd);
     const effectiveState = { ...state, mode };
@@ -56,6 +57,14 @@ function onboardingGate(ctx) {
     // The model is allowed to write the canonical state file itself.
     if ((0, tool_classify_1.isStateFilePath)(filePath) || (0, tool_classify_1.isStateFileOnlyPatch)(toolName, toolInput))
         return (0, result_1.noop)();
+    const localPrefs = (0, local_prefs_1.localPreferenceContext)(effectiveState, String(effectiveState.stack || mode), 'gate', block);
+    if (localPrefs) {
+        if ((0, tool_classify_1.isReadOnlyOrientationToolUse)(toolName, toolInput))
+            return (0, result_1.noop)();
+        return (0, result_1.deny)(localPrefs.context, {
+            ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+        });
+    }
     if (mode === 'new-project' && (0, predicates_1.isNewProjectOnboardingIncomplete)(effectiveState)) {
         const repaired = (0, repair_1.repairNewProjectOnboardingState)(cwd, effectiveState, 'generic pre-tool onboarding repair');
         if (repaired) {

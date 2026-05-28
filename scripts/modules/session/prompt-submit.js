@@ -2,8 +2,9 @@
 // src/modules/session/prompt-submit.ts
 // UserPromptSubmit handler: drives the auth gate / auth-choice flow on every
 // prompt, records/clears the team-mode-change approval, surfaces onboarding
-// reminders + the one-time OpenCode opt-in, and converges project-local
-// materialization. Ported 1:1 from runUserPromptSubmit (prompt-submit.cjs).
+// reminders, and converges project-local materialization plus per-user local
+// preference prompts. Ported 1:1 from
+// runUserPromptSubmit (prompt-submit.cjs).
 // Auth-choice parsing reads the extracted prompt text (cleaner than the legacy
 // raw-string pass; the host adapter already extracts the prompt).
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
@@ -52,10 +53,10 @@ const prompts_1 = require("../../shared/onboarding/prompts");
 const team_mode_approval_1 = require("../../shared/onboarding/team-mode-approval");
 const config_1 = require("../../shared/config");
 const paths_1 = require("../../shared/paths");
-const prompt_request_1 = require("../../shared/prompt-request");
 const prompt_input_1 = require("../../shared/prompt-input");
 const skill_block_1 = require("../../shared/skill-block");
 const state_1 = require("../../shared/state");
+const local_prefs_1 = require("../../shared/onboarding/local-prefs");
 const auth_gate_1 = require("./auth-gate");
 const auth_choice_1 = require("./auth-choice");
 const session_start_1 = require("./session-start");
@@ -133,7 +134,23 @@ function runUserPromptSubmit(ctx) {
         const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized', {}, TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK)}`;
         return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [team mode switch authorized]' });
     }
-    // ── Team Confirmation still pending ──
+    const validStack = Boolean(state.stack && (0, config_1.isKnownStack)(state.stack));
+    const isIncomplete = !validStack
+        || state.onboardingComplete !== true
+        || (state.mode === 'new-project' && (0, predicates_1.isNewProjectOnboardingIncomplete)(normalizedState));
+    // ── Per-user local preferences required before mutating Traffic One work ──
+    // Already-configured projects can be shared across users. The repo-local
+    // state may be complete, but each user still needs local preferences.
+    const localPrefs = validStack && state.onboardingComplete === true
+        ? (0, local_prefs_1.localPreferenceContext)(normalizedState, stack, 'user-prompt', block)
+        : null;
+    if (localPrefs) {
+        return (0, result_1.context)(localPrefs.context, {
+            systemMessage: `traffic-one [${stack}] local preferences required`,
+            ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+        });
+    }
+    // ── Team Confirmation still pending (fallback for incomplete new-project flows) ──
     if ((0, predicates_1.needsTeamConfirmation)(normalizedState)) {
         const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${(0, fallbacks_1.teamConfirmationPromptContext)(normalizedState, 'user-prompt', block)}`;
         const promptRequest = (0, prompts_1.onboardingPromptRequestForStep)('team-confirmation', {
@@ -141,10 +158,6 @@ function runUserPromptSubmit(ctx) {
         });
         return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [team confirmation required]', promptRequest });
     }
-    const validStack = Boolean(state.stack && (0, config_1.isKnownStack)(state.stack));
-    const isIncomplete = !validStack
-        || state.onboardingComplete !== true
-        || (state.mode === 'new-project' && (0, predicates_1.isNewProjectOnboardingIncomplete)(normalizedState));
     // ── Re-inject the short onboarding reminder while a new project is incomplete ──
     if (isIncomplete && state.mode === 'new-project') {
         const reminder = (0, directives_1.onboardingReminderShort)(block);
@@ -168,11 +181,6 @@ function runUserPromptSubmit(ctx) {
     const materialized = (0, materialize_1.materializeProjectIfNeeded)(cwd, { trigger: 'generic user-prompt convergence' });
     if (materialized) {
         return (0, result_1.context)(materialized.context, { systemMessage: materialized.systemMessage });
-    }
-    // ── One-time OpenCode opt-in (existing/auto-detected codebases) ──
-    if (!(0, state_1.hasResolvedOpenCodeState)(normalizedState.openCode)) {
-        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${(0, directives_1.openCodeOptInDirective)(block)}`;
-        return (0, result_1.context)(additionalContext, { systemMessage: `traffic-one [${stack}] opencode opt-in`, promptRequest: (0, prompt_request_1.openCodePromptRequest)(additionalContext) });
     }
     return (0, result_1.context)(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

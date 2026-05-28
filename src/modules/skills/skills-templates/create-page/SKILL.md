@@ -1,10 +1,9 @@
 ---
 name: create-page
 description: >
-  Prerequisite: do not read, invoke, or activate this skill during Traffic One
-  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
-  this skill only after `.traffic-one/.one.json` has `onboardingComplete: true` and
-  `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
+  Prerequisite: follow the shared Traffic One setup gate
+  (`rules/common/setup-gate.md`). Use `detect-project` / `stack-setup` first;
+  activate this skill only after the gate is clear. Then use PROACTIVELY
   whenever the user asks to create, add, or build a page, route, screen, or
   view.
   Triggers: "create a page", "add a route", "new screen for", "build the [name] page",
@@ -13,10 +12,9 @@ description: >
 
 # Skill: Create Page
 
-Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
-onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and
-`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
-return here after the stack, mobile, code graph, and team gates are resolved.
+Traffic One setup gate: follow `rules/common/setup-gate.md`. Use
+`detect-project` / `stack-setup` first; do not implement with this skill until
+the hook/gate context is clear.
 
 Confirm the page and route before creating any files.
 

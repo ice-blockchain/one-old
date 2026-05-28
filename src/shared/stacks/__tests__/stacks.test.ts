@@ -15,6 +15,7 @@ test('AGENT_ROLE_BASE_RULES covers all six senior roles with curated, auth-gated
     assert.ok(Array.isArray(rules) && rules.length > 0, `missing base rules for ${role}`);
     // auth-gate is the universal baseline for every role.
     assert.ok(rules.includes('rules/common/auth-gate.md'), `${role} should include the auth gate`);
+    assert.ok(rules.includes('rules/common/setup-gate.md'), `${role} should include the setup gate`);
   }
   // Role scoping is curated: the frontend role carries UI rules; the backend role does not.
   assert.ok(AGENT_ROLE_BASE_RULES['senior-frontend']?.some((r) => r.startsWith('rules/frontend/')));
@@ -31,6 +32,7 @@ test('STACKS exposes the five stack manifests', () => {
 test('default stack: react + supabase mandatory, postgres optional, no dupes', () => {
   const m = STACKS.default;
   assert.ok(m.mandatory.includes('rules/common/auth-gate.md'));
+  assert.ok(m.mandatory.includes('rules/common/setup-gate.md'));
   assert.ok(m.mandatory.includes('rules/frontend/react/core.md'));
   assert.ok(m.mandatory.includes('rules/frontend/react/supabase-client.md'));
   assert.ok(m.optional.includes('rules/backend/postgres.md'));

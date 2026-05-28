@@ -13,6 +13,25 @@ description: >
 
 ## Detection logic (run in this order)
 
+### Step 0 — Resolve the target project root
+Use the actual target project folder for all Traffic One state and local
+preferences. Prefer, in order: explicit tool `workdir`/`cwd`, file paths named
+by the tool, prompt-mentioned child folders such as `in "one-nextjs"`, then the
+host cwd. Stay inside the host workspace unless the host supplies an absolute
+in-workspace path. Prefer the nearest inner project marker (`.traffic-one/.one.json`,
+`package.json`, `go.mod`, `pyproject.toml`, `Cargo.toml`, etc.) over a parent
+`.traffic-one`.
+
+Before implementation in any project with Traffic One state, check the merged
+effective state for this target root. Shared `.traffic-one/.one.json` contains
+project facts; per-user preferences live under
+`~/.traffic-one/projects/<hash(targetRoot)>/preferences.json`. If local
+`openCode`, `performance`/`team`, or `codeGraphProvider` is missing, ask only
+the next local-preference step and stop. Required order: OpenCode, Performance,
+Team Confirmation for High/Balanced, then Code Graph. Read-only orientation is
+allowed; mutating tools, installs, scaffolding, and implementation skills are
+blocked until the missing local preference is saved.
+
 ### Step 1 — Is this a new project?
 - No `package.json`, OR
 - Fewer than 5 `.ts` / `.tsx` files outside `node_modules`
@@ -28,8 +47,8 @@ only after the required onboarding gates below are answered.
 Explicit user requests never skip Traffic One onboarding. A prompt such as
 "use Next.js", "web only", "frontend only", "use React Native", "no subagents",
 or "just build it" is implementation intent, not an onboarding answer. Always
-ask the required Agent Mode, Team Confirmation, project context, mobile, and
-code graph preflight questions in order
+ask the required OpenCode, Agent Mode, Team Confirmation, project context,
+mobile, and code graph preflight questions in order
 before `.traffic-one/.one.json`, `.traffic-one/plan.md`, scaffolding, installs, or
 source edits.
 
@@ -41,11 +60,11 @@ and stop for the user's typed answer. Do not write `.traffic-one/.one.json`,
 package versions, or choose defaults while onboarding answers are pending.
 
 Codex current-thread fallback: if `request_user_input` cannot be called, do not
-run more detection tools. The next visible assistant message must ask the Agent
-Mode question with `1. High (Recommended)`, `2. Balanced`, and `3. Low`, tell
-the user to reply with the option number or label, and stop. Ask Team
-Confirmation only for High/Balanced, then project context, then Mobile App,
-then Code Graph.
+run more detection tools. The next visible assistant message must ask the
+OpenCode opt-in question with `1. Enable OpenCode delegation` and `2. Not now`,
+tell the user to reply with the option number or label, and stop. Then ask
+Agent Mode, Team Confirmation only for High/Balanced, project context, Mobile
+App, then Code Graph.
 
 ### Step 2 — Existing project: check for Supabase
 Look for `@supabase/supabase-js` or `@supabase/ssr` in `package.json` dependencies.
@@ -73,7 +92,8 @@ dev fixtures behind the Supabase contract.
 Traffic One onboarding is mandatory whenever the resolved project mode is
 `new-project` (`mode === "new-project"`) until onboarding choices are answered
 and the project plan is ready. Run it in the current thread, using popup/input
-tools when available and plain-chat fallback when they are not.
+tools when available and plain-chat fallback when they are not. OpenCode is the
+first prompt before Performance.
 
 Codex Performance/Team preflight for new projects:
 - If the user's request is a non-trivial multi-layer build (UI + API/backend +
@@ -87,8 +107,12 @@ Codex Performance/Team preflight for new projects:
   reply with the option number or label, and stop. Do not choose a default,
   infer an answer, write `.traffic-one/.one.json`, scaffold, or continue while the
   onboarding answer is pending.
-- Ask the Performance / Agent Mode popup with Codex `request_user_input` when
-  available. Use question: "How do you want to run agents for this build?"
+- Ask the OpenCode popup first with Codex `request_user_input` when available.
+  Use question: "Save tokens by delegating coding tasks to OpenCode (a free
+  local agent)?" Options: `Enable OpenCode delegation` and `Not now`. Either
+  answer is saved in local Traffic One preferences and resolves this step.
+- Ask the Performance / Agent Mode popup next with Codex `request_user_input`
+  when available. Use question: "How do you want to run agents for this build?"
   Options: `High (Recommended)`, `Balanced`, and `Low`. `High` and `Balanced`
   mean the Traffic One subagent team; `Low` means main-agent-only role
   simulation.
@@ -129,6 +153,11 @@ Codex Performance/Team preflight for new projects:
 
 ### existing-codebase
 Preserve all existing structure. Improve new code only.
+If `.traffic-one/.one.json` is missing, inspect the target project, auto-detect
+stack/frontend/backend/mobile/realtime/technologies/evidence, and write shared
+state in the target root. Then run the local preference gate for this user:
+OpenCode, Performance, Team Confirmation for High/Balanced, then Code Graph.
+Existing projects do not ask new-project-only MVP context or Mobile App prompts.
 → Apply rules/modes/existing-codebase.md to new files only
 
 ### existing-with-supabase
@@ -147,16 +176,19 @@ State clearly:
 3. For existing-with-supabase: mention migration offer once
 4. For new-project with backend-backed needs: state `backend=supabase` as the
    default and `stack=default` unless custom tech was requested.
-5. For new-project, run onboarding in the current thread before asking
+5. For any Traffic One project, ask missing local preferences before mutating
+   work. Existing projects ask only OpenCode, Performance/Team, and Code Graph;
+   new projects continue through MVP context and Mobile App after those gates.
+6. For new-project, run onboarding in the current thread before asking
    implementation questions. If popup input is unavailable, ask fallback chat
    questions and stop.
-6. For new-project non-trivial multi-layer builds on Codex: ask Performance /
-   Agent Mode first, then Team Confirmation for High/Balanced, and stop until
-   the user answers before scaffolding.
-7. Show the setup-success message, ask the rich dynamic MVP-context
+7. For new-project non-trivial multi-layer builds on Codex: ask OpenCode first,
+   then Performance / Agent Mode, then Team Confirmation for High/Balanced, and
+   stop until the user answers before scaffolding.
+8. Show the setup-success message, ask the rich dynamic MVP-context
    questionnaire, and persist `projectContext`.
-8. Ask the `Do you want a mobile app too?` popup, then ask the required
+9. Ask the `Do you want a mobile app too?` popup, then ask the required
    `Code Graph` popup with `GitNexus` and `graphify` before writing final
    `.traffic-one/.one.json`.
-9. Ask what they'd like to do next only when they have not already given a build
+10. Ask what they'd like to do next only when they have not already given a build
    task and the Performance/Team preflight gate does not apply.

@@ -2,20 +2,19 @@
 
 Traffic One plugin behavior is provided by the installed skills, hooks, background integrations, and the active rule index below. Keep this mirror aligned with the plugin-root rules so Codex, Claude Code, Cursor, and local plugin tests all see the same baseline.
 
-## New-Project Gate
+## Traffic One Setup Gates
 
-- When `mode === "new-project"`, Traffic One onboarding runs in the current thread before `.traffic-one/.one.json`, `.traffic-one/plan.md`, subagent prompts, file writes, installs, or scaffolding.
-- Use host popup input for onboarding when available. If popup input is unavailable, ask the same next unresolved onboarding question in chat and stop for the user's typed answer.
-- Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
+- Hooks enforce the shared setup gate in `.traffic-one/rules/common/setup-gate.md`; do not duplicate or bypass that field/order logic in skills.
+- Resolve Traffic One state by the actual target project root, not the wrapper cwd.
+- Before the setup gate is clear, mention only project detection/onboarding. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
+- Use host popup input for setup prompts when available. If popup input is unavailable, ask the same next unresolved question in chat and stop for the user's typed answer.
 - Treat explicit user requests as implementation intent, not onboarding answers.
-- The OpenCode delegation opt-in (token economy) is the FIRST onboarding prompt, asked before Agent Mode; persist local `openCode` (`enabled`, `source`, `decidedAt`). It also surfaces once (non-blocking) for existing codebases. Delegation itself is a later task — this only records the choice so a future performance update can split work across Traffic One subagents and free OpenCode agents.
-- Persist Agent Mode/Performance in local Traffic One preferences; Balanced/High require Team Confirmation and `team.approved=true` before any subagent spawn.
-- After Agent Mode and Team Confirmation, collect a rich dynamic MVP `projectContext`, then ask Mobile App, then Code Graph.
 - Local `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
 
 ## Active Rules
 
 - .traffic-one/rules/common/auth-gate.md
+- .traffic-one/rules/common/setup-gate.md
 - .traffic-one/rules/common/senior-engineer-team.md
 - .traffic-one/rules/common/project-memory.md
 - .traffic-one/rules/common/documentation.md

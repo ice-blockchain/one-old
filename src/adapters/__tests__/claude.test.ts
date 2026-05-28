@@ -1,5 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 import { makeClaudeAdapter } from '../claude';
 import { dispatch } from '../../core/dispatch';
@@ -75,4 +78,33 @@ test('codex: namespaced multi-agent spawn hits spawn-agent gates', async () => {
   const parsed = JSON.parse(await dispatch(codex, handlers, { stdin, argv: [] }));
   assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'claim required');
+});
+
+test('codex: exec_command parses cmd/workdir and routes context to the inner app', async () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-adapter-')));
+  const child = path.join(root, 'one-nextjs');
+  try {
+    fs.mkdirSync(child, { recursive: true });
+    fs.writeFileSync(path.join(child, 'package.json'), '{}', 'utf8');
+    const codex = makeClaudeAdapter('codex');
+    const handlers: Handler[] = [
+      {
+        id: 'inspect',
+        event: 'PreToolUse',
+        tools: ['shell'],
+        priority: 0,
+        run: (ctx) => context(`cwd=${ctx.cwd}\ncommand=${ctx.input.tool?.command || ''}`),
+      },
+    ];
+    const stdin = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'exec_command',
+      tool_input: { cmd: 'npm test', workdir: 'one-nextjs' },
+      cwd: root,
+    });
+    const parsed = JSON.parse(await dispatch(codex, handlers, { stdin, argv: [] }));
+    assert.equal(parsed.hookSpecificOutput.additionalContext, `cwd=${child}\ncommand=npm test`);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

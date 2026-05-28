@@ -29,11 +29,12 @@ test('hostPopupInstruction names the host popup tools', () => {
   }
 });
 
-test('codexDefaultModeFallbackDirective embeds the agent-mode prompt', () => {
+test('codexDefaultModeFallbackDirective starts with the OpenCode prompt', () => {
   for (const block of [skill, verbatim]) {
     const out = codexDefaultModeFallbackDirective(block);
     assert.ok(out.includes('CURRENT-THREAD ONBOARDING FALLBACK'));
-    assert.ok(out.includes('High (Recommended)')); // embedded agent-mode prompt
+    assert.ok(out.includes('Enable OpenCode delegation')); // first fallback prompt
+    assert.ok(out.includes('Agent Mode'));
     assert.ok(out.includes('Mobile App'));
   }
 });

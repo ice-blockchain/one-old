@@ -37,17 +37,18 @@ export function hostPopupInstruction(block: OnboardingBlock): string {
 
 export function codexDefaultModeFallbackDirective(block: OnboardingBlock): string {
   const agentMode = agentModePrompt(block);
+  const openCode = openCodeChatFallback(block);
   const verbatim = [
     'CURRENT-THREAD ONBOARDING FALLBACK (visible response, blocking):',
     'If `request_user_input` cannot be called, do not use tools and do not keep detecting/scaffolding.',
     'Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate create-feature, create-page, frontend-design, tdd-workflow, or other implementation skills yet.',
     'Your next visible assistant message must be the plain-chat fallback prompt below, then you must stop for the user answer:',
     '',
-    agentMode,
+    openCode,
     '',
-    "After the user answers, ask Team Confirmation for High/Balanced, then show \"Traffic One was successfully set up. Let's collect the project details next.\", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.",
+    "After the user answers, ask Agent Mode, Team Confirmation for High/Balanced, then show \"Traffic One was successfully set up. Let's collect the project details next.\", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.",
   ].join('\n');
-  return block('codex-fallback', { AGENT_MODE_PROMPT: agentMode }, verbatim);
+  return block('codex-fallback', { OPEN_CODE_PROMPT: openCode, AGENT_MODE_PROMPT: agentMode }, verbatim);
 }
 
 // Condensed reminder re-injected on UserPromptSubmit while a new project hasn't
@@ -69,14 +70,13 @@ export function onboardingReminderShort(block: OnboardingBlock): string {
   return block('onboarding-reminder', { CODEX_FALLBACK: codexFallback }, fallback);
 }
 
-// One-time OpenCode delegation opt-in directive (surfaced for existing/auto-
-// detected codebases via UserPromptSubmit). Composes the host-popup instruction
-// + the OpenCode chat fallback.
+// Blocking OpenCode delegation opt-in directive. Composes the host-popup
+// instruction + the OpenCode chat fallback.
 export function openCodeOptInDirective(block: OnboardingBlock): string {
   const hostPopup = hostPopupInstruction(block);
   const openCodeChat = openCodeChatFallback(block);
   const fallback = [
-    'OPENCODE DELEGATION OPT-IN (one-time, non-blocking):',
+    'OPENCODE DELEGATION OPT-IN (blocking local preference):',
     '  Traffic One can delegate bounded implementation tasks to OpenCode, a free',
     '  local AI coding agent, so it plans/supervises/verifies while OpenCode executes',
     '  — cutting paid token usage. Every delegated change stays in a reviewable',
@@ -86,7 +86,7 @@ export function openCodeOptInDirective(block: OnboardingBlock): string {
     '  Then record the answer in local Traffic One preferences:',
     '    "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }',
     '  "Enable" -> enabled: true; "Not now" -> enabled: false. Do NOT re-ask once it is',
-    "  recorded, and do NOT let this block the user's current request.",
+    "  recorded. This blocks mutating Traffic One work until the answer is saved locally.",
     '',
     openCodeChat,
   ].join('\n');

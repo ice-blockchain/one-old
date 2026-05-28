@@ -6,8 +6,10 @@
 
 Preserve all existing structure. New code only.
 
-## OpenCode delegation opt-in (token economy, one-time)
-- If `.traffic-one/.one.json` has no resolved `openCode` field, the UserPromptSubmit hook surfaces a one-time, non-blocking popup asking whether to enable delegating bounded coding tasks to OpenCode (a free local agent) to save paid tokens. Record the answer as `openCode: { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }` and do not re-ask. Delegation itself ships in a later task; this only records the preference. Never auto-pick — wait for the user.
+## Setup gate
+- Follow `rules/common/setup-gate.md` before normal feature work. Existing
+  projects skip new-project-only MVP context and Mobile App prompts; preserve
+  the detected architecture and ask only missing local-preference steps.
 
 ## Active constraints
 - Do NOT rename, move, or restructure existing files

@@ -24,10 +24,10 @@ onboarding question in chat and stop for the user's typed answer.
 
 Codex current-thread fallback: if `request_user_input` cannot be called, the
 fallback is the next visible assistant response before any tool use. Ask the
-Agent Mode question with `1. High (Recommended)`, `2. Balanced`, and `3. Low`,
-tell the user to reply with the option number or label, and stop. Ask Team
-Confirmation only for High/Balanced, then project context, then Mobile App,
-then Code Graph.
+OpenCode opt-in question with `1. Enable OpenCode delegation` and `2. Not now`,
+tell the user to reply with the option number or label, and stop. Then ask
+Agent Mode, Team Confirmation only for High/Balanced, project context, Mobile
+App, then Code Graph.
 
 ### Path B — Mid-project reconfigure
 User says "switch stack", "change stack", "reconfigure", etc. Read the existing
@@ -37,8 +37,11 @@ User says "switch stack", "change stack", "reconfigure", etc. Read the existing
 ### NOT this skill: existing project on first session
 For existing codebases the SessionStart hook does the detection itself
 (scans `package.json` deps + workspace config) and writes `.traffic-one/.one.json`
-without any Q&A. Don't trigger here. The user only sees a one-line confirmation
-on the model's first reply (auto-detected stack: X, backend: Y, realtime: Z).
+without new-project Q&A. Don't trigger here. After shared state is detected or
+written, the current user still must complete local preferences for that target
+root before implementation: OpenCode, Performance, Team Confirmation for
+High/Balanced, then Code Graph. Existing projects do not ask MVP context or
+Mobile App prompts.
 
 ## Stack ids (the only valid values)
 
@@ -63,7 +66,8 @@ load only the selected technology rules.
 When the resolved project mode is `new-project` (`mode === "new-project"`),
 Traffic One onboarding is mandatory until onboarding choices are answered and
 the project plan is ready. Run it in the current thread, using popup/input
-tools when available and plain-chat fallback when they are not.
+tools when available and plain-chat fallback when they are not. OpenCode is the
+first prompt before Performance.
 
 Codex onboarding choices must use prompt popups when available, not prose with numbered
 options. When `request_user_input` is available, call that tool and stop; do
@@ -75,12 +79,13 @@ onboarding answer is pending.
 
 Ask onboarding prompts in this order and stop after each unresolved answer:
 
-1. Agent Mode / Performance: `High (Recommended)`, `Balanced`, or `Low`.
-2. Team Confirmation for `High` / `Balanced`: show every role/tier/model row
+1. OpenCode delegation opt-in: `Enable OpenCode delegation` or `Not now`.
+2. Agent Mode / Performance: `High (Recommended)`, `Balanced`, or `Low`.
+3. Team Confirmation for `High` / `Balanced`: show every role/tier/model row
    and wait for explicit `Approve`; skip this for `Low`.
-3. Show: "Traffic One was successfully set up. Let's collect the project
+4. Show: "Traffic One was successfully set up. Let's collect the project
    details next."
-4. Ask one rich, dynamic MVP-context questionnaire based on the user's original
+5. Ask one rich, dynamic MVP-context questionnaire based on the user's original
    request and save `projectContext` with `source`, `originalPrompt`,
    `summary`, `answers`, and `collectedAt`. Cover audience, core flows, v1
    features, roles/auth, data model, admin/ops needs, business model, payments
@@ -89,7 +94,7 @@ Ask onboarding prompts in this order and stop after each unresolved answer:
    Ask admin-area questions when the app has managed content/users/
    transactions/moderation/reporting/operations even if the user did not ask
    for admin.
-5. Ask the mobile decision. If the user already asked for
+6. Ask the mobile decision. If the user already asked for
    mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only, Next.js,
    frontend-only, no backend, no subagents, or "just build it", treat that as
    implementation intent rather than an onboarding answer. On Codex, use
@@ -169,7 +174,7 @@ not add a "(Recommended)" tag.
 
 The schema is required for new projects: `mode`, `stack`, `frontend`, `backend`,
 `projectContext`, `mobile`, `technologies`, `realtime`, `codeGraphProvider`,
-`performance`, `team`, `toolchain`, `confirmed`, `onboardingComplete`,
+`openCode`, `performance`, `team`, `toolchain`, `confirmed`, `onboardingComplete`,
 `confirmedAt`
 (`version` is the current
 Traffic One plugin version; do not write a separate `pluginVersion` field).
@@ -203,6 +208,7 @@ role phases are simulated manually in the current thread. Use
   "technologies": { "frontend": [], "backend": [], "mobile": [] },
   "realtime": "<heavy|light|none>",
   "codeGraphProvider": "<gitnexus|graphify>",
+  "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" },
   "performance": { "level": "<low|balanced|high>", "source": "prompted" },
   "team": { "mode": "<subagents|main-agent>", "source": "prompted", "approved": true },
   "toolchain": {

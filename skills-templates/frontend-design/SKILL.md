@@ -1,10 +1,9 @@
 ---
 name: frontend-design
 description: >
-  Prerequisite: do not read, invoke, or activate this skill during Traffic One
-  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
-  this skill only after `.traffic-one/.one.json` has `onboardingComplete: true` and
-  `.traffic-one/plan.md` exists. Once onboarding is resolved, create
+  Prerequisite: follow the shared Traffic One setup gate
+  (`rules/common/setup-gate.md`). Use `detect-project` / `stack-setup` first;
+  activate this skill only after the gate is clear. Then create
   distinctive, production-grade frontend interfaces with high design quality.
   Use when the user asks to build web components, pages, or applications and
   the visual direction matters as much as the code quality.
@@ -17,10 +16,9 @@ metadata:
 
 Traffic One precedence: follow this skill only where it does not conflict with Traffic One AGENTS.md and rules/*.md. Forced stack choices, approved libraries, i18n, styling, services, state, testing, accessibility, security, and backend technology rules from Traffic One take precedence.
 
-Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
-onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and
-`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
-return here after the stack, mobile, code graph, and team gates are resolved.
+Traffic One setup gate: follow `rules/common/setup-gate.md`. Use
+`detect-project` / `stack-setup` first; do not implement with this skill until
+the hook/gate context is clear.
 
 # Frontend Design
 

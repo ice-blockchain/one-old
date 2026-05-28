@@ -6,7 +6,7 @@ import * as path from 'path';
 
 import { normalizeState, readState, requireAddon, statePath, writeState } from '../normalize';
 import { readEffectiveState } from '../local-prefs';
-import { nextOnboardingStep } from '../../onboarding/prompts';
+import { nextLocalPreferenceStep } from '../../onboarding/local-prefs';
 
 function withPrefs<T>(fn: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-state-'));
@@ -117,7 +117,7 @@ test('local onboarding preferences are isolated per user for the same project', 
     assert.equal('performance' in userBState, false);
     assert.equal('team' in userBState, false);
     assert.equal(userBState.stack, 'default');
-    assert.equal(nextOnboardingStep(userBState), 'open-code');
+    assert.equal(nextLocalPreferenceStep(userBState), 'open-code');
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;

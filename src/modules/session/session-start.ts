@@ -19,6 +19,8 @@ import { autoDetectedAnnouncement } from '../../shared/directives';
 import { onboardingDirectiveNewProject } from '../../shared/onboarding/session-directive';
 import type { OnboardingBlock } from '../../shared/onboarding/fallbacks';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
+import { localPreferenceContext } from '../../shared/onboarding/local-prefs';
+import { nextOnboardingPromptRequest, nextOnboardingStepPrompt } from '../../shared/onboarding/fallbacks';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
@@ -126,6 +128,15 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
   // ── Flow 1 — already onboarded → pack the rule bundle ──
   if (onboardingReady) {
+    const activeStackId = String(stackId);
+    const localPrefs = localPreferenceContext(state, activeStackId, 'session-start', block);
+    if (localPrefs) {
+      return context(localPrefs.context, {
+        systemMessage: `traffic-one [${activeStackId}] local preferences required`,
+        ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+      });
+    }
+
     const spec = stackSpecForState(state);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
@@ -187,7 +198,28 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     header += tokenEconomyBanner(cwd);
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
+    const localPrefs = localPreferenceContext(state, String(state.stack || mode), 'session-start', block);
+    if (localPrefs) {
+      return context(`${banner}\n\n${localPrefs.context}`, {
+        systemMessage: `traffic-one [${state.stack || mode}] local preferences required`,
+        ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+      });
+    }
     return context(`${banner}\n\n${header}${graphPreview}\n${body}`);
+  }
+
+  if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state)) {
+    const localPrefs = localPreferenceContext(state, stackId, 'session-start', block);
+    const nextPrompt = localPrefs?.context || [
+      `[ACTIVE STACK: ${stackId}]`,
+      '',
+      nextOnboardingStepPrompt(state, 'user-prompt', block),
+    ].join('\n');
+    const promptRequest = localPrefs?.promptRequest || nextOnboardingPromptRequest(state, 'user-prompt', block);
+    return context(nextPrompt, {
+      systemMessage: 'traffic-one [onboarding incomplete]',
+      ...(promptRequest ? { promptRequest } : {}),
+    });
   }
 
   // ── Flow 3 — new project (or undetectable existing) → onboarding directive ──

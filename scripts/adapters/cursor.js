@@ -38,12 +38,14 @@ function makeCursorAdapter() {
             let tool;
             if (mapping.tool) {
                 const command = (0, coerce_1.firstString)(data.command, data.cmd, data.shell_command, data.shellCommand, input.command, input.cmd);
+                const workdir = (0, coerce_1.firstString)(data.workdir, data.working_dir, data.workingDir, input.workdir, input.cwd, input.working_dir, input.workingDir);
                 const filePath = (0, coerce_1.firstString)(data.file_path, data.filePath, data.path, data.uri, input.file_path, input.filePath, input.path, input.uri, document.path, document.uri);
                 const content = (0, coerce_1.firstString)(data.content, data.new_content, data.newContent, data.text, input.content, input.new_content, input.newContent, input.text);
                 tool = {
                     class: mapping.tool,
                     rawName: sub,
                     ...(command ? { command } : {}),
+                    ...(workdir ? { workdir } : {}),
                     ...(filePath ? { filePath } : {}),
                     ...(content ? { content } : {}),
                 };

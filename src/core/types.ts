@@ -25,6 +25,7 @@ export interface ToolInput {
   readonly class: ToolClass;
   readonly rawName: string;
   readonly command?: string;
+  readonly workdir?: string;
   readonly filePath?: string;
   readonly content?: string;
 }

@@ -40,7 +40,16 @@ function materializeProjectFromState(cwd, opts = {}) {
     if (!state || typeof state !== 'object') {
         return outcome('missing-state', 'traffic-one — `.traffic-one/.one.json` is missing or invalid; cannot materialize project rules', 'Write the complete Traffic One state file first, then run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root.');
     }
+    const hadLocalPreferenceFields = (0, state_1.hasLocalPreferenceFields)(state);
     const normalizedBeforeValidation = (0, state_1.normalizeState)(state, state.mode || (0, detection_1.detectMode)(cwd));
+    if (normalizedBeforeValidation || hadLocalPreferenceFields) {
+        try {
+            (0, state_1.writeState)(cwd, state);
+        }
+        catch {
+            // best-effort; validation below still reports any missing fields.
+        }
+    }
     const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
     const validationIssues = (0, state_1.trafficOneStateValidationIssues)(state, validCodeGraphProviders);
     if (validationIssues.length > 0) {
@@ -52,14 +61,6 @@ function materializeProjectFromState(cwd, opts = {}) {
             validationIssues,
         });
         return outcome('incomplete', 'traffic-one — `.traffic-one/.one.json` is incomplete; cannot materialize project rules yet', context);
-    }
-    if (normalizedBeforeValidation) {
-        try {
-            (0, state_1.writeState)(cwd, state);
-        }
-        catch {
-            // best-effort; materialization can still proceed with the normalized object.
-        }
     }
     (0, plan_migration_1.migrateArchitectureDocsToPlan)(cwd);
     let materialized = null;

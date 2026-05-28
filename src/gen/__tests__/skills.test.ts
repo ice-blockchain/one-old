@@ -29,3 +29,17 @@ test('generated skills do not require architecture.md artifacts', () => {
     assert.doesNotMatch(doc.content, /package-architecture/i, doc.relPath);
   }
 });
+
+test('generated skills enforce local preferences before implementation', () => {
+  const docs = generatedSkillDocs(REPO_ROOT);
+  const detect = docs.find((d) => d.relPath === path.join('skills-templates', 'detect-project', 'SKILL.md'));
+  const page = docs.find((d) => d.relPath === path.join('skills-templates', 'create-page', 'SKILL.md'));
+  const stack = docs.find((d) => d.relPath === path.join('skills-templates', 'stack-setup', 'SKILL.md'));
+  assert.ok(detect);
+  assert.ok(page);
+  assert.ok(stack);
+  assert.match(detect.content, /Required order: OpenCode, Performance,\s*Team Confirmation for High\/Balanced, then Code Graph/);
+  assert.match(page.content, /rules\/common\/setup-gate\.md/);
+  assert.doesNotMatch(page.content, /local preferences contain `openCode`/);
+  assert.match(stack.content, /Existing projects do not ask MVP context or\s*Mobile App prompts/);
+});

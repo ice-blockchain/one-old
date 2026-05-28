@@ -34,13 +34,15 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
 
       let tool: ToolInput | undefined;
       if (rawName) {
-        const command = asString(toolInput.command);
+        const command = asString(toolInput.command ?? toolInput.cmd);
+        const workdir = asString(toolInput.workdir ?? toolInput.cwd);
         const filePath = asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
         const content = asString(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
         tool = {
           class: toolClassForRawName(rawName),
           rawName,
           ...(command ? { command } : {}),
+          ...(workdir ? { workdir } : {}),
           ...(filePath ? { filePath } : {}),
           ...(content ? { content } : {}),
         };

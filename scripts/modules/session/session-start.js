@@ -52,6 +52,8 @@ const materialize_1 = require("../../shared/materialize");
 const directives_1 = require("../../shared/directives");
 const session_directive_1 = require("../../shared/onboarding/session-directive");
 const predicates_1 = require("../../shared/onboarding/predicates");
+const local_prefs_1 = require("../../shared/onboarding/local-prefs");
+const fallbacks_1 = require("../../shared/onboarding/fallbacks");
 const packing_1 = require("../../shared/packing");
 const paths_1 = require("../../shared/paths");
 const skill_filters_1 = require("../../shared/skill-filters");
@@ -137,6 +139,14 @@ function runSessionStartAuthed(ctx) {
         && (mode !== 'new-project' || !(0, predicates_1.isNewProjectOnboardingIncomplete)(state));
     // ── Flow 1 — already onboarded → pack the rule bundle ──
     if (onboardingReady) {
+        const activeStackId = String(stackId);
+        const localPrefs = (0, local_prefs_1.localPreferenceContext)(state, activeStackId, 'session-start', block);
+        if (localPrefs) {
+            return (0, result_1.context)(localPrefs.context, {
+                systemMessage: `traffic-one [${activeStackId}] local preferences required`,
+                ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+            });
+        }
         const spec = (0, stacks_1.stackSpecForState)(state);
         const modeRulePath = `rules/modes/${mode}.md`;
         const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
@@ -198,7 +208,27 @@ function runSessionStartAuthed(ctx) {
         if (skillDirective)
             header += skillDirective;
         const graphPreview = (0, session_start_lib_1.readGraphPreview)(cwd);
+        const localPrefs = (0, local_prefs_1.localPreferenceContext)(state, String(state.stack || mode), 'session-start', block);
+        if (localPrefs) {
+            return (0, result_1.context)(`${banner}\n\n${localPrefs.context}`, {
+                systemMessage: `traffic-one [${state.stack || mode}] local preferences required`,
+                ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+            });
+        }
         return (0, result_1.context)(`${banner}\n\n${header}${graphPreview}\n${body}`);
+    }
+    if (mode === 'new-project' && stackId && (0, predicates_1.isNewProjectOnboardingIncomplete)(state)) {
+        const localPrefs = (0, local_prefs_1.localPreferenceContext)(state, stackId, 'session-start', block);
+        const nextPrompt = localPrefs?.context || [
+            `[ACTIVE STACK: ${stackId}]`,
+            '',
+            (0, fallbacks_1.nextOnboardingStepPrompt)(state, 'user-prompt', block),
+        ].join('\n');
+        const promptRequest = localPrefs?.promptRequest || (0, fallbacks_1.nextOnboardingPromptRequest)(state, 'user-prompt', block);
+        return (0, result_1.context)(nextPrompt, {
+            systemMessage: 'traffic-one [onboarding incomplete]',
+            ...(promptRequest ? { promptRequest } : {}),
+        });
     }
     // ── Flow 3 — new project (or undetectable existing) → onboarding directive ──
     const directive = (0, session_directive_1.onboardingDirectiveNewProject)(block);

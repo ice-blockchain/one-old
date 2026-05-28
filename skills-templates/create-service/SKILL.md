@@ -1,10 +1,9 @@
 ---
 name: create-service
 description: >
-  Prerequisite: do not read, invoke, or activate this skill during Traffic One
-  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
-  this skill only after `.traffic-one/.one.json` has `onboardingComplete: true` and
-  `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
+  Prerequisite: follow the shared Traffic One setup gate
+  (`rules/common/setup-gate.md`). Use `detect-project` / `stack-setup` first;
+  activate this skill only after the gate is clear. Then use PROACTIVELY
   whenever the user asks to add an API call, create a service, fetch data from
   an endpoint, connect to a backend, or wire up HTTP requests.
   Triggers: "add an API call", "create a service for", "fetch [resource] from the API",
@@ -13,10 +12,9 @@ description: >
 
 # Skill: Create Service
 
-Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
-onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and
-`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
-return here after the stack, mobile, code graph, and team gates are resolved.
+Traffic One setup gate: follow `rules/common/setup-gate.md`. Use
+`detect-project` / `stack-setup` first; do not implement with this skill until
+the hook/gate context is clear.
 
 Confirm the service function and hook before creating any files.
 

@@ -57,6 +57,39 @@ test('materializeProjectFromState: incomplete state reports an "incomplete" outc
   });
 });
 
+test('materializeProjectFromState: moves local-only fields out of shared .one.json', () => {
+  withTempProject((dir) => {
+    writeState(dir, {
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
+      projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      codeGraphProvider: 'graphify',
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-01-01T00:00:00Z',
+    });
+
+    const out = materializeProjectFromState(dir, { trigger: 'unit' });
+    assert.notEqual(out.status, 'incomplete');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal('openCode' in onDisk, false);
+    assert.equal('codeGraphProvider' in onDisk, false);
+    assert.equal('performance' in onDisk, false);
+    assert.equal('team' in onDisk, false);
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    assert.ok(prefsPath);
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    assert.equal(prefs.codeGraphProvider, 'graphify');
+  });
+});
+
 test('materializeProjectIfNeeded: already-materialized → fires the reporter, returns null', () => {
   withTempProject((dir) => {
     writeMaterialized(dir);

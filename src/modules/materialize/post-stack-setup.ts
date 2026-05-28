@@ -131,9 +131,13 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const cwd = ctx.cwd;
   const raw = obj(ctx.input.raw) || {};
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
-  const filePath = asString(toolInput.file_path);
+  const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path);
+  const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
+  const pathBase = workdir
+    ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(ctx.input.cwd, workdir))
+    : ctx.input.cwd;
   const cwdAbs = path.resolve(cwd);
-  const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(cwd, filePath)) : '';
+  const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(pathBase, filePath)) : '';
   const targetInsideCwd = Boolean(targetPath && (targetPath === cwdAbs || targetPath.startsWith(`${cwdAbs}${path.sep}`)));
   if (isPluginAuthoringRoot(cwd) && (!targetPath || targetInsideCwd)) return noop();
 
@@ -158,15 +162,15 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // 1. Supabase Edge Function edit → auto-deploy (injected; skip when no hook).
   if (FUNCTION_PATH_RE.test(fp)) {
-    const result = deps.functionEditDeploy ? deps.functionEditDeploy(filePath) : null;
+    const result = deps.functionEditDeploy ? deps.functionEditDeploy(targetPath || filePath) : null;
     return result ? context(result) : noop();
   }
 
   // 2. Soft digest-size warning (never blocks the write).
   const digestMatch = fp.match(DIGEST_PATH_RE);
-  if (digestMatch && fs.existsSync(filePath)) {
+  if (digestMatch && targetPath && fs.existsSync(targetPath)) {
     let bytes = 0;
-    try { bytes = fs.statSync(filePath).size; } catch { bytes = 0; }
+    try { bytes = fs.statSync(targetPath).size; } catch { bytes = 0; }
     if (bytes > DIGEST_HARD_BYTES) {
       const role = digestMatch[1] as string;
       const kb = Math.round((bytes / 1024) * 10) / 10;
@@ -177,14 +181,15 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // 3. Non-state-file write → write-triggered convergence.
   if (!isStateFilePath(filePath)) {
-    const mem = materializeFromProjectMemoryWrite(cwd, filePath, { reportOneMcp });
+    const mem = materializeFromProjectMemoryWrite(cwd, targetPath || filePath, { reportOneMcp });
     if (mem) return outcomeToResult(mem);
-    const hint = materializeFromToolInputHints(cwd, toolInput, { reportOneMcp });
+    const hintInput = targetPath ? { ...toolInput, file_path: targetPath } : toolInput;
+    const hint = materializeFromToolInputHints(cwd, hintInput, { reportOneMcp });
     if (hint) return outcomeToResult(hint);
     return outcomeToResult(materializeProjectIfNeeded(cwd, { trigger: 'generic post-tool convergence', reportOneMcp }));
   }
 
   // 4. State-file write → validate + materialize (writeState strips local prefs).
-  if (!fs.existsSync(filePath)) return noop();
-  return outcomeToResult(materializeProjectFromState(projectRootFromStateFilePath(filePath), { trigger: 'post-stack-setup', reportOneMcp }));
+  if (!targetPath || !fs.existsSync(targetPath)) return noop();
+  return outcomeToResult(materializeProjectFromState(projectRootFromStateFilePath(targetPath), { trigger: 'post-stack-setup', reportOneMcp }));
 }

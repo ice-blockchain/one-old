@@ -32,13 +32,15 @@ function makeClaudeAdapter(id = 'claude') {
             const toolInput = (0, coerce_1.asRecord)(data.tool_input ?? data.toolInput);
             let tool;
             if (rawName) {
-                const command = (0, coerce_1.asString)(toolInput.command);
+                const command = (0, coerce_1.asString)(toolInput.command ?? toolInput.cmd);
+                const workdir = (0, coerce_1.asString)(toolInput.workdir ?? toolInput.cwd);
                 const filePath = (0, coerce_1.asString)(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
                 const content = (0, coerce_1.asString)(toolInput.content ?? toolInput.new_content ?? toolInput.newContent);
                 tool = {
                     class: (0, events_1.toolClassForRawName)(rawName),
                     rawName,
                     ...(command ? { command } : {}),
+                    ...(workdir ? { workdir } : {}),
                     ...(filePath ? { filePath } : {}),
                     ...(content ? { content } : {}),
                 };

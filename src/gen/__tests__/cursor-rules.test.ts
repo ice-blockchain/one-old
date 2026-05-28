@@ -32,8 +32,8 @@ test('cursorFrontmatter emits description + globs + alwaysApply', () => {
 
 test('generatedCursorRules gathers rule + agent docs from the repo tree', () => {
   const docs = generatedCursorRules(REPO_ROOT);
-  // 72 rule templates + 6 agents (00-auth-required.mdc is hand-authored, not generated).
-  assert.equal(docs.length, 78);
+  // 73 rule templates + 6 agents (00-auth-required.mdc is hand-authored, not generated).
+  assert.equal(docs.length, 79);
   const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
   // common/auth-gate.md → auth-required.mdc (special slug).

@@ -150,9 +150,13 @@ function runPostStackSetup(ctx, deps = {}) {
     const cwd = ctx.cwd;
     const raw = obj(ctx.input.raw) || {};
     const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
-    const filePath = asString(toolInput.file_path);
+    const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path);
+    const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
+    const pathBase = workdir
+        ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(ctx.input.cwd, workdir))
+        : ctx.input.cwd;
     const cwdAbs = path.resolve(cwd);
-    const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(cwd, filePath)) : '';
+    const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(pathBase, filePath)) : '';
     const targetInsideCwd = Boolean(targetPath && (targetPath === cwdAbs || targetPath.startsWith(`${cwdAbs}${path.sep}`)));
     if ((0, authoring_root_1.isPluginAuthoringRoot)(cwd) && (!targetPath || targetInsideCwd))
         return (0, result_1.noop)();
@@ -174,15 +178,15 @@ function runPostStackSetup(ctx, deps = {}) {
         return (0, result_1.noop)();
     // 1. Supabase Edge Function edit → auto-deploy (injected; skip when no hook).
     if (post_helpers_1.FUNCTION_PATH_RE.test(fp)) {
-        const result = deps.functionEditDeploy ? deps.functionEditDeploy(filePath) : null;
+        const result = deps.functionEditDeploy ? deps.functionEditDeploy(targetPath || filePath) : null;
         return result ? (0, result_1.context)(result) : (0, result_1.noop)();
     }
     // 2. Soft digest-size warning (never blocks the write).
     const digestMatch = fp.match(post_helpers_1.DIGEST_PATH_RE);
-    if (digestMatch && fs.existsSync(filePath)) {
+    if (digestMatch && targetPath && fs.existsSync(targetPath)) {
         let bytes = 0;
         try {
-            bytes = fs.statSync(filePath).size;
+            bytes = fs.statSync(targetPath).size;
         }
         catch {
             bytes = 0;
@@ -196,16 +200,17 @@ function runPostStackSetup(ctx, deps = {}) {
     }
     // 3. Non-state-file write → write-triggered convergence.
     if (!(0, tool_classify_1.isStateFilePath)(filePath)) {
-        const mem = (0, converge_from_write_1.materializeFromProjectMemoryWrite)(cwd, filePath, { reportOneMcp });
+        const mem = (0, converge_from_write_1.materializeFromProjectMemoryWrite)(cwd, targetPath || filePath, { reportOneMcp });
         if (mem)
             return outcomeToResult(mem);
-        const hint = (0, converge_from_write_1.materializeFromToolInputHints)(cwd, toolInput, { reportOneMcp });
+        const hintInput = targetPath ? { ...toolInput, file_path: targetPath } : toolInput;
+        const hint = (0, converge_from_write_1.materializeFromToolInputHints)(cwd, hintInput, { reportOneMcp });
         if (hint)
             return outcomeToResult(hint);
         return outcomeToResult((0, materialize_1.materializeProjectIfNeeded)(cwd, { trigger: 'generic post-tool convergence', reportOneMcp }));
     }
     // 4. State-file write → validate + materialize (writeState strips local prefs).
-    if (!fs.existsSync(filePath))
+    if (!targetPath || !fs.existsSync(targetPath))
         return (0, result_1.noop)();
-    return outcomeToResult((0, materialize_1.materializeProjectFromState)((0, post_helpers_1.projectRootFromStateFilePath)(filePath), { trigger: 'post-stack-setup', reportOneMcp }));
+    return outcomeToResult((0, materialize_1.materializeProjectFromState)((0, post_helpers_1.projectRootFromStateFilePath)(targetPath), { trigger: 'post-stack-setup', reportOneMcp }));
 }

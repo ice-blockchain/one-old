@@ -18,6 +18,8 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(out.includes('- .traffic-one/rules/common/auth-gate.md'));
   assert.ok(out.includes('- .traffic-one/skills/project-memory/SKILL.md'));
   assert.ok(out.includes('## Active Rule Kernel'));
+  assert.ok(out.includes('per-user local preferences'));
+  assert.ok(out.includes('Existing projects skip new-project MVP/mobile prompts'));
   assert.ok(out.includes('## Read Rules When'));
   assert.ok(out.includes('### Mandatory Baseline'));
   assert.ok(out.includes('### Reference On Demand'));

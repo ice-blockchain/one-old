@@ -1,11 +1,11 @@
 ---
 name: traffic-one-onboarding-gate
-description: Wording source for the Traffic One new-project onboarding gate — chat fallbacks (shown when no host popup tool is available) and gate deny reasons. Read at runtime via skillBlock(); the step-routing + deny LOGIC lives in TS.
+description: Wording source for Traffic One setup gates — new-project onboarding, local preference prompts, chat fallbacks (shown when no host popup tool is available), and gate deny reasons. Read at runtime via skillBlock(); the step-routing + deny LOGIC lives in TS.
 ---
 
 # Traffic One Onboarding Gate
 
-Directive PROSE for the new-project onboarding flow. The step router, deny
+Directive PROSE for the new-project onboarding and local preference flows. The step router, deny
 conditions, and `permissionDecision:"deny"` live in
 `src/modules/onboarding-gate/` + `src/shared/onboarding/`. `{{PLACEHOLDER}}`
 tokens are filled by the gate. Each block has a verbatim fallback in code, so a
@@ -167,9 +167,9 @@ If `request_user_input` cannot be called, do not use tools and do not keep detec
 Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate create-feature, create-page, frontend-design, tdd-workflow, or other implementation skills yet.
 Your next visible assistant message must be the plain-chat fallback prompt below, then you must stop for the user answer:
 
-{{AGENT_MODE_PROMPT}}
+{{OPEN_CODE_PROMPT}}
 
-After the user answers, ask Team Confirmation for High/Balanced, then show "Traffic One was successfully set up. Let's collect the project details next.", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.
+After the user answers, ask Agent Mode, Team Confirmation for High/Balanced, then show "Traffic One was successfully set up. Let's collect the project details next.", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.
 <!-- T1BLOCK:END codex-fallback -->
 
 <!-- T1BLOCK:BEGIN onboarding-reminder -->
@@ -252,7 +252,7 @@ ONBOARDING directive for the full pitch script and decline-Supabase examples.
 <!-- T1BLOCK:END onboarding-reminder -->
 
 <!-- T1BLOCK:BEGIN opencode-optin -->
-OPENCODE DELEGATION OPT-IN (one-time, non-blocking):
+OPENCODE DELEGATION OPT-IN (blocking local preference):
   Traffic One can delegate bounded implementation tasks to OpenCode, a free
   local AI coding agent, so it plans/supervises/verifies while OpenCode executes
   — cutting paid token usage. Every delegated change stays in a reviewable
@@ -262,7 +262,7 @@ OPENCODE DELEGATION OPT-IN (one-time, non-blocking):
   Then record the answer in local Traffic One preferences:
     "openCode": { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }
   "Enable" -> enabled: true; "Not now" -> enabled: false. Do NOT re-ask once it is
-  recorded, and do NOT let this block the user's current request.
+  recorded. This blocks mutating Traffic One work until the answer is saved locally.
 
 {{OPENCODE_CHAT}}
 <!-- T1BLOCK:END opencode-optin -->

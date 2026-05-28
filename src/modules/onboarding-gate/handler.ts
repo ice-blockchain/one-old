@@ -22,6 +22,7 @@ import { isNewProjectOnboardingIncomplete, needsTeamConfirmation } from '../../s
 import { onboardingPromptRequestForStep, performanceLevelOf } from '../../shared/onboarding/prompts';
 import { repairNewProjectOnboardingState } from '../../shared/onboarding/repair';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
+import { localPreferenceContext } from '../../shared/onboarding/local-prefs';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { normalizeState, readEffectiveState } from '../../shared/state';
@@ -53,7 +54,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(cwd)) return noop();
   // Auth is enforced by the priority-0 session gate before this gate runs.
 
-  const filePath = asString(toolInput.file_path);
+  const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
   const state = readEffectiveState(cwd);
   const mode = (state.mode as string) || detectMode(cwd);
   const effectiveState: Rec = { ...state, mode };
@@ -68,6 +69,14 @@ export function onboardingGate(ctx: Ctx): HookResult {
 
   // The model is allowed to write the canonical state file itself.
   if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) return noop();
+
+  const localPrefs = localPreferenceContext(effectiveState, String(effectiveState.stack || mode), 'gate', block);
+  if (localPrefs) {
+    if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+    return deny(localPrefs.context, {
+      ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+    });
+  }
 
   if (mode === 'new-project' && isNewProjectOnboardingIncomplete(effectiveState)) {
     const repaired = repairNewProjectOnboardingState(cwd, effectiveState, 'generic pre-tool onboarding repair');

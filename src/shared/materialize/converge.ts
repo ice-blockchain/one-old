@@ -16,6 +16,7 @@ import { STACKS } from '../stacks';
 import { nowIsoNoMs } from '../text';
 import {
   isMaterialized,
+  hasLocalPreferenceFields,
   normalizeState,
   readEffectiveState,
   stackFingerprint,
@@ -85,7 +86,15 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
     );
   }
 
+  const hadLocalPreferenceFields = hasLocalPreferenceFields(state);
   const normalizedBeforeValidation = normalizeState(state, (state.mode as string) || detectMode(cwd));
+  if (normalizedBeforeValidation || hadLocalPreferenceFields) {
+    try {
+      writeState(cwd, state);
+    } catch {
+      // best-effort; validation below still reports any missing fields.
+    }
+  }
 
   const cgProvider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
   const validationIssues = trafficOneStateValidationIssues(state, validCodeGraphProviders);
@@ -103,15 +112,6 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
       context,
     );
   }
-
-  if (normalizedBeforeValidation) {
-    try {
-      writeState(cwd, state);
-    } catch {
-      // best-effort; materialization can still proceed with the normalized object.
-    }
-  }
-
   migrateArchitectureDocsToPlan(cwd);
 
   let materialized: MaterializeResult | null = null;

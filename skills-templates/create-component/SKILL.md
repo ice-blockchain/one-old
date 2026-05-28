@@ -1,10 +1,9 @@
 ---
 name: create-component
 description: >
-  Prerequisite: do not read, invoke, or activate this skill during Traffic One
-  new-project onboarding. Use `detect-project` / `stack-setup` first, then use
-  this skill only after `.traffic-one/.one.json` has `onboardingComplete: true` and
-  `.traffic-one/plan.md` exists. Once onboarding is resolved, use PROACTIVELY
+  Prerequisite: follow the shared Traffic One setup gate
+  (`rules/common/setup-gate.md`). Use `detect-project` / `stack-setup` first;
+  activate this skill only after the gate is clear. Then use PROACTIVELY
   whenever the user asks to create, add, build, make, scaffold, or generate a
   React component, UI element, card, modal, form, button, table, list, or any
   piece of UI.
@@ -14,10 +13,9 @@ description: >
 
 # Skill: Create Component
 
-Traffic One onboarding guard: Do not read, invoke, or activate during Traffic One new-project
-onboarding before `.traffic-one/.one.json` has `onboardingComplete: true` and
-`.traffic-one/plan.md` exists. Use `detect-project` / `stack-setup` first, then
-return here after the stack, mobile, code graph, and team gates are resolved.
+Traffic One setup gate: follow `rules/common/setup-gate.md`. Use
+`detect-project` / `stack-setup` first; do not implement with this skill until
+the hook/gate context is clear.
 
 Confirm placement and props before creating any files.
 

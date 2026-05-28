@@ -14,10 +14,11 @@ const skill_block_1 = require("../shared/skill-block");
 const text_1 = require("../shared/text");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 function buildContext(input, opts = {}) {
+    const projectRoot = paths_1.paths.projectRoot(input);
     return {
         input,
         host: input.host,
-        cwd: input.cwd,
+        cwd: projectRoot,
         now: text_1.nowIso,
         log: (0, logger_1.makeLogger)({ debug: opts.debug ?? false }),
         fsjson: fsjson_1.fsjson,
