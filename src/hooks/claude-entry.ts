@@ -13,7 +13,6 @@ import { collectHandlers, defaultModulesDir, loadModules } from '../core/registr
 import { selectAdapter } from '../adapters/select';
 import { authRequiredMessage } from '../shared/auth';
 import { detectHost } from '../shared/host';
-import { pluginRoot } from '../shared/paths';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -39,7 +38,7 @@ export async function runClaudeHook(
   const host = detectHost(env, ['--host', subcommand]); // never cursor here
   const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir(pluginRoot())));
+    const handlers = collectHandlers(loadModules(defaultModulesDir()));
     const stdout = await dispatchSubcommand(adapter, handlers, subcommand, { stdin, argv: [subcommand] });
     return { stdout, exitCode: 0 };
   } catch {

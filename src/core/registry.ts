@@ -16,8 +16,13 @@ export interface LoadedModule {
   readonly handlers: readonly Handler[];
 }
 
-export function defaultModulesDir(pluginRoot: string): string {
-  return path.join(pluginRoot, 'src', 'modules');
+export function defaultModulesDir(): string {
+  // registry.{ts→js} lives in core/; the modules sit next to core under BOTH
+  // src/ (tsx dev/test) and the compiled scripts/ tree. Resolving via __dirname
+  // (not pluginRoot/src) keeps discovery layout-agnostic — critical so the
+  // compiled runtime loads scripts/modules/*/index.js and never reaches back
+  // into src/ (which holds un-runnable .ts). A test may pass an override dir.
+  return path.join(__dirname, '..', 'modules');
 }
 
 export function discoverDescriptors(

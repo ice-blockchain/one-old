@@ -7,9 +7,8 @@ import * as path from 'path';
 import { runClaudeHook } from '../claude-entry';
 import { handlersForSubcommand } from '../../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../../core/registry';
-import { pluginRoot } from '../../shared/paths';
 
-const REAL_HANDLERS = collectHandlers(loadModules(defaultModulesDir(pluginRoot())));
+const REAL_HANDLERS = collectHandlers(loadModules(defaultModulesDir()));
 function idsFor(sub: string): string[] {
   return handlersForSubcommand(REAL_HANDLERS, sub).map((h) => h.id).sort();
 }

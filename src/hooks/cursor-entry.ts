@@ -14,7 +14,6 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { makeCursorAdapter } from '../adapters/cursor';
 import { authRequiredMessage } from '../shared/auth';
-import { pluginRoot } from '../shared/paths';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -33,7 +32,7 @@ export async function runCursorHook(
   if (!subcommand) return { stdout: CURSOR_NOOP, exitCode: 0 };
   const adapter = makeCursorAdapter();
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir(pluginRoot())));
+    const handlers = collectHandlers(loadModules(defaultModulesDir()));
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand] });
     return { stdout: stdout || CURSOR_NOOP, exitCode: 0 };
   } catch {
