@@ -35,3 +35,6 @@ jobs:
 
       - name: Tests (unit + golden snapshot)
         run: npm test
+
+      - name: Compiled-runtime smoke (bare-node dispatch)
+        run: npm run smoke

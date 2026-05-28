@@ -12,6 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "gen": "tsx src/gen/index.ts",
     "gen:check": "tsx src/gen/index.ts --check",
+    "smoke": "tsx src/build/compiled-smoke.ts",
     "test": "node --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\""
   },
   "devDependencies": {
