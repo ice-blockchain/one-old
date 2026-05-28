@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ensureRunAgentClaim } from '../run-agent';
+import { ensureRunAgentClaim, runIdNow } from '../run-agent';
 
 function withPrefs<T>(fn: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runagent-'));
@@ -18,6 +18,10 @@ function withPrefs<T>(fn: (dir: string) => T): T {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('runIdNow returns a unix epoch millisecond string', () => {
+  assert.match(runIdNow(), /^\d{13}$/);
+});
 
 test('ensureRunAgentClaim writes a pending claim and stamps run state', () => {
   withPrefs((dir) => {

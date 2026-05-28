@@ -24,7 +24,7 @@ function obj(value: unknown): Rec | null {
 }
 
 export function runIdNow(): string {
-  return new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z');
+  return Date.now().toString();
 }
 
 function safePathSegment(value: unknown): string {

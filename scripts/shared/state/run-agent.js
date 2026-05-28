@@ -54,7 +54,7 @@ function obj(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 function runIdNow() {
-    return new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z');
+    return Date.now().toString();
 }
 function safePathSegment(value) {
     return String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160);

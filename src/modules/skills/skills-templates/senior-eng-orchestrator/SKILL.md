@@ -114,14 +114,14 @@ Read `.traffic-one/.one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md
 - If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → invoke the `stack-setup` skill first. The user must commit to a stack before architect can plan.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
 
-**Generate a run-id** (UTC, second precision, filesystem-safe):
+**Generate a run-id** (Unix epoch milliseconds, filesystem-safe):
 
 ```bash
-RUN_ID=$(node -e "console.log(new Date().toISOString().replace(/[:.]/g,'-').replace(/-\d{3}Z$/,'Z'))")
+RUN_ID=$(node -e "console.log(Date.now().toString())")
 mkdir -p ".traffic-one/digests/$RUN_ID"
 ```
 
-Expected shape: `2026-05-07T14-23-05Z`. Pass this run-id verbatim to every subagent in the synthetic prompt. The full per-phase prompt templates live in `resources/prompt-templates.md`; reference them rather than inlining their full text in this skill body.
+Expected shape: a 13-digit epoch-millisecond string such as `1715091785000`. Pass this run-id verbatim to every subagent in the synthetic prompt. The full per-phase prompt templates live in `resources/prompt-templates.md`; reference them rather than inlining their full text in this skill body.
 
 Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
 
