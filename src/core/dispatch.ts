@@ -18,3 +18,24 @@ export async function dispatch(
   const result = await runPipeline(handlers, ctx);
   return adapter.serialize(result, input);
 }
+
+// The handlers a given hook subcommand invokes — those that declared the
+// subcommand in their `subcommands`. runPipeline still re-filters by (event,
+// tool class) + orders by priority, so the auth gate (priority 0) runs first
+// for the gate subcommands it participates in, then short-circuits on deny.
+// Reproduces the legacy 1:1 subcommand→handler dispatch (each legacy gate
+// checked auth first) while keeping routing module-local (no central map).
+export function handlersForSubcommand(handlers: readonly Handler[], subcommand: string): Handler[] {
+  return handlers.filter((handler) => handler.subcommands?.includes(subcommand));
+}
+
+// Route a raw host invocation for a specific subcommand through the pipeline.
+// The host entry resolves argv→subcommand, picks the adapter, and calls this.
+export async function dispatchSubcommand(
+  adapter: HostAdapter,
+  handlers: readonly Handler[],
+  subcommand: string,
+  raw: RawInvocation,
+): Promise<string> {
+  return dispatch(adapter, handlersForSubcommand(handlers, subcommand), raw);
+}

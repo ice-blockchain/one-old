@@ -7,6 +7,7 @@ export const handlers: Handler[] = [
     id: 'agent-model.spawn',
     event: 'PreToolUse',
     tools: ['spawn-agent'],
+    subcommands: ['check-agent-model'],
     priority: 40,
     run: (ctx) => agentModelGate(ctx),
   },

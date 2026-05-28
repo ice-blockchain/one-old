@@ -7,6 +7,7 @@ export const handlers: Handler[] = [
     id: 'onboarding-gate',
     event: 'PreToolUse',
     tools: ['shell', 'file-write', 'file-edit', 'file-read', 'spawn-agent'],
+    subcommands: ['check-onboarding-gate'],
     priority: 10,
     run: (ctx) => onboardingGate(ctx),
   },

@@ -7,6 +7,7 @@ export const handlers: Handler[] = [
     id: 'page-speed.build',
     event: 'PostToolUse',
     tools: ['shell'],
+    subcommands: ['post-build-page-speed'],
     priority: 40,
     run: (ctx) => postBuildPageSpeed(ctx),
   },

@@ -10,6 +10,7 @@ export const handlers: Handler[] = [
     id: 'graphify.hint',
     event: 'PreToolUse',
     tools: ['search'],
+    subcommands: ['pre-graphify-hint'],
     priority: 50, // context-only, runs after the gates
     run: (ctx) => preGraphifyHint(ctx),
   },
@@ -17,6 +18,7 @@ export const handlers: Handler[] = [
     id: 'graphify.post-build',
     event: 'PostToolUse',
     tools: ['shell'],
+    subcommands: ['post-build-graphify'],
     priority: 50, // after page-speed (40); context-only
     run: (ctx) => postBuildCodeGraphHint(ctx),
   },

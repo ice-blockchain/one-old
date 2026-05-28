@@ -67,6 +67,14 @@ export interface Handler {
   // For PreToolUse: the tool classes this handler applies to. Empty/undefined
   // means "all tools for this event".
   readonly tools?: readonly ToolClass[];
+  // The hook subcommand entry point(s) this handler participates in — the
+  // host-config invocation names (e.g. 'check-onboarding-gate'). The auth gate
+  // participates in all four PreToolUse gate subcommands; most handlers list
+  // exactly one. The entry routes an incoming subcommand to the handlers that
+  // include it, then runs them through the priority-ordered pipeline (so the
+  // priority-0 auth gate runs first, matching the legacy per-gate auth check).
+  // Undefined means the handler is not directly hook-invoked by a subcommand.
+  readonly subcommands?: readonly string[];
   // Lower runs first; a deny short-circuits the rest.
   readonly priority: number;
   run(ctx: Ctx): MaybeAsync<HookResult>;
