@@ -23,6 +23,8 @@ import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
+import { readEffectiveState } from '../../shared/state';
+import { inferTrafficOneSpawnRole } from '../agent-model/role-infer';
 import {
   type MaterializeOutcome,
   materializeProjectFromState,
@@ -33,6 +35,8 @@ import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromSta
 
 type Rec = Record<string, unknown>;
 const skillBlock = makeSkillBlock(pluginRoot);
+const PLAN_READY_RE = /(?:^|\n)\s*(?:verdict:\s*)?PLAN_READY\s*(?:\n|$)/i;
+const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
 
 export interface PostStackSetupDeps {
   logTokenUse?: (cwd: string, payload: unknown) => void;
@@ -45,6 +49,16 @@ function obj(value: unknown): Rec | null {
 }
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+function stringifySearchValue(value: unknown): string {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return '';
+  }
 }
 function outcomeToResult(out: MaterializeOutcome | null): HookResult {
   return out ? context(out.context, { systemMessage: out.systemMessage }) : noop();
@@ -62,15 +76,60 @@ function digestWarning(role: string, kb: number): string {
   return skillBlock('materialize', 'digest-size', { ROLE: role, KB: kb }, verbatim);
 }
 
+function planReadyText(value: unknown): boolean {
+  return PLAN_READY_RE.test(stringifySearchValue(value));
+}
+
+function architectDigestProjectRoot(filePath: string): string | null {
+  const normalized = filePath.replace(/\\/g, '/');
+  const match = normalized.match(/^(.*)\/\.traffic-one\/digests\/[^/]+\/architect\.md$/);
+  return match?.[1] ?? null;
+}
+
+function isArchitectPlanReadyDigest(filePath: string): boolean {
+  if (!filePath || !architectDigestProjectRoot(filePath)) return false;
+  try {
+    return planReadyText(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+function agentResponseText(raw: Rec): string {
+  return [
+    raw.tool_response,
+    raw.tool_result,
+    raw.toolResponse,
+    raw.toolResult,
+    raw.response,
+    raw.result,
+    raw.output,
+  ].map(stringifySearchValue).filter(Boolean).join('\n');
+}
+
+function isArchitectPlanReadyAgentResult(ctx: Ctx, raw: Rec, toolInput: Rec): boolean {
+  const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
+  if (!SPAWN_TOOL_RE.test(toolName)) return false;
+
+  const responseText = agentResponseText(raw);
+  if (!PLAN_READY_RE.test(responseText)) return false;
+
+  const role = inferTrafficOneSpawnRole(toolInput);
+  if (role) return role === 'senior-architect';
+
+  // `wait_agent` returns may not carry the original spawn prompt, so the
+  // terminal PLAN_READY token is enough to identify the architect phase.
+  return /^wait_agent$/i.test(toolName);
+}
+
+function triggerArchitectPlanReadyReport(cwd: string, state: Rec, reportOneMcp: ReportOneMcp | undefined): void {
+  if (!reportOneMcp) return;
+  reportOneMcp(cwd, state, 'architect PLAN_READY');
+}
+
 export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): HookResult {
   const cwd = ctx.cwd;
-  if (!isAuthenticatedLocal()) return noop();
-
   const raw = obj(ctx.input.raw) || {};
-  // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
-  // logger by default; tests inject a spy/no-op via deps.
-  (deps.logTokenUse ?? logToolUse)(cwd, raw);
-
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const filePath = asString(toolInput.file_path);
   const cwdAbs = path.resolve(cwd);
@@ -79,6 +138,23 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   if (isPluginAuthoringRoot(cwd) && (!targetPath || targetInsideCwd)) return noop();
 
   const fp = filePath.replace(/\\/g, '/');
+  const reportOneMcp = deps.reportOneMcp;
+  const digestRoot = architectDigestProjectRoot(targetPath || filePath);
+  const reportRoot = digestRoot || cwd;
+  const state = readEffectiveState(reportRoot);
+  const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
+
+  if (isArchitectPlanReadyDigest(targetPath || filePath) || isArchitectPlanReadyAgentResult(ctx, raw, toolInput)) {
+    triggerArchitectPlanReadyReport(reportRoot, state, reportOneMcp);
+  }
+
+  if (!isAuthenticatedLocal()) return noop();
+
+  // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
+  // logger by default; tests inject a spy/no-op via deps.
+  (deps.logTokenUse ?? logToolUse)(cwd, raw);
+
+  if (isSpawnAgentLifecycleTool) return noop();
 
   // 1. Supabase Edge Function edit → auto-deploy (injected; skip when no hook).
   if (FUNCTION_PATH_RE.test(fp)) {
@@ -98,8 +174,6 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     }
     return noop();
   }
-
-  const reportOneMcp = deps.reportOneMcp;
 
   // 3. Non-state-file write → write-triggered convergence.
   if (!isStateFilePath(filePath)) {

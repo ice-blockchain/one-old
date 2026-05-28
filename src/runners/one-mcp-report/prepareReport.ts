@@ -1,8 +1,9 @@
 // src/runners/one-mcp-report/prepareReport.ts
 // Decide whether to queue + spawn the fire-and-forget one-mcp report, and do so.
-// Ported 1:1 from one-mcp-report/prepareReport.cjs. Skips unless authed locally,
-// the cwd is a real codebase, and no report id is registered yet. The detached
-// child runs the compiled scripts/one-mcp-report.cjs.
+// Ported 1:1 from one-mcp-report/prepareReport.cjs. Skips unless authed locally
+// (except for explicit architect PLAN_READY reports), the cwd is a real
+// codebase, and no report id is registered yet. The detached child runs the
+// compiled scripts/one-mcp-report.cjs.
 
 import { spawn } from 'child_process';
 import * as path from 'path';
@@ -23,6 +24,7 @@ export interface PrepareOptions {
   trigger?: string;
   state?: unknown;
   spawn?: boolean;
+  allowUnauthenticated?: boolean;
 }
 export interface PrepareResult {
   started: boolean;
@@ -34,7 +36,7 @@ export interface PrepareResult {
 
 export function prepareReport(cwd: string, options: PrepareOptions = {}): PrepareResult {
   if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') return { started: false, reason: 'disabled' };
-  if (!isAuthenticatedLocal()) return { started: false, reason: 'auth-required' };
+  if (!options.allowUnauthenticated && !isAuthenticatedLocal()) return { started: false, reason: 'auth-required' };
   const root = path.resolve(cwd);
   if (!hasRealCodebase(root)) return { started: false, reason: 'no-codebase' };
 

@@ -60,7 +60,7 @@ test('materializeFromToolInputHints: reporter is invoked for a resolved already-
     let reported = 0;
     const out = materializeFromToolInputHints(dir, { file_path: path.join(dir, 'apps', 'web', 'x.ts') }, { reportOneMcp: () => { reported += 1; } });
     assert.equal(out, null); // already materialized → nothing to converge
-    assert.ok(reported >= 1); // reporter still fired for the resolved root
+    assert.equal(reported, 1); // reporter fires once for the resolved root
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     fs.rmSync(dir, { recursive: true, force: true });

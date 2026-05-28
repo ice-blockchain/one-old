@@ -52,7 +52,7 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 Traffic One hooks handle the one-mcp first-look report in the background for full end-user projects. Do not call `one-mcp.report_codebase_metadata` from the assistant.
 
-- The reporter is skipped until `mcp-auth` authentication succeeds; `.traffic-one/.one.json` must not gain `one-uid` before auth.
+- Normal background reports are skipped until `mcp-auth` authentication succeeds. The explicit architect `PLAN_READY` path is the exception: after a terminal `PLAN_READY` is observed from `wait_agent`/architect completion, the hook may mint `one-uid` and queue the one-mcp report even when auth is missing.
 - If `.traffic-one/.one.json` already contains `one-uid`, the background reporter stops and makes no additional report attempt for that project.
 - If `one-uid` is missing and the project has real codebase markers, the hook writes a UUID v7 into `.traffic-one/.one.json` under `one-uid`, gathers anonymous structural metadata, and sends one background HTTPS request to the one-mcp endpoint. `.one-mcp-id` is legacy-only and must not be created.
 - The report is fire-and-forget. Success, failure, timeout, invalid response, or skipped submission must stay silent and must never block onboarding completion, materialization, tool use, scaffolding, or development.

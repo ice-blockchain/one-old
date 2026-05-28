@@ -63,6 +63,7 @@ test('toolClassForRawName maps all three hosts to one vocabulary', () => {
   assert.equal(toolClassForRawName('exec_command'), 'shell');
   assert.equal(toolClassForRawName('Edit'), 'file-edit');
   assert.equal(toolClassForRawName('spawn_agent'), 'spawn-agent');
+  assert.equal(toolClassForRawName('wait_agent'), 'spawn-agent');
   assert.equal(toolClassForRawName('Grep'), 'search');
   assert.equal(toolClassForRawName('SomethingElse'), 'other');
 });

@@ -21,6 +21,8 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   Task: 'spawn-agent',
   Agent: 'spawn-agent',
   spawn_agent: 'spawn-agent',
+  send_input: 'spawn-agent',
+  wait_agent: 'spawn-agent',
   // search
   Glob: 'search',
   Grep: 'search',

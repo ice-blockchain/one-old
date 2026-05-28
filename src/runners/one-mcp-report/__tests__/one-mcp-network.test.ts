@@ -103,3 +103,28 @@ test('prepareReport returns auth-required without an auth state', () => {
     }
   });
 });
+
+test('prepareReport can queue an explicit architect PLAN_READY report without auth', () => {
+  withProject((cwd) => {
+    const env = process.env;
+    const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
+    try {
+      fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+      const r = prepareReport(cwd, {
+        spawn: false,
+        trigger: 'architect PLAN_READY',
+        allowUnauthenticated: true,
+      });
+      assert.equal(r.started, true);
+      assert.equal(r.spawned, false);
+      const status = JSON.parse(fs.readFileSync(path.join(cwd, STATUS_REL), 'utf8'));
+      assert.equal(status.status, 'queued');
+      assert.equal(status.trigger, 'architect PLAN_READY');
+      const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+      assert.ok(typeof state['one-uid'] === 'string' && state['one-uid'].length > 0);
+    } finally {
+      if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
+    }
+  });
+});

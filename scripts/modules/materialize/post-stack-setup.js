@@ -56,15 +56,33 @@ const paths_1 = require("../../shared/paths");
 const token_logger_1 = require("../../shared/token-logger");
 const skill_block_1 = require("../../shared/skill-block");
 const tool_classify_1 = require("../../shared/tool-classify");
+const state_1 = require("../../shared/state");
+const role_infer_1 = require("../agent-model/role-infer");
 const materialize_1 = require("../../shared/materialize");
 const converge_from_write_1 = require("./converge-from-write");
 const post_helpers_1 = require("./post-helpers");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
+const PLAN_READY_RE = /(?:^|\n)\s*(?:verdict:\s*)?PLAN_READY\s*(?:\n|$)/i;
+const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
 function obj(value) {
     return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 function asString(value) {
     return typeof value === 'string' ? value : '';
+}
+function stringifySearchValue(value) {
+    if (value == null)
+        return '';
+    if (typeof value === 'string')
+        return value;
+    if (typeof value === 'number' || typeof value === 'boolean')
+        return String(value);
+    try {
+        return JSON.stringify(value);
+    }
+    catch {
+        return '';
+    }
 }
 function outcomeToResult(out) {
     return out ? (0, result_1.context)(out.context, { systemMessage: out.systemMessage }) : (0, result_1.noop)();
@@ -80,14 +98,57 @@ function digestWarning(role, kb) {
     ].join('\n');
     return skillBlock('materialize', 'digest-size', { ROLE: role, KB: kb }, verbatim);
 }
+function planReadyText(value) {
+    return PLAN_READY_RE.test(stringifySearchValue(value));
+}
+function architectDigestProjectRoot(filePath) {
+    const normalized = filePath.replace(/\\/g, '/');
+    const match = normalized.match(/^(.*)\/\.traffic-one\/digests\/[^/]+\/architect\.md$/);
+    return match?.[1] ?? null;
+}
+function isArchitectPlanReadyDigest(filePath) {
+    if (!filePath || !architectDigestProjectRoot(filePath))
+        return false;
+    try {
+        return planReadyText(fs.readFileSync(filePath, 'utf8'));
+    }
+    catch {
+        return false;
+    }
+}
+function agentResponseText(raw) {
+    return [
+        raw.tool_response,
+        raw.tool_result,
+        raw.toolResponse,
+        raw.toolResult,
+        raw.response,
+        raw.result,
+        raw.output,
+    ].map(stringifySearchValue).filter(Boolean).join('\n');
+}
+function isArchitectPlanReadyAgentResult(ctx, raw, toolInput) {
+    const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
+    if (!SPAWN_TOOL_RE.test(toolName))
+        return false;
+    const responseText = agentResponseText(raw);
+    if (!PLAN_READY_RE.test(responseText))
+        return false;
+    const role = (0, role_infer_1.inferTrafficOneSpawnRole)(toolInput);
+    if (role)
+        return role === 'senior-architect';
+    // `wait_agent` returns may not carry the original spawn prompt, so the
+    // terminal PLAN_READY token is enough to identify the architect phase.
+    return /^wait_agent$/i.test(toolName);
+}
+function triggerArchitectPlanReadyReport(cwd, state, reportOneMcp) {
+    if (!reportOneMcp)
+        return;
+    reportOneMcp(cwd, state, 'architect PLAN_READY');
+}
 function runPostStackSetup(ctx, deps = {}) {
     const cwd = ctx.cwd;
-    if (!(0, auth_1.isAuthenticatedLocal)())
-        return (0, result_1.noop)();
     const raw = obj(ctx.input.raw) || {};
-    // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
-    // logger by default; tests inject a spy/no-op via deps.
-    (deps.logTokenUse ?? token_logger_1.logToolUse)(cwd, raw);
     const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
     const filePath = asString(toolInput.file_path);
     const cwdAbs = path.resolve(cwd);
@@ -96,6 +157,21 @@ function runPostStackSetup(ctx, deps = {}) {
     if ((0, authoring_root_1.isPluginAuthoringRoot)(cwd) && (!targetPath || targetInsideCwd))
         return (0, result_1.noop)();
     const fp = filePath.replace(/\\/g, '/');
+    const reportOneMcp = deps.reportOneMcp;
+    const digestRoot = architectDigestProjectRoot(targetPath || filePath);
+    const reportRoot = digestRoot || cwd;
+    const state = (0, state_1.readEffectiveState)(reportRoot);
+    const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
+    if (isArchitectPlanReadyDigest(targetPath || filePath) || isArchitectPlanReadyAgentResult(ctx, raw, toolInput)) {
+        triggerArchitectPlanReadyReport(reportRoot, state, reportOneMcp);
+    }
+    if (!(0, auth_1.isAuthenticatedLocal)())
+        return (0, result_1.noop)();
+    // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
+    // logger by default; tests inject a spy/no-op via deps.
+    (deps.logTokenUse ?? token_logger_1.logToolUse)(cwd, raw);
+    if (isSpawnAgentLifecycleTool)
+        return (0, result_1.noop)();
     // 1. Supabase Edge Function edit → auto-deploy (injected; skip when no hook).
     if (post_helpers_1.FUNCTION_PATH_RE.test(fp)) {
         const result = deps.functionEditDeploy ? deps.functionEditDeploy(filePath) : null;
@@ -118,7 +194,6 @@ function runPostStackSetup(ctx, deps = {}) {
         }
         return (0, result_1.noop)();
     }
-    const reportOneMcp = deps.reportOneMcp;
     // 3. Non-state-file write → write-triggered convergence.
     if (!(0, tool_classify_1.isStateFilePath)(filePath)) {
         const mem = (0, converge_from_write_1.materializeFromProjectMemoryWrite)(cwd, filePath, { reportOneMcp });

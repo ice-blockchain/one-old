@@ -56,7 +56,7 @@ function materializeFromToolInputHints(cwd, toolInput, opts = {}) {
     const reportOneMcp = opts.reportOneMcp || noopReporter;
     for (const projectRoot of (0, post_helpers_1.projectRootsFromToolInputHints)(cwd, toolInput)) {
         const relativeRoot = path.relative(cwd, projectRoot).replace(/\\/g, '/') || '.';
-        const result = (0, materialize_1.materializeProjectIfNeeded)(projectRoot, { trigger: `${trigger}: ${relativeRoot}`, reportOneMcp });
+        const result = (0, materialize_1.materializeProjectIfNeeded)(projectRoot, { trigger: `${trigger}: ${relativeRoot}` });
         const state = (0, state_1.readEffectiveState)(projectRoot);
         reportOneMcp(projectRoot, state, `${trigger}: ${relativeRoot}`);
         if (result)
