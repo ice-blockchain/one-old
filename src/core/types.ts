@@ -40,12 +40,21 @@ export interface HookInput {
   readonly raw: unknown;
 }
 
+// Optional extras a result may carry alongside its context/decision:
+//   systemMessage — a host "system message" line (legacy `systemMessage`).
+//   promptRequest — a host modal/popup-input spec (legacy `promptRequest`);
+//     Claude/Codex pass it through; Cursor (no equivalent) drops it.
+export interface ResultMeta {
+  readonly systemMessage?: string;
+  readonly promptRequest?: unknown;
+}
+
 // The canonical decision. The adapter serialises it to each host's wire shape;
 // e.g. a Cursor afterFileEdit (a post-event) downgrades `deny` to a warning.
 export type HookResult =
   | { readonly kind: 'noop' }
-  | { readonly kind: 'context'; readonly context: string }
-  | { readonly kind: 'deny'; readonly reason: string; readonly context?: string };
+  | ({ readonly kind: 'context'; readonly context: string } & ResultMeta)
+  | ({ readonly kind: 'deny'; readonly reason: string; readonly context?: string } & ResultMeta);
 
 export type MaybeAsync<T> = T | Promise<T>;
 

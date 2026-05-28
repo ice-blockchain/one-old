@@ -72,9 +72,13 @@ export function makeCursorAdapter(): HostAdapter {
     },
 
     serialize(result) {
+      // Cursor has no promptRequest equivalent — drop it; map systemMessage → user_message.
       if (result.kind === 'noop') return '{}';
       if (result.kind === 'context') {
-        return JSON.stringify({ additional_context: result.context });
+        return JSON.stringify({
+          ...(result.context && result.context.trim() ? { additional_context: result.context } : {}),
+          ...(result.systemMessage !== undefined ? { user_message: result.systemMessage } : {}),
+        });
       }
       return JSON.stringify({
         ...(result.context ? { additional_context: result.context } : {}),

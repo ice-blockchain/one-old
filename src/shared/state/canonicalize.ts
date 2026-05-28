@@ -99,7 +99,7 @@ export function canonicalPerformanceLevel(level: unknown): unknown {
   return PERFORMANCE_LEVEL_IDS.has(normalized) ? normalized : level;
 }
 
-function mobileStateFromString(value: unknown): StateRecord | null {
+export function mobileStateFromString(value: unknown): StateRecord | null {
   const normalized = normalizedString(value);
   if (!normalized) return null;
   if (normalized === 'web' || normalized === 'web-only') return { enabled: false, framework: 'none', source: 'prompted' };
@@ -109,7 +109,7 @@ function mobileStateFromString(value: unknown): StateRecord | null {
   return null;
 }
 
-function teamStateFromString(value: unknown): StateRecord | null {
+export function teamStateFromString(value: unknown): StateRecord | null {
   const mode = canonicalTeamMode(value);
   return typeof mode === 'string' && TEAM_MODE_IDS.has(mode) ? { mode, source: 'prompted' } : null;
 }

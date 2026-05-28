@@ -61,10 +61,14 @@ export function makeClaudeAdapter(id: Extract<HostId, 'claude' | 'codex'> = 'cla
       if (result.kind === 'noop') return '';
       if (result.kind === 'context') {
         return JSON.stringify({
+          ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
+          ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
           hookSpecificOutput: { hookEventName: input.event, additionalContext: result.context },
         });
       }
       return JSON.stringify({
+        ...(result.systemMessage !== undefined ? { systemMessage: result.systemMessage } : {}),
+        ...(result.promptRequest !== undefined ? { promptRequest: result.promptRequest } : {}),
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',

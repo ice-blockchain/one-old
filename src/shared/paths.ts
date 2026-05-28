@@ -26,6 +26,17 @@ export function pluginRoot(): string {
   return path.resolve(__dirname, '..', '..');
 }
 
+export function isManagedPluginCachePath(root: string): boolean {
+  return [
+    `${path.sep}.claude${path.sep}plugins${path.sep}cache${path.sep}`,
+    `${path.sep}.codex${path.sep}plugins${path.sep}cache${path.sep}`,
+  ].some((marker) => root.includes(marker));
+}
+
+export function isInPluginCache(): boolean {
+  return isManagedPluginCachePath(pluginRoot());
+}
+
 const PROJECT_MARKERS = ['.git', 'package.json', '.traffic-one', '.traffic-one.json'];
 
 function findUp(startDir: string): string | null {

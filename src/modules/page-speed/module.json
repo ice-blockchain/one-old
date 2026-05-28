@@ -1,0 +1,9 @@
+{
+  "id": "page-speed",
+  "kind": "runtime",
+  "entry": "index",
+  "subscriptions": [
+    { "event": "PostToolUse", "subcommand": "post-build-page-speed", "tools": ["shell"] }
+  ],
+  "gates": []
+}
