@@ -12,5 +12,5 @@
     "newLine": "lf"
   },
   "include": ["src/**/*.ts", "src/**/*.cts"],
-  "exclude": ["src/**/*.test.ts", "src/gen/**", "src/**/__tests__/**"]
+  "exclude": ["src/**/*.test.ts", "src/gen/**", "src/build/**", "src/**/__tests__/**"]
 }

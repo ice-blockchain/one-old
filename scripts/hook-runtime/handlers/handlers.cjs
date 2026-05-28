@@ -1,48 +1,12 @@
 'use strict';
-
-// scripts/hook-runtime/handlers.cjs
-// Five handlers, one per hook subcommand. Each is a pure function:
-//   input → { stdout, exitCode } (no side effects on stdin/stdout/stderr).
-// The thin entry script (`scripts/hook-runtime.cjs`) wires stdin/stdout
-// around them.
+// Transitional authoring-root marker for pre-cutover Traffic One installs.
 //
-// This is the thin "main" of the handlers/ folder: the function bodies live in
-// cohesive themed sibling files (auth, session-start, prompt-submit, gates,
-// post) sharing _helpers.cjs. This module re-exports the identical public
-// surface the original single-file handlers.cjs exposed.
-
-const { runSessionStart } = require('./session-start.cjs');
-const { runUserPromptSubmit } = require('./prompt-submit.cjs');
-const {
-  runCheckOnboardingGate,
-  runCheckAgentModel,
-  runCheckArchitectureWrite,
-  runCheckLibraryAllowlist,
-  forbiddenForStack,
-} = require('./gates.cjs');
-const {
-  runPostBuildPageSpeed,
-  runPostStackSetup,
-  runMaterializeProject,
-  runPostFunctionEdit,
-  runPreGraphifyHint,
-  runPostBuildGraphifyHint,
-} = require('./post.cjs');
-const { authRequiredHookResult } = require('./auth.cjs');
-
-module.exports = {
-  runSessionStart,
-  runUserPromptSubmit,
-  runCheckOnboardingGate,
-  runCheckAgentModel,        // PreToolUse(Task) → enforce performance-level model
-  runCheckArchitectureWrite,
-  runCheckLibraryAllowlist,
-  runPostBuildPageSpeed,
-  runPostStackSetup,
-  runMaterializeProject,
-  runPostFunctionEdit,      // exported for testing + entrypoint dispatch
-  runPreGraphifyHint,        // PreToolUse(Glob|Grep) → graph hint
-  runPostBuildGraphifyHint,  // PostToolUse(Bash) → post-build install/build hint
-  forbiddenForStack,         // exported for testing
-  authRequiredHookResult,    // exported for hook-runtime fail-closed fallback
-};
+// The installed Traffic One plugin (<= 2.9.70) detects THIS repository as its own
+// authoring root by the existence of this file. That detection suppresses
+// auth-gating, new-project onboarding, and self-materialization while the plugin
+// is developed in-place. The post-cutover runtime resolves the authoring root via
+// scripts/hook-runtime.cjs + src/.authoring-root + manifest name instead, so this
+// file is only a compatibility shim for the stale installed build. It carries no
+// runtime logic (the installed plugin executes its own cached copy, not this one)
+// and can be removed once the plugin is rebuilt from src/ and reinstalled.
+module.exports = {};

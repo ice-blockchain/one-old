@@ -1,0 +1,222 @@
+"use strict";
+// src/shared/onboarding/fallbacks.ts
+// Assembles the new-project onboarding chat-fallback PROSE (shown when no host
+// popup tool is available) from the onboarding-gate skill blocks + the dynamic
+// helpers, and wires the step router → prose + popup request. The `block`
+// function (skillBlock bound to 'onboarding-gate') returns skill prose with
+// {{VARS}} filled, or the verbatim fallback if the block is missing. Ported 1:1
+// from the *ChatFallback / nextOnboardingStepPromptAndRequest helpers.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.OPEN_CODE_INSTALL = void 0;
+exports.openCodeChatFallback = openCodeChatFallback;
+exports.performanceChatFallback = performanceChatFallback;
+exports.mobileChatFallback = mobileChatFallback;
+exports.codeGraphChatFallback = codeGraphChatFallback;
+exports.projectContextChatFallback = projectContextChatFallback;
+exports.teamConfirmationChatFallback = teamConfirmationChatFallback;
+exports.teamConfirmationPromptContext = teamConfirmationPromptContext;
+exports.nextOnboardingStepPromptAndRequest = nextOnboardingStepPromptAndRequest;
+exports.nextOnboardingStepPrompt = nextOnboardingStepPrompt;
+exports.nextOnboardingPromptRequest = nextOnboardingPromptRequest;
+exports.onboardingGateFallbackReason = onboardingGateFallbackReason;
+exports.teamConfirmationGateFallbackReason = teamConfirmationGateFallbackReason;
+exports.repairedMaterializationDenyReason = repairedMaterializationDenyReason;
+const project_context_1 = require("./project-context");
+const prompts_1 = require("./prompts");
+const team_lines_1 = require("./team-lines");
+// OpenCode install one-liner (ported from opencode-prompt.cjs).
+exports.OPEN_CODE_INSTALL = 'curl -fsSL https://opencode.ai/install | bash';
+function obj(value) {
+    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
+}
+function openCodeChatFallback(block) {
+    return block('open-code', { INSTALL: exports.OPEN_CODE_INSTALL }, [
+        'Traffic One can delegate bounded coding tasks to OpenCode — a free, local AI',
+        'agent — to save your paid token budget. Traffic One still plans, supervises,',
+        'and verifies; OpenCode executes, and every change is kept in a reviewable',
+        `digest. To actually use it you install OpenCode (\`${exports.OPEN_CODE_INSTALL}\`)`,
+        'and sign in. The delegation feature ships in a later update; this only records',
+        'your preference.',
+        '',
+        'Save tokens by delegating coding tasks to OpenCode?',
+        '',
+        '  1. Enable OpenCode delegation',
+        '  2. Not now',
+        '',
+        'Reply with the option number or label.',
+    ].join('\n'));
+}
+function performanceChatFallback(block) {
+    return block('performance', {}, [
+        'Traffic One needs to know how you want to run agents for this build.',
+        'How do you want to run agents for this build?',
+        '',
+        '  1. High (Recommended) — Subagent team with max-power models',
+        '  2. Balanced — Subagent team with efficient mid-tier models',
+        '  3. Low — Main agent only with role roadmap checklist',
+        '',
+        'Reply with the option number or label.',
+    ].join('\n'));
+}
+function mobileChatFallback(block) {
+    return block('mobile', {}, [
+        'Traffic One needs the mobile app decision for this project.',
+        '',
+        'Do you want a mobile app too?',
+        '',
+        '  1. Web only (Recommended)',
+        '  2. Ionic + Capacitor',
+        '  3. React Native / Expo',
+        '',
+        'Reply with the option number or label.',
+    ].join('\n'));
+}
+function codeGraphChatFallback(block) {
+    return block('code-graph', {}, [
+        'Traffic One needs the code graph provider for this project.',
+        '',
+        'Which provider should we use for the codebase graph?',
+        '',
+        '  1. GitNexus',
+        '  2. graphify',
+        '',
+        'Reply with the option number or label.',
+    ].join('\n'));
+}
+function projectContextChatFallback(state, block) {
+    const originalPrompt = (0, project_context_1.projectContextOriginalPrompt)(state);
+    const promptIntro = originalPrompt ? `Original request I should tailor this to: "${originalPrompt}"\n\n` : '';
+    const answerKeys = project_context_1.PROJECT_CONTEXT_ANSWER_KEYS.join(', ');
+    const domainQuestions = (0, project_context_1.projectContextDomainQuestionLines)(originalPrompt).map((line) => `- ${line}`).join('\n');
+    const verbatim = [
+        "Traffic One was successfully set up. Let's collect the project details next.",
+        '',
+        `${promptIntro}Answer these MVP-context questions in one reply so the build plan is complete:`,
+        '',
+        '1. Audience and jobs: who uses it, what problem they solve, and the top 2-3 user journeys.',
+        '2. V1 scope: must-have features, nice-to-haves to defer, and any launch deadline or demo expectation.',
+        '3. Roles and auth: anonymous, user, customer, creator/provider, staff/admin, permissions, and profile data.',
+        '4. Data model: core entities and relationships the MVP must store or seed.',
+        '5. Admin and operations: dashboards, CRUD, moderation, user/content/transaction management, analytics, support, and audit needs. Include this when the app has managed content, users, transactions, or operational workflows, even if the first request did not mention admin.',
+        '6. Business model and payments: free, paid, freemium, lead-gen, subscription, one-time purchase, marketplace commission, or internal tool? Are payments in or out for v1?',
+        '7. Content and integrations: source of seed/real data, uploads/files, search, notifications/email, realtime, maps/calendar/AI/external APIs, import/export.',
+        '8. Success criteria and product tone: what makes the MVP feel complete, what metrics matter, and what visual/brand direction should guide the UI.',
+        '',
+        `Use these answer keys where possible: ${answerKeys}.`,
+        '',
+        'Dynamic questions for this request:',
+        domainQuestions,
+        '',
+        'Save the answer in `.traffic-one/.one.json` as `projectContext` with `source`, `originalPrompt`, `summary`, `answers`, and `collectedAt` before asking the Mobile App prompt.',
+    ].join('\n');
+    return block('project-context', { PROMPT_INTRO: promptIntro, ANSWER_KEYS: answerKeys, DOMAIN_QUESTIONS: domainQuestions }, verbatim);
+}
+function teamConfirmationChatFallback(level, overrides, block) {
+    const teamLines = (0, team_lines_1.renderTeamLines)(level, overrides).join('\n');
+    const verbatim = [
+        `Traffic One — confirm the subagent team for ${String(level).toUpperCase()} mode:`,
+        '',
+        teamLines,
+        '',
+        '  1. Approve — use the team above and launch the subagents.',
+        '  2. Re-pick performance — choose a different performance level.',
+        '  3. Customise — tell me which role(s) to retier (highest | balanced | cheapest).',
+        '',
+        'Reply with the option number or label. For "Customise", also list the',
+        'role/tier changes, e.g. "senior-reviewer=highest, senior-tester=balanced".',
+    ].join('\n');
+    return block('team-confirmation-chat', { LEVEL_UPPER: String(level).toUpperCase(), TEAM_LINES: teamLines }, verbatim);
+}
+function teamConfirmationPromptContext(state, source, block) {
+    const s = obj(state);
+    const perf = s && obj(s.performance);
+    const level = perf && typeof perf.level === 'string' ? perf.level : '';
+    const team = s && obj(s.team);
+    const overrides = team && obj(team.overrides) ? team.overrides : null;
+    const teamChat = teamConfirmationChatFallback(level, overrides, block);
+    const sourceNote = source === 'user-prompt'
+        ? block('team-confirmation-source-user-prompt', {}, 'If the latest user message is an explicit "Approve" answer to this Team Confirmation prompt, first save local Traffic One preferences with `team.approved: true` (and any collected `team.overrides`), then continue.')
+        : block('team-confirmation-source-gate', {}, 'Your next visible assistant message must ask this approval question and then stop for the user answer.');
+    const verbatim = [
+        `Traffic One Team Confirmation is still required before the ${level} subagent run can start.`,
+        'The user selected a multi-agent performance level, but local Traffic One preferences do not contain `team.approved: true`.',
+        'Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.',
+        sourceNote,
+        'Use the host popup tool when available (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI). This is onboarding popup 2. If no popup tool is exposed, show this plain-chat fallback verbatim:',
+        '',
+        teamChat,
+    ].join('\n');
+    return block('team-confirmation-context', { LEVEL: level, SOURCE_NOTE: sourceNote, TEAM_CHAT: teamChat }, verbatim);
+}
+// Build the {fallbackText, promptRequest} for the next unresolved onboarding
+// step. Mirrors nextOnboardingStepPromptAndRequest (_helpers.cjs).
+function nextOnboardingStepPromptAndRequest(state, source, block) {
+    const step = (0, prompts_1.nextOnboardingStep)(state);
+    const level = (0, prompts_1.performanceLevelOf)(state);
+    const stepFallback = (s) => {
+        switch (s) {
+            case 'open-code': return ['Next unresolved Traffic One onboarding step: OpenCode delegation opt-in.', '', openCodeChatFallback(block)].join('\n');
+            case 'performance': return ['Next unresolved Traffic One onboarding step: Agent mode.', '', performanceChatFallback(block)].join('\n');
+            case 'team-confirmation':
+            case 'team': return teamConfirmationPromptContext(state, source, block);
+            case 'project-context': return projectContextChatFallback(state, block);
+            case 'mobile': return mobileChatFallback(block);
+            case 'code-graph': return codeGraphChatFallback(block);
+            case 'state': return [
+                'Traffic One onboarding state is still incomplete or noncanonical.',
+                'Complete `.traffic-one/.one.json` plus local Traffic One preferences before continuing.',
+            ].join('\n');
+        }
+    };
+    if (!step) {
+        return {
+            fallbackText: [
+                'Traffic One onboarding state is still incomplete or noncanonical.',
+                'Complete `.traffic-one/.one.json` plus local Traffic One preferences before continuing.',
+            ].join('\n'),
+            promptRequest: null,
+        };
+    }
+    return {
+        fallbackText: stepFallback(step),
+        promptRequest: (0, prompts_1.onboardingPromptRequestForStep)(step, { level, fallbackText: stepFallback(step) }),
+    };
+}
+function nextOnboardingStepPrompt(state, source, block) {
+    return nextOnboardingStepPromptAndRequest(state, source, block).fallbackText;
+}
+function nextOnboardingPromptRequest(state, source, block) {
+    return nextOnboardingStepPromptAndRequest(state, source, block).promptRequest;
+}
+// ── Gate deny reasons (compose the prose blocks above) ───────────────────────
+function onboardingGateFallbackReason(state, block) {
+    const nextStepPrompt = nextOnboardingStepPrompt(state, 'gate', block);
+    const verbatim = [
+        'Traffic One onboarding gate: mode=new-project and onboarding is not complete.',
+        'Complete Traffic One onboarding in the current thread before using tools. If the popup tool is unavailable, the next unresolved fallback prompt must be displayed as the next visible assistant message.',
+        '',
+        'The previous assistant turn tried to use tools before completing onboarding. Stop tool use now. Your next visible assistant message must ask only this unresolved step:',
+        '',
+        nextStepPrompt,
+        '',
+        'The onboarding state remains incomplete until `.traffic-one/.one.json` contains shared project facts (stack, frontend, backend, projectContext, mobile, technologies, realtime, confirmed, onboardingComplete, confirmedAt) and local Traffic One preferences contain openCode, codeGraphProvider, performance, team (including `team.approved: true` after Team Confirmation for Balanced/High), and toolchain stamps.',
+        'After sending that prompt, stop. Do not choose defaults, inspect package versions, scaffold, install, edit files, spawn helper agents, or continue implementation until the typed answer is received and the remaining onboarding prompts are resolved.',
+    ].join('\n');
+    return block('gate-fallback-reason', { NEXT_STEP_PROMPT: nextStepPrompt }, verbatim);
+}
+function teamConfirmationGateFallbackReason(state, block) {
+    const context = teamConfirmationPromptContext(state, 'gate', block);
+    const verbatim = [
+        'Traffic One Team Confirmation gate: the role/model lineup has not been approved.',
+        '',
+        context,
+    ].join('\n');
+    return block('team-confirmation-gate-reason', { CONTEXT: context }, verbatim);
+}
+function repairedMaterializationDenyReason(block) {
+    return block('repaired-materialization', {}, [
+        'Traffic One state was repaired/materialized before this tool use.',
+        'The attempted mutating tool has been denied once so it cannot run against stale `.traffic-one/.one.json`, rules, skills, or root agent context.',
+        'rerun the same tool now; the canonical `.traffic-one/.one.json` and project-local materialization are current.',
+    ].join('\n'));
+}
