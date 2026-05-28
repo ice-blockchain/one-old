@@ -4,10 +4,12 @@
 // legacy root paths. --check compares against what's committed and exits 1 on
 // drift, so CI fails when the committed output is stale.
 //
-// Currently wired: the 5 manifests + .mcp.json. The hook configs, .cursor/rules,
+// Currently wired: the 5 manifests + .mcp.json + the 3 hook configs
+// (settings.json, hooks/hooks.json, hooks/hooks-cursor.json). The .cursor/rules,
 // AGENTS.md regions, and content trees land here as their emitters are built.
 
 import { pluginRoot } from '../shared/paths';
+import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
 import { GenRun } from './lib/run';
 
@@ -15,6 +17,7 @@ export function runGen(opts: { check: boolean; root?: string }): GenRun {
   const run = new GenRun({ check: opts.check, root: opts.root ?? pluginRoot() });
   emitManifests(run);
   emitMcp(run);
+  emitHooks(run);
   return run;
 }
 

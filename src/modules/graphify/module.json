@@ -4,7 +4,7 @@
   "entry": "index",
   "subscriptions": [
     { "event": "PreToolUse", "subcommand": "pre-graphify-hint", "tools": ["search"] },
-    { "event": "PostToolUse", "subcommand": "post-build-code-graph", "tools": ["shell"] }
+    { "event": "PostToolUse", "subcommand": "post-build-graphify", "tools": ["shell"] }
   ],
   "gates": [
     { "id": "graphify-hint", "event": "PreToolUse", "priority": 50, "tools": ["search"] }
