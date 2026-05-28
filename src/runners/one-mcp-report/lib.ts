@@ -7,9 +7,11 @@
 // has no dependency on the collectors or the report-id reader.
 
 import * as fs from 'fs';
+import * as https from 'https';
 import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../shared/config';
+import { buildMcpPayload } from './buildMcpPayload';
 
 type Rec = Record<string, unknown>;
 
@@ -173,4 +175,51 @@ export function detectInfrastructureVendor(cwd: string): string {
 export function parseTimestamp(value: unknown): number {
   const time = Date.parse(String(value || ''));
   return Number.isFinite(time) ? time : 0;
+}
+
+// ms-stripped ISO timestamp (matches the legacy nowIso in this runner).
+export { nowIsoNoMs as nowIso } from '../../shared/text';
+
+export function stateForReport(root: string, options: { state?: unknown } = {}): Rec {
+  return options.state && typeof options.state === 'object' ? (options.state as Rec) : readProjectState(root);
+}
+
+// Fire-and-forget MCP tools/call POST. Resolves the response body on 2xx,
+// rejects on non-2xx / error response / timeout. Ported 1:1 from
+// one-mcp-report/_helpers.cjs (mcpRequest).
+export function mcpRequest(endpoint: string, payload: unknown, timeoutMs = 15000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(endpoint);
+    const body = JSON.stringify(buildMcpPayload(payload));
+    const req = https.request({
+      method: 'POST',
+      hostname: url.hostname,
+      path: `${url.pathname}${url.search}`,
+      port: url.port || 443,
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let responseBody = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { responseBody += chunk; });
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode || 'unknown'}`));
+          return;
+        }
+        if (/"error"\s*:/.test(responseBody)) {
+          reject(new Error('MCP error response'));
+          return;
+        }
+        resolve(responseBody);
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('request timeout')); });
+    req.on('error', reject);
+    req.end(body);
+  });
 }

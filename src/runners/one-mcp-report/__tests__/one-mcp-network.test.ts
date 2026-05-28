@@ -1,0 +1,105 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { prepareReport } from '../prepareReport';
+import { runReport } from '../runReport';
+
+const STATUS_REL = path.join('.traffic-one', 'one-mcp-report.json');
+
+function withProject(fn: (cwd: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-net-'));
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+async function withProjectAsync(fn: (cwd: string) => Promise<void>): Promise<void> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-net-'));
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  try { await fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function withFreshAuth(fn: (dir: string) => void): void {
+  withProject((dir) => {
+    const env = process.env;
+    const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
+    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+    env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
+      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
+      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    }), 'utf8');
+    try { fn(dir); } finally {
+      if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+      if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
+    }
+  });
+}
+
+test('runReport posts the queued report via an injected transport → status ok', async () => {
+  await withProjectAsync(async (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ dependencies: { react: '18' } }), 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-1' }), 'utf8');
+    fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-1' }), 'utf8');
+    let posted: unknown = null;
+    const r = await runReport(cwd, { transport: async (_e, payload) => { posted = payload; return 'ok'; } });
+    assert.equal(r.ok, true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(cwd, STATUS_REL), 'utf8')).status, 'ok');
+    assert.equal((posted as { report_id: string }).report_id, 'rep-1');
+  });
+});
+
+test('runReport records a failed status when the transport rejects', async () => {
+  await withProjectAsync(async (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-2' }), 'utf8');
+    fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-2' }), 'utf8');
+    const r = await runReport(cwd, { transport: async () => { throw new Error('boom'); } });
+    assert.equal(r.ok, false);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(cwd, STATUS_REL), 'utf8')).status, 'failed');
+  });
+});
+
+test('runReport skips when no report id / not queued', async () => {
+  await withProjectAsync(async (cwd) => {
+    assert.equal((await runReport(cwd, { transport: async () => 'x' })).skipped, 'missing-report-id');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-3' }), 'utf8');
+    assert.equal((await runReport(cwd, { transport: async () => 'x' })).skipped, 'not-queued');
+  });
+});
+
+test('prepareReport skips when disabled / unauthenticated / no codebase, and queues when ready', () => {
+  withFreshAuth((cwd) => {
+    process.env.TRAFFIC_ONE_DISABLE_ONE_MCP = '1';
+    assert.equal(prepareReport(cwd, { spawn: false }).reason, 'disabled');
+    delete process.env.TRAFFIC_ONE_DISABLE_ONE_MCP;
+    // authed but no codebase markers → no-codebase
+    assert.equal(prepareReport(cwd, { spawn: false }).reason, 'no-codebase');
+    // real codebase → queues (no spawn) + writes status + mints one-uid
+    fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+    const r = prepareReport(cwd, { spawn: false });
+    assert.equal(r.started, true);
+    assert.equal(r.spawned, false);
+    const status = JSON.parse(fs.readFileSync(path.join(cwd, STATUS_REL), 'utf8'));
+    assert.equal(status.status, 'queued');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(typeof state['one-uid'] === 'string' && state['one-uid'].length > 0);
+  });
+});
+
+test('prepareReport returns auth-required without an auth state', () => {
+  withProject((cwd) => {
+    const env = process.env;
+    const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
+    try {
+      fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+      assert.equal(prepareReport(cwd, { spawn: false }).reason, 'auth-required');
+    } finally {
+      if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
+    }
+  });
+});
