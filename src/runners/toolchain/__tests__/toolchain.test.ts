@@ -33,9 +33,9 @@ test('toolStatus classifies installed vs spec', () => {
 test('mergeToolchainStamp writes an installedVersion/installedAt entry', () => {
   const state = mergeToolchainStamp({}, 'gitnexus', { version: '1.6.4', at: '2026-01-01T00:00:00Z' });
   const tc = state.toolchain as Record<string, { installedVersion: string; installedAt: string }>;
-  assert.equal(tc.gitnexus.installedVersion, '1.6.4');
-  assert.equal(tc.gitnexus.installedAt, '2026-01-01T00:00:00Z');
+  assert.deepEqual(tc.gitnexus, { installedVersion: '1.6.4', installedAt: '2026-01-01T00:00:00Z' });
   // a missing version stamps null
   const s2 = mergeToolchainStamp(state, 'graphify', { version: null });
-  assert.equal((s2.toolchain as Record<string, { installedVersion: string | null }>).graphify.installedVersion, null);
+  const tc2 = s2.toolchain as Record<string, { installedVersion: string | null }>;
+  assert.equal(tc2.graphify?.installedVersion, null);
 });
