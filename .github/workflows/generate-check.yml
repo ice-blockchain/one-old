@@ -1,0 +1,37 @@
+name: Generate check
+
+# Verifies the TypeScript engine typechecks, the committed generated artifacts
+# (manifests, hook configs, .cursor/rules) are in sync with their single
+# sources, and the full test suite (incl. the byte-identical golden snapshot)
+# is green. Runs alongside the legacy cursor-sync.yml during the src/ migration;
+# replaces it at cutover.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  generate-check:
+    name: Typecheck + gen --check + tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Generated artifacts in sync
+        run: npm run gen -- --check
+
+      - name: Tests (unit + golden snapshot)
+        run: npm test
