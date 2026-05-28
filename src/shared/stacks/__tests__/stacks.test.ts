@@ -1,11 +1,24 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { STACKS, composeRuleManifest, roleScopedRules, templatePath } from '../index';
+import { AGENT_ROLE_BASE_RULES, STACKS, composeRuleManifest, roleScopedRules, templatePath } from '../index';
 
 test('templatePath rewrites the logical namespace to the source library', () => {
   assert.equal(templatePath('rules/common/auth-gate.md'), 'rules-templates/common/auth-gate.md');
   assert.equal(templatePath('rules/core.md'), 'rules-templates/core.md');
+});
+
+test('AGENT_ROLE_BASE_RULES covers all six senior roles with curated, auth-gated sets', () => {
+  const roles = ['senior-architect', 'senior-frontend', 'senior-backend', 'senior-reviewer', 'senior-tester', 'senior-shipper'];
+  for (const role of roles) {
+    const rules = AGENT_ROLE_BASE_RULES[role];
+    assert.ok(Array.isArray(rules) && rules.length > 0, `missing base rules for ${role}`);
+    // auth-gate is the universal baseline for every role.
+    assert.ok(rules.includes('rules/common/auth-gate.md'), `${role} should include the auth gate`);
+  }
+  // Role scoping is curated: the frontend role carries UI rules; the backend role does not.
+  assert.ok(AGENT_ROLE_BASE_RULES['senior-frontend']?.some((r) => r.startsWith('rules/frontend/')));
+  assert.ok(!AGENT_ROLE_BASE_RULES['senior-backend']?.some((r) => r === 'rules/frontend/ui-quality.md'));
 });
 
 test('STACKS exposes the five stack manifests', () => {
