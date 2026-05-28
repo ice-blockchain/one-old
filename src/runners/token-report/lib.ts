@@ -1,8 +1,12 @@
 // src/runners/token-report/lib.ts
-// Core token-usage stats: the per-model pricing table + the message→stats
-// accumulator. Ported 1:1 from token-report/_helpers.cjs (PRICING, addToStats,
-// numberValue). Codex parsing, session discovery, and markdown rendering land
-// in follow-up files.
+// Core token-usage stats: pricing table, message→stats accumulator, Codex
+// session usage, Traffic One attribution estimate, stats merge + formatters.
+// Ported 1:1 from token-report/_helpers.cjs. Session discovery + markdown
+// rendering + the CLI entry land in follow-up files.
+
+import * as path from 'path';
+
+import { parseOriginalTokenCount } from './parseOriginalTokenCount';
 
 type Rec = Record<string, unknown>;
 
@@ -90,4 +94,146 @@ export function addToStats(stats: Stats, msg: unknown): void {
       stats.toolUses += 1;
     }
   }
+}
+
+// ── Codex session usage ──────────────────────────────────────────────────────
+
+export interface CodexUsageFields {
+  inputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  reportedTotalTokens: number;
+}
+
+export function codexUsageFields(usage: unknown): CodexUsageFields {
+  const u = usage && typeof usage === 'object' ? (usage as Rec) : null;
+  if (!u) {
+    return { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0, reportedTotalTokens: 0 };
+  }
+  const totalInput = numberValue(u.input_tokens);
+  const cachedInput = Math.min(numberValue(u.cached_input_tokens), totalInput);
+  const outputTokens = numberValue(u.output_tokens);
+  return {
+    inputTokens: Math.max(0, totalInput - cachedInput),
+    cacheCreationInputTokens: numberValue(u.cache_creation_input_tokens),
+    cacheReadInputTokens: cachedInput,
+    outputTokens,
+    reasoningOutputTokens: numberValue(u.reasoning_output_tokens),
+    reportedTotalTokens: numberValue(u.total_tokens) || totalInput + outputTokens,
+  };
+}
+
+export function addCodexLargestUsage(stats: Stats, usage: unknown, timestamp: string | null): void {
+  const f = codexUsageFields(usage);
+  const totalThisCall = f.inputTokens + f.cacheCreationInputTokens + f.cacheReadInputTokens + f.outputTokens;
+  if (!stats.largestMessage || totalThisCall > stats.largestMessage.tokens) {
+    stats.largestMessage = { tokens: totalThisCall, timestamp, role: 'codex-api-call' };
+  }
+}
+
+export function applyCodexCumulativeUsage(stats: Stats, usage: unknown, model: string | null): void {
+  const f = codexUsageFields(usage);
+  stats.inputTokens = f.inputTokens;
+  stats.cacheCreationInputTokens = f.cacheCreationInputTokens;
+  stats.cacheReadInputTokens = f.cacheReadInputTokens;
+  stats.outputTokens = f.outputTokens;
+  stats.reasoningOutputTokens = f.reasoningOutputTokens;
+  const modelName = model || 'codex';
+  stats.byModel = {
+    [modelName]: { messages: stats.messages, inputTokens: f.inputTokens, cacheCreationInputTokens: f.cacheCreationInputTokens, cacheReadInputTokens: f.cacheReadInputTokens, outputTokens: f.outputTokens },
+  };
+}
+
+export function codexSessionIdFromFile(filePath: string): string {
+  return path.basename(filePath).replace(/^rollout-/, '').replace(/\.jsonl$/, '');
+}
+
+// ── Traffic One attribution estimate ─────────────────────────────────────────
+
+export function looksTrafficOneRelated(text: unknown): boolean {
+  if (typeof text !== 'string' || text.length === 0) return false;
+  return /\btraffic-one\b|Traffic One|\.traffic-one|AGENTS\.md|CLAUDE\.md|hook-runtime|skills-templates|rules\/common|rules\/frontend|token-report\.cjs/.test(text);
+}
+
+export function addTrafficOneOutputEstimate(estimate: { directToolOutputTokens: number; directToolOutputs: number }, output: unknown): void {
+  if (!looksTrafficOneRelated(output)) return;
+  const tokens = parseOriginalTokenCount(output);
+  if (tokens <= 0) return;
+  estimate.directToolOutputTokens += tokens;
+  estimate.directToolOutputs += 1;
+}
+
+export function estimateTrafficOneInstructionTokens(text: unknown): number {
+  if (!looksTrafficOneRelated(text)) return 0;
+  const blocks = String(text).split(/\n{2,}/);
+  let chars = 0;
+  for (const block of blocks) {
+    if (looksTrafficOneRelated(block)) chars += Buffer.byteLength(block, 'utf8');
+  }
+  return Math.ceil(chars / 4);
+}
+
+// ── Merge + format ───────────────────────────────────────────────────────────
+
+export function minIso(a: string | null, b: string | null): string | null {
+  if (!a) return b || null;
+  if (!b) return a;
+  return a < b ? a : b;
+}
+export function maxIso(a: string | null, b: string | null): string | null {
+  if (!a) return b || null;
+  if (!b) return a;
+  return a > b ? a : b;
+}
+
+export function sumIntoStats(target: Stats, source: Stats): void {
+  target.messages += source.messages;
+  target.toolUses += source.toolUses;
+  target.inputTokens += source.inputTokens;
+  target.cacheCreationInputTokens += source.cacheCreationInputTokens;
+  target.cacheReadInputTokens += source.cacheReadInputTokens;
+  target.outputTokens += source.outputTokens;
+  target.reasoningOutputTokens += source.reasoningOutputTokens || 0;
+  for (const [tool, count] of Object.entries(source.byTool || {})) {
+    target.byTool[tool] = (target.byTool[tool] || 0) + count;
+  }
+  target.byModel = mergeByModel(target.byModel, source.byModel);
+  target.firstAt = minIso(target.firstAt, source.firstAt);
+  target.lastAt = maxIso(target.lastAt, source.lastAt);
+}
+
+export function mergeByModel(left: Record<string, ModelStats>, right: Record<string, ModelStats>): Record<string, ModelStats> {
+  const out: Record<string, ModelStats> = { ...left };
+  for (const [model, m] of Object.entries(right || {})) {
+    let entry = out[model];
+    if (!entry) {
+      entry = { messages: 0, inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 0 };
+      out[model] = entry;
+    }
+    entry.messages += m.messages;
+    entry.inputTokens += m.inputTokens;
+    entry.cacheCreationInputTokens += m.cacheCreationInputTokens;
+    entry.cacheReadInputTokens += m.cacheReadInputTokens;
+    entry.outputTokens += m.outputTokens;
+  }
+  return out;
+}
+
+export function fmtNum(n: number): string {
+  return Number(n).toLocaleString('en-US');
+}
+export function fmtCost(usd: number): string {
+  return `$${usd.toFixed(4)}`;
+}
+export function fmtDuration(firstAt: string | null, lastAt: string | null): string {
+  if (!firstAt || !lastAt) return '—';
+  const ms = Date.parse(lastAt) - Date.parse(firstAt);
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  const mins = Math.round(ms / 60000);
+  if (mins < 60) return `${mins} min`;
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return `${hrs}h ${rem}m`;
 }
