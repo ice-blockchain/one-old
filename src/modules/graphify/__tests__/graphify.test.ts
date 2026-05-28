@@ -22,7 +22,8 @@ function withGraphProject(opts: { provider?: string; makeArtefact?: boolean; aut
     }), 'utf8');
   }
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ stack: 'default', codeGraphProvider: provider }), 'utf8');
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ stack: 'default' }), 'utf8');
+  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({ codeGraphProvider: provider }), 'utf8');
   if (opts.makeArtefact) {
     if (provider === 'gitnexus') {
       fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });

@@ -40,11 +40,11 @@ export const PRE_TOOL_USE: HookGroup[] = [
     // Codex) so the onboarding gate blocks subagent spawns on a new project too —
     // not just the agent-model gate. Without Task|Agent, a Claude `Task` spawn
     // skipped the onboarding gate and surfaced onboarding inside the subagent.
-    matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|Task|Agent|spawn_agent|send_input|wait_agent|multi_tool_use',
+    matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|Task|Agent|spawn_agent|send_input|wait_agent|multi_agent_v1.spawn_agent|multi_agent_v1.send_input|multi_agent_v1.wait_agent|multi_tool_use',
     entries: [{ subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' }],
   },
   {
-    matcher: 'Task|Agent|spawn_agent',
+    matcher: 'Task|Agent|spawn_agent|multi_agent_v1.spawn_agent',
     entries: [{ subcommand: 'check-agent-model', statusMessage: 'Checking agent model tier...' }],
   },
   {

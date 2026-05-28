@@ -38,6 +38,8 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.loadPreviousManifest = loadPreviousManifest;
 exports.migrateLegacyMemoryFile = migrateLegacyMemoryFile;
+exports.migrateLegacyRootDocumentationFile = migrateLegacyRootDocumentationFile;
+exports.migrateLegacyRootDocumentation = migrateLegacyRootDocumentation;
 exports.cleanupPrevious = cleanupPrevious;
 exports.modeRulesForState = modeRulesForState;
 const fs = __importStar(require("fs"));
@@ -78,6 +80,72 @@ function migrateLegacyMemoryFile(cwd, fileName) {
     }
     return false;
 }
+const LEGACY_ROOT_DOCUMENTATION_FILES = [
+    'api.md',
+    'database.md',
+    'deployment.md',
+    'environment-setup.md',
+    'security.md',
+];
+function normalizeMarkdown(text) {
+    return text.replace(/\r\n/g, '\n').trim();
+}
+function compactLegacyRootContent(content) {
+    const lines = content.trim().split('\n');
+    if (lines[0] && /^#\s+/.test(lines[0])) {
+        lines.shift();
+        while (lines[0] === '')
+            lines.shift();
+    }
+    return lines.join('\n').trim();
+}
+function migratedRootDocBlock(fileName, content) {
+    return [
+        `## Migrated From Root \`${fileName}\``,
+        '',
+        `The notes below were moved from legacy root \`${fileName}\`. Keep future edits in \`.traffic-one/${fileName}\` so Traffic One project context stays compact.`,
+        '',
+        compactLegacyRootContent(content) || '_Empty legacy file._',
+    ].join('\n');
+}
+function migrateLegacyRootDocumentationFile(cwd, fileName) {
+    const legacyPath = path.join(cwd, fileName);
+    const targetPath = path.join(cwd, '.traffic-one', fileName);
+    if (!fs.existsSync(legacyPath) || fs.lstatSync(legacyPath).isDirectory())
+        return false;
+    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+    if (!fs.existsSync(targetPath)) {
+        fs.renameSync(legacyPath, targetPath);
+        return true;
+    }
+    const legacyText = (0, fsjson_1.readText)(legacyPath) ?? '';
+    const targetText = (0, fsjson_1.readText)(targetPath) ?? '';
+    const legacyNorm = normalizeMarkdown(legacyText);
+    const targetNorm = normalizeMarkdown(targetText);
+    if (!legacyNorm || targetNorm === legacyNorm || targetNorm.includes(legacyNorm)) {
+        fs.rmSync(legacyPath, { force: true });
+        return true;
+    }
+    if (!targetNorm) {
+        fs.writeFileSync(targetPath, `${legacyText.trimEnd()}\n`, 'utf8');
+        fs.rmSync(legacyPath, { force: true });
+        return true;
+    }
+    const marker = `## Migrated From Root \`${fileName}\``;
+    if (!targetText.includes(marker)) {
+        fs.writeFileSync(targetPath, `${targetText.trimEnd()}\n\n${migratedRootDocBlock(fileName, legacyText)}\n`, 'utf8');
+    }
+    fs.rmSync(legacyPath, { force: true });
+    return true;
+}
+function migrateLegacyRootDocumentation(cwd) {
+    let migrated = 0;
+    for (const fileName of LEGACY_ROOT_DOCUMENTATION_FILES) {
+        if (migrateLegacyRootDocumentationFile(cwd, fileName))
+            migrated += 1;
+    }
+    return migrated;
+}
 function cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames) {
     let removed = 0;
     const projectMemoryRoot = path.join(cwd, '.traffic-one');
@@ -102,6 +170,7 @@ function cleanupPrevious(cwd, previous, nextRulePaths, nextSkillNames) {
         removed += 1;
     if (migrateLegacyMemoryFile(cwd, 'security.md'))
         removed += 1;
+    removed += migrateLegacyRootDocumentation(cwd);
     const prevSkills = Array.isArray(previous.skills) ? previous.skills : [];
     for (const name of prevSkills) {
         if (nextSkillNames.has(name))

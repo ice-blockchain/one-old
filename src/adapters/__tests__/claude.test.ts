@@ -61,3 +61,18 @@ test('codex: exec_command hits the SAME canonical shell gate as Claude Bash', as
   assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
   assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'blocked');
 });
+
+test('codex: namespaced multi-agent spawn hits spawn-agent gates', async () => {
+  const codex = makeClaudeAdapter('codex');
+  const handlers: Handler[] = [
+    { id: 'spawn-gate', event: 'PreToolUse', tools: ['spawn-agent'], priority: 0, run: () => deny('claim required') },
+  ];
+  const stdin = JSON.stringify({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'multi_agent_v1.spawn_agent',
+    tool_input: { agent_type: 'worker', message: 'You are the Traffic One senior-frontend role.' },
+  });
+  const parsed = JSON.parse(await dispatch(codex, handlers, { stdin, argv: [] }));
+  assert.equal(parsed.hookSpecificOutput.permissionDecision, 'deny');
+  assert.equal(parsed.hookSpecificOutput.permissionDecisionReason, 'claim required');
+});

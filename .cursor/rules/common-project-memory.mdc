@@ -73,7 +73,12 @@ normal feature work:
   under roughly 150 instructions; do not duplicate the linter.
 - `.traffic-one/security.md`: non-negotiables such as no service-role keys
   in client/mobile code, no `user_metadata` in RLS, secrets only via env vars,
-  and no production data in fixtures or docs.
+  no production data in fixtures or docs, and any merged operating-security
+  notes that would otherwise live in a duplicate root `security.md`.
+- `.traffic-one/api.md`, `.traffic-one/database.md`,
+  `.traffic-one/deployment.md`, and `.traffic-one/environment-setup.md`:
+  deeper operational docs when they apply. Root copies are legacy; merge them
+  here to keep the project root focused on entry docs.
 - `.traffic-one/rules/**`: generated active rule files for the selected stack.
   This directory is generated-only and must not contain `AGENTS.md`, project
   memory notes, or manifest metadata.
@@ -147,7 +152,7 @@ Keep persistent memory useful, not encyclopedic:
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
   `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
   asks to preserve a report. The codebase-graph artefact location depends on
-  `codeGraphProvider` in `.traffic-one/.one.json`.
+  the current user's local `codeGraphProvider` preference.
 - Do not place secrets, service-role keys, database passwords, raw customer data,
   or production connection strings in project memory.
 - Append to `agent-log.md` and `deployments.jsonl`; do not rewrite history except

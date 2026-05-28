@@ -41,7 +41,7 @@ projects must include:
 - Regression coverage that proves every created or changed public route has the
   expected title, description, canonical URL, Open Graph image, JSON-LD, and
   sitemap inclusion, and that private/admin routes emit `noindex,nofollow`.
-- A note in `deployment.md` or `.traffic-one/known-issues.md` when an SPA route
+- A note in `.traffic-one/deployment.md` or `.traffic-one/known-issues.md` when an SPA route
   must rank but lacks prerendering/static rendering or equivalent host support.
   Do not claim full SEO parity for client-rendered shells alone.
 

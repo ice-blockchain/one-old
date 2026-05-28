@@ -16,8 +16,8 @@ test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', 
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'just do something' }), null);
 });
 
-// A fully-materialized new-project temp dir (performance/team embedded in .one.json
-// so readEffectiveState surfaces them).
+// A fully-materialized new-project temp dir with performance/team in local prefs
+// so readEffectiveState surfaces only the current user's choices.
 function withMaterialized(opts: { teamApproved: boolean }, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agentmodel-'));
   const env = process.env;
@@ -36,6 +36,8 @@ function withMaterialized(opts: { teamApproved: boolean }, fn: (cwd: string) => 
   fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({
     mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
     onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
+  }), 'utf8');
+  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
     performance: { level: 'high', source: 'prompted' },
     team: { mode: 'subagents', source: 'prompted', ...(opts.teamApproved ? { approved: true } : {}) },
   }), 'utf8');

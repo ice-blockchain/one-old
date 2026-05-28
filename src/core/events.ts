@@ -29,7 +29,8 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
 };
 
 export function toolClassForRawName(rawName: string): ToolClass {
-  return RAW_TOOL_CLASS[rawName] ?? 'other';
+  const normalized = rawName.includes('.') ? (rawName.split('.').pop() as string) : rawName;
+  return RAW_TOOL_CLASS[normalized] ?? 'other';
 }
 
 // Does a handler apply to this input? Same event, and (for tool-scoped handlers)

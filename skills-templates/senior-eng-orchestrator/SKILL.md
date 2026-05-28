@@ -32,11 +32,11 @@ Required behavior on Codex:
      - Cursor      : task-UI prompt
      - All fallback: plain chat with the three numbered options below; stop for typed reply.
 10. Stop and wait for the user's answer. Do not write `.traffic-one/plan.md`, create files, edit code, run implementation commands, or simulate roles before the answer.
-11. Persist the answer in `.traffic-one/.one.json` (hold the performance answer in working memory; for High/Balanced, Team Confirmation confirms the team first — do not write `team.approved: true` until the user clicks Approve):
+11. Persist the answer in local Traffic One preferences (hold the performance answer in working memory; for High/Balanced, Team Confirmation confirms the team first — do not write `team.approved: true` until the user clicks Approve):
      - "High"     → `performance: { level: "high",     source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
      - "Balanced" → `performance: { level: "balanced", source: "prompted" }`, `team: { mode: "subagents", source: "prompted" }`
      - "Low"      → `performance: { level: "low",      source: "prompted" }`, `team: { mode: "main-agent", source: "prompted" }`
-12. For **High** or **Balanced**: ask Team Confirmation before spawning. List role → tier → model and ask Approve / Re-pick performance / Customise. The PreToolUse spawn gate denies every Task/spawn_agent call until `.traffic-one/.one.json` contains `team: { ..., approved: true }`, so auto-approving is forbidden — wait for the user's explicit Approve, then persist `team.approved: true` (plus any `team.overrides` collected). Then spawn phases using the host adapter (Codex `spawn_agent`, Claude Code `Task`, Cursor task adapter). On EACH spawn, pass the `model` tool PARAMETER resolved from the role's capability tier to your host (see the Runtime compatibility tier→model table). The model is set by the parameter, not by prompt text — omitting it makes the subagent inherit the parent model.
+12. For **High** or **Balanced**: ask Team Confirmation before spawning. List role → tier → model and ask Approve / Re-pick performance / Customise. The PreToolUse spawn gate denies every Task/spawn_agent call until local Traffic One preferences contain `team: { ..., approved: true }`, so auto-approving is forbidden — wait for the user's explicit Approve, then persist `team.approved: true` (plus any `team.overrides` collected). Then spawn phases using the host adapter (Codex `spawn_agent`, Claude Code `Task`, Cursor task adapter). On EACH spawn, pass the `model` tool PARAMETER resolved from the role's capability tier to your host (see the Runtime compatibility tier→model table). The model is set by the parameter, not by prompt text — omitting it makes the subagent inherit the parent model.
 13. For **Low** or when subagents are unavailable/blocked: run the same phases manually as a role roadmap checklist in this thread and explicitly state the Traffic One team is being simulated by the main agent.
 
 Do not satisfy Traffic One team execution with generic explorer/helper agents. A High/Balanced Traffic One run means the named senior-role workflow below: spawn `senior-architect`, wait for `PLAN_READY`, then spawn `senior-frontend` and `senior-backend`, wait for both to return before Phase 3, then spawn the reviewer/tester roles.
@@ -279,10 +279,10 @@ state, index it now" signal — don't rely on the post-build hook to fire,
 because most orchestrator runs end at `APPROVED` / `TESTS_GREEN` without
 the user typing `pnpm build`.
 
-Dispatch on `codeGraphProvider` from `.traffic-one/.one.json`:
+Dispatch on `codeGraphProvider` from the effective Traffic One state, which merges shared `.traffic-one/.one.json` with the current user's local preferences:
 
 ```bash
-PROVIDER=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('.traffic-one/.one.json','utf8')).codeGraphProvider||'')}catch{}")
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
     node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"

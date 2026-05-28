@@ -17,10 +17,10 @@ new project complete with only a lightweight README.
 For `mode: existing-codebase` and `mode: existing-with-supabase`, reconcile the
 documentation baseline before normal feature work across every detected or
 fallback stack when docs are missing or stale. If a canonical doc does not
-exist, create it from verified repo facts at the repo root. If it already
-exists, update it in place. If legacy canonical docs exist under `docs/`, migrate
-them to the root path when that can be done without overwriting a newer root
-file.
+exist, create it from verified repo facts at its canonical path. Human entry
+docs stay at the repo root; detailed operational docs live under `.traffic-one/`.
+If legacy canonical docs exist at the repo root or under `docs/`, migrate them
+to the canonical path when that can be done without dropping newer content.
 
 ## Canonical docs
 
@@ -39,18 +39,20 @@ file.
   migration-only.
 - `.traffic-one/decisions/`: one short Nygard-style ADR per significant
   decision. Use Context, Decision, Status, and Consequences.
-- `api.md`: generated from OpenAPI or source routes/Edge Functions; include
+- `.traffic-one/api.md`: generated from OpenAPI or source routes/Edge Functions; include
   auth, request/response schemas, errors, and examples.
-- `database.md`: generated from migrations or `pg_dump --schema-only
+- `.traffic-one/database.md`: generated from migrations or `pg_dump --schema-only
   --no-owner --no-privileges`; include RLS policies next to each table and
   never include data or connection strings.
-- `deployment.md`: preview/staging/prod URLs, deploy commands, env var names
+- `.traffic-one/deployment.md`: preview/staging/prod URLs, deploy commands, env var names
   without values, rollback, and "build failing" / "DB down" runbooks.
-- `security.md`: threat model summary, vulnerability reporting, dependency
-  update cadence, RLS testing approach, secret rotation, and scanner command.
+- `.traffic-one/security.md`: compact security memory plus the operating doc:
+  threat model summary, vulnerability reporting, dependency update cadence, RLS
+  testing approach, secret rotation, and scanner command. Do not create a
+  separate root `security.md`; merge legacy root content here.
 - `CHANGELOG.md`: Keep a Changelog format, populated from Conventional Commits
   and edited for humans.
-- `environment-setup.md`: exact runtime/package-manager/Supabase CLI versions,
+- `.traffic-one/environment-setup.md`: exact runtime/package-manager/Supabase CLI versions,
   env setup, DB seed/reset commands, and local workflow.
 - `CONTRIBUTING.md`: branch naming, PR checklist, commit conventions, review
   checklist, and test expectations.

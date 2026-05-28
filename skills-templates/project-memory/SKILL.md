@@ -62,6 +62,10 @@ Create or refresh:
 - `.traffic-one/decisions/README.md` and ADR files as needed
 - `.traffic-one/coding.md`
 - `.traffic-one/security.md`
+- `.traffic-one/api.md`, `.traffic-one/database.md`,
+  `.traffic-one/deployment.md`, and `.traffic-one/environment-setup.md` when
+  those operational docs apply; root copies are legacy and should be merged
+  into `.traffic-one/`
 - `.traffic-one/rules/**` generated active rule files only
 - `.traffic-one/manifest.json` generated active bundle manifest
 - root `AGENTS.md` containing the compact active rule kernel/index by default
@@ -96,7 +100,7 @@ Create or refresh:
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
   `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
   asks to preserve a report. The codebase-graph artefact location depends on
-  `codeGraphProvider` in `.traffic-one/.one.json`.
+  the current user's local `codeGraphProvider` preference.
 - Treat memory as continuity, not a transcript. Store stable facts, decisions,
   failed approaches, current work state, and "next session" handoffs; do not
   paste chat history or bulky generated output.
@@ -158,12 +162,19 @@ Create or refresh:
 ### `.traffic-one/security.md`
 
 ```markdown
-# Security Rules
+# Security Memory
 
+## Non-Negotiables
 - No secrets in client, mobile, docs, fixtures, or logs.
 - No Supabase service-role key outside server-only environments.
 - Do not use `user_metadata` in RLS policies.
 - Secrets are referenced by env var name only.
+
+## App And Data Rules
+- Unverified:
+
+## Release Gate
+- Run the project security/predeploy check before production promotion.
 ```
 
 ### `.traffic-one/deployments.jsonl`

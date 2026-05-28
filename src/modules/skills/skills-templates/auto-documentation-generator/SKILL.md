@@ -3,8 +3,9 @@ name: auto-documentation-generator
 description: >
   Generate or refresh the documentation humans and agents actually read:
   README.md, AGENTS.md, CLAUDE.md, Cursor .mdc rules, `.traffic-one/plan.md`, ADRs,
-  api.md, database.md, deployment.md, security.md, CHANGELOG.md,
-  environment-setup.md, CONTRIBUTING.md, and llms.txt for SPA + Supabase,
+  `.traffic-one/api.md`, `.traffic-one/database.md`,
+  `.traffic-one/deployment.md`, `.traffic-one/security.md`, CHANGELOG.md,
+  `.traffic-one/environment-setup.md`, CONTRIBUTING.md, and llms.txt for SPA + Supabase,
   Ionic/Capacitor, React Native, and backend projects. Trigger on "generate
   docs", "auto-documentation", "document this project", "write project docs",
   "create AGENTS.md", "create llms.txt", "update the project plan", or
@@ -35,18 +36,25 @@ Use this skill when the user asks to:
 - Generate, refresh, audit, or repair project documentation.
 - Prepare launch, handoff, onboarding, or production-readiness docs.
 - Create or update `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
-  `.traffic-one/plan.md`, `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
-  `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`, or
-  `llms.txt`.
+  `.traffic-one/plan.md`, `.traffic-one/decisions/`, `.traffic-one/api.md`,
+  `.traffic-one/database.md`, `.traffic-one/deployment.md`,
+  `.traffic-one/security.md`, `CHANGELOG.md`,
+  `.traffic-one/environment-setup.md`, `CONTRIBUTING.md`, or `llms.txt`.
 
 ## Core Rules
 
 - Update existing docs first. Create a new file only when the information has no
   better existing home.
 - In existing projects, reconcile the docs baseline: if a canonical doc is
-  missing, create it from verified repo facts at the repo root; if it exists,
-  update it in place. If legacy canonical docs exist under `docs/`, migrate them
-  to the root path when that can be done without overwriting a newer root file.
+  missing, create it from verified repo facts at its canonical path. Keep
+  human entry docs at the repo root and detailed operational docs under
+  `.traffic-one/`. If legacy canonical docs exist at the repo root or under
+  `docs/`, migrate or merge them to the canonical path when that can be done
+  without dropping content.
+- Treat root `api.md`, `database.md`, `deployment.md`,
+  `environment-setup.md`, and `security.md` as legacy. Move their content into
+  `.traffic-one/`; when both root `security.md` and `.traffic-one/security.md`
+  exist, compact them into the `.traffic-one/security.md` operating doc.
 - Prefer pointers to duplicated prose. Link from README/AGENTS/CLAUDE to deeper
   docs instead of copying the same commands everywhere.
 - Do not generate empty boilerplate. Omit sections that cannot be filled with
@@ -64,8 +72,8 @@ Use this skill when the user asks to:
 Read only what is needed:
 
 1. `README.md`, `AGENTS.md`, `CLAUDE.md`, `.cursor/rules/*.mdc`,
-   `.traffic-one/` project memory, root docs, and legacy `docs/` only when
-   present.
+   `.traffic-one/` project memory/docs, legacy root docs, and legacy `docs/`
+   only when present.
 2. `package.json`, workspace config, lockfile, `.nvmrc`, `.tool-versions`,
    `mise.toml`, `turbo.json`, `vite.config.*`, `capacitor.config.*`,
    `eas.json`, CI workflows, deploy manifests.
@@ -107,12 +115,12 @@ Create or refresh these files when relevant:
 | `.cursor/rules/*.mdc` | Cursor-specific guidance | Short scoped rules with `description`, `globs`, and `alwaysApply`; split large rules by domain. |
 | `.traffic-one/plan.md` | Plan and system map | Current goal, module map, public contracts, risks, cut-list, key dependencies, and links to ADRs. Legacy `architecture.md` files are migration-only. |
 | `.traffic-one/decisions/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
-| `api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
-| `database.md` | Schema/RLS reference | Generate from migrations or `pg_dump --schema-only --no-owner --no-privileges`; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
-| `deployment.md` | Release/runbook | Preview/staging/prod URLs, deploy commands, secrets list without values, rollback, "build failing", and "DB down" runbooks. |
-| `security.md` | Security operating doc | Threat model summary, vulnerability reporting, dependency update cadence, RLS testing, secret rotation, security scanner command. |
+| `.traffic-one/api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
+| `.traffic-one/database.md` | Schema/RLS reference | Generate from migrations or `pg_dump --schema-only --no-owner --no-privileges`; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
+| `.traffic-one/deployment.md` | Release/runbook | Preview/staging/prod URLs, deploy commands, secrets list without values, rollback, "build failing", and "DB down" runbooks. |
+| `.traffic-one/security.md` | Security memory and operating doc | Merge project non-negotiables, threat model summary, vulnerability reporting, dependency update cadence, RLS testing, secret rotation, and scanner command. Do not create a separate root `security.md`. |
 | `CHANGELOG.md` | Release history | Keep a Changelog structure with `Unreleased`, generated from Conventional Commits and edited for humans. |
-| `environment-setup.md` | Reproducible local setup | Exact Node/Bun/pnpm versions, Supabase CLI version, env setup, seed/reset commands, local DB flow. |
+| `.traffic-one/environment-setup.md` | Reproducible local setup | Exact Node/Bun/pnpm versions, Supabase CLI version, env setup, seed/reset commands, local DB flow. |
 | `CONTRIBUTING.md` | Contributor path | Branch naming, PR template/checklist, commit conventions, review checklist, test expectations. |
 | `public/llms.txt` or root `llms.txt` | LLM docs index | Markdown index for AI crawlers/assistants pointing to canonical docs. For web apps, serve it at `/llms.txt`. |
 
@@ -125,8 +133,9 @@ Keep it human-first:
 - One paragraph explaining what the product does and who it serves.
 - One-command local setup when possible, such as `pnpm install && pnpm dev`.
 - Link to live deploy or write `Live deploy: not configured yet`.
-- Link to `AGENTS.md`, `.traffic-one/plan.md`, `deployment.md`, and
-  `environment-setup.md` instead of repeating their full content.
+- Link to `AGENTS.md`, `.traffic-one/plan.md`,
+  `.traffic-one/deployment.md`, and `.traffic-one/environment-setup.md`
+  instead of repeating their full content.
 
 ### AGENTS.md and CLAUDE.md
 
@@ -174,7 +183,7 @@ Create a concise Markdown file with:
 ## Canonical docs
 - [README](https://example.com/README.md): human overview and setup.
 - [Plan](https://example.com/.traffic-one/plan.md): module map and public contracts.
-- [API](https://example.com/api.md): endpoints and auth.
+- [API](https://example.com/.traffic-one/api.md): endpoints and auth.
 
 ## Optional
 - [Changelog](https://example.com/CHANGELOG.md): release history.

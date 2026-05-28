@@ -66,3 +66,42 @@ test('cleanupPrevious removes a stale generated rule no longer in the next set',
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('cleanupPrevious moves legacy root docs into .traffic-one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cleanup-docs-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'api.md'), '# API\n\nRoot API notes.\n', 'utf8');
+
+    const removed = cleanupPrevious(dir, { rules: [], skills: [] }, new Set(), new Set());
+
+    assert.ok(removed >= 1);
+    assert.equal(fs.existsSync(path.join(dir, 'api.md')), false);
+    assert.equal(
+      fs.readFileSync(path.join(dir, '.traffic-one', 'api.md'), 'utf8'),
+      '# API\n\nRoot API notes.\n',
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('cleanupPrevious compacts duplicate root security docs into .traffic-one/security.md', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cleanup-security-'));
+  try {
+    const trafficOne = path.join(dir, '.traffic-one');
+    fs.mkdirSync(trafficOne, { recursive: true });
+    fs.writeFileSync(path.join(trafficOne, 'security.md'), '# Security Memory\n\n- No secrets.\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'security.md'), '# Security\n\n- RLS must be default-deny.\n', 'utf8');
+
+    const removed = cleanupPrevious(dir, { rules: [], skills: [] }, new Set(), new Set());
+
+    assert.ok(removed >= 1);
+    assert.equal(fs.existsSync(path.join(dir, 'security.md')), false);
+    const security = fs.readFileSync(path.join(trafficOne, 'security.md'), 'utf8');
+    assert.ok(security.includes('# Security Memory'));
+    assert.ok(security.includes('## Migrated From Root `security.md`'));
+    assert.ok(security.includes('RLS must be default-deny.'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

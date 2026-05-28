@@ -289,7 +289,8 @@ contract, env validation, and migrations/RLS baseline are in place.
      route's title, description, canonical, Open Graph image, JSON-LD, and
      sitemap inclusion, plus `noindex,nofollow` on private/admin routes.
    - If an SPA public route must rank, document the prerender/static rendering
-     or host-support plan in `deployment.md` or `.traffic-one/known-issues.md`.
+     or host-support plan in `.traffic-one/deployment.md` or
+     `.traffic-one/known-issues.md`.
      Do not claim SEO parity from a client-rendered shell alone.
 
 8. **CI/CD pipeline (use Turborepo's caching)**
@@ -341,12 +342,16 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Invoke `auto-documentation-generator` for every generated project before
      calling the scaffold complete, even if the user did not explicitly request
      docs.
-   - Create or refresh the relevant root-level canonical docs from
+   - Create or refresh the relevant canonical docs from
      `rules/common/documentation.md`: `README.md`, `AGENTS.md`, concise
      `CLAUDE.md` or symlink, `.cursor/rules/*.mdc`, `.traffic-one/plan.md`,
-     `.traffic-one/decisions/`, `api.md`, `database.md`, `deployment.md`,
-     `security.md`, `CHANGELOG.md`, `environment-setup.md`, `CONTRIBUTING.md`,
-     and served `/llms.txt` for web surfaces.
+     `.traffic-one/decisions/`, `.traffic-one/api.md`,
+     `.traffic-one/database.md`, `.traffic-one/deployment.md`,
+     `.traffic-one/security.md`, `CHANGELOG.md`,
+     `.traffic-one/environment-setup.md`, `CONTRIBUTING.md`, and served
+     `/llms.txt` for web surfaces. Do not create duplicate root-level
+     `api.md`, `database.md`, `deployment.md`, `environment-setup.md`, or
+     `security.md`; merge legacy copies into `.traffic-one/`.
    - Mark facts as `Unverified` with the exact needed command/input instead of
      inventing deploy URLs, database output, secret values, or production
      configuration.

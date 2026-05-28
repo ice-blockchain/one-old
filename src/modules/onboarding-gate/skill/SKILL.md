@@ -950,12 +950,15 @@ For the recommended default stack (`default` with frontend=react-vite and backen
      prerender/static-rendering or host-support plan.
   8. Mandatory docs baseline: run `auto-documentation-generator` before calling
      the scaffold complete. New generated sites/apps/services MUST include the
-     relevant root-level canonical docs from `rules/common/documentation.md`:
+     relevant canonical docs from `rules/common/documentation.md`:
      README.md, AGENTS.md, concise CLAUDE.md or symlink, .cursor/rules/*.mdc,
-     .traffic-one/plan.md, .traffic-one/decisions/, api.md, database.md,
-     deployment.md, security.md, CHANGELOG.md, environment-setup.md,
-     CONTRIBUTING.md, and served /llms.txt for web surfaces. Mark unknown facts
-     as Unverified; do not leave only a lightweight README.
+     .traffic-one/plan.md, .traffic-one/decisions/, .traffic-one/api.md,
+     .traffic-one/database.md, .traffic-one/deployment.md,
+     .traffic-one/security.md, CHANGELOG.md,
+     .traffic-one/environment-setup.md, CONTRIBUTING.md, and served /llms.txt
+     for web surfaces. Do not create duplicate root api/database/deployment/
+     environment-setup/security docs; merge legacy copies into .traffic-one/.
+     Mark unknown facts as Unverified; do not leave only a lightweight README.
   9. Initialise git with Gitflow branches (`main`, `develop`).
 
 For `custom-backend` with frontend=react-vite and backend=none: a single Vite app under root `src/` (no apps/, no packages/).

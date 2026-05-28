@@ -29,7 +29,8 @@ const RAW_TOOL_CLASS = {
     Grep: 'search',
 };
 function toolClassForRawName(rawName) {
-    return RAW_TOOL_CLASS[rawName] ?? 'other';
+    const normalized = rawName.includes('.') ? rawName.split('.').pop() : rawName;
+    return RAW_TOOL_CLASS[normalized] ?? 'other';
 }
 // Does a handler apply to this input? Same event, and (for tool-scoped handlers)
 // the input's tool class is in the handler's list. No `tools` ⇒ all tools.
