@@ -12,5 +12,6 @@
     "newLine": "lf"
   },
   "include": ["src/**/*.ts", "src/**/*.cts"],
-  "exclude": ["src/**/*.test.ts", "src/gen/**", "src/build/**", "src/**/__tests__/**"]
+  "//lighthouse": "src/runners/lighthouse/** is emitted by tsconfig.lighthouse.build.json (NodeNext ESM), not this CommonJS build — see buildRuntime.",
+  "exclude": ["src/**/*.test.ts", "src/gen/**", "src/build/**", "src/**/__tests__/**", "src/runners/lighthouse/**"]
 }

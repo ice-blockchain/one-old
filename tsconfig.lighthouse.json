@@ -1,0 +1,10 @@
+{
+  "//": "The Lighthouse runner is the one ESM entry (.mts → scripts/lighthouse-runner.mjs). ESM emit needs NodeNext resolution (explicit ./lib.js import specifiers), unlike the rest of the engine which is classic CommonJS/Node. This config TYPECHECKS lighthouse (noEmit, inherited); tsconfig.lighthouse.build.json emits it. `npm run typecheck` runs this after the main typecheck; the main tsconfig.json excludes src/runners/lighthouse/** so it never sees the .mjs specifiers.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext"
+  },
+  "include": ["src/runners/lighthouse/**/*.ts", "src/runners/lighthouse/**/*.mts"],
+  "exclude": []
+}

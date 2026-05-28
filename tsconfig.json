@@ -15,5 +15,7 @@
     "resolveJsonModule": true,
     "noEmit": true
   },
-  "include": ["src/**/*.ts", "src/**/*.mts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.mts", "tests/**/*.ts"],
+  "//exclude": "src/runners/lighthouse/** is typechecked by tsconfig.lighthouse.json (NodeNext) — it uses ESM .mjs import specifiers the classic Node resolver here can't follow.",
+  "exclude": ["src/runners/lighthouse/**"]
 }

@@ -31,7 +31,7 @@ import {
   reportBaseName,
   runScriptArgs,
   usage,
-} from './lib';
+} from './lib.js';
 
 interface RunOptions { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: 'pipe' | Array<'ignore' | 'pipe'>; forwardOutput?: boolean }
 

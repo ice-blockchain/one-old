@@ -77,7 +77,24 @@ export function copyRunnerAssets(outDir: string): string[] {
   return copied.sort();
 }
 
-export interface BuildResult { modulesCopied: number; assetsCopied: string[]; shimsWritten: string[]; }
+// Lighthouse is the lone ESM runner. The rest of the engine is CommonJS with
+// classic Node resolution, which cannot emit the explicit `.mjs` import
+// specifiers ESM needs — so lighthouse compiles via its own NodeNext config:
+//   src/runners/lighthouse/index.mts → <outDir>/runners/lighthouse/index.mjs (ESM)
+//   src/runners/lighthouse/lib.ts     → <outDir>/runners/lighthouse/lib.js  (CJS)
+// then a 1-line ESM entry shim at the legacy path <outDir>/lighthouse-runner.mjs
+// keeps `node scripts/lighthouse-runner.mjs …` working (parallels the .cjs shims).
+export function buildLighthouse(outDir: string): void {
+  const lh = spawnSync('npx', ['tsc', '-p', 'tsconfig.lighthouse.build.json', '--outDir', path.join(outDir, 'runners', 'lighthouse')], {
+    cwd: REPO_ROOT, encoding: 'utf8', timeout: 180000,
+  });
+  if (lh.status !== 0) {
+    throw new Error(`lighthouse tsc failed:\n${lh.stdout || ''}${lh.stderr || ''}`);
+  }
+  fs.writeFileSync(path.join(outDir, 'lighthouse-runner.mjs'), "import './runners/lighthouse/index.mjs';\n", 'utf8');
+}
+
+export interface BuildResult { modulesCopied: number; assetsCopied: string[]; shimsWritten: string[]; lighthouseEmitted: boolean; }
 
 export function buildRuntime(outDir: string): BuildResult {
   const tsc = spawnSync('npx', ['tsc', '-p', 'tsconfig.build.json', '--outDir', outDir], {
@@ -89,7 +106,8 @@ export function buildRuntime(outDir: string): BuildResult {
   const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(outDir, 'modules'));
   const assetsCopied = copyRunnerAssets(outDir);
   const shimsWritten = writeShims(outDir);
-  return { modulesCopied: copied.length, assetsCopied, shimsWritten };
+  buildLighthouse(outDir);
+  return { modulesCopied: copied.length, assetsCopied, shimsWritten, lighthouseEmitted: true };
 }
 
 if (require.main === module) {
@@ -99,5 +117,5 @@ if (require.main === module) {
     process.exit(1);
   }
   const result = buildRuntime(path.resolve(outDir));
-  process.stdout.write(`build-runtime: compiled to ${outDir}; ${result.modulesCopied} module descriptors; ${result.assetsCopied.length} runner assets; shims: ${result.shimsWritten.join(', ')}\n`);
+  process.stdout.write(`build-runtime: compiled to ${outDir}; ${result.modulesCopied} module descriptors; ${result.assetsCopied.length} runner assets; shims: ${result.shimsWritten.join(', ')}; lighthouse: ${result.lighthouseEmitted ? 'lighthouse-runner.mjs (ESM)' : 'skipped'}\n`);
 }
