@@ -22,7 +22,9 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth']);
   assert.deepEqual(idsFor('check-agent-model'), ['agent-model.spawn', 'session.auth']);
   assert.deepEqual(idsFor('check-architecture-write'), ['architecture-guard.write', 'session.auth']);
-  assert.deepEqual(idsFor('check-library-allowlist'), ['architecture-guard.library', 'session.auth']);
+  // check-library-allowlist runs the deploy gate (25) + the install allowlist (30)
+  // after auth (0) — the legacy "deploy gate runs first" ordering inside the gate.
+  assert.deepEqual(idsFor('check-library-allowlist'), ['architecture-guard.deploy', 'architecture-guard.library', 'session.auth']);
   // Hints + post-build handlers route to exactly one handler (no cross-fire —
   // critical so the two PostToolUse entries don't double-emit context).
   assert.deepEqual(idsFor('pre-graphify-hint'), ['graphify.hint']);
