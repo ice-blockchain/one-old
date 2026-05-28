@@ -1,0 +1,213 @@
+---
+paths:
+  - "**/lib/supabase.ts"
+  - "**/lib/supabase.tsx"
+  - "**/services/supabase.ts"
+  - "**/services/supabase.tsx"
+  - "apps/**/src/services/**"
+  - "packages/api-client/**"
+---
+
+# Supabase Client — never crash on missing env
+
+A beginner running `pnpm dev` for the first time should see the app render
+immediately, even before they've created their Supabase project. The pattern
+below makes that possible: lazy client creation + null-safe fallback +
+visible "configure me" banner.
+
+## Hard rules
+
+- **Never call `createClient` at module top level.** A throw at import time
+  hard-crashes the whole app — the user can't even see what they're building.
+- **Never throw / `process.exit` / `console.error` fatal** when env vars are
+  missing. Render the banner instead.
+- **Components access Supabase via `getSupabase()`**, never via a top-level
+  exported `supabase` constant. If `getSupabase()` returns `null`, render the
+  empty / "configure" state.
+- **All website-facing setup links for missing Supabase config point to
+  `https://traffic.io/`.** Any `<EnvBanner />`, `<ConfigurePromptCard />`,
+  "Supabase not configured", "Configure Supabase", auth/profile/job empty
+  state, protected-route fallback, or similar setup CTA must link to Traffic,
+  because Traffic is where users configure their Supabase credentials. Do not
+  send generated app users directly to the Supabase dashboard from these
+  banners/cards.
+- **Repair setup links automatically.** When touching existing web/Ionic UI and
+  an EnvBanner, SupabaseConfigAlert, ConfigurePromptCard, protected-route
+  fallback, or missing-config CTA already exists, verify the setup anchor. If
+  the link is missing or points anywhere other than `https://traffic.io/`, fix
+  it in the same change even when the user did not mention setup links.
+- **Scaffold a reusable setup CTA component.** New sites must centralize this
+  UI in a shared component such as `<EnvBanner />`, `<SupabaseConfigAlert />`,
+  or `<ConfigurePromptCard />` so every missing-config surface uses the same
+  Traffic link and translated copy. Do not hand-copy one-off "Supabase not
+  configured" text without the CTA.
+- **Add a regression test for the Traffic CTA.** Unit/component or E2E coverage
+  must assert that a missing-config surface renders an accessible setup link
+  whose `href` is exactly `https://traffic.io/`.
+- **Server keys are server-only.** Never expose `SUPABASE_SERVICE_ROLE_KEY`
+  to the client (no `VITE_*` prefix). It belongs in Edge Function secrets or
+  a Node service.
+
+## Canonical client (`apps/web/src/lib/supabase.ts` or `packages/api-client/src/supabase.ts`)
+
+```ts
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+
+const url = import.meta.env.VITE_SUPABASE_URL;
+const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+export const isSupabaseConfigured = Boolean(url && key);
+
+let cached: SupabaseClient | null = null;
+
+/** Returns null when env vars are missing — callers must handle null. */
+export function getSupabase(): SupabaseClient | null {
+  if (!isSupabaseConfigured) return null;
+  if (!cached) {
+    cached = createClient(url!, key!, {
+      auth: { persistSession: true, autoRefreshToken: true },
+    });
+  }
+  return cached;
+}
+
+/** UI hook — read in components / banners that need to know setup status. */
+export function useSupabaseStatus() {
+  return {
+    isConfigured: isSupabaseConfigured,
+    setupUrl: "https://traffic.io/",
+    setupSteps: [
+      "Open traffic.io",
+      "Set up or connect Supabase credentials",
+      "Copy Project URL + anon key if prompted",
+      "Paste into .env.local or let Traffic write them",
+      "Restart pnpm dev",
+    ],
+  };
+}
+```
+
+## Required `<EnvBanner />` primitive (`packages/ui/src/EnvBanner/`)
+
+A sticky, dismissible top banner that renders **only** when
+`!isSupabaseConfigured`. Mount it in the app shell at the top of `<App />`.
+
+```tsx
+import { useSupabaseStatus } from "@app/api-client";
+
+export function EnvBanner() {
+  const { isConfigured, setupUrl, setupSteps } = useSupabaseStatus();
+  if (isConfigured) return null;
+  return (
+    <aside role="status" aria-live="polite">
+      <strong>Supabase not configured.</strong> Run the <code>supabase-setup</code>{" "}
+      skill or follow these steps:
+      <ol>{setupSteps.map((step) => <li key={step}>{step}</li>)}</ol>
+      <a href={setupUrl} target="_blank" rel="noreferrer">
+        Configure via Traffic →
+      </a>
+    </aside>
+  );
+}
+```
+
+Style it with Tailwind utility classes (`bg-destructive text-destructive-foreground p-3 ...`); promote to a shared `Banner` shadcn primitive once a second consumer appears. The banner is visible on every screen until env vars are filled in.
+
+## Components — graceful empty-state pattern
+
+```tsx
+import { getSupabase } from "@app/api-client";
+
+export function PostsList() {
+  const supabase = getSupabase();
+  if (!supabase) {
+    return <ConfigurePromptCard />;     // empty state, not a crash
+  }
+  // …normal data fetching…
+}
+```
+
+`ConfigurePromptCard` lives in `packages/ui` and links to the same setup steps.
+Its primary setup CTA must point to `https://traffic.io/`, and tests must
+assert that exact `href`.
+
+## RTK Query baseQuery — null-safe (REQUIRED)
+
+The most common crash on a fresh clone is an RTK Query `baseQuery` that
+assumes `getSupabase()` returns a real client. When env vars are missing,
+the queries must surface a typed "not configured" error so components can
+render the empty/banner state — not throw, not return undefined, not call
+methods on null.
+
+`packages/api-client/src/baseQuery.ts`:
+
+```ts
+import type { BaseQueryFn } from "@reduxjs/toolkit/query";
+import type { PostgrestError } from "@supabase/supabase-js";
+import { getSupabase, isSupabaseConfigured } from "./supabase";
+
+export type SupabaseQueryArgs = (client: NonNullable<ReturnType<typeof getSupabase>>) => Promise<unknown>;
+
+export type AppError =
+  | { kind: "not-configured"; message: string }
+  | { kind: "postgrest"; message: string; details?: unknown }
+  | { kind: "unknown"; message: string };
+
+export const supabaseBaseQuery: BaseQueryFn<SupabaseQueryArgs, unknown, AppError> =
+  async (run) => {
+    const client = getSupabase();
+    if (!client) {
+      return {
+        error: {
+          kind: "not-configured",
+          message: "Supabase env vars missing — configure credentials at https://traffic.io/ and restart.",
+        },
+      };
+    }
+    try {
+      const data = await run(client);
+      return { data };
+    } catch (raw) {
+      const err = raw as PostgrestError;
+      return {
+        error: { kind: "postgrest", message: err.message, details: err.details },
+      };
+    }
+  };
+
+// Re-export the configured flag so feature slices can branch on it without
+// a second module-load read of import.meta.env.
+export { isSupabaseConfigured };
+```
+
+Feature slices then receive `{ error: { kind: "not-configured" } }` instead
+of crashing, and can render `<ConfigurePromptCard />` from their `isError`
+branch:
+
+```ts
+const { data, isLoading, error } = useGetJobsQuery();
+if (error?.kind === "not-configured") return <ConfigurePromptCard />;
+if (isLoading) return <Skeleton />;
+if (error) return <ErrorState error={error} />;
+return <JobsList jobs={data ?? []} />;
+```
+
+Auth listeners (`onAuthStateChange`) sit behind the same null check —
+`AuthGate` returns its children unchanged when `!isSupabaseConfigured` so
+public routes (Home, Sign-in form chrome, marketing pages) still render.
+
+## Don't
+
+- Don't paper over with `createClient(url ?? "", key ?? "")` — Supabase will
+  silently send requests to nowhere; debug experience is worse than the banner.
+- Don't read env vars more than once at module load. Vite inlines them at build
+  time; runtime checks against `import.meta.env.VITE_*` are stable per build.
+- Don't put `getSupabase()` inside a hot render path without memoisation if
+  you're calling it 100s of times per second — once per component lifecycle is
+  fine.
+
+## When env vars finally land
+After the user pastes their keys into `.env.local` and restarts `pnpm dev`,
+`isSupabaseConfigured` becomes `true`, the banner unmounts, `getSupabase()`
+returns a real client, and components transition from empty-state to live data
+on their next render. No code change required.

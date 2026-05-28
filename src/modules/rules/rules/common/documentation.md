@@ -1,0 +1,64 @@
+---
+# Human and agent documentation defaults
+---
+
+# Auto-Documentation Defaults
+
+When the user asks to generate, refresh, or audit project documentation, invoke
+`auto-documentation-generator`. The goal is useful docs that humans and agents
+actually read, not a wall of generated boilerplate.
+
+For `mode: new-project`, this is mandatory across every stack, even when the
+user does not ask for docs explicitly. Every generated site/app/service must
+finish with the canonical docs that apply to the scaffold, or an
+`Unverified`/`Skipped` entry explaining the exact missing fact. Do not call a
+new project complete with only a lightweight README.
+
+For `mode: existing-codebase` and `mode: existing-with-supabase`, reconcile the
+documentation baseline before normal feature work across every detected or
+fallback stack when docs are missing or stale. If a canonical doc does not
+exist, create it from verified repo facts at the repo root. If it already
+exists, update it in place. If legacy canonical docs exist under `docs/`, migrate
+them to the root path when that can be done without overwriting a newer root
+file.
+
+## Canonical docs
+
+- `README.md`: human-first overview, audience, one-command local setup, live
+  deploy link or "not configured", and links to deeper docs.
+- `AGENTS.md`: root agent guide with build/test commands, code-style rules,
+  repo map, gotchas, security constraints, and deploy warnings. Nested
+  `AGENTS.md` files are for large subprojects with different rules.
+- `CLAUDE.md`: symlink to `AGENTS.md` when possible, otherwise under ~300 lines
+  and focused on what Claude would get wrong without it. Do not duplicate the
+  linter or full style guide.
+- `.cursor/rules/*.mdc`: Cursor-specific project rules; keep each rule short,
+  scoped, and version-controlled with `description`, `globs`, and `alwaysApply`.
+- `architecture.md`: root-level folder map, data flow diagram, key
+  dependencies, and why major choices were made. Link ADRs.
+- `.traffic-one/decisions/`: one short Nygard-style ADR per significant
+  decision. Use Context, Decision, Status, and Consequences.
+- `api.md`: generated from OpenAPI or source routes/Edge Functions; include
+  auth, request/response schemas, errors, and examples.
+- `database.md`: generated from migrations or `pg_dump --schema-only
+  --no-owner --no-privileges`; include RLS policies next to each table and
+  never include data or connection strings.
+- `deployment.md`: preview/staging/prod URLs, deploy commands, env var names
+  without values, rollback, and "build failing" / "DB down" runbooks.
+- `security.md`: threat model summary, vulnerability reporting, dependency
+  update cadence, RLS testing approach, secret rotation, and scanner command.
+- `CHANGELOG.md`: Keep a Changelog format, populated from Conventional Commits
+  and edited for humans.
+- `environment-setup.md`: exact runtime/package-manager/Supabase CLI versions,
+  env setup, DB seed/reset commands, and local workflow.
+- `CONTRIBUTING.md`: branch naming, PR checklist, commit conventions, review
+  checklist, and test expectations.
+- `public/llms.txt` or root `llms.txt`: concise Markdown index pointing
+  LLMs and AI crawlers to canonical docs.
+
+## Guardrails
+
+- Update existing docs before creating new files.
+- Prefer links and file references over duplicated prose.
+- Mark unknown facts `Unverified` with the exact command or user input needed.
+- No placeholder sections, fake URLs, secret values, or production data dumps.

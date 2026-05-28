@@ -1,0 +1,63 @@
+---
+# Loaded when mode = existing-codebase (>5 source files, no Supabase)
+---
+
+# Mode: Existing Codebase
+
+Preserve all existing structure. New code only.
+
+## OpenCode delegation opt-in (token economy, one-time)
+- If `.traffic-one/.one.json` has no resolved `openCode` field, the UserPromptSubmit hook surfaces a one-time, non-blocking popup asking whether to enable delegating bounded coding tasks to OpenCode (a free local agent) to save paid tokens. Record the answer as `openCode: { "enabled": <true|false>, "source": "prompted", "decidedAt": "<ISO-8601 UTC>" }` and do not re-ask. Delegation itself ships in a later task; this only records the preference. Never auto-pick — wait for the user.
+
+## Active constraints
+- Do NOT rename, move, or restructure existing files
+- Max function length: 50 lines on new code
+- Max component length: 150 lines on new code
+- No `any`, no inline styles, named exports only — on new code
+- No backend or infrastructure suggestions
+- Before normal feature work, run the `project-memory` baseline reconciliation:
+  - Confirm root `.traffic-one/.one.json` exists and has a valid `mode` and `stack`;
+    `.traffic-one/` memory does not replace stack/state selection.
+  - If `.traffic-one/` is missing, create it from verified repo facts.
+  - If memory files already exist, update them in place.
+  - If legacy ADRs exist in root `adr/`, migrate or mirror them to
+    `.traffic-one/decisions/` when safe.
+  - Do not include secrets, production data, or fake MCP/deploy configuration.
+- Before normal feature work, run the `auto-documentation-generator` baseline
+  reconciliation from `rules/common/documentation.md`:
+  - If a canonical doc does not exist, create it from verified repo facts at the
+    repo root.
+  - If a canonical doc already exists, update it in place.
+  - If legacy canonical docs exist under `docs/`, migrate them to the root path
+    when that can be done without overwriting a newer root file.
+  - Mark unknown facts as `Unverified` with the exact command/input needed.
+  - Never include secret values, production data, fake deploy URLs, or
+    boilerplate sections.
+- Before normal feature work on any existing web surface, run the `seo`
+  baseline reconciliation from `rules/common/seo.md`:
+  - Inspect routes, app shell HTML, public assets, sitemap/robots, metadata
+    helpers, and existing SEO tests before adding new SEO code.
+  - If SEO is missing or only partially present, add route-aware metadata,
+    canonical URLs, JSON-LD, Open Graph/Twitter tags, favicon/PWA assets,
+    `robots.txt`, `sitemap.xml`, and regression coverage.
+  - If SEO exists, update it in place for the changed public routes and preserve
+    verified brand/domain values.
+  - Mark unknown production domains as `Unverified`; do not invent deploy URLs.
+- Before normal frontend/UI work, reconcile the i18n baseline from
+  `rules/frontend/i18n.md`:
+  - Inspect package manifests and source for `packages/i18n`, `src/i18n*`,
+    `locales/`, `public/locales/`, `messages/`, catalog files, `i18next`,
+    `react-i18next`, `expo-localization`, or existing provider wrappers.
+  - If an i18n module exists, extend it automatically for changed UI even when
+    the user did not ask for translations. Add source-language catalog entries
+    for every new key.
+  - Prefer `<Trans>` for rich copy with links or React elements; use `t()` only
+    for simple labels, attributes, and validation strings.
+  - If no i18n module exists, do not invent a parallel system for a narrow edit;
+    follow the existing app convention and record the i18n baseline as
+    `Unverified` or `Not present` in the handoff.
+- For existing Supabase-backed web/Ionic surfaces, repair any missing-config
+  setup banner/card touched by the work so its setup CTA points to
+  `https://traffic.io/` and has regression coverage for that exact `href`.
+
+<!-- TODO: expand with project-specific incremental rules once structure is validated -->

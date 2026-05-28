@@ -15,6 +15,7 @@ import { emitAgents } from './emit/agents';
 import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
+import { emitRules } from './emit/rules';
 import { GenRun } from './lib/run';
 
 export function runGen(opts: { check: boolean; root?: string }): GenRun {
@@ -23,6 +24,7 @@ export function runGen(opts: { check: boolean; root?: string }): GenRun {
   emitMcp(run);
   emitHooks(run);
   emitAgents(run); // before cursor-rules: the cursor mirror reads agents/
+  emitRules(run); // before cursor-rules: slugForSource reads rules-templates/
   emitCursorRules(run);
   return run;
 }
