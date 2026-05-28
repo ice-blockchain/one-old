@@ -86,3 +86,28 @@ test('pre-graphify-hint AUTHED with no graph artefact → silent (empty stdout)'
     assert.equal(r.stdout, '');
   });
 });
+
+test('session-start UNAUTHED surfaces the auth choice (fail toward unverified)', async () => {
+  await withEnv({ authed: false }, async (cwd) => {
+    const r = await runClaudeHook('session-start', JSON.stringify({ hook_event_name: 'SessionStart', cwd }));
+    assert.equal(r.exitCode, 0);
+    const out = JSON.parse(r.stdout);
+    assert.match(String(out.systemMessage), /authentication choice required/);
+    assert.equal(out.promptRequest?.id, 'traffic-one.auth.choice');
+    assert.equal(out.hookSpecificOutput?.hookEventName, 'SessionStart');
+  });
+});
+
+test('session-start AUTHED plumbs through to valid JSON, exit 0 (never throws to host)', async () => {
+  // SessionStart runs a forced remote auth check + rule packing + materialization;
+  // the auth-decision nuances (3 flows, remote-check fail-closed) are covered by
+  // the session module's own unit tests. The entry's contract here is simply:
+  // it routes session-start through the pipeline and always returns valid output.
+  await withEnv({ authed: true }, async (cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+    const r = await runClaudeHook('session-start', JSON.stringify({ hook_event_name: 'SessionStart', cwd }));
+    assert.equal(r.exitCode, 0);
+    if (r.stdout) assert.doesNotThrow(() => JSON.parse(r.stdout));
+  });
+});
