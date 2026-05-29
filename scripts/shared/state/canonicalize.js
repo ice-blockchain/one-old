@@ -1,0 +1,273 @@
+"use strict";
+// src/shared/state/canonicalize.ts
+// Vocabulary canonicalization + the .one.json shape migration. Ported 1:1 from
+// scripts/hook-runtime/state/canonicalize.cjs — behavior must match exactly.
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.normalizedString = normalizedString;
+exports.canonicalMobileSource = canonicalMobileSource;
+exports.canonicalTeamMode = canonicalTeamMode;
+exports.canonicalTeamSource = canonicalTeamSource;
+exports.canonicalOpenCodeSource = canonicalOpenCodeSource;
+exports.canonicalTeamOverrides = canonicalTeamOverrides;
+exports.overridesEqual = overridesEqual;
+exports.canonicalPerformanceLevel = canonicalPerformanceLevel;
+exports.mobileStateFromString = mobileStateFromString;
+exports.teamStateFromString = teamStateFromString;
+exports.codeGraphProviderFromString = codeGraphProviderFromString;
+exports.codeGraphProviderFromValue = codeGraphProviderFromValue;
+exports.canonicalMode = canonicalMode;
+exports.canonicalBackendValue = canonicalBackendValue;
+exports.canonicalizeStateShape = canonicalizeStateShape;
+const model_tiers_1 = require("../model-tiers");
+const performance_config_1 = require("../performance-config");
+const constants_1 = require("./constants");
+function normalizedString(value) {
+    return typeof value === 'string' ? value.trim().toLowerCase().replace(/[_\s]+/g, '-') : '';
+}
+function canonicalMobileSource(source) {
+    if (typeof source !== 'string')
+        return source;
+    if (constants_1.MOBILE_SOURCE_IDS.has(source))
+        return source;
+    const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+    if (constants_1.MOBILE_SOURCE_IDS.has(normalized))
+        return normalized;
+    return constants_1.MOBILE_SOURCE_ALIASES.get(normalized) || source;
+}
+function canonicalTeamMode(mode) {
+    if (typeof mode !== 'string')
+        return mode;
+    if (constants_1.TEAM_MODE_IDS.has(mode))
+        return mode;
+    const normalized = mode.trim().toLowerCase().replace(/[_\s]+/g, '-');
+    if (constants_1.TEAM_MODE_IDS.has(normalized))
+        return normalized;
+    return constants_1.TEAM_MODE_ALIASES.get(normalized) || mode;
+}
+function canonicalTeamSource(source) {
+    if (typeof source !== 'string')
+        return source;
+    if (constants_1.TEAM_SOURCE_IDS.has(source))
+        return source;
+    const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+    if (constants_1.TEAM_SOURCE_IDS.has(normalized))
+        return normalized;
+    return constants_1.TEAM_SOURCE_ALIASES.get(normalized) || source;
+}
+function canonicalOpenCodeSource(source) {
+    if (typeof source !== 'string')
+        return 'prompted';
+    const normalized = source.trim().toLowerCase().replace(/[_\s]+/g, '-');
+    return constants_1.OPEN_CODE_SOURCE_IDS.has(normalized) ? normalized : 'prompted';
+}
+// Canonical { role: tier } map, or null when there are no usable overrides.
+function canonicalTeamOverrides(overrides, level) {
+    if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides))
+        return null;
+    const levelKey = typeof level === 'string' ? level : '';
+    const levelCfg = levelKey ? performance_config_1.PERFORMANCE_CONFIG[levelKey] : undefined;
+    const baseAgents = levelCfg ? levelCfg.agents : null;
+    const validRoles = new Set();
+    if (baseAgents) {
+        for (const role of Object.keys(baseAgents))
+            validRoles.add(role);
+    }
+    else {
+        for (const cfg of Object.values(performance_config_1.PERFORMANCE_CONFIG)) {
+            for (const role of Object.keys(cfg.agents))
+                validRoles.add(role);
+        }
+    }
+    const result = {};
+    for (const [role, tier] of Object.entries(overrides)) {
+        if (!validRoles.has(role))
+            continue;
+        const canonical = (0, model_tiers_1.canonicalTier)(tier);
+        if (!canonical)
+            continue;
+        const base = baseAgents ? baseAgents[role] : undefined;
+        if (base && base.tier === canonical)
+            continue;
+        result[role] = canonical;
+    }
+    return Object.keys(result).length > 0 ? result : null;
+}
+function overridesEqual(left, right) {
+    if (left === right)
+        return true;
+    const a = left && typeof left === 'object' ? left : null;
+    const b = right && typeof right === 'object' ? right : null;
+    if (!a && !b)
+        return true;
+    if (!a || !b)
+        return false;
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length)
+        return false;
+    for (const key of aKeys) {
+        if (a[key] !== b[key])
+            return false;
+    }
+    return true;
+}
+function canonicalPerformanceLevel(level) {
+    if (typeof level !== 'string')
+        return level;
+    if (constants_1.PERFORMANCE_LEVEL_IDS.has(level))
+        return level;
+    const normalized = level.trim().toLowerCase().replace(/[_\s]+/g, '-');
+    return constants_1.PERFORMANCE_LEVEL_IDS.has(normalized) ? normalized : level;
+}
+function mobileStateFromString(value) {
+    const normalized = normalizedString(value);
+    if (!normalized)
+        return null;
+    if (normalized === 'web' || normalized === 'web-only')
+        return { enabled: false, framework: 'none', source: 'prompted' };
+    if (normalized === 'none' || normalized === 'no-mobile' || normalized === 'disabled')
+        return { enabled: false, framework: 'none', source: 'none' };
+    if (normalized === 'ionic' || normalized === 'ionic-capacitor')
+        return { enabled: true, framework: 'ionic-capacitor', source: 'prompted' };
+    if (normalized === 'react-native' || normalized === 'react-native-expo' || normalized === 'expo')
+        return { enabled: true, framework: 'react-native-expo', source: 'prompted' };
+    return null;
+}
+function teamStateFromString(value) {
+    const mode = canonicalTeamMode(value);
+    return typeof mode === 'string' && constants_1.TEAM_MODE_IDS.has(mode) ? { mode, source: 'prompted' } : null;
+}
+function codeGraphProviderFromString(value) {
+    const normalized = normalizedString(value);
+    return normalized === 'gitnexus' || normalized === 'graphify' ? normalized : null;
+}
+function codeGraphProviderFromValue(value) {
+    const direct = codeGraphProviderFromString(value);
+    if (direct)
+        return direct;
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+        return null;
+    const record = value;
+    for (const key of ['provider', 'codeGraphProvider', 'id', 'name']) {
+        const nested = codeGraphProviderFromValue(record[key]);
+        if (nested)
+            return nested;
+    }
+    return null;
+}
+function canonicalMode(value) {
+    const normalized = normalizedString(value);
+    if (normalized === 'new-project' || normalized === 'existing-codebase')
+        return normalized;
+    return typeof value === 'string' ? value : null;
+}
+function canonicalBackendValue(value) {
+    const normalized = normalizedString(value);
+    if (normalized === 'supabase-ready' || normalized === 'supabase-default' || normalized === 'managed-supabase') {
+        return 'supabase';
+    }
+    return value;
+}
+function canonicalizeStateShape(state) {
+    if (!state || typeof state !== 'object')
+        return false;
+    const s = state;
+    let changed = false;
+    if (!s.mode && typeof s.projectMode === 'string') {
+        const mode = canonicalMode(s.projectMode);
+        if (mode) {
+            s.mode = mode;
+            changed = true;
+        }
+    }
+    if (Object.prototype.hasOwnProperty.call(s, 'projectMode')) {
+        delete s.projectMode;
+        changed = true;
+    }
+    const compactStack = s.stack && typeof s.stack === 'object' && !Array.isArray(s.stack)
+        ? s.stack
+        : null;
+    if (compactStack) {
+        if (typeof compactStack.id === 'string' && compactStack.id.trim()) {
+            s.stack = compactStack.id.trim();
+            changed = true;
+        }
+        if (!s.frontend && typeof compactStack.frontend === 'string') {
+            s.frontend = compactStack.frontend;
+            changed = true;
+        }
+        if (!s.backend && typeof compactStack.backend === 'string') {
+            s.backend = compactStack.backend;
+            changed = true;
+        }
+        if ((s.mobile === undefined || s.mobile === null) && compactStack.mobile !== undefined) {
+            s.mobile = compactStack.mobile;
+            changed = true;
+        }
+        if (!s.codeGraphProvider) {
+            const provider = codeGraphProviderFromValue(compactStack.codeGraph || compactStack.codeGraphProvider);
+            if (provider) {
+                s.codeGraphProvider = provider;
+                changed = true;
+            }
+        }
+        if ((s.team === undefined || s.team === null) && compactStack.team !== undefined) {
+            s.team = compactStack.team;
+            changed = true;
+        }
+        if (Object.prototype.hasOwnProperty.call(s, 'project')) {
+            delete s.project;
+            changed = true;
+        }
+    }
+    if (typeof s.backend === 'string') {
+        const backend = canonicalBackendValue(s.backend);
+        if (backend !== s.backend) {
+            s.backend = backend;
+            changed = true;
+        }
+    }
+    if (typeof s.mobile === 'string') {
+        const mobile = mobileStateFromString(s.mobile);
+        if (mobile) {
+            s.mobile = mobile;
+            changed = true;
+        }
+    }
+    if ((s.team === undefined || s.team === null) && s.subagentTeam !== undefined) {
+        s.team = s.subagentTeam;
+        changed = true;
+    }
+    if (Object.prototype.hasOwnProperty.call(s, 'subagentTeam')) {
+        delete s.subagentTeam;
+        changed = true;
+    }
+    if (typeof s.team === 'string') {
+        const team = teamStateFromString(s.team);
+        if (team) {
+            s.team = team;
+            changed = true;
+        }
+    }
+    const canonicalProvider = codeGraphProviderFromValue(s.codeGraphProvider);
+    if (canonicalProvider && s.codeGraphProvider !== canonicalProvider) {
+        s.codeGraphProvider = canonicalProvider;
+        changed = true;
+    }
+    if (!s.codeGraphProvider && s.codeGraph !== undefined) {
+        const provider = codeGraphProviderFromValue(s.codeGraph);
+        if (provider) {
+            s.codeGraphProvider = provider;
+            delete s.codeGraph;
+            changed = true;
+        }
+    }
+    if (typeof s.performance === 'string') {
+        const level = canonicalPerformanceLevel(s.performance);
+        if (typeof level === 'string' && constants_1.PERFORMANCE_LEVEL_IDS.has(level)) {
+            s.performance = { level, source: 'prompted' };
+            changed = true;
+        }
+    }
+    return changed;
+}

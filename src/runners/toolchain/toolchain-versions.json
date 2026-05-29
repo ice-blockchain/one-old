@@ -1,0 +1,47 @@
+{
+  "$comment": "Curated spec of 3rd-party CLI tools the plugin invokes. Bump `recommended` here in a single PR when a new upstream release lands — runners + doctor consume this file to decide whether the user's installed version is fresh. `minimum` is the lowest version that actually works for our integration; older than that, the runner refuses with a clear upgrade hint. Probes use `versionRegex` against the CLI's `--version` (or alternate `versionCommand`) output to extract a comparable semver. Keep this list lean: only tools the plugin auto-installs or auto-invokes.",
+  "tools": {
+    "gitnexus": {
+      "recommended": "1.6.4",
+      "minimum": "1.0.0",
+      "license": "PolyForm Noncommercial",
+      "url": "https://github.com/abhigyanpatwari/GitNexus",
+      "npmPackage": "gitnexus",
+      "versionCommand": "gitnexus --version",
+      "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
+      "installCommand": "npm install -g gitnexus",
+      "notes": "Requires Node >=22. Runner discovers `~/.nvm/versions/node/v22.*/bin/gitnexus` via absolute path so PATH order doesn't matter."
+    },
+    "graphify": {
+      "recommended": "0.7.10",
+      "minimum": "0.4.0",
+      "license": "MIT",
+      "url": "https://github.com/edmondchuc/graphify",
+      "pipxPackage": "graphifyy",
+      "versionCommand": "graphify --version",
+      "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
+      "installCommand": "pipx install graphifyy",
+      "notes": "Python CLI. The `graphifyy` package name is intentional (not a typo) — that's how it's published on PyPI."
+    },
+    "gitleaks": {
+      "recommended": "8.30.1",
+      "minimum": "8.20.0",
+      "license": "MIT",
+      "url": "https://github.com/gitleaks/gitleaks",
+      "versionCommand": "gitleaks version",
+      "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
+      "installCommand": "brew install gitleaks",
+      "notes": "Used by `predeploy-security-check`. CI pins `gitleaks@v8.30.1`. Local installs need brew (macOS) or apt/release binary (Linux)."
+    },
+    "trufflehog": {
+      "recommended": "3.94.3",
+      "minimum": "3.80.0",
+      "license": "AGPL-3.0",
+      "url": "https://github.com/trufflesecurity/trufflehog",
+      "versionCommand": "trufflehog --version",
+      "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
+      "installCommand": "brew install trufflehog",
+      "notes": "Used by `predeploy-security-check`. CI pins `trufflehog@v3.94.3`. Local installs need brew (macOS) or the trufflesecurity release binary (Linux)."
+    }
+  }
+}

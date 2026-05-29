@@ -1,0 +1,39 @@
+<!-- GENERATED FROM: rules/common/setup-gate.md; run `npm run gen` to update. -->
+---
+description: "Traffic One Setup Gate. Generated from rules/common/setup-gate.md."
+alwaysApply: true
+---
+
+# Traffic One Setup Gate
+
+Traffic One hooks are the source of truth for setup gating. They resolve the
+actual target project root, merge shared `.traffic-one/.one.json` with the
+current user's local preferences, and surface the next required host prompt
+before implementation.
+
+Before mutating Traffic One work, the setup gate must be clear:
+
+- Auth is valid, or the user explicitly chose to continue without Traffic One.
+- Shared project state exists at the resolved target root and has
+  `onboardingComplete: true`.
+- The current user's local preferences for that target root contain
+  `openCode`, `performance`/`team`, and `codeGraphProvider`.
+- Balanced/High performance has explicit Team Confirmation with
+  `team.approved: true`.
+- New projects have completed the new-project-only `projectContext` and Mobile
+  App prompts; existing projects skip those two prompts and preserve the
+  detected architecture.
+
+If the gate reports missing local preferences, ask only the next missing step
+and stop for the user's answer. Existing-project order is OpenCode, Performance,
+Team Confirmation for Balanced/High, then Code Graph. New-project order is
+OpenCode, Performance, Team Confirmation for Balanced/High, project context,
+Mobile App, then Code Graph.
+
+Read-only orientation is allowed while preferences are missing. Feature writes,
+dependency installs, scaffolding, materialized implementation skills, and
+subagent work must wait until the hook/gate context is clear. Never auto-pick
+defaults and never store local-only fields in shared `.traffic-one/.one.json`;
+hooks split `openCode`, `performance`, `team`, `codeGraphProvider`,
+`toolchain`, and graph runner stamps into
+`~/.traffic-one/projects/<hash(targetRoot)>/preferences.json`.

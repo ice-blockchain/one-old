@@ -1,0 +1,55 @@
+---
+paths:
+  - "apps/**/app/**"
+  - "apps/**/src/**"
+  - "packages/ui-native/**"
+  - "src/**"
+---
+
+# React Native (Expo) — Stack Core
+
+Forced library list and absolute rules for Expo-first React Native apps. Detail
+rules in `rules/frontend/react-native/*`.
+
+Use this stack only when the client explicitly asks for React Native, Expo, RN,
+or a fully React Native implementation. Generic mobile variants of React web
+products use Ionic Framework with Capacitor instead.
+
+## Forced library stack — no exceptions
+
+### Runtime
+- **App:** Expo SDK + React Native + TypeScript, Hermes, New Architecture.
+- **Routing:** Expo Router with typed routes.
+- **State:** Redux Toolkit + RTK Query for server/business state; zustand only for ephemeral UI.
+- **I/O:** axios in services or RTK Query; WebSocket/socket.io-client behind service singletons.
+- **Forms/storage:** react-hook-form + zod; expo-secure-store for secrets.
+- **i18n:** i18next + react-i18next; expo-localization for device locale; resources in `packages/i18n`.
+- **Animation/gestures:** react-native-reanimated + react-native-gesture-handler.
+
+### Build, styling, testing
+- Expo CLI locally, EAS Build/Submit for native builds, Metro bundler.
+- **NativeWind v4** (`tailwindcss@^3.4` + `nativewind@^4`) for styling; pair with
+  `react-native-reanimated` and `react-native-safe-area-context`.
+- **React Native Reusables (RNR)** for UI primitives: `npx @react-native-reusables/cli@latest add <name>`
+  copies components into `packages/ui-native/src/components/ui/` (monorepo) or
+  `src/components/ui/` (single-app). RNR is built on `rn-primitives`
+  (Radix-equivalent for RN). Icons via `lucide-react-native`.
+- Variants via `class-variance-authority` (cva); merge classes with `cn()`
+  (= `clsx` + `tailwind-merge`).
+- Theme: HSL CSS vars in `global.css` (NativeWind reads them on web *and*
+  native). Dark mode via the `dark:` variant.
+- No styled-components, `@emotion`, vanilla-extract, CSS modules, DOM tags,
+  or inline object styles for static styling. `StyleSheet.create` is reserved
+  for dynamic/animated values (e.g. Reanimated derived styles).
+- jest + jest-expo + @testing-library/react-native; msw/fakes for services; Maestro for device E2E.
+
+## Absolute rules
+- Function components only. Named exports for reusable components.
+- Expo Router route files may use `export default` (router requires it); keep them thin and compose named feature components.
+- Explicit `ComponentNameProps`; native primitives or approved shared primitives only.
+- API calls via services/RTK Query; never axios or `new WebSocket()` in components.
+- User-facing text, placeholders, labels, loading/error/empty copy, accessibility labels come from i18n keys. Hardcoded only for brand names / user-generated / server / IDs / test fixtures.
+- Server state in RTK Query/Redux only — never duplicated in zustand or component state.
+- Cross-package imports use workspace names (`@app/ui-native`, `@app/utils`).
+- Monorepo default: `apps/mobile/app`, `apps/mobile/src/features/*`, `packages/ui-native`.
+- New apps use `packages/i18n`; existing apps with mature i18n may keep it but new UI copy still uses `i18next`/`react-i18next`. Detect and extend existing i18n modules automatically; prefer `<Trans>` for rich copy with links or React elements and reserve `t()` for simple strings. Read device locale via `expo-localization` and feed i18next.

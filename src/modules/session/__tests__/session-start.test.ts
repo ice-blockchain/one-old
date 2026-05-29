@@ -1,0 +1,181 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { runSessionStart, runSessionStartAuthed } from '../session-start';
+import type { Ctx, HookInput } from '../../../core/types';
+import { initializeToolchainState } from '../../../shared/state/toolchain';
+
+function ctx(cwd: string): Ctx {
+  const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+// A temp project with isolated prefs. The post-auth body (runSessionStartAuthed)
+// needs no auth — SessionStart's forced remote probe is tested separately.
+function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sstart-'));
+  const env = process.env;
+  const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  if (state) {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+  }
+  try { fn(dir); } finally {
+    if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function localPrefs(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+    performance: { level: 'low', source: 'prompted' },
+    team: { mode: 'main-agent', source: 'prompted' },
+    codeGraphProvider: 'graphify',
+    toolchain: initializeToolchainState({}),
+    ...extra,
+  };
+}
+
+function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
+  const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  assert.ok(prefsPath, 'test prefs path must be configured');
+  fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+  fs.writeFileSync(prefsPath, JSON.stringify(localPrefs(extra)), 'utf8');
+}
+
+function existingState(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    mode: 'existing-codebase',
+    stack: 'minimal',
+    frontend: 'none',
+    backend: 'other',
+    realtime: 'none',
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+    ...extra,
+  };
+}
+
+function newProjectSharedState(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    projectContext: {
+      source: 'prompted',
+      originalPrompt: 'Build a dashboard',
+      summary: 'Dashboard MVP',
+      answers: { audience: 'Operators' },
+      collectedAt: '2026-01-01T00:00:00Z',
+    },
+    realtime: 'none',
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+    ...extra,
+  };
+}
+
+function writeExistingNextCodebase(cwd: string): void {
+  fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+  fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'x', dependencies: { next: '15.0.0', react: '19.0.0' } }), 'utf8');
+  for (let i = 0; i < 6; i += 1) {
+    fs.writeFileSync(path.join(cwd, 'src', `file-${i}.tsx`), `export const value${i} = ${i};\n`, 'utf8');
+  }
+}
+
+test('runSessionStart is a noop in the plugin authoring root (before any auth probe)', () => {
+  assert.equal(runSessionStart(ctx(process.cwd())).kind, 'noop');
+});
+
+test('Flow 3: a new project with no Traffic One state gets first-run onboarding + baseline rules', () => {
+  withProject(null, (cwd) => {
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('FIRST-RUN ONBOARDING (new project)'));
+      assert.ok(r.context.includes('Baseline rules'));
+    }
+  });
+});
+
+test('Flow 1: an onboarded existing project with local prefs gets the packed rule bundle header', () => {
+  withProject(existingState(), (cwd) => {
+    writeLocalPrefs();
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('stack: minimal'));
+      assert.ok(r.context.includes('mode: existing-codebase'));
+    }
+  });
+});
+
+test('Flow 1: an onboarded existing project without local prefs asks only local-pref steps', () => {
+  withProject(existingState(), (cwd) => {
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.equal(r.systemMessage, 'traffic-one [minimal] local preferences required');
+      assert.ok(r.context.includes('local preferences are required'));
+      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
+    }
+  });
+});
+
+test('Flow 1: an onboarded new project with shared state + local prefs runs normally', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    writeLocalPrefs();
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('stack: default'));
+      assert.ok(r.context.includes('mode: new-project'));
+      const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+      assert.equal('openCode' in onDisk, false);
+      assert.equal('performance' in onDisk, false);
+      assert.equal('team' in onDisk, false);
+      assert.equal('codeGraphProvider' in onDisk, false);
+    }
+  });
+});
+
+test('Flow 1: an onboarded new project without local prefs asks local-pref steps', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.equal(r.systemMessage, 'traffic-one [onboarding incomplete]');
+      assert.ok(r.context.includes('local preferences are required'));
+      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
+    }
+  });
+});
+
+test('Flow 2: an existing codebase with no state auto-detects, writes state, then asks local prefs', () => {
+  withProject(null, (cwd) => {
+    writeExistingNextCodebase(cwd);
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.equal(r.systemMessage, 'traffic-one [custom-frontend] local preferences required');
+      assert.ok(r.context.includes('auto-detected'));
+      assert.ok(r.context.includes('local preferences are required'));
+      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
+    }
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(onDisk.mode, 'existing-codebase');
+    assert.equal(onDisk.stack, 'custom-frontend');
+    assert.equal(onDisk.frontend, 'nextjs');
+    assert.equal('openCode' in onDisk, false);
+  });
+});

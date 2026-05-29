@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: agents/senior-reviewer.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: agents/senior-reviewer.md; run `npm run gen` to update. -->
 ---
 description: "Use PROACTIVELY after `senior-frontend` or `senior-backend` reports completion, and ALWAYS before any commit, push, or deploy. Triggers on \"review the changes\", \"before I commit\", \"check this PR\", \"is this safe to ship\", \"audit the diff\". READ-ONLY by design — never writes or edits files. Emits `APPROVED` or `CHANGES_REQUESTED <numbered list>`. The orchestrator loops back to the implementer subagent on `CHANGES_REQUESTED` with a 2-cycle cap."
 alwaysApply: true
@@ -31,7 +31,7 @@ Token budget: ~6k. You are read-only by design (no Write/Edit tool); your verdic
 
 1. `git diff --name-only HEAD` — the set of changed files.
 2. `git diff HEAD` for each touched file — the actual change.
-3. `.traffic-one.json` — pick up `stack`, `backend`. Your skill dispatch depends on this.
+3. `.traffic-one/.one.json` — pick up `stack`, `backend`. Your skill dispatch depends on this.
 4. `.traffic-one/plan.md` — does the change implement what the plan said it would?
 5. `.traffic-one/coding.md`, `.traffic-one/security.md`, `.traffic-one/known-issues.md`, and `.traffic-one/agent-log.md` if present.
 6. The path-scoped rules that apply to the touched files (`rules/frontend/**`, `rules/backend/**` per the active stack).
@@ -110,7 +110,7 @@ CHANGES_REQUESTED — <one line summary>.
 - Visual-heavy UI has screenshot or Storybook verification, or a concrete note
   explaining why visual QA could not run and which breakpoints/states remain
   unverified.
-- No raw deployment commands (`vercel deploy`, `gh release`, etc.) added without `lastShipperApprovalAt` already in `.traffic-one.json` from a recent shipper run.
+- No raw deployment commands (`vercel deploy`, `gh release`, etc.) added without `lastShipperApprovalAt` already in `.traffic-one/.one.json` from a recent shipper run.
 - No deploy approval without a fresh passing `lastSecurityCheckStatus: "passed"` stamp whose fingerprint matches the current worktree.
 - No production-readiness hard blocker remains: failing production build,
   leaked browser/mobile secret, missing Supabase RLS, unsafe destructive
@@ -145,7 +145,7 @@ CHANGES_REQUESTED — <one line summary>.
 - Any of the above failed.
 - The implementer wrote feature code outside their scope (frontend touched backend, or vice versa).
 - The diff regresses an existing test or rule.
-- The change introduces a forbidden library that the architecture-write hook already denies.
+- The change introduces a forbidden library that the plan-write hook already denies.
 
 ## Digest output (REQUIRED)
 

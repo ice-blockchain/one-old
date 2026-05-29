@@ -1,0 +1,225 @@
+// src/runners/one-mcp-report/lib.ts
+// Low-level helpers for the one-mcp first-look report: constants, file-walk +
+// skip rules, dependency scan, technology/component mapping, infra-vendor
+// detection, and project-state IO. Ported 1:1 from one-mcp-report/_helpers.cjs
+// (the network client + report-id mint live with the orchestration half). The
+// legacy "hoisted forwarder" circular-dep workaround is removed: this module
+// has no dependency on the collectors or the report-id reader.
+
+import * as fs from 'fs';
+import * as https from 'https';
+import * as path from 'path';
+
+import { LEGACY_STATE_FILE, STATE_FILE } from '../../shared/config';
+import { buildMcpPayload } from './buildMcpPayload';
+
+type Rec = Record<string, unknown>;
+
+export const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/one-mcp';
+export const ONE_UID_FIELD = 'one-uid';
+export const LEGACY_ID_FILE = '.one-mcp-id';
+export const STATUS_FILE = path.join('.traffic-one', 'one-mcp-report.json');
+export const QUEUED_RETRY_MS = 5 * 60 * 1000;
+export const FAILED_RETRY_MS = 60 * 60 * 1000;
+
+export const SKIP_DIRS = new Set([
+  '.cache', '.git', '.gitnexus', '.next', '.nuxt', '.traffic-one', '.turbo',
+  'build', 'coverage', 'dist', 'graphify-out', 'node_modules', 'out', 'Pods', 'target', 'vendor',
+]);
+export const SKIP_FILES = new Set(['.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']);
+
+export function readText(filePath: string): string | null {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+export function readJson(filePath: string, fallback: unknown = null): unknown {
+  const text = readText(filePath);
+  if (text === null) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed && typeof parsed === 'object' ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function writeJson(filePath: string, value: unknown): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+}
+
+export function statePath(cwd: string): string {
+  return path.join(cwd, STATE_FILE);
+}
+export function legacyStatePath(cwd: string): string {
+  return path.join(cwd, LEGACY_STATE_FILE);
+}
+
+export function readProjectState(cwd: string): Rec {
+  const nextState = readJson(statePath(cwd), null);
+  if (nextState && typeof nextState === 'object') return nextState as Rec;
+  const legacyState = readJson(legacyStatePath(cwd), null);
+  return legacyState && typeof legacyState === 'object' ? (legacyState as Rec) : {};
+}
+
+export function writeProjectState(cwd: string, state: unknown): void {
+  writeJson(statePath(cwd), state && typeof state === 'object' ? state : {});
+}
+
+export function shouldSkipFile(relPath: string, fileName: string): boolean {
+  const normalized = relPath.replace(/\\/g, '/');
+  if (SKIP_FILES.has(fileName)) return true;
+  if (/\.(min|bundle)\.(js|css)$/i.test(fileName)) return true;
+  if (/\.(test|spec)\.[cm]?[jt]sx?$/i.test(fileName)) return true;
+  if (/\.g\.dart$/i.test(fileName) || /\.pb\.(go|ts|js)$/i.test(fileName)) return true;
+  if (/(^|\/)(__tests__|tests?|fixtures?|vendor)(\/|$)/i.test(normalized)) return true;
+  return false;
+}
+
+export function walkFiles(cwd: string, visitor: (absPath: string, relPath: string) => void, relDir = ''): void {
+  const dir = path.join(cwd, relDir);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      walkFiles(cwd, visitor, path.join(relDir, entry.name));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    const relPath = path.join(relDir, entry.name);
+    if (shouldSkipFile(relPath, entry.name)) continue;
+    visitor(path.join(cwd, relPath), relPath);
+  }
+}
+
+export function extensionFor(filePath: string): string | null {
+  const base = path.basename(filePath);
+  if (base === 'Dockerfile') return 'dockerfile';
+  const ext = path.extname(base).replace(/^\./, '').toLowerCase();
+  return ext && ext.length <= 64 ? ext : null;
+}
+
+export function countLines(text: string | null): number {
+  if (!text) return 0;
+  return text.endsWith('\n') ? text.split('\n').length - 1 : text.split('\n').length;
+}
+
+export function packageJsonFiles(cwd: string): string[] {
+  const files: string[] = [];
+  walkFiles(cwd, (absPath, relPath) => {
+    if (path.basename(relPath) === 'package.json') files.push(absPath);
+  });
+  files.sort();
+  return files;
+}
+
+export function dependencyNames(cwd: string): Set<string> {
+  const names = new Set<string>();
+  for (const filePath of packageJsonFiles(cwd)) {
+    const pkg = readJson(filePath, {}) as Rec;
+    for (const section of ['dependencies', 'devDependencies', 'peerDependencies', 'optionalDependencies']) {
+      const deps = pkg && pkg[section] && typeof pkg[section] === 'object' ? (pkg[section] as Rec) : {};
+      for (const name of Object.keys(deps)) names.add(name);
+    }
+    if (typeof pkg.packageManager === 'string') {
+      const manager = pkg.packageManager.split('@')[0]!.toLowerCase();
+      if (manager) names.add(`package-manager:${manager}`);
+    }
+  }
+  return names;
+}
+
+export function addTechForDependency(techs: Set<string>, dep: string): void {
+  const map = new Map<string, string>([
+    ['@nestjs/core', 'nestjs'], ['@reduxjs/toolkit', 'redux'], ['@supabase/ssr', 'supabase'],
+    ['@supabase/supabase-js', 'supabase'], ['@tanstack/react-query', 'tanstack-query'], ['next', 'next.js'],
+    ['posthog-js', 'posthog'], ['prisma', 'prisma'], ['react', 'react'], ['react-native', 'react-native'],
+    ['tailwindcss', 'tailwindcss'], ['turbo', 'turborepo'], ['typescript', 'typescript'], ['vite', 'vite'],
+    ['zustand', 'zustand'],
+  ]);
+  if (map.has(dep)) techs.add(map.get(dep) as string);
+  if (dep === 'package-manager:pnpm') techs.add('pnpm');
+  if (dep === 'package-manager:npm') techs.add('npm');
+  if (dep === 'package-manager:yarn') techs.add('yarn');
+}
+
+export interface ArchComponent { type: string; name: string; uses?: string[] }
+export function addComponent(components: ArchComponent[], seen: Set<string>, type: string, name: string, uses: string[] = []): void {
+  const key = `${type}:${name}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  if (type === 'custom_service') components.push({ type, name, uses });
+  else components.push({ type, name });
+}
+
+export function detectInfrastructureVendor(cwd: string): string {
+  const checks: [string, string][] = [
+    ['vercel.json', 'vercel'], ['netlify.toml', 'netlify'], ['wrangler.toml', 'cloudflare'],
+    ['fly.toml', 'fly'], ['render.yaml', 'render'], ['railway.json', 'railway'],
+  ];
+  for (const [fileName, vendor] of checks) {
+    if (fs.existsSync(path.join(cwd, fileName))) return vendor;
+  }
+  return 'unknown';
+}
+
+export function parseTimestamp(value: unknown): number {
+  const time = Date.parse(String(value || ''));
+  return Number.isFinite(time) ? time : 0;
+}
+
+// ms-stripped ISO timestamp (matches the legacy nowIso in this runner).
+export { nowIsoNoMs as nowIso } from '../../shared/text';
+
+export function stateForReport(root: string, options: { state?: unknown } = {}): Rec {
+  return options.state && typeof options.state === 'object' ? (options.state as Rec) : readProjectState(root);
+}
+
+// Fire-and-forget MCP tools/call POST. Resolves the response body on 2xx,
+// rejects on non-2xx / error response / timeout. Ported 1:1 from
+// one-mcp-report/_helpers.cjs (mcpRequest).
+export function mcpRequest(endpoint: string, payload: unknown, timeoutMs = 15000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(endpoint);
+    const body = JSON.stringify(buildMcpPayload(payload));
+    const req = https.request({
+      method: 'POST',
+      hostname: url.hostname,
+      path: `${url.pathname}${url.search}`,
+      port: url.port || 443,
+      headers: {
+        accept: 'application/json, text/event-stream',
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(body),
+      },
+      timeout: timeoutMs,
+    }, (res) => {
+      let responseBody = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { responseBody += chunk; });
+      res.on('end', () => {
+        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`HTTP ${res.statusCode || 'unknown'}`));
+          return;
+        }
+        if (/"error"\s*:/.test(responseBody)) {
+          reject(new Error('MCP error response'));
+          return;
+        }
+        resolve(responseBody);
+      });
+    });
+    req.on('timeout', () => { req.destroy(new Error('request timeout')); });
+    req.on('error', reject);
+    req.end(body);
+  });
+}

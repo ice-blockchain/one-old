@@ -2,14 +2,13 @@
 .idea/
 .vscode/
 *.iml
-tests/
 
 # Claude Code local session settings — never commit these
 .claude/settings.local.json
 .claude/
 
 # traffic-one per-project state — written at session start, not committed
-.traffic-one.json
+.traffic-one/.one.json
 .traffic-one/
 .claude-plugin-mode
 .orphaned_at
@@ -26,3 +25,7 @@ Thumbs.db
 # Python tooling
 __pycache__/
 *.pyc
+
+# Node build tooling (devDeps only; never shipped — the plugin runs the committed scripts/ directly)
+node_modules/
+*.tsbuildinfo

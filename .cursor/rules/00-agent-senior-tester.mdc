@@ -1,4 +1,4 @@
-<!-- GENERATED FROM: agents/senior-tester.md; run `node scripts/sync-cursor.cjs` to update. -->
+<!-- GENERATED FROM: agents/senior-tester.md; run `npm run gen` to update. -->
 ---
 description: "Use PROACTIVELY after `senior-frontend` or `senior-backend` reports completion, in parallel with `senior-reviewer`. Triggers on \"add tests\", \"write the test plan\", \"verify with tests\", \"TDD this\", \"run the tests\", \"make sure it works\". Adds or updates unit + integration + E2E tests via `tdd-workflow`, `e2e-testing`, `ai-regression-testing`, `verification-loop`, plus stack-specific `*-testing` skills. Restricted to test files and test directories — never modifies feature source. Ends with `TESTS_GREEN` or `TESTS_FAILING <numbered list>`."
 alwaysApply: true
@@ -30,7 +30,7 @@ Token budget: ~8k. You can `Read` test files broadly (your scope is restricted t
 ## What you read first
 
 1. `.traffic-one/plan.md` — the Public contracts section is the contract you assert against.
-2. `.traffic-one.json` — pick up `stack`. Your test-runner dispatch depends on it.
+2. `.traffic-one/.one.json` — pick up `stack`. Your test-runner dispatch depends on it.
 3. `.traffic-one/known-issues.md` — verify new tests do not duplicate accepted known issues unless the task is to fix them.
 4. `git diff --name-only HEAD` — what changed; tests focus on the changed surface.
 5. Existing test layout: `tests/`, `e2e/`, `__tests__/`, `cypress/`, `playwright/`, `*.test.{ts,tsx,py,go,rs,java,kt,cs,php,pl}`.

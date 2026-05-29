@@ -1,0 +1,38 @@
+<!-- GENERATED FROM: rules/backend/cpp.md; run `npm run gen` to update. -->
+---
+description: "C++ Backend Rules. Generated from rules/backend/cpp.md."
+globs: ["**/*.cpp", "**/*.hpp", "**/*.cc", "**/*.hh", "**/*.cxx", "**/*.h", "**/CMakeLists.txt"]
+alwaysApply: false
+---
+
+# C++ Backend Rules
+
+Backend-focused rules for cpp projects.
+
+## Style & resource ownership
+- Prefer modern C++17/20/23 features over C-style constructs.
+- Use `clang-format` and keep formatter settings in the repo.
+- RAII everywhere: no manual `new`/`delete`; use `std::make_unique` / `std::make_shared`.
+- Use `std::unique_ptr` for exclusive ownership and `std::shared_ptr` only for real shared ownership.
+- Prefer Rule of Zero; if custom lifetime methods are required, follow Rule of Five.
+- Pass small/trivial types by value, large values by `const&`, and return by value.
+
+## Backend patterns
+- Encapsulate file, socket, DB, and other OS handles in RAII wrappers.
+- Keep storage behind repository interfaces instead of exposing driver/query-builder details.
+- Use `std::optional` for missing values and `std::expected`/result types for expected failures.
+- Use exceptions for exceptional states only; map service failures to safe API errors at the boundary.
+
+## Security
+- Use `std::string`, `std::array`, and `std::vector`; avoid raw arrays and unsafe C string functions.
+- Never use `strcpy`, `strcat`, or `sprintf`; prefer `fmt::format` or safe C++ APIs.
+- Always initialize variables; avoid undefined behavior, dangling pointers, and unjustified casts.
+- Run sanitizers in CI for service code: AddressSanitizer and UndefinedBehaviorSanitizer.
+- Run `clang-tidy` and `cppcheck` on backend/native modules.
+- Prefer verified framework/provider auth components over custom crypto, session,
+  password, or JWT implementations.
+
+## Testing
+- Use GoogleTest/gMock with CMake/CTest.
+- Run tests with sanitizers enabled in CI.
+- Track coverage with `lcov`/equivalent where C++ backend logic is business-critical.

@@ -1,0 +1,62 @@
+---
+paths:
+  - "apps/**/src/components/**"
+  - "apps/**/src/features/**/components/**"
+  - "packages/ui/**"
+  - "src/components/**"
+  - "src/features/**/components/**"
+---
+
+# Ionic Component Rules
+
+React component rules still apply. Ionic-specific components are allowed only
+when building the full Ionic React alternative or when an Ionic primitive solves
+a real mobile interaction better than the existing shared UI primitive.
+
+## Structure
+
+- One component per file, named export, explicit `ComponentNameProps`.
+- Style with Tailwind utility classes; compose shadcn primitives from
+  `packages/ui/src/components/ui/`. No sibling style files.
+- Keep platform concerns at the screen/layout boundary; leaf components receive
+  typed props and do not read Capacitor state directly.
+- Components render loading, error, empty, offline, and permission-denied states
+  when those states are possible.
+- Mobile UI follows the active design brief: primary action, scan order,
+  state coverage, and safe-area behavior are part of the component contract.
+
+## Composing shadcn inside Ionic chrome
+
+- shadcn primitives (button, dialog, dropdown, form controls, sheet, tabs,
+  popover, …) compose inside `IonContent`. They get the same shadcn HSL theme
+  via the bridge file.
+- Keep Ionic's own primitives for mobile-shell concerns where they earn their
+  weight: `IonPage`, `IonContent`, `IonHeader`, `IonToolbar`, `IonTabs`, and
+  modals/sheets that need native-feeling presentation. Inside `IonHeader` /
+  `IonToolbar` prefer Ionic's tap states over a shadcn button — the OS-feel is
+  better than what we can match with utility classes.
+- Forms always use `react-hook-form` + zod; the shadcn `<Form>` primitive wraps
+  Ionic-friendly inputs (or shadcn's own `Input` / `Textarea` / `Select`) inside
+  `IonContent`.
+
+## Ionic primitives
+
+- Use `IonPage`, `IonContent`, `IonHeader`, `IonToolbar`, `IonTabs`, and
+  `IonModal` only in full Ionic React flows or thin mobile shell layouts.
+- Do not mix Ionic layout primitives and custom nested card shells unless the
+  hierarchy remains simple and scroll behavior is verified.
+- Keep forms on `react-hook-form` + zod; Ionic inputs adapt to the form layer,
+  not the other way around.
+- Avoid copying desktop card grids into mobile shells. Reorder content, collapse
+  secondary controls, and keep bottom actions reachable without blocking inputs.
+
+## Copy and accessibility
+
+- All visible copy, placeholders, helper text, error text, `aria-label`, and
+  permission copy come from translation keys.
+- Buttons and links keep semantic meaning. Icon-only controls need translated
+  labels and visible focus states.
+- Touch targets meet mobile accessibility requirements without relying on color
+  alone for state.
+- Verify small-screen screenshots for clipped text, hidden controls, keyboard
+  overlap, and safe-area collisions before delivery.

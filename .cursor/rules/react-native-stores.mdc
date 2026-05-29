@@ -1,0 +1,46 @@
+<!-- GENERATED FROM: rules/frontend/react-native/stores.md; run `npm run gen` to update. -->
+---
+description: "React Native State Management — Redux Toolkit + zustand. Generated from rules/frontend/react-native/stores.md."
+globs: ["apps/**/src/stores/**", "apps/**/src/features/**/stores/**", "apps/**/src/store/**", "src/stores/**", "src/features/**/stores/**", "src/store/**"]
+alwaysApply: false
+---
+
+# React Native State Management — Redux Toolkit + zustand
+
+## Boundaries
+
+| Need | Tool |
+|------|------|
+| Server data, cached entities, REST payloads | RTK Query |
+| Cross-feature business state | Redux Toolkit slice |
+| WebSocket-fed durable app state | Redux slice fed by the WS service |
+| Ephemeral UI state | zustand |
+| Component-local state | `useState` / `useReducer` |
+| Form state | react-hook-form |
+
+Server data lives in exactly one place: RTK Query or a Redux slice. Never copy
+server data into zustand, route params, or component state.
+
+## Redux Toolkit
+- Store config lives in `apps/mobile/src/store/index.ts` or a shared package.
+- Export `RootState`, `AppDispatch`, `useAppDispatch`, and `useAppSelector`.
+- One slice per domain; export named actions and selectors.
+- Use `createSelector` for non-trivial derivations.
+- Middleware order: RTK Query api -> WS bridge / analytics -> defaults.
+
+## RTK Query
+- One `createApi` per service domain.
+- Validate responses with zod in `transformResponse`.
+- Use tags precisely; mutations invalidate the smallest affected set.
+- Generated hooks only in components; never call endpoint internals from UI.
+
+## zustand
+- UI-only state: modal open, active tab hint, local draft visibility, transient ids.
+- No arrays of server entities, fetched lists, auth tokens, or business state.
+- One store per concern; export a typed interface and `reset()`.
+- Subscribe to slices, not the whole store object.
+
+## Persistence
+- Use expo-secure-store for tokens and secrets.
+- Use AsyncStorage only for non-sensitive preferences and cache hints.
+- Hydration must expose loading/error states; never assume persisted state exists.

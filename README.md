@@ -13,8 +13,9 @@ Traffic One is gated by the separate `mcp-auth` MCP server. Before onboarding,
 materialization, background reporting, or normal plugin work, the agent presents
 a two-option modal selector: authenticate Traffic One (recommended) or continue
 without Traffic One. If the user authenticates, the agent asks for the API key
-and runs the auth client internally, then verifies status itself. Users should
-not be asked to run shell commands for the normal auth flow.
+using a secure host input/modal; the hook runs the auth client internally, then
+verifies status itself. Users should not be asked to run shell commands for the
+normal auth flow.
 
 Optional endpoint override for local testing:
 
@@ -27,18 +28,25 @@ or session tokens to plain HTTP except for loopback local development
 (`localhost`, `127.0.0.1`, or `::1`).
 
 The API key is exchanged for a short-lived session token stored in user-level
-state only (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
-or `~/.traffic-one/auth.json`). Do not commit keys or session tokens.
+state (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
+or `~/.traffic-one/auth.json`). The raw API key is stored outside `auth.json` in
+the OS credential manager when available; `auth.json` stores only session
+metadata plus a credential reference. Do not commit keys or session tokens.
 When a stored session expires, the auth client automatically calls `refresh`
-with `TRAFFIC_ONE_AUTH_KEY` if that key is still available in the current
-process environment. If the key is unavailable or rejected, the client returns a
-reauthentication error and keeps Traffic One gated.
+with the OS credential manager key. If no credential is available or refresh is
+rejected, the client returns a reauthentication error and keeps Traffic One
+gated.
 
 Codex and Claude Code hooks call `auth_status` remotely at every new session
-start and again at most once per day during ongoing sessions. If auth is
-missing, expired, remotely rejected, or the remote status check cannot be
-verified, Traffic One shows the login instruction and then stays inactive; the
-user's request continues without Traffic One features unless they login.
+start and again at most once per day during ongoing sessions through the local
+auth client. The assistant must not call the exposed `mcp-auth` MCP tools
+(`mcp__mcp_auth__auth_status`, `mcp__mcp_auth__refresh`,
+`mcp__mcp_auth__authenticate`, or `mcp__mcp_auth__logout`) for routine auth gate
+checks; status and refresh should stay silent behind the hook/client boundary.
+If auth is missing, expired, remotely rejected, or the remote status check
+cannot be verified, Traffic One shows the login instruction and then stays
+inactive; the user's request continues without Traffic One features unless they
+login.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
@@ -66,28 +74,18 @@ The plugin also declares `mcp-auth` in `.mcp.json`:
   "mcpServers": {
     "mcp-auth": {
       "type": "http",
-      "url": "http://127.0.0.1:8787/mcp",
-      "bearer_token_env_var": "TRAFFIC_ONE_AUTH_KEY",
-      "headers": {
-        "Authorization": "Bearer ${TRAFFIC_ONE_AUTH_KEY:-}"
-      }
+      "url": "http://127.0.0.1:8787/mcp"
     }
   }
 }
 ```
 
-The `${TRAFFIC_ONE_AUTH_KEY:-}` default is deliberate: it lets the MCP server
-load even when the key is unset, so the plugin does **not** throw a hard
-"Missing environment variables" error at install for end users who haven't set
-the key. Authentication does not depend on this MCP server — the auth gate runs
-`scripts/traffic-one-auth.cjs login` (with the key the user pastes at the
-prompt) to mint a session into `~/.traffic-one/auth.json`, and the gate reads
-that session on every host (Claude Code, Codex, Cursor) via the shared hooks.
-
-For local testing you can still set `TRAFFIC_ONE_AUTH_KEY` in your shell. Codex
-reads `bearer_token_env_var`; the explicit header remains for hosts that consume
-`.mcp.json` headers directly. Production can replace this test-key path with
-OAuth when the auth server advertises it.
+Authentication does not depend on the exposed `mcp-auth` MCP tools. The auth
+gate runs `scripts/traffic-one-auth.cjs login` internally with the key the user
+pastes at the prompt, passes that key to the auth client through stdin, stores
+the raw key in the OS credential manager when available, mints a session into
+`~/.traffic-one/auth.json`, and reads that session on every host (Claude Code,
+Codex, Cursor) via the shared hooks.
 
 ---
 
@@ -96,7 +94,7 @@ OAuth when the auth server advertises it.
 ```
 .
 ├── skills/                  ← Runtime filtered active skills
-├── skills-templates/        ← Full skill source; manifest reads this directly
+├── skills-catalog/          ← Full skill source pool (materialized per stack)
 │   ├── create-component/
 │   ├── create-feature/
 │   ├── create-page/
@@ -136,8 +134,8 @@ OAuth when the auth server advertises it.
 ├── .mcp.json                ← MCP           — mcp-auth auth server declaration
 ├── scripts/hook-runtime.cjs ← Hooks         — dependency-free Node hook runtime
 ├── scripts/traffic-one-auth.cjs ← Auth      — mcp-auth login/refresh/status/logout
-├── scripts/sync-cursor.cjs  ← Cursor        — generates .cursor/rules + normalizes manifest
-├── .githooks/pre-commit     ← Git           — auto-runs Cursor sync and stages generated files
+├── src/gen/index.ts         ← Generator     — emits manifests, hooks, rules, skills, agents, and Cursor mirrors
+├── .githooks/pre-commit     ← Git           — auto-runs codegen and stages generated files
 ├── .githooks/prepare-commit-msg ← Git       — appends Traffic One integration trailer
 ├── .github/workflows/       ← CI            — checks Cursor sync stays deterministic
 │
@@ -148,8 +146,8 @@ OAuth when the auth server advertises it.
 └── .cursor-plugin/          ← Cursor        — marketplace manifest
 ```
 
-**Maintenance rule:** `rules/*.md` is the source of truth.
-`.cursor/rules/*.mdc` is generated by `scripts/sync-cursor.cjs`; each file has a generated header pointing back to its source. `AGENTS.md` remains the Codex entry-point mirror. Always update `rules/*.md` first.
+**Maintenance rule:** `src/modules/**` is the source of truth for generated content.
+Run `npm run gen` after source changes; `.cursor/rules/*.mdc` files are generated mirrors with headers pointing back to their sources.
 
 ---
 
@@ -205,19 +203,19 @@ Path-scoped rules load only when a matching file is open — zero token cost oth
 - Open `Button.test.tsx` → testing rules appear
 
 ### Cursor sync automation
-Regenerate Cursor artifacts after editing `rules/`:
+Regenerate generated artifacts after editing content under `src/modules/`:
 
 ```
-node scripts/sync-cursor.cjs
+npm run gen
 ```
 
 CI verifies determinism without writing files:
 
 ```
-node scripts/sync-cursor.cjs --check
+npm run gen -- --check
 ```
 
-The tracked `.githooks/pre-commit` hook runs the sync automatically and stages generated `.cursor` changes.
+The tracked `.githooks/pre-commit` hook runs generation automatically and stages generated files.
 The tracked `.githooks/prepare-commit-msg` hook appends
 `Integrated-With: Traffic One plugin <noreply@traffic.io>` so commits record
 the active plugin integration alongside agent co-author trailers. Enable them in a clone with:
@@ -259,23 +257,45 @@ If Homebrew is missing, Traffic One asks the user to install Homebrew first.
 
 ## Installation
 
+Until Traffic One is published to the public plugin marketplace, install it from
+a local checkout of this repository. Replace `/absolute/path/to/traffic-one`
+with this repo's absolute path, for example `/Users/John/Projects/traffic-one`.
+
 ### Claude Code
+
 ```
-/plugin marketplace add cosminturcin/claude-plug
-/plugin install traffic-one@traffic-one
+claude plugin marketplace add /absolute/path/to/traffic-one --scope user
+claude plugin install traffic-one@traffic-one --scope user
 ```
 
 ### Codex CLI
+
 ```
-codex marketplace add cosminturcin/claude-plug
-codex plugin install traffic-one
+codex plugin marketplace add /absolute/path/to/traffic-one
+codex plugin add traffic-one@traffic-one-local
 ```
 
 ### Cursor
+
 ```
-/add-plugin cosminturcin/claude-plug
+/add-plugin /absolute/path/to/traffic-one
 ```
 Or via Cursor Settings → Plugins → Add.
+
+### Marketplace install after publication
+
+After the marketplace listing is live, use the published marketplace source
+instead of the local path:
+
+```
+claude plugin marketplace add traffic-one/traffic-one
+claude plugin install traffic-one@traffic-one
+
+codex plugin marketplace add traffic-one/traffic-one
+codex plugin add traffic-one
+
+/add-plugin traffic-one/traffic-one
+```
 
 ---
 
@@ -283,22 +303,22 @@ Or via Cursor Settings → Plugins → Add.
 
 | What to change | Where |
 |----------------|-------|
-| Library stack, folder structure, core rules | `rules/core.md`, then run `node scripts/sync-cursor.cjs` |
-| Provider-first stack recommendations | `rules/common/stack-recommendations.md`, then run `node scripts/sync-cursor.cjs` |
-| Curated library catalog | `rules/common/library-catalog.md`, then run `node scripts/sync-cursor.cjs` |
-| Post-deploy observability defaults | `rules/common/stack-recommendations.md`, `skills/observability/SKILL.md`, then run `node scripts/sync-cursor.cjs` |
-| App launch checklist defaults | `rules/common/stack-recommendations.md`, `skills/app-launch-checklist/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
-| Generated/existing frontend i18n baseline | `rules/frontend/i18n.md`, `skills/i18n-text/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
-| Generated/existing web SEO baseline | `rules/common/seo.md`, `skills/seo/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
-| Project memory defaults | `rules/common/project-memory.md`, `skills/project-memory/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
-| Documentation defaults | `rules/common/documentation.md`, `skills/auto-documentation-generator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
-| Senior-engineer orchestration workflow | `rules/common/senior-engineer-team.md`, `skills/senior-eng-orchestrator/SKILL.md`, then mirror `AGENTS.md` and run `node scripts/sync-cursor.cjs` |
-| React web stack rules | `rules/frontend/react/*.md`, then run `node scripts/sync-cursor.cjs` |
-| Ionic/Capacitor hybrid mobile rules | `rules/frontend/ionic/*.md`, then run `node scripts/sync-cursor.cjs` |
-| React Native stack rules, explicit only | `rules/frontend/react-native/*.md`, then run `node scripts/sync-cursor.cjs` |
-| UI quality and typography rules | `rules/frontend/ui-quality.md`, `rules/frontend/typography.md`, then run `node scripts/sync-cursor.cjs` |
-| Backend and backend technology rules | `rules/backend/*.md`, then run `node scripts/sync-cursor.cjs` |
-| Agent behavior, assumptions, surgical edits | `rules/common/execution-discipline.md`, then run `node scripts/sync-cursor.cjs` |
+| Library stack, folder structure, core rules | `src/modules/**/rules/core.md`, then run `npm run gen` |
+| Provider-first stack recommendations | `src/modules/**/rules/common/stack-recommendations.md`, then run `npm run gen` |
+| Curated library catalog | `src/modules/**/rules/common/library-catalog.md`, then run `npm run gen` |
+| Post-deploy observability defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| App launch checklist defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| Generated/existing frontend i18n baseline | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| Generated/existing web SEO baseline | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| Project memory defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| Documentation defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| Senior-engineer orchestration workflow | Source rule/skill under `src/modules/`, then run `npm run gen` |
+| React web stack rules | `src/modules/**/rules/frontend/react/*.md`, then run `npm run gen` |
+| Ionic/Capacitor hybrid mobile rules | `src/modules/**/rules/frontend/ionic/*.md`, then run `npm run gen` |
+| React Native stack rules, explicit only | `src/modules/**/rules/frontend/react-native/*.md`, then run `npm run gen` |
+| UI quality and typography rules | Source frontend rule under `src/modules/`, then run `npm run gen` |
+| Backend and backend technology rules | `src/modules/**/rules/backend/*.md`, then run `npm run gen` |
+| Agent behavior, assumptions, surgical edits | Source common rule under `src/modules/`, then run `npm run gen` |
 | Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
 | Blocked libraries | Edit the `PreToolUse[Bash]` hook in `settings.json` and `hooks/hooks.json` |
-| Architecture / onboarding / materialization checks | Edit the matching hook in both `settings.json` and `hooks/hooks.json`, then cover it in `scripts/test-stack-recommendations.cjs` |
+| Architecture / onboarding / materialization checks | Edit the matching source under `src/modules/`, then cover it with `npm test` |

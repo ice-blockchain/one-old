@@ -1,0 +1,93 @@
+<!-- GENERATED FROM: rules/backend/postgres.md; run `npm run gen` to update. -->
+---
+description: "PostgreSQL Rules. Generated from rules/backend/postgres.md."
+globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema.prisma", "src/services/**", "src/lib/db/**"]
+alwaysApply: false
+---
+
+# PostgreSQL Rules
+
+## Types
+| Use case | Correct | Avoid |
+|---|---|---|
+| IDs | `bigint` / `uuid` | `int` |
+| Strings | `text` | `varchar(n)` |
+| Email identity | `citext` or normalized lower-case `text` + unique index | case-sensitive raw `text` |
+| Timestamps | `timestamptz` | `timestamp` |
+| Money | `numeric(12,2)` | `float` |
+| JSON | `jsonb` | `json` |
+| Embeddings | `vector(n)` + model/version metadata | raw vector without dimensions |
+
+## Schema design
+- Every table has a primary key; prefer `bigint generated always as identity`
+  for internal records and `uuid default gen_random_uuid()` for public or
+  distributed IDs.
+- Tables are plural `snake_case`; columns are singular `snake_case`.
+- User-mutable tables include `created_at`, `updated_at`, and `created_by` when
+  actor attribution matters. Soft-delete tables use `deleted_at timestamptz`,
+  not only `is_deleted boolean`.
+- Foreign keys declare explicit `ON DELETE` behavior (`restrict`, `cascade`, or
+  `set null`) based on product ownership semantics.
+- Multi-tenant Supabase SaaS defaults to shared tables with `tenant_id` + RLS;
+  document any schema-per-tenant/project-per-tenant deviation.
+- Identify PII columns and restrict sensitive fields with column-level grants
+  when row-level access is broader than field-level access.
+
+## Indexes
+- B-tree default. Composite `(a, b)` equality-first.
+- `GIN` for `jsonb @>` and full-text. `BRIN` for time-series ranges.
+- Partial: `WHERE deleted_at IS NULL`. Covering: `INCLUDE (...)`.
+- Index every hot `WHERE`, `JOIN`, `ORDER BY`, foreign key, and pagination
+  cursor column.
+- Index every non-PK column referenced in RLS policies, especially `user_id` and
+  `tenant_id`.
+
+## Queries
+- Parameterised only — no string interpolation.
+- Hot queries must show index usage in `EXPLAIN ANALYZE` (no `Seq Scan` on big tables).
+- No `SELECT *` in services.
+- No N+1 loops — batch related reads with `IN (...)`, joins, or preloaded repository methods.
+- Large reads must be bounded with `LIMIT`, cursor pagination, or a documented hard cap.
+- Realtime subscriptions include filters; no broad table subscriptions for
+  multi-tenant/user data.
+- Full-text search uses Postgres `tsvector` + GIN before external search for
+  ordinary app search.
+- JSONB is for sparse/variable attributes only; queried JSONB has a GIN or
+  expression index.
+- Vector search chooses HNSW vs IVFFlat intentionally, stores model/version, and
+  benchmarks recall/performance before production.
+
+## Migrations
+- One concern per migration; reversible where feasible.
+- Non-null on big table: nullable → backfill in batches → NOT NULL.
+- Drops are two-phase (stop reading → deploy → drop).
+- Production rollback is forward-only: write an undo migration instead of
+  editing applied migrations or restoring from backup. Never write `DROP TABLE`
+  without a tested rollback/undo plan.
+- Add foreign keys on large tables with `NOT VALID`, then `VALIDATE CONSTRAINT`.
+- Avoid one-shot `ALTER COLUMN TYPE` and large-table `NOT NULL DEFAULT`; use
+  expand-contract migrations.
+
+## RLS (multi-tenant)
+- ON for every user-data table. Default-deny. Per-role per-action policies. Test with anon + authed in CI.
+- Policies are operation-specific for `SELECT` / `INSERT` / `UPDATE` / `DELETE`.
+  Write policies include `WITH CHECK` as well as `USING` where applicable.
+- Policies target `TO authenticated` or the intended role explicitly; avoid
+  accidental default `public`.
+- Wrap stable Supabase helpers as `(select auth.uid())` / `(select auth.jwt())`
+  in policies when possible.
+
+## Connections
+- Use a pooler (PgBouncer / Supavisor) for serverless / high concurrency.
+- Transaction-mode pooling breaks prepared statements — match driver config.
+
+## Operations gates
+- Supabase Security Advisor and Performance Advisor findings are clean or
+  documented before production release.
+- Enable `pg_stat_statements` on Supabase/Postgres before production
+  observability is marked ready. Surface slow queries by normalized query,
+  p95/mean execution time, calls, and rows read when available, then include a
+  concrete index suggestion or an `EXPLAIN ANALYZE` follow-up. Never paste bind
+  values or PII into reports.
+- Backups have a tested restore path. Free-tier Supabase projects need explicit
+  export/off-site backup planning before production data lands.

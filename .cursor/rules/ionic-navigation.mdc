@@ -1,0 +1,32 @@
+<!-- GENERATED FROM: rules/frontend/ionic/navigation.md; run `npm run gen` to update. -->
+---
+description: "Ionic Navigation Rules. Generated from rules/frontend/ionic/navigation.md."
+globs: ["apps/**/src/App.tsx", "apps/**/src/routes.tsx", "apps/**/src/pages/**", "apps/**/src/features/**/routes/**", "src/App.tsx", "src/routes.tsx", "src/pages/**"]
+alwaysApply: false
+---
+
+# Ionic Navigation Rules
+
+## Capacitor wrapper default
+
+- Keep `react-router-dom v6` as the source routing model for packaged React apps.
+- Route params contain ids and filters only; validate external/deep-link params
+  with zod before use.
+- Android back button maps to route pop, modal close, or explicit app-exit
+  behavior. Do not let it close the app from an inner route unexpectedly.
+- Deep links enter through a small boundary that normalizes URLs before routing.
+
+## Full Ionic React alternative
+
+- Use Ionic navigation only when the user chooses the larger mobile-first rewrite.
+- `IonRouterOutlet`, tabs, and stack navigation must be planned per top-level
+  workflow; do not translate web routes one-for-one without checking mobile UX.
+- Verify router compatibility before adding Ionic React Router packages.
+- Keep route wrappers thin; feature logic stays in hooks/services/components.
+
+## State and auth
+
+- Auth guards live at route/layout boundaries and still require server-side
+  authorization.
+- Do not pass full server entities through navigation state.
+- Persist only intentional navigation state across app restarts.
