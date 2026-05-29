@@ -4,6 +4,7 @@
 // session that owns the path. Returns a single deny reason (or null). Deny PROSE comes
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
+import { obj, type Rec } from '../../shared/obj';
 import {
   roleCanWriteFeatureSource,
   subagentMayWriteFeatureSource,
@@ -16,13 +17,8 @@ import {
   resolveRunAgentContext,
 } from '../../shared/state';
 
-type Rec = Record<string, unknown>;
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 export interface RunTeamArgs {
   projectRoot: string;

@@ -9,15 +9,13 @@ exports.isSubagentSession = isSubagentSession;
 exports.activeAgentRole = activeAgentRole;
 exports.getSpawnIndex = getSpawnIndex;
 exports.isFixCycleSession = isFixCycleSession;
+const obj_1 = require("../obj");
 const constants_1 = require("./constants");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function stackFingerprint(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return 'minimal|none|none|none';
-    const mobile = obj(s.mobile);
+    const mobile = (0, obj_1.obj)(s.mobile);
     return [
         s.stack || 'minimal',
         s.frontend || 'none',
@@ -26,7 +24,7 @@ function stackFingerprint(state) {
     ].join('|');
 }
 function isMaterialized(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     if (!s.onboardingComplete)
@@ -36,7 +34,7 @@ function isMaterialized(state) {
     return s.materializedStack === stackFingerprint(s);
 }
 function isSubagentSession(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     if (typeof s.currentRunId !== 'string' || !s.currentRunId)
@@ -53,17 +51,17 @@ function isSubagentSession(state) {
     return true;
 }
 function activeAgentRole(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return null;
     const role = s.activeAgentRole;
     return typeof role === 'string' && constants_1.VALID_AGENT_ROLES.has(role) ? role : null;
 }
 function getSpawnIndex(state, role) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return 0;
-    const map = obj(s.spawnIndex);
+    const map = (0, obj_1.obj)(s.spawnIndex);
     if (!map)
         return 0;
     const n = map[role];

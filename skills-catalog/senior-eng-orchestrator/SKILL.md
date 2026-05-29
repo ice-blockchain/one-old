@@ -27,7 +27,7 @@ Two resolved preferences drive orchestration:
   "subagents"` (spawn the named role agents); `low` → `team.mode: "main-agent"`
   (run the phases manually in this thread as a role roadmap).
 - **Team Confirmation** (only for `high`/`balanced`): the PreToolUse spawn gate
-  denies every `Task`/`spawn_agent` call until local preferences contain
+  denies every subagent-spawn call until local preferences contain
   `team.approved: true`. Auto-approving is forbidden — wait for the user's
   explicit Approve, then spawn.
 
@@ -42,19 +42,18 @@ work already started, pause at the next safe point, resolve it, then continue.
 - **Per-agent model is set by the spawn tool's `model` PARAMETER — never by prompt text.** The `agents/senior-*.md` files declare no `model:` frontmatter, so a subagent spawned without a `model` param silently inherits the parent model. For Balanced/High you MUST pass the model param on every spawn. Each role is assigned a host-agnostic capability TIER (`highest`|`balanced`|`cheapest`, see `model-tiers.cjs`); resolve the tier to YOUR host's model:
   - Balanced → architect/frontend/backend/reviewer/shipper = `balanced` tier, tester = `cheapest` tier.
   - High → architect/frontend/backend/reviewer = `highest` tier, tester = `cheapest` tier, shipper = `balanced` tier.
-  - Tier → model: `highest` = claude:`opus` / codex:`gpt-5-codex` / cursor:`opus`; `balanced` = claude:`sonnet` / codex:`gpt-5` / cursor:`sonnet`; `cheapest` = claude:`haiku` / codex:`gpt-5-mini` / cursor:`haiku`.
-- **Claude Code**: auto-spawn with the `Task`/Agent tool and pass `model: "<alias>"` (`opus`|`sonnet`|`haiku`) on EACH spawn per the tier mapping above. The alias auto-tracks the newest model of that family.
-- Claude Code agents do not inherit parent skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
-- **Codex**: clear the setup gate first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Then call Codex `spawn_agent` and pass `model:` set to the codex column for each role's tier. If Low is chosen or subagents are blocked, simulate manually.
-- **Cursor**: auto-spawn available Cursor/background-agent/task agents when this skill triggers. Include the per-role model directive in each agent prompt header. If Cursor exposes no callable agent facility, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*.mdc` role contexts.
-- Codex role mapping:
-  - `senior-architect` → `worker`, owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
-  - `senior-frontend` → `worker`, owned write scope frontend/UI/i18n files only.
-  - `senior-backend` → `worker`, owned write scope backend/API/database files only.
-  - `senior-reviewer` → `explorer` or `default`, read-only.
-  - `senior-tester` → `worker`, owned write scope test files and test infrastructure only.
-  - `senior-shipper` → `worker`, deploy/release only after the shipper gate is satisfied.
-- Include the relevant `agents/senior-*.md` role text or a concise equivalent in every Codex/Cursor subagent prompt.
+  - Tier → model: resolve each tier (`highest`|`balanced`|`cheapest`) to your host's concrete model via the tier→model table in `model-tiers.cjs`; the Team Confirmation line-up renders the resolved per-host models.
+- **Spawn**: auto-spawn each role with your host's subagent tool when this skill triggers, passing the `model` parameter resolved to that role's tier on EVERY spawn (a model name in prompt text has no effect). Where the host uses model aliases, the alias auto-tracks the newest model of that family.
+- Subagents do not inherit the parent's skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
+- If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). If the host exposes no callable agent facility, Low is chosen, or subagents are blocked, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*` role contexts.
+- Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its owned area; a read-only agent for the reviewer):
+  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
+  - `senior-frontend` — owned write scope frontend/UI/i18n files only.
+  - `senior-backend` — owned write scope backend/API/database files only.
+  - `senior-reviewer` — read-only.
+  - `senior-tester` — owned write scope test files and test infrastructure only.
+  - `senior-shipper` — deploy/release only after the shipper gate is satisfied.
+- Include the relevant `agents/senior-*.md` role text or a concise equivalent in every subagent prompt.
 - If subagents are unavailable or blocked, or the user picks Low: continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
 
 ## When you fire
@@ -181,7 +180,7 @@ The 2-cycle reviewer cap (architect / orchestrator level) still applies — if t
 
 ### Phase 1 — Architect (sequential, blocking)
 
-Spawn `senior-architect` via the available subagent tool. Architect tier = `balanced` for Balanced, `highest` for High — resolve to your host's model (claude `sonnet`/`opus`, codex `gpt-5`/`gpt-5-codex`). On Claude Code, use `Task` with `subagent_type: "senior-architect"` AND the `model` param. On Codex, after the required confirmation step, use a `worker` subagent with the senior-architect role instructions, the `model` param, owned write scope `.traffic-one/plan.md` plus ADR/docs only. On Cursor, use the closest available background-agent/task adapter with the same role instructions, model, and write scope. Block on its return.
+Spawn `senior-architect` via your host's subagent tool with the `model` param set. Architect tier = `balanced` for Balanced, `highest` for High — resolve to your host's model. After any required confirmation step, give the subagent the senior-architect role instructions and owned write scope `.traffic-one/plan.md` plus ADR/docs only. Block on its return.
 
 Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one/.one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`.
 
@@ -189,7 +188,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 ### Phase 2 — Implement (parallel)
 
-Single message with TWO subagent calls in the same turn (`senior-frontend` + `senior-backend`). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host (claude `sonnet`/`opus`, codex `gpt-5`/`gpt-5-codex`). On Codex, use `worker` subagents with disjoint write scopes and tell each worker they are not alone in the codebase.
+Single message with TWO subagent calls in the same turn (`senior-frontend` + `senior-backend`). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Give the implementers disjoint write scopes and tell each they are not alone in the codebase.
 
 Synthetic prompts — use the **Phase 2 — Frontend** and **Phase 2 — Backend** templates from `resources/prompt-templates.md`. Each template instructs the implementer to read the architect digest first, then the relevant plan section, then graph nodes, raw files only as last resort. Each writes its own digest (`.traffic-one/digests/<run-id>/{frontend,backend}.md`) before reporting.
 
@@ -197,7 +196,7 @@ Wait for both to return before Phase 3.
 
 ### Phase 3 — Verify (parallel)
 
-Single message with TWO subagent calls (`senior-reviewer` + `senior-tester`). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier (claude `haiku`, codex `gpt-5-mini`) in both levels. On Codex, use a read-only `explorer` or `default` subagent for reviewer, and a `worker` subagent for tester restricted to test files and test infrastructure.
+Single message with TWO subagent calls (`senior-reviewer` + `senior-tester`). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 
 Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Both templates instruct the verifier to read the implementer digests first (`.traffic-one/digests/<run-id>/{frontend,backend}.md`), then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool); tester writes `tester.md` directly.
 
@@ -330,7 +329,7 @@ Next steps:
 ## Hard rules
 
 - The architect runs first on any new project (`mode === "new-project"`) or whenever `.traffic-one/plan.md` is missing.
-- On Claude Code, Codex, and Cursor, do not silently skip the Traffic One team for matching end-to-end tasks. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. On Codex, always ask for explicit subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined or subagents are unavailable, simulate the same phases manually and state why.
+- On every host, do not silently skip the Traffic One team for matching end-to-end tasks. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. Where the host requires explicit user intent before spawning, always ask for subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined or subagents are unavailable, simulate the same phases manually and state why.
 - Frontend ∥ backend in parallel — single message, two subagent calls.
 - Reviewer ∥ tester in parallel — single message, two subagent calls.
 - Shipper only on explicit deploy intent in the user's most recent message.

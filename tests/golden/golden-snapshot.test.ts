@@ -6,7 +6,7 @@ import * as path from 'node:path';
 
 // Golden snapshot of every artifact the generator must reproduce byte-for-byte:
 // the 4 host configs, 5 manifests, AGENTS.md, and the content trees (skills,
-// skills-templates, rules-templates, agents, .cursor/rules). Captured at the
+// skills-catalog, rules, agents, .cursor/rules). Captured at the
 // start of Step 6 from the hand-authored tree. The generator (Step 6) + cutover
 // (Step 7) must leave these hashes unchanged; this test is the drift tripwire.
 

@@ -16,8 +16,8 @@ test('onboardingDirectiveNewProject (skill) is the full first-run directive with
   assert.ok(out.includes('OPENCODE DELEGATION PREFLIGHT'));
   assert.ok(out.includes('AGENT PERFORMANCE PREFLIGHT'));
   assert.ok(out.includes('TEAM CONFIRMATION PREFLIGHT'));
-  assert.ok(out.includes('CURRENT-THREAD ONBOARDING FALLBACK')); // codex fallback
-  assert.ok(out.includes('request_user_input')); // host popup instruction
+  assert.ok(out.includes('CURRENT-THREAD ONBOARDING FALLBACK')); // current-thread fallback
+  assert.ok(out.includes("host's interactive prompt/popup tool")); // host popup instruction
   // pitch labels filled
   assert.ok(out.includes('Supabase')); // backend label
   // remaining procedure/scaffold now point at the single-source rules

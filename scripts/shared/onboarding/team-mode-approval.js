@@ -52,15 +52,13 @@ exports.proposedTeamModeFromStateWrite = proposedTeamModeFromStateWrite;
 exports.proposedStateWritesModeChangeApproval = proposedStateWritesModeChangeApproval;
 exports.teamModeMarkerWriteViolation = teamModeMarkerWriteViolation;
 exports.teamModeDowngradeViolation = teamModeDowngradeViolation;
+const obj_1 = require("../obj");
 const detection_1 = require("../detection");
 const state_1 = require("../state");
 const text_1 = require("../text");
 const tool_classify_1 = require("../tool-classify");
 const fs = __importStar(require("fs"));
 exports.TEAM_MODE_CHANGE_APPROVAL_TTL_MS = 10 * 60 * 1000;
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function hashPromptText(promptText) {
     return (0, text_1.sha256)(String(promptText || '').trim());
 }
@@ -83,9 +81,9 @@ function isExplicitSubagentsToMainAgentIntent(promptText) {
     return stopsSubagents && choosesMainAgent;
 }
 function hasFreshTeamModeChangeApproval(state, nowMs = Date.now()) {
-    const s = obj(state);
-    const team = s && obj(s.team);
-    const approval = team && obj(team.modeChangeApproval);
+    const s = (0, obj_1.obj)(state);
+    const team = s && (0, obj_1.obj)(s.team);
+    const approval = team && (0, obj_1.obj)(team.modeChangeApproval);
     if (!approval)
         return false;
     if (approval.from !== 'subagents' || approval.to !== 'main-agent')
@@ -98,8 +96,8 @@ function hasFreshTeamModeChangeApproval(state, nowMs = Date.now()) {
     return Number.isFinite(requestedAt) && requestedAt <= nowMs && nowMs - requestedAt <= exports.TEAM_MODE_CHANGE_APPROVAL_TTL_MS;
 }
 function setTeamModeChangeApproval(cwd, state, promptText) {
-    const s = obj(state);
-    const team = s && obj(s.team);
+    const s = (0, obj_1.obj)(state);
+    const team = s && (0, obj_1.obj)(s.team);
     if (!s || !team)
         return false;
     team.modeChangeApproval = {
@@ -110,8 +108,8 @@ function setTeamModeChangeApproval(cwd, state, promptText) {
     return true;
 }
 function clearTeamModeChangeApproval(cwd, state) {
-    const s = obj(state);
-    const team = s && obj(s.team);
+    const s = (0, obj_1.obj)(state);
+    const team = s && (0, obj_1.obj)(s.team);
     if (!s || !team)
         return false;
     if (!Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval'))
@@ -121,8 +119,8 @@ function clearTeamModeChangeApproval(cwd, state) {
     return true;
 }
 function updateTeamModeChangeApprovalFromPrompt(cwd, state, promptText) {
-    const s = obj(state);
-    const team = s && obj(s.team);
+    const s = (0, obj_1.obj)(state);
+    const team = s && (0, obj_1.obj)(s.team);
     if (!promptText || !String(promptText).trim())
         return { recorded: false, cleared: false };
     if (!s || s.onboardingComplete !== true)
@@ -138,7 +136,7 @@ function updateTeamModeChangeApprovalFromPrompt(cwd, state, promptText) {
 function writeLikeStateFileTarget(toolName, toolInput) {
     if (!(0, tool_classify_1.isWriteLikeToolName)(toolName))
         return false;
-    const ti = obj(toolInput);
+    const ti = (0, obj_1.obj)(toolInput);
     const filePath = ti && typeof ti.file_path === 'string' ? ti.file_path : '';
     return (0, tool_classify_1.isStateFilePath)(filePath) || (0, tool_classify_1.isStateFileOnlyPatch)(toolName, toolInput);
 }
@@ -156,7 +154,7 @@ function replaceOneOrAll(text, oldText, newText, replaceAll = false) {
 }
 function proposedStateTextFromToolInput(cwd, toolName, toolInput) {
     const normalized = (0, tool_classify_1.normalizedToolName)(toolName);
-    const ti = obj(toolInput) || {};
+    const ti = (0, obj_1.obj)(toolInput) || {};
     const currentStatePath = (0, tool_classify_1.existingStateFilePath)(cwd);
     const currentText = fs.existsSync(currentStatePath) ? fs.readFileSync(currentStatePath, 'utf8') : '';
     if (/^Write$/i.test(normalized))
@@ -167,7 +165,7 @@ function proposedStateTextFromToolInput(cwd, toolName, toolInput) {
         let nextText = currentText;
         const edits = Array.isArray(ti.edits) ? ti.edits : [];
         for (const edit of edits) {
-            const e = obj(edit) || {};
+            const e = (0, obj_1.obj)(edit) || {};
             nextText = replaceOneOrAll(nextText, e.old_string, e.new_string, e.replace_all === true);
         }
         return nextText;
@@ -185,7 +183,7 @@ function proposedStateFromStateWrite(cwd, toolName, toolInput) {
     catch {
         return null;
     }
-    const p = obj(proposed);
+    const p = (0, obj_1.obj)(proposed);
     if (!p)
         return null;
     const normalized = JSON.parse(JSON.stringify(p));
@@ -195,7 +193,7 @@ function proposedStateFromStateWrite(cwd, toolName, toolInput) {
 function proposedTeamModeFromStateWrite(cwd, toolName, toolInput) {
     const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
     if (proposed) {
-        const team = obj(proposed.team);
+        const team = (0, obj_1.obj)(proposed.team);
         return team && typeof team.mode === 'string' ? team.mode : null;
     }
     if (/^apply_patch$/i.test((0, tool_classify_1.normalizedToolName)(toolName))) {
@@ -206,7 +204,7 @@ function proposedTeamModeFromStateWrite(cwd, toolName, toolInput) {
 }
 function proposedStateWritesModeChangeApproval(cwd, toolName, toolInput) {
     const proposed = proposedStateFromStateWrite(cwd, toolName, toolInput);
-    const team = proposed && obj(proposed.team);
+    const team = proposed && (0, obj_1.obj)(proposed.team);
     if (team)
         return Object.prototype.hasOwnProperty.call(team, 'modeChangeApproval');
     if (/^apply_patch$/i.test((0, tool_classify_1.normalizedToolName)(toolName))) {
@@ -227,10 +225,10 @@ function teamModeMarkerWriteViolation(cwd, toolName, toolInput) {
 function teamModeDowngradeViolation(cwd, toolName, toolInput, currentState) {
     if (!writeLikeStateFileTarget(toolName, toolInput))
         return false;
-    const s = obj(currentState);
+    const s = (0, obj_1.obj)(currentState);
     if (!s || s.onboardingComplete !== true)
         return false;
-    const team = obj(s.team);
+    const team = (0, obj_1.obj)(s.team);
     if (!team || team.mode !== 'subagents')
         return false;
     if (proposedTeamModeFromStateWrite(cwd, toolName, toolInput) !== 'main-agent')

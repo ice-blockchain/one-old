@@ -6,6 +6,8 @@
 // session gate before this runs. Deny PROSE comes from the onboarding-gate
 // skill via the shared/onboarding assemblers.
 
+import { asString } from '../../adapters/coerce';
+import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
@@ -29,17 +31,8 @@ import { normalizeState, readEffectiveState } from '../../shared/state';
 import { isMutatingPreToolUse, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
-type Rec = Record<string, unknown>;
-
 const skillBlock = makeSkillBlock(pluginRoot);
 const block: OnboardingBlock = (name, vars) => skillBlock('onboarding-gate', name, vars);
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
 
 export function onboardingGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};

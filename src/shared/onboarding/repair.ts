@@ -5,6 +5,7 @@
 // from canRepairNewProjectOnboardingState / repairNewProjectOnboardingState
 // (_helpers.cjs).
 
+import { obj, type Rec } from '../obj';
 import { isKnownStack } from '../config';
 import { detectMode } from '../detection';
 import { type MaterializeOutcome, materializeProjectFromState } from '../materialize';
@@ -21,12 +22,6 @@ import {
   writeState,
 } from '../state';
 import { isNewProjectOnboardingIncomplete } from './predicates';
-
-type Rec = Record<string, unknown>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 // True when `state` is an onboarding-complete new project that only needs a
 // normalize pass to become canonical (so the gate can repair instead of deny).

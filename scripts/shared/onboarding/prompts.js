@@ -9,17 +9,15 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.nextOnboardingStep = nextOnboardingStep;
 exports.performanceLevelOf = performanceLevelOf;
 exports.onboardingPromptRequestForStep = onboardingPromptRequestForStep;
+const obj_1 = require("../obj");
 const prompt_request_1 = require("../prompt-request");
 const state_1 = require("../state");
 const predicates_1 = require("./predicates");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 // The next unresolved onboarding step for a new project, in canonical order, or
 // null when mode !== "new-project". 'state' means all prompts answered but the
 // canonical state file still needs writing.
 function nextOnboardingStep(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s || s.mode !== 'new-project')
         return null;
     if (!(0, state_1.hasResolvedOpenCodeState)(s.openCode))
@@ -39,8 +37,8 @@ function nextOnboardingStep(state) {
     return 'state';
 }
 function performanceLevelOf(state) {
-    const s = obj(state);
-    const perf = s && obj(s.performance);
+    const s = (0, obj_1.obj)(state);
+    const perf = s && (0, obj_1.obj)(s.performance);
     return perf && typeof perf.level === 'string' ? perf.level : 'selected';
 }
 // Build the host popup request for a given onboarding step. Returns null for the

@@ -5,6 +5,8 @@
 // (gates.cjs). Spawn-specific fields (subagent_type, model, …) come from
 // ctx.input.raw (the canonical ToolInput doesn't carry them). Deny PROSE → skill.
 
+import { asString } from '../../adapters/coerce';
+import { obj, type Rec } from '../../shared/obj';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
@@ -16,17 +18,8 @@ import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
 
-type Rec = Record<string, unknown>;
-
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
 
 export function agentModelGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();

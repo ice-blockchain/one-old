@@ -8,19 +8,17 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.canRepairNewProjectOnboardingState = canRepairNewProjectOnboardingState;
 exports.repairNewProjectOnboardingState = repairNewProjectOnboardingState;
+const obj_1 = require("../obj");
 const config_1 = require("../config");
 const detection_1 = require("../detection");
 const materialize_1 = require("../materialize");
 const performance_1 = require("../performance");
 const state_1 = require("../state");
 const predicates_1 = require("./predicates");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 // True when `state` is an onboarding-complete new project that only needs a
 // normalize pass to become canonical (so the gate can repair instead of deny).
 function canRepairNewProjectOnboardingState(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     if (s.onboardingComplete !== true)
@@ -47,8 +45,8 @@ function canRepairNewProjectOnboardingState(state) {
         return false;
     if (!(0, state_1.hasValidPerformanceState)(candidate.performance))
         return false;
-    const team = obj(candidate.team);
-    const performance = obj(candidate.performance);
+    const team = (0, obj_1.obj)(candidate.team);
+    const performance = (0, obj_1.obj)(candidate.performance);
     if (!team || !performance)
         return false;
     const expectedTeamMode = (0, performance_1.teamModeForLevel)(String(performance.level));

@@ -2,6 +2,7 @@
 // Per-user, per-project runtime preferences (kept out of the repo-shared
 // .one.json). Ported 1:1 from scripts/hook-runtime/state/local-prefs.cjs.
 
+import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -28,11 +29,6 @@ import {
 import { stateTimestamp } from './io';
 import { initializeLocalToolchainState } from './toolchain';
 
-type Rec = Record<string, unknown>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 function inSet(set: Set<string>, value: unknown): boolean {
   return typeof value === 'string' && set.has(value);
 }

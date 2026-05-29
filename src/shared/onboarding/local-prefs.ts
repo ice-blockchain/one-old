@@ -4,6 +4,7 @@
 // each user still needs local choices for OpenCode, performance/team, and the
 // code graph provider before mutating work proceeds.
 
+import { obj, type Rec } from '../obj';
 import { teamModeForLevel } from '../performance';
 import type { PromptRequest } from '../prompt-request';
 import {
@@ -21,12 +22,7 @@ import {
 } from './fallbacks';
 import { onboardingPromptRequestForStep, performanceLevelOf, type OnboardingStep } from './prompts';
 
-type Rec = Record<string, unknown>;
 type LocalPreferenceStep = Extract<OnboardingStep, 'open-code' | 'performance' | 'team-confirmation' | 'code-graph'>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 export function nextLocalPreferenceStep(state: unknown): LocalPreferenceStep | null {
   const s = obj(state);

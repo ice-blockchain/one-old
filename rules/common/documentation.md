@@ -30,7 +30,7 @@ to the canonical path when that can be done without dropping newer content.
   repo map, gotchas, security constraints, and deploy warnings. Nested
   `AGENTS.md` files are for large subprojects with different rules.
 - `CLAUDE.md`: symlink to `AGENTS.md` when possible, otherwise under ~300 lines
-  and focused on what Claude would get wrong without it. Do not duplicate the
+  and focused on what the agent would get wrong without it. Do not duplicate the
   linter or full style guide.
 - `.cursor/rules/*.mdc`: Cursor-specific project rules; keep each rule short,
   scoped, and version-controlled with `description`, `globs`, and `alwaysApply`.

@@ -7,7 +7,7 @@ description: >
   stack.md, .agentignore, agent-log.md, and reusable local skills.
   Trigger on "project memory", ".traffic-one folder", "agent memory",
   "persistent context", "agent-log", "known issues", or requests
-  to make agent context survive across Claude Code, Codex, Cursor, or future
+  to make agent context survive across all supported host agents, or future
   agents.
 metadata:
   source: everything-claude-code

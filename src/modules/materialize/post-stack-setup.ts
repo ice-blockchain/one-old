@@ -2,9 +2,10 @@
 // PostToolUse dispatcher (priority ~60): auth gate → supabase function-edit
 // auto-deploy → digest-size warning → write-triggered materialization (project
 // memory / tool-input hints / generic convergence) → state-file write
-// materialization. Ported 1:1 from runPostStackSetup (post.cjs). Runner
-// couplings (token log, supabase deploy, one-mcp report) are INJECTED via deps
-// (default no-op) — they wire to the compiled runners at the Step-7 cutover.
+// materialization. Ported from runPostStackSetup (post.cjs). The token-log and
+// one-mcp-report couplings are wired (default logger import + materialize/index.ts);
+// the supabase function-edit auto-deploy coupling is injected via deps and is not
+// yet wired (functionEditDeploy defaults to a no-op — to be wired separately).
 //
 // TODO (cutover reconcile): the legacy state-file branch emits per-validation-
 // issue systemMessages + a gitnexus node-warning + the exact "rules loaded for
@@ -12,6 +13,8 @@
 // strips local prefs via writeState + validates + materializes); reconcile the
 // exact wording against the legacy when both are side-by-side.
 
+import { asString } from '../../adapters/coerce';
+import { obj, type Rec } from '../../shared/obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -33,7 +36,6 @@ import {
 import { materializeFromProjectMemoryWrite, materializeFromToolInputHints, type ReportOneMcp } from './converge-from-write';
 import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath } from './post-helpers';
 
-type Rec = Record<string, unknown>;
 const skillBlock = makeSkillBlock(pluginRoot);
 const PLAN_READY_RE = /(?:^|\n)\s*(?:verdict:\s*)?PLAN_READY\s*(?:\n|$)/i;
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
@@ -44,12 +46,6 @@ export interface PostStackSetupDeps {
   reportOneMcp?: ReportOneMcp;
 }
 
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
 function stringifySearchValue(value: unknown): string {
   if (value == null) return '';
   if (typeof value === 'string') return value;

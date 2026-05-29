@@ -42,7 +42,7 @@ Estimate how much of the context window is consumed by plugin components and pro
 
 ## Nine overhead patterns to check
 
-Apply these overhead checks to Traffic One, Codex, Claude Code, and Cursor
+Apply these overhead checks to Traffic One and all supported host agents
 harnesses:
 
 1. **Instruction bloat** — keep always-on `AGENTS.md` / `CLAUDE.md` concise;

@@ -23,8 +23,8 @@ writing files. Use the host popup/input mechanism when available; if it is
 unavailable, ask the same next unresolved question in chat and stop for the
 user's typed answer.
 
-Codex current-thread fallback: if `request_user_input` cannot be called, the
-fallback is the next visible assistant response before any tool use — ask the
+Current-thread fallback: if the host's interactive prompt tool cannot be called,
+the fallback is the next visible assistant response before any tool use — ask the
 OpenCode opt-in (`1. Enable OpenCode delegation`, `2. Not now`), tell the user to
 reply with the option number or label, and stop. Then ask Agent Mode, Team
 Confirmation only for High/Balanced, project context, Mobile App, then Code
@@ -74,8 +74,8 @@ ready. Run it in the current thread, using popup/input tools when available and
 plain-chat fallback when they are not. OpenCode is the first prompt before
 Performance.
 
-Codex onboarding choices must use prompt popups when available, not prose with
-numbered options. When `request_user_input` is available, call that tool and
+Onboarding choices must use the host's prompt popup when available, not prose with
+numbered options. When that tool is available, call it and
 stop; do not print `Options:` in chat. Plain-text fallback is allowed only when
 the popup tool is unavailable: ask the same blocking question in chat with
 numbered options, tell the user to reply with the option number or label, and
@@ -101,8 +101,8 @@ Ask onboarding prompts in this order and stop after each unresolved answer:
 6. Ask the mobile decision. If the user already asked for
    mobile/iOS/Android/Ionic/Capacitor/React Native/Expo/RN, web only, Next.js,
    frontend-only, no backend, no subagents, or "just build it", treat that as
-   implementation intent rather than an onboarding answer. On Codex use
-   `request_user_input` as a popup:
+   implementation intent rather than an onboarding answer. Use the host's prompt
+   tool as a popup:
 
 - header: `Mobile App`
 - question: `Do you want a mobile app too?`
@@ -144,8 +144,8 @@ frontend-only prototype or rejects Supabase.
 
 `gitnexus` · `graphify`
 
-After the mobile popup is answered, ask this provider choice. On Codex use
-`request_user_input` as a popup:
+After the mobile popup is answered, ask this provider choice. Use the host's
+prompt tool as a popup:
 
 - header: `Code Graph`
 - question: `Which provider should we use for the codebase graph?`
@@ -262,7 +262,7 @@ required `packages/*`) before any feature code.
 
 ## Must-not-do
 
-- Do NOT tell the user to restart Claude Code. The PostToolUse hook handles
+- Do NOT tell the user to restart the host. The PostToolUse hook handles
   loading.
 - Do NOT ask the user to edit JSON.
 - Do NOT use stack ids that aren't listed above.

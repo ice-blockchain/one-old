@@ -3,6 +3,7 @@
 // subagents resolve their own role context. Ported 1:1 from
 // scripts/hook-runtime/state/run-agent.cjs.
 
+import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -16,12 +17,6 @@ import {
 import { stateTimestamp } from './io';
 import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
 import { writeState } from './normalize';
-
-type Rec = Record<string, unknown>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 export function runIdNow(): string {
   return Date.now().toString();

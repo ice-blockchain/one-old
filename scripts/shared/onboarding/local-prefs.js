@@ -8,25 +8,23 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.nextLocalPreferenceStep = nextLocalPreferenceStep;
 exports.localPreferencePromptAndRequest = localPreferencePromptAndRequest;
 exports.localPreferenceContext = localPreferenceContext;
+const obj_1 = require("../obj");
 const performance_1 = require("../performance");
 const state_1 = require("../state");
 const fallbacks_1 = require("./fallbacks");
 const prompts_1 = require("./prompts");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function nextLocalPreferenceStep(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s || !s.stack)
         return null;
     if (!(0, state_1.hasResolvedOpenCodeState)(s.openCode))
         return 'open-code';
     if (!(0, state_1.hasValidPerformanceState)(s.performance))
         return 'performance';
-    const performance = obj(s.performance);
+    const performance = (0, obj_1.obj)(s.performance);
     const level = performance && typeof performance.level === 'string' ? performance.level : '';
     const expectedTeamMode = (0, performance_1.teamModeForLevel)(level);
-    const team = obj(s.team);
+    const team = (0, obj_1.obj)(s.team);
     if (!(0, state_1.hasValidTeamState)(s.team)) {
         return expectedTeamMode === 'subagents' ? 'team-confirmation' : 'performance';
     }

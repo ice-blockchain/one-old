@@ -58,7 +58,7 @@ Use this skill when the user asks to:
   and who owns rotation.
 - Keep agent-facing docs concise. `CLAUDE.md` should be a symlink to `AGENTS.md`
   when that works for the project, or a focused file under ~300 lines containing
-  only what Claude would otherwise get wrong.
+  only what the agent would otherwise get wrong.
 - Treat docs as code: use existing package manager, scripts, deployment config,
   migrations, OpenAPI files, and git history as the source of truth.
 
@@ -137,7 +137,7 @@ Keep it human-first:
 - `AGENTS.md` is the cross-agent standard. Include commands agents should run,
   style/architecture gotchas, security constraints, and repo-specific hazards.
 - `CLAUDE.md` should be a symlink to `AGENTS.md` when the repo does not need
-  Claude-specific differences. Otherwise keep it concise and link outward.
+  Host-specific differences. Otherwise keep it concise and link outward.
 - Do not paste the full lint rules; name the deterministic command.
 
 ### Plan and ADRs

@@ -43,6 +43,7 @@ exports.ensureRunAgentClaim = ensureRunAgentClaim;
 exports.resolveRunAgentContext = resolveRunAgentContext;
 exports.hasRunAgentState = hasRunAgentState;
 exports.legacyRunAgentContext = legacyRunAgentContext;
+const obj_1 = require("../obj");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const fsjson_1 = require("../fsjson");
@@ -50,9 +51,6 @@ const constants_1 = require("./constants");
 const io_1 = require("./io");
 const materialization_1 = require("./materialization");
 const normalize_1 = require("./normalize");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function runIdNow() {
     return Date.now().toString();
 }
@@ -91,8 +89,8 @@ function hookSessionIdentity(rawInput) {
     const data = (rawInput && typeof rawInput === 'object'
         ? rawInput
         : (0, fsjson_1.parseJson)(typeof rawInput === 'string' ? rawInput : '', {}));
-    const payload = obj(data.payload) || {};
-    const source = obj(data.source) || obj(payload.source) || {};
+    const payload = (0, obj_1.obj)(data.payload) || {};
+    const source = (0, obj_1.obj)(data.source) || (0, obj_1.obj)(payload.source) || {};
     const threadSpawn = (nestedValue(source, ['subagent', 'thread_spawn'])
         || nestedValue(data, ['subagent', 'thread_spawn'])
         || nestedValue(payload, ['subagent', 'thread_spawn'])
@@ -117,7 +115,7 @@ function isFreshTimestamp(value, maxAgeMs) {
     return timestampAgeMs(value) <= maxAgeMs;
 }
 function stateAllowsRunContext(state, runId) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     if (typeof runId !== 'string' || !runId)
@@ -131,7 +129,7 @@ function stateAllowsRunContext(state, runId) {
     return true;
 }
 function claimAllowsState(state, claim) {
-    const c = obj(claim);
+    const c = (0, obj_1.obj)(claim);
     if (!c)
         return false;
     if (typeof c.role !== 'string' || !constants_1.VALID_AGENT_ROLES.has(c.role))
@@ -146,7 +144,7 @@ function claimAllowsState(state, claim) {
 }
 function runIdsForLookup(cwd, state) {
     const ids = [];
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (s && typeof s.currentRunId === 'string' && s.currentRunId)
         ids.push(s.currentRunId);
     try {
@@ -167,7 +165,7 @@ function runIdsForLookup(cwd, state) {
     return ids;
 }
 function readClaimFile(filePath) {
-    return obj((0, fsjson_1.readJson)(filePath, null));
+    return (0, obj_1.obj)((0, fsjson_1.readJson)(filePath, null));
 }
 function listPendingClaims(cwd, runId) {
     try {
@@ -216,7 +214,7 @@ function nextSpawnIndex(cwd, state, runId, role) {
 function ensureRunAgentClaim(cwd, state, role, rawInput, metadata = {}) {
     if (!constants_1.VALID_AGENT_ROLES.has(role))
         return null;
-    const source = obj(state) ? { ...state } : {};
+    const source = (0, obj_1.obj)(state) ? { ...state } : {};
     const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
     const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
     const identity = hookSessionIdentity(rawInput);
@@ -238,7 +236,7 @@ function ensureRunAgentClaim(cwd, state, role, rawInput, metadata = {}) {
     fs.mkdirSync(pendingDir(cwd, runId), { recursive: true });
     (0, fsjson_1.writeJson)(path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`), claim);
     source.currentRunId = runId;
-    const existingSpawn = obj(source.spawnIndex);
+    const existingSpawn = (0, obj_1.obj)(source.spawnIndex);
     source.spawnIndex = existingSpawn ? { ...existingSpawn, [role]: spawnIndex } : { [role]: spawnIndex };
     (0, normalize_1.writeState)(cwd, source);
     return claim;
@@ -295,7 +293,7 @@ function resolveRunAgentContext(cwd, state, rawInput, options = {}) {
     return null;
 }
 function hasRunAgentState(cwd, state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId : null;
     if (!runId)
         return false;
@@ -307,7 +305,7 @@ function legacyRunAgentContext(state) {
     const role = (0, materialization_1.activeAgentRole)(state);
     if (!role)
         return null;
-    const s = obj(state) || {};
+    const s = (0, obj_1.obj)(state) || {};
     return {
         source: 'legacy-state',
         runId: s.currentRunId,

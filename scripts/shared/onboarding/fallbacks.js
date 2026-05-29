@@ -22,14 +22,12 @@ exports.nextOnboardingPromptRequest = nextOnboardingPromptRequest;
 exports.onboardingGateFallbackReason = onboardingGateFallbackReason;
 exports.teamConfirmationGateFallbackReason = teamConfirmationGateFallbackReason;
 exports.repairedMaterializationDenyReason = repairedMaterializationDenyReason;
+const obj_1 = require("../obj");
 const project_context_1 = require("./project-context");
 const prompts_1 = require("./prompts");
 const team_lines_1 = require("./team-lines");
 // OpenCode install one-liner (ported from opencode-prompt.cjs).
 exports.OPEN_CODE_INSTALL = 'curl -fsSL https://opencode.ai/install | bash';
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function openCodeChatFallback(block) {
     return block('open-code', { INSTALL: exports.OPEN_CODE_INSTALL });
 }
@@ -54,11 +52,11 @@ function teamConfirmationChatFallback(level, overrides, block) {
     return block('team-confirmation-chat', { LEVEL_UPPER: String(level).toUpperCase(), TEAM_LINES: teamLines });
 }
 function teamConfirmationPromptContext(state, source, block) {
-    const s = obj(state);
-    const perf = s && obj(s.performance);
+    const s = (0, obj_1.obj)(state);
+    const perf = s && (0, obj_1.obj)(s.performance);
     const level = perf && typeof perf.level === 'string' ? perf.level : '';
-    const team = s && obj(s.team);
-    const overrides = team && obj(team.overrides) ? team.overrides : null;
+    const team = s && (0, obj_1.obj)(s.team);
+    const overrides = team && (0, obj_1.obj)(team.overrides) ? team.overrides : null;
     const teamChat = teamConfirmationChatFallback(level, overrides, block);
     const sourceNote = source === 'user-prompt'
         ? block('team-confirmation-source-user-prompt', {})

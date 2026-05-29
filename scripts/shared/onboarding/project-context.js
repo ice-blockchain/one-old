@@ -9,6 +9,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.PROJECT_CONTEXT_ANSWER_KEYS = void 0;
 exports.projectContextOriginalPrompt = projectContextOriginalPrompt;
 exports.projectContextDomainQuestionLines = projectContextDomainQuestionLines;
+const obj_1 = require("../obj");
 exports.PROJECT_CONTEXT_ANSWER_KEYS = [
     'audience',
     'coreFlows',
@@ -25,14 +26,11 @@ exports.PROJECT_CONTEXT_ANSWER_KEYS = [
     'constraints',
     'domainSpecific',
 ];
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 // The user's first request, used to tailor onboarding questions. Checks the
 // persisted projectContext.originalPrompt first, then loose top-level aliases.
 function projectContextOriginalPrompt(state) {
-    const s = obj(state);
-    const pc = s && obj(s.projectContext);
+    const s = (0, obj_1.obj)(state);
+    const pc = s && (0, obj_1.obj)(s.projectContext);
     const candidates = [
         pc && pc.originalPrompt,
         s && s.originalPrompt,

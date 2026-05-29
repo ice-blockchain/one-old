@@ -4,6 +4,7 @@
 // whether Team Confirmation is still pending. Ported 1:1 from _helpers.cjs
 // (isNewProjectOnboardingIncomplete:969, needsTeamConfirmation:1420).
 
+import { obj, type Rec } from '../obj';
 import { isKnownStack } from '../config';
 import { teamModeForLevel } from '../performance';
 import {
@@ -18,12 +19,6 @@ import {
   hasValidTeamState,
   isTeamApproved,
 } from '../state';
-
-type Rec = Record<string, unknown>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 // True when mode==="new-project" and any required shared-state or local-pref
 // onboarding field is still missing/invalid (blocks scaffolding/tool use).

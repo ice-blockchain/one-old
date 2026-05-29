@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { agentModePrompt, codexDefaultModeFallbackDirective, hostPopupInstruction, onboardingReminderShort, openCodePopupBlock } from '../directives';
+import { agentModePrompt, currentThreadFallbackDirective, hostPopupInstruction, onboardingReminderShort, openCodePopupBlock } from '../directives';
 import { OPEN_CODE_INSTALL } from '../fallbacks';
 import type { OnboardingBlock } from '../fallbacks';
 import { makeSkillBlock } from '../../skill-block';
@@ -18,14 +18,13 @@ test('agentModePrompt renders the three agent-mode options', () => {
   assert.ok(out.includes('Low'));
 });
 
-test('hostPopupInstruction names the host popup tools', () => {
+test('hostPopupInstruction points at the host prompt tool', () => {
   const out = hostPopupInstruction(skill);
-  assert.ok(out.includes('request_user_input'));
-  assert.ok(out.includes('AskUserQuestion'));
+  assert.ok(out.includes("host's interactive prompt/popup tool"));
 });
 
-test('codexDefaultModeFallbackDirective starts with the OpenCode prompt', () => {
-  const out = codexDefaultModeFallbackDirective(skill);
+test('currentThreadFallbackDirective starts with the OpenCode prompt', () => {
+  const out = currentThreadFallbackDirective(skill);
   assert.ok(out.includes('CURRENT-THREAD ONBOARDING FALLBACK'));
   assert.ok(out.includes('Enable OpenCode delegation')); // first fallback prompt
   assert.ok(out.includes('Agent Mode'));
@@ -52,5 +51,5 @@ test('openCodePopupBlock renders the SessionStart OpenCode preflight (popup 0)',
   const out = openCodePopupBlock(skill);
   assert.ok(out.includes('OPENCODE DELEGATION PREFLIGHT'));
   assert.ok(out.includes(OPEN_CODE_INSTALL));
-  assert.ok(out.includes('request_user_input'));
+  assert.ok(out.includes("host's interactive prompt/popup tool"));
 });

@@ -7,21 +7,17 @@
 // block-coverage test guarantees every referenced block exists, so the optional
 // `fallback` arg is left empty here.
 
+import { obj, type Rec } from '../obj';
 import type { PromptRequest } from '../prompt-request';
 import { PROJECT_CONTEXT_ANSWER_KEYS, projectContextDomainQuestionLines, projectContextOriginalPrompt } from './project-context';
 import { nextOnboardingStep, onboardingPromptRequestForStep, performanceLevelOf, type OnboardingStep } from './prompts';
 import { renderTeamLines } from './team-lines';
 
-type Rec = Record<string, unknown>;
 type Vars = Record<string, string | number | null | undefined>;
 export type OnboardingBlock = (name: string, vars?: Vars, fallback?: string) => string;
 
 // OpenCode install one-liner (ported from opencode-prompt.cjs).
 export const OPEN_CODE_INSTALL = 'curl -fsSL https://opencode.ai/install | bash';
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 export function openCodeChatFallback(block: OnboardingBlock): string {
   return block('open-code', { INSTALL: OPEN_CODE_INSTALL });

@@ -194,7 +194,7 @@ contract, env validation, and migrations/RLS baseline are in place.
    - Root `AGENTS.md` is the canonical active agent context. Do not generate
      `.traffic-one/rules/AGENTS.md`; `.traffic-one/rules/` must contain only
      generated rule files. Root `CLAUDE.md` should be a symlink to root
-     `AGENTS.md` for Claude Code compatibility only when `CLAUDE.md` is absent.
+     `AGENTS.md` for host compatibility only when `CLAUDE.md` is absent.
    - If the project has no DB yet, `.traffic-one/schema.sql` says
      `Not applicable` with the reason. Once migrations exist, refresh it after
      every migration.

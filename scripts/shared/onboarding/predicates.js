@@ -7,22 +7,20 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.isNewProjectOnboardingIncomplete = isNewProjectOnboardingIncomplete;
 exports.needsTeamConfirmation = needsTeamConfirmation;
+const obj_1 = require("../obj");
 const config_1 = require("../config");
 const performance_1 = require("../performance");
 const state_1 = require("../state");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 // True when mode==="new-project" and any required shared-state or local-pref
 // onboarding field is still missing/invalid (blocks scaffolding/tool use).
 function isNewProjectOnboardingIncomplete(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     if (s.mode !== 'new-project')
         return false;
-    const performance = obj(s.performance);
-    const team = obj(s.team);
+    const performance = (0, obj_1.obj)(s.performance);
+    const team = (0, obj_1.obj)(s.team);
     const hasValidStack = typeof s.stack === 'string' && (0, config_1.isKnownStack)(s.stack);
     const hasOpenCode = (0, state_1.hasResolvedOpenCodeState)(s.openCode);
     const hasGraphProvider = s.codeGraphProvider === 'gitnexus' || s.codeGraphProvider === 'graphify';
@@ -56,7 +54,7 @@ function isNewProjectOnboardingIncomplete(state) {
 // True when a Balanced/High new project still needs the user to approve the
 // subagent role/model line-up (team.mode="subagents" but team.approved !== true).
 function needsTeamConfirmation(state) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     if (s.mode !== 'new-project')
@@ -65,8 +63,8 @@ function needsTeamConfirmation(state) {
         return false;
     if (!(0, state_1.hasValidTeamState)(s.team))
         return false;
-    const performance = obj(s.performance);
-    const team = obj(s.team);
+    const performance = (0, obj_1.obj)(s.performance);
+    const team = (0, obj_1.obj)(s.team);
     if (!performance || !team)
         return false;
     if ((0, performance_1.teamModeForLevel)(String(performance.level)) !== 'subagents')

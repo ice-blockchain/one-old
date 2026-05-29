@@ -39,4 +39,4 @@ active. Do not continue a pending Traffic One onboarding answer, materialize
 project files, run Traffic One skills, spawn Traffic One agents, report to MCP,
 or perform Traffic One-guided implementation until auth is valid again. Continue
 the user's request without Traffic One features when the request is actionable
-outside Traffic One. Cursor has rule-level enforcement only.
+outside Traffic One. Some hosts have rule-level enforcement only.

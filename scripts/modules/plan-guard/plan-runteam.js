@@ -6,15 +6,13 @@
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runTeamEnforcementViolation = runTeamEnforcementViolation;
+const obj_1 = require("../../shared/obj");
 const feature_source_1 = require("../../shared/feature-source");
 const state_1 = require("../../shared/state");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 // Returns the run-team deny reason, or null when the write is allowed.
 function runTeamEnforcementViolation(args) {
     const { projectRoot, filePath, state, rawData, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
-    const team = obj(state.team);
+    const team = (0, obj_1.obj)(state.team);
     if (!writingFeatureSource || !team || team.mode !== 'subagents')
         return null;
     const agentContext = (0, state_1.resolveRunAgentContext)(projectRoot, state, rawData, { claimPending: true })

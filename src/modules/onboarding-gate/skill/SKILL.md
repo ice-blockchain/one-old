@@ -107,9 +107,9 @@ If the latest user message is an explicit "Approve" answer to this Team Confirma
 <!-- T1BLOCK:BEGIN team-confirmation-context -->
 Traffic One Team Confirmation is still required before the {{LEVEL}} subagent run can start.
 The user selected a multi-agent performance level, but local Traffic One preferences do not contain `team.approved: true`.
-Do not spawn Task/spawn_agent/background-agent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.
+Do not spawn subagent workers, do not write feature source, and do not set `team.source: "unavailable"` as a shortcut. If subagents are unavailable, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before any state rewrite.
 {{SOURCE_NOTE}}
-Use the host popup tool when available (Codex `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI). This is onboarding popup 2. If no popup tool is exposed, show this plain-chat fallback verbatim:
+Use the host's interactive prompt/popup tool when available. This is onboarding popup 2. If no popup tool is exposed, show this plain-chat fallback verbatim:
 
 {{TEAM_CHAT}}
 <!-- T1BLOCK:END team-confirmation-context -->
@@ -158,19 +158,19 @@ Reply with the option number or label.
 <!-- T1BLOCK:END agent-mode-prompt -->
 
 <!-- T1BLOCK:BEGIN host-popup-instruction -->
-Ask via the host popup tool when available: Codex `request_user_input`, Claude Code `AskUserQuestion`, or the Cursor task-UI prompt. Only if no popup tool is exposed, ask in plain chat with the numbered options, tell the user to reply with the option number or label, and stop. Do NOT emit the plain-text fallback when a popup tool is working.
+Ask via the host's interactive prompt/popup tool when available. Only if no popup tool is exposed, ask in plain chat with the numbered options, tell the user to reply with the option number or label, and stop. Do NOT emit the plain-text fallback when a popup tool is working.
 <!-- T1BLOCK:END host-popup-instruction -->
 
-<!-- T1BLOCK:BEGIN codex-fallback -->
+<!-- T1BLOCK:BEGIN current-thread-fallback -->
 CURRENT-THREAD ONBOARDING FALLBACK (visible response, blocking):
-If `request_user_input` cannot be called, do not use tools and do not keep detecting/scaffolding.
+If the host's interactive prompt tool cannot be called, do not use tools and do not keep detecting/scaffolding.
 Before onboarding is resolved, mention only the project-detection/onboarding flow. Do not read, invoke, announce, or activate create-feature, create-page, frontend-design, tdd-workflow, or other implementation skills yet.
 Your next visible assistant message must be the plain-chat fallback prompt below, then you must stop for the user answer:
 
 {{OPEN_CODE_PROMPT}}
 
 After the user answers, ask Agent Mode, Team Confirmation for High/Balanced, then show "Traffic One was successfully set up. Let's collect the project details next.", collect a rich dynamic MVP project context, ask Mobile App, then ask Code Graph. Ask only the next unresolved question and stop each time.
-<!-- T1BLOCK:END codex-fallback -->
+<!-- T1BLOCK:END current-thread-fallback -->
 
 <!-- T1BLOCK:BEGIN onboarding-reminder -->
 ═══ traffic-one — onboarding still incomplete ═══
@@ -181,7 +181,7 @@ onboarding question in chat and stop for the user's typed answer. Do not
 scaffold, install, edit source, or choose defaults while onboarding answers are
 pending.
 
-{{CODEX_FALLBACK}}
+{{CURRENT_THREAD_FALLBACK}}
 
 Write the effective onboarding state to `.traffic-one/.one.json` (use the Write tool, RELATIVE path
 `.traffic-one/.one.json` so it lands in the current working directory — never an
@@ -229,7 +229,7 @@ Code-graph provider: gitnexus · graphify (REQUIRED, no default — ASK the user
 OpenCode opt-in: `openCode.enabled` true|false (REQUIRED — ask the OpenCode token-economy popup BEFORE Performance; save source "prompted" + decidedAt in local preferences).
 Performance level: low · balanced · high (REQUIRED for new-project multi-layer builds — ASK the user with the Performance popup; stored in local preferences).
 Team mode: derived from performance — balanced/high → subagents, low → main-agent. Save both fields locally. Omit `team.approved` for low.
-Team confirmation: for balanced/high, ALSO ask the Team popup (popup 2) so the user approves the role→model line-up. On Approve, save `team.approved: true` in local preferences (REQUIRED — the PreToolUse spawn gate denies every Task/spawn_agent call until this flag is present). Save per-role overrides as `team.overrides` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
+Team confirmation: for balanced/high, ALSO ask the Team popup (popup 2) so the user approves the role→model line-up. On Approve, save `team.approved: true` in local preferences (REQUIRED — the PreToolUse spawn gate denies every subagent-spawn call until this flag is present). Save per-role overrides as `team.overrides` (role → tier) when the user customises; omit the field when the line-up was approved as-is.
 Project context: REQUIRED after the Traffic One setup success message and before the Mobile App prompt. Ask the rich dynamic MVP questionnaire and save answers with suggested keys: audience, coreFlows, v1Features, rolesAuth, businessModel, payments, admin, dataModel, contentSource, integrations, engagement, successMetrics, constraints, domainSpecific.
 Toolchain: REQUIRED in local preferences, initialized with gitnexus, graphify, gitleaks, and trufflehog null stamps.
 
@@ -237,14 +237,14 @@ Default complex-project recommendation is stack=default, frontend=react-vite,
 backend=supabase. If the user explicitly chose a non-default frontend or
 backend, record the matching custom stack and concrete technology fields.
 
-Use the Codex `request_user_input` popup for the next unresolved onboarding
+Use the host's interactive prompt/popup tool for the next unresolved onboarding
 choice in this order: OpenCode delegation opt-in (token economy), Agent
 Mode/Performance, Team Confirmation for balanced/high subagents,
 project context, Mobile App, then Code Graph. Ask the
 mobile prompt even when the user's prompt already named web, mobile, Next.js,
 Ionic, React Native, frontend-only, or any other implementation preference. Do
 not print numbered option
-lists in chat when `request_user_input` is available. If the popup tool is
+lists in chat when a popup tool is available. If the popup tool is
 unavailable, ask the same question in chat with numbered options, tell the user
 to reply with the option number or label, and stop. Do not choose a default or
 continue implementation while the answer is pending. See the FIRST-RUN
@@ -262,7 +262,7 @@ frontend={{FRONTEND}}
 backend={{BACKEND}}
 mobile={{MOBILE}}
 mode=new-project: complete Traffic One onboarding in the current thread before implementation. If no popup/input tool is available, ask fallback chat questions and stop for typed answers.
-{{CODEX_FALLBACK}}
+{{CURRENT_THREAD_FALLBACK}}
 Onboarding choices must be prompt popups. {{HOST_POPUP}} Do not print numbered option lists in chat when a popup tool is available; never choose a default or continue implementation while an answer is pending.
 Required order: Agent mode (High/Balanced/Low), Team role/model confirmation for High/Balanced, success message, rich MVP-context questionnaire, Mobile App, then Code Graph provider.
 Ask only the next unresolved onboarding step below:
@@ -304,10 +304,9 @@ HOW TO ACTUALLY SET THE MODEL — mandatory, not advisory:
   The subagent model is set ONLY by the spawn tool's `model` PARAMETER. A
   model name written in the prompt text has ZERO effect — the subagent will
   silently inherit the parent model if you omit the param.
-  Pass the value from YOUR host's column above:
-    Claude Code : `Task`/Agent tool — `model: "<claude value>"` (opus|sonnet|haiku).
-    Codex       : `spawn_agent` — `model: "<codex value>"`.
-    Cursor      : background-agent/task adapter — set `<cursor value>` per role.
+  Spawn via your host's subagent tool and set its `model` parameter to the
+  resolved value for each role's tier (the per-host columns above come from
+  `model-tiers.cjs`).
 
 The orchestrator MUST NOT write feature source files.
 <!-- T1BLOCK:END perf-balanced -->
@@ -329,10 +328,9 @@ HOW TO ACTUALLY SET THE MODEL — mandatory, not advisory:
   The subagent model is set ONLY by the spawn tool's `model` PARAMETER. A
   model name written in the prompt text has ZERO effect — the subagent will
   silently inherit the parent model if you omit the param.
-  Pass the value from YOUR host's column above:
-    Claude Code : `Task`/Agent tool — `model: "<claude value>"` (opus|sonnet|haiku).
-    Codex       : `spawn_agent` — `model: "<codex value>"`.
-    Cursor      : background-agent/task adapter — set `<cursor value>` per role.
+  Spawn via your host's subagent tool and set its `model` parameter to the
+  resolved value for each role's tier (the per-host columns above come from
+  `model-tiers.cjs`).
 
 The orchestrator MUST NOT write feature source files.
 <!-- T1BLOCK:END perf-high -->
@@ -341,10 +339,8 @@ The orchestrator MUST NOT write feature source files.
 AGENT PERFORMANCE PREFLIGHT (popup 1, blocking for non-trivial multi-layer builds):
   After global Traffic One auth is resolved, ask the performance level using
   the host's popup/input mechanism:
-    - Codex        : use `request_user_input` popup when available.
-    - Claude Code  : use the `AskUserQuestion` tool when available.
-    - Cursor       : use the Cursor task-UI prompt when available.
-    - All hosts (fallback): if no popup tool is exposed, ask in plain chat
+    - Use your host's interactive prompt/popup tool when available.
+    - Fallback: if no popup tool is exposed, ask in plain chat
       with the three numbered options below, tell the user to reply with the
       option number or label, and stop.
 
@@ -367,7 +363,7 @@ AGENT PERFORMANCE PREFLIGHT (popup 1, blocking for non-trivial multi-layer build
   chosen level. Popup 2 is MANDATORY — auto-approving it on the user's
   behalf, or skipping it with "the default looks fine / I'll proceed",
   is a HARD VIOLATION of this directive. Do NOT save final onboarding state
-  and do NOT spawn any subagent (Task / spawn_agent / background-agent)
+  and do NOT spawn any subagent
   until the user has replied "Approve" in popup 2. If you cannot ask the
   popup (no popup tool exposed AND no user available), use the chat
   fallback in `teamConfirmationChatFallback` and STOP for the user reply;
@@ -383,7 +379,7 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
   This popup is NON-NEGOTIABLE for balanced/high. You MUST stop, render
   the team line-up, ASK the user via the host popup tool, and wait for
   an explicit user answer. Auto-approving is a hard violation AND will
-  be physically denied by the spawn gate — any Task/spawn_agent call
+  be physically denied by the spawn gate — any subagent-spawn call
   while local Traffic One preferences have `team.approved !== true` returns
   "Team Confirmation gate" denial. The following are all violations of this rule:
     - Saving local preferences with `team.approved: true` before the
@@ -391,7 +387,7 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
     - Saying "I'll auto-approve the default", "the default looks fine",
       "I'll proceed with Balanced", "to keep moving I'll approve", or any
       phrasing that picks an answer on the user's behalf.
-    - Spawning ANY subagent (Task / spawn_agent / background-agent) before
+    - Spawning ANY subagent before
       the user replied "Approve" in this popup.
     - Treating popup 2 as optional polish because the team list "looks
       right" — the user explicitly asked for this confirmation step.
@@ -428,7 +424,7 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
   override's tier substituted in and a trailing "(override)" tag). Do not
   invent model strings under any circumstance.
 
-  TWO-STEP DISPLAY (mandatory; AskUserQuestion has no body field, so the
+  TWO-STEP DISPLAY (mandatory; some host prompt tools have no body field, so the
   table must be printed as an assistant message BEFORE the popup opens):
 
     STEP 1 (assistant message, BEFORE calling the popup tool):
@@ -454,9 +450,8 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
       visibility — collapsing it defeats the purpose.
 
     STEP 2 (call the host popup tool):
-      Ask via the host popup tool when available (Codex
-      `request_user_input`, Claude Code `AskUserQuestion`, Cursor task-UI
-      prompt). If no popup is exposed, fall back to plain chat with the
+      Ask via the host's interactive prompt/popup tool when available. If
+      no popup is exposed, fall back to plain chat with the
       numbered options below, tell the user to reply with the option
       number or label, and stop.
 
@@ -476,7 +471,7 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
                     "approved": true,
                     "overrides": <collected overrides or omitted if empty> }
       The `approved: true` field is what unlocks the spawn gate — without
-      it, every Task/spawn_agent call will be denied. Then auto-launch
+      it, every subagent-spawn call will be denied. Then auto-launch
       the Traffic One subagent team.
     - "Re-pick performance" → discard any pending overrides and re-show
       the Performance popup (popup 1). Do NOT save final onboarding state
@@ -498,7 +493,7 @@ TEAM CONFIRMATION PREFLIGHT (popup 2, MANDATORY for balanced/high; ENFORCED by s
       }
     Omit the `overrides` field entirely when there are none.
     `approved: true` is REQUIRED for balanced/high — the PreToolUse spawn
-    gate denies every Task/spawn_agent call until this flag is present.
+    gate denies every subagent-spawn call until this flag is present.
     The hook gate reads `overrides` at spawn time and enforces the
     resulting model parameter per host — a model id written in prompt text
     has no effect.
@@ -515,7 +510,7 @@ OPENCODE DELEGATION PREFLIGHT (asked first, before the Performance popup; blocki
   free, local AI coding agent. Traffic One still plans, supervises, and verifies;
   OpenCode executes. Every delegated change is kept in a reviewable digest
   (changed files + run summary) before it is accepted. Enabling this can cut your
-  paid Claude/Codex token usage.
+  paid model token usage.
   Prerequisite to actually use it: install OpenCode with `{{INSTALL}}`
   and sign in. The delegation wiring ships in a later update — for now this only
   records your preference so a future performance update can split work between
@@ -568,7 +563,7 @@ ONBOARDING POPUP RULE (all hosts, blocking):
   Let's collect the project details next.") → 4. Project Context → 5. Mobile App
   → 6. Code Graph.
 
-{{CODEX_FALLBACK}}
+{{CURRENT_THREAD_FALLBACK}}
 
 {{OPENCODE_POPUP}}
 
@@ -616,7 +611,7 @@ auto-documentation baselines. For Supabase backends, run `supabase-setup` before
 any `@supabase/supabase-js` code. A flat/root Vite app for `stack=default` is a
 violation.
 
-DO NOT tell the user to restart Claude Code. Until onboarding completes, only the
+DO NOT tell the user to restart the host. Until onboarding completes, only the
 minimal baseline rules are in effect; do not invoke scaffolding/design skills
 (create-component, create-feature, frontend-design, tdd-workflow, …) before the
 bundle loads.

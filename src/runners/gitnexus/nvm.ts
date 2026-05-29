@@ -103,7 +103,7 @@ export function nodeVersionMismatchMessage(major: number | null): string {
   const have = major === null ? 'an unknown Node version' : `Node ${major}`;
   return (
     `GitNexus requires Node >=${GITNEXUS_MIN_NODE_MAJOR} (you have ${have}). `
-    + 'Upgrade once, then relaunch Claude Code:\n'
+    + 'Upgrade once, then restart the host:\n'
     + `  nvm install ${GITNEXUS_MIN_NODE_MAJOR}\n`
     + `  nvm alias default ${GITNEXUS_MIN_NODE_MAJOR}\n`
     + '  nvm use default\n'

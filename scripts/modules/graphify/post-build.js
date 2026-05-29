@@ -158,8 +158,8 @@ function buildHintMessage(provider, result) {
                 + 'AGENT: present the bash command above to the user, then run it via '
                 + 'your Bash tool. The Bash permission prompt is the consent gate — '
                 + 'do NOT install Node without it. After it succeeds, the runner will '
-                + 'pick up the new Node 22 binary automatically (no Claude Code '
-                + 'relaunch needed; the runner globs `~/.nvm/versions/node/v22.*` '
+                + 'pick up the new Node 22 binary automatically (no host '
+                + 'restart needed; the runner globs `~/.nvm/versions/node/v22.*` '
                 + 'directly).';
         }
         if (result.action === 'node-version-mismatch') {

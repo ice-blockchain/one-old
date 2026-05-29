@@ -3,9 +3,10 @@
 // PostToolUse dispatcher (priority ~60): auth gate → supabase function-edit
 // auto-deploy → digest-size warning → write-triggered materialization (project
 // memory / tool-input hints / generic convergence) → state-file write
-// materialization. Ported 1:1 from runPostStackSetup (post.cjs). Runner
-// couplings (token log, supabase deploy, one-mcp report) are INJECTED via deps
-// (default no-op) — they wire to the compiled runners at the Step-7 cutover.
+// materialization. Ported from runPostStackSetup (post.cjs). The token-log and
+// one-mcp-report couplings are wired (default logger import + materialize/index.ts);
+// the supabase function-edit auto-deploy coupling is injected via deps and is not
+// yet wired (functionEditDeploy defaults to a no-op — to be wired separately).
 //
 // TODO (cutover reconcile): the legacy state-file branch emits per-validation-
 // issue systemMessages + a gitnexus node-warning + the exact "rules loaded for
@@ -47,6 +48,8 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runPostStackSetup = runPostStackSetup;
+const coerce_1 = require("../../adapters/coerce");
+const obj_1 = require("../../shared/obj");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const result_1 = require("../../core/result");
@@ -64,12 +67,6 @@ const post_helpers_1 = require("./post-helpers");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 const PLAN_READY_RE = /(?:^|\n)\s*(?:verdict:\s*)?PLAN_READY\s*(?:\n|$)/i;
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
-function asString(value) {
-    return typeof value === 'string' ? value : '';
-}
 function stringifySearchValue(value) {
     if (value == null)
         return '';
@@ -128,7 +125,7 @@ function agentResponseText(raw) {
     ].map(stringifySearchValue).filter(Boolean).join('\n');
 }
 function isArchitectPlanReadyAgentResult(ctx, raw, toolInput) {
-    const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
+    const toolName = ctx.input.tool?.rawName || (0, coerce_1.asString)(raw.tool_name ?? raw.toolName);
     if (!SPAWN_TOOL_RE.test(toolName))
         return false;
     const responseText = agentResponseText(raw);
@@ -148,10 +145,10 @@ function triggerArchitectPlanReadyReport(cwd, state, reportOneMcp) {
 }
 function runPostStackSetup(ctx, deps = {}) {
     const cwd = ctx.cwd;
-    const raw = obj(ctx.input.raw) || {};
-    const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
-    const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path);
-    const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
+    const raw = (0, obj_1.obj)(ctx.input.raw) || {};
+    const toolInput = (0, obj_1.obj)(raw.tool_input) || (0, obj_1.obj)(raw.toolInput) || {};
+    const filePath = ctx.input.tool?.filePath || (0, coerce_1.asString)(toolInput.file_path);
+    const workdir = ctx.input.tool?.workdir || (0, coerce_1.asString)(toolInput.workdir ?? toolInput.cwd);
     const pathBase = workdir
         ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(ctx.input.cwd, workdir))
         : ctx.input.cwd;
@@ -165,7 +162,7 @@ function runPostStackSetup(ctx, deps = {}) {
     const digestRoot = architectDigestProjectRoot(targetPath || filePath);
     const reportRoot = digestRoot || cwd;
     const state = (0, state_1.readEffectiveState)(reportRoot);
-    const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
+    const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test((0, coerce_1.asString)(raw.tool_name ?? raw.toolName));
     if (isArchitectPlanReadyDigest(targetPath || filePath) || isArchitectPlanReadyAgentResult(ctx, raw, toolInput)) {
         triggerArchitectPlanReadyReport(reportRoot, state, reportOneMcp);
     }

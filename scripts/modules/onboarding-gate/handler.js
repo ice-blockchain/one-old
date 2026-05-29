@@ -8,6 +8,8 @@
 // skill via the shared/onboarding assemblers.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.onboardingGate = onboardingGate;
+const coerce_1 = require("../../adapters/coerce");
+const obj_1 = require("../../shared/obj");
 const result_1 = require("../../core/result");
 const authoring_root_1 = require("../../shared/authoring-root");
 const detection_1 = require("../../shared/detection");
@@ -25,23 +27,17 @@ const tool_classify_1 = require("../../shared/tool-classify");
 const auth_choice_1 = require("../session/auth-choice");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 const block = (name, vars) => skillBlock('onboarding-gate', name, vars);
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
-function asString(value) {
-    return typeof value === 'string' ? value : '';
-}
 function onboardingGate(ctx) {
-    const raw = obj(ctx.input.raw) || {};
-    const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
-    const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
+    const raw = (0, obj_1.obj)(ctx.input.raw) || {};
+    const toolName = ctx.input.tool?.rawName || (0, coerce_1.asString)(raw.tool_name ?? raw.toolName);
+    const toolInput = (0, obj_1.obj)(raw.tool_input) || (0, obj_1.obj)(raw.toolInput) || {};
     const cwd = ctx.cwd;
     if ((0, authoring_root_1.isPluginAuthoringRoot)(cwd))
         return (0, result_1.noop)();
     if ((0, auth_choice_1.authChoiceAllowsContinue)(cwd))
         return (0, result_1.noop)();
     // Auth is enforced by the priority-0 session gate before this gate runs.
-    const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
+    const filePath = ctx.input.tool?.filePath || (0, coerce_1.asString)(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
     const state = (0, state_1.readEffectiveState)(cwd);
     const mode = state.mode || (0, detection_1.detectMode)(cwd);
     const effectiveState = { ...state, mode };

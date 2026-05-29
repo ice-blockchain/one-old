@@ -1,6 +1,6 @@
 ---
 name: verification-loop
-description: "A comprehensive verification system for Claude Code sessions, including local-evidence production audits and Production-Readiness Score audits for SPA + Supabase and Ionic releases."
+description: "A comprehensive verification system for agent sessions, including local-evidence production audits and Production-Readiness Score audits for SPA + Supabase and Ionic releases."
 metadata:
   source: everything-claude-code
   source_path: skills/verification-loop/SKILL.md
@@ -12,7 +12,7 @@ metadata:
 
 # Verification Loop Skill
 
-A comprehensive verification system for Claude Code sessions.
+A comprehensive verification system for agent sessions.
 
 ## When to Use
 

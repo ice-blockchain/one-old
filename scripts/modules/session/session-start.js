@@ -4,8 +4,9 @@
 // digest retention + session materialization → subagent fast path (fix-cycle /
 // role-scoped index) → mode routing (onboarded bundle / existing-codebase
 // auto-detect / new-project onboarding directive). Ported 1:1 from
-// runSessionStart (session-start.cjs). The one-mcp reporter is a Step-5 runner —
-// no-op'd here (TODO: wire at Step 5).
+// runSessionStart (session-start.cjs). The one-mcp first-look report fires from
+// the PostToolUse post-stack-setup handler (first tool use / architect
+// PLAN_READY), so SessionStart materialization intentionally does not report.
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -42,6 +43,7 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.runSessionStartAuthed = runSessionStartAuthed;
 exports.runSessionStart = runSessionStart;
+const obj_1 = require("../../shared/obj");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const result_1 = require("../../core/result");
@@ -68,9 +70,6 @@ const session_start_lib_1 = require("./session-start-lib");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 const block = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
 const STACK_IDS = new Set(Object.keys(stacks_1.STACKS));
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function runSessionStartInner(ctx) {
     const cwd = ctx.cwd;
     if ((0, authoring_root_1.isPluginAuthoringRoot)(cwd))
@@ -230,7 +229,7 @@ function runSessionStartAuthed(ctx) {
     const directive = (0, session_directive_1.onboardingDirectiveNewProject)(block);
     const spec = stacks_1.STACKS.minimal;
     const { body } = (0, packing_1.packBundle)(root, spec.mandatory, spec.optional);
-    if (!obj(state.toolchain))
+    if (!(0, obj_1.obj)(state.toolchain))
         state.toolchain = (0, toolchain_1.initializeToolchainState)();
     (0, state_1.writeState)(cwd, state);
     return (0, result_1.context)(`${directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n${body}`);
@@ -250,7 +249,7 @@ function stampMaterialization(cwd, state) {
     }
 }
 // Fail-closed: a throw anywhere in SessionStart must never crash the hook. The
-// auth instruction / noop still surfaces; core/errors guarantees exit-0.
+// auth instruction / noop still surfaces; the try/catch below guarantees exit-0.
 function runSessionStart(ctx) {
     try {
         return runSessionStartInner(ctx);

@@ -59,7 +59,7 @@ function postWriteIncompleteWarning(args) {
     if (cgMissing) {
         if (lines.length > 2)
             lines.push('');
-        lines.push('You also did not set local `codeGraphProvider`. This is REQUIRED —', 'no skip, no default. Ask with the host popup tool (Codex `request_user_input`,', 'Claude Code `AskUserQuestion`, or Cursor task-UI) when available:', 'header "Code Graph"; question "Which provider should we use for the codebase graph?";', 'if no popup tool is available, ask in chat with numbered options and stop for the typed reply;', `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`, 'usage 50–70% on multi-file work. See `rules/common/codebase-graph.md`', 'and the FIRST-RUN ONBOARDING directive for the license trade-off', '(gitnexus is PolyForm Noncommercial; graphify is MIT).');
+        lines.push('You also did not set local `codeGraphProvider`. This is REQUIRED —', "no skip, no default. Ask with the host's interactive prompt/popup tool", 'when available:', 'header "Code Graph"; question "Which provider should we use for the codebase graph?";', 'if no popup tool is available, ask in chat with numbered options and stop for the typed reply;', `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`, 'usage 50–70% on multi-file work. See `rules/common/codebase-graph.md`', 'and the FIRST-RUN ONBOARDING directive for the license trade-off', '(gitnexus is PolyForm Noncommercial; graphify is MIT).');
     }
     else if (cgUnknown) {
         if (lines.length > 2)

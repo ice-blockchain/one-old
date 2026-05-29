@@ -45,6 +45,7 @@ exports.readState = readState;
 exports.writeState = writeState;
 exports.normalizeState = normalizeState;
 exports.requireAddon = requireAddon;
+const obj_1 = require("../obj");
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const config_1 = require("../config");
@@ -54,9 +55,6 @@ const constants_1 = require("./constants");
 const io_1 = require("./io");
 const local_prefs_1 = require("./local-prefs");
 const toolchain_1 = require("./toolchain");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function defaultMobileState() {
     return { enabled: false, framework: 'none', source: 'none' };
 }
@@ -66,7 +64,7 @@ function defaultTechnologiesFor(state) {
     const mobile = [];
     const frontendValue = (typeof state.frontend === 'string' && state.frontend) || 'none';
     const backendValue = (typeof state.backend === 'string' && state.backend) || 'none';
-    const mobileObj = obj(state.mobile);
+    const mobileObj = (0, obj_1.obj)(state.mobile);
     const mobileValue = mobileObj ? mobileObj.framework : undefined;
     if (frontendValue === 'react-vite')
         frontend.push('react', 'vite');
@@ -109,7 +107,7 @@ function normalizeLegacyStack(state) {
     else if (original === 'react-native-expo-monorepo' || original === 'react-native-expo-app') {
         state.frontend = state.frontend || 'none';
         state.backend = state.backend || 'supabase';
-        const existingMobile = obj(state.mobile) || {};
+        const existingMobile = (0, obj_1.obj)(state.mobile) || {};
         state.mobile = {
             ...existingMobile,
             enabled: true,
@@ -152,7 +150,7 @@ function readState(cwd) {
     return {};
 }
 function writeState(cwd, state) {
-    let source = obj(state) ? { ...state } : {};
+    let source = (0, obj_1.obj)(state) ? { ...state } : {};
     delete source.pluginVersion;
     if (source.stack) {
         (0, canonicalize_1.canonicalizeStateShape)(source);
@@ -165,7 +163,7 @@ function writeState(cwd, state) {
     (0, fsjson_1.writeJson)(statePath(cwd), { ...source, version: (0, io_1.stateVersion)() });
 }
 function normalizeState(state, defaultMode) {
-    const s = obj(state);
+    const s = (0, obj_1.obj)(state);
     if (!s)
         return false;
     let changed = (0, canonicalize_1.canonicalizeStateShape)(s);
@@ -202,7 +200,7 @@ function normalizeState(state, defaultMode) {
         s.backend = s.stack === 'minimal' ? 'none' : 'supabase';
         changed = true;
     }
-    const mobile = obj(s.mobile);
+    const mobile = (0, obj_1.obj)(s.mobile);
     if (!mobile) {
         s.mobile = defaultMobileState();
         changed = true;
@@ -224,7 +222,7 @@ function normalizeState(state, defaultMode) {
             changed = true;
         }
     }
-    const technologies = obj(s.technologies);
+    const technologies = (0, obj_1.obj)(s.technologies);
     if (!technologies) {
         s.technologies = defaultTechnologiesFor(s);
         changed = true;
@@ -238,14 +236,14 @@ function normalizeState(state, defaultMode) {
             }
         }
     }
-    const team = obj(s.team);
+    const team = (0, obj_1.obj)(s.team);
     if (team) {
         const normalizedTeam = {
             ...team,
             mode: (0, canonicalize_1.canonicalTeamMode)(team.mode),
             source: (0, canonicalize_1.canonicalTeamSource)(team.source || 'prompted'),
         };
-        const perf = obj(s.performance);
+        const perf = (0, obj_1.obj)(s.performance);
         const performanceLevel = perf ? (0, canonicalize_1.canonicalPerformanceLevel)(perf.level) : null;
         const normalizedOverrides = (0, canonicalize_1.canonicalTeamOverrides)(team.overrides, performanceLevel);
         if (normalizedOverrides)
@@ -272,7 +270,7 @@ function normalizeState(state, defaultMode) {
             changed = true;
         }
     }
-    const performance = obj(s.performance);
+    const performance = (0, obj_1.obj)(s.performance);
     if (performance) {
         const normalizedPerformance = {
             ...performance,
@@ -284,7 +282,7 @@ function normalizeState(state, defaultMode) {
             changed = true;
         }
     }
-    const openCode = obj(s.openCode);
+    const openCode = (0, obj_1.obj)(s.openCode);
     if (openCode) {
         const normalizedOpenCode = {
             ...openCode,
@@ -311,7 +309,7 @@ function normalizeState(state, defaultMode) {
             s.supabaseFunctionsAutoDeploy = 'ask';
             changed = true;
         }
-        if (!obj(s.supabaseAddons)) {
+        if (!(0, obj_1.obj)(s.supabaseAddons)) {
             s.supabaseAddons = {};
             changed = true;
         }
@@ -322,8 +320,8 @@ function requireAddon(state, name) {
     if (!constants_1.KNOWN_ADDONS.has(name)) {
         return { approved: false, skipped: false, status: 'pending', known: false };
     }
-    const s = obj(state);
-    const addons = (s && obj(s.supabaseAddons)) || {};
+    const s = (0, obj_1.obj)(state);
+    const addons = (s && (0, obj_1.obj)(s.supabaseAddons)) || {};
     const status = typeof addons[name] === 'string' ? addons[name] : 'pending';
     return { approved: status === 'approved', skipped: status === 'skipped', status, known: true };
 }

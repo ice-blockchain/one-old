@@ -3,9 +3,11 @@
 // digest retention + session materialization → subagent fast path (fix-cycle /
 // role-scoped index) → mode routing (onboarded bundle / existing-codebase
 // auto-detect / new-project onboarding directive). Ported 1:1 from
-// runSessionStart (session-start.cjs). The one-mcp reporter is a Step-5 runner —
-// no-op'd here (TODO: wire at Step 5).
+// runSessionStart (session-start.cjs). The one-mcp first-look report fires from
+// the PostToolUse post-stack-setup handler (first tool use / architect
+// PLAN_READY), so SessionStart materialization intentionally does not report.
 
+import { obj, type Rec } from '../../shared/obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -42,15 +44,9 @@ import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
 import { ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 
-type Rec = Record<string, unknown>;
-
 const skillBlock = makeSkillBlock(pluginRoot);
 const block: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
 const STACK_IDS = new Set(Object.keys(STACKS));
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 function runSessionStartInner(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
@@ -244,7 +240,7 @@ function stampMaterialization(cwd: string, state: Rec): void {
 }
 
 // Fail-closed: a throw anywhere in SessionStart must never crash the hook. The
-// auth instruction / noop still surfaces; core/errors guarantees exit-0.
+// auth instruction / noop still surfaces; the try/catch below guarantees exit-0.
 export function runSessionStart(ctx: Ctx): HookResult {
   try {
     return runSessionStartInner(ctx);

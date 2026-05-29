@@ -49,6 +49,7 @@ exports.stripLocalPreferenceFields = stripLocalPreferenceFields;
 exports.splitLocalPreferences = splitLocalPreferences;
 exports.effectiveState = effectiveState;
 exports.readEffectiveState = readEffectiveState;
+const obj_1 = require("../obj");
 const fs = __importStar(require("fs"));
 const os = __importStar(require("os"));
 const path = __importStar(require("path"));
@@ -59,9 +60,6 @@ const canonicalize_1 = require("./canonicalize");
 const constants_1 = require("./constants");
 const io_1 = require("./io");
 const toolchain_1 = require("./toolchain");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function inSet(set, value) {
     return typeof value === 'string' && set.has(value);
 }
@@ -89,7 +87,7 @@ function projectPrefsPath(cwd, env = process.env) {
     return path.join(base, 'projects', projectRootHash(cwd), 'preferences.json');
 }
 function normalizeProjectPrefs(prefs) {
-    const base = obj(prefs);
+    const base = (0, obj_1.obj)(prefs);
     if (!base)
         return {};
     const out = { ...base };
@@ -115,7 +113,7 @@ function normalizeProjectPrefs(prefs) {
             changed = true;
         }
     }
-    const perf = obj(out.performance);
+    const perf = (0, obj_1.obj)(out.performance);
     if (perf) {
         const level = (0, canonicalize_1.canonicalPerformanceLevel)(perf.level);
         const rawSource = typeof perf.source === 'string'
@@ -143,9 +141,9 @@ function normalizeProjectPrefs(prefs) {
             changed = true;
         }
     }
-    const team = obj(out.team);
+    const team = (0, obj_1.obj)(out.team);
     if (team) {
-        const perfNow = obj(out.performance);
+        const perfNow = (0, obj_1.obj)(out.performance);
         const performanceLevel = perfNow ? perfNow.level : null;
         const normalized = {
             ...team,
@@ -177,14 +175,14 @@ function normalizeProjectPrefs(prefs) {
             changed = true;
         }
     }
-    const toolchain = obj(out.toolchain);
+    const toolchain = (0, obj_1.obj)(out.toolchain);
     if (toolchain) {
         const normalizedToolchain = (0, toolchain_1.initializeLocalToolchainState)(toolchain);
         if (JSON.stringify(toolchain) !== JSON.stringify(normalizedToolchain))
             changed = true;
         out.toolchain = normalizedToolchain;
     }
-    const openCode = obj(out.openCode);
+    const openCode = (0, obj_1.obj)(out.openCode);
     if (openCode) {
         out.openCode = {
             ...openCode,
@@ -213,30 +211,30 @@ function mergePlainObject(current, patch) {
     return { ...current, ...patch };
 }
 function mergeProjectPrefsObject(current, patch) {
-    const patchObj = obj(patch);
+    const patchObj = (0, obj_1.obj)(patch);
     const next = { ...current, ...(patchObj || {}) };
     if (patchObj) {
         if (Object.prototype.hasOwnProperty.call(patchObj, 'performance')) {
-            const p = obj(patchObj.performance);
+            const p = (0, obj_1.obj)(patchObj.performance);
             next.performance = p && !Object.prototype.hasOwnProperty.call(p, 'level')
                 ? mergePlainObject(current.performance, patchObj.performance)
                 : patchObj.performance;
         }
         if (Object.prototype.hasOwnProperty.call(patchObj, 'team')) {
-            const t = obj(patchObj.team);
+            const t = (0, obj_1.obj)(patchObj.team);
             next.team = t && !Object.prototype.hasOwnProperty.call(t, 'mode')
                 ? mergePlainObject(current.team, patchObj.team)
                 : patchObj.team;
         }
         if (Object.prototype.hasOwnProperty.call(patchObj, 'openCode')) {
-            const o = obj(patchObj.openCode);
+            const o = (0, obj_1.obj)(patchObj.openCode);
             next.openCode = o && !Object.prototype.hasOwnProperty.call(o, 'enabled')
                 ? mergePlainObject(current.openCode, patchObj.openCode)
                 : patchObj.openCode;
         }
-        const patchToolchain = obj(patchObj.toolchain);
+        const patchToolchain = (0, obj_1.obj)(patchObj.toolchain);
         if (patchToolchain) {
-            const currentToolchain = obj(current.toolchain) || {};
+            const currentToolchain = (0, obj_1.obj)(current.toolchain) || {};
             const merged = { ...currentToolchain };
             for (const [name, stamp] of Object.entries(patchToolchain)) {
                 merged[name] = mergePlainObject(currentToolchain[name], stamp);
@@ -250,24 +248,24 @@ function mergeProjectPrefs(cwd, patch, env = process.env) {
     return writeProjectPrefs(cwd, mergeProjectPrefsObject(readProjectPrefs(cwd, env), patch), env);
 }
 function hasLocalPreferenceFields(value) {
-    const v = obj(value);
+    const v = (0, obj_1.obj)(value);
     if (!v)
         return false;
     if (Object.keys(v).some((key) => exports.LOCAL_PREF_KEYS.has(key) || key === 'codeGraph' || key === 'subagentTeam')) {
         return true;
     }
-    const stack = obj(v.stack);
+    const stack = (0, obj_1.obj)(v.stack);
     return Boolean(stack && (Object.prototype.hasOwnProperty.call(stack, 'codeGraph')
         || Object.prototype.hasOwnProperty.call(stack, 'codeGraphProvider')));
 }
 function extractProjectPrefs(value) {
-    const source = obj(value) || {};
+    const source = (0, obj_1.obj)(value) || {};
     const prefs = {};
     for (const key of exports.LOCAL_PREF_KEYS) {
         if (Object.prototype.hasOwnProperty.call(source, key))
             prefs[key] = source[key];
     }
-    const stack = obj(source.stack);
+    const stack = (0, obj_1.obj)(source.stack);
     const nestedProvider = (0, canonicalize_1.codeGraphProviderFromValue)(source.codeGraph)
         || (0, canonicalize_1.codeGraphProviderFromValue)(stack ? (stack.codeGraph || stack.codeGraphProvider) : null);
     if (nestedProvider && !prefs.codeGraphProvider)
@@ -277,12 +275,12 @@ function extractProjectPrefs(value) {
     return normalizeProjectPrefs(prefs);
 }
 function stripLocalPreferenceFields(value) {
-    const out = obj(value) ? { ...value } : {};
+    const out = (0, obj_1.obj)(value) ? { ...value } : {};
     for (const key of exports.LOCAL_PREF_KEYS)
         delete out[key];
     delete out.codeGraph;
     delete out.subagentTeam;
-    const stack = obj(out.stack);
+    const stack = (0, obj_1.obj)(out.stack);
     if (stack) {
         const nextStack = { ...stack };
         delete nextStack.codeGraph;
@@ -292,7 +290,7 @@ function stripLocalPreferenceFields(value) {
     return out;
 }
 function splitLocalPreferences(cwd, state, env = process.env) {
-    const stateRec = obj(state) || {};
+    const stateRec = (0, obj_1.obj)(state) || {};
     if (!hasLocalPreferenceFields(state)) {
         return { state: stateRec, prefs: readProjectPrefs(cwd, env), changed: false };
     }
@@ -307,7 +305,7 @@ function splitLocalPreferences(cwd, state, env = process.env) {
     }
 }
 function effectiveState(projectState, prefs) {
-    const state = obj(projectState) ? { ...projectState } : {};
+    const state = (0, obj_1.obj)(projectState) ? { ...projectState } : {};
     const local = normalizeProjectPrefs(prefs);
     for (const key of exports.LOCAL_PREF_KEYS) {
         if (Object.prototype.hasOwnProperty.call(local, key))

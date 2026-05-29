@@ -15,6 +15,8 @@
 // order of the (rarely co-occurring) plan + run-team lines differs.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.planWriteGate = planWriteGate;
+const coerce_1 = require("../../adapters/coerce");
+const obj_1 = require("../../shared/obj");
 const result_1 = require("../../core/result");
 const auth_choice_1 = require("../session/auth-choice");
 const feature_source_1 = require("../../shared/feature-source");
@@ -28,17 +30,11 @@ const plan_readiness_1 = require("./plan-readiness");
 const plan_runteam_1 = require("./plan-runteam");
 const plan_static_1 = require("./plan-static");
 const block = (0, plan_static_1.makePlanBlock)((0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot));
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
-function asString(value) {
-    return typeof value === 'string' ? value : '';
-}
 function planWriteGate(ctx) {
-    const raw = obj(ctx.input.raw) || {};
-    const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName) || 'Bash';
-    const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
-    const rawFilePath = asString(toolInput.file_path).replace(/\\/g, '/');
+    const raw = (0, obj_1.obj)(ctx.input.raw) || {};
+    const toolName = ctx.input.tool?.rawName || (0, coerce_1.asString)(raw.tool_name ?? raw.toolName) || 'Bash';
+    const toolInput = (0, obj_1.obj)(raw.tool_input) || (0, obj_1.obj)(raw.toolInput) || {};
+    const rawFilePath = (0, coerce_1.asString)(toolInput.file_path).replace(/\\/g, '/');
     const rawCommand = (0, tool_classify_1.commandFromToolInput)(toolInput);
     const patchTargetPaths = (0, tool_classify_1.normalizedToolName)(toolName) === 'apply_patch'
         ? (0, feature_source_1.applyPatchTargetPaths)(rawCommand)
@@ -52,7 +48,7 @@ function planWriteGate(ctx) {
     // before we judge it (side-effect only; the outcome is intentionally ignored).
     (0, materialize_1.migrateArchitectureDocsToPlan)(projectRoot);
     (0, materialize_1.materializeProjectIfNeeded)(projectRoot, { trigger: 'plan preflight convergence' });
-    const content = asString(toolInput.content) || asString(toolInput.new_string) || '';
+    const content = (0, coerce_1.asString)(toolInput.content) || (0, coerce_1.asString)(toolInput.new_string) || '';
     const state = (0, state_1.readEffectiveState)(projectRoot);
     const isNative = (0, state_1.isNativeState)(state);
     // Resolve which targets are feature source (direct path + apply_patch targets).

@@ -5,7 +5,7 @@
 // from _helpers.cjs (PROJECT_CONTEXT_ANSWER_KEYS:1044, projectContextOriginalPrompt,
 // projectContextDomainQuestionLines).
 
-type Rec = Record<string, unknown>;
+import { obj, type Rec } from '../obj';
 
 export const PROJECT_CONTEXT_ANSWER_KEYS = [
   'audience',
@@ -23,10 +23,6 @@ export const PROJECT_CONTEXT_ANSWER_KEYS = [
   'constraints',
   'domainSpecific',
 ] as const;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 // The user's first request, used to tailor onboarding questions. Checks the
 // persisted projectContext.originalPrompt first, then loose top-level aliases.

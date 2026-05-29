@@ -94,7 +94,7 @@ Codex, Cursor) via the shared hooks.
 ```
 .
 ├── skills/                  ← Runtime filtered active skills
-├── skills-templates/        ← Full skill source; manifest reads this directly
+├── skills-catalog/          ← Full skill source pool (materialized per stack)
 │   ├── create-component/
 │   ├── create-feature/
 │   ├── create-page/

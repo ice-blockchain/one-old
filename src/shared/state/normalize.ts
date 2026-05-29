@@ -4,6 +4,7 @@
 // scripts/hook-runtime/state/normalize.cjs (dead helper setIfMissingOrDifferent
 // dropped). Uses shared fsjson; state timestamps keep the legacy ms-stripped form.
 
+import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -24,12 +25,6 @@ import { KNOWN_ADDONS } from './constants';
 import { stateTimestamp, stateVersion } from './io';
 import { splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
-
-type Rec = Record<string, unknown>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 function defaultMobileState(): Rec {
   return { enabled: false, framework: 'none', source: 'none' };

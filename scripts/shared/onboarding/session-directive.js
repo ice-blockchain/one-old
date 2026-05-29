@@ -17,7 +17,7 @@ function onboardingDirectiveNewProject(block) {
         BACKEND_LABEL: (0, config_1.pitchBackendLabel)(),
         DEPLOY_LABEL: (0, config_1.pitchDeployLabel)(),
         HOST_POPUP: (0, directives_1.hostPopupInstruction)(block),
-        CODEX_FALLBACK: (0, directives_1.codexDefaultModeFallbackDirective)(block),
+        CURRENT_THREAD_FALLBACK: (0, directives_1.currentThreadFallbackDirective)(block),
         OPENCODE_POPUP: (0, directives_1.openCodePopupBlock)(block),
         PERFORMANCE_POPUP: (0, perf_directives_1.performancePopupBlock)(block),
         TEAM_CONFIRMATION_POPUP: (0, perf_directives_1.teamConfirmationPopupBlock)(block),

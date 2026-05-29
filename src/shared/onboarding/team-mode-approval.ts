@@ -6,6 +6,7 @@
 // Pure state logic — the guard DENY PROSE lives in the onboarding-gate skill;
 // the guards here return a boolean "violates?" so callers map it to prose.
 
+import { obj, type Rec } from '../obj';
 import { detectMode } from '../detection';
 import { normalizeState, writeState } from '../state';
 import { sha256, nowIsoNoMs } from '../text';
@@ -19,13 +20,7 @@ import {
 } from '../tool-classify';
 import * as fs from 'fs';
 
-type Rec = Record<string, unknown>;
-
 export const TEAM_MODE_CHANGE_APPROVAL_TTL_MS = 10 * 60 * 1000;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 export function hashPromptText(promptText: unknown): string {
   return sha256(String(promptText || '').trim());

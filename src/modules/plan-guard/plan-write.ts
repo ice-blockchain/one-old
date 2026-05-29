@@ -13,6 +13,8 @@
 // (before run-team). The set of violations is identical — only the relative
 // order of the (rarely co-occurring) plan + run-team lines differs.
 
+import { asString } from '../../adapters/coerce';
+import { obj, type Rec } from '../../shared/obj';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
@@ -31,16 +33,7 @@ import { planReadinessViolations } from './plan-readiness';
 import { runTeamEnforcementViolation } from './plan-runteam';
 import { planStaticViolations, makePlanBlock } from './plan-static';
 
-type Rec = Record<string, unknown>;
-
 const block = makePlanBlock(makeSkillBlock(pluginRoot));
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
 
 export function planWriteGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};

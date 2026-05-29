@@ -5,6 +5,7 @@
 // keeps routing logic prose-free. Ported 1:1 from nextOnboardingStep /
 // nextOnboardingStepPromptAndRequest (_helpers.cjs).
 
+import { obj, type Rec } from '../obj';
 import {
   codeGraphPromptRequest,
   mobilePromptRequest,
@@ -23,8 +24,6 @@ import {
 } from '../state';
 import { needsTeamConfirmation } from './predicates';
 
-type Rec = Record<string, unknown>;
-
 export type OnboardingStep =
   | 'open-code'
   | 'performance'
@@ -34,10 +33,6 @@ export type OnboardingStep =
   | 'mobile'
   | 'code-graph'
   | 'state';
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 // The next unresolved onboarding step for a new project, in canonical order, or
 // null when mode !== "new-project". 'state' means all prompts answered but the

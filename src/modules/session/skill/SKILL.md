@@ -53,7 +53,7 @@ Present this as a host modal selector when a modal/popup tool is available:
 Question: Do you want to authenticate Traffic One now, or continue without using the Traffic One plugin?
 Choices: Authenticate Traffic One (Recommended); Continue without Traffic One.
 
-If Authenticate Traffic One is chosen, ask for the API key (secure input) and STOP. When the user pastes the key, Traffic One authenticates it automatically inside the hook — do NOT invoke `traffic-one-auth.cjs` or any auth command via Bash/shell yourself (Claude Code's security classifier blocks passing a key to a script; the hook runs login + status internally). Do not Write/Edit `auth.json` directly, and do not ask the user to run bash or shell commands.
+If Authenticate Traffic One is chosen, ask for the API key (secure input) and STOP. When the user pastes the key, Traffic One authenticates it automatically inside the hook — do NOT invoke `traffic-one-auth.cjs` or any auth command via Bash/shell yourself (the host's security classifier blocks passing a key to a script; the hook runs login + status internally). Do not Write/Edit `auth.json` directly, and do not ask the user to run bash or shell commands.
 {{MCP_TOOL_WARNING}}
 If Continue without Traffic One is chosen, remember the choice for this project and continue the request using normal non-Traffic-One behavior only.
 

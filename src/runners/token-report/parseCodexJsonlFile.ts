@@ -3,6 +3,7 @@
 // Traffic One attribution estimate. Ported 1:1 from
 // token-report/parseCodexJsonlFile.cjs.
 
+import { obj, type Rec } from '../../shared/obj';
 import * as fs from 'fs';
 
 import { emptyStats } from './emptyStats';
@@ -16,7 +17,6 @@ import {
   type Stats,
 } from './lib';
 
-type Rec = Record<string, unknown>;
 export interface CodexSession {
   id: string;
   jsonl: string;
@@ -29,9 +29,6 @@ export interface CodexSession {
 }
 export interface CodexParse { session: CodexSession; stats: Stats; trafficOne: TrafficOneEstimate }
 
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 function str(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
 }

@@ -2,13 +2,8 @@
 // Web/native stack predicates. Ported 1:1 from isWebState/isNativeState in
 // scripts/hook-runtime/handlers/_helpers.cjs.
 
+import { obj, type Rec } from '../obj';
 import { RN_STACKS, WEB_STACKS } from '../config';
-
-type Rec = Record<string, unknown>;
-
-function obj(value: unknown): Rec | null {
-  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
-}
 
 export function isNativeState(state: unknown): boolean {
   const s = obj(state);

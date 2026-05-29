@@ -7,6 +7,8 @@
 // ctx.input.raw (the canonical ToolInput doesn't carry them). Deny PROSE → skill.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.agentModelGate = agentModelGate;
+const coerce_1 = require("../../adapters/coerce");
+const obj_1 = require("../../shared/obj");
 const result_1 = require("../../core/result");
 const paths_1 = require("../../shared/paths");
 const performance_1 = require("../../shared/performance");
@@ -18,20 +20,14 @@ const converge_1 = require("./converge");
 const role_infer_1 = require("./role-infer");
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
 const block = (name, vars = {}) => skillBlock('agent-model', name, vars);
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
-function asString(value) {
-    return typeof value === 'string' ? value : '';
-}
 function agentModelGate(ctx) {
     if ((0, auth_choice_1.authChoiceAllowsContinue)(ctx.cwd))
         return (0, result_1.noop)();
-    const raw = obj(ctx.input.raw) || {};
-    const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
+    const raw = (0, obj_1.obj)(ctx.input.raw) || {};
+    const toolName = ctx.input.tool?.rawName || (0, coerce_1.asString)(raw.tool_name ?? raw.toolName);
     if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(toolName))
         return (0, result_1.noop)();
-    const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
+    const toolInput = (0, obj_1.obj)(raw.tool_input) || (0, obj_1.obj)(raw.toolInput) || {};
     const role = (0, role_infer_1.inferTrafficOneSpawnRole)(toolInput);
     if (!role)
         return (0, result_1.noop)();
@@ -47,7 +43,7 @@ function agentModelGate(ctx) {
             return (0, result_1.deny)(block('agent-materialization-deny'));
         return (0, result_1.deny)(block('agent-materialization-missing'));
     }
-    const performance = obj(state.performance);
+    const performance = (0, obj_1.obj)(state.performance);
     const level = performance && typeof performance.level === 'string' && performance_config_1.PERFORMANCE_LEVEL_IDS.has(performance.level)
         ? performance.level
         : null;
@@ -59,8 +55,8 @@ function agentModelGate(ctx) {
     if (!(0, state_1.isTeamApproved)(state.team)) {
         return (0, result_1.deny)(block('team-confirmation', { LEVEL: level }));
     }
-    const team = obj(state.team);
-    const overrides = team && obj(team.overrides) ? team.overrides : null;
+    const team = (0, obj_1.obj)(state.team);
+    const overrides = team && (0, obj_1.obj)(team.overrides) ? team.overrides : null;
     const expected = (0, performance_1.modelForRoleHost)(level, role, ctx.host, overrides);
     if (!expected)
         return (0, result_1.noop)();
@@ -73,7 +69,7 @@ function agentModelGate(ctx) {
     }
     (0, state_1.ensureRunAgentClaim)(cwd, state, role, raw, {
         toolName,
-        agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+        agentType: (0, coerce_1.asString)(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
         model: passedModel,
     });
     return (0, result_1.noop)();

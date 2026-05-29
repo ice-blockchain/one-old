@@ -38,13 +38,11 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.parseCodexJsonlFile = parseCodexJsonlFile;
+const obj_1 = require("../../shared/obj");
 const fs = __importStar(require("fs"));
 const emptyStats_1 = require("./emptyStats");
 const emptyTrafficOneEstimate_1 = require("./emptyTrafficOneEstimate");
 const lib_1 = require("./lib");
-function obj(value) {
-    return value && typeof value === 'object' && !Array.isArray(value) ? value : null;
-}
 function str(value) {
     return typeof value === 'string' ? value : undefined;
 }
@@ -69,7 +67,7 @@ function parseCodexJsonlFile(filePath) {
             continue;
         let parsed;
         try {
-            parsed = obj(JSON.parse(line));
+            parsed = (0, obj_1.obj)(JSON.parse(line));
         }
         catch {
             continue;
@@ -84,7 +82,7 @@ function parseCodexJsonlFile(filePath) {
                 stats.lastAt = ts;
         }
         if (parsed.type === 'session_meta') {
-            const payload = obj(parsed.payload) || {};
+            const payload = (0, obj_1.obj)(parsed.payload) || {};
             session = {
                 ...session,
                 id: str(payload.id) ?? session.id,
@@ -95,13 +93,13 @@ function parseCodexJsonlFile(filePath) {
                 modelProvider: str(payload.model_provider) ?? session.modelProvider,
                 model: str(payload.model) ?? session.model,
             };
-            trafficOne.instructionApproxTokens += (0, lib_1.estimateTrafficOneInstructionTokens)(obj(payload.base_instructions)?.text);
-            trafficOne.instructionApproxTokens += (0, lib_1.estimateTrafficOneInstructionTokens)(obj(payload.instructions)?.text);
-            trafficOne.instructionApproxTokens += (0, lib_1.estimateTrafficOneInstructionTokens)(obj(payload.user_instructions)?.text);
+            trafficOne.instructionApproxTokens += (0, lib_1.estimateTrafficOneInstructionTokens)((0, obj_1.obj)(payload.base_instructions)?.text);
+            trafficOne.instructionApproxTokens += (0, lib_1.estimateTrafficOneInstructionTokens)((0, obj_1.obj)(payload.instructions)?.text);
+            trafficOne.instructionApproxTokens += (0, lib_1.estimateTrafficOneInstructionTokens)((0, obj_1.obj)(payload.user_instructions)?.text);
             continue;
         }
         if (parsed.type === 'response_item') {
-            const payload = obj(parsed.payload) || {};
+            const payload = (0, obj_1.obj)(parsed.payload) || {};
             if (payload.type === 'function_call') {
                 const name = str(payload.name) || str(payload.tool_name) || str(payload.call_name) || 'function_call';
                 stats.byTool[name] = (stats.byTool[name] || 0) + 1;
@@ -113,10 +111,10 @@ function parseCodexJsonlFile(filePath) {
             continue;
         }
         if (parsed.type === 'event_msg') {
-            const payload = obj(parsed.payload) || {};
+            const payload = (0, obj_1.obj)(parsed.payload) || {};
             if (payload.type !== 'token_count')
                 continue;
-            const info = obj(payload.info) || {};
+            const info = (0, obj_1.obj)(payload.info) || {};
             stats.messages += 1;
             if (typeof info.model_context_window === 'number' && Number.isFinite(info.model_context_window)) {
                 stats.modelContextWindow = info.model_context_window;

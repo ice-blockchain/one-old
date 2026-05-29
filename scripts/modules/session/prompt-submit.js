@@ -168,7 +168,7 @@ function runUserPromptSubmit(ctx) {
                 FRONTEND: classification.frontend,
                 BACKEND: classification.backend,
                 MOBILE: classification.mobile.enabled ? classification.mobile.framework : 'none',
-                CODEX_FALLBACK: (0, directives_1.codexDefaultModeFallbackDirective)(block),
+                CURRENT_THREAD_FALLBACK: (0, directives_1.currentThreadFallbackDirective)(block),
                 HOST_POPUP: (0, directives_1.hostPopupInstruction)(block),
                 NEXT_STEP: (0, fallbacks_1.nextOnboardingStepPrompt)(normalizedState, 'user-prompt', block),
             })

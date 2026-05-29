@@ -13,7 +13,7 @@ import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { classifyPromptForStack, detectMode } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import {
-  codexDefaultModeFallbackDirective,
+  currentThreadFallbackDirective,
   hostPopupInstruction,
   onboardingReminderShort,
 } from '../../shared/onboarding/directives';
@@ -159,7 +159,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
         FRONTEND: classification.frontend,
         BACKEND: classification.backend,
         MOBILE: classification.mobile.enabled ? classification.mobile.framework : 'none',
-        CODEX_FALLBACK: codexDefaultModeFallbackDirective(block),
+        CURRENT_THREAD_FALLBACK: currentThreadFallbackDirective(block),
         HOST_POPUP: hostPopupInstruction(block),
         NEXT_STEP: nextOnboardingStepPrompt(normalizedState, 'user-prompt', block),
       })

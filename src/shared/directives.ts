@@ -89,8 +89,8 @@ export function postWriteIncompleteWarning(args: IncompleteWarningArgs): string 
     if (lines.length > 2) lines.push('');
     lines.push(
       'You also did not set local `codeGraphProvider`. This is REQUIRED —',
-      'no skip, no default. Ask with the host popup tool (Codex `request_user_input`,',
-      'Claude Code `AskUserQuestion`, or Cursor task-UI) when available:',
+      "no skip, no default. Ask with the host's interactive prompt/popup tool",
+      'when available:',
       'header "Code Graph"; question "Which provider should we use for the codebase graph?";',
       'if no popup tool is available, ask in chat with numbered options and stop for the typed reply;',
       `${providers.map((p) => `\`${p}\``).join(' or ')}. The graph reduces token`,

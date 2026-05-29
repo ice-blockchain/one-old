@@ -7,7 +7,7 @@
 // SessionStart context, not deny enforcement.
 
 import { defaultBackendValue, pitchBackendLabel, pitchDeployLabel } from '../config';
-import { codexDefaultModeFallbackDirective, hostPopupInstruction, openCodePopupBlock } from './directives';
+import { currentThreadFallbackDirective, hostPopupInstruction, openCodePopupBlock } from './directives';
 import type { OnboardingBlock } from './fallbacks';
 import { performancePopupBlock, teamConfirmationPopupBlock } from './perf-directives';
 
@@ -17,7 +17,7 @@ export function onboardingDirectiveNewProject(block: OnboardingBlock): string {
     BACKEND_LABEL: pitchBackendLabel(),
     DEPLOY_LABEL: pitchDeployLabel(),
     HOST_POPUP: hostPopupInstruction(block),
-    CODEX_FALLBACK: codexDefaultModeFallbackDirective(block),
+    CURRENT_THREAD_FALLBACK: currentThreadFallbackDirective(block),
     OPENCODE_POPUP: openCodePopupBlock(block),
     PERFORMANCE_POPUP: performancePopupBlock(block),
     TEAM_CONFIRMATION_POPUP: teamConfirmationPopupBlock(block),
