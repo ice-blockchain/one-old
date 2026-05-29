@@ -150,15 +150,13 @@ function runSessionStartAuthed(ctx) {
         const spec = (0, stacks_1.stackSpecForState)(state);
         const modeRulePath = `rules/modes/${mode}.md`;
         const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
-        const { body, dropped } = (0, packing_1.packBundle)(root, modeMandatory, spec.optional, config_1.BUDGET_CHARS);
+        const { body } = (0, packing_1.packBundle)(root, modeMandatory, spec.optional);
         const copied = (0, skill_filters_1.copyActiveSkills)(state);
         const skillDirective = (0, skill_filters_1.pruneSkillsDirective)(state, (0, skill_filters_1.listAllSkills)());
         stampMaterialization(cwd, state);
         let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
         if (copied > 0)
             header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
-        if (dropped.length > 0)
-            header += `[${dropped.length} rule file(s) deferred to path-scoped attach]\n`;
         header += (0, session_start_lib_1.tokenEconomyBanner)(cwd);
         if (skillDirective)
             header += skillDirective;
@@ -192,7 +190,7 @@ function runSessionStartAuthed(ctx) {
         const spec = (0, stacks_1.stackSpecForState)(state);
         const modeRulePath = `rules/modes/${mode}.md`;
         const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
-        const { body, dropped } = (0, packing_1.packBundle)(root, modeMandatory, spec.optional, config_1.BUDGET_CHARS);
+        const { body } = (0, packing_1.packBundle)(root, modeMandatory, spec.optional);
         const copied = (0, skill_filters_1.copyActiveSkills)(state);
         const allSkills = (0, skill_filters_1.listAllSkills)();
         stampMaterialization(cwd, state);
@@ -202,8 +200,6 @@ function runSessionStartAuthed(ctx) {
         let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
         if (copied > 0)
             header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
-        if (dropped.length > 0)
-            header += `[${dropped.length} rule file(s) deferred]\n`;
         header += (0, session_start_lib_1.tokenEconomyBanner)(cwd);
         if (skillDirective)
             header += skillDirective;
@@ -233,7 +229,7 @@ function runSessionStartAuthed(ctx) {
     // ── Flow 3 — new project (or undetectable existing) → onboarding directive ──
     const directive = (0, session_directive_1.onboardingDirectiveNewProject)(block);
     const spec = stacks_1.STACKS.minimal;
-    const { body } = (0, packing_1.packBundle)(root, spec.mandatory, spec.optional, Math.floor(config_1.BUDGET_CHARS / 2));
+    const { body } = (0, packing_1.packBundle)(root, spec.mandatory, spec.optional);
     if (!obj(state.toolchain))
         state.toolchain = (0, toolchain_1.initializeToolchainState)();
     (0, state_1.writeState)(cwd, state);

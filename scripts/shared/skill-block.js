@@ -70,11 +70,22 @@ function makeSkillBlock(resolvePluginRoot) {
     return (moduleId, blockName, vars, fallback = '') => {
         let source = cache.get(moduleId);
         if (source === undefined) {
-            try {
-                source = fs.readFileSync(path.join(resolvePluginRoot(), 'src', 'modules', moduleId, 'skill', 'SKILL.md'), 'utf8');
-            }
-            catch {
-                source = '';
+            // Prefer the authoring source (src/, always current in dev + present when
+            // src/ ships); fall back to the compiled copy (scripts/, shipped by the
+            // build) so wording resolves even when src/ is stripped from an install.
+            const root = resolvePluginRoot();
+            source = '';
+            for (const base of ['src', 'scripts']) {
+                try {
+                    const text = fs.readFileSync(path.join(root, base, 'modules', moduleId, 'skill', 'SKILL.md'), 'utf8');
+                    if (text) {
+                        source = text;
+                        break;
+                    }
+                }
+                catch {
+                    // try the next candidate
+                }
             }
             cache.set(moduleId, source);
         }

@@ -50,7 +50,7 @@ import * as fs from 'fs';
 type Rec = Record<string, unknown>;
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
+const block: OnboardingBlock = (name, vars) => skillBlock('onboarding-gate', name, vars);
 const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
 
 // Prepend a note (e.g. the login-success line) to a context result, leaving
@@ -62,8 +62,6 @@ function prependContext(prefix: string, result: HookResult): HookResult {
     ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
   });
 }
-
-const TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK = 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.';
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
@@ -119,7 +117,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // ── Team-mode-change approval recorded from the prompt ──
   const teamModeApproval = updateTeamModeChangeApprovalFromPrompt(cwd, normalizedState, promptText);
   if (teamModeApproval.recorded) {
-    const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized', {}, TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK)}`;
+    const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized', {})}`;
     return context(additionalContext, { systemMessage: 'traffic-one [team mode switch authorized]' });
   }
 
@@ -164,7 +162,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
         CODEX_FALLBACK: codexDefaultModeFallbackDirective(block),
         HOST_POPUP: hostPopupInstruction(block),
         NEXT_STEP: nextOnboardingStepPrompt(normalizedState, 'user-prompt', block),
-      }, firstPromptClassificationFallback(classification))
+      })
       : nextOnboardingStepPrompt(normalizedState, 'user-prompt', block);
     const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${classificationContext ? `${classificationContext}\n\n` : ''}${reminder}`;
     return context(additionalContext, { systemMessage: 'traffic-one [onboarding incomplete]', ...(promptRequest ? { promptRequest } : {}) });
@@ -177,26 +175,4 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   return context(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
-}
-
-interface Classification {
-  stack: string;
-  frontend: string;
-  backend: string;
-  mobile: { enabled: boolean; framework: string };
-}
-
-function firstPromptClassificationFallback(c: Classification): string {
-  return [
-    '[FIRST PROMPT STACK CLASSIFICATION]',
-    `stack=${c.stack}`,
-    `frontend=${c.frontend}`,
-    `backend=${c.backend}`,
-    `mobile=${c.mobile.enabled ? c.mobile.framework : 'none'}`,
-    'mode=new-project: complete Traffic One onboarding in the current thread before implementation. If no popup/input tool is available, ask fallback chat questions and stop for typed answers.',
-    codexDefaultModeFallbackDirective(block),
-    `Onboarding choices must be prompt popups. ${hostPopupInstruction(block)} Do not print numbered option lists in chat when a popup tool is available; never choose a default or continue implementation while an answer is pending.`,
-    'Required order: Agent mode (High/Balanced/Low), Team role/model confirmation for High/Balanced, success message, rich MVP-context questionnaire, Mobile App, then Code Graph provider.',
-    'Ask only the next unresolved onboarding step below:',
-  ].join('\n');
 }

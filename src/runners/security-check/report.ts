@@ -1,0 +1,77 @@
+// src/runners/security-check/report.ts
+// Report IO: write the JSON + Markdown reports and stamp a passing run into state.
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { type Rec, type Report } from './constants';
+import { relativePath, timestampSlug } from './helpers';
+import { legacyStatePath, statePath } from '../../shared/state';
+import { pluginVersion } from '../../shared/version';
+
+export interface ReportPaths { jsonPath: string; markdownPath: string; relativeJsonPath: string; relativeMarkdownPath: string; }
+
+export function writeReports(cwd: string, reportDir: string, report: Report): ReportPaths {
+  fs.mkdirSync(reportDir, { recursive: true });
+  const slug = timestampSlug(report.generatedAt);
+  const jsonPath = path.join(reportDir, `security-check-${slug}.json`);
+  const markdownPath = path.join(reportDir, `security-check-${slug}.md`);
+  fs.writeFileSync(jsonPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  fs.writeFileSync(markdownPath, renderMarkdownReport(report), 'utf8');
+  return {
+    jsonPath,
+    markdownPath,
+    relativeJsonPath: relativePath(cwd, jsonPath),
+    relativeMarkdownPath: relativePath(cwd, markdownPath),
+  };
+}
+
+export function renderMarkdownReport(report: Report): string {
+  const blockers = report.issues.filter((issue) => issue.severity === 'high');
+  const warnings = report.issues.filter((issue) => issue.severity !== 'high');
+  const lines = [
+    '# Traffic One Pre-Deployment Security Check',
+    '',
+    `Status: ${report.status.toUpperCase()}`,
+    `Generated: ${report.generatedAt}`,
+    `Fingerprint: ${report.fingerprint.fingerprint}`,
+    '',
+    `High findings: ${blockers.length}`,
+    `Warnings: ${warnings.length}`,
+    '',
+  ];
+  for (const issue of report.issues) {
+    const location = issue.file ? `${issue.file}${issue.line ? `:${issue.line}` : ''}` : 'project';
+    lines.push(`- [${issue.severity}] ${issue.category} — ${location} — ${issue.message}`);
+    if (issue.remediation) {
+      lines.push(`  Fix: ${issue.remediation}`);
+    }
+  }
+  if (report.issues.length === 0) {
+    lines.push('No findings.');
+  }
+  lines.push('');
+  return `${lines.join('\n')}\n`;
+}
+
+export function stampState(cwd: string, report: Report, relativeReportPath: string): void {
+  const nextStatePath = statePath(cwd);
+  const oldStatePath = legacyStatePath(cwd);
+  let state: Rec = {};
+  try {
+    const readableStatePath = fs.existsSync(nextStatePath) ? nextStatePath : oldStatePath;
+    state = JSON.parse(fs.readFileSync(readableStatePath, 'utf8')) as Rec;
+  } catch {
+    state = {};
+  }
+  state.lastSecurityCheckAt = report.generatedAt;
+  state.lastSecurityCheckStatus = 'passed';
+  state.lastSecurityCheckFingerprint = report.fingerprint.fingerprint;
+  state.lastSecurityCheckReport = relativeReportPath;
+  delete state.pluginVersion;
+  const version = pluginVersion();
+  if (version) {
+    state.version = version;
+  }
+  fs.mkdirSync(path.dirname(nextStatePath), { recursive: true });
+  fs.writeFileSync(nextStatePath, `${JSON.stringify(state, null, 2)}\n`, 'utf8');
+}

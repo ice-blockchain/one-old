@@ -22,19 +22,5 @@ export function onboardingDirectiveNewProject(block: OnboardingBlock): string {
     PERFORMANCE_POPUP: performancePopupBlock(block),
     TEAM_CONFIRMATION_POPUP: teamConfirmationPopupBlock(block),
   };
-  const fallback = [
-    '═══ traffic-one — FIRST-RUN ONBOARDING (new project) ═══',
-    '',
-    `New project. Recommend the default stack (react-vite + ${vars.DEFAULT_BACKEND}) and complete Traffic One onboarding in the current thread before scaffolding/installs/file writes.`,
-    'Required popup order (host popup tool when available; else plain-chat fallback and stop): OpenCode opt-in → Performance (High/Balanced/Low) → Team Confirmation (mandatory for Balanced/High) → success message → project context → Mobile App → Code Graph provider. Never auto-answer a popup.',
-    '',
-    vars.OPENCODE_POPUP,
-    '',
-    vars.PERFORMANCE_POPUP,
-    '',
-    vars.TEAM_CONFIRMATION_POPUP,
-    '',
-    'After the rule bundle loads, scaffold the Turborepo workspace per rules/modes/new-project.md before any feature code. Write the full onboarding schema to .traffic-one/.one.json (relative path).',
-  ].join('\n');
-  return block('onboarding-directive-new-project', vars, fallback);
+  return block('onboarding-directive-new-project', vars);
 }

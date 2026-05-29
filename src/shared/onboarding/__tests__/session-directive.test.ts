@@ -7,8 +7,7 @@ import { makeSkillBlock } from '../../skill-block';
 import { pluginRoot } from '../../paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const skill: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
-const verbatim: OnboardingBlock = (_name, _vars, fallback) => fallback;
+const skill: OnboardingBlock = (name, vars) => skillBlock('onboarding-gate', name, vars);
 
 test('onboardingDirectiveNewProject (skill) is the full first-run directive with embedded popups', () => {
   const out = onboardingDirectiveNewProject(skill);
@@ -21,19 +20,9 @@ test('onboardingDirectiveNewProject (skill) is the full first-run directive with
   assert.ok(out.includes('request_user_input')); // host popup instruction
   // pitch labels filled
   assert.ok(out.includes('Supabase')); // backend label
-  // later sections present
-  assert.ok(out.includes('MOBILE DECISION PREFLIGHT'));
-  assert.ok(out.includes('CODEBASE GRAPH PROVIDER PREFLIGHT'));
-  assert.ok(out.includes('SCAFFOLD THE PROJECT STRUCTURE'));
+  // remaining procedure/scaffold now point at the single-source rules
+  assert.ok(out.includes('rules/common/onboarding.md'));
+  assert.ok(out.includes('rules/modes/new-project.md'));
   // no unresolved template vars
-  assert.ok(!out.includes('{{'));
-});
-
-test('onboardingDirectiveNewProject (verbatim fallback) still composes the popups', () => {
-  const out = onboardingDirectiveNewProject(verbatim);
-  assert.ok(out.includes('FIRST-RUN ONBOARDING (new project)'));
-  assert.ok(out.includes('OPENCODE DELEGATION PREFLIGHT'));
-  assert.ok(out.includes('AGENT PERFORMANCE PREFLIGHT'));
-  assert.ok(out.includes('TEAM CONFIRMATION PREFLIGHT'));
   assert.ok(!out.includes('{{'));
 });

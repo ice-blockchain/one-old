@@ -48,10 +48,6 @@ export function nextLocalPreferenceStep(state: unknown): LocalPreferenceStep | n
   return null;
 }
 
-export function hasMissingLocalPreferences(state: unknown): boolean {
-  return nextLocalPreferenceStep(state) !== null;
-}
-
 export interface LocalPreferencePrompt {
   step: LocalPreferenceStep;
   fallbackText: string;

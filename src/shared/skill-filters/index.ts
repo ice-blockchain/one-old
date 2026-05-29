@@ -223,7 +223,3 @@ export function copyActiveSkills(stackOrState: unknown): number {
   }
   return copied;
 }
-
-// Deprecated no-op shims (kept for export-surface compatibility).
-export const pruneCacheSkills = (): number => 0;
-export const restoreDisabledSkills = (): number => 0;

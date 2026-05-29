@@ -62,7 +62,7 @@ const auth_choice_1 = require("./auth-choice");
 const session_start_1 = require("./session-start");
 const fs = __importStar(require("fs"));
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
-const block = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
+const block = (name, vars) => skillBlock('onboarding-gate', name, vars);
 const sessionBlock = (name, vars = {}) => skillBlock('session', name, vars);
 // Prepend a note (e.g. the login-success line) to a context result, leaving
 // non-context results untouched.
@@ -74,7 +74,6 @@ function prependContext(prefix, result) {
         ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
     });
 }
-const TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK = 'The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.';
 function runUserPromptSubmit(ctx) {
     const cwd = ctx.cwd;
     if ((0, authoring_root_1.isPluginAuthoringRoot)(cwd))
@@ -131,7 +130,7 @@ function runUserPromptSubmit(ctx) {
     // ── Team-mode-change approval recorded from the prompt ──
     const teamModeApproval = (0, team_mode_approval_1.updateTeamModeChangeApprovalFromPrompt)(cwd, normalizedState, promptText);
     if (teamModeApproval.recorded) {
-        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized', {}, TEAM_MODE_SWITCH_AUTHORIZED_FALLBACK)}`;
+        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized', {})}`;
         return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [team mode switch authorized]' });
     }
     const validStack = Boolean(state.stack && (0, config_1.isKnownStack)(state.stack));
@@ -172,7 +171,7 @@ function runUserPromptSubmit(ctx) {
                 CODEX_FALLBACK: (0, directives_1.codexDefaultModeFallbackDirective)(block),
                 HOST_POPUP: (0, directives_1.hostPopupInstruction)(block),
                 NEXT_STEP: (0, fallbacks_1.nextOnboardingStepPrompt)(normalizedState, 'user-prompt', block),
-            }, firstPromptClassificationFallback(classification))
+            })
             : (0, fallbacks_1.nextOnboardingStepPrompt)(normalizedState, 'user-prompt', block);
         const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${classificationContext ? `${classificationContext}\n\n` : ''}${reminder}`;
         return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [onboarding incomplete]', ...(promptRequest ? { promptRequest } : {}) });
@@ -183,18 +182,4 @@ function runUserPromptSubmit(ctx) {
         return (0, result_1.context)(materialized.context, { systemMessage: materialized.systemMessage });
     }
     return (0, result_1.context)(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
-}
-function firstPromptClassificationFallback(c) {
-    return [
-        '[FIRST PROMPT STACK CLASSIFICATION]',
-        `stack=${c.stack}`,
-        `frontend=${c.frontend}`,
-        `backend=${c.backend}`,
-        `mobile=${c.mobile.enabled ? c.mobile.framework : 'none'}`,
-        'mode=new-project: complete Traffic One onboarding in the current thread before implementation. If no popup/input tool is available, ask fallback chat questions and stop for typed answers.',
-        (0, directives_1.codexDefaultModeFallbackDirective)(block),
-        `Onboarding choices must be prompt popups. ${(0, directives_1.hostPopupInstruction)(block)} Do not print numbered option lists in chat when a popup tool is available; never choose a default or continue implementation while an answer is pending.`,
-        'Required order: Agent mode (High/Balanced/Low), Team role/model confirmation for High/Balanced, success message, rich MVP-context questionnaire, Mobile App, then Code Graph provider.',
-        'Ask only the next unresolved onboarding step below:',
-    ].join('\n');
 }

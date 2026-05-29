@@ -16,28 +16,23 @@ import {
 import { makeSkillBlock } from '../../skill-block';
 import { pluginRoot } from '../../paths';
 
-// Real skill block bound to the onboarding-gate module (reads its SKILL.md).
+// Single source of truth: the real skill block bound to the onboarding-gate
+// module (reads its SKILL.md). The wording lives only there now.
 const skillBlock = makeSkillBlock(pluginRoot);
-const skill: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
-// Verbatim-fallback path: ignore the skill, return the in-code fallback.
-const verbatim: OnboardingBlock = (_name, _vars, fallback) => fallback;
+const skill: OnboardingBlock = (name, vars) => skillBlock('onboarding-gate', name, vars);
 
-test('openCodeChatFallback renders the install command (skill + verbatim agree)', () => {
-  for (const block of [skill, verbatim]) {
-    const out = openCodeChatFallback(block);
-    assert.ok(out.includes(OPEN_CODE_INSTALL));
-    assert.ok(out.includes('Enable OpenCode delegation'));
-  }
+test('openCodeChatFallback renders the install command', () => {
+  const out = openCodeChatFallback(skill);
+  assert.ok(out.includes(OPEN_CODE_INSTALL));
+  assert.ok(out.includes('Enable OpenCode delegation'));
 });
 
 test('projectContextChatFallback fills original prompt + dynamic domain questions', () => {
   const state = { projectContext: { originalPrompt: 'an online course academy' } };
-  for (const block of [skill, verbatim]) {
-    const out = projectContextChatFallback(state, block);
-    assert.ok(out.includes('an online course academy'));
-    assert.ok(out.includes('Learning platform specifics'));
-    assert.ok(out.includes('audience, coreFlows')); // answer keys joined
-  }
+  const out = projectContextChatFallback(state, skill);
+  assert.ok(out.includes('an online course academy'));
+  assert.ok(out.includes('Learning platform specifics'));
+  assert.ok(out.includes('audience, coreFlows')); // answer keys joined
   // no original prompt → no intro line, generic domain question
   const generic = projectContextChatFallback({}, skill);
   assert.ok(!generic.includes('Original request'));
@@ -45,12 +40,10 @@ test('projectContextChatFallback fills original prompt + dynamic domain question
 });
 
 test('teamConfirmationChatFallback renders the role line-up for the level', () => {
-  for (const block of [skill, verbatim]) {
-    const out = teamConfirmationChatFallback('high', null, block);
-    assert.ok(out.includes('HIGH mode'));
-    assert.ok(out.includes('senior-architect'));
-    assert.ok(out.includes('Approve'));
-  }
+  const out = teamConfirmationChatFallback('high', null, skill);
+  assert.ok(out.includes('HIGH mode'));
+  assert.ok(out.includes('senior-architect'));
+  assert.ok(out.includes('Approve'));
 });
 
 test('teamConfirmationPromptContext embeds the chat fallback + a source-specific note', () => {
@@ -72,13 +65,11 @@ test('nextOnboardingStepPromptAndRequest routes to the first unresolved step', (
 });
 
 test('gate deny-reason composers embed the next-step prompt / context', () => {
-  for (const block of [skill, verbatim]) {
-    const reason = onboardingGateFallbackReason({ mode: 'new-project' }, block);
-    assert.ok(reason.includes('onboarding gate: mode=new-project'));
-    assert.ok(reason.includes('OpenCode')); // the embedded next-step prompt
-    const team = teamConfirmationGateFallbackReason({ performance: { level: 'high' }, team: { mode: 'subagents' } }, block);
-    assert.ok(team.includes('lineup has not been approved'));
-    assert.ok(team.includes('Team Confirmation is still required'));
-    assert.ok(repairedMaterializationDenyReason(block).includes('repaired/materialized before this tool use'));
-  }
+  const reason = onboardingGateFallbackReason({ mode: 'new-project' }, skill);
+  assert.ok(reason.includes('onboarding gate: mode=new-project'));
+  assert.ok(reason.includes('OpenCode')); // the embedded next-step prompt
+  const team = teamConfirmationGateFallbackReason({ performance: { level: 'high' }, team: { mode: 'subagents' } }, skill);
+  assert.ok(team.includes('lineup has not been approved'));
+  assert.ok(team.includes('Team Confirmation is still required'));
+  assert.ok(repairedMaterializationDenyReason(skill).includes('repaired/materialized before this tool use'));
 });

@@ -10,14 +10,12 @@ import { templatePath } from './stacks/template-path';
 export interface PackResult {
   body: string;
   included: string[];
-  dropped: string[];
 }
 
 export function packBundle(
   root: string,
   mandatory: readonly string[],
   optional?: readonly string[],
-  _budget?: number,
 ): PackResult {
   const lines = [
     '## Active rules (read on demand)',
@@ -42,7 +40,7 @@ export function packBundle(
       included.push(rel);
     }
   }
-  return { body: `${lines.join('\n')}\n`, included, dropped: [] };
+  return { body: `${lines.join('\n')}\n`, included };
 }
 
 export function packRuleIndex(root: string, rules: readonly string[]): PackResult {
@@ -59,7 +57,7 @@ export function packRuleIndex(root: string, rules: readonly string[]): PackResul
     lines.push(`- .traffic-one/${rel}`);
     included.push(rel);
   }
-  return { body: `${lines.join('\n')}\n`, included, dropped: [] };
+  return { body: `${lines.join('\n')}\n`, included };
 }
 
 export function roleDigestName(role: unknown): string {
@@ -87,5 +85,5 @@ export function packFixCycleHeader(_cwd: string, role: string, runId: string, sp
     `4. Re-emit your digest at ${digestFile} when done.`,
     '',
   ];
-  return { body: `${lines.join('\n')}\n`, included: [], dropped: [] };
+  return { body: `${lines.join('\n')}\n`, included: [] };
 }

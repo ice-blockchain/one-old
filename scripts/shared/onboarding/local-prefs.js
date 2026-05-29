@@ -6,7 +6,6 @@
 // code graph provider before mutating work proceeds.
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.nextLocalPreferenceStep = nextLocalPreferenceStep;
-exports.hasMissingLocalPreferences = hasMissingLocalPreferences;
 exports.localPreferencePromptAndRequest = localPreferencePromptAndRequest;
 exports.localPreferenceContext = localPreferenceContext;
 const performance_1 = require("../performance");
@@ -38,9 +37,6 @@ function nextLocalPreferenceStep(state) {
     if (s.codeGraphProvider !== 'gitnexus' && s.codeGraphProvider !== 'graphify')
         return 'code-graph';
     return null;
-}
-function hasMissingLocalPreferences(state) {
-    return nextLocalPreferenceStep(state) !== null;
 }
 function localPreferencePromptAndRequest(state, source, block) {
     const step = nextLocalPreferenceStep(state);

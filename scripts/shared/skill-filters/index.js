@@ -38,7 +38,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.restoreDisabledSkills = exports.pruneCacheSkills = exports.SKILL_FILTERS = exports.BOOTSTRAP_SKILLS = void 0;
+exports.SKILL_FILTERS = exports.BOOTSTRAP_SKILLS = void 0;
 exports.activeSkillsFor = activeSkillsFor;
 exports.pruneSkillsDirective = pruneSkillsDirective;
 exports.listAllSkills = listAllSkills;
@@ -269,8 +269,3 @@ function copyActiveSkills(stackOrState) {
     }
     return copied;
 }
-// Deprecated no-op shims (kept for export-surface compatibility).
-const pruneCacheSkills = () => 0;
-exports.pruneCacheSkills = pruneCacheSkills;
-const restoreDisabledSkills = () => 0;
-exports.restoreDisabledSkills = restoreDisabledSkills;

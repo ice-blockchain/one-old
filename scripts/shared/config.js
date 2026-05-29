@@ -36,7 +36,7 @@ var __importStar = (this && this.__importStar) || (function () {
     };
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.INFRA_CONFIG = exports.WEB_STACKS = exports.RN_STACKS = exports.LEGACY_STACK_ALIASES = exports.STACK_IDS = exports.BUDGET_CHARS = exports.LEGACY_LOCK_FILE = exports.LEGACY_STATE_FILE = exports.STATE_FILE = exports.STATE_BASENAME = exports.STATE_DIR = exports.MAX_STDIN = void 0;
+exports.INFRA_CONFIG = exports.WEB_STACKS = exports.RN_STACKS = exports.LEGACY_STACK_ALIASES = exports.STACK_IDS = exports.LEGACY_LOCK_FILE = exports.LEGACY_STATE_FILE = exports.STATE_FILE = exports.STATE_BASENAME = exports.STATE_DIR = exports.MAX_STDIN = void 0;
 exports.isKnownStack = isKnownStack;
 exports.defaultBackendValue = defaultBackendValue;
 exports.pitchBackendLabel = pitchBackendLabel;
@@ -48,7 +48,6 @@ exports.STATE_BASENAME = '.one.json';
 exports.STATE_FILE = path.join(exports.STATE_DIR, exports.STATE_BASENAME);
 exports.LEGACY_STATE_FILE = exports.STATE_FILE;
 exports.LEGACY_LOCK_FILE = '.claude-plugin-mode';
-exports.BUDGET_CHARS = 9500;
 exports.STACK_IDS = new Set(['minimal', 'default', 'custom-frontend', 'custom-backend', 'custom-stack']);
 exports.LEGACY_STACK_ALIASES = {
     'react-realtime-monorepo': 'default',

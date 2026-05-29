@@ -20,12 +20,11 @@ function tmpRoot(rels: string[]): string {
 test('packBundle emits pointers only for rule templates that exist', () => {
   const dir = tmpRoot(['rules/common/auth-gate.md', 'rules/core.md']);
   try {
-    const r = packBundle(dir, ['rules/common/auth-gate.md', 'rules/missing.md'], ['rules/core.md'], 9500);
+    const r = packBundle(dir, ['rules/common/auth-gate.md', 'rules/missing.md'], ['rules/core.md']);
     assert.deepEqual(r.included, ['rules/common/auth-gate.md', 'rules/core.md']);
     assert.ok(r.body.includes('- .traffic-one/rules/common/auth-gate.md'));
     assert.ok(!r.body.includes('rules/missing.md'));
     assert.ok(r.body.includes('### Optional'));
-    assert.deepEqual(r.dropped, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

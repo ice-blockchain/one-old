@@ -32,10 +32,7 @@ import { authChoiceAllowsContinue } from '../session/auth-choice';
 type Rec = Record<string, unknown>;
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
-
-const MARKER_GUARD_FALLBACK = 'Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. Do not add or refresh it in `.traffic-one/.one.json` manually.';
-const DOWNGRADE_GUARD_FALLBACK = 'Traffic One team mode guard: local Traffic One preferences currently record `team.mode="subagents"`. This write would switch the project to `team.mode="main-agent"`, but the latest user prompt did not explicitly say they no longer want subagents and want Low/main-agent mode. Ask the user to say that explicitly before rewriting local `performance.level="low"` and `team.mode="main-agent"`. Do not use `team.source="unavailable"` or a state rewrite as a workaround.';
+const block: OnboardingBlock = (name, vars) => skillBlock('onboarding-gate', name, vars);
 
 function obj(value: unknown): Rec | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Rec) : null;
@@ -61,10 +58,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
   normalizeState(effectiveState, mode);
 
   if (teamModeMarkerWriteViolation(cwd, toolName, toolInput)) {
-    return deny(block('team-mode-marker-guard', {}, MARKER_GUARD_FALLBACK));
+    return deny(block('team-mode-marker-guard', {}));
   }
   if (teamModeDowngradeViolation(cwd, toolName, toolInput, effectiveState)) {
-    return deny(block('team-mode-downgrade-guard', {}, DOWNGRADE_GUARD_FALLBACK));
+    return deny(block('team-mode-downgrade-guard', {}));
   }
 
   // The model is allowed to write the canonical state file itself.

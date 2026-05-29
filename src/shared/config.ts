@@ -10,7 +10,6 @@ export const STATE_BASENAME = '.one.json';
 export const STATE_FILE = path.join(STATE_DIR, STATE_BASENAME);
 export const LEGACY_STATE_FILE = STATE_FILE;
 export const LEGACY_LOCK_FILE = '.claude-plugin-mode';
-export const BUDGET_CHARS = 9500;
 
 export const STACK_IDS = new Set(['minimal', 'default', 'custom-frontend', 'custom-backend', 'custom-stack']);
 

@@ -43,7 +43,7 @@ exports.packFixCycleHeader = packFixCycleHeader;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const template_path_1 = require("./stacks/template-path");
-function packBundle(root, mandatory, optional, _budget) {
+function packBundle(root, mandatory, optional) {
     const lines = [
         '## Active rules (read on demand)',
         '',
@@ -69,7 +69,7 @@ function packBundle(root, mandatory, optional, _budget) {
             included.push(rel);
         }
     }
-    return { body: `${lines.join('\n')}\n`, included, dropped: [] };
+    return { body: `${lines.join('\n')}\n`, included };
 }
 function packRuleIndex(root, rules) {
     const lines = [
@@ -86,7 +86,7 @@ function packRuleIndex(root, rules) {
         lines.push(`- .traffic-one/${rel}`);
         included.push(rel);
     }
-    return { body: `${lines.join('\n')}\n`, included, dropped: [] };
+    return { body: `${lines.join('\n')}\n`, included };
 }
 function roleDigestName(role) {
     if (!role || typeof role !== 'string')
@@ -113,5 +113,5 @@ function packFixCycleHeader(_cwd, role, runId, spawnIndex) {
         `4. Re-emit your digest at ${digestFile} when done.`,
         '',
     ];
-    return { body: `${lines.join('\n')}\n`, included: [], dropped: [] };
+    return { body: `${lines.join('\n')}\n`, included: [] };
 }
