@@ -154,7 +154,7 @@ export function codexSessionIdFromFile(filePath: string): string {
 
 export function looksTrafficOneRelated(text: unknown): boolean {
   if (typeof text !== 'string' || text.length === 0) return false;
-  return /\btraffic-one\b|Traffic One|\.traffic-one|AGENTS\.md|CLAUDE\.md|hook-runtime|skills-templates|rules\/common|rules\/frontend|token-report\.cjs/.test(text);
+  return /\btraffic-one\b|Traffic One|\.traffic-one|AGENTS\.md|CLAUDE\.md|hook-runtime|skills-catalog|rules\/common|rules\/frontend|token-report\.cjs/.test(text);
 }
 
 export function addTrafficOneOutputEstimate(estimate: { directToolOutputTokens: number; directToolOutputs: number }, output: unknown): void {

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react/performance.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react/performance.md; run `npm run gen` to update. -->
 ---
-description: "React Performance Rules. Generated from rules-templates/frontend/react/performance.md."
+description: "React Performance Rules. Generated from rules/frontend/react/performance.md."
 globs: ["apps/**/src/pages/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui/**", "src/pages/**", "src/components/**", "src/features/**/components/**"]
 alwaysApply: false
 ---

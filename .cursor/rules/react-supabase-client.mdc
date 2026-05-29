@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react/supabase-client.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react/supabase-client.md; run `npm run gen` to update. -->
 ---
-description: "Supabase Client — never crash on missing env. Generated from rules-templates/frontend/react/supabase-client.md."
+description: "Supabase Client — never crash on missing env. Generated from rules/frontend/react/supabase-client.md."
 globs: ["**/lib/supabase.ts", "**/lib/supabase.tsx", "**/services/supabase.ts", "**/services/supabase.tsx", "apps/**/src/services/**", "packages/api-client/**"]
 alwaysApply: false
 ---

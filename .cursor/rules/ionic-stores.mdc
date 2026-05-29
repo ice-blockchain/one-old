@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/stores.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/stores.md; run `npm run gen` to update. -->
 ---
-description: "Ionic State Management. Generated from rules-templates/frontend/ionic/stores.md."
+description: "Ionic State Management. Generated from rules/frontend/ionic/stores.md."
 globs: ["apps/**/src/store/**", "apps/**/src/features/**/slice.ts", "apps/**/src/features/**/store.ts", "src/store/**", "src/features/**/slice.ts", "src/features/**/store.ts"]
 alwaysApply: false
 ---

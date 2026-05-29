@@ -13,6 +13,9 @@ Object.defineProperty(exports, "templatePath", { enumerable: true, get: function
 const COMMON_MANDATORY = [
     'rules/common/auth-gate.md',
     'rules/common/setup-gate.md',
+    'rules/common/project-routing.md',
+    'rules/common/onboarding.md',
+    'rules/common/skill-precedence.md',
     'rules/common/clean-code.md',
     'rules/common/execution-discipline.md',
     'rules/common/security.md',
@@ -113,32 +116,32 @@ const BACKEND_RULES = {
 };
 exports.AGENT_ROLE_BASE_RULES = {
     'senior-architect': [
-        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
+        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/project-routing.md', 'rules/common/onboarding.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
         'rules/common/stack-recommendations.md', 'rules/common/library-catalog.md', 'rules/common/project-memory.md',
         'rules/common/documentation.md', 'rules/common/senior-engineer-team.md', 'rules/common/codebase-graph.md',
         'rules/common/security.md', 'rules/common/agent-handoff-digests.md', 'rules/core.md',
     ],
     'senior-frontend': [
-        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
+        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
         'rules/common/security.md', 'rules/common/codebase-graph.md', 'rules/common/agent-handoff-digests.md',
         'rules/core.md', 'rules/frontend/i18n.md', 'rules/frontend/ui-quality.md', 'rules/frontend/typography.md',
     ],
     'senior-backend': [
-        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
+        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/clean-code.md', 'rules/common/execution-discipline.md',
         'rules/common/security.md', 'rules/common/quality-tooling.md', 'rules/common/codebase-graph.md',
         'rules/common/agent-handoff-digests.md', 'rules/core.md',
     ],
     'senior-reviewer': [
-        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/security.md', 'rules/common/quality-tooling.md',
+        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/security.md', 'rules/common/quality-tooling.md',
         'rules/common/clean-code.md', 'rules/common/execution-discipline.md', 'rules/common/agent-handoff-digests.md',
         'rules/common/codebase-graph.md',
     ],
     'senior-tester': [
-        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/quality-tooling.md', 'rules/common/execution-discipline.md',
+        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/quality-tooling.md', 'rules/common/execution-discipline.md',
         'rules/common/agent-handoff-digests.md', 'rules/common/codebase-graph.md', 'rules/frontend/testing.md',
     ],
     'senior-shipper': [
-        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/security.md', 'rules/common/git.md',
+        'rules/common/auth-gate.md', 'rules/common/setup-gate.md', 'rules/common/skill-precedence.md', 'rules/common/security.md', 'rules/common/git.md',
         'rules/common/agent-handoff-digests.md', 'rules/common/quality-tooling.md',
     ],
 };

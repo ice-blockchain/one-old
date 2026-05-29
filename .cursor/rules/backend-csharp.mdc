@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/csharp.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/csharp.md; run `npm run gen` to update. -->
 ---
-description: "C#/.NET Backend Rules. Generated from rules-templates/backend/csharp.md."
+description: "C#/.NET Backend Rules. Generated from rules/backend/csharp.md."
 globs: ["**/*.cs", "**/*.csx", "**/*.csproj", "**/appsettings*.json"]
 alwaysApply: false
 ---

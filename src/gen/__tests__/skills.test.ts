@@ -3,18 +3,19 @@ import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
 import { generatedSkillDocs } from '../emit/skills';
+import { claudePluginManifest, codexPluginManifest, cursorPluginManifest } from '../sources/product';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-test('generatedSkillDocs re-gathers both skill trees (107 templates + 3 bootstrap)', () => {
+test('generatedSkillDocs re-gathers both skill trees (104 catalog + 1 bootstrap)', () => {
   const docs = generatedSkillDocs(REPO_ROOT);
-  const templates = docs.filter((d) => d.relPath.startsWith(`skills-templates${path.sep}`));
+  const templates = docs.filter((d) => d.relPath.startsWith(`skills-catalog${path.sep}`));
   const bootstrap = docs.filter((d) => d.relPath.startsWith(`skills${path.sep}`));
-  assert.equal(templates.length, 107);
-  assert.equal(bootstrap.length, 3);
-  // The shared bootstrap skills exist in BOTH trees (distinct content).
-  assert.ok(docs.some((d) => d.relPath === path.join('skills', 'stack-setup', 'SKILL.md')));
-  assert.ok(docs.some((d) => d.relPath === path.join('skills-templates', 'stack-setup', 'SKILL.md')));
+  assert.equal(templates.length, 104);
+  assert.equal(bootstrap.length, 1);
+  // The bootstrap diagnostic skill lives once, in the host-read bootstrap tree only.
+  assert.ok(docs.some((d) => d.relPath === path.join('skills', 'traffic-one-doctor', 'SKILL.md')));
+  assert.ok(!docs.some((d) => d.relPath === path.join('skills-catalog', 'traffic-one-doctor', 'SKILL.md')));
   // Deterministic sort + non-empty content.
   const sorted = [...docs].map((d) => d.relPath).sort((a, b) => a.localeCompare(b));
   assert.deepEqual(docs.map((d) => d.relPath), sorted);
@@ -30,16 +31,24 @@ test('generated skills do not require architecture.md artifacts', () => {
   }
 });
 
-test('generated skills enforce local preferences before implementation', () => {
+test('generated skills carry no Traffic One governance boilerplate', () => {
   const docs = generatedSkillDocs(REPO_ROOT);
-  const detect = docs.find((d) => d.relPath === path.join('skills-templates', 'detect-project', 'SKILL.md'));
-  const page = docs.find((d) => d.relPath === path.join('skills-templates', 'create-page', 'SKILL.md'));
-  const stack = docs.find((d) => d.relPath === path.join('skills-templates', 'stack-setup', 'SKILL.md'));
-  assert.ok(detect);
-  assert.ok(page);
-  assert.ok(stack);
-  assert.match(detect.content, /Required order: OpenCode, Performance,\s*Team Confirmation for High\/Balanced, then Code Graph/);
-  assert.match(page.content, /rules\/common\/setup-gate\.md/);
-  assert.doesNotMatch(page.content, /local preferences contain `openCode`/);
-  assert.match(stack.content, /Existing projects do not ask MVP context or\s*Mobile App prompts/);
+  for (const doc of docs) {
+    assert.doesNotMatch(doc.content, /Traffic One precedence:/, doc.relPath);
+    assert.doesNotMatch(doc.content, /Traffic One setup gate:/, doc.relPath);
+    assert.doesNotMatch(doc.content, /Prerequisite: follow the shared/, doc.relPath);
+    // Skill files reference neither dissolved policy skill.
+    assert.doesNotMatch(doc.content, /`detect-project`/, doc.relPath);
+    assert.doesNotMatch(doc.content, /`stack-setup`/, doc.relPath);
+  }
+  // The two policy skills are gone from both trees entirely.
+  assert.ok(!docs.some((d) => d.relPath.includes('detect-project')));
+  assert.ok(!docs.some((d) => d.relPath.includes('stack-setup')));
+});
+
+test('all host manifests read the managed ./skills/ dir (per-stack filtering)', () => {
+  const version = '0.0.0-test';
+  for (const m of [claudePluginManifest(version), codexPluginManifest(version), cursorPluginManifest(version)]) {
+    assert.equal(m.skills, './skills/');
+  }
 });

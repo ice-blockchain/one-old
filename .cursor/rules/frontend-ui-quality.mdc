@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ui-quality.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ui-quality.md; run `npm run gen` to update. -->
 ---
-description: "UI Quality — design gate + material honesty. Generated from rules-templates/frontend/ui-quality.md."
+description: "UI Quality — design gate + material honesty. Generated from rules/frontend/ui-quality.md."
 globs: ["**/*.tsx", "**/*.jsx", "**/*.css", "**/*.scss", "**/tailwind.config.*", "**/globals.css", "**/global.css", "apps/**/src/**", "packages/ui/**", "packages/ui-native/**", "packages/tailwind-config/**"]
 alwaysApply: false
 ---

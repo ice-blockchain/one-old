@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/accessibility.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/accessibility.md; run `npm run gen` to update. -->
 ---
-description: "React Native Accessibility Rules. Generated from rules-templates/frontend/react-native/accessibility.md."
+description: "React Native Accessibility Rules. Generated from rules/frontend/react-native/accessibility.md."
 globs: ["apps/**/app/**", "apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
 alwaysApply: false
 ---

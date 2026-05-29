@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/kotlin.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/kotlin.md; run `npm run gen` to update. -->
 ---
-description: "Kotlin/JVM Backend Rules. Generated from rules-templates/backend/kotlin.md."
+description: "Kotlin/JVM Backend Rules. Generated from rules/backend/kotlin.md."
 globs: ["**/*.kt", "**/*.kts", "**/build.gradle", "**/build.gradle.kts"]
 alwaysApply: false
 ---

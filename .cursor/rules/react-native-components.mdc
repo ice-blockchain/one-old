@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/components.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/components.md; run `npm run gen` to update. -->
 ---
-description: "React Native Component Rules. Generated from rules-templates/frontend/react-native/components.md."
+description: "React Native Component Rules. Generated from rules/frontend/react-native/components.md."
 globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "packages/ui-native/**", "src/components/**", "src/features/**/components/**"]
 alwaysApply: false
 ---

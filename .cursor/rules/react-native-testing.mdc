@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/testing.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/testing.md; run `npm run gen` to update. -->
 ---
-description: "React Native Testing — Jest + RNTL + Maestro. Generated from rules-templates/frontend/react-native/testing.md."
+description: "React Native Testing — Jest + RNTL + Maestro. Generated from rules/frontend/react-native/testing.md."
 globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/.maestro/**", "apps/**/src/test/**", "packages/**/test/**"]
 alwaysApply: false
 ---

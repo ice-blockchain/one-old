@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/realtime.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/realtime.md; run `npm run gen` to update. -->
 ---
-description: "React Native Real-time Rules. Generated from rules-templates/frontend/react-native/realtime.md."
+description: "React Native Real-time Rules. Generated from rules/frontend/react-native/realtime.md."
 globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/use*Channel*.ts", "**/use*Channel*.tsx"]
 alwaysApply: false
 ---

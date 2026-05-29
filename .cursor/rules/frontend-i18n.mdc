@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/i18n.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/i18n.md; run `npm run gen` to update. -->
 ---
-description: "Frontend i18n Baseline. Generated from rules-templates/frontend/i18n.md."
+description: "Frontend i18n Baseline. Generated from rules/frontend/i18n.md."
 alwaysApply: true
 ---
 

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/styles.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/styles.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Styling Rules. Generated from rules-templates/frontend/ionic/styles.md."
+description: "Ionic Styling Rules. Generated from rules/frontend/ionic/styles.md."
 globs: ["apps/**/src/styles/**", "apps/**/tailwind.config.*", "apps/**/postcss.config.*", "packages/ui/**", "src/styles/**", "tailwind.config.*", "postcss.config.*"]
 alwaysApply: false
 ---

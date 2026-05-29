@@ -85,8 +85,8 @@ export interface Handler {
 export interface SkillRef {
   readonly id: string;
   readonly path: string; // relative to the module dir, e.g. "skill/SKILL.md"
-  readonly shipped?: boolean; // gathered into skills/ + skills-templates/ by gen
-  readonly bootstrap?: boolean; // one of the 4 always-present skills
+  readonly shipped?: boolean; // gathered into skills/ + skills-catalog/ by gen
+  readonly bootstrap?: boolean; // an always-present bootstrap skill (traffic-one-doctor)
 }
 
 export interface Subscription {

@@ -6,15 +6,15 @@ import { generatedRuleTemplates } from '../emit/rules';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-test('generatedRuleTemplates re-gathers the full nested rules-templates tree', () => {
+test('generatedRuleTemplates re-gathers the full nested rules tree', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
-  assert.equal(docs.length, 73);
+  assert.equal(docs.length, 76);
   const paths = new Set(docs.map((d) => d.relPath));
   // Root, common, and deeply-nested rule paths are all preserved exactly.
-  assert.ok(paths.has(path.join('rules-templates', 'core.md')));
-  assert.ok(paths.has(path.join('rules-templates', 'common', 'auth-gate.md')));
-  assert.ok(paths.has(path.join('rules-templates', 'common', 'setup-gate.md')));
-  assert.ok([...paths].some((p) => p.startsWith(path.join('rules-templates', 'frontend', 'react'))));
+  assert.ok(paths.has(path.join('rules', 'core.md')));
+  assert.ok(paths.has(path.join('rules', 'common', 'auth-gate.md')));
+  assert.ok(paths.has(path.join('rules', 'common', 'setup-gate.md')));
+  assert.ok([...paths].some((p) => p.startsWith(path.join('rules', 'frontend', 'react'))));
   // Output is sorted + every doc carries content.
   const sorted = [...docs].map((d) => d.relPath).sort((a, b) => a.localeCompare(b));
   assert.deepEqual(docs.map((d) => d.relPath), sorted);
@@ -32,12 +32,28 @@ test('generated rules do not require architecture.md artifacts', () => {
 
 test('setup-gate rule makes local preferences blocking', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
-  const setup = docs.find((d) => d.relPath === path.join('rules-templates', 'common', 'setup-gate.md'));
-  const existing = docs.find((d) => d.relPath === path.join('rules-templates', 'modes', 'existing-codebase.md'));
+  const setup = docs.find((d) => d.relPath === path.join('rules', 'common', 'setup-gate.md'));
+  const existing = docs.find((d) => d.relPath === path.join('rules', 'modes', 'existing-codebase.md'));
   assert.ok(setup);
   assert.ok(existing);
   assert.match(setup.content, /Before mutating Traffic One work, the setup gate must be clear/);
   assert.match(setup.content, /Existing-project order is OpenCode, Performance,\s*Team Confirmation for Balanced\/High, then Code Graph/);
   assert.match(existing.content, /rules\/common\/setup-gate\.md/);
   assert.doesNotMatch(existing.content, /non-blocking popup/);
+});
+
+test('new policy rules exist and carry their canonical text', () => {
+  const docs = generatedRuleTemplates(REPO_ROOT);
+  const find = (name: string) => docs.find((d) => d.relPath === path.join('rules', 'common', name));
+  const routing = find('project-routing.md');
+  const onboarding = find('onboarding.md');
+  const precedence = find('skill-precedence.md');
+  assert.ok(routing, 'project-routing.md missing');
+  assert.ok(onboarding, 'onboarding.md missing');
+  assert.ok(precedence, 'skill-precedence.md missing');
+  // onboarding carries the invariant moved off the dissolved stack-setup skill.
+  assert.match(onboarding.content, /Existing projects do not ask MVP context or\s*Mobile App prompts/);
+  // skill-precedence carries the precedence policy moved off every skill.
+  assert.match(precedence.content, /take precedence/);
+  assert.match(precedence.content, /Do not implement via any skill until the setup gate/);
 });

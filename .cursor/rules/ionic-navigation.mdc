@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/navigation.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/navigation.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Navigation Rules. Generated from rules-templates/frontend/ionic/navigation.md."
+description: "Ionic Navigation Rules. Generated from rules/frontend/ionic/navigation.md."
 globs: ["apps/**/src/App.tsx", "apps/**/src/routes.tsx", "apps/**/src/pages/**", "apps/**/src/features/**/routes/**", "src/App.tsx", "src/routes.tsx", "src/pages/**"]
 alwaysApply: false
 ---

@@ -7,7 +7,7 @@
 // Currently wired: the 5 manifests + .mcp.json + the 3 hook configs
 // (settings.json, hooks/hooks.json, hooks/hooks-cursor.json) + agents/ (from
 // the agent content modules) + .cursor/rules. The AGENTS.md regions + the
-// remaining content trees (skills, skills-templates, rules-templates) land here
+// remaining content trees (skills, skills-catalog, rules) land here
 // as their content modules + emitters are built.
 
 import { pluginRoot } from '../shared/paths';
@@ -25,7 +25,7 @@ export function runGen(opts: { check: boolean; root?: string }): GenRun {
   emitMcp(run);
   emitHooks(run);
   emitAgents(run); // before cursor-rules: the cursor mirror reads agents/
-  emitRules(run); // before cursor-rules: slugForSource reads rules-templates/
+  emitRules(run); // before cursor-rules: slugForSource reads rules/
   emitSkills(run);
   emitCursorRules(run);
   return run;

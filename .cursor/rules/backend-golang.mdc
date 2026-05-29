@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/golang.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/golang.md; run `npm run gen` to update. -->
 ---
-description: "Go Backend Rules. Generated from rules-templates/backend/golang.md."
+description: "Go Backend Rules. Generated from rules/backend/golang.md."
 globs: ["**/*.go", "**/go.mod", "**/go.sum"]
 alwaysApply: false
 ---

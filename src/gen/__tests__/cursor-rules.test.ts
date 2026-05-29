@@ -32,14 +32,14 @@ test('cursorFrontmatter emits description + globs + alwaysApply', () => {
 
 test('generatedCursorRules gathers rule + agent docs from the repo tree', () => {
   const docs = generatedCursorRules(REPO_ROOT);
-  // 73 rule templates + 6 agents (00-auth-required.mdc is hand-authored, not generated).
-  assert.equal(docs.length, 79);
+  // 76 rule templates + 6 agents (00-auth-required.mdc is hand-authored, not generated).
+  assert.equal(docs.length, 82);
   const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
   // common/auth-gate.md → auth-required.mdc (special slug).
   const authPath = path.join('.cursor', 'rules', 'auth-required.mdc');
   assert.ok(byPath.has(authPath));
-  assert.ok(byPath.get(authPath)?.startsWith('<!-- GENERATED FROM: rules-templates/common/auth-gate.md;'));
+  assert.ok(byPath.get(authPath)?.startsWith('<!-- GENERATED FROM: rules/common/auth-gate.md;'));
 
   // agents/senior-architect.md → 00-agent-senior-architect.mdc (always-on mirror).
   const agentPath = path.join('.cursor', 'rules', '00-agent-senior-architect.mdc');

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/performance.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/performance.md; run `npm run gen` to update. -->
 ---
-description: "Frontend Performance — framework-agnostic. Generated from rules-templates/frontend/performance.md."
+description: "Frontend Performance — framework-agnostic. Generated from rules/frontend/performance.md."
 globs: ["apps/**/src/**", "packages/ui/**", "src/**"]
 alwaysApply: false
 ---

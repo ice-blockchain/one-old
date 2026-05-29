@@ -1,5 +1,5 @@
 // src/gen/emit/cursor-rules.ts
-// Emits .cursor/rules/*.mdc from the rule templates (rules-templates/**) and the
+// Emits .cursor/rules/*.mdc from the rule templates (rules/**) and the
 // agent role docs (agents/*.md). Absorbs the legacy Cursor sync task. Byte-identical
 // to the committed .mdc files (golden-verified). The "GENERATED FROM … run
 // `npm run gen`" header is load-bearing for stale-rule detection + the snapshot.
@@ -102,7 +102,7 @@ function renderAgentRule(sourcePath: string, repoRoot: string): RuleDocument {
 }
 
 export function generatedCursorRules(repoRoot: string = pluginRoot()): RuleDocument[] {
-  const rulesRoot = path.join(repoRoot, 'rules-templates');
+  const rulesRoot = path.join(repoRoot, 'rules');
   const agentsRoot = path.join(repoRoot, 'agents');
   const ruleDocs = walkMarkdownFiles(rulesRoot, repoRoot).map((source) => renderCursorRule(source, repoRoot, rulesRoot));
   const agentDocs = walkMarkdownFiles(agentsRoot, repoRoot).map((source) => renderAgentRule(source, repoRoot));

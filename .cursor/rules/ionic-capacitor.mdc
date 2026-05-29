@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/capacitor.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/capacitor.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Capacitor Packaging Rules. Generated from rules-templates/frontend/ionic/capacitor.md."
+description: "Ionic Capacitor Packaging Rules. Generated from rules/frontend/ionic/capacitor.md."
 globs: ["capacitor.config.*", "ionic.config.json", "apps/**/capacitor.config.*", "apps/**/ionic.config.json", "apps/**/ios/**", "apps/**/android/**", "ios/**", "android/**"]
 alwaysApply: false
 ---

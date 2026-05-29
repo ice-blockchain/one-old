@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/quality-tooling.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/quality-tooling.md; run `npm run gen` to update. -->
 ---
-description: "Quality Tooling. Generated from rules-templates/common/quality-tooling.md."
+description: "Quality Tooling. Generated from rules/common/quality-tooling.md."
 globs: ["package.json", "**/package.json", "pnpm-workspace.yaml", "turbo.json", "tsconfig*.json", "**/tsconfig*.json", ".eslintrc*", "eslint.config.*", "prettier.config.*", ".prettierrc*", ".lintstagedrc*", "lint-staged.config.*", ".github/workflows/**"]
 alwaysApply: false
 ---

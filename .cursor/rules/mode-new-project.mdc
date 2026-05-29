@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/modes/new-project.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/modes/new-project.md; run `npm run gen` to update. -->
 ---
-description: "Mode: New Project — Real-time React Monorepo. Generated from rules-templates/modes/new-project.md."
+description: "Mode: New Project — Real-time React Monorepo. Generated from rules/modes/new-project.md."
 alwaysApply: false
 ---
 

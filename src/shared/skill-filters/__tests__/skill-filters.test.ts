@@ -11,7 +11,8 @@ import {
 
 test('activeSkillsFor(default state) unions common + react-vite + supabase', () => {
   const s = activeSkillsFor({ stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true });
-  assert.ok(s.has('auth'));
+  assert.ok(s.has('library-pick')); // a real _common skill
+  assert.ok(!s.has('auth')); // phantom auth is no longer listed
   assert.ok(s.has('project-memory'));
   assert.ok(s.has('create-component')); // react-vite
   assert.ok(s.has('postgres-patterns')); // supabase
@@ -32,7 +33,7 @@ test('activeSkillsFor accepts a stack string (legacy alias)', () => {
 test('pruneSkillsDirective lists active + flags wrong-stack skills', () => {
   const directive = pruneSkillsDirective(
     { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true },
-    ['auth', 'django-patterns'],
+    ['library-pick', 'django-patterns'],
   );
   assert.ok(directive.includes('[ACTIVE SKILLS for stack=default]'));
   assert.ok(directive.includes('[DO NOT INVOKE'));

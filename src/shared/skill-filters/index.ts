@@ -9,16 +9,16 @@ import * as path from 'path';
 
 import { isInPluginCache, pluginRoot } from '../paths';
 
-const SKILLS_TEMPLATES_DIR = 'skills-templates';
+const SKILLS_TEMPLATES_DIR = 'skills-catalog';
 const SKILLS_ACTIVE_DIR = 'skills';
 
-export const BOOTSTRAP_SKILLS = new Set(['auth', 'stack-setup', 'detect-project', 'traffic-one-doctor']);
+export const BOOTSTRAP_SKILLS = new Set(['traffic-one-doctor']);
 
 export const SKILL_FILTERS: Readonly<Record<string, Set<string>>> = {
   _common: new Set([
-    'auth', 'stack-setup', 'library-pick', 'context-budget', 'execution-discipline',
+    'library-pick', 'context-budget', 'execution-discipline',
     'git-commit', 'refactor', 'security-review', 'security-scan',
-    'detect-project', 'repo-scan', 'verification-loop', 'tdd-workflow',
+    'repo-scan', 'verification-loop', 'tdd-workflow',
     'coding-standards', 'i18n-text', 'ui-demo', 'design-system',
     'architecture-decision-records', 'deployment-patterns',
     'auto-documentation-generator', 'project-memory',

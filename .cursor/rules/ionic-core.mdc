@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/core.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/core.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Framework — Stack Core. Generated from rules-templates/frontend/ionic/core.md."
+description: "Ionic Framework — Stack Core. Generated from rules/frontend/ionic/core.md."
 globs: ["capacitor.config.*", "ionic.config.json", "apps/**/capacitor.config.*", "apps/**/ionic.config.json", "apps/**/src/**", "src/**"]
 alwaysApply: false
 ---

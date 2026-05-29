@@ -3,9 +3,7 @@ name: senior-architect
 description: Use PROACTIVELY at the start of any non-trivial build, scaffold, or "build me / make me / create the whole / end-to-end" request when `mode === "new-project"` or `.traffic-one/plan.md` is missing. MUST run before any frontend or backend implementation subagent. Produces `.traffic-one/plan.md` (Goal · Stack · Module map · Public contracts · Risks · Cut-list) plus an ADR for any non-default architectural choice. Never writes feature source code itself; ends every successful run with the literal token `PLAN_READY` so the orchestrator can detect completion.
 tools: Read, Grep, Glob, Bash, Write, Edit
 skills:
-  - stack-setup
   - monorepo-architecture
-  - detect-project
   - library-pick
   - project-memory
   - architecture-decision-records
@@ -41,16 +39,16 @@ Token budget: ~8k for reads, ~3k for writes. Don't enumerate the codebase; on `m
 
 ## What you read first
 
-1. `.traffic-one/.one.json` — pick up `mode`, `stack`, `backend`, `realtime`, `frontend`. If the file is empty or pre-onboarding, run `stack-setup` first.
+1. `.traffic-one/.one.json` — pick up `mode`, `stack`, `backend`, `realtime`, `frontend`. If the file is empty or pre-onboarding, conduct onboarding per `rules/common/onboarding.md` first.
 2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/coding.md`, `.traffic-one/security.md`, and `.traffic-one/known-issues.md` if present.
 3. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
 4. The user's last 1–3 messages — extract the actual product intent (verb, audience, primary action).
 
 ## Skills you consult (in this order)
 
-- `stack-setup` — only if `.traffic-one/.one.json` is empty or `confirmed !== true`.
+- Onboarding (`rules/common/onboarding.md`) — conduct onboarding only if `.traffic-one/.one.json` is empty or `confirmed !== true`.
 - `monorepo-architecture` — **mandatory** when `stack === "default"` or `frontend === "react-vite"`. Produces the `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, `apps/web/`, and `packages/{ui,tailwind-config,i18n}` skeleton before the Module map is finalised. Skip only for `stack === "minimal"` single-app projects with no shared code.
-- `detect-project` — to confirm we're greenfield vs. extending an existing repo.
+- Project routing (`rules/common/project-routing.md`) — to confirm we're greenfield vs. extending an existing repo.
 - `library-pick` — for every non-default library decision; document the chosen + rejected with reasons.
 - `project-memory` — create or reconcile `.traffic-one/product.md`,
   `.traffic-one/stack.md`, `.traffic-one/rules/*`,

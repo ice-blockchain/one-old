@@ -1,9 +1,9 @@
 // src/gen/emit/rules.ts
-// Re-gathers the flat rules-templates/ tree (materialization reads it; the
-// cursor-rules emitter derives .mdc slugs from its nested paths) from the
-// content modules that declare `rules` subdirs in module.json. The rule docs
-// now live in src/modules/<id>/rules/** (the source); gen re-emits
-// rules-templates/<exact-nested-path> byte-identical.
+// Re-gathers the flat rules/ tree (materialization reads it; the cursor-rules
+// emitter derives .mdc slugs from its nested paths) from the content modules
+// that declare `rules` subdirs in module.json. The rule docs live in
+// src/modules/<id>/rules/** (the source); gen re-emits the top-level
+// rules/<exact-nested-path> byte-identical.
 //
 // The emitter UNIONS every content module's rules/ subtree, so the grouping of
 // rules across modules does not affect the output — a single `rules` module can
@@ -27,7 +27,7 @@ export function generatedRuleTemplates(repoRoot: string): RuleDoc[] {
     for (const sub of descriptor.rules) {
       const base = path.join(dir, sub);
       for (const f of collectFiles(base)) {
-        docs.push({ relPath: path.join('rules-templates', f.rel), content: fs.readFileSync(f.abs, 'utf8') });
+        docs.push({ relPath: path.join('rules', f.rel), content: fs.readFileSync(f.abs, 'utf8') });
       }
     }
   }

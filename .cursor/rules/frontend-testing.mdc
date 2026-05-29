@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/testing.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/testing.md; run `npm run gen` to update. -->
 ---
-description: "Frontend Testing — framework-agnostic. Generated from rules-templates/frontend/testing.md."
+description: "Frontend Testing — framework-agnostic. Generated from rules/frontend/testing.md."
 globs: ["**/*.test.ts", "**/*.test.tsx", "**/*.spec.ts", "**/*.spec.tsx", "**/e2e/**", "**/playwright/**", "src/test/**", "apps/**/test/**", "packages/**/test/**"]
 alwaysApply: false
 ---

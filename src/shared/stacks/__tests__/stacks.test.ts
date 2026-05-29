@@ -3,9 +3,9 @@ import assert from 'node:assert/strict';
 
 import { AGENT_ROLE_BASE_RULES, STACKS, composeRuleManifest, roleScopedRules, templatePath } from '../index';
 
-test('templatePath rewrites the logical namespace to the source library', () => {
-  assert.equal(templatePath('rules/common/auth-gate.md'), 'rules-templates/common/auth-gate.md');
-  assert.equal(templatePath('rules/core.md'), 'rules-templates/core.md');
+test('templatePath maps the logical namespace to the rules/ source (identity)', () => {
+  assert.equal(templatePath('rules/common/auth-gate.md'), 'rules/common/auth-gate.md');
+  assert.equal(templatePath('rules/core.md'), 'rules/core.md');
 });
 
 test('AGENT_ROLE_BASE_RULES covers all six senior roles with curated, auth-gated sets', () => {
@@ -16,7 +16,12 @@ test('AGENT_ROLE_BASE_RULES covers all six senior roles with curated, auth-gated
     // auth-gate is the universal baseline for every role.
     assert.ok(rules.includes('rules/common/auth-gate.md'), `${role} should include the auth gate`);
     assert.ok(rules.includes('rules/common/setup-gate.md'), `${role} should include the setup gate`);
+    // Every role carries the skill-precedence policy (skills are subordinate to rules).
+    assert.ok(rules.includes('rules/common/skill-precedence.md'), `${role} should include skill precedence`);
   }
+  // The architect additionally carries the routing + onboarding policy rules.
+  assert.ok(AGENT_ROLE_BASE_RULES['senior-architect']?.includes('rules/common/project-routing.md'));
+  assert.ok(AGENT_ROLE_BASE_RULES['senior-architect']?.includes('rules/common/onboarding.md'));
   // Role scoping is curated: the frontend role carries UI rules; the backend role does not.
   assert.ok(AGENT_ROLE_BASE_RULES['senior-frontend']?.some((r) => r.startsWith('rules/frontend/')));
   assert.ok(!AGENT_ROLE_BASE_RULES['senior-backend']?.some((r) => r === 'rules/frontend/ui-quality.md'));
@@ -33,6 +38,9 @@ test('default stack: react + supabase mandatory, postgres optional, no dupes', (
   const m = STACKS.default;
   assert.ok(m.mandatory.includes('rules/common/auth-gate.md'));
   assert.ok(m.mandatory.includes('rules/common/setup-gate.md'));
+  assert.ok(m.mandatory.includes('rules/common/project-routing.md'));
+  assert.ok(m.mandatory.includes('rules/common/onboarding.md'));
+  assert.ok(m.mandatory.includes('rules/common/skill-precedence.md'));
   assert.ok(m.mandatory.includes('rules/frontend/react/core.md'));
   assert.ok(m.mandatory.includes('rules/frontend/react/supabase-client.md'));
   assert.ok(m.optional.includes('rules/backend/postgres.md'));

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react/realtime.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react/realtime.md; run `npm run gen` to update. -->
 ---
-description: "React Real-time — subscription hooks + Redux bridge. Generated from rules-templates/frontend/react/realtime.md."
+description: "React Real-time — subscription hooks + Redux bridge. Generated from rules/frontend/react/realtime.md."
 globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/use*Channel*.ts", "**/use*Channel*.tsx"]
 alwaysApply: false
 ---

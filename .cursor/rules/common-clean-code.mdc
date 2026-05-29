@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/clean-code.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/clean-code.md; run `npm run gen` to update. -->
 ---
-description: "Clean Code (baseline). Generated from rules-templates/common/clean-code.md."
+description: "Clean Code (baseline). Generated from rules/common/clean-code.md."
 alwaysApply: true
 ---
 

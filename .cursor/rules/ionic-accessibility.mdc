@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/accessibility.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/accessibility.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Accessibility Rules. Generated from rules-templates/frontend/ionic/accessibility.md."
+description: "Ionic Accessibility Rules. Generated from rules/frontend/ionic/accessibility.md."
 globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "apps/**/src/pages/**", "packages/ui/**", "src/components/**", "src/features/**/components/**", "src/pages/**"]
 alwaysApply: false
 ---

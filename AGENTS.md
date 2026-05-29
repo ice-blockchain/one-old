@@ -15,6 +15,9 @@ Traffic One plugin behavior is provided by the installed skills, hooks, backgrou
 
 - .traffic-one/rules/common/auth-gate.md
 - .traffic-one/rules/common/setup-gate.md
+- .traffic-one/rules/common/project-routing.md
+- .traffic-one/rules/common/onboarding.md
+- .traffic-one/rules/common/skill-precedence.md
 - .traffic-one/rules/common/senior-engineer-team.md
 - .traffic-one/rules/common/project-memory.md
 - .traffic-one/rules/common/documentation.md

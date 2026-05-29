@@ -90,7 +90,7 @@ fixes that aren't needed.
 | `NO_GIT_DIR` | No `.git/` at project root. Runner handles via `--skip-git`; informational. | n/a (info) |
 | `GITNEXUS_STALE` | `.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
 | `LAST_RUN_FAILED` | Most recent runner stamp shows an error. Surface the message and pair with other findings. | Depends |
-| `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one/.one.json` missing the field. Re-run onboarding. | Via `stack-setup` |
+| `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one/.one.json` missing the field. Re-run onboarding. | Via onboarding (`rules/common/onboarding.md`) |
 | `CODEX_TRAFFIC_ONE_PLUGIN_DISABLED` | Codex config does not enable the Traffic One plugin, so hooks will not run. | No (user enables plugin) |
 | `CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED` | Codex hook trust records are missing, disabled, or missing trusted hashes. | No (user re-trusts hooks) |
 | `CODEX_WORKSPACE_UNTRUSTED` | Current workspace is outside trusted Codex project roots, so hooks may be skipped. | No (user trusts workspace/parent) |
@@ -127,6 +127,6 @@ the Bash tool's permission prompt is the consent gate.
 - Never auto-run `npm install` / `nvm install` / `git init` without explicit
   user approval in this turn.
 - Never modify `.traffic-one/.one.json` directly from this skill; route field
-  changes through `stack-setup`.
+  changes through onboarding (`rules/common/onboarding.md`).
 - Never delete `.gitnexus/`, `.traffic-one/backups/`, or any project file.
 - Never share the user's filesystem layout to a remote endpoint.

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/documentation.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/documentation.md; run `npm run gen` to update. -->
 ---
-description: "Auto-Documentation Defaults. Generated from rules-templates/common/documentation.md."
+description: "Auto-Documentation Defaults. Generated from rules/common/documentation.md."
 alwaysApply: true
 ---
 

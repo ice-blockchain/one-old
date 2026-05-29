@@ -74,7 +74,8 @@ function materializeProjectAssets(cwd, state) {
         .filter((relPath) => fs.existsSync(path.join(root, (0, stacks_1.templatePath)(relPath))));
     const rules = unique([...mandatoryRules, ...referenceRules]);
     const skills = [...(0, skill_filters_1.activeSkillsFor)(state)]
-        .filter((name) => fs.existsSync(path.join(root, 'skills-templates', name, 'SKILL.md')))
+        .filter((name) => !skill_filters_1.BOOTSTRAP_SKILLS.has(name)) // bootstrap skills live in the host skills/ dir, not per-project
+        .filter((name) => fs.existsSync(path.join(root, 'skills-catalog', name, 'SKILL.md')))
         .sort();
     const previous = (0, cleanup_1.loadPreviousManifest)(cwd);
     const removed = (0, cleanup_1.cleanupPrevious)(cwd, previous, new Set(rules), new Set(skills));
@@ -88,7 +89,7 @@ function materializeProjectAssets(cwd, state) {
     }
     const skillsRoot = path.join(cwd, '.traffic-one', 'skills');
     for (const name of skills) {
-        if ((0, generated_1.copySkillDir)(path.join(root, 'skills-templates', name), path.join(skillsRoot, name)))
+        if ((0, generated_1.copySkillDir)(path.join(root, 'skills-catalog', name), path.join(skillsRoot, name)))
             written += 1;
     }
     if ((0, render_agents_1.preserveManualRootContext)(cwd, 'AGENTS.md', state))

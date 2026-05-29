@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/performance.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/performance.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Performance Rules. Generated from rules-templates/frontend/ionic/performance.md."
+description: "Ionic Performance Rules. Generated from rules/frontend/ionic/performance.md."
 globs: ["apps/**/src/**", "src/**", "capacitor.config.*", "apps/**/capacitor.config.*"]
 alwaysApply: false
 ---

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/core.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/core.md; run `npm run gen` to update. -->
 ---
-description: "Project Core (framework-agnostic). Generated from rules-templates/core.md."
+description: "Project Core (framework-agnostic). Generated from rules/core.md."
 alwaysApply: true
 ---
 

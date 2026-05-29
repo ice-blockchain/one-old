@@ -9,7 +9,7 @@ import * as path from 'path';
 import { isPluginAuthoringRoot } from '../authoring-root';
 import { toPosix, writeTextIfChanged } from '../fs-text';
 import { pluginRoot } from '../paths';
-import { activeSkillsFor } from '../skill-filters';
+import { activeSkillsFor, BOOTSTRAP_SKILLS } from '../skill-filters';
 import { stackSpecForState, templatePath } from '../stacks';
 import { nowIsoNoMs } from '../text';
 import { cleanupPrevious, loadPreviousManifest, modeRulesForState } from './cleanup';
@@ -53,7 +53,8 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
     .filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))));
   const rules = unique([...mandatoryRules, ...referenceRules]);
   const skills = [...activeSkillsFor(state)]
-    .filter((name) => fs.existsSync(path.join(root, 'skills-templates', name, 'SKILL.md')))
+    .filter((name) => !BOOTSTRAP_SKILLS.has(name)) // bootstrap skills live in the host skills/ dir, not per-project
+    .filter((name) => fs.existsSync(path.join(root, 'skills-catalog', name, 'SKILL.md')))
     .sort();
 
   const previous = loadPreviousManifest(cwd);
@@ -69,7 +70,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
 
   const skillsRoot = path.join(cwd, '.traffic-one', 'skills');
   for (const name of skills) {
-    if (copySkillDir(path.join(root, 'skills-templates', name), path.join(skillsRoot, name))) written += 1;
+    if (copySkillDir(path.join(root, 'skills-catalog', name), path.join(skillsRoot, name))) written += 1;
   }
 
   if (preserveManualRootContext(cwd, 'AGENTS.md', state)) written += 1;

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/styles.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/styles.md; run `npm run gen` to update. -->
 ---
-description: "React Native Styling Rules. Generated from rules-templates/frontend/react-native/styles.md."
+description: "React Native Styling Rules. Generated from rules/frontend/react-native/styles.md."
 globs: ["apps/**/src/components/**", "apps/**/src/features/**/components/**", "apps/**/src/styles/**", "packages/ui-native/**", "**/global.css", "**/tailwind.config.*", "**/nativewind-env.d.ts"]
 alwaysApply: false
 ---

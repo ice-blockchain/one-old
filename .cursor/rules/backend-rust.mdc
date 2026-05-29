@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/rust.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/rust.md; run `npm run gen` to update. -->
 ---
-description: "Rust Backend Rules. Generated from rules-templates/backend/rust.md."
+description: "Rust Backend Rules. Generated from rules/backend/rust.md."
 globs: ["**/*.rs", "**/Cargo.toml", "**/Cargo.lock"]
 alwaysApply: false
 ---

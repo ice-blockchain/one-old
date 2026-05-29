@@ -1,11 +1,11 @@
 // src/gen/emit/skills.ts
-// Re-gathers BOTH skill trees the hosts read: skills/ (Claude/Cursor — the
-// bootstrap skills) and skills-templates/ (Codex + the set materialised into
-// .traffic-one/skills/). The two trees are NOT identical even for the shared
-// bootstrap skills (the skills/ copies are host-facing bootstrap documents),
-// so each content module ships them as separate subtrees:
-//   src/modules/<id>/skills/**            → skills/**
-//   src/modules/<id>/skills-templates/**  → skills-templates/**
+// Re-gathers BOTH skill trees gen emits: skills/ (the host-read bootstrap dir —
+// all three host manifests point here; the session-start surgery fills it with
+// the per-stack set) and skills-catalog/ (the pristine source pool the surgery +
+// materializer copy from; no host manifest reads it directly). Each content
+// module ships them as separate subtrees:
+//   src/modules/<id>/skills/**          → skills/**
+//   src/modules/<id>/skills-catalog/**  → skills-catalog/**
 // gen re-emits both byte-identical. Unions across content modules, so the
 // grouping (one skills module today) can be re-split into feature modules later
 // with zero output diff.
@@ -17,7 +17,7 @@ import { discoverDescriptors } from '../../core/registry';
 import { collectFiles } from '../lib/content-walk';
 import type { GenRun } from '../lib/run';
 
-const SKILL_TREES = ['skills', 'skills-templates'] as const;
+const SKILL_TREES = ['skills', 'skills-catalog'] as const;
 
 export interface SkillDoc { relPath: string; content: string; }
 

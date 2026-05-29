@@ -51,7 +51,7 @@ export function codexPluginManifest(version: string): Record<string, unknown> {
     version,
     description: CODEX_DESCRIPTION,
     author: { ...AUTHOR },
-    skills: './skills-templates/',
+    skills: './skills/',
     hooks: './hooks/hooks.json',
     instructions: './AGENTS.md',
     mcpServers: './.mcp.json',

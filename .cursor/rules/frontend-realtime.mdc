@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/realtime.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/realtime.md; run `npm run gen` to update. -->
 ---
-description: "Real-time / WebSocket — framework-agnostic. Generated from rules-templates/frontend/realtime.md."
+description: "Real-time / WebSocket — framework-agnostic. Generated from rules/frontend/realtime.md."
 globs: ["apps/**/src/services/ws/**", "apps/**/src/features/**/ws/**", "packages/ws-client/**", "**/*.socket.ts", "**/*.ws.ts"]
 alwaysApply: false
 ---

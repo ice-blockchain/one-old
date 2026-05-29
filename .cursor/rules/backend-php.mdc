@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/php.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/php.md; run `npm run gen` to update. -->
 ---
-description: "PHP Backend Rules. Generated from rules-templates/backend/php.md."
+description: "PHP Backend Rules. Generated from rules/backend/php.md."
 globs: ["**/*.php", "**/composer.json", "**/composer.lock", "**/phpunit.xml", "**/phpunit.xml.dist"]
 alwaysApply: false
 ---

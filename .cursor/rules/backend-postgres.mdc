@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/postgres.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/postgres.md; run `npm run gen` to update. -->
 ---
-description: "PostgreSQL Rules. Generated from rules-templates/backend/postgres.md."
+description: "PostgreSQL Rules. Generated from rules/backend/postgres.md."
 globs: ["**/*.sql", "supabase/migrations/**", "db/migrations/**", "prisma/schema.prisma", "src/services/**", "src/lib/db/**"]
 alwaysApply: false
 ---

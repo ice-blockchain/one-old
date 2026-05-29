@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/auth-gate.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/auth-gate.md; run `npm run gen` to update. -->
 ---
-description: "Traffic One Authentication Gate. Generated from rules-templates/common/auth-gate.md."
+description: "Traffic One Authentication Gate. Generated from rules/common/auth-gate.md."
 alwaysApply: true
 ---
 

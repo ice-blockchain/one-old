@@ -9,15 +9,15 @@ import { cleanupPrevious } from '../cleanup';
 import { hasMaterializedProjectAssets } from '../has-assets';
 import { materializeProjectAssets } from '../materialize';
 
-// Build a temp pluginRoot containing a small rules-templates/ + skills-templates/.
+// Build a temp pluginRoot containing a small rules/ + skills-catalog/.
 function withPluginAndProject(fn: (project: string) => void): void {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-matwriter-'));
   const plugin = path.join(base, 'plugin');
-  fs.mkdirSync(path.join(plugin, 'rules-templates', 'common'), { recursive: true });
-  fs.writeFileSync(path.join(plugin, 'rules-templates', 'common', 'auth-gate.md'), '# Auth gate rule\nbody', 'utf8');
-  fs.writeFileSync(path.join(plugin, 'rules-templates', 'core.md'), '# Core rule\nbody', 'utf8');
-  fs.mkdirSync(path.join(plugin, 'skills-templates', 'project-memory'), { recursive: true });
-  fs.writeFileSync(path.join(plugin, 'skills-templates', 'project-memory', 'SKILL.md'), '# project-memory\nbody', 'utf8');
+  fs.mkdirSync(path.join(plugin, 'rules', 'common'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, 'rules', 'common', 'auth-gate.md'), '# Auth gate rule\nbody', 'utf8');
+  fs.writeFileSync(path.join(plugin, 'rules', 'core.md'), '# Core rule\nbody', 'utf8');
+  fs.mkdirSync(path.join(plugin, 'skills-catalog', 'project-memory'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, 'skills-catalog', 'project-memory', 'SKILL.md'), '# project-memory\nbody', 'utf8');
   const project = path.join(base, 'proj');
   fs.mkdirSync(project, { recursive: true });
 

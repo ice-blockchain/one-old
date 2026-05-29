@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/project-memory.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/project-memory.md; run `npm run gen` to update. -->
 ---
-description: "Project Memory. Generated from rules-templates/common/project-memory.md."
+description: "Project Memory. Generated from rules/common/project-memory.md."
 alwaysApply: true
 ---
 

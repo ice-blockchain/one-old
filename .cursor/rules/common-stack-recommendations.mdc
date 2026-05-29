@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/stack-recommendations.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/stack-recommendations.md; run `npm run gen` to update. -->
 ---
-description: "Stack Recommendations — Provider-First Defaults. Generated from rules-templates/common/stack-recommendations.md."
+description: "Stack Recommendations — Provider-First Defaults. Generated from rules/common/stack-recommendations.md."
 alwaysApply: true
 ---
 

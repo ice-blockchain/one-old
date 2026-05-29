@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/security.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/security.md; run `npm run gen` to update. -->
 ---
-description: "React Native Security Rules. Generated from rules-templates/frontend/react-native/security.md."
+description: "React Native Security Rules. Generated from rules/frontend/react-native/security.md."
 globs: ["apps/**/app/**", "apps/**/src/services/**", "apps/**/src/features/**/api.ts", "apps/**/src/features/**/services/**", "packages/api-client/**", "src/services/**"]
 alwaysApply: false
 ---

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/agent-handoff-digests.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/agent-handoff-digests.md; run `npm run gen` to update. -->
 ---
-description: "Agent handoff digests — token-cheap phase-to-phase contract. Generated from rules-templates/common/agent-handoff-digests.md."
+description: "Agent handoff digests — token-cheap phase-to-phase contract. Generated from rules/common/agent-handoff-digests.md."
 alwaysApply: true
 ---
 

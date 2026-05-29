@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/modes/existing-codebase.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/modes/existing-codebase.md; run `npm run gen` to update. -->
 ---
-description: "Mode: Existing Codebase. Generated from rules-templates/modes/existing-codebase.md."
+description: "Mode: Existing Codebase. Generated from rules/modes/existing-codebase.md."
 alwaysApply: false
 ---
 

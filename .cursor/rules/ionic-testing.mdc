@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/ionic/testing.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/ionic/testing.md; run `npm run gen` to update. -->
 ---
-description: "Ionic Testing Rules. Generated from rules-templates/frontend/ionic/testing.md."
+description: "Ionic Testing Rules. Generated from rules/frontend/ionic/testing.md."
 globs: ["apps/**/e2e/**", "apps/**/src/**/*.test.*", "apps/**/src/**/*.spec.*", "src/**/*.test.*", "src/**/*.spec.*", "capacitor.config.*", "apps/**/capacitor.config.*"]
 alwaysApply: false
 ---

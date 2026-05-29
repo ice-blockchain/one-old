@@ -47,14 +47,14 @@ exports.copyActiveSkills = copyActiveSkills;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const paths_1 = require("../paths");
-const SKILLS_TEMPLATES_DIR = 'skills-templates';
+const SKILLS_TEMPLATES_DIR = 'skills-catalog';
 const SKILLS_ACTIVE_DIR = 'skills';
-exports.BOOTSTRAP_SKILLS = new Set(['auth', 'stack-setup', 'detect-project', 'traffic-one-doctor']);
+exports.BOOTSTRAP_SKILLS = new Set(['traffic-one-doctor']);
 exports.SKILL_FILTERS = {
     _common: new Set([
-        'auth', 'stack-setup', 'library-pick', 'context-budget', 'execution-discipline',
+        'library-pick', 'context-budget', 'execution-discipline',
         'git-commit', 'refactor', 'security-review', 'security-scan',
-        'detect-project', 'repo-scan', 'verification-loop', 'tdd-workflow',
+        'repo-scan', 'verification-loop', 'tdd-workflow',
         'coding-standards', 'i18n-text', 'ui-demo', 'design-system',
         'architecture-decision-records', 'deployment-patterns',
         'auto-documentation-generator', 'project-memory',

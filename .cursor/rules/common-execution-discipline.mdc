@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/execution-discipline.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/execution-discipline.md; run `npm run gen` to update. -->
 ---
-description: "Execution Discipline. Generated from rules-templates/common/execution-discipline.md."
+description: "Execution Discipline. Generated from rules/common/execution-discipline.md."
 alwaysApply: true
 ---
 

@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/security.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/security.md; run `npm run gen` to update. -->
 ---
-description: "Security Baseline. Generated from rules-templates/common/security.md."
+description: "Security Baseline. Generated from rules/common/security.md."
 alwaysApply: true
 ---
 

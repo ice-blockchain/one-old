@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/frontend/react-native/core.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/frontend/react-native/core.md; run `npm run gen` to update. -->
 ---
-description: "React Native (Expo) — Stack Core. Generated from rules-templates/frontend/react-native/core.md."
+description: "React Native (Expo) — Stack Core. Generated from rules/frontend/react-native/core.md."
 globs: ["apps/**/app/**", "apps/**/src/**", "packages/ui-native/**", "src/**"]
 alwaysApply: false
 ---

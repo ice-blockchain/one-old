@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/perl.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/perl.md; run `npm run gen` to update. -->
 ---
-description: "Perl Backend Rules. Generated from rules-templates/backend/perl.md."
+description: "Perl Backend Rules. Generated from rules/backend/perl.md."
 globs: ["**/*.pl", "**/*.pm", "**/*.t", "**/*.psgi", "**/*.cgi"]
 alwaysApply: false
 ---

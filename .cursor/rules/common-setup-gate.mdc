@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/common/setup-gate.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/common/setup-gate.md; run `npm run gen` to update. -->
 ---
-description: "Traffic One Setup Gate. Generated from rules-templates/common/setup-gate.md."
+description: "Traffic One Setup Gate. Generated from rules/common/setup-gate.md."
 alwaysApply: true
 ---
 

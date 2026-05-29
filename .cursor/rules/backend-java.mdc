@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/backend/java.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/backend/java.md; run `npm run gen` to update. -->
 ---
-description: "Java Backend Rules. Generated from rules-templates/backend/java.md."
+description: "Java Backend Rules. Generated from rules/backend/java.md."
 globs: ["**/*.java", "**/pom.xml", "**/build.gradle", "**/build.gradle.kts"]
 alwaysApply: false
 ---

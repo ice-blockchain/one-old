@@ -21,7 +21,7 @@ git add -A \
   agents \
   hooks/hooks.json \
   hooks/hooks-cursor.json \
-  rules-templates \
+  rules \
   settings.json \
   skills \
-  skills-templates
+  skills-catalog

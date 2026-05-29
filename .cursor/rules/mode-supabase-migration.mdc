@@ -1,6 +1,6 @@
-<!-- GENERATED FROM: rules-templates/modes/supabase-migration.md; run `npm run gen` to update. -->
+<!-- GENERATED FROM: rules/modes/supabase-migration.md; run `npm run gen` to update. -->
 ---
-description: "Mode: Existing Codebase + Supabase Migration Offer. Generated from rules-templates/modes/supabase-migration.md."
+description: "Mode: Existing Codebase + Supabase Migration Offer. Generated from rules/modes/supabase-migration.md."
 alwaysApply: false
 ---
 
