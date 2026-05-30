@@ -49,7 +49,7 @@ const path = __importStar(require("path"));
 const paths_1 = require("../paths");
 const SKILLS_TEMPLATES_DIR = 'skills-catalog';
 const SKILLS_ACTIVE_DIR = 'skills';
-exports.BOOTSTRAP_SKILLS = new Set(['traffic-one-doctor']);
+exports.BOOTSTRAP_SKILLS = new Set();
 exports.SKILL_FILTERS = {
     _common: new Set([
         'library-pick', 'context-budget', 'execution-discipline',
@@ -58,10 +58,10 @@ exports.SKILL_FILTERS = {
         'coding-standards', 'i18n-text', 'ui-demo', 'design-system',
         'architecture-decision-records', 'deployment-patterns',
         'auto-documentation-generator', 'project-memory',
-        'api-design', 'api-connector-builder', 'adaptive-communication',
+        'api-design', 'api-connector-builder',
         'documentation-lookup', 'observability', 'app-launch-checklist',
         'design-audit', 'browser-qa', 'supabase-setup', 'predeploy-security-check',
-        'senior-eng-orchestrator', 'traffic-one-doctor', 'token-usage-report', 'model-tier-sync',
+        'senior-eng-orchestrator', 'token-usage-report', 'model-tier-sync',
     ]),
     'react-vite': new Set([
         'create-component', 'create-feature', 'create-page', 'create-service',

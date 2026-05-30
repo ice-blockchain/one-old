@@ -17,7 +17,7 @@ export type HostModelKey = (typeof HOST_IDS)[number];
 export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>> = {
   claude: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
   cursor: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
-  codex: { highest: 'gpt-5-codex', balanced: 'gpt-5', cheapest: 'gpt-5-mini' },
+  codex: { highest: 'gpt-5.5', balanced: 'gpt-5', cheapest: 'gpt-5-mini' },
 };
 
 export function canonicalTier(tier: unknown): TierId | null {

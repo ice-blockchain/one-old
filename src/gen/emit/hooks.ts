@@ -10,6 +10,7 @@ import {
   POST_TOOL_USE,
   PRE_TOOL_USE,
   SESSION_START,
+  SUBAGENT_START,
   claudeCommand,
   cursorCommand,
   promptSubmitGroup,
@@ -39,6 +40,7 @@ function claudeHooks(promptStatus: boolean): Rec {
       UserPromptSubmit: [renderGroup(promptSubmitGroup(promptStatus))],
       PreToolUse: PRE_TOOL_USE.map(renderGroup),
       PostToolUse: POST_TOOL_USE.map(renderGroup),
+      SubagentStart: [renderGroup(SUBAGENT_START)],
     },
   };
 }

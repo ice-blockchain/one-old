@@ -31,6 +31,8 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   assert.deepEqual(idsFor('post-build-page-speed'), ['page-speed.build']);
   assert.deepEqual(idsFor('post-build-graphify'), ['graphify.post-build']);
   assert.deepEqual(idsFor('post-stack-setup'), ['materialize.post-stack-setup']);
+  // Codex SubagentStart binds the pending role claim to the new subagent thread id.
+  assert.deepEqual(idsFor('subagent-start'), ['agent-model.subagent-start']);
 });
 
 test('an unknown subcommand routes to no handlers', () => {

@@ -27,7 +27,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5-codex', cursor: 'opus',
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'opus',
   });
   assert.equal(tierModelTable('bad'), null);
 });

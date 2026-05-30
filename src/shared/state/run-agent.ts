@@ -55,10 +55,72 @@ function nestedValue(source: unknown, keys: string[]): unknown {
   return current;
 }
 
+// Codex reports the orchestrator's session_id in every hook payload — even for
+// subagent threads — so session_id can't tell threads apart. The only per-thread
+// discriminator is transcript_path, whose rollout filename ends with the running
+// thread's id (the child's `agent_id`). Parse that canonical UUID.
+const ROLLOUT_THREAD_RE = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/i;
+export function transcriptThreadId(transcriptPath: unknown): string | null {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
+  const base = transcriptPath.replace(/\\/g, '/').split('/').pop() || '';
+  const match = base.match(ROLLOUT_THREAD_RE);
+  return match ? (match[1] as string).toLowerCase() : null;
+}
+
+// Infer the Traffic One role assigned to a subagent by reading its rollout
+// (transcript_path) and matching the spawn assignment "You are … senior-X". Anchored
+// on "You are" (within one clause) so a prompt that ALSO names other roles — e.g.
+// "you are senior-frontend … avoid backend-owned paths … senior-backend owns the API"
+// — still resolves the assigned role, not a cross-referenced one. Best-effort: returns
+// null if the file is unreadable or the assignment isn't present yet (SubagentStart can
+// fire before the rollout is flushed; the child's first write re-attempts when it is).
+const SPAWN_ROLE_RE = /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i;
+export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
+  let raw: string;
+  try {
+    raw = fs.readFileSync(transcriptPath, 'utf8');
+  } catch {
+    return null;
+  }
+  const userTexts: string[] = [];
+  for (const line of raw.split('\n')) {
+    if (!line.includes('"user"')) continue; // cheap prefilter before JSON.parse
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const p = obj((parsed as Rec)?.payload) || obj(parsed) || {};
+    if (p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) continue;
+    const text = (p.content as unknown[])
+      .map((seg) => {
+        const s = obj(seg);
+        return s && s.type === 'input_text' && typeof s.text === 'string' ? s.text : '';
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (text) userTexts.push(text);
+  }
+  for (let i = userTexts.length - 1; i >= 0; i -= 1) {
+    const match = (userTexts[i] || '').match(SPAWN_ROLE_RE);
+    const role = match ? (match[1] as string).toLowerCase() : null;
+    if (role && VALID_AGENT_ROLES.has(role)) return role;
+  }
+  return null;
+}
+
 export interface SessionIdentity {
   sessionId: string | null;
   parentSessionId: string | null;
   isSubagent: boolean;
+  // The running thread id parsed from transcript_path — the reliable per-thread
+  // key on Codex (where session_id is always the parent). Null when absent.
+  threadId: string | null;
+  // The raw transcript_path (the running thread's rollout) — read to infer the role
+  // of a Codex subagent that has no claim yet.
+  transcriptPath: string | null;
 }
 
 export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
@@ -83,6 +145,8 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
     threadSpawn.parent_thread_id, threadSpawn.parentThreadId,
     threadSpawn.parent_session_id, threadSpawn.parentSessionId,
   );
+  const transcriptPath = firstString(data.transcript_path, data.transcriptPath, payload.transcript_path, payload.transcriptPath);
+  const threadId = transcriptThreadId(transcriptPath);
   const threadSource = firstString(data.thread_source, data.threadSource, payload.thread_source, payload.threadSource);
   const isSubagent = Boolean(
     threadSource === 'subagent'
@@ -92,7 +156,7 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
     || nestedValue(payload, ['subagent']),
   );
 
-  return { sessionId, parentSessionId, isSubagent };
+  return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath };
 }
 
 function timestampAgeMs(value: unknown): number {
@@ -267,12 +331,28 @@ export function resolveRunAgentContext(
   const shouldClaimPending = options.claimPending !== false;
   const runIds = runIdsForLookup(cwd, state);
 
-  if (identity.sessionId) {
-    for (const runId of runIds) {
-      const claim = readClaimFile(runAgentFile(cwd, runId, identity.sessionId));
+  // Exact claim match. threadId (from transcript_path) is the reliable Codex key —
+  // a subagent's tool-call hook reports the parent's session_id, so try threadId
+  // first, then session_id (the per-thread id on Claude).
+  const exactKeys = [identity.threadId, identity.sessionId].filter((v): v is string => Boolean(v));
+  for (const runId of runIds) {
+    for (const key of exactKeys) {
+      const claim = readClaimFile(runAgentFile(cwd, runId, key));
       if (claim && claimAllowsState(state, claim)) {
         return contextFromClaim(claim, 'run-agent');
       }
+    }
+  }
+
+  // Codex self-heal: a subagent thread (threadId differs from the parent session_id
+  // Codex reports) with no claim yet — infer its role from its own transcript and
+  // stake the claim now. This runs at the child's first gated write, by which point
+  // the rollout carries the spawn assignment (SubagentStart can fire before it does).
+  if (shouldClaimPending && identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId) {
+    const role = inferRoleFromTranscript(identity.transcriptPath);
+    if (role) {
+      const ctx = claimThreadRole(cwd, state, identity.threadId, role, { parentSessionId: identity.sessionId });
+      if (ctx) return ctx;
     }
   }
 
@@ -304,6 +384,57 @@ export function resolveRunAgentContext(
   }
 
   return null;
+}
+
+// Create a claimed role context keyed by an explicit thread id. Used by the Codex
+// SubagentStart hook: Codex fires no PreToolUse for spawns (so the agent-model gate
+// never stakes a pending claim) and reports the parent's session_id on the child's
+// later tool calls — the child is identifiable only by its transcript thread id
+// (== the SubagentStart `agent_id`). We persist a claim under that id with the role
+// inferred from the child's spawn prompt, so the child's write hook resolves its role
+// by exact threadId match. Idempotent: an existing valid claim is returned as-is.
+export function claimThreadRole(
+  cwd: string,
+  state: unknown,
+  threadId: string,
+  role: string,
+  options: { parentSessionId?: string | null } = {},
+): RunAgentContext | null {
+  if (!VALID_AGENT_ROLES.has(role)) return null;
+  if (typeof threadId !== 'string' || !threadId.trim()) return null;
+  const id = threadId.trim();
+  const source: Rec = obj(state) ? { ...(state as Rec) } : {};
+  const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
+
+  const existing = readClaimFile(runAgentFile(cwd, runId, id));
+  if (existing && claimAllowsState(state, existing)) {
+    return contextFromClaim(existing, 'subagent-start');
+  }
+
+  const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
+  const claim: Rec = {
+    version: 1,
+    runId,
+    claimId: `${role}-${spawnIndex}-${id.slice(-8)}`,
+    role,
+    spawnIndex,
+    status: 'claimed',
+    sessionId: id,
+    parentSessionId: firstString(options.parentSessionId),
+    createdAt: stateTimestamp(),
+    claimedAt: stateTimestamp(),
+    stackFingerprint: stackFingerprint(source),
+  };
+  fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+  writeJson(runAgentFile(cwd, runId, id), claim);
+  // Deliberately NOT writeState() here. Parallel subagents self-heal their claims
+  // near-simultaneously on their first writes, and writeState does a non-atomic
+  // read-modify-rewrite of the shared .one.json — concurrent calls would clobber it.
+  // The per-thread claim file written above is the source of truth, and
+  // runIdsForLookup() scans the runs/ dir on disk, so resolution needs no
+  // currentRunId/spawnIndex stamp (the orchestrator already stamps currentRunId
+  // during onboarding; nextSpawnIndex counts claim files on disk).
+  return contextFromClaim(claim, 'subagent-start');
 }
 
 export function hasRunAgentState(cwd: string, state: unknown): boolean {

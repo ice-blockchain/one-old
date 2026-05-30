@@ -10,6 +10,7 @@ exports.agentModelGate = agentModelGate;
 const coerce_1 = require("../../adapters/coerce");
 const obj_1 = require("../../shared/obj");
 const result_1 = require("../../core/result");
+const events_1 = require("../../core/events");
 const paths_1 = require("../../shared/paths");
 const performance_1 = require("../../shared/performance");
 const performance_config_1 = require("../../shared/performance-config");
@@ -25,7 +26,9 @@ function agentModelGate(ctx) {
         return (0, result_1.noop)();
     const raw = (0, obj_1.obj)(ctx.input.raw) || {};
     const toolName = ctx.input.tool?.rawName || (0, coerce_1.asString)(raw.tool_name ?? raw.toolName);
-    if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(toolName))
+    // Normalize a host namespace (Codex `multi_agent_v1.spawn_agent`) to the bare name
+    // before matching, so the gate can't silently bail on a qualified spawn tool.
+    if (toolName && !/^(Task|Agent|spawn_agent)$/i.test((0, events_1.stripToolNamespace)(toolName)))
         return (0, result_1.noop)();
     const toolInput = (0, obj_1.obj)(raw.tool_input) || (0, obj_1.obj)(raw.toolInput) || {};
     const role = (0, role_infer_1.inferTrafficOneSpawnRole)(toolInput);

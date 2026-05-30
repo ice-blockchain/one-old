@@ -19,9 +19,10 @@ test('activeSkillsFor(default state) unions common + react-vite + supabase', () 
   assert.ok(!s.has('django-patterns'));
 });
 
-test('activeSkillsFor: pre-onboarding new project → only bootstrap skills', () => {
+test('activeSkillsFor: pre-onboarding new project → no skills (bootstrap set is empty)', () => {
   const s = activeSkillsFor({ mode: 'new-project', onboardingComplete: false });
   assert.deepEqual([...s].sort(), [...BOOTSTRAP_SKILLS].sort());
+  assert.equal(s.size, 0);
 });
 
 test('activeSkillsFor accepts a stack string (legacy alias)', () => {

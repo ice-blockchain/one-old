@@ -127,7 +127,6 @@ line-verifiable source files.
 | Skill | Local file | Source |
 | --- | --- | --- |
 | `accessibility` | `skills/accessibility/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/accessibility/SKILL.md |
-| `adaptive-communication` | `skills/adaptive-communication/SKILL.md` | bencium-marketplace `adaptive-communication` |
 | `ai-regression-testing` | `skills/ai-regression-testing/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/ai-regression-testing/SKILL.md |
 | `android-clean-architecture` | `skills/android-clean-architecture/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/android-clean-architecture/SKILL.md |
 | `api-connector-builder` | `skills/api-connector-builder/SKILL.md` | ECC: https://github.com/affaan-m/everything-claude-code/blob/main/skills/api-connector-builder/SKILL.md |
@@ -278,8 +277,6 @@ line-verifiable source files.
 | `scripts/lighthouse-runner.mjs` | Mobile Lighthouse production-preview runner. |
 | `scripts/security-check-runner.cjs` | Traffic One pre-deployment security scanner. |
 | `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, and `.cursor/rules/*.mdc`. |
-| `scripts/test-security-check-runner.cjs` | Security scanner fixture tests. |
-| `scripts/test-stack-recommendations.cjs` | Stack recommendation and hook fixture tests. |
 
 ## Generated Cursor Mirrors
 

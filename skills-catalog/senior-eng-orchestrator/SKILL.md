@@ -188,7 +188,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 ### Phase 2 — Implement (parallel)
 
-Single message with TWO subagent calls in the same turn (`senior-frontend` + `senior-backend`). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Give the implementers disjoint write scopes and tell each they are not alone in the codebase.
+Run `senior-frontend` and `senior-backend` **concurrently** — they share the architect's plan/digest for contracts, so neither waits on the other. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue both spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue the `senior-frontend` and `senior-backend` `spawn_agent` calls **consecutively** and do **NOT** call `wait_agent` until BOTH have returned their `agent_id` — a `wait_agent` after the first spawn blocks the turn and serializes the roles (architect → backend → frontend instead of architect → frontend ∥ backend). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Give the implementers disjoint write scopes and tell each they are not alone in the codebase.
 
 Synthetic prompts — use the **Phase 2 — Frontend** and **Phase 2 — Backend** templates from `resources/prompt-templates.md`. Each template instructs the implementer to read the architect digest first, then the relevant plan section, then graph nodes, raw files only as last resort. Each writes its own digest (`.traffic-one/digests/<run-id>/{frontend,backend}.md`) before reporting.
 
@@ -196,7 +196,7 @@ Wait for both to return before Phase 3.
 
 ### Phase 3 — Verify (parallel)
 
-Single message with TWO subagent calls (`senior-reviewer` + `senior-tester`). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
+Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls before any `wait_agent`, then `wait_agent` on each). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 
 Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Both templates instruct the verifier to read the implementer digests first (`.traffic-one/digests/<run-id>/{frontend,backend}.md`), then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool); tester writes `tester.md` directly.
 

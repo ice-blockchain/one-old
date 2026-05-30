@@ -18,6 +18,8 @@ function normalizeEvent(value) {
             return 'UserPromptSubmit';
         case 'PostToolUse':
             return 'PostToolUse';
+        case 'SubagentStart':
+            return 'SubagentStart';
         default:
             return 'PreToolUse';
     }

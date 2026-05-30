@@ -4,6 +4,7 @@
 // single source that lets one gate match Claude's `Bash`, Codex's `exec_command`,
 // and Cursor's shell event without any host branching in feature code.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.stripToolNamespace = stripToolNamespace;
 exports.toolClassForRawName = toolClassForRawName;
 exports.handlerMatches = handlerMatches;
 const RAW_TOOL_CLASS = {
@@ -28,9 +29,14 @@ const RAW_TOOL_CLASS = {
     Glob: 'search',
     Grep: 'search',
 };
+// Strip a host tool namespace: Codex may present a tool as `multi_agent_v1.spawn_agent`
+// (namespace.tool) where Claude uses the bare `spawn_agent`. The canonical class is
+// keyed on the bare tool name, so every match site must normalize through this.
+function stripToolNamespace(rawName) {
+    return rawName.includes('.') ? rawName.split('.').pop() : rawName;
+}
 function toolClassForRawName(rawName) {
-    const normalized = rawName.includes('.') ? rawName.split('.').pop() : rawName;
-    return RAW_TOOL_CLASS[normalized] ?? 'other';
+    return RAW_TOOL_CLASS[stripToolNamespace(rawName)] ?? 'other';
 }
 // Does a handler apply to this input? Same event, and (for tool-scoped handlers)
 // the input's tool class is in the handler's list. No `tools` ⇒ all tools.
