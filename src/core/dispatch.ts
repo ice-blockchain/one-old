@@ -7,6 +7,7 @@ import type { Handler } from './types';
 import type { HostAdapter, RawInvocation } from '../adapters/types';
 import { buildContext } from './context';
 import { runPipeline } from './pipeline';
+import { maybeTraceHook } from '../shared/hook-trace';
 
 export async function dispatch(
   adapter: HostAdapter,
@@ -14,6 +15,7 @@ export async function dispatch(
   raw: RawInvocation,
 ): Promise<string> {
   const input = adapter.parse(raw);
+  maybeTraceHook(input, raw.stdin); // off-by-default; gated by TRAFFIC_ONE_HOOK_TRACE
   const ctx = buildContext(input);
   const result = await runPipeline(handlers, ctx);
   return adapter.serialize(result, input);

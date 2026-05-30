@@ -9,7 +9,11 @@ export type CanonicalEvent =
   | 'SessionStart'
   | 'UserPromptSubmit'
   | 'PreToolUse'
-  | 'PostToolUse';
+  | 'PostToolUse'
+  // Codex-only: fired when a subagent (worker) thread spawns. Its input carries the
+  // child thread id (`agent_id`) — the deterministic hook-time signal Codex provides
+  // for binding a Traffic One role claim to the new subagent session.
+  | 'SubagentStart';
 
 // Gates match these classes, never raw per-host tool names.
 export type ToolClass =

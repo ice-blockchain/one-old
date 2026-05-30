@@ -8,6 +8,7 @@
 import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
 import { deny, noop } from '../../core/result';
+import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
@@ -26,7 +27,9 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
-  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(toolName)) return noop();
+  // Normalize a host namespace (Codex `multi_agent_v1.spawn_agent`) to the bare name
+  // before matching, so the gate can't silently bail on a qualified spawn tool.
+  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(stripToolNamespace(toolName))) return noop();
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const role = inferTrafficOneSpawnRole(toolInput);

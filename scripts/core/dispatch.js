@@ -9,8 +9,10 @@ exports.handlersForSubcommand = handlersForSubcommand;
 exports.dispatchSubcommand = dispatchSubcommand;
 const context_1 = require("./context");
 const pipeline_1 = require("./pipeline");
+const hook_trace_1 = require("../shared/hook-trace");
 async function dispatch(adapter, handlers, raw) {
     const input = adapter.parse(raw);
+    (0, hook_trace_1.maybeTraceHook)(input, raw.stdin); // off-by-default; gated by TRAFFIC_ONE_HOOK_TRACE
     const ctx = (0, context_1.buildContext)(input);
     const result = await (0, pipeline_1.runPipeline)(handlers, ctx);
     return adapter.serialize(result, input);

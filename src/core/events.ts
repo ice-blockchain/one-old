@@ -28,9 +28,15 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   Grep: 'search',
 };
 
+// Strip a host tool namespace: Codex may present a tool as `multi_agent_v1.spawn_agent`
+// (namespace.tool) where Claude uses the bare `spawn_agent`. The canonical class is
+// keyed on the bare tool name, so every match site must normalize through this.
+export function stripToolNamespace(rawName: string): string {
+  return rawName.includes('.') ? (rawName.split('.').pop() as string) : rawName;
+}
+
 export function toolClassForRawName(rawName: string): ToolClass {
-  const normalized = rawName.includes('.') ? (rawName.split('.').pop() as string) : rawName;
-  return RAW_TOOL_CLASS[normalized] ?? 'other';
+  return RAW_TOOL_CLASS[stripToolNamespace(rawName)] ?? 'other';
 }
 
 // Does a handler apply to this input? Same event, and (for tool-scoped handlers)

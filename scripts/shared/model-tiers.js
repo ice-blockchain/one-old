@@ -18,7 +18,7 @@ exports.HOST_IDS = ['claude', 'codex', 'cursor'];
 exports.HOST_MODELS = {
     claude: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
     cursor: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
-    codex: { highest: 'gpt-5-codex', balanced: 'gpt-5', cheapest: 'gpt-5-mini' },
+    codex: { highest: 'gpt-5.5', balanced: 'gpt-5', cheapest: 'gpt-5-mini' },
 };
 function canonicalTier(tier) {
     if (typeof tier !== 'string')
