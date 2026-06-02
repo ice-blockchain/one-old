@@ -82,7 +82,7 @@ function probeNvm() {
         installedVersions: versions,
         hasV22: !!nvm22,
         v22Paths: nvm22,
-        installCommand: nvm22 ? null : (0, gitnexus_1.nvmInstallCommand)(),
+        installCommand: null,
     };
 }
 function probeGitnexus() {

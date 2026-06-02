@@ -3,7 +3,7 @@
 // 1:1 from scripts/doctor/buildFindings.cjs. Pure: derives messages from probe
 // data; never reads the filesystem itself except via the toolchain spec.
 
-import { getToolSpec, toolStatus } from '../toolchain';
+import { toolStatus } from '../toolchain';
 import { codeGraphProviderFromValue, normalizedProjectState, onboardingStateIssues, rawStateHasLegacyShape } from './lib';
 import type {
   CodexHooksProbe,
@@ -163,14 +163,13 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
       findings.push({
         severity: 'fix-needed',
         code: 'NVM_INSTALLED_NO_V22',
-        message: `Hook process is on Node ${node.runningMajor} and nvm has no v22 installed. Run the install command below.`,
-        recommendedCommand: nvm.installCommand ?? undefined,
+        message: `Hook process is on Node ${node.runningMajor} and nvm has no v22 installed. The GitNexus hook will try to prepare Node 22 automatically after provider approval; choose graphify if you need a provider that does not depend on Node 22.`,
       });
     } else {
       findings.push({
         severity: 'fix-needed',
         code: 'NO_NVM_NO_V22',
-        message: `Hook process is on Node ${node.runningMajor} and nvm is not installed. Install nvm (https://github.com/nvm-sh/nvm) then run \`nvm install 22 && nvm alias default 22\`. Or switch \`codeGraphProvider\` to "graphify" (Python; any Node).`,
+        message: `Hook process is on Node ${node.runningMajor} and nvm is not installed. Traffic One cannot prepare GitNexus automatically without a compatible Node 22 path; switch \`codeGraphProvider\` to "graphify" for a Python-based graph provider.`,
       });
     }
   }
@@ -179,7 +178,7 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     findings.push({
       severity: 'fix-needed',
       code: 'GITNEXUS_IN_OLD_NVM_NODE',
-      message: `\`gitnexus\` on PATH (${gitnexus.onPath}) lives in an old nvm Node folder — will crash with "SyntaxError: Cannot use import statement" when invoked. Reinstall against Node 22: \`npm install -g gitnexus\` from a shell with Node 22 active.`,
+      message: `\`gitnexus\` on PATH (${gitnexus.onPath}) lives in an old nvm Node folder — will crash with "SyntaxError: Cannot use import statement" when invoked. The onboarding hook will install a managed GitNexus copy when the provider is selected.`,
     });
   }
 
@@ -235,15 +234,12 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
       const stamp = stampRaw && typeof stampRaw === 'object' ? (stampRaw as Rec) : {};
       const status = toolStatus(name, stamp.installedVersion);
       if (status.status === 'too-old' || status.status === 'outdated') {
-        const spec = getToolSpec(name) || {};
         const severity: Finding['severity'] = status.status === 'too-old' ? 'fix-needed' : 'info';
-        const upgrade = (typeof spec.installCommand === 'string' && spec.installCommand) || `<upgrade ${name}>`;
         findings.push({
           severity,
           code: 'TOOLCHAIN_OUTDATED',
           tool: name,
-          message: `${name} ${status.installed} installed; ${status.status === 'too-old' ? `minimum supported is ${status.minimum}` : `recommended is ${status.recommended}`}. Upgrade: \`${upgrade}\`.`,
-          recommendedCommand: upgrade,
+          message: `${name} ${status.installed} installed; ${status.status === 'too-old' ? `minimum supported is ${status.minimum}` : `recommended is ${status.recommended}`}. Traffic One hooks install/upgrade selected tools automatically.`,
         });
       }
     }

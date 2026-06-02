@@ -6,7 +6,8 @@
 // after the first successful build. Ported 1:1 from scripts/graphify-runner.cjs.
 //
 // Output shape:
-//   { ok, action: 'used-existing'|'fresh'|'installed-pipx'|'installed-pip'|
+//   { ok, action: 'used-existing'|'used-managed'|'fresh'|'installed-pipx'|
+//     'installed-venv'|'upgraded-pipx'|'upgraded-venv'|
 //     'install-skipped', report: '<abs>'|null, error: '<msg>'|null,
 //     durationMs, installedVersion? }
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
@@ -44,6 +45,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.which = exports.nowIso = void 0;
+exports.ensureGraphifyTool = ensureGraphifyTool;
 exports.bootstrap = bootstrap;
 exports.main = main;
 const child_process_1 = require("child_process");
@@ -69,47 +71,144 @@ function writeStateMerge(cwd, patch) {
         // best-effort; the runner never throws
     }
 }
-function tryInstall() {
-    // Path A: pipx (recommended for end-users).
+function graphifyPackageSpec() {
+    const spec = (0, toolchain_1.getToolSpec)('graphify');
+    return typeof spec?.recommended === 'string' && spec.recommended
+        ? `graphifyy==${spec.recommended}`
+        : 'graphifyy';
+}
+function stampToolchain(cwd, binPath, version) {
+    if (!version)
+        return;
+    const current = readState(cwd);
+    const updated = (0, toolchain_1.mergeToolchainStamp)(current, 'graphify', { version, binPath, at: (0, text_1.nowIso)() });
+    writeStateMerge(cwd, { toolchain: updated.toolchain });
+}
+function installWithPipx(cwd) {
     if (which('pipx')) {
-        const result = (0, child_process_1.spawnSync)('pipx', ['install', 'graphifyy', '--quiet'], {
+        const result = (0, child_process_1.spawnSync)('pipx', ['install', graphifyPackageSpec(), '--force', '--quiet'], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 90 * 1000,
         });
-        if (result.status === 0 && which('graphify')) {
-            return { action: 'installed-pipx', error: null };
+        const binPath = which('graphify');
+        if (result.status === 0 && binPath) {
+            const installedVersion = (0, toolchain_1.probeToolVersion)('graphify', { binPath });
+            stampToolchain(cwd, binPath, installedVersion);
+            return { action: 'installed-pipx', error: null, binPath, installedVersion };
         }
         return {
             action: 'install-skipped',
-            error: `pipx install graphifyy failed: ${(result.stderr || '').trim() || 'non-zero exit'}`,
+            error: `pipx graphifyy installation failed: ${(result.stderr || '').trim() || 'non-zero exit'}`,
+            binPath: null,
         };
     }
-    // Path B: python3 -m pip --user.
-    if (which('python3')) {
-        const result = (0, child_process_1.spawnSync)('python3', ['-m', 'pip', 'install', '--user', 'graphifyy', '--quiet'], {
+    return { action: 'install-skipped', error: '`pipx` is not on PATH', binPath: null };
+}
+function installWithManagedVenv(cwd, previousError = null) {
+    const python = which('python3');
+    if (!python) {
+        return {
+            action: 'install-skipped',
+            error: [
+                'graphify install needs either `pipx` or `python3` with venv support on PATH.',
+                previousError ? `pipx attempt: ${previousError}` : '',
+            ].filter(Boolean).join(' '),
+            binPath: null,
+        };
+    }
+    const venvDir = path.join((0, toolchain_1.managedToolDir)('graphify'), 'venv');
+    const venvPython = (0, toolchain_1.managedVenvPython)('graphify');
+    const binPath = (0, toolchain_1.managedVenvBin)('graphify', 'graphify');
+    try {
+        fs.mkdirSync(path.dirname(venvDir), { recursive: true });
+    }
+    catch {
+        // spawn errors below will surface the write failure if the directory is bad.
+    }
+    if (!fs.existsSync(venvPython)) {
+        const venv = (0, child_process_1.spawnSync)(python, ['-m', 'venv', venvDir], {
             encoding: 'utf8',
             stdio: ['ignore', 'pipe', 'pipe'],
             timeout: 90 * 1000,
         });
-        if (result.status === 0 && which('graphify')) {
-            return { action: 'installed-pip', error: null };
+        if (venv.status !== 0) {
+            return {
+                action: 'install-skipped',
+                error: `python3 -m venv for graphify failed: ${(venv.stderr || '').trim() || 'non-zero exit'}`,
+                binPath: null,
+            };
         }
+    }
+    const pip = (0, child_process_1.spawnSync)(venvPython, ['-m', 'pip', 'install', '--upgrade', graphifyPackageSpec(), '--quiet'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 180 * 1000,
+    });
+    if (pip.status !== 0 || !fs.existsSync(binPath)) {
         return {
             action: 'install-skipped',
-            error: `pip install --user graphifyy failed: ${(result.stderr || '').trim() || 'non-zero exit'}`,
+            error: [
+                `managed venv install of graphifyy failed: ${(pip.stderr || '').trim() || 'non-zero exit'}`,
+                previousError ? `pipx attempt: ${previousError}` : '',
+            ].filter(Boolean).join(' '),
+            binPath: null,
         };
     }
+    const installedVersion = (0, toolchain_1.probeToolVersion)('graphify', { binPath });
+    stampToolchain(cwd, binPath, installedVersion);
     return {
-        action: 'install-skipped',
-        error: 'Neither `pipx` nor `python3` is on PATH. Install graphify manually: `pipx install graphifyy`.',
+        action: previousError ? 'installed-venv' : 'upgraded-venv',
+        error: null,
+        binPath,
+        installedVersion,
     };
 }
-function runGraphify(cwd) {
+function tryInstall(cwd) {
+    const pipx = installWithPipx(cwd);
+    if (!pipx.error && pipx.binPath)
+        return pipx;
+    return installWithManagedVenv(cwd, pipx.error);
+}
+function ensureGraphifyTool(cwd = process.cwd(), opts = {}) {
+    const state = readState(cwd);
+    if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) {
+        return { ok: false, action: 'install-skipped', error: 'codeGraphAutoRun is false in local Traffic One preferences', binPath: null };
+    }
+    const candidates = [
+        { binPath: fs.existsSync((0, toolchain_1.managedVenvBin)('graphify', 'graphify')) ? (0, toolchain_1.managedVenvBin)('graphify', 'graphify') : null, action: 'used-managed' },
+        { binPath: which('graphify'), action: 'used-existing' },
+    ];
+    for (const candidate of candidates) {
+        if (!candidate.binPath)
+            continue;
+        const probed = (0, toolchain_1.probeTool)('graphify', candidate.binPath);
+        if ((0, toolchain_1.isToolUsable)(probed.status)) {
+            stampToolchain(cwd, candidate.binPath, probed.version);
+            return { ok: true, action: candidate.action, error: null, binPath: candidate.binPath, installedVersion: probed.version };
+        }
+    }
+    if (opts.skipInstall) {
+        return { ok: false, action: 'install-skipped', error: 'graphify is missing or below the minimum supported version and skipInstall=true', binPath: null };
+    }
+    const installResult = tryInstall(cwd);
+    if (installResult.error || !installResult.binPath) {
+        writeStateMerge(cwd, { graphifyLastErrorAt: (0, text_1.nowIso)(), graphifyLastError: installResult.error || 'graphify still not available after install attempt' });
+        return { ok: false, action: installResult.action, error: installResult.error || 'graphify not available after install', binPath: null };
+    }
+    return {
+        ok: true,
+        action: installResult.action,
+        error: null,
+        binPath: installResult.binPath,
+        installedVersion: installResult.installedVersion,
+    };
+}
+function runGraphify(cwd, graphifyBin) {
     // graphify's CLI requires a subcommand. `update <path>` (re-)extracts code
     // files and writes graphify-out/{GRAPH_REPORT.md, graph.json, graph.html}.
     // Works on a fresh directory too — no separate init step.
-    const result = (0, child_process_1.spawnSync)('graphify', ['update', '.'], {
+    const result = (0, child_process_1.spawnSync)(graphifyBin, ['update', '.'], {
         cwd,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -145,19 +244,12 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
             return { ok: true, action: 'fresh', report: reportAbs, error: null, durationMs: 0 };
         }
     }
-    let action = 'used-existing';
-    if (!which('graphify')) {
-        if (opts.skipInstall) {
-            return { ok: false, action: 'install-skipped', report: null, error: 'graphify not on PATH and skipInstall=true', durationMs: 0 };
-        }
-        const installResult = tryInstall();
-        action = installResult.action;
-        if (installResult.error || !which('graphify')) {
-            writeStateMerge(cwd, { graphifyLastErrorAt: (0, text_1.nowIso)(), graphifyLastError: installResult.error || 'graphify still not on PATH after install attempt' });
-            return { ok: false, action, report: null, error: installResult.error || 'graphify not available after install', durationMs: Date.now() - startedAt };
-        }
+    const ensured = ensureGraphifyTool(cwd, opts);
+    const action = ensured.action;
+    if (!ensured.ok || !ensured.binPath) {
+        return { ok: false, action, report: null, error: ensured.error || 'graphify not available after install', durationMs: Date.now() - startedAt };
     }
-    const run = runGraphify(cwd);
+    const run = runGraphify(cwd, ensured.binPath);
     if (run.status !== 0) {
         writeStateMerge(cwd, { graphifyLastErrorAt: (0, text_1.nowIso)(), graphifyLastError: run.stderr || 'graphify exited non-zero' });
         return { ok: false, action, report: null, error: run.stderr || 'graphify exited non-zero', durationMs: Date.now() - startedAt };
@@ -171,11 +263,9 @@ function bootstrap(cwd = process.cwd(), opts = {}) {
     // so doctor + post-build hooks can compare installed vs recommended.
     let installedVersion = null;
     try {
-        installedVersion = (0, toolchain_1.probeToolVersion)('graphify');
+        installedVersion = (0, toolchain_1.probeToolVersion)('graphify', { binPath: ensured.binPath });
         if (installedVersion) {
-            const current = readState(cwd);
-            const updated = (0, toolchain_1.mergeToolchainStamp)(current, 'graphify', { version: installedVersion, at: (0, text_1.nowIso)() });
-            writeStateMerge(cwd, { toolchain: updated.toolchain });
+            stampToolchain(cwd, ensured.binPath, installedVersion);
         }
     }
     catch {

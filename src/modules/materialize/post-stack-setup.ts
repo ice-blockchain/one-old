@@ -27,6 +27,7 @@ import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
 import { readEffectiveState } from '../../shared/state';
+import { ensureOnboardingToolchainContext } from '../../runners/toolchain/onboarding';
 import { inferTrafficOneSpawnRole } from '../agent-model/role-infer';
 import {
   type MaterializeOutcome,
@@ -44,6 +45,7 @@ export interface PostStackSetupDeps {
   logTokenUse?: (cwd: string, payload: unknown) => void;
   functionEditDeploy?: (filePath: string) => string | null;
   reportOneMcp?: ReportOneMcp;
+  ensureToolchain?: (cwd: string) => string | null;
 }
 
 function stringifySearchValue(value: unknown): string {
@@ -56,8 +58,10 @@ function stringifySearchValue(value: unknown): string {
     return '';
   }
 }
-function outcomeToResult(out: MaterializeOutcome | null): HookResult {
-  return out ? context(out.context, { systemMessage: out.systemMessage }) : noop();
+function outcomeToResult(out: MaterializeOutcome | null, extraContext: string | null = null): HookResult {
+  if (!out) return extraContext ? context(extraContext, { systemMessage: 'traffic-one — toolchain checked' }) : noop();
+  const body = extraContext ? `${out.context}\n\n${extraContext}` : out.context;
+  return context(body, { systemMessage: out.systemMessage });
 }
 
 function digestWarning(role: string, kb: number): string {
@@ -187,5 +191,14 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // 4. State-file write → validate + materialize (writeState strips local prefs).
   if (!targetPath || !fs.existsSync(targetPath)) return noop();
-  return outcomeToResult(materializeProjectFromState(projectRootFromStateFilePath(targetPath), { trigger: 'post-stack-setup', reportOneMcp }));
+  const projectRoot = projectRootFromStateFilePath(targetPath);
+  const out = materializeProjectFromState(projectRoot, { trigger: 'post-stack-setup', reportOneMcp });
+  let toolchainContext: string | null = null;
+  try {
+    toolchainContext = (deps.ensureToolchain ?? ensureOnboardingToolchainContext)(projectRoot);
+  } catch (error) {
+    const detail = error && (error as Error).message ? (error as Error).message : String(error || 'unknown error');
+    toolchainContext = `[toolchain] hook-owned install/upgrade failed: ${detail}.`;
+  }
+  return outcomeToResult(out, toolchainContext);
 }

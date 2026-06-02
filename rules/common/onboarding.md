@@ -146,7 +146,7 @@ After the mobile popup is answered, ask this provider choice. Use the host's
 prompt tool as a popup:
 
 - header: `Code Graph`
-- question: `Which provider should we use for the codebase graph?`
+- question: `Which provider should Traffic One use and install/upgrade for the codebase graph?`
 - options:
   - `GitNexus` — Node CLI; writes `.gitnexus/`; PolyForm Noncommercial; requires
     Node >=22.
@@ -160,12 +160,14 @@ stop for the user's typed reply:
 > **graphify**? Both build a structural cache that subagents and skills read
 > before falling back to `Glob`/`Grep`. Estimated 50–70% lower cross-session
 > token usage and noticeably better cross-file refactor / "where does X live"
-> answers.
+> answers. Your provider choice also approves Traffic One hooks to install or
+> upgrade that provider's local CLI when missing or below the minimum supported
+> version.
 >
-> - **gitnexus** — Node CLI (`npm install -g gitnexus`); writes `.gitnexus/`.
+> - **gitnexus** — Node CLI; writes `.gitnexus/`.
 >   **License: PolyForm Noncommercial — only usable on non-commercial projects.**
 >   Optionally serves an MCP server for richer queries.
-> - **graphify** — Python CLI (`pipx install graphifyy`); writes
+> - **graphify** — Python CLI; writes
 >   `graphify-out/GRAPH_REPORT.md` + `graph.json`. **License: MIT.**
 
 Treat the answer as required. Do NOT write `.traffic-one/.one.json` with

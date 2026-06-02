@@ -10,7 +10,6 @@ import {
   currentNodeMajor,
   findNvmNode22,
   nodeVersionMismatchMessage,
-  nvmInstallCommand,
   nvmPresent,
 } from '../index';
 
@@ -87,9 +86,6 @@ test('currentNodeMajor returns the running major', () => {
 
 test('constants + messages are stable', () => {
   assert.equal(GITNEXUS_MIN_NODE_MAJOR, 22);
-  const cmd = nvmInstallCommand();
-  assert.ok(cmd.includes('nvm install 22'));
-  assert.ok(cmd.includes('npm install -g gitnexus'));
   const msg = nodeVersionMismatchMessage(20);
   assert.ok(msg.includes('Node 20'));
   assert.ok(msg.includes('>=22'));

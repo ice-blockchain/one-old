@@ -91,7 +91,7 @@ export function openCodePromptRequest(fallbackText?: string): PromptRequest {
   return singleSelectPromptRequest({
     id: 'traffic-one.onboarding.open-code',
     title: 'OpenCode',
-    question: 'Save tokens by delegating coding tasks to OpenCode (a free local agent)?',
+    question: 'Save tokens with OpenCode and approve hook-owned CLI install/upgrade if needed?',
     options: [
       { id: 'enable', label: 'Enable OpenCode delegation' },
       { id: 'not_now', label: 'Not now' },
@@ -132,7 +132,7 @@ export function codeGraphPromptRequest(fallbackText?: string): PromptRequest {
   return singleSelectPromptRequest({
     id: 'traffic-one.onboarding.code-graph',
     title: 'Code Graph',
-    question: 'Which provider should we use for the codebase graph?',
+    question: 'Which provider should Traffic One use and install/upgrade for the codebase graph?',
     options: [
       { id: 'gitnexus', label: 'GitNexus' },
       { id: 'graphify', label: 'graphify' },

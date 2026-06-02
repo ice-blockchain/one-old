@@ -43,12 +43,21 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.SPEC_PATH = void 0;
 exports.loadSpec = loadSpec;
 exports.getToolSpec = getToolSpec;
+exports.toolchainRoot = toolchainRoot;
+exports.managedToolDir = managedToolDir;
+exports.managedVenvBin = managedVenvBin;
+exports.managedVenvPython = managedVenvPython;
+exports.managedNpmPrefix = managedNpmPrefix;
+exports.managedNpmBin = managedNpmBin;
 exports.compareSemver = compareSemver;
 exports.probeToolVersion = probeToolVersion;
 exports.toolStatus = toolStatus;
+exports.probeTool = probeTool;
+exports.isToolUsable = isToolUsable;
 exports.mergeToolchainStamp = mergeToolchainStamp;
 const child_process_1 = require("child_process");
 const fs = __importStar(require("fs"));
+const os = __importStar(require("os"));
 const path = __importStar(require("path"));
 const text_1 = require("../../shared/text");
 exports.SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
@@ -68,6 +77,34 @@ function loadSpec() {
 function getToolSpec(toolName) {
     const spec = loadSpec();
     return Object.prototype.hasOwnProperty.call(spec, toolName) ? spec[toolName] : null;
+}
+function toolchainRoot() {
+    if (process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT)
+        return path.resolve(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT);
+    const stateHome = process.env.XDG_STATE_HOME
+        ? path.join(process.env.XDG_STATE_HOME, 'traffic-one')
+        : path.join(process.env.HOME || os.homedir(), '.traffic-one');
+    return path.join(stateHome, 'toolchains');
+}
+function managedToolDir(toolName) {
+    return path.join(toolchainRoot(), toolName);
+}
+function managedVenvBin(toolName, binName = toolName) {
+    const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    return path.join(managedToolDir(toolName), 'venv', binDir, `${binName}${ext}`);
+}
+function managedVenvPython(toolName) {
+    const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    return path.join(managedToolDir(toolName), 'venv', binDir, `python${ext}`);
+}
+function managedNpmPrefix(toolName) {
+    return path.join(managedToolDir(toolName), 'npm-prefix');
+}
+function managedNpmBin(toolName, binName = toolName) {
+    const ext = process.platform === 'win32' ? '.cmd' : '';
+    return path.join(managedNpmPrefix(toolName), 'bin', `${binName}${ext}`);
 }
 // Compare two semver strings (no dep). -1 / 0 / 1, or null for non-semver.
 function compareSemver(a, b) {
@@ -127,6 +164,20 @@ function toolStatus(toolName, installedVersion) {
     else if (vRec !== null && vRec < 0)
         status = 'outdated';
     return { installed: installedVersion, recommended: spec.recommended ?? null, minimum: spec.minimum ?? null, status };
+}
+function probeTool(toolName, binPath) {
+    const version = binPath ? probeToolVersion(toolName, { binPath }) : null;
+    const status = toolStatus(toolName, version);
+    return {
+        binPath,
+        version,
+        status: status.status,
+        recommended: status.recommended,
+        minimum: status.minimum,
+    };
+}
+function isToolUsable(status) {
+    return status === 'current' || status === 'outdated';
 }
 // Merge a toolchain stamp into the in-memory state object (caller persists).
 function mergeToolchainStamp(state, toolName, { version, binPath, at }) {

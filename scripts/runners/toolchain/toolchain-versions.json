@@ -9,7 +9,7 @@
       "npmPackage": "gitnexus",
       "versionCommand": "gitnexus --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
-      "installCommand": "npm install -g gitnexus",
+      "installCommand": "Traffic One managed npm-prefix install/upgrade",
       "notes": "Requires Node >=22. Runner discovers `~/.nvm/versions/node/v22.*/bin/gitnexus` via absolute path so PATH order doesn't matter."
     },
     "graphify": {
@@ -20,8 +20,19 @@
       "pipxPackage": "graphifyy",
       "versionCommand": "graphify --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
-      "installCommand": "pipx install graphifyy",
+      "installCommand": "Traffic One managed pipx or venv install/upgrade",
       "notes": "Python CLI. The `graphifyy` package name is intentional (not a typo) — that's how it's published on PyPI."
+    },
+    "opencode": {
+      "recommended": "1.15.13",
+      "minimum": "1.15.13",
+      "license": "MIT",
+      "url": "https://opencode.ai",
+      "npmPackage": "opencode-ai",
+      "versionCommand": "opencode --version",
+      "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
+      "installCommand": "Traffic One managed npm-prefix install/upgrade",
+      "notes": "OpenCode CLI for future Traffic One delegation. Hooks install it into a Traffic One-managed npm prefix; do not ask users to run the upstream curl installer."
     },
     "gitleaks": {
       "recommended": "8.30.1",

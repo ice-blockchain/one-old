@@ -8,6 +8,7 @@ import { runPostStackSetup } from '../post-stack-setup';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { endpointFromEnv } from '../../../shared/auth';
 import { toolClassForRawName } from '../../../core/events';
+import { initializeToolchainState } from '../../../shared/state/toolchain';
 
 function ctx(cwd: string, toolInput: Record<string, unknown>): Ctx {
   return rawCtx(cwd, 'Write', toolInput);
@@ -185,5 +186,48 @@ test('generic write in an already-materialized project → noop (nothing to conv
   withAuthedProject(true, (cwd) => {
     const r = runPostStackSetup(ctx(cwd, { file_path: path.join(cwd, 'apps', 'web', 'feature.ts') }));
     assert.equal(r.kind, 'noop');
+  });
+});
+
+test('state-file write runs onboarding toolchain ensure after local prefs are split', () => {
+  withAuthedProject(false, (cwd) => {
+    const stateFile = path.join(cwd, '.traffic-one', '.one.json');
+    fs.writeFileSync(stateFile, JSON.stringify({
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
+      projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { goal: 'x' }, collectedAt: '2026-01-01T00:00:00Z' },
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      codeGraphProvider: 'graphify',
+      performance: { level: 'low', source: 'prompted' },
+      team: { mode: 'main-agent', source: 'prompted' },
+      toolchain: initializeToolchainState({}),
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-01-01T00:00:00Z',
+    }), 'utf8');
+
+    let called = 0;
+    const r = runPostStackSetup(ctx(cwd, { file_path: stateFile }), {
+      ensureToolchain: (root) => {
+        called += 1;
+        assert.equal(root, cwd);
+        const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+        assert.ok(prefsPath);
+        const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+        assert.equal(prefs.codeGraphProvider, 'graphify');
+        assert.equal(prefs.openCode.enabled, true);
+        return '[toolchain] fake install ready';
+      },
+    });
+
+    assert.equal(called, 1);
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('[toolchain] fake install ready'));
+    }
   });
 });

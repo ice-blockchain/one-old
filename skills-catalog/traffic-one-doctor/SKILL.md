@@ -71,9 +71,10 @@ plugin root that contains this `SKILL.md`.
 
 Parse the JSON. Walk findings in order. For each `severity: "fix-needed"`:
 
-- If a `recommendedCommand` is present, surface it to the user and offer to run
-  it via the Bash tool (the Bash permission prompt becomes consent).
-- If only a message is present, relay the message verbatim.
+- Relay the message verbatim.
+- Do not turn toolchain findings into user-run install commands. Traffic One
+  toolchain installs/upgrades are handled by hooks after onboarding/provider
+  approval.
 
 For `severity: "info"`, surface a short summary — don't badger the user with
 fixes that aren't needed.
@@ -83,9 +84,9 @@ fixes that aren't needed.
 | Code | Meaning | Auto-fix? |
 | --- | --- | --- |
 | `NODE_LT22_BUT_V22_AVAILABLE` | Active Node is <22 but nvm v22 is installed. Runner uses absolute v22 path, no action needed. | n/a (info) |
-| `NVM_INSTALLED_NO_V22` | nvm present but no Node 22. `recommendedCommand` is the single-line install. | Yes, via Bash tool |
-| `NO_NVM_NO_V22` | No nvm at all. User installs nvm manually, or switches to `graphify`. | No (user installs nvm) |
-| `GITNEXUS_IN_OLD_NVM_NODE` | gitnexus on PATH lives in old nvm Node folder → will crash. Reinstall against Node 22. | Yes, via Bash tool |
+| `NVM_INSTALLED_NO_V22` | nvm present but no Node 22. GitNexus hook will try managed preparation after provider approval. | Via onboarding/build hook |
+| `NO_NVM_NO_V22` | No nvm at all. Switch to `graphify` or add Node 22 outside Traffic One. | No |
+| `GITNEXUS_IN_OLD_NVM_NODE` | gitnexus on PATH lives in old nvm Node folder → will crash. Hook installs managed GitNexus after provider approval. | Via onboarding/build hook |
 | `NVMRC_PINNED_TO_OLD_NODE` | Project `.nvmrc` < 22 while provider is gitnexus → overwrite `.nvmrc` with `22`. | Yes, via Write tool |
 | `NO_GIT_DIR` | No `.git/` at project root. Runner handles via `--skip-git`; informational. | n/a (info) |
 | `GITNEXUS_STALE` | `.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
@@ -110,22 +111,20 @@ traffic-one doctor — summary: ACTION_NEEDED
 Findings:
   1. [fix-needed] GITNEXUS_IN_OLD_NVM_NODE
      `gitnexus` on PATH lives in old nvm Node folder; will crash on invoke.
-     Fix: `npm install -g gitnexus` from a Node 22 shell.
+     The onboarding/build hook will install a managed GitNexus copy after
+     provider approval.
 
   2. [info] NODE_LT22_BUT_V22_AVAILABLE
      Active Node is 20 but nvm v22 (v22.22.2) is installed. The runner
      uses the absolute v22 path; no action required.
 
-Next step: shall I run `npm install -g gitnexus` via the Bash tool?
+Next step: save or re-confirm the code graph provider so the hook can retry.
 ```
-
-Always wait for user confirmation before running any `recommendedCommand` —
-the Bash tool's permission prompt is the consent gate.
 
 ## Must-not-do
 
-- Never auto-run `npm install` / `nvm install` / `git init` without explicit
-  user approval in this turn.
+- Never ask the user to run toolchain install commands for GitNexus, graphify,
+  or OpenCode; those belong to onboarding/build hooks.
 - Never modify `.traffic-one/.one.json` directly from this skill; route field
   changes through onboarding (`rules/common/onboarding.md`).
 - Never delete `.gitnexus/`, `.traffic-one/backups/`, or any project file.

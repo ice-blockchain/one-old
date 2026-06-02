@@ -441,10 +441,8 @@ contract, env validation, and migrations/RLS baseline are in place.
    an estimated 50–70% on multi-file work.
 
    **When `codeGraphProvider: "gitnexus"`** (PolyForm Noncommercial license):
-   ```bash
-   npm install -g gitnexus    # one-time install (Node CLI)
-   gitnexus analyze .         # produces .gitnexus/ index + auto-context
-   ```
+   the post-build hook installs/upgrades GitNexus in a Traffic One-managed
+   npm prefix when needed, then runs the analysis that produces `.gitnexus/`.
    GitNexus auto-writes `AGENTS.md`, `CLAUDE.md`, and `.claude/skills/`,
    which conflict with traffic-one's own. The runner
    (`scripts/gitnexus-runner.cjs`) backs those three up to
@@ -452,11 +450,9 @@ contract, env validation, and migrations/RLS baseline are in place.
    traffic-one's versions if changed.
 
    **When `codeGraphProvider: "graphify"`** (MIT license):
-   ```bash
-   pipx install graphifyy     # one-time install (Python tool)
-   graphify update .          # produces graphify-out/GRAPH_REPORT.md + graph.json
-   graphify hook install      # optional: regenerate on every git commit
-   ```
+   the post-build hook installs/upgrades graphify in a Traffic One-managed
+   Python venv when needed, then runs `graphify update .` to produce
+   `graphify-out/GRAPH_REPORT.md` + `graph.json`.
 
    The plugin's PostToolUse hook emits this hint automatically after the first
    successful build on `mode: new-project` + `onboardingComplete: true` and

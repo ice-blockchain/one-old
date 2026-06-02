@@ -60,6 +60,7 @@ const token_logger_1 = require("../../shared/token-logger");
 const skill_block_1 = require("../../shared/skill-block");
 const tool_classify_1 = require("../../shared/tool-classify");
 const state_1 = require("../../shared/state");
+const onboarding_1 = require("../../runners/toolchain/onboarding");
 const role_infer_1 = require("../agent-model/role-infer");
 const materialize_1 = require("../../shared/materialize");
 const converge_from_write_1 = require("./converge-from-write");
@@ -81,8 +82,11 @@ function stringifySearchValue(value) {
         return '';
     }
 }
-function outcomeToResult(out) {
-    return out ? (0, result_1.context)(out.context, { systemMessage: out.systemMessage }) : (0, result_1.noop)();
+function outcomeToResult(out, extraContext = null) {
+    if (!out)
+        return extraContext ? (0, result_1.context)(extraContext, { systemMessage: 'traffic-one — toolchain checked' }) : (0, result_1.noop)();
+    const body = extraContext ? `${out.context}\n\n${extraContext}` : out.context;
+    return (0, result_1.context)(body, { systemMessage: out.systemMessage });
 }
 function digestWarning(role, kb) {
     const verbatim = [
@@ -209,5 +213,15 @@ function runPostStackSetup(ctx, deps = {}) {
     // 4. State-file write → validate + materialize (writeState strips local prefs).
     if (!targetPath || !fs.existsSync(targetPath))
         return (0, result_1.noop)();
-    return outcomeToResult((0, materialize_1.materializeProjectFromState)((0, post_helpers_1.projectRootFromStateFilePath)(targetPath), { trigger: 'post-stack-setup', reportOneMcp }));
+    const projectRoot = (0, post_helpers_1.projectRootFromStateFilePath)(targetPath);
+    const out = (0, materialize_1.materializeProjectFromState)(projectRoot, { trigger: 'post-stack-setup', reportOneMcp });
+    let toolchainContext = null;
+    try {
+        toolchainContext = (deps.ensureToolchain ?? onboarding_1.ensureOnboardingToolchainContext)(projectRoot);
+    }
+    catch (error) {
+        const detail = error && error.message ? error.message : String(error || 'unknown error');
+        toolchainContext = `[toolchain] hook-owned install/upgrade failed: ${detail}.`;
+    }
+    return outcomeToResult(out, toolchainContext);
 }

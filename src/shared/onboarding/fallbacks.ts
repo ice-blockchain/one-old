@@ -16,8 +16,8 @@ import { renderTeamLines } from './team-lines';
 type Vars = Record<string, string | number | null | undefined>;
 export type OnboardingBlock = (name: string, vars?: Vars, fallback?: string) => string;
 
-// OpenCode install one-liner (ported from opencode-prompt.cjs).
-export const OPEN_CODE_INSTALL = 'curl -fsSL https://opencode.ai/install | bash';
+// OpenCode install approval wording (no user-run shell command).
+export const OPEN_CODE_INSTALL = 'Traffic One hook-owned install/upgrade of the OpenCode CLI';
 
 export function openCodeChatFallback(block: OnboardingBlock): string {
   return block('open-code', { INSTALL: OPEN_CODE_INSTALL });

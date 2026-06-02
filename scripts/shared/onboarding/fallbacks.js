@@ -26,8 +26,8 @@ const obj_1 = require("../obj");
 const project_context_1 = require("./project-context");
 const prompts_1 = require("./prompts");
 const team_lines_1 = require("./team-lines");
-// OpenCode install one-liner (ported from opencode-prompt.cjs).
-exports.OPEN_CODE_INSTALL = 'curl -fsSL https://opencode.ai/install | bash';
+// OpenCode install approval wording (no user-run shell command).
+exports.OPEN_CODE_INSTALL = 'Traffic One hook-owned install/upgrade of the OpenCode CLI';
 function openCodeChatFallback(block) {
     return block('open-code', { INSTALL: exports.OPEN_CODE_INSTALL });
 }

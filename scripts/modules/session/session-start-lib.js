@@ -130,8 +130,7 @@ function tokenEconomyBanner(cwd, probe) {
                 const installedVersion = stamp && typeof stamp === 'object' ? stamp.installedVersion : null;
                 const status = probe.toolStatus(name, installedVersion);
                 if (status.status === 'too-old') {
-                    const spec = probe.getToolSpec(name) || {};
-                    lines.push(`[toolchain] ${name} ${status.installed} is below the minimum supported (${status.minimum}). Upgrade: \`${spec.installCommand || `<upgrade ${name}>`}\`.`);
+                    lines.push(`[toolchain] ${name} ${status.installed} is below the minimum supported (${status.minimum}). Traffic One will install/upgrade it through the onboarding hook when that tool is selected.`);
                 }
                 else if (status.status === 'outdated') {
                     lines.push(`[toolchain] ${name} ${status.installed} installed; recommended is ${status.recommended}.`);

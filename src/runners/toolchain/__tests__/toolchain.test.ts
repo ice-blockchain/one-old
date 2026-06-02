@@ -8,6 +8,7 @@ test('loadSpec / getToolSpec read the curated spec (via __dirname)', () => {
   assert.ok(Object.keys(spec).length >= 4);
   assert.equal(getToolSpec('gitnexus')?.recommended, '1.6.4');
   assert.equal(getToolSpec('graphify')?.minimum, '0.4.0');
+  assert.equal(getToolSpec('opencode')?.npmPackage, 'opencode-ai');
   assert.equal(getToolSpec('not-a-tool'), null);
 });
 

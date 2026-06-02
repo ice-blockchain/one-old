@@ -43,7 +43,7 @@ exports.hasInitializedToolchain = hasInitializedToolchain;
 const path = __importStar(require("path"));
 const fsjson_1 = require("../fsjson");
 const paths_1 = require("../paths");
-const FALLBACK_TOOLS = ['gitnexus', 'graphify', 'gitleaks', 'trufflehog'];
+const FALLBACK_TOOLS = ['gitnexus', 'graphify', 'opencode', 'gitleaks', 'trufflehog'];
 function toolNamesFromSpec() {
     try {
         const specPath = path.join((0, paths_1.pluginRoot)(), 'scripts', 'toolchain-versions.json');

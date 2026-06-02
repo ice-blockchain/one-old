@@ -37,12 +37,8 @@ Noncommercial** — only usable on non-commercial projects.
    pointed at.
 
 If `.gitnexus/` is missing or older than ~7 days, the post-build hook in
-`scripts/hook-runtime/handlers.cjs` will rebuild it. Manual rebuild:
-
-```bash
-npm install -g gitnexus   # one-time install (Node CLI; npx works too)
-gitnexus analyze .
-```
+`scripts/hook-runtime/handlers.cjs` will ensure the CLI is installed/upgraded
+in a Traffic One-managed toolchain and rebuild it.
 
 ### When `codeGraphProvider: "graphify"`
 
@@ -57,13 +53,8 @@ a structured JSON graph under `graphify-out/`. License: **MIT**.
 3. **`Glob`/`Grep`/raw `Read`** — last resort, scoped to the area the graph
    pointed at.
 
-If the report is missing or older than ~7 days, manual rebuild:
-
-```bash
-pipx install graphifyy   # one-time install (Python tool)
-graphify update .
-graphify hook install    # optional: regenerate on every git commit
-```
+If the report is missing or older than ~7 days, the post-build hook will ensure
+the CLI is installed/upgraded in a Traffic One-managed toolchain and rebuild it.
 
 The post-build hook emits a one-time hint after the first successful build
 on `mode: 'new-project'`; you don't need to nag the user every session.

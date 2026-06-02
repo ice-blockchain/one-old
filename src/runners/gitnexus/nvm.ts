@@ -2,7 +2,7 @@
 // nvm-aware Node-22 binary discovery + the version-mismatch messaging the
 // GitNexus bootstrap, the post-build banner, and doctor all share. Ported 1:1
 // from scripts/gitnexus-runner/{currentNodeMajor,findNvmNode22,nvmPresent,
-// nvmInstallCommand,nodeVersionMismatchMessage}.cjs.
+// nodeVersionMismatchMessage}.cjs.
 //
 // Claude Code's hook process inherits the PATH it was launched with. Once the
 // user runs `nvm alias default 22`, only NEW shells see Node 22 — the running
@@ -14,9 +14,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 // GitNexus's package.json declares `engines.node: ">=22"`. Running
-// `npm install -g gitnexus` on a lower Node prints a noisy EBADENGINE error
-// that beginners can't decode. We pre-flight and refuse with a clean,
-// actionable banner BEFORE wasting ~3 minutes on a doomed npm install.
+// Installing GitNexus with a lower Node prints a noisy EBADENGINE error that
+// beginners can't decode. We pre-flight and prepare/require Node 22 before
+// wasting ~3 minutes on a doomed npm install.
 export const GITNEXUS_MIN_NODE_MAJOR = 22;
 
 export interface NvmNode22 {
@@ -83,31 +83,14 @@ export function nvmPresent(): boolean {
   return fs.existsSync(path.join(home, '.nvm', 'nvm.sh'));
 }
 
-// Single-line bash command the agent can hand to the Bash tool. Sources the
-// nvm script first because nvm is a shell function, then installs + sets
-// default. Bash tool permission prompt is the user's consent — the runner
-// itself never executes this.
-export function nvmInstallCommand(): string {
-  return (
-    `bash -lc '. "$HOME/.nvm/nvm.sh" `
-    + `&& nvm install ${GITNEXUS_MIN_NODE_MAJOR} `
-    + `&& nvm alias default ${GITNEXUS_MIN_NODE_MAJOR} `
-    + `&& nvm use default `
-    + `&& npm install -g gitnexus'`
-  );
-}
-
 // Beginner-friendly upgrade message. Single source of truth so the runner, the
 // post-build banner, and the post-stack-setup warning all use the same wording.
 export function nodeVersionMismatchMessage(major: number | null): string {
   const have = major === null ? 'an unknown Node version' : `Node ${major}`;
   return (
     `GitNexus requires Node >=${GITNEXUS_MIN_NODE_MAJOR} (you have ${have}). `
-    + 'Upgrade once, then restart the host:\n'
-    + `  nvm install ${GITNEXUS_MIN_NODE_MAJOR}\n`
-    + `  nvm alias default ${GITNEXUS_MIN_NODE_MAJOR}\n`
-    + '  nvm use default\n'
-    + 'Or pick the `graphify` provider instead (Python; works on any Node) '
-    + 'by updating local Traffic One preferences -> `codeGraphProvider: "graphify"`.'
+    + 'Traffic One could not prepare a compatible GitNexus toolchain automatically. '
+    + 'Pick the `graphify` provider instead if you need a graph provider that works '
+    + 'without Node 22.'
   );
 }

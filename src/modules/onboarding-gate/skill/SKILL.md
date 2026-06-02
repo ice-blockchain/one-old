@@ -15,9 +15,9 @@ missing block never disables the gate.
 Traffic One can delegate bounded coding tasks to OpenCode — a free, local AI
 agent — to save your paid token budget. Traffic One still plans, supervises,
 and verifies; OpenCode executes, and every change is kept in a reviewable
-digest. To actually use it you install OpenCode (`{{INSTALL}}`)
-and sign in. The delegation feature ships in a later update; this only records
-your preference.
+digest. If you enable it, {{INSTALL}} runs automatically when needed and you
+sign in after the CLI is available. The delegation feature ships in a later
+update; this records your preference and install approval.
 
 Save tokens by delegating coding tasks to OpenCode?
 
@@ -52,6 +52,8 @@ Reply with the option number or label.
 
 <!-- T1BLOCK:BEGIN code-graph -->
 Traffic One needs the code graph provider for this project.
+Selecting a provider approves Traffic One hooks to install or upgrade that
+provider's local CLI when it is missing or below the minimum supported version.
 
 Which provider should we use for the codebase graph?
 
@@ -511,15 +513,16 @@ OPENCODE DELEGATION PREFLIGHT (asked first, before the Performance popup; blocki
   OpenCode executes. Every delegated change is kept in a reviewable digest
   (changed files + run summary) before it is accepted. Enabling this can cut your
   paid model token usage.
-  Prerequisite to actually use it: install OpenCode with `{{INSTALL}}`
-  and sign in. The delegation wiring ships in a later update — for now this only
-  records your preference so a future performance update can split work between
-  Traffic One subagents and free OpenCode agents.
+  If the CLI is missing or below the minimum supported version, {{INSTALL}}
+  runs automatically from the hook after this approval. The delegation wiring
+  ships in a later update — for now this records your preference and install
+  approval so a future performance update can split work between Traffic One
+  subagents and free OpenCode agents.
 
     header: "OpenCode"
-    question: "Save tokens by delegating coding tasks to OpenCode (a free local agent)?"
+    question: "Save tokens with OpenCode and approve hook-owned CLI install/upgrade if needed?"
     options:
-      - "Enable OpenCode delegation" — Allow Traffic One to hand bounded tasks to OpenCode later (requires installing OpenCode).
+      - "Enable OpenCode delegation" — Allow Traffic One to hand bounded tasks to OpenCode later and install/upgrade the local CLI if needed.
       - "Not now" — Keep everything on Traffic One's own agents for now; you can enable this later.
 
   Persist the answer in local Traffic One preferences as:
