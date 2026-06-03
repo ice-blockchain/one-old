@@ -7,68 +7,163 @@
   <title>Traffic One — Setup</title>
   <style>
     :root {
-      --bg: #0b0d12; --panel: #141821; --panel-2: #1b2030; --border: #272d3d;
-      --text: #e8ebf2; --muted: #9aa3b8; --accent: #5b8cff; --accent-2: #3f6fe0;
-      --ok: #3ecf8e; --err: #ff6b6b; --radius: 14px;
+      --bg: #080b11; --panel: #0f141d; --panel-2: #161c28; --panel-3: #1b2333;
+      --border: #232b3a;
+      --text: #eaf0f8; --muted: #93a0b6; --faint: #6c7a92;
+      --accent: #2dd4ff; --accent-2: #4f8bff; --accent-press: #1aa9d6;
+      --ok: #34d399; --err: #fb7185;
+      --radius: 16px; --radius-sm: 11px;
+      --grad: linear-gradient(135deg, #2dd4ff 0%, #4f8bff 100%);
     }
     * { box-sizing: border-box; }
     html, body { margin: 0; height: 100%; }
     body {
-      background: radial-gradient(1200px 600px at 50% -10%, #18203a 0%, var(--bg) 60%);
+      background:
+        radial-gradient(900px 520px at 50% -18%, rgba(45,212,255,.10), transparent 62%),
+        radial-gradient(700px 460px at 88% 8%, rgba(79,139,255,.08), transparent 60%),
+        var(--bg);
       color: var(--text);
       font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
-      display: flex; align-items: center; justify-content: center; padding: 32px;
+      -webkit-font-smoothing: antialiased;
+      display: flex; align-items: center; justify-content: center; padding: 28px;
     }
-    .card { width: 100%; max-width: 560px; background: var(--panel); border: 1px solid var(--border);
-      border-radius: var(--radius); box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
-    .head { padding: 22px 26px 14px; border-bottom: 1px solid var(--border); }
-    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: .2px; }
-    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(91,140,255,.16); }
-    .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
-    .body { padding: 22px 26px 26px; }
-    .step-title { font-size: 18px; font-weight: 640; margin: 2px 0 4px; }
-    .step-desc { color: var(--muted); margin: 0 0 18px; }
+    .card {
+      width: 100%; max-width: 680px;
+      max-height: min(92vh, 780px);
+      display: flex; flex-direction: column;
+      background: linear-gradient(180deg, rgba(255,255,255,.012), transparent 120px), var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: 0 30px 70px rgba(0,0,0,.5), 0 0 0 1px rgba(45,212,255,.04);
+      overflow: hidden;
+    }
+
+    /* ── Header / brand ─────────────────────────────── */
+    .head { flex: none; padding: 18px 24px 16px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 13px; }
+    .logo { width: 38px; height: 38px; flex: none; filter: drop-shadow(0 4px 12px rgba(45,212,255,.28)); }
+    .brand-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+    .brand { font-weight: 680; letter-spacing: .2px; font-size: 15.5px; }
+    .brand b { background: var(--grad); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .sub { color: var(--muted); font-size: 12.5px; }
+
+    /* ── Scrollable step body ───────────────────────── */
+    .body { flex: 1 1 auto; overflow-y: auto; overflow-x: hidden; padding: 20px 24px 12px; }
+    .body::-webkit-scrollbar { width: 9px; }
+    .body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 9px; border: 2px solid var(--panel); }
+    .body::-webkit-scrollbar-thumb:hover { background: #34405a; }
+
+    .step-head { margin-bottom: 16px; }
+    .step-title { font-size: 19px; font-weight: 660; letter-spacing: -.2px; margin: 0 0 5px; }
+    .step-desc { color: var(--muted); margin: 0; font-size: 13.5px; }
+    .pill { display: inline-block; font-size: 11px; font-weight: 600; letter-spacing: .04em;
+      color: var(--accent); background: rgba(45,212,255,.10); border: 1px solid rgba(45,212,255,.22);
+      border-radius: 999px; padding: 2px 9px; margin-left: 8px; vertical-align: 2px; }
+
+    /* ── Single-select option cards ─────────────────── */
     .opts { display: grid; gap: 10px; }
-    .opt { text-align: left; cursor: pointer; padding: 14px 16px; border-radius: 12px; background: var(--panel-2);
-      border: 1px solid var(--border); color: var(--text); transition: border-color .12s ease, transform .04s ease; }
-    .opt:hover { border-color: var(--accent); }
+    .opt { display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer;
+      padding: 14px 15px; border-radius: var(--radius-sm); background: var(--panel-2);
+      border: 1px solid var(--border); color: var(--text); width: 100%;
+      transition: border-color .14s ease, background .14s ease, transform .05s ease; }
+    .opt:hover { border-color: var(--accent); background: var(--panel-3); }
     .opt:active { transform: translateY(1px); }
+    .opt-main { flex: 1 1 auto; min-width: 0; }
     .opt .label { font-weight: 600; }
     .opt .hint { color: var(--muted); font-size: 13px; margin-top: 3px; }
-    label.field { display: block; margin: 0 0 12px; }
-    label.field .name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 5px; display: block; }
-    label.field textarea::placeholder, label.field input::placeholder { color: var(--muted); opacity: .7; }
-    textarea, input[type=text] { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
-      border-radius: 10px; padding: 9px 11px; font: inherit; resize: vertical; }
-    textarea:focus, input:focus { outline: none; border-color: var(--accent); }
-    .domain { background: rgba(91,140,255,.08); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
-      color: var(--muted); font-size: 13px; margin: 0 0 16px; }
-    .btn { cursor: pointer; padding: 11px 16px; border-radius: 10px; border: 1px solid var(--accent-2);
-      background: var(--accent-2); color: #fff; font: inherit; font-weight: 600; }
-    .btn:hover { background: var(--accent); border-color: var(--accent); }
-    .btn[disabled] { opacity: .55; cursor: default; }
-    .progress { display: flex; gap: 6px; margin-top: 18px; }
-    .pip { height: 4px; flex: 1; border-radius: 4px; background: var(--border); }
-    .pip.done { background: var(--accent); }
-    .pip.active { background: var(--accent-2); }
-    .loading { display: flex; align-items: center; gap: 12px; color: var(--muted); padding: 8px 0; }
-    .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+    .opt-go { flex: none; color: var(--faint); font-size: 17px; transition: color .14s ease, transform .14s ease; }
+    .opt:hover .opt-go { color: var(--accent); transform: translateX(3px); }
+
+    /* ── Project-context form ───────────────────────── */
+    .domain { background: rgba(45,212,255,.06); border: 1px solid rgba(45,212,255,.16);
+      border-radius: var(--radius-sm); padding: 10px 12px; color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+    /* Collapsed-by-default disclosure for inferred context, so the questions sit
+       front-and-center on load and the hints are one tap away. */
+    .ctx { margin: 0 0 16px; border: 1px solid rgba(45,212,255,.16); border-radius: var(--radius-sm);
+      background: rgba(45,212,255,.05); overflow: hidden; }
+    .ctx-sum { cursor: pointer; list-style: none; padding: 10px 12px; font-size: 12.5px; font-weight: 600;
+      color: var(--accent); display: flex; align-items: center; gap: 8px; user-select: none; }
+    .ctx-sum::-webkit-details-marker { display: none; }
+    .ctx-sum::before { content: "▸"; font-size: 11px; transition: transform .15s ease; }
+    .ctx[open] .ctx-sum::before { transform: rotate(90deg); }
+    .ctx-count { margin-left: auto; font-size: 11px; font-weight: 600; color: var(--muted);
+      background: rgba(45,212,255,.12); border-radius: 999px; padding: 1px 9px; }
+    .ctx .domain { margin: 0 12px 10px; }
+    .ctx[open] .domain:first-of-type { margin-top: 2px; }
+    .group { margin-top: 18px; }
+    .group:first-of-type { margin-top: 8px; }
+    .group-cap { font-size: 11px; letter-spacing: .13em; text-transform: uppercase; color: var(--faint);
+      margin: 0 0 11px; display: flex; align-items: center; gap: 10px; }
+    .group-cap::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(205px, 1fr)); gap: 11px 12px; }
+
+    label.field { display: block; margin: 0; }
+    label.field.lead { margin-bottom: 6px; }
+    label.field .name { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 5px; display: block; }
+    label.field.lead .name { font-size: 13px; }
+    textarea, input[type=text] {
+      width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 10px; padding: 9px 11px; font: inherit; resize: vertical; transition: border-color .12s ease, box-shadow .12s ease; }
+    textarea { min-height: 40px; line-height: 1.45; }
+    label.field.lead input { padding: 11px 13px; font-size: 14.5px; }
+    textarea::placeholder, input::placeholder { color: var(--faint); }
+    textarea:focus, input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(45,212,255,.16); }
+
+    /* ── Pinned action bar (progress + primary action) ─ */
+    .actions { flex: none; padding: 14px 24px 16px; border-top: 1px solid var(--border);
+      background: linear-gradient(180deg, rgba(255,255,255,.012), transparent); }
+    .actions.hidden { display: none; }
+    .progress { display: flex; gap: 6px; }
+    .pip { height: 4px; flex: 1; border-radius: 4px; background: var(--border); transition: background .2s ease; }
+    .pip.done { background: var(--grad); }
+    .pip.active { background: var(--accent); box-shadow: 0 0 10px rgba(45,212,255,.45); }
+    .bar-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 11px; }
+    .stepcount { color: var(--muted); font-size: 12px; }
+    .btn { cursor: pointer; padding: 11px 20px; border-radius: 10px; border: 0;
+      background: var(--grad); color: #05121c; font: inherit; font-weight: 680; letter-spacing: .2px;
+      box-shadow: 0 6px 18px rgba(45,212,255,.22); transition: filter .14s ease, transform .05s ease, box-shadow .14s ease; }
+    .btn:hover { filter: brightness(1.07); box-shadow: 0 8px 22px rgba(45,212,255,.3); }
+    .btn:active { transform: translateY(1px); }
+    .btn[disabled] { opacity: .5; cursor: default; box-shadow: none; }
+
+    /* ── Transient states ───────────────────────────── */
+    .loading { display: flex; align-items: center; gap: 12px; color: var(--muted); padding: 10px 0; }
+    .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border);
+      border-top-color: var(--accent); animation: spin .8s linear infinite; }
     @keyframes spin { to { transform: rotate(360deg); } }
-    .done-state { text-align: center; padding: 18px 0; }
-    .done-state .check { width: 46px; height: 46px; border-radius: 50%; background: rgba(62,207,142,.14); color: var(--ok);
-      display: inline-flex; align-items: center; justify-content: center; font-size: 24px; margin-bottom: 10px; }
+    .done-state { text-align: center; padding: 22px 0 10px; }
+    .done-state .check { width: 50px; height: 50px; border-radius: 50%; background: rgba(52,211,153,.14);
+      color: var(--ok); display: inline-flex; align-items: center; justify-content: center; font-size: 26px; margin-bottom: 12px; }
     .err { color: var(--err); margin-top: 12px; font-size: 13px; }
-    .foot { color: var(--muted); font-size: 12px; padding: 14px 26px; border-top: 1px solid var(--border); }
+
+    .foot { flex: none; color: var(--faint); font-size: 11.5px; padding: 12px 24px; border-top: 1px solid var(--border);
+      display: flex; align-items: center; gap: 7px; }
+    .foot .lock { color: var(--muted); }
   </style>
 </head>
 <body>
   <main class="card" role="main">
     <div class="head">
-      <div class="brand"><span class="dot"></span> Traffic One</div>
-      <div class="sub">Project setup — answer a few questions to configure this workspace.</div>
+      <svg class="logo" viewBox="0 0 44 44" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1.6" y="1.6" width="40.8" height="40.8" rx="11" fill="url(#tg)" fill-opacity=".12" />
+        <rect x="1.6" y="1.6" width="40.8" height="40.8" rx="11" stroke="url(#tg)" stroke-opacity=".55" stroke-width="1.4" />
+        <path d="M17.5 12 H12.6 A2.6 2.6 0 0 0 10 14.6 V29.4 A2.6 2.6 0 0 0 12.6 32 H17.5" stroke="url(#tg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M26.5 12 H31.4 A2.6 2.6 0 0 1 34 14.6 V29.4 A2.6 2.6 0 0 1 31.4 32 H26.5" stroke="url(#tg)" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" />
+        <path d="M23.8 12.4 L17.4 23.2 H21.6 L20.3 31.6 L27 20.2 H22.6 Z" fill="url(#tg)" />
+        <defs>
+          <linearGradient id="tg" x1="7" y1="7" x2="37" y2="37" gradientUnits="userSpaceOnUse">
+            <stop stop-color="#2dd4ff" /><stop offset="1" stop-color="#4f8bff" />
+          </linearGradient>
+        </defs>
+      </svg>
+      <div class="brand-text">
+        <div class="brand">Traffic <b>One</b></div>
+        <div class="sub">Configure this workspace — answers stay on your machine.</div>
+      </div>
     </div>
     <div class="body" id="view"><div class="loading"><span class="spinner"></span> Loading setup…</div></div>
-    <div class="foot">This window runs locally on your machine. You can close it when setup finishes.</div>
+    <div class="actions hidden" id="actions"></div>
+    <div class="foot"><span class="lock">●</span> Runs locally on 127.0.0.1 — close this window when setup finishes.</div>
   </main>
 
   <script>
@@ -79,7 +174,17 @@
       || new URLSearchParams(location.search).get("t") || "";
     const NEW_PROJECT_STEPS = ["open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
     const EXISTING_STEPS = ["open-code", "performance", "team-confirmation", "code-graph"];
+    // Presentation-only grouping for the long project-context form so the fields
+    // read as a few scannable sections instead of one tall stack. Unknown keys
+    // (e.g. a field added server-side later) fall through to "More details".
+    const FIELD_GROUPS = [
+      { cap: "The basics", keys: ["audience", "coreFlows", "v1Features"] },
+      { cap: "Product & access", keys: ["rolesAuth", "businessModel", "payments", "admin"] },
+      { cap: "Data & integrations", keys: ["dataModel", "contentSource", "integrations"] },
+      { cap: "Growth & constraints", keys: ["engagement", "successMetrics", "constraints", "domainSpecific"] },
+    ];
     const view = document.getElementById("view");
+    const actions = document.getElementById("actions");
 
     async function api(path, opts = {}) {
       const headers = Object.assign({ "x-t1-token": T1_TOKEN }, opts.headers || {});
@@ -99,9 +204,19 @@
       return node;
     }
 
-    function progress(v) {
+    function setActions(node) {
+      actions.innerHTML = "";
+      if (node) { actions.appendChild(node); actions.classList.remove("hidden"); }
+      else { actions.classList.add("hidden"); }
+    }
+
+    function stepInfo(v) {
       const steps = v.mode === "new-project" ? NEW_PROJECT_STEPS : EXISTING_STEPS;
-      const idx = steps.indexOf(v.step);
+      return { steps, idx: steps.indexOf(v.step) };
+    }
+
+    function progress(v) {
+      const { steps, idx } = stepInfo(v);
       const row = el("div", { className: "progress" });
       steps.forEach((_, i) => {
         const cls = idx === -1 || i < idx ? "pip done" : i === idx ? "pip active" : "pip";
@@ -110,14 +225,27 @@
       return row;
     }
 
+    // Sticky bottom bar: progress pips + a "Step X of Y" caption and, on forms, the
+    // primary button — so the call to action is always visible while fields scroll.
+    function actionBar(v, button) {
+      const wrap = el("div", {});
+      wrap.appendChild(progress(v));
+      const row = el("div", { className: "bar-row" });
+      const { steps, idx } = stepInfo(v);
+      row.appendChild(el("div", { className: "stepcount" }, [idx >= 0 ? "Step " + (idx + 1) + " of " + steps.length : ""]));
+      if (button) row.appendChild(button); else row.appendChild(el("div", {}));
+      wrap.appendChild(row);
+      return wrap;
+    }
+
     function showLoading(text) {
+      setActions(null);
       view.innerHTML = "";
       view.appendChild(el("div", { className: "loading" }, [el("span", { className: "spinner" }), text || "Working…"]));
     }
 
     function showError(message) {
-      const note = el("div", { className: "err" }, [message || "Something went wrong."]);
-      view.appendChild(note);
+      view.appendChild(el("div", { className: "err" }, [message || "Something went wrong."]));
     }
 
     async function submitAnswer(step, value, loadingText) {
@@ -144,55 +272,91 @@
       return "timeout";
     }
 
+    function stepHead(v) {
+      const head = el("div", { className: "step-head" });
+      head.appendChild(el("div", { className: "step-title" }, [v.meta.title]));
+      head.appendChild(el("p", { className: "step-desc" }, [v.meta.question]));
+      return head;
+    }
+
     function renderSingleSelect(v) {
       view.innerHTML = "";
-      view.appendChild(el("div", { className: "step-title" }, [v.meta.title]));
-      view.appendChild(el("p", { className: "step-desc" }, [v.meta.question]));
+      view.appendChild(stepHead(v));
       const opts = el("div", { className: "opts" });
       (v.meta.options || []).forEach((o) => {
-        const btn = el("button", { className: "opt", type: "button" }, [
-          el("div", { className: "label" }, [o.label]),
-        ]);
-        if (o.hint) btn.appendChild(el("div", { className: "hint" }, [o.hint]));
+        const main = el("div", { className: "opt-main" }, [el("div", { className: "label" }, [o.label])]);
+        if (o.hint) main.appendChild(el("div", { className: "hint" }, [o.hint]));
+        const btn = el("button", { className: "opt", type: "button" }, [main, el("span", { className: "opt-go" }, ["→"])]);
         btn.addEventListener("click", () => submitAnswer(v.step, o.id));
         opts.appendChild(btn);
       });
       view.appendChild(opts);
-      view.appendChild(progress(v));
+      setActions(actionBar(v, null));
     }
 
-    function field(labelText, control) {
-      return el("label", { className: "field" }, [el("span", { className: "name" }, [labelText]), control]);
+    function field(labelText, control, cls) {
+      return el("label", { className: "field" + (cls ? " " + cls : "") }, [el("span", { className: "name" }, [labelText]), control]);
+    }
+
+    function normalizeFields(raw) {
+      // Tolerate both the rich {key,label,hint} shape and a bare key string.
+      return (raw || []).map((f) => (typeof f === "string"
+        ? { key: f, label: f, hint: "" }
+        : { key: f.key, label: f.label || f.key, hint: f.hint || "" }));
     }
 
     function renderForm(v) {
       view.innerHTML = "";
-      view.appendChild(el("div", { className: "step-title" }, [v.meta.title]));
-      view.appendChild(el("p", { className: "step-desc" }, [v.meta.question]));
-      (v.meta.domainQuestions || []).forEach((q) => view.appendChild(el("div", { className: "domain" }, [q])));
+      const head = stepHead(v);
+      head.querySelector(".step-title").appendChild(el("span", { className: "pill" }, ["all optional"]));
+      view.appendChild(head);
+      const domainQ = v.meta.domainQuestions || [];
+      if (domainQ.length) {
+        const det = el("details", { className: "ctx" });
+        det.appendChild(el("summary", { className: "ctx-sum" }, [
+          "Context I picked up from your request",
+          el("span", { className: "ctx-count" }, [String(domainQ.length)]),
+        ]));
+        domainQ.forEach((q) => det.appendChild(el("div", { className: "domain" }, [q])));
+        view.appendChild(det);
+      }
+
       const summary = el("input", { type: "text", id: "f-summary", placeholder: "One line: what are you building?" });
-      view.appendChild(field("Summary", summary));
+      view.appendChild(field("Summary", summary, "lead"));
+
+      const fields = normalizeFields(v.meta.fields);
+      const byKey = {};
+      fields.forEach((f) => { byKey[f.key] = f; });
       const inputs = {};
-      (v.meta.fields || []).forEach((f) => {
-        // Tolerate both the rich {key,label,hint} shape and a bare key string.
-        const key = typeof f === "string" ? f : f.key;
-        const label = typeof f === "string" ? key : (f.label || key);
-        const hint = typeof f === "string" ? "" : (f.hint || "");
-        const box = el("textarea", { id: "f-" + key, rows: 2, placeholder: hint });
-        inputs[key] = box;
-        view.appendChild(field(label, box));
-      });
+      const used = {};
+      function fieldNode(f) {
+        const box = el("textarea", { id: "f-" + f.key, rows: 2, placeholder: f.hint });
+        inputs[f.key] = box;
+        used[f.key] = true;
+        return field(f.label, box);
+      }
+      function section(cap, items) {
+        if (!items.length) return;
+        const sec = el("section", { className: "group" }, [el("div", { className: "group-cap" }, [cap])]);
+        const grid = el("div", { className: "grid" });
+        items.forEach((f) => grid.appendChild(fieldNode(f)));
+        sec.appendChild(grid);
+        view.appendChild(sec);
+      }
+      FIELD_GROUPS.forEach((g) => section(g.cap, g.keys.map((k) => byKey[k]).filter(Boolean)));
+      section("More details", fields.filter((f) => !used[f.key]));
+
       const submit = el("button", { className: "btn", type: "button" }, ["Continue"]);
       submit.addEventListener("click", () => {
         const answers = {};
         Object.keys(inputs).forEach((k) => { const val = inputs[k].value.trim(); if (val) answers[k] = val; });
         submitAnswer("project-context", { summary: summary.value.trim(), answers });
       });
-      view.appendChild(submit);
-      view.appendChild(progress(v));
+      setActions(actionBar(v, submit));
     }
 
     function renderDone() {
+      setActions(null);
       view.innerHTML = "";
       view.appendChild(el("div", { className: "done-state" }, [
         el("div", { className: "check" }, ["✓"]),
@@ -203,8 +367,8 @@
     }
 
     function render(v) {
-      if (!v) return showError("No response from the setup server.");
-      if (v.error) { view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
+      if (!v) { setActions(null); return showError("No response from the setup server."); }
+      if (v.error) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
       if (v.done) return renderDone();
       if (v.step === "finalize") return submitAnswer("finalize", null, "Finishing setup…");
       if (v.meta && v.meta.kind === "form") return renderForm(v);
@@ -213,7 +377,7 @@
 
     (async function start() {
       try { render(await api("/state")); }
-      catch (err) { view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Connection issue"])); showError(err.message); }
+      catch (err) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Connection issue"])); showError(err.message); }
     })();
   </script>
 </body>
