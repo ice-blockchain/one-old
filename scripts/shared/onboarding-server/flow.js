@@ -20,6 +20,24 @@ const project_context_1 = require("../onboarding/project-context");
 const performance_1 = require("../performance");
 const io_1 = require("../state/io");
 const state_1 = require("../state");
+// Human-friendly label + placeholder for each PROJECT_CONTEXT_ANSWER_KEY, so the
+// wizard form reads like questions instead of camelCase identifiers.
+const PROJECT_CONTEXT_FIELDS = [
+    { key: 'audience', label: 'Who is it for?', hint: 'Primary users / audience' },
+    { key: 'coreFlows', label: 'Core user flows', hint: 'The main things a user does, end to end' },
+    { key: 'v1Features', label: 'V1 features', hint: 'What must ship in the first version' },
+    { key: 'rolesAuth', label: 'Roles & sign-in', hint: 'User roles and how they authenticate' },
+    { key: 'businessModel', label: 'Business model', hint: 'How it makes money — or free / internal' },
+    { key: 'payments', label: 'Payments', hint: 'Billing, subscriptions, or checkout?' },
+    { key: 'admin', label: 'Admin area', hint: 'What an admin needs to manage' },
+    { key: 'dataModel', label: 'Data model', hint: 'Key entities and how they relate' },
+    { key: 'contentSource', label: 'Content source', hint: 'Where the data / content comes from' },
+    { key: 'integrations', label: 'Integrations', hint: 'Third-party services or APIs to connect' },
+    { key: 'engagement', label: 'Engagement', hint: 'Notifications, email, retention' },
+    { key: 'successMetrics', label: 'Success metrics', hint: 'How you will measure success' },
+    { key: 'constraints', label: 'Constraints', hint: 'Deadlines, budget, tech, compliance' },
+    { key: 'domainSpecific', label: 'Anything domain-specific', hint: 'Unique rules or details for this domain' },
+];
 // ── Step copy (the questions now live in the wizard, not in agent prose) ─────────
 const STEP_META = {
     'open-code': {
@@ -71,9 +89,9 @@ const STEP_META = {
     },
     'project-context': {
         kind: 'form',
-        title: 'Project Context',
-        question: 'Answer these MVP-context questions so the build plan is complete.',
-        fields: [...project_context_1.PROJECT_CONTEXT_ANSWER_KEYS],
+        title: 'About the project',
+        question: 'Tell me a bit about what you are building. Everything here is optional — fill what is relevant and I will infer the rest from your request.',
+        fields: PROJECT_CONTEXT_FIELDS,
     },
 };
 function metaForStep(step, originalPrompt) {

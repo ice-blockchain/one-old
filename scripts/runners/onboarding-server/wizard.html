@@ -36,7 +36,8 @@
     .opt .label { font-weight: 600; }
     .opt .hint { color: var(--muted); font-size: 13px; margin-top: 3px; }
     label.field { display: block; margin: 0 0 12px; }
-    label.field .name { font-size: 13px; color: var(--muted); margin-bottom: 4px; display: block; text-transform: capitalize; }
+    label.field .name { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 5px; display: block; }
+    label.field textarea::placeholder, label.field input::placeholder { color: var(--muted); opacity: .7; }
     textarea, input[type=text] { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
       border-radius: 10px; padding: 9px 11px; font: inherit; resize: vertical; }
     textarea:focus, input:focus { outline: none; border-color: var(--accent); }
@@ -160,18 +161,26 @@
       view.appendChild(progress(v));
     }
 
+    function field(labelText, control) {
+      return el("label", { className: "field" }, [el("span", { className: "name" }, [labelText]), control]);
+    }
+
     function renderForm(v) {
       view.innerHTML = "";
       view.appendChild(el("div", { className: "step-title" }, [v.meta.title]));
       view.appendChild(el("p", { className: "step-desc" }, [v.meta.question]));
       (v.meta.domainQuestions || []).forEach((q) => view.appendChild(el("div", { className: "domain" }, [q])));
-      const summary = el("input", { type: "text", id: "f-summary", placeholder: "One-line product summary" });
-      view.appendChild(el("label", { className: "field" }, [el("span", { className: "name" }, ["summary"]), summary]));
+      const summary = el("input", { type: "text", id: "f-summary", placeholder: "One line: what are you building?" });
+      view.appendChild(field("Summary", summary));
       const inputs = {};
-      (v.meta.fields || []).forEach((key) => {
-        const box = el("textarea", { id: "f-" + key, rows: 2 });
+      (v.meta.fields || []).forEach((f) => {
+        // Tolerate both the rich {key,label,hint} shape and a bare key string.
+        const key = typeof f === "string" ? f : f.key;
+        const label = typeof f === "string" ? key : (f.label || key);
+        const hint = typeof f === "string" ? "" : (f.hint || "");
+        const box = el("textarea", { id: "f-" + key, rows: 2, placeholder: hint });
         inputs[key] = box;
-        view.appendChild(el("label", { className: "field" }, [el("span", { className: "name" }, [key]), box]));
+        view.appendChild(field(label, box));
       });
       const submit = el("button", { className: "btn", type: "button" }, ["Continue"]);
       submit.addEventListener("click", () => {
