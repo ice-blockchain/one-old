@@ -77,7 +77,9 @@ function writeLaunchConfig(cwd, port) {
         configs.push({
             name: ENTRY_NAME,
             runtimeExecutable: process.execPath,
-            runtimeArgs: [wizardScriptPath(), cwd, '--port', String(port)],
+            // --attach: don't re-bind the port the gate already opened; stay alive next to
+            // it so preview_start shows the live wizard instead of crashing on EADDRINUSE.
+            runtimeArgs: [wizardScriptPath(), cwd, '--port', String(port), '--attach'],
             port,
         });
         data.configurations = configs;

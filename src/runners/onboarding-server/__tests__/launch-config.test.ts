@@ -39,6 +39,7 @@ test('writeLaunchConfig registers the traffic-one-setup entry with the wizard po
     assert.equal(entry?.port, 51820);
     assert.ok(entry?.runtimeArgs?.includes('--port'));
     assert.ok(entry?.runtimeArgs?.includes('51820'));
+    assert.ok(entry?.runtimeArgs?.includes('--attach'), 'attaches instead of re-binding the port');
   });
 });
 

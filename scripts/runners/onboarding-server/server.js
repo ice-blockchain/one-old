@@ -145,15 +145,18 @@ function startOnboardingServer(options) {
                     return;
                 }
                 const reqUrl = new URL(req.url || '/', `http://${host}:${port}`);
-                // Browsers auto-request /favicon.ico (no token) — answer 204 so it doesn't
-                // surface a noisy 403 in the console.
                 if (reqUrl.pathname === '/favicon.ico') {
                     res.writeHead(204);
                     res.end();
                     return;
                 }
+                // The page shell + health are loopback-only and need NO token, so the editor's
+                // preview pane (which loads the bare URL via preview_start) can open it. The
+                // served page carries the token for its own API calls; the state/answer/task
+                // routes stay token-protected.
+                const publicPath = reqUrl.pathname === '/' || reqUrl.pathname === '/index.html' || reqUrl.pathname === '/healthz';
                 const provided = headerValue(req.headers['x-t1-token']) || reqUrl.searchParams.get('t') || '';
-                if (provided !== token) {
+                if (!publicPath && provided !== token) {
                     res.writeHead(403, { 'content-type': 'text/plain' });
                     res.end('forbidden');
                     return;

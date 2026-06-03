@@ -33,31 +33,25 @@ async function withServer(fn: (server: RunningServer) => Promise<void>): Promise
   }
 }
 
-test('server: rejects requests without the token', async () => {
+test('server: state/answer routes require the token; page + health are public', async () => {
   await withServer(async (server) => {
-    const res = await request(server.port, '/healthz');
-    assert.equal(res.status, 403);
+    // API routes stay protected
+    assert.equal((await request(server.port, '/state')).status, 403);
+    assert.equal((await request(server.port, '/state?t=secret')).status, 200);
+    // health is public (token-free) so attach/health checks work
+    assert.equal((await request(server.port, '/healthz')).status, 200);
   });
 });
 
-test('server: /healthz returns ok with the token', async () => {
+test('server: serves the wizard page on the BARE url (no token) so the preview pane can load it', async () => {
   await withServer(async (server) => {
-    const res = await request(server.port, '/healthz?t=secret');
-    assert.equal(res.status, 200);
-    assert.equal(JSON.parse(res.body).ok, true);
-  });
-});
-
-test('server: serves the wizard page shell on /', async () => {
-  await withServer(async (server) => {
-    const res = await request(server.port, '/?t=secret');
+    const res = await request(server.port, '/'); // no ?t= — this is what preview_start loads
     assert.equal(res.status, 200);
     assert.ok(res.body.includes('Traffic One'));
-    // token is injected, not left as the placeholder
+    // the token is still injected server-side for the page's own API calls
     assert.ok(res.body.includes('secret'));
     assert.ok(!res.body.includes('%%T1_TOKEN%%'));
-    // the JS identifier must survive substitution intact (regression: global
-    // replace previously mangled it into `window.<token>`)
+    // the JS identifier must survive substitution intact (regression guard)
     assert.ok(!res.body.includes('window.secret'));
   });
 });
