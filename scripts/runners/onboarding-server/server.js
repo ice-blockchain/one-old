@@ -47,17 +47,16 @@ const crypto = __importStar(require("crypto"));
 const http = __importStar(require("http"));
 const registry_1 = require("../../shared/onboarding-server/registry");
 const io_1 = require("../../shared/state/io");
+const launch_config_1 = require("./launch-config");
 const routes_1 = require("./routes");
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
-// Auto-open the wizard in the OS default browser by DEFAULT so it "just opens"
-// rather than only printing a link (the agent additionally opens it inline where it
-// has a preview/browser tool). Opt out with TRAFFIC_ONE_OPEN_BROWSER=0|false|no|off
-// for headless/CI. Fire-and-forget; never throws — the clickable URL is the final
-// fallback regardless.
+// Off by DEFAULT — Traffic One targets the editor's in-app preview pane (Claude
+// Code preview / Cursor Simple Browser), not an external browser window. Opt in to
+// also pop the OS default browser with TRAFFIC_ONE_OPEN_BROWSER=1. Fire-and-forget.
 function shouldOpenBrowser(env) {
     const flag = (env.TRAFFIC_ONE_OPEN_BROWSER || '').trim().toLowerCase();
-    return !(flag === '0' || flag === 'false' || flag === 'no' || flag === 'off');
+    return flag === '1' || flag === 'true' || flag === 'yes' || flag === 'on';
 }
 function maybeOpenBrowser(url, env) {
     if (!shouldOpenBrowser(env))
@@ -123,8 +122,10 @@ function startOnboardingServer(options) {
                 clearTimeout(idleTimer);
                 idleTimer = null;
             }
-            if (standalone)
+            if (standalone) {
                 (0, registry_1.clearServerRecord)(cwd, env);
+                (0, launch_config_1.removeLaunchConfig)(cwd);
+            }
         };
         const finish = () => {
             cleanup();
@@ -187,6 +188,9 @@ function startOnboardingServer(options) {
                 catch {
                     // best-effort; the agent can still be handed the URL from this process
                 }
+                // Register with Claude Code's preview (.claude/launch.json) so the agent can
+                // show the wizard in the in-app preview pane via preview_start.
+                (0, launch_config_1.writeLaunchConfig)(cwd, port);
                 for (const signal of ['SIGTERM', 'SIGINT']) {
                     process.on(signal, finish);
                 }

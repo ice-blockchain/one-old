@@ -13,15 +13,17 @@ by the gate, and each block has a verbatim fallback in code, so a missing block
 never disables the gate.
 
 <!-- T1BLOCK:BEGIN server-deny-reason -->
-Traffic One setup is required before building in this project. OPEN THE SETUP
-WIZARD NOW — do not just print the link:
+Traffic One setup is required before building in this project. OPEN THE SETUP WIZARD
+IN YOUR EDITOR'S PREVIEW PANE — do NOT open an external browser:
 
-1. If you have an in-app browser, preview pane, "Simple Browser", or a browser tool
-   (e.g. Claude-in-Chrome), open this URL in it so the wizard shows INLINE:
-   {{URL}}
-2. It is also opening in the default browser automatically.
-3. Only if neither appears, share this clickable link for the user to open:
-   {{URL}}
+- Claude Code: call preview_start with name "traffic-one-setup" to show the wizard in
+  the in-app preview pane (it is already registered in this project's
+  .claude/launch.json).
+- Cursor: open this URL in the built-in Simple Browser.
+- Codex / other host: open this URL in your in-app web view if you have one.
+
+Only if you have NO in-app preview, give the user this clickable link to open:
+{{URL}}
 
 The wizard runs locally, installs the tools it needs (showing progress), and writes
 the configuration. Read-only orientation (pwd, ls, reading files, searching) is
@@ -36,9 +38,10 @@ Traffic One" from the Traffic One auth prompt.
 
 <!-- T1BLOCK:BEGIN setup-pending -->
 Traffic One needs a quick setup before it can build in this project. When you start
-a coding task, Traffic One opens a local setup wizard — a URL you open in your
-browser (inline if your editor supports it) — that collects a few choices and
-installs the tools it needs, then writes the configuration.
+a coding task, Traffic One opens a local setup wizard — shown in your editor's
+in-app preview pane (Claude Code preview / Cursor Simple Browser), with a clickable
+link as fallback — that collects a few choices and installs the tools it needs, then
+writes the configuration.
 
 Until then only read-only orientation is in effect: do not scaffold, install, or
 write feature code, do not invoke build/design skills, and do NOT try to ask these

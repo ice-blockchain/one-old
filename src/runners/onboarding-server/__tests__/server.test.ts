@@ -69,12 +69,12 @@ test('server: standalone:false does not write a registry record', async () => {
   });
 });
 
-test('browser auto-open is on by default; opt out via TRAFFIC_ONE_OPEN_BROWSER', () => {
-  assert.equal(shouldOpenBrowser({}), true);
+test('external browser auto-open is OFF by default (in-app preview preferred); opt in via env', () => {
+  assert.equal(shouldOpenBrowser({}), false);
   assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: '1' }), true);
+  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: 'true' }), true);
+  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: 'on' }), true);
   assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: '0' }), false);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: 'false' }), false);
-  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: 'off' }), false);
 });
 
 test('server: rejects a non-loopback Host header (anti DNS-rebind)', async () => {
