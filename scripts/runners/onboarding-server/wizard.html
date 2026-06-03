@@ -1,0 +1,211 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Traffic One — Setup</title>
+  <style>
+    :root {
+      --bg: #0b0d12; --panel: #141821; --panel-2: #1b2030; --border: #272d3d;
+      --text: #e8ebf2; --muted: #9aa3b8; --accent: #5b8cff; --accent-2: #3f6fe0;
+      --ok: #3ecf8e; --err: #ff6b6b; --radius: 14px;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background: radial-gradient(1200px 600px at 50% -10%, #18203a 0%, var(--bg) 60%);
+      color: var(--text);
+      font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
+      display: flex; align-items: center; justify-content: center; padding: 32px;
+    }
+    .card { width: 100%; max-width: 560px; background: var(--panel); border: 1px solid var(--border);
+      border-radius: var(--radius); box-shadow: 0 24px 60px rgba(0,0,0,.45); overflow: hidden; }
+    .head { padding: 22px 26px 14px; border-bottom: 1px solid var(--border); }
+    .brand { display: flex; align-items: center; gap: 10px; font-weight: 650; letter-spacing: .2px; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px rgba(91,140,255,.16); }
+    .sub { color: var(--muted); font-size: 13px; margin-top: 6px; }
+    .body { padding: 22px 26px 26px; }
+    .step-title { font-size: 18px; font-weight: 640; margin: 2px 0 4px; }
+    .step-desc { color: var(--muted); margin: 0 0 18px; }
+    .opts { display: grid; gap: 10px; }
+    .opt { text-align: left; cursor: pointer; padding: 14px 16px; border-radius: 12px; background: var(--panel-2);
+      border: 1px solid var(--border); color: var(--text); transition: border-color .12s ease, transform .04s ease; }
+    .opt:hover { border-color: var(--accent); }
+    .opt:active { transform: translateY(1px); }
+    .opt .label { font-weight: 600; }
+    .opt .hint { color: var(--muted); font-size: 13px; margin-top: 3px; }
+    label.field { display: block; margin: 0 0 12px; }
+    label.field .name { font-size: 13px; color: var(--muted); margin-bottom: 4px; display: block; text-transform: capitalize; }
+    textarea, input[type=text] { width: 100%; background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+      border-radius: 10px; padding: 9px 11px; font: inherit; resize: vertical; }
+    textarea:focus, input:focus { outline: none; border-color: var(--accent); }
+    .domain { background: rgba(91,140,255,.08); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px;
+      color: var(--muted); font-size: 13px; margin: 0 0 16px; }
+    .btn { cursor: pointer; padding: 11px 16px; border-radius: 10px; border: 1px solid var(--accent-2);
+      background: var(--accent-2); color: #fff; font: inherit; font-weight: 600; }
+    .btn:hover { background: var(--accent); border-color: var(--accent); }
+    .btn[disabled] { opacity: .55; cursor: default; }
+    .progress { display: flex; gap: 6px; margin-top: 18px; }
+    .pip { height: 4px; flex: 1; border-radius: 4px; background: var(--border); }
+    .pip.done { background: var(--accent); }
+    .pip.active { background: var(--accent-2); }
+    .loading { display: flex; align-items: center; gap: 12px; color: var(--muted); padding: 8px 0; }
+    .spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .done-state { text-align: center; padding: 18px 0; }
+    .done-state .check { width: 46px; height: 46px; border-radius: 50%; background: rgba(62,207,142,.14); color: var(--ok);
+      display: inline-flex; align-items: center; justify-content: center; font-size: 24px; margin-bottom: 10px; }
+    .err { color: var(--err); margin-top: 12px; font-size: 13px; }
+    .foot { color: var(--muted); font-size: 12px; padding: 14px 26px; border-top: 1px solid var(--border); }
+  </style>
+</head>
+<body>
+  <main class="card" role="main">
+    <div class="head">
+      <div class="brand"><span class="dot"></span> Traffic One</div>
+      <div class="sub">Project setup — answer a few questions to configure this workspace.</div>
+    </div>
+    <div class="body" id="view"><div class="loading"><span class="spinner"></span> Loading setup…</div></div>
+    <div class="foot">This window runs locally on your machine. You can close it when setup finishes.</div>
+  </main>
+
+  <script>
+    // The server substitutes %%T1_TOKEN%% with the session token; fall back to the
+    // URL query if it was somehow served unsubstituted.
+    var T1_INJECTED = "%%T1_TOKEN%%";
+    var T1_TOKEN = (T1_INJECTED.charAt(0) !== "%" ? T1_INJECTED : "")
+      || new URLSearchParams(location.search).get("t") || "";
+    const NEW_PROJECT_STEPS = ["open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
+    const EXISTING_STEPS = ["open-code", "performance", "team-confirmation", "code-graph"];
+    const view = document.getElementById("view");
+
+    async function api(path, opts = {}) {
+      const headers = Object.assign({ "x-t1-token": T1_TOKEN }, opts.headers || {});
+      if (opts.body) headers["content-type"] = "application/json";
+      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      const text = await res.text();
+      let json = null;
+      try { json = text ? JSON.parse(text) : null; } catch (_) {}
+      if (!res.ok) throw new Error((json && json.error) || ("HTTP " + res.status));
+      return json;
+    }
+
+    function el(tag, attrs, children) {
+      const node = document.createElement(tag);
+      Object.assign(node, attrs || {});
+      (children || []).forEach((c) => node.appendChild(typeof c === "string" ? document.createTextNode(c) : c));
+      return node;
+    }
+
+    function progress(v) {
+      const steps = v.mode === "new-project" ? NEW_PROJECT_STEPS : EXISTING_STEPS;
+      const idx = steps.indexOf(v.step);
+      const row = el("div", { className: "progress" });
+      steps.forEach((_, i) => {
+        const cls = idx === -1 || i < idx ? "pip done" : i === idx ? "pip active" : "pip";
+        row.appendChild(el("div", { className: cls }));
+      });
+      return row;
+    }
+
+    function showLoading(text) {
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "loading" }, [el("span", { className: "spinner" }), text || "Working…"]));
+    }
+
+    function showError(message) {
+      const note = el("div", { className: "err" }, [message || "Something went wrong."]);
+      view.appendChild(note);
+    }
+
+    async function submitAnswer(step, value, loadingText) {
+      showLoading(loadingText || "Saving…");
+      let resp;
+      try {
+        resp = await api("/answer", { method: "POST", body: JSON.stringify({ step, value }) });
+      } catch (err) { return render({ error: err.message }); }
+      if (resp && resp.taskId) {
+        showLoading("Installing — this can take a minute…");
+        const status = await pollTask(resp.taskId);
+        if (status === "error") { /* non-blocking: setup still completes */ }
+      }
+      render(resp.view);
+    }
+
+    async function pollTask(id) {
+      for (let i = 0; i < 600; i++) {
+        let t;
+        try { t = await api("/task/" + id); } catch (_) { return "error"; }
+        if (t.status === "done" || t.status === "error") return t.status;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      return "timeout";
+    }
+
+    function renderSingleSelect(v) {
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "step-title" }, [v.meta.title]));
+      view.appendChild(el("p", { className: "step-desc" }, [v.meta.question]));
+      const opts = el("div", { className: "opts" });
+      (v.meta.options || []).forEach((o) => {
+        const btn = el("button", { className: "opt", type: "button" }, [
+          el("div", { className: "label" }, [o.label]),
+        ]);
+        if (o.hint) btn.appendChild(el("div", { className: "hint" }, [o.hint]));
+        btn.addEventListener("click", () => submitAnswer(v.step, o.id));
+        opts.appendChild(btn);
+      });
+      view.appendChild(opts);
+      view.appendChild(progress(v));
+    }
+
+    function renderForm(v) {
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "step-title" }, [v.meta.title]));
+      view.appendChild(el("p", { className: "step-desc" }, [v.meta.question]));
+      (v.meta.domainQuestions || []).forEach((q) => view.appendChild(el("div", { className: "domain" }, [q])));
+      const summary = el("input", { type: "text", id: "f-summary", placeholder: "One-line product summary" });
+      view.appendChild(el("label", { className: "field" }, [el("span", { className: "name" }, ["summary"]), summary]));
+      const inputs = {};
+      (v.meta.fields || []).forEach((key) => {
+        const box = el("textarea", { id: "f-" + key, rows: 2 });
+        inputs[key] = box;
+        view.appendChild(el("label", { className: "field" }, [el("span", { className: "name" }, [key]), box]));
+      });
+      const submit = el("button", { className: "btn", type: "button" }, ["Continue"]);
+      submit.addEventListener("click", () => {
+        const answers = {};
+        Object.keys(inputs).forEach((k) => { const val = inputs[k].value.trim(); if (val) answers[k] = val; });
+        submitAnswer("project-context", { summary: summary.value.trim(), answers });
+      });
+      view.appendChild(submit);
+      view.appendChild(progress(v));
+    }
+
+    function renderDone() {
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "done-state" }, [
+        el("div", { className: "check" }, ["✓"]),
+        el("div", { className: "step-title" }, ["Setup complete"]),
+        el("p", { className: "step-desc" }, ["Traffic One is configured. Return to your editor — the build will continue."]),
+      ]));
+      api("/complete", { method: "POST", body: "{}" }).catch(() => {});
+    }
+
+    function render(v) {
+      if (!v) return showError("No response from the setup server.");
+      if (v.error) { view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
+      if (v.done) return renderDone();
+      if (v.step === "finalize") return submitAnswer("finalize", null, "Finishing setup…");
+      if (v.meta && v.meta.kind === "form") return renderForm(v);
+      return renderSingleSelect(v);
+    }
+
+    (async function start() {
+      try { render(await api("/state")); }
+      catch (err) { view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Connection issue"])); showError(err.message); }
+    })();
+  </script>
+</body>
+</html>

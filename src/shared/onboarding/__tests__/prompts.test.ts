@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { nextOnboardingStep, onboardingPromptRequestForStep, performanceLevelOf } from '../prompts';
+import { nextOnboardingStep } from '../prompts';
 import { initializeToolchainState } from '../../state/toolchain';
 
 const TOOLCHAIN = Object.fromEntries(
@@ -53,23 +53,4 @@ test('nextOnboardingStep walks the canonical order as fields resolve', () => {
   assert.equal(nextOnboardingStep(cg), 'code-graph');
   // everything resolved → terminal 'state'
   assert.equal(nextOnboardingStep(complete()), 'state');
-});
-
-test('onboardingPromptRequestForStep returns the right popup for each step', () => {
-  assert.equal(onboardingPromptRequestForStep('open-code')?.id, 'traffic-one.onboarding.open-code');
-  assert.equal(onboardingPromptRequestForStep('performance')?.id, 'traffic-one.onboarding.performance');
-  assert.equal(onboardingPromptRequestForStep('mobile')?.kind, 'single_select');
-  assert.equal(onboardingPromptRequestForStep('code-graph')?.options?.length, 2);
-  assert.equal(onboardingPromptRequestForStep('project-context')?.kind, 'text');
-  const team = onboardingPromptRequestForStep('team-confirmation', { level: 'high', fallbackText: 'FB' });
-  assert.equal(team?.id, 'traffic-one.onboarding.team-confirmation');
-  assert.ok(team?.question.includes('high'));
-  assert.equal(team?.fallbackText, 'FB');
-  // terminal step has no popup
-  assert.equal(onboardingPromptRequestForStep('state'), null);
-});
-
-test('performanceLevelOf reads the level or defaults to "selected"', () => {
-  assert.equal(performanceLevelOf(complete()), 'high');
-  assert.equal(performanceLevelOf({ mode: 'new-project' }), 'selected');
 });

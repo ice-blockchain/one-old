@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "version": "2.9.83",
+  "version": "2.9.89",
   "private": true,
   "type": "commonjs",
   "description": "Build + codegen tooling for the Traffic One plugin. Readable engine source lives in src/ and compiles to scripts/ (no dist); the content layer + host configs are generated to the repo root by src/gen. Hosts (Claude/Codex/Cursor) run the committed scripts/ + root trees exactly as before.",

@@ -1,12 +1,12 @@
 "use strict";
 // src/modules/session/prompt-submit.ts
 // UserPromptSubmit handler: drives the auth gate / auth-choice flow on every
-// prompt, records/clears the team-mode-change approval, surfaces onboarding
-// reminders, and converges project-local materialization plus per-user local
-// preference prompts. Ported 1:1 from
-// runUserPromptSubmit (prompt-submit.cjs).
-// Auth-choice parsing reads the extracted prompt text (cleaner than the legacy
-// raw-string pass; the host adapter already extracts the prompt).
+// prompt, records/clears the team-mode-change approval, and — once a project is a
+// Traffic One project but onboarding is incomplete — points the user at the local
+// setup wizard (the wizard owns the questions now; this only surfaces its URL and
+// converges materialization). A deterministic coding-intent heuristic suppresses
+// premature activation on a brand-new project when the prompt is clearly not a
+// coding/implementation request. Auth flow ported 1:1 from runUserPromptSubmit.
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -46,24 +46,42 @@ const result_1 = require("../../core/result");
 const authoring_root_1 = require("../../shared/authoring-root");
 const detection_1 = require("../../shared/detection");
 const materialize_1 = require("../../shared/materialize");
-const directives_1 = require("../../shared/onboarding/directives");
-const fallbacks_1 = require("../../shared/onboarding/fallbacks");
-const predicates_1 = require("../../shared/onboarding/predicates");
-const prompts_1 = require("../../shared/onboarding/prompts");
+const ensure_1 = require("../../shared/onboarding-server/ensure");
+const flow_1 = require("../../shared/onboarding-server/flow");
+const registry_1 = require("../../shared/onboarding-server/registry");
+const project_context_1 = require("../../shared/onboarding/project-context");
 const team_mode_approval_1 = require("../../shared/onboarding/team-mode-approval");
-const config_1 = require("../../shared/config");
 const paths_1 = require("../../shared/paths");
 const prompt_input_1 = require("../../shared/prompt-input");
 const skill_block_1 = require("../../shared/skill-block");
 const state_1 = require("../../shared/state");
-const local_prefs_1 = require("../../shared/onboarding/local-prefs");
 const auth_gate_1 = require("./auth-gate");
 const auth_choice_1 = require("./auth-choice");
 const session_start_1 = require("./session-start");
 const fs = __importStar(require("fs"));
 const skillBlock = (0, skill_block_1.makeSkillBlock)(paths_1.pluginRoot);
-const block = (name, vars) => skillBlock('onboarding-gate', name, vars);
+const block = (name, vars = {}) => skillBlock('onboarding-gate', name, vars);
 const sessionBlock = (name, vars = {}) => skillBlock('session', name, vars);
+// Persist the user's first request into the new-project state so the wizard can
+// tailor its questions AND derive the right stack (without it, an empty prompt
+// derives to `minimal`). Idempotent: only on a new project, and never overwrites
+// an existing prompt — the FIRST coding prompt is the project description.
+function seedOriginalPrompt(cwd, prompt) {
+    const text = (prompt || '').trim();
+    if (!text)
+        return;
+    const state = (0, state_1.readState)(cwd);
+    if (state.mode !== 'new-project')
+        return;
+    if ((0, project_context_1.projectContextOriginalPrompt)(state))
+        return;
+    try {
+        (0, state_1.writeState)(cwd, { ...state, originalPrompt: text });
+    }
+    catch {
+        // best-effort; the wizard still runs, just without prompt-tailored defaults
+    }
+}
 // Prepend a note (e.g. the login-success line) to a context result, leaving
 // non-context results untouched.
 function prependContext(prefix, result) {
@@ -97,8 +115,7 @@ function runUserPromptSubmit(ctx) {
                 return (0, result_1.context)(sessionBlock('login-failed', { REASON: login.reason || 'unknown failure' }), { systemMessage: 'traffic-one authentication failed' });
             }
             // Authenticated this turn → fall through and run the authed SessionStart
-            // body now, so onboarding starts in the SAME response. (Mid-session auth
-            // otherwise never reaches that body, so onboarding never starts.)
+            // body now, so setup starts in the SAME response.
             loginSucceeded = true;
         }
         else if ((0, auth_gate_1.isSessionExpiryReauth)(authGate)) {
@@ -112,13 +129,23 @@ function runUserPromptSubmit(ctx) {
             return (0, auth_gate_1.authRequiredHookResult)('UserPromptSubmit', { authChoiceWrite: writeResult });
         }
     }
+    const uninitialized = !fs.existsSync((0, state_1.statePath)(cwd)) && !fs.existsSync((0, state_1.legacyStatePath)(cwd));
+    // ── Coding-intent gate ──
+    // On a brand-new project with no active wizard, a clearly non-coding prompt
+    // must not activate Traffic One. The instant state exists, a wizard server is
+    // running, the user just authenticated, or the prompt looks like build/
+    // implementation work, the normal path runs — an active project is never
+    // mis-skipped (and the PreToolUse gate still fires if a tool is attempted).
+    if (uninitialized && !loginSucceeded && !(0, registry_1.serverRecordExists)(cwd) && !(0, detection_1.isLikelyCodingPrompt)(promptText)) {
+        return (0, result_1.noop)();
+    }
     // A fresh login, or any authenticated interaction on a not-yet-initialized
     // project (auth completed mid-session, so SessionStart returned the gate and
     // never ran the authed body), runs that authed SessionStart body now — this is
-    // where new-project onboarding / existing-codebase auto-detect actually starts.
-    const uninitialized = !fs.existsSync((0, state_1.statePath)(cwd)) && !fs.existsSync((0, state_1.legacyStatePath)(cwd));
+    // where new-project setup / existing-codebase auto-detect actually starts.
     if (loginSucceeded || uninitialized) {
         const bootstrapped = (0, session_start_1.runSessionStartAuthed)(ctx);
+        seedOriginalPrompt(cwd, promptText);
         return loginSucceeded ? prependContext(`${sessionBlock('login-success')}\n\n`, bootstrapped) : bootstrapped;
     }
     const state = (0, state_1.readEffectiveState)(cwd);
@@ -130,51 +157,19 @@ function runUserPromptSubmit(ctx) {
     // ── Team-mode-change approval recorded from the prompt ──
     const teamModeApproval = (0, team_mode_approval_1.updateTeamModeChangeApprovalFromPrompt)(cwd, normalizedState, promptText);
     if (teamModeApproval.recorded) {
-        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized', {})}`;
+        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${block('team-mode-switch-authorized')}`;
         return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [team mode switch authorized]' });
     }
-    const validStack = Boolean(state.stack && (0, config_1.isKnownStack)(state.stack));
-    const isIncomplete = !validStack
-        || state.onboardingComplete !== true
-        || (state.mode === 'new-project' && (0, predicates_1.isNewProjectOnboardingIncomplete)(normalizedState));
-    // ── Per-user local preferences required before mutating Traffic One work ──
-    // Already-configured projects can be shared across users. The repo-local
-    // state may be complete, but each user still needs local preferences.
-    const localPrefs = validStack && state.onboardingComplete === true
-        ? (0, local_prefs_1.localPreferenceContext)(normalizedState, stack, 'user-prompt', block)
-        : null;
-    if (localPrefs) {
-        return (0, result_1.context)(localPrefs.context, {
-            systemMessage: `traffic-one [${stack}] local preferences required`,
-            ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+    // ── Onboarding incomplete → surface the local setup wizard URL ──
+    // The wizard owns the questions + state writes; the agent only points the user
+    // at it and waits. Covers new-project onboarding AND an already-configured
+    // project missing this user's local preferences.
+    if (!(0, flow_1.computeOnboarding)(cwd).done) {
+        seedOriginalPrompt(cwd, promptText);
+        const server = (0, ensure_1.ensureOnboardingServer)(cwd);
+        return (0, result_1.context)(`[ACTIVE STACK: ${stack}]\n\n${block('server-deny-reason', { URL: server.url })}`, {
+            systemMessage: 'traffic-one [setup required]',
         });
-    }
-    // ── Team Confirmation still pending (fallback for incomplete new-project flows) ──
-    if ((0, predicates_1.needsTeamConfirmation)(normalizedState)) {
-        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${(0, fallbacks_1.teamConfirmationPromptContext)(normalizedState, 'user-prompt', block)}`;
-        const promptRequest = (0, prompts_1.onboardingPromptRequestForStep)('team-confirmation', {
-            level: (0, prompts_1.performanceLevelOf)(normalizedState), fallbackText: additionalContext,
-        });
-        return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [team confirmation required]', promptRequest });
-    }
-    // ── Re-inject the short onboarding reminder while a new project is incomplete ──
-    if (isIncomplete && state.mode === 'new-project') {
-        const reminder = (0, directives_1.onboardingReminderShort)(block);
-        const classification = promptText ? (0, detection_1.classifyPromptForStack)(promptText) : null;
-        const promptRequest = (0, fallbacks_1.nextOnboardingPromptRequest)(normalizedState, 'user-prompt', block);
-        const classificationContext = classification
-            ? block('first-prompt-classification', {
-                STACK: classification.stack,
-                FRONTEND: classification.frontend,
-                BACKEND: classification.backend,
-                MOBILE: classification.mobile.enabled ? classification.mobile.framework : 'none',
-                CURRENT_THREAD_FALLBACK: (0, directives_1.currentThreadFallbackDirective)(block),
-                HOST_POPUP: (0, directives_1.hostPopupInstruction)(block),
-                NEXT_STEP: (0, fallbacks_1.nextOnboardingStepPrompt)(normalizedState, 'user-prompt', block),
-            })
-            : (0, fallbacks_1.nextOnboardingStepPrompt)(normalizedState, 'user-prompt', block);
-        const additionalContext = `[ACTIVE STACK: ${stack}]\n\n${classificationContext ? `${classificationContext}\n\n` : ''}${reminder}`;
-        return (0, result_1.context)(additionalContext, { systemMessage: 'traffic-one [onboarding incomplete]', ...(promptRequest ? { promptRequest } : {}) });
     }
     // ── Generic convergence ──
     const materialized = (0, materialize_1.materializeProjectIfNeeded)(cwd, { trigger: 'generic user-prompt convergence' });

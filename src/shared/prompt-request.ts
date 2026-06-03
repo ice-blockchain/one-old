@@ -1,7 +1,7 @@
 // src/shared/prompt-request.ts
-// Host modal/popup-input request specs. Ported 1:1 from the prompt-request
-// builders in scripts/hook-runtime/handlers/_helpers.cjs. Shared by the auth,
-// onboarding, and agent-model gates.
+// Host modal/popup-input request specs. Shared by the auth + agent-model gates.
+// The new-project onboarding popups were removed when onboarding moved into the
+// local wizard server — the wizard owns those questions now.
 
 export interface PromptOption {
   id: string;
@@ -83,85 +83,4 @@ export function sessionExpiredPromptRequest(fallbackText?: string): PromptReques
     question: 'Your Traffic One session expired. Enter your Traffic One API key to re-authenticate.',
     ...(fallbackText ? { fallbackText } : {}),
   });
-}
-
-// ── New-project onboarding popup requests (ported 1:1 from _helpers.cjs) ──────
-
-export function openCodePromptRequest(fallbackText?: string): PromptRequest {
-  return singleSelectPromptRequest({
-    id: 'traffic-one.onboarding.open-code',
-    title: 'OpenCode',
-    question: 'Save tokens by delegating coding tasks to OpenCode (a free local agent)?',
-    options: [
-      { id: 'enable', label: 'Enable OpenCode delegation' },
-      { id: 'not_now', label: 'Not now' },
-    ],
-    ...(fallbackText ? { fallbackText } : {}),
-  });
-}
-
-export function performancePromptRequest(fallbackText?: string): PromptRequest {
-  return singleSelectPromptRequest({
-    id: 'traffic-one.onboarding.performance',
-    title: 'Performance',
-    question: 'How do you want to run agents for this build?',
-    options: [
-      { id: 'high', label: 'High (Recommended)' },
-      { id: 'balanced', label: 'Balanced' },
-      { id: 'low', label: 'Low' },
-    ],
-    ...(fallbackText ? { fallbackText } : {}),
-  });
-}
-
-export function mobilePromptRequest(fallbackText?: string): PromptRequest {
-  return singleSelectPromptRequest({
-    id: 'traffic-one.onboarding.mobile',
-    title: 'Mobile App',
-    question: 'Do you want a mobile app too?',
-    options: [
-      { id: 'web_only', label: 'Web only (Recommended)' },
-      { id: 'ionic_capacitor', label: 'Ionic + Capacitor' },
-      { id: 'react_native_expo', label: 'React Native / Expo' },
-    ],
-    ...(fallbackText ? { fallbackText } : {}),
-  });
-}
-
-export function codeGraphPromptRequest(fallbackText?: string): PromptRequest {
-  return singleSelectPromptRequest({
-    id: 'traffic-one.onboarding.code-graph',
-    title: 'Code Graph',
-    question: 'Which provider should we use for the codebase graph?',
-    options: [
-      { id: 'gitnexus', label: 'GitNexus' },
-      { id: 'graphify', label: 'graphify' },
-    ],
-    ...(fallbackText ? { fallbackText } : {}),
-  });
-}
-
-export function teamConfirmationPromptRequest(level: string, fallbackText?: string): PromptRequest {
-  return singleSelectPromptRequest({
-    id: 'traffic-one.onboarding.team-confirmation',
-    title: 'Team',
-    question: `Approve the ${level || 'selected'} team line-up above?`,
-    options: [
-      { id: 'approve', label: 'Approve' },
-      { id: 'repick_performance', label: 'Re-pick performance' },
-      { id: 'customise', label: 'Customise' },
-    ],
-    ...(fallbackText ? { fallbackText } : {}),
-  });
-}
-
-export function projectContextPromptRequest(fallbackText?: string): PromptRequest {
-  return {
-    id: 'traffic-one.onboarding.project-context',
-    kind: 'text',
-    title: 'Project Context',
-    question: 'Answer the MVP-context questions in one reply so the build plan is complete.',
-    blocking: true,
-    ...(fallbackText ? { fallbackText } : {}),
-  };
 }

@@ -7,12 +7,23 @@ import * as path from 'path';
 import { makeClaudeAdapter } from '../../../adapters/claude';
 import { dispatch } from '../../../core/dispatch';
 import { runUserPromptSubmit } from '../prompt-submit';
-import type { Ctx, Handler, HookInput } from '../../../core/types';
+import type { Ctx, Handler, HookInput, HookResult } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+// The wizard URL is surfaced (not a per-step popup); ensure() returns a placeholder
+// URL under NO_SPAWN so no real server is started.
+function assertSetupRequired(r: HookResult): void {
+  assert.equal(r.kind, 'context');
+  if (r.kind === 'context') {
+    assert.equal(r.systemMessage, 'traffic-one [setup required]');
+    assert.ok(r.context.includes('http://127.0.0.1'), 'context carries the wizard URL');
+    assert.equal(r.promptRequest, undefined);
+  }
 }
 
 // Fresh local auth → authGateForHook authenticated WITHOUT spawning the CLI.
@@ -22,9 +33,11 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
     version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
     expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
@@ -37,6 +50,7 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -94,19 +108,34 @@ test('noop inside the plugin authoring root', () => {
   assert.equal(runUserPromptSubmit(ctx(process.cwd(), 'hello')).kind, 'noop');
 });
 
-test('authed + no state file → bootstraps new-project onboarding (mid-session auth)', () => {
+test('authed + no state + a coding prompt → bootstraps new-project setup (mid-session auth)', () => {
   withAuthedProject(null, (cwd) => {
-    const r = runUserPromptSubmit(ctx(cwd, 'hi'));
+    const r = runUserPromptSubmit(ctx(cwd, 'build a todo app with auth'));
     assert.equal(r.kind, 'context');
-    // Greenfield + authenticated (e.g. auth completed mid-session, so SessionStart
-    // returned the auth gate and never ran the authed body) → run that body now →
-    // the new-project onboarding directive, NOT the old empty "traffic-one active".
     if (r.kind === 'context') {
+      // Greenfield + authenticated → run the authed SessionStart body now →
+      // the new-project setup directive + baseline rules.
       assert.ok(
-        r.context.includes('Baseline rules') || r.context.toLowerCase().includes('onboarding'),
-        'expected the new-project onboarding bootstrap, got an empty/active noop',
+        r.context.includes('Baseline rules') || r.context.toLowerCase().includes('setup'),
+        'expected the new-project setup bootstrap',
       );
     }
+  });
+});
+
+test('seeds the user request into new-project state so the wizard can derive the stack', () => {
+  withAuthedProject(null, (cwd) => {
+    runUserPromptSubmit(ctx(cwd, 'create a modern learning platform with courses and an admin area'));
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(state.mode, 'new-project');
+    assert.ok(String(state.originalPrompt || '').includes('learning platform'), 'original prompt persisted for the wizard');
+  });
+});
+
+test('coding-intent gate: authed + no state + a clearly non-coding prompt → noop (Traffic One stays inactive)', () => {
+  withAuthedProject(null, (cwd) => {
+    assert.equal(runUserPromptSubmit(ctx(cwd, 'hi there, how are you today?')).kind, 'noop');
+    assert.equal(runUserPromptSubmit(ctx(cwd, 'what is the capital of France?')).kind, 'noop');
   });
 });
 
@@ -117,10 +146,12 @@ test('codex prompt mentioning an inner existing app bootstraps Traffic One in th
   const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   try {
     env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(root, 'auth.json');
     env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
     env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(root, 'prefs.json');
+    env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
     fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
       version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
       expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
@@ -136,13 +167,13 @@ test('codex prompt mentioning an inner existing app bootstraps Traffic One in th
       stdin: JSON.stringify({
         hook_event_name: 'UserPromptSubmit',
         cwd: root,
-        prompt: 'please continue in "one-nextjs"',
+        prompt: 'please continue building the nextjs app in "one-nextjs"',
       }),
       argv: [],
     });
     const parsed = JSON.parse(out);
-    assert.equal(parsed.systemMessage, 'traffic-one [custom-frontend] local preferences required');
-    assert.ok(parsed.hookSpecificOutput.additionalContext.includes('local preferences are required'));
+    assert.equal(parsed.systemMessage, 'traffic-one [custom-frontend] setup required');
+    assert.ok(parsed.hookSpecificOutput.additionalContext.toLowerCase().includes('setup'));
     assert.ok(fs.existsSync(path.join(child, '.traffic-one', '.one.json')));
     const childState = JSON.parse(fs.readFileSync(path.join(child, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(childState.stack, 'custom-frontend');
@@ -154,68 +185,33 @@ test('codex prompt mentioning an inner existing app bootstraps Traffic One in th
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('authed + incomplete new project → onboarding reminder + next-step popup', () => {
+test('authed + incomplete new project → setup required + wizard URL (no popup)', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
-    const r = runUserPromptSubmit(ctx(cwd, 'build a shop with checkout'));
-    assert.equal(r.kind, 'context');
-    if (r.kind === 'context') {
-      assert.ok(r.systemMessage?.includes('onboarding incomplete'));
-      assert.ok(r.context.includes('FIRST PROMPT STACK CLASSIFICATION'));
-      assert.ok(r.context.includes('onboarding still incomplete'));
-      assert.ok(r.promptRequest);
-    }
+    assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'build a shop with checkout')));
   });
 });
 
-test('authed + unapproved subagent line-up → team confirmation required', () => {
+test('authed + unapproved subagent line-up → setup required (wizard owns team confirmation)', () => {
   withAuthedProject(completeSharedState(), (cwd) => {
     writeLocalPrefs({ performance: { level: 'high', source: 'prompted' }, team: { mode: 'subagents', source: 'prompted', approved: false } });
-    const r = runUserPromptSubmit(ctx(cwd, 'continue'));
-    assert.equal(r.kind, 'context');
-    if (r.kind === 'context') {
-      assert.equal(r.systemMessage, 'traffic-one [default] local preferences required');
-      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.team-confirmation');
-    }
+    assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'continue')));
   });
 });
 
-test('local preference hook asks OpenCode before Team Confirmation', () => {
+test('authed + complete shared new project but missing local prefs → setup required + URL', () => {
   withAuthedProject(completeSharedState(), (cwd) => {
-    writeLocalPrefs({ openCode: undefined, performance: { level: 'high', source: 'prompted' }, team: { mode: 'subagents', source: 'prompted', approved: false } });
-    const r = runUserPromptSubmit(ctx(cwd, 'continue'));
-    assert.equal(r.kind, 'context');
-    if (r.kind === 'context') {
-      assert.equal(r.systemMessage, 'traffic-one [default] local preferences required');
-      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
-    }
+    assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'add a button')));
   });
 });
 
-test('authed + complete shared new project but missing local prefs → local-pref prompt', () => {
-  withAuthedProject(completeSharedState(), (cwd) => {
-    const r = runUserPromptSubmit(ctx(cwd, 'add a button'));
-    assert.equal(r.kind, 'context');
-    if (r.kind === 'context') {
-      assert.equal(r.systemMessage, 'traffic-one [default] local preferences required');
-      assert.ok(r.context.includes('local preferences are required'));
-      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
-    }
-  });
-});
-
-test('authed + complete existing project but missing local prefs → local-pref prompt', () => {
+test('authed + complete existing project but missing local prefs → setup required + URL', () => {
   withAuthedProject(existingSharedState(), (cwd) => {
-    const r = runUserPromptSubmit(ctx(cwd, 'add a button'));
-    assert.equal(r.kind, 'context');
-    if (r.kind === 'context') {
-      assert.equal(r.systemMessage, 'traffic-one [minimal] local preferences required');
-      assert.ok(r.context.includes('local preferences are required'));
-      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
-    }
+    assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'add a button')));
   });
 });
 

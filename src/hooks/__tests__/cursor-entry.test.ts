@@ -9,11 +9,12 @@ import { runCursorHook } from '../cursor-entry';
 async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-entry-'));
   const env = process.env;
-  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH };
+  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
+  env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // unit tests must never spawn a real wizard server
   if (opts.authed) {
     fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
       version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
@@ -26,6 +27,7 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
     for (const [k, v] of Object.entries({
       TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs, TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
+      TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -67,7 +69,8 @@ test('beforeShellExecution AUTHED on a fresh new-project dir → onboarding gate
     const r = await runCursorHook('before-shell-execution', stdin);
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, 'deny');
-    assert.ok(out.user_message.includes('onboarding'));
+    assert.ok(out.user_message.includes('http://127.0.0.1'), 'deny carries the wizard URL');
+    assert.ok(/setup/i.test(out.user_message));
   });
 });
 

@@ -12,13 +12,12 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 // longer carry verbatim fallbacks — so a missing/renamed block would silently
 // degrade to an empty string at runtime. This test fails the build instead: every
 // block referenced in code must exist in the SKILL.md.
+// Onboarding questions now live in the wizard server, so the only `block('…')`
+// callers left are the gate + the two session handlers (deny / setup-pending /
+// team-mode guards).
 const ONBOARDING_SOURCES = [
-  'src/shared/onboarding/fallbacks.ts',
-  'src/shared/onboarding/directives.ts',
-  'src/shared/onboarding/perf-directives.ts',
-  'src/shared/onboarding/session-directive.ts',
-  'src/shared/onboarding/local-prefs.ts',
   'src/modules/onboarding-gate/handler.ts',
+  'src/modules/session/session-start.ts',
   'src/modules/session/prompt-submit.ts',
 ];
 
@@ -39,7 +38,7 @@ test('every onboarding-gate block referenced in code exists in its SKILL.md', ()
     'utf8',
   );
   const referenced = referencedOnboardingBlocks();
-  assert.ok(referenced.size >= 15, `expected to discover the onboarding block refs, found ${referenced.size}`);
+  assert.ok(referenced.size >= 5, `expected to discover the onboarding block refs, found ${referenced.size}`);
   const missing = [...referenced].filter((name) => extractBlock(skill, name) === null);
   assert.deepEqual(missing, [], `onboarding-gate SKILL.md is missing referenced blocks:\n${missing.join('\n')}`);
 });
