@@ -45,10 +45,6 @@ fi
 mkdir -p "$prefix/bin"
 cat > "$prefix/bin/opencode" <<'OPENCODE'
 #!/bin/sh
-if [ "$1" = "--version" ]; then
-  echo "opencode 1.15.13"
-  exit 0
-fi
 exit 0
 OPENCODE
 chmod +x "$prefix/bin/opencode"
@@ -64,5 +60,7 @@ exit 0
     const args = fs.readFileSync(log, 'utf8');
     assert.ok(args.includes('--prefix'));
     assert.ok(args.includes('opencode-ai@1.15.13'));
+    const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || '', 'utf8'));
+    assert.equal(prefs.toolchain?.opencode?.installedVersion, '1.15.13');
   });
 });

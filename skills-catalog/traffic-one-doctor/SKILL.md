@@ -39,8 +39,10 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
    workspace coverage, and whether `mcp-auth` is configured.
 6. **Session incident debug** — with `--session <id>`, resolves the Codex JSONL
    transcript and reports hook payload count, prompt requests, Traffic One root
-   instruction injection, auth expiry at session start, and mutating tool use
-   before the auth gate.
+   instruction injection, session source, auth-choice side effects, auth expiry
+   at session start, and mutating tool use before the auth gate. `auth.json` is
+   login-only: it is created only after the user submits a valid API key through
+   the Traffic One login prompt.
 
 It outputs a JSON report with one of three summaries:
 
@@ -97,6 +99,7 @@ fixes that aren't needed.
 | `CODEX_WORKSPACE_UNTRUSTED` | Current workspace is outside trusted Codex project roots, so hooks may be skipped. | No (user trusts workspace/parent) |
 | `CODEX_SESSION_NOT_FOUND` | `--session` id was not found in `~/.codex/sessions`. | No |
 | `CODEX_HOOKS_NOT_INVOKED_FOR_SESSION` | The transcript has no hook payloads or prompt requests. Hooks likely did not run in that session. | No (restart/trust workspace) |
+| `CODEX_HOOK_OUTPUT_NOT_INJECTED` | Traffic One auth-choice state changed near session start, but the transcript has no hook output, prompt requests, or permission decisions. The hook side effect happened, but Codex did not deliver the auth prompt to the model/UI. | No (restart after plugin/host fix) |
 | `TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED` | The transcript's session-start instructions did not include Traffic One root instructions. | No (plugin/host activation) |
 | `TRAFFIC_ONE_AUTH_EXPIRED_AT_SESSION_START` | Local auth state was expired before the debugged session started. A working hook should have prompted. | Via auth flow |
 | `SESSION_MUTATED_BEFORE_TRAFFIC_ONE_AUTH_GATE` | A mutating tool was used before any Traffic One auth gate appeared. Treat artifacts from that session as non-Traffic-One output. | Review manually |

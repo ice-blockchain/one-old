@@ -27,6 +27,7 @@ import {
   mergeToolchainStamp,
   probeTool,
   probeToolVersion,
+  toolStatus,
 } from '../toolchain';
 
 type Rec = Record<string, unknown>;
@@ -82,6 +83,35 @@ function graphifyPackageSpec(): string {
     : 'graphifyy';
 }
 
+function graphifyRecommendedVersion(): string | null {
+  const spec = getToolSpec('graphify');
+  return typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
+}
+
+function graphifyManagedPackageVersion(): string | null {
+  const python = managedVenvPython('graphify');
+  if (!fs.existsSync(python)) return null;
+  let result;
+  try {
+    result = spawnSync(python, ['-m', 'pip', 'show', 'graphifyy'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10 * 1000,
+    });
+  } catch {
+    return null;
+  }
+  if (result.status !== 0) return null;
+  const match = /^Version:\s*([0-9]+\.[0-9]+\.[0-9]+)/m.exec(result.stdout || '');
+  return match && match[1] ? match[1] : null;
+}
+
+function graphifyInstalledVersion(binPath: string, fallbackToPinned: boolean = false): string | null {
+  return probeToolVersion('graphify', { binPath })
+    || (path.resolve(binPath) === path.resolve(managedVenvBin('graphify', 'graphify')) ? graphifyManagedPackageVersion() : null)
+    || (fallbackToPinned ? graphifyRecommendedVersion() : null);
+}
+
 function stampToolchain(cwd: string, binPath: string, version?: string | null): void {
   if (!version) return;
   const current = readState(cwd);
@@ -98,7 +128,7 @@ function installWithPipx(cwd: string): InstallResult {
     });
     const binPath = which('graphify');
     if (result.status === 0 && binPath) {
-      const installedVersion = probeToolVersion('graphify', { binPath });
+      const installedVersion = graphifyInstalledVersion(binPath, true);
       stampToolchain(cwd, binPath, installedVersion);
       return { action: 'installed-pipx', error: null, binPath, installedVersion };
     }
@@ -163,7 +193,7 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
       binPath: null,
     };
   }
-  const installedVersion = probeToolVersion('graphify', { binPath });
+  const installedVersion = graphifyInstalledVersion(binPath, true);
   stampToolchain(cwd, binPath, installedVersion);
   return {
     action: previousError ? 'installed-venv' : 'upgraded-venv',
@@ -191,10 +221,13 @@ export function ensureGraphifyTool(cwd: string = process.cwd(), opts: GraphifyOp
   ];
   for (const candidate of candidates) {
     if (!candidate.binPath) continue;
-    const probed = probeTool('graphify', candidate.binPath);
-    if (isToolUsable(probed.status)) {
-      stampToolchain(cwd, candidate.binPath, probed.version);
-      return { ok: true, action: candidate.action, error: null, binPath: candidate.binPath, installedVersion: probed.version };
+    const version = candidate.action === 'used-managed'
+      ? graphifyInstalledVersion(candidate.binPath)
+      : probeTool('graphify', candidate.binPath).version;
+    const status = toolStatus('graphify', version);
+    if (isToolUsable(status.status)) {
+      stampToolchain(cwd, candidate.binPath, version);
+      return { ok: true, action: candidate.action, error: null, binPath: candidate.binPath, installedVersion: version };
     }
   }
 
@@ -278,7 +311,7 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
   // so doctor + post-build hooks can compare installed vs recommended.
   let installedVersion: string | null = null;
   try {
-    installedVersion = probeToolVersion('graphify', { binPath: ensured.binPath });
+    installedVersion = graphifyInstalledVersion(ensured.binPath) || ensured.installedVersion || null;
     if (installedVersion) {
       stampToolchain(cwd, ensured.binPath, installedVersion);
     }

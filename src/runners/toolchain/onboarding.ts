@@ -54,6 +54,11 @@ function opencodePackageSpec(): string {
   return typeof spec?.recommended === 'string' && spec.recommended ? `${pkg}@${spec.recommended}` : pkg;
 }
 
+function opencodeRecommendedVersion(): string | null {
+  const spec = getToolSpec('opencode');
+  return typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
+}
+
 export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolResult {
   const managedBin = managedNpmBin('opencode', 'opencode');
   const candidates = [
@@ -89,7 +94,7 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     };
   }
 
-  const installedVersion = probeToolVersion('opencode', { binPath: managedBin });
+  const installedVersion = probeToolVersion('opencode', { binPath: managedBin }) || opencodeRecommendedVersion();
   stampToolchain(cwd, 'opencode', managedBin, installedVersion);
   return { tool: 'opencode', ok: true, action: 'installed-managed-npm', error: null, binPath: managedBin, installedVersion };
 }

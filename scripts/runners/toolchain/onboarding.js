@@ -68,6 +68,10 @@ function opencodePackageSpec() {
     const pkg = typeof spec?.npmPackage === 'string' && spec.npmPackage ? spec.npmPackage : 'opencode-ai';
     return typeof spec?.recommended === 'string' && spec.recommended ? `${pkg}@${spec.recommended}` : pkg;
 }
+function opencodeRecommendedVersion() {
+    const spec = (0, index_1.getToolSpec)('opencode');
+    return typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
+}
 function ensureOpenCodeTool(cwd = process.cwd()) {
     const managedBin = (0, index_1.managedNpmBin)('opencode', 'opencode');
     const candidates = [
@@ -101,7 +105,7 @@ function ensureOpenCodeTool(cwd = process.cwd()) {
             binPath: null,
         };
     }
-    const installedVersion = (0, index_1.probeToolVersion)('opencode', { binPath: managedBin });
+    const installedVersion = (0, index_1.probeToolVersion)('opencode', { binPath: managedBin }) || opencodeRecommendedVersion();
     stampToolchain(cwd, 'opencode', managedBin, installedVersion);
     return { tool: 'opencode', ok: true, action: 'installed-managed-npm', error: null, binPath: managedBin, installedVersion };
 }
