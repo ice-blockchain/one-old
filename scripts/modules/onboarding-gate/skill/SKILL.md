@@ -14,23 +14,26 @@ never disables the gate.
 
 <!-- T1BLOCK:BEGIN server-deny-reason -->
 Traffic One setup is required before building in this project. OPEN THE SETUP WIZARD
-IN YOUR EDITOR'S PREVIEW PANE — do NOT open an external browser:
+IN YOUR EDITOR'S IN-APP PREVIEW PANE — do NOT open an external browser. Traffic One
+has ALREADY written this project's .claude/launch.json, so do NOT create or edit that
+file yourself:
 
-- Claude Code: call preview_start with name "traffic-one-setup" to show the wizard in
-  the in-app preview pane (it is already registered in this project's
-  .claude/launch.json).
-- Cursor: open this URL in the built-in Simple Browser.
-- Codex / other host: open this URL in your in-app web view if you have one.
+- Claude Code: your FIRST action is to call preview_start with name
+  "traffic-one-setup" — it is already registered in .claude/launch.json and points at
+  the running wizard, so it opens in the in-app preview pane.
+- Cursor: open the link below in the built-in Simple Browser.
+- Codex / other host: open the link below in your in-app web view if you have one.
 
-Only if you have NO in-app preview, give the user this clickable link to open:
+If you have no in-app preview at all, give the user this clickable link to open:
 {{URL}}
 
 The wizard runs locally, installs the tools it needs (showing progress), and writes
 the configuration. Read-only orientation (pwd, ls, reading files, searching) is
 allowed now, but feature writes, installs, and subagent work stay blocked until
 setup completes. When the wizard says it is done, continue your request and Traffic
-One picks up where you left off. Do NOT tell the user to restart the host, and do
-NOT try to answer these setup questions yourself in chat — the wizard owns them.
+One picks up where you left off. Do NOT restart the host, do NOT answer these setup
+questions yourself in chat, and do NOT hand-write launch.json — the wizard owns the
+questions and Traffic One owns the preview config.
 
 If the user would rather not use Traffic One, they can choose "Continue without
 Traffic One" from the Traffic One auth prompt.

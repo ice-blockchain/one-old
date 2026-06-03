@@ -45,6 +45,7 @@ exports.ensureOnboardingServer = ensureOnboardingServer;
 const child_process_1 = require("child_process");
 const path = __importStar(require("path"));
 const paths_1 = require("../paths");
+const launch_config_1 = require("./launch-config");
 const registry_1 = require("./registry");
 function processAlive(pid) {
     if (!Number.isInteger(pid) || pid <= 0)
@@ -82,9 +83,18 @@ function ensureOnboardingServer(cwd, options = {}) {
     const env = options.env || process.env;
     const isAlive = options.isAlive || processAlive;
     const launch = options.launch || defaultLaunch;
+    // Register the in-app preview entry (.claude/launch.json) SYNCHRONOUSLY before
+    // returning, so preview_start finds it the instant the gate denies — never rely
+    // on the detached child's own async self-registration having landed yet. No-op
+    // for port 0 (the NO_SPAWN placeholder skips this entirely).
+    const finalize = (result) => {
+        if (result.port > 0)
+            (0, launch_config_1.writeLaunchConfig)(cwd, result.port);
+        return result;
+    };
     const existing = (0, registry_1.readServerRecord)(cwd, env);
     if (existing && isAlive(existing.pid)) {
-        return { url: existing.url, port: existing.port, token: existing.token, started: false };
+        return finalize({ url: existing.url, port: existing.port, token: existing.token, started: false });
     }
     // Test/CI guard (mirrors TRAFFIC_ONE_ONE_MCP_NO_SPAWN): never spawn a real
     // detached server. Reuse a pre-seeded record if present, else hand back a
@@ -101,11 +111,11 @@ function ensureOnboardingServer(cwd, options = {}) {
     for (;;) {
         const rec = (0, registry_1.readServerRecord)(cwd, env);
         if (rec && (childPid <= 0 || rec.pid === childPid)) {
-            return { url: rec.url, port: rec.port, token: rec.token, started: true };
+            return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
         }
         if (Date.now() >= deadline) {
             if (rec)
-                return { url: rec.url, port: rec.port, token: rec.token, started: true };
+                return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
             throw new Error('traffic-one onboarding server did not become ready');
         }
         sleepSync(50);

@@ -10,6 +10,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 
 import { pluginRoot } from '../paths';
+import { writeLaunchConfig } from './launch-config';
 import { clearServerRecord, readServerRecord } from './registry';
 
 export interface EnsureResult {
@@ -63,9 +64,18 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const isAlive = options.isAlive || processAlive;
   const launch = options.launch || defaultLaunch;
 
+  // Register the in-app preview entry (.claude/launch.json) SYNCHRONOUSLY before
+  // returning, so preview_start finds it the instant the gate denies — never rely
+  // on the detached child's own async self-registration having landed yet. No-op
+  // for port 0 (the NO_SPAWN placeholder skips this entirely).
+  const finalize = (result: EnsureResult): EnsureResult => {
+    if (result.port > 0) writeLaunchConfig(cwd, result.port);
+    return result;
+  };
+
   const existing = readServerRecord(cwd, env);
   if (existing && isAlive(existing.pid)) {
-    return { url: existing.url, port: existing.port, token: existing.token, started: false };
+    return finalize({ url: existing.url, port: existing.port, token: existing.token, started: false });
   }
 
   // Test/CI guard (mirrors TRAFFIC_ONE_ONE_MCP_NO_SPAWN): never spawn a real
@@ -83,10 +93,10 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   for (;;) {
     const rec = readServerRecord(cwd, env);
     if (rec && (childPid <= 0 || rec.pid === childPid)) {
-      return { url: rec.url, port: rec.port, token: rec.token, started: true };
+      return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
     }
     if (Date.now() >= deadline) {
-      if (rec) return { url: rec.url, port: rec.port, token: rec.token, started: true };
+      if (rec) return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
       throw new Error('traffic-one onboarding server did not become ready');
     }
     sleepSync(50);
