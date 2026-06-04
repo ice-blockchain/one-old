@@ -13,6 +13,8 @@ export {
   DEFAULT_ENDPOINT,
   FRESHNESS_REASON,
   REMOTE_AUTH_CHECK_INTERVAL_MS,
+} from '../../config/auth';
+export {
   authEndpointUrl,
   authStateFreshness,
   authRemoteCheckDue,

@@ -11,10 +11,9 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-type Rec = Record<string, unknown>;
+import { CREDENTIAL_REF_VERSION, SERVICE } from '../../config/auth';
 
-export const CREDENTIAL_REF_VERSION = 1;
-export const SERVICE = 'traffic-one';
+type Rec = Record<string, unknown>;
 
 export interface CredentialRef {
   version: number;

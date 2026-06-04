@@ -2,7 +2,7 @@
 // Validators for onboarding-critical state sub-objects. Ported 1:1 from
 // scripts/hook-runtime/state/validate.cjs.
 
-import { STACK_IDS } from '../config';
+import { STACK_IDS } from '../../config/stacks';
 import { teamModeForLevel } from '../performance';
 import {
   BACKEND_IDS,
@@ -14,7 +14,7 @@ import {
   PERFORMANCE_SOURCE_IDS,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
-} from './constants';
+} from '../../config/state';
 import { hasInitializedToolchain } from './toolchain';
 
 function asObject(value: unknown): Record<string, unknown> | null {

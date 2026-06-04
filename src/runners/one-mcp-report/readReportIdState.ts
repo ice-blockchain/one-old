@@ -6,7 +6,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { LEGACY_ID_FILE, ONE_UID_FIELD, readProjectState, readText, writeProjectState } from './lib';
+import { LEGACY_ID_FILE, ONE_UID_FIELD } from '../../config/reporting';
+import { readProjectState, readText, writeProjectState } from './lib';
 import { validReportId } from './validReportId';
 
 export interface ReportIdState {

@@ -9,9 +9,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { deleteAuthChoiceState } from '../../modules/session/auth-choice';
+import { AUTH_STATE_VERSION, REFRESH_FAILURE_THRESHOLD } from '../../config/auth';
 import {
-  AUTH_STATE_VERSION,
-  REFRESH_FAILURE_THRESHOLD,
   authStatePath,
   refreshBackoffMs,
   refreshFailureCount,

@@ -7,7 +7,8 @@ import * as path from 'path';
 
 import { buildMcpPayload } from './buildMcpPayload';
 import { collectMetadata } from './collectMetadata';
-import { readJson, STATUS_FILE, stateForReport, writeJson } from './lib';
+import { SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { readJson, stateForReport, writeJson } from './lib';
 
 type Rec = Record<string, unknown>;
 
@@ -16,6 +17,7 @@ export function debugPayloadForReport(root: string, state: unknown, reportId: st
 }
 
 export function backfillDebugPayload(root: string, reportId: string, options: { state?: unknown } = {}): boolean {
+  if (!SAVE_MCP_REPORT) return false;
   const statusPath = path.join(root, STATUS_FILE);
   const status = readJson(statusPath, null) as Rec | null;
   if (!status || status.reportId !== reportId || status.mcpPayload) return false;

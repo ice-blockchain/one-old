@@ -26,10 +26,30 @@ test('effectiveTierForRole honors config + overrides; null for low', () => {
 
 test('modelForRoleHost resolves per host; modelForRole gives all columns', () => {
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude'), 'opus');
-  assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5-mini'); // cheapest
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5.4-mini'); // cheapest
   assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'opus');
   assert.equal(modelForRoleHost('low', 'senior-architect', 'claude'), null);
   assert.deepEqual(modelForRole('balanced', 'senior-frontend'), {
-    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5', cursor: 'sonnet',
+    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5.4', cursor: 'sonnet',
   });
+});
+
+test('effectiveTierForRole: planCtx makes tiers plan-aware; overrides win; legacy unchanged', () => {
+  const free = { host: 'claude', plan: 'free', useOpenCode: false };
+  const max = { host: 'claude', plan: 'max', useOpenCode: false };
+  // legacy (no planCtx) → PERFORMANCE_CONFIG default
+  assert.equal(effectiveTierForRole('high', 'senior-architect'), 'highest');
+  // plan-aware: free high architect drops to balanced; max high architect stays highest
+  assert.equal(effectiveTierForRole('high', 'senior-architect', null, free), 'balanced');
+  assert.equal(effectiveTierForRole('high', 'senior-architect', null, max), 'highest');
+  // a user override beats the plan
+  assert.equal(effectiveTierForRole('high', 'senior-architect', { 'senior-architect': 'cheapest' }, max), 'cheapest');
+  // low has no subagents → null regardless of plan
+  assert.equal(effectiveTierForRole('low', 'senior-architect', null, max), null);
+});
+
+test('modelForRoleHost threads planCtx → plan-aware model id', () => {
+  const free = { host: 'claude', plan: 'free', useOpenCode: false };
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free), 'sonnet'); // free → balanced
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null), 'opus'); // legacy → highest
 });

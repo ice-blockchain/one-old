@@ -1,6 +1,9 @@
-// src/shared/state/constants.ts
+// src/config/state.ts
 // Canonical id sets, alias maps, and staleness windows for the state machine.
-// Ported 1:1 from scripts/hook-runtime/state/constants.cjs — behavior must match.
+// THE state-vocabulary knobs (known frontends/backends, team/performance/mobile
+// vocabularies, freshness windows). The functions that read/validate against this
+// data live in src/shared/state/**. PERFORMANCE_LEVEL_IDS is the single source
+// (the resolver functions in shared/performance-config.ts read it from here).
 
 import * as path from 'path';
 

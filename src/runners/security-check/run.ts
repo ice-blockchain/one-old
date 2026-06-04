@@ -8,8 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { computeProjectFingerprint } from './fingerprint';
+import { DEFAULT_REPORT_DIR } from '../../config/security';
 import {
-  DEFAULT_REPORT_DIR,
   type ReportPaths,
   type Report,
   type ScanReport,

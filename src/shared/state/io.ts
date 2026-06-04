@@ -3,7 +3,7 @@
 // shared/fsjson (deduped — legacy state/io.cjs carried its own copies); only the
 // state-specific bits live here.
 
-import { pluginVersion } from '../version';
+import { pluginVersion } from '../../config/plugin-identity';
 
 // Legacy state writes drop milliseconds (2026-05-27T12:00:00Z, not .123Z) — keep
 // that so stamped timestamps match the previous on-disk format.

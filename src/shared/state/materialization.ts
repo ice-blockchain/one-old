@@ -3,7 +3,7 @@
 // signals. Ported 1:1 from scripts/hook-runtime/state/materialization.cjs.
 
 import { obj, type Rec } from '../obj';
-import { SUBAGENT_STALE_MS, VALID_AGENT_ROLES } from './constants';
+import { SUBAGENT_STALE_MS, VALID_AGENT_ROLES } from '../../config/state';
 
 export function stackFingerprint(state: unknown): string {
   const s = obj(state);

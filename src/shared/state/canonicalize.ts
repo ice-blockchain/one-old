@@ -2,8 +2,8 @@
 // Vocabulary canonicalization + the .one.json shape migration. Ported 1:1 from
 // scripts/hook-runtime/state/canonicalize.cjs — behavior must match exactly.
 
+import { PERFORMANCE_CONFIG } from '../../config/performance';
 import { canonicalTier } from '../model-tiers';
-import { PERFORMANCE_CONFIG } from '../performance-config';
 import {
   MOBILE_SOURCE_ALIASES,
   MOBILE_SOURCE_IDS,
@@ -13,7 +13,7 @@ import {
   TEAM_MODE_IDS,
   TEAM_SOURCE_ALIASES,
   TEAM_SOURCE_IDS,
-} from './constants';
+} from '../../config/state';
 
 type StateRecord = Record<string, unknown>;
 

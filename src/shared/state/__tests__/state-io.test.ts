@@ -7,7 +7,7 @@ import {
   TEAM_MODE_ALIASES,
   TEAM_MODE_IDS,
   VALID_AGENT_ROLES,
-} from '../constants';
+} from '../../../config/state';
 
 test('stateTimestamp drops milliseconds (legacy on-disk format)', () => {
   assert.match(stateTimestamp(), /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);

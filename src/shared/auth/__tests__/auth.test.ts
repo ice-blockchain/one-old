@@ -5,7 +5,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
-  FRESHNESS_REASON,
   authRemoteCheckDue,
   authStateFreshness,
   endpointFromEnv,
@@ -13,6 +12,7 @@ import {
   isTrafficOneAuthCommand,
   isTrafficOneDoctorCommand,
 } from '../index';
+import { FRESHNESS_REASON } from '../../../config/auth';
 
 const ENDPOINT = 'http://127.0.0.1:8787/mcp';
 function freshState(over: Record<string, unknown> = {}): Record<string, unknown> {

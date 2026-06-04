@@ -4,8 +4,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { AUTH_CHOICE_CONTINUE_TTL_MS } from '../../../config/onboarding';
 import {
-  AUTH_CHOICE_CONTINUE_TTL_MS,
   authChoiceAllowsContinue,
   authChoiceStatus,
   readAuthChoice,

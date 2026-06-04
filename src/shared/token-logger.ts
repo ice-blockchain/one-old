@@ -19,13 +19,12 @@ import {
   statePath,
 } from './state';
 
+import { LOG_REL_PATH, TOKEN_LOG_ENV_FLAG } from '../config/token-logger';
+
 type Rec = Record<string, unknown>;
 
-export const ENV_FLAG = 'TRAFFIC_ONE_TOKEN_LOG';
-export const LOG_REL_PATH = path.join('.traffic-one', 'token-log.jsonl');
-
 export function isEnabled(): boolean {
-  const v = process.env[ENV_FLAG];
+  const v = process.env[TOKEN_LOG_ENV_FLAG];
   return v === '1' || v === 'true' || v === 'yes';
 }
 

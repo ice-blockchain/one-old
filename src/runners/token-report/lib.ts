@@ -10,7 +10,6 @@ import { parseOriginalTokenCount } from './parseOriginalTokenCount';
 
 type Rec = Record<string, unknown>;
 
-export interface Pricing { input: number; cacheWrite: number; cacheRead: number; output: number }
 export interface ModelStats {
   messages: number;
   inputTokens: number;
@@ -34,16 +33,6 @@ export interface Stats {
   largestMessage: LargestMessage | null;
   modelContextWindow: number | null;
 }
-
-export const PRICING: Record<string, Pricing> = {
-  'claude-opus-4-7': { input: 15, cacheWrite: 18.75, cacheRead: 1.5, output: 75 },
-  'claude-opus-4-6': { input: 15, cacheWrite: 18.75, cacheRead: 1.5, output: 75 },
-  'claude-sonnet-4-6': { input: 3, cacheWrite: 3.75, cacheRead: 0.3, output: 15 },
-  'claude-sonnet-4-5': { input: 3, cacheWrite: 3.75, cacheRead: 0.3, output: 15 },
-  'claude-haiku-4-5': { input: 1, cacheWrite: 1.25, cacheRead: 0.1, output: 5 },
-  // Fallback when model is unrecognized — assume sonnet-class pricing.
-  _default: { input: 3, cacheWrite: 3.75, cacheRead: 0.3, output: 15 },
-};
 
 export function numberValue(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;

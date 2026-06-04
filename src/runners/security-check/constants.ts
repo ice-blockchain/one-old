@@ -1,34 +1,8 @@
 // src/runners/security-check/constants.ts
-// Shared constants + types for the pre-deployment security check.
-import * as path from 'path';
+// Shared types for the pre-deployment security check. The tunable knobs (report
+// dir, ignore lists, text extensions, stamp fields) live in config/security.ts.
 
 export type Rec = Record<string, unknown>;
-
-export const DEFAULT_REPORT_DIR = path.join('.traffic-one', 'reports', 'security');
-export const STATE_REL_PATH = '.traffic-one/.one.json';
-export const LEGACY_STATE_REL_PATH = STATE_REL_PATH;
-export const SECURITY_STAMP_FIELDS = [
-  'lastSecurityCheckAt',
-  'lastSecurityCheckStatus',
-  'lastSecurityCheckFingerprint',
-  'lastSecurityCheckReport',
-  'lastShipperApprovalAt',
-];
-
-export const TEXT_EXTENSIONS = new Set([
-  '.cjs', '.conf', '.config', '.css', '.csv', '.env', '.html', '.js', '.json',
-  '.jsx', '.md', '.mjs', '.mts', '.sql', '.toml', '.ts', '.tsx', '.txt',
-  '.yaml', '.yml',
-]);
-
-export const FINGERPRINT_IGNORES = [
-  '.git/', 'node_modules/', '.pnpm-store/', '.turbo/', '.cache/', 'dist/',
-  'build/', '.next/', '.expo/', '.traffic-one/reports/security/', '.traffic-one.deploy.log',
-];
-
-export const WALK_IGNORES = new Set([
-  '.git', 'node_modules', '.pnpm-store', '.turbo', '.cache', 'dist', 'build', '.next', '.expo',
-]);
 
 export interface Issue {
   severity: 'high' | 'medium' | 'low';

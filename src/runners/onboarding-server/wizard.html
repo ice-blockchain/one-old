@@ -318,9 +318,10 @@
       if (!team.length) return null;
       const box = el("div", { className: "team" });
       const lvl = v.meta.performanceLevel ? cap(v.meta.performanceLevel) + " performance · " : "";
+      const tierNote = v.meta.recommendedTier ? " · " + cap(v.meta.recommendedTier) + " plan tier" : "";
       box.appendChild(el("div", { className: "team-head" }, [
         el("span", { className: "t" }, ["Your senior team"]),
-        el("span", { className: "lvl" }, [lvl + team.length + " agents"]),
+        el("span", { className: "lvl" }, [lvl + team.length + " agents" + tierNote]),
       ]));
       team.forEach((m) => {
         const ic = el("div", { className: "ic" }, [(m.label || "?").charAt(0)]);

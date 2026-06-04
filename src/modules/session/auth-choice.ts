@@ -11,10 +11,9 @@ import { authStatePath } from '../../shared/auth';
 import { readJson } from '../../shared/fsjson';
 import { nowIsoNoMs, sha256 } from '../../shared/text';
 
-type Rec = Record<string, unknown>;
+import { AUTH_CHOICE_CONTINUE_TTL_MS, AUTH_CHOICE_STATE_VERSION } from '../../config/onboarding';
 
-export const AUTH_CHOICE_STATE_VERSION = 3;
-export const AUTH_CHOICE_CONTINUE_TTL_MS = 4 * 60 * 60 * 1000;
+type Rec = Record<string, unknown>;
 
 export function authChoiceStatePath(env: NodeJS.ProcessEnv = process.env): string {
   if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return path.resolve(env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH);

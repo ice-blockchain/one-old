@@ -5,7 +5,7 @@
 // MaterializeOutcome (or null when nothing happened). The one-mcp reporter is
 // injected (default no-op) — it is a Step-5 runner concern.
 
-import { STACK_IDS } from '../../shared/config';
+import { STACK_IDS } from '../../config/stacks';
 import { detectMode } from '../../shared/detection';
 import { findProjectRootForHookFile, projectRelativeHookPath } from '../../shared/hook-paths';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';

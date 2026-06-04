@@ -13,7 +13,7 @@ import {
   RUNS_REL_DIR,
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
-} from './constants';
+} from '../../config/state';
 import { stateTimestamp } from './io';
 import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
 import { writeState } from './normalize';

@@ -10,11 +10,11 @@ import * as path from 'path';
 
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { AUTH_ENABLED, FRESHNESS_REASON } from '../../config/auth';
 import {
   authRemoteCheckDue,
   authRequiredMessage,
   authStateFreshness,
-  FRESHNESS_REASON,
   isAuthenticatedLocal,
   isTrafficOneAuthCommand,
   isTrafficOneDoctorCommand,
@@ -54,7 +54,22 @@ export interface AuthGate {
   priorReason?: string | null;
 }
 
+// Effective auth enforcement: the committed default (config/auth AUTH_ENABLED),
+// overridable per-process via TRAFFIC_ONE_AUTH (1/true/on → enforce,
+// 0/false/off → bypass) so ops and tests can toggle without a code edit.
+export function authEnforced(env: NodeJS.ProcessEnv = process.env): boolean {
+  const o = (env.TRAFFIC_ONE_AUTH ?? '').trim().toLowerCase();
+  if (o === '1' || o === 'true' || o === 'on' || o === 'yes') return true;
+  if (o === '0' || o === 'false' || o === 'off' || o === 'no') return false;
+  return AUTH_ENABLED;
+}
+
 export function authGateForHook({ forceRemote = false }: { forceRemote?: boolean } = {}): AuthGate {
+  // Master kill-switch (config/auth.ts AUTH_ENABLED + TRAFFIC_ONE_AUTH override).
+  // When auth is disabled, report authenticated so every gate (session / prompt /
+  // pre-tool / materialize) passes through without spawning the CLI, prompting, or
+  // denying.
+  if (!authEnforced()) return { authenticated: true, checkedRemote: false };
   const authScript = authScriptPath();
   const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_REMOTE_CHECK_TIMEOUT_MS || '5000', 10);
   const runStatus = (args: string[]) => spawnSync(process.execPath, [authScript, ...args], {

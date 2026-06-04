@@ -17,8 +17,11 @@ import {
   projectContextOriginalPrompt,
 } from '../onboarding/project-context';
 import { detectHost } from '../host';
-import { effectiveTierForRole, modelForRoleHost, teamModeForLevel } from '../performance';
-import { PERFORMANCE_CONFIG } from '../performance-config';
+import { detectHostPlan } from '../host-plan';
+import { PERFORMANCE_CONFIG } from '../../config/performance';
+import { recommendTierForPlan } from '../model-tiers';
+import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
+import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
 import {
   mergeProjectPrefs,
@@ -74,6 +77,8 @@ export interface StepMeta {
   domainQuestions?: string[];
   team?: TeamMember[];
   performanceLevel?: string;
+  recommendedLevel?: string;
+  recommendedTier?: string;
   host?: string;
 }
 
@@ -91,14 +96,14 @@ const TEAM_ROLES: { role: string; label: string; blurb: string }[] = [
 
 // Build the per-role line-up for a performance level + host. Empty for levels with
 // no subagent team (low / main-agent) or an unknown level.
-export function buildTeamLineup(level: string, host: string, overrides?: Rec | null): TeamMember[] {
+export function buildTeamLineup(level: string, host: string, overrides?: Rec | null, planCtx?: PlanCtx | null): TeamMember[] {
   const cfg = PERFORMANCE_CONFIG[level];
   if (!cfg || cfg.teamMode !== 'subagents') return [];
   const out: TeamMember[] = [];
   for (const r of TEAM_ROLES) {
-    const tier = effectiveTierForRole(level, r.role, overrides || null);
+    const tier = effectiveTierForRole(level, r.role, overrides || null, planCtx || null);
     if (!tier) continue;
-    const model = modelForRoleHost(level, r.role, host, overrides || null) || tier;
+    const model = modelForRoleHost(level, r.role, host, overrides || null, planCtx || null) || tier;
     out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model });
   }
   return out;
@@ -154,7 +159,7 @@ const STEP_META: Record<Exclude<WizardStep, null | 'finalize'>, Omit<StepMeta, '
     title: 'Performance',
     question: 'How do you want to run agents for this build?',
     options: [
-      { id: 'high', label: 'High', hint: 'Recommended — a multi-agent senior team' },
+      { id: 'high', label: 'High', hint: 'A multi-agent senior team' },
       { id: 'balanced', label: 'Balanced', hint: 'Multi-agent team on cheaper tiers' },
       { id: 'low', label: 'Low', hint: 'Single main agent' },
     ],
@@ -237,6 +242,7 @@ export function computeOnboarding(cwd: string): OnboardingView {
 
   const meta = metaForStep(step, originalPrompt);
   if (step === 'team-confirmation') enrichTeamMeta(meta, state);
+  if (step === 'performance') enrichPerformanceMeta(meta, state);
 
   return {
     mode,
@@ -256,8 +262,29 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
   const host = detectHost();
-  meta.team = buildTeamLineup(level, host, overrides);
+  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: obj(state.openCode)?.enabled === true };
+  meta.team = buildTeamLineup(level, host, overrides, planCtx);
   meta.performanceLevel = level;
+  meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
+  meta.host = host;
+}
+
+// Pre-select the wizard's recommended performance level from the detected plan +
+// the OpenCode opt-in: move it first and tag its hint "Recommended". Clones the
+// option objects so the shared STEP_META copy is never mutated.
+function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
+  const host = detectHost();
+  const plan = detectHostPlan(host);
+  const useOpenCode = obj(state.openCode)?.enabled === true;
+  const recommended = recommendLevelForPlan(host, plan, useOpenCode);
+  const options = (meta.options || []).map((o) => ({ ...o }));
+  for (const o of options) {
+    if (o.id === recommended) o.hint = o.hint ? `Recommended — ${o.hint}` : 'Recommended';
+  }
+  options.sort((a, b) => (a.id === recommended ? -1 : b.id === recommended ? 1 : 0));
+  meta.options = options;
+  meta.recommendedLevel = recommended;
+  meta.recommendedTier = recommendTierForPlan(host, plan, useOpenCode);
   meta.host = host;
 }
 
