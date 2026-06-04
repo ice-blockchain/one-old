@@ -32,6 +32,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',
   'onboarding-server.cjs': './runners/onboarding-server/index.js',
+  'onboarding-wait.cjs': './runners/onboarding-wait/index.js',
 };
 
 function shimSource(target: string): string {
