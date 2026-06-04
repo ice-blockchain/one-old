@@ -45,7 +45,8 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
     // common/auth-gate.md -> auth-required.mdc (special slug).
     const authPath = path.join('.cursor', 'rules', 'auth-required.mdc');
     assert.ok(byPath.has(authPath));
-    assert.ok(byPath.get(authPath)?.startsWith('<!-- GENERATED FROM: rules/common/auth-gate.md;'));
+    assert.ok(byPath.get(authPath)?.startsWith('---\n'));
+    assert.ok(byPath.get(authPath)?.includes('<!-- GENERATED FROM: rules/common/auth-gate.md;'));
 
     // agents/senior-architect.md -> 00-agent-senior-architect.mdc (always-on mirror).
     const agentPath = path.join('.cursor', 'rules', '00-agent-senior-architect.mdc');
@@ -53,9 +54,11 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
     assert.ok(byPath.get(agentPath)?.includes('alwaysApply: true'));
     assert.ok(byPath.get(agentPath)?.includes('Cursor has no first-class'));
 
-    // Every generated mirror carries the GENERATED-FROM marker + ends with a newline.
+    // Cursor requires .mdc frontmatter to be the first bytes. The generated
+    // marker lives below the frontmatter so Cursor does not reject the file.
     for (const doc of docs) {
-      assert.ok(doc.content.startsWith('<!-- GENERATED FROM: '), `missing marker: ${doc.relPath}`);
+      assert.ok(doc.content.startsWith('---\n'), `frontmatter must start file: ${doc.relPath}`);
+      assert.ok(doc.content.includes('<!-- GENERATED FROM: '), `missing marker: ${doc.relPath}`);
       assert.ok(doc.content.endsWith('\n'), `missing trailing newline: ${doc.relPath}`);
     }
   } finally {
