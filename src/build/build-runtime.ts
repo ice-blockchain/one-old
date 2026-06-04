@@ -1,16 +1,14 @@
 // src/build/build-runtime.ts
-// The cutover runtime build: compile src/ → <outDir> (the nested core/shared/
-// modules/adapters/hooks/runners tree), copy the module.json descriptors, and
-// write the legacy-named .cjs SHIMS at the root so the host configs + skills +
-// spawns keep invoking the SAME paths they do today (scripts/hook-runtime.cjs,
-// scripts/traffic-one-auth.cjs, …). Each shim is a 1-liner that require()s the
-// real compiled entry and calls its main() — needed because the entry's own
+// Runtime build: compile src/ -> <outDir> (normally dist/scripts, the nested
+// core/shared/modules/adapters/hooks/runners tree), copy module descriptors, and
+// write the legacy-named .cjs SHIMS at the output root so host configs + skills
+// + spawns keep invoking scripts/hook-runtime.cjs, scripts/traffic-one-auth.cjs,
+// and friends relative to the generated plugin root. Each shim is a 1-liner that require()s the
+// real compiled entry and calls its main() - needed because the entry's own
 // `require.main === module` guard does not fire when it is require()d.
 //
-// This script NEVER targets scripts/ implicitly — the caller passes an explicit
-// outDir. At the manual cutover the user deletes the legacy hand-authored
-// scripts/** first, then runs this with outDir=scripts, golden-diffs, and
-// cross-host verifies. `npm run smoke` exercises the whole thing into a temp dir.
+// This script NEVER targets an output implicitly - the caller passes an
+// explicit outDir. `npm run smoke` exercises the whole thing into a temp dir.
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
@@ -85,7 +83,7 @@ export function copyRunnerAssets(outDir: string): string[] {
 //   src/runners/lighthouse/index.mts → <outDir>/runners/lighthouse/index.mjs (ESM)
 //   src/runners/lighthouse/lib.ts     → <outDir>/runners/lighthouse/lib.js  (CJS)
 // then a 1-line ESM entry shim at the legacy path <outDir>/lighthouse-runner.mjs
-// keeps `node scripts/lighthouse-runner.mjs …` working (parallels the .cjs shims).
+// keeps `node scripts/lighthouse-runner.mjs ...` working (parallels the .cjs shims).
 export function buildLighthouse(outDir: string): void {
   const lh = spawnSync('npx', ['tsc', '-p', 'tsconfig.lighthouse.build.json', '--outDir', path.join(outDir, 'runners', 'lighthouse')], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: 180000,
@@ -115,7 +113,7 @@ export function buildRuntime(outDir: string): BuildResult {
 if (require.main === module) {
   const outDir = process.argv[2];
   if (!outDir) {
-    process.stderr.write('Usage: tsx src/build/build-runtime.ts <outDir>\n(At cutover: delete legacy scripts/** first, then pass outDir=scripts.)\n');
+    process.stderr.write('Usage: tsx src/build/build-runtime.ts <outDir>\n(Default package script passes outDir=dist/scripts.)\n');
     process.exit(1);
   }
   const result = buildRuntime(path.resolve(outDir));

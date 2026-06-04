@@ -7,7 +7,7 @@ import * as path from 'path';
 import { readJson } from './fsjson';
 import { pluginRoot } from './paths';
 
-export function pluginVersion(): string {
-  const pkg = readJson<{ version?: string }>(path.join(pluginRoot(), 'package.json'), {});
+export function pluginVersion(root: string = pluginRoot()): string {
+  const pkg = readJson<{ version?: string }>(path.join(root, 'package.json'), {});
   return pkg.version ?? '0.0.0';
 }

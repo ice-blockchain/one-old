@@ -7,9 +7,21 @@ import * as path from 'path';
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { readProjectPrefs, readState, writeState } from '../../state';
 
+const HOST_ENV_KEYS = [
+  'CURSOR_PLUGIN_ROOT',
+  'CODEX_PLUGIN_ROOT',
+  'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
+  'CODEX_THREAD_ID',
+] as const;
+
 function withProject(committed: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevHostEnv = new Map<string, string | undefined>();
+  for (const key of HOST_ENV_KEYS) {
+    prevHostEnv.set(key, process.env[key]);
+    delete process.env[key];
+  }
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   if (committed) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -20,11 +32,22 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    for (const [key, value] of prevHostEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 const asRec = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' ? value as Record<string, unknown> : {});
+type TeamMember = ReturnType<typeof buildTeamLineup>[number];
+
+function requireRole(by: Record<string, TeamMember>, role: string): TeamMember {
+  const member = by[role];
+  assert.ok(member, `missing ${role}`);
+  return member;
+}
 
 test('new-project: the full wizard sequence completes onboarding', () => {
   withProject(null, (cwd) => {
@@ -147,22 +170,25 @@ test('buildTeamLineup: high performance maps each role to its tier + claude mode
     'senior-architect', 'senior-frontend', 'senior-backend', 'senior-reviewer', 'senior-tester', 'senior-shipper',
   ]);
   const by = Object.fromEntries(team.map((m) => [m.role, m]));
-  assert.deepEqual({ tier: by['senior-architect'].tier, model: by['senior-architect'].model }, { tier: 'highest', model: 'opus' });
-  assert.deepEqual({ tier: by['senior-tester'].tier, model: by['senior-tester'].model }, { tier: 'cheapest', model: 'haiku' });
-  assert.deepEqual({ tier: by['senior-shipper'].tier, model: by['senior-shipper'].model }, { tier: 'balanced', model: 'sonnet' });
-  assert.ok(by['senior-architect'].label === 'Architect' && by['senior-architect'].blurb.length > 0);
+  const architect = requireRole(by, 'senior-architect');
+  const tester = requireRole(by, 'senior-tester');
+  const shipper = requireRole(by, 'senior-shipper');
+  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'opus' });
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'cheapest', model: 'haiku' });
+  assert.deepEqual({ tier: shipper.tier, model: shipper.model }, { tier: 'balanced', model: 'sonnet' });
+  assert.ok(architect.label === 'Architect' && architect.blurb.length > 0);
 });
 
 test('buildTeamLineup: balanced uses sonnet for builders, haiku for tester', () => {
   const by = Object.fromEntries(buildTeamLineup('balanced', 'claude').map((m) => [m.role, m]));
-  assert.equal(by['senior-frontend'].model, 'sonnet');
-  assert.equal(by['senior-tester'].model, 'haiku');
+  assert.equal(requireRole(by, 'senior-frontend').model, 'sonnet');
+  assert.equal(requireRole(by, 'senior-tester').model, 'haiku');
 });
 
 test('buildTeamLineup: host changes the concrete model ids (codex)', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'codex').map((m) => [m.role, m]));
-  assert.equal(by['senior-architect'].model, 'gpt-5.5');
-  assert.equal(by['senior-tester'].model, 'gpt-5-mini');
+  assert.equal(requireRole(by, 'senior-architect').model, 'gpt-5.5');
+  assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5-mini');
 });
 
 test('buildTeamLineup: low (main-agent) has no subagent line-up', () => {
@@ -172,8 +198,9 @@ test('buildTeamLineup: low (main-agent) has no subagent line-up', () => {
 
 test('buildTeamLineup: a per-role tier override is honored', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'claude', { 'senior-tester': 'highest' }).map((m) => [m.role, m]));
-  // tester is normally cheapest/haiku — the override promotes it
-  assert.deepEqual({ tier: by['senior-tester'].tier, model: by['senior-tester'].model }, { tier: 'highest', model: 'opus' });
+  // tester is normally cheapest/haiku; the override promotes it
+  const tester = requireRole(by, 'senior-tester');
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'opus' });
 });
 
 test('computeOnboarding: the team-confirmation step carries the resolved line-up', () => {

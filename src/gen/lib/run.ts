@@ -1,27 +1,28 @@
 // src/gen/lib/run.ts
-// The codegen run context: in normal mode it writes generated files; in --check
-// mode it compares against what's on disk and records drift (so CI can fail on
-// "the committed output is stale"). Deterministic: callers feed canonical
-// content (stable key order, 2-space JSON, trailing newline) so a rebuild is a
-// no-op diff.
+// The codegen run context: in normal mode it writes generated plugin files; in
+// --check mode it compares against what's on disk and records drift. The output
+// root is the generated plugin root (dist/ by default); sourceRoot is the
+// authoring checkout where src/modules and static source docs live.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
-export interface GenRunOptions { check: boolean; root: string; }
+export interface GenRunOptions { check: boolean; root: string; sourceRoot?: string; }
 
 export class GenRun {
   readonly check: boolean;
   readonly root: string;
+  readonly sourceRoot: string;
   readonly drift: string[] = [];
   readonly written: string[] = [];
 
   constructor(opts: GenRunOptions) {
     this.check = opts.check;
     this.root = opts.root;
+    this.sourceRoot = opts.sourceRoot ?? opts.root;
   }
 
-  // Emit (or check) a single file at a repo-root-relative path.
+  // Emit (or check) a single file at a plugin-root-relative path.
   file(relPath: string, content: string): void {
     const abs = path.join(this.root, relPath);
     if (this.check) {

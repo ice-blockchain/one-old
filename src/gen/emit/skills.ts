@@ -38,7 +38,7 @@ export function generatedSkillDocs(repoRoot: string): SkillDoc[] {
 }
 
 export function emitSkills(run: GenRun): void {
-  for (const doc of generatedSkillDocs(run.root)) {
+  for (const doc of generatedSkillDocs(run.sourceRoot)) {
     run.file(doc.relPath, doc.content);
   }
 }

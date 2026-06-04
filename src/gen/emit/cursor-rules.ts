@@ -2,7 +2,7 @@
 // Emits .cursor/rules/*.mdc from the rule templates (rules/**) and the
 // agent role docs (agents/*.md). Absorbs the legacy Cursor sync task. Byte-identical
 // to the committed .mdc files (golden-verified). The "GENERATED FROM … run
-// `npm run gen`" header is load-bearing for stale-rule detection + the snapshot.
+// `npm run gen`" marker is load-bearing for stale-rule detection + the snapshot.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -65,8 +65,8 @@ function renderCursorRule(sourcePath: string, repoRoot: string, rulesRoot: strin
   const relPath = path.join('.cursor', 'rules', `${slugForSource(sourcePath, rulesRoot)}.mdc`);
 
   const contentLines = [
-    `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     ...cursorFrontmatter(description, paths, alwaysApply),
+    `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     '',
     body.trimEnd(),
     '',
@@ -90,8 +90,8 @@ function renderAgentRule(sourcePath: string, repoRoot: string): RuleDocument {
     + '(`senior-eng-orchestrator`) describes how the roles compose.';
 
   const contentLines = [
-    `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     ...cursorFrontmatter(description, [], true),
+    `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     '',
     note,
     '',

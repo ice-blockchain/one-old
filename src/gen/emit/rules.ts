@@ -36,7 +36,7 @@ export function generatedRuleTemplates(repoRoot: string): RuleDoc[] {
 }
 
 export function emitRules(run: GenRun): void {
-  for (const doc of generatedRuleTemplates(run.root)) {
+  for (const doc of generatedRuleTemplates(run.sourceRoot)) {
     run.file(doc.relPath, doc.content);
   }
 }

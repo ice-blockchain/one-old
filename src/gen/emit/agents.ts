@@ -31,7 +31,7 @@ export function generatedAgents(repoRoot: string): AgentDoc[] {
 }
 
 export function emitAgents(run: GenRun): void {
-  for (const doc of generatedAgents(run.root)) {
+  for (const doc of generatedAgents(run.sourceRoot)) {
     run.file(doc.relPath, doc.content);
   }
 }

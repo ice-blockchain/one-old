@@ -1,9 +1,9 @@
 // src/shared/paths.ts
-// The ONE path layer. pluginRoot resolves the repo/install root (env override →
-// __dirname), and the same relative depth holds whether running from src/shared
-// (tsx dev) or scripts/shared (compiled). projectRoot is hint-aware: it prefers
-// the directory of a tool's target file (PostToolUse materialisation derives the
-// project from the edited path, not cwd).
+// The ONE path layer. pluginRoot resolves the authoring/install root (env
+// override -> __dirname), and the same relative depth holds whether running from
+// src/shared (tsx dev) or dist/scripts/shared (compiled). projectRoot is
+// hint-aware: it prefers the directory of a tool's target file (PostToolUse
+// materialisation derives the project from the edited path, not cwd).
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -22,7 +22,8 @@ export function pluginRoot(): string {
     const value = process.env[key];
     if (value) return value;
   }
-  // src/shared/paths.ts → ../../ = repo root; scripts/shared/paths.js → ../../ = repo root.
+  // src/shared/paths.ts -> ../../ = source root;
+  // dist/scripts/shared/paths.js -> ../../ = generated plugin root.
   return path.resolve(__dirname, '..', '..');
 }
 

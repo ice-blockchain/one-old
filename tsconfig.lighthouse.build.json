@@ -1,10 +1,10 @@
 {
-  "//": "Emits the Lighthouse ESM runner. index.mts → <outDir>/index.mjs (ESM); lib.ts → <outDir>/lib.js (CJS, imported by index.mjs via Node's ESM→CJS named-export interop). buildRuntime runs this with --outDir <out>/runners/lighthouse and writes the root entry shim <out>/lighthouse-runner.mjs. Typecheck variant: tsconfig.lighthouse.json.",
+  "//": "Emits the Lighthouse ESM runner. index.mts -> <outDir>/index.mjs (ESM); lib.ts -> <outDir>/lib.js (CJS, imported by index.mjs via Node's ESM-to-CJS named-export interop). buildRuntime runs this with --outDir <out>/runners/lighthouse and writes the root entry shim <out>/lighthouse-runner.mjs. Typecheck variant: tsconfig.lighthouse.json.",
   "extends": "./tsconfig.lighthouse.json",
   "compilerOptions": {
     "noEmit": false,
     "rootDir": "src/runners/lighthouse",
-    "outDir": "scripts/runners/lighthouse",
+    "outDir": "dist/scripts/runners/lighthouse",
     "declaration": false,
     "declarationMap": false,
     "sourceMap": false,
