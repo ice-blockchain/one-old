@@ -8,6 +8,7 @@
 // module only maps an answer → a writeState/mergeProjectPrefs call. The code-graph
 // install is returned as a `task` signal for the HTTP layer to run out-of-band.
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.buildTeamLineup = buildTeamLineup;
 exports.effectiveOnboardingState = effectiveOnboardingState;
 exports.computeOnboarding = computeOnboarding;
 exports.applyAnswer = applyAnswer;
@@ -17,9 +18,38 @@ const predicates_1 = require("../onboarding/predicates");
 const prompts_1 = require("../onboarding/prompts");
 const local_prefs_1 = require("../onboarding/local-prefs");
 const project_context_1 = require("../onboarding/project-context");
+const host_1 = require("../host");
 const performance_1 = require("../performance");
+const performance_config_1 = require("../performance-config");
 const io_1 = require("../state/io");
 const state_1 = require("../state");
+// The senior-engineer roster, in the order it should read on screen. Labels +
+// one-line blurbs come from the agent definitions (src/modules/senior-*/agent.md);
+// the per-role tier/model is resolved from PERFORMANCE_CONFIG at display time.
+const TEAM_ROLES = [
+    { role: 'senior-architect', label: 'Architect', blurb: 'Plans the build, public contracts & module map' },
+    { role: 'senior-frontend', label: 'Frontend', blurb: 'UI — pages, components, design system, accessibility' },
+    { role: 'senior-backend', label: 'Backend', blurb: 'APIs, data, auth, migrations, background jobs' },
+    { role: 'senior-reviewer', label: 'Reviewer', blurb: 'Read-only audit before every commit' },
+    { role: 'senior-tester', label: 'Tester', blurb: 'Unit, integration & end-to-end tests' },
+    { role: 'senior-shipper', label: 'Shipper', blurb: 'Deploy & release — only when you ask' },
+];
+// Build the per-role line-up for a performance level + host. Empty for levels with
+// no subagent team (low / main-agent) or an unknown level.
+function buildTeamLineup(level, host, overrides) {
+    const cfg = performance_config_1.PERFORMANCE_CONFIG[level];
+    if (!cfg || cfg.teamMode !== 'subagents')
+        return [];
+    const out = [];
+    for (const r of TEAM_ROLES) {
+        const tier = (0, performance_1.effectiveTierForRole)(level, r.role, overrides || null);
+        if (!tier)
+            continue;
+        const model = (0, performance_1.modelForRoleHost)(level, r.role, host, overrides || null) || tier;
+        out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model });
+    }
+    return out;
+}
 // Human-friendly label + placeholder for each PROJECT_CONTEXT_ANSWER_KEY, so the
 // wizard form reads like questions instead of camelCase identifiers.
 const PROJECT_CONTEXT_FIELDS = [
@@ -133,14 +163,29 @@ function computeOnboarding(cwd) {
         step = raw ?? null;
         done = raw == null;
     }
+    const meta = metaForStep(step, originalPrompt);
+    if (step === 'team-confirmation')
+        enrichTeamMeta(meta, state);
     return {
         mode,
         stack: typeof state.stack === 'string' ? state.stack : null,
         step,
         done,
         originalPrompt,
-        meta: metaForStep(step, originalPrompt),
+        meta,
     };
+}
+// Attach the resolved subagent line-up (role → tier → host model) so the wizard's
+// team step can SHOW who will build, instead of asking for a blind approval.
+function enrichTeamMeta(meta, state) {
+    const performance = (0, obj_1.obj)(state.performance);
+    const level = performance && typeof performance.level === 'string' ? performance.level : '';
+    const team = (0, obj_1.obj)(state.team);
+    const overrides = team && (0, obj_1.obj)(team.overrides) ? team.overrides : null;
+    const host = (0, host_1.detectHost)();
+    meta.team = buildTeamLineup(level, host, overrides);
+    meta.performanceLevel = level;
+    meta.host = host;
 }
 // ── Answer application ──────────────────────────────────────────────────────────
 function patchSharedState(cwd, patch) {

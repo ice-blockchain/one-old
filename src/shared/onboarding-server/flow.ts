@@ -16,7 +16,9 @@ import {
   projectContextDomainQuestionLines,
   projectContextOriginalPrompt,
 } from '../onboarding/project-context';
-import { teamModeForLevel } from '../performance';
+import { detectHost } from '../host';
+import { effectiveTierForRole, modelForRoleHost, teamModeForLevel } from '../performance';
+import { PERFORMANCE_CONFIG } from '../performance-config';
 import { stateTimestamp } from '../state/io';
 import {
   mergeProjectPrefs,
@@ -51,6 +53,17 @@ export interface FormField {
   hint?: string;
 }
 
+// One subagent in the team-confirmation line-up: a role, what it does, the
+// capability tier it runs at for the chosen performance level, and the concrete
+// model id resolved for the active host (opus/sonnet/haiku, gpt-5.x, …).
+export interface TeamMember {
+  role: string;
+  label: string;
+  blurb: string;
+  tier: string;
+  model: string;
+}
+
 export interface StepMeta {
   step: WizardStep;
   kind: 'single_select' | 'form' | 'finalize' | 'done';
@@ -59,6 +72,36 @@ export interface StepMeta {
   options?: StepOption[];
   fields?: FormField[];
   domainQuestions?: string[];
+  team?: TeamMember[];
+  performanceLevel?: string;
+  host?: string;
+}
+
+// The senior-engineer roster, in the order it should read on screen. Labels +
+// one-line blurbs come from the agent definitions (src/modules/senior-*/agent.md);
+// the per-role tier/model is resolved from PERFORMANCE_CONFIG at display time.
+const TEAM_ROLES: { role: string; label: string; blurb: string }[] = [
+  { role: 'senior-architect', label: 'Architect', blurb: 'Plans the build, public contracts & module map' },
+  { role: 'senior-frontend', label: 'Frontend', blurb: 'UI — pages, components, design system, accessibility' },
+  { role: 'senior-backend', label: 'Backend', blurb: 'APIs, data, auth, migrations, background jobs' },
+  { role: 'senior-reviewer', label: 'Reviewer', blurb: 'Read-only audit before every commit' },
+  { role: 'senior-tester', label: 'Tester', blurb: 'Unit, integration & end-to-end tests' },
+  { role: 'senior-shipper', label: 'Shipper', blurb: 'Deploy & release — only when you ask' },
+];
+
+// Build the per-role line-up for a performance level + host. Empty for levels with
+// no subagent team (low / main-agent) or an unknown level.
+export function buildTeamLineup(level: string, host: string, overrides?: Rec | null): TeamMember[] {
+  const cfg = PERFORMANCE_CONFIG[level];
+  if (!cfg || cfg.teamMode !== 'subagents') return [];
+  const out: TeamMember[] = [];
+  for (const r of TEAM_ROLES) {
+    const tier = effectiveTierForRole(level, r.role, overrides || null);
+    if (!tier) continue;
+    const model = modelForRoleHost(level, r.role, host, overrides || null) || tier;
+    out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model });
+  }
+  return out;
 }
 
 // Human-friendly label + placeholder for each PROJECT_CONTEXT_ANSWER_KEY, so the
@@ -192,14 +235,30 @@ export function computeOnboarding(cwd: string): OnboardingView {
     done = raw == null;
   }
 
+  const meta = metaForStep(step, originalPrompt);
+  if (step === 'team-confirmation') enrichTeamMeta(meta, state);
+
   return {
     mode,
     stack: typeof state.stack === 'string' ? state.stack : null,
     step,
     done,
     originalPrompt,
-    meta: metaForStep(step, originalPrompt),
+    meta,
   };
+}
+
+// Attach the resolved subagent line-up (role → tier → host model) so the wizard's
+// team step can SHOW who will build, instead of asking for a blind approval.
+function enrichTeamMeta(meta: StepMeta, state: Rec): void {
+  const performance = obj(state.performance);
+  const level = performance && typeof performance.level === 'string' ? performance.level : '';
+  const team = obj(state.team);
+  const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
+  const host = detectHost();
+  meta.team = buildTeamLineup(level, host, overrides);
+  meta.performanceLevel = level;
+  meta.host = host;
 }
 
 // ── Answer application ──────────────────────────────────────────────────────────

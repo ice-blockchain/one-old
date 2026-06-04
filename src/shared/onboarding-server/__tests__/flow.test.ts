@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { applyAnswer, computeOnboarding } from '../flow';
+import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { readProjectPrefs, readState, writeState } from '../../state';
 
 function withProject(committed: Record<string, unknown> | null, fn: (cwd: string) => void): void {
@@ -137,6 +137,74 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
     assert.equal(s.backend, 'supabase');
     // summary falls back to the prompt, not the "MVP" placeholder
     assert.ok(String(asRec(s.projectContext).summary).includes('learning platform'));
+  });
+});
+
+test('buildTeamLineup: high performance maps each role to its tier + claude model', () => {
+  const team = buildTeamLineup('high', 'claude');
+  assert.equal(team.length, 6);
+  assert.deepEqual(team.map((m) => m.role), [
+    'senior-architect', 'senior-frontend', 'senior-backend', 'senior-reviewer', 'senior-tester', 'senior-shipper',
+  ]);
+  const by = Object.fromEntries(team.map((m) => [m.role, m]));
+  assert.deepEqual({ tier: by['senior-architect'].tier, model: by['senior-architect'].model }, { tier: 'highest', model: 'opus' });
+  assert.deepEqual({ tier: by['senior-tester'].tier, model: by['senior-tester'].model }, { tier: 'cheapest', model: 'haiku' });
+  assert.deepEqual({ tier: by['senior-shipper'].tier, model: by['senior-shipper'].model }, { tier: 'balanced', model: 'sonnet' });
+  assert.ok(by['senior-architect'].label === 'Architect' && by['senior-architect'].blurb.length > 0);
+});
+
+test('buildTeamLineup: balanced uses sonnet for builders, haiku for tester', () => {
+  const by = Object.fromEntries(buildTeamLineup('balanced', 'claude').map((m) => [m.role, m]));
+  assert.equal(by['senior-frontend'].model, 'sonnet');
+  assert.equal(by['senior-tester'].model, 'haiku');
+});
+
+test('buildTeamLineup: host changes the concrete model ids (codex)', () => {
+  const by = Object.fromEntries(buildTeamLineup('high', 'codex').map((m) => [m.role, m]));
+  assert.equal(by['senior-architect'].model, 'gpt-5.5');
+  assert.equal(by['senior-tester'].model, 'gpt-5-mini');
+});
+
+test('buildTeamLineup: low (main-agent) has no subagent line-up', () => {
+  assert.deepEqual(buildTeamLineup('low', 'claude'), []);
+  assert.deepEqual(buildTeamLineup('nonsense', 'claude'), []);
+});
+
+test('buildTeamLineup: a per-role tier override is honored', () => {
+  const by = Object.fromEntries(buildTeamLineup('high', 'claude', { 'senior-tester': 'highest' }).map((m) => [m.role, m]));
+  // tester is normally cheapest/haiku — the override promotes it
+  assert.deepEqual({ tier: by['senior-tester'].tier, model: by['senior-tester'].model }, { tier: 'highest', model: 'opus' });
+});
+
+test('computeOnboarding: the team-confirmation step carries the resolved line-up', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    assert.equal(view.meta.performanceLevel, 'high');
+    assert.ok(Array.isArray(view.meta.team) && view.meta.team?.length === 6);
+    const architect = view.meta.team?.find((m) => m.role === 'senior-architect');
+    assert.equal(architect?.model, 'opus');
+    // host is resolved (defaults to claude outside a host process) so the UI can label it
+    assert.equal(view.meta.host, 'claude');
+    // the approve/re-pick options are still present
+    assert.deepEqual(view.meta.options?.map((o) => o.id), ['approve', 'repick_performance']);
+  });
+});
+
+test('existing project: the team step also carries the resolved line-up', () => {
+  const committed = {
+    mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    realtime: 'none', confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(committed, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'balanced');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    assert.equal(view.meta.team?.length, 6);
+    assert.equal(view.meta.team?.find((m) => m.role === 'senior-frontend')?.model, 'sonnet');
   });
 });
 
