@@ -86,6 +86,19 @@ export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boo
     || />{1,2}/.test(command);
 }
 
+// The blocking "wait for setup" command (node …/onboarding-wait.cjs <cwd>) the agent
+// runs after opening the wizard. It is read-only, but we allow-list it EXPLICITLY so
+// the onboarding gate lets it through regardless of how shell commands are otherwise
+// classified — while strictly rejecting any shell chaining/redirection/expansion so
+// the allow-list can't smuggle a second command.
+export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (!isShellToolName(toolName)) return false;
+  const command = commandFromToolInput(toolInput).trim();
+  if (!command || command.includes('\n')) return false;
+  if (/[;&|`$<>(){}]/.test(command)) return false;
+  return /(^|\s)node(\s|$)/.test(command) && command.includes('onboarding-wait.cjs');
+}
+
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');
