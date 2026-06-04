@@ -14,6 +14,7 @@ import { detectMode, isLikelyCodingPrompt } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { serverRecordExists } from '../../shared/onboarding-server/registry';
 import { projectContextOriginalPrompt } from '../../shared/onboarding/project-context';
 import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/team-mode-approval';
@@ -146,7 +147,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   if (!computeOnboarding(cwd).done) {
     seedOriginalPrompt(cwd, promptText);
     const server = ensureOnboardingServer(cwd);
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block('server-deny-reason', { URL: server.url })}`, {
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
       systemMessage: 'traffic-one [setup required]',
     });
   }

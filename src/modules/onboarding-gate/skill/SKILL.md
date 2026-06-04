@@ -27,13 +27,25 @@ file yourself:
 If you have no in-app preview at all, give the user this clickable link to open:
 {{URL}}
 
+CONTINUE AUTOMATICALLY — do NOT end your turn after opening the wizard. Immediately
+after opening it, run this command and keep your turn open; it BLOCKS until the user
+finishes setup (run it with a long timeout, ~9 minutes / 540000 ms):
+
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, IMMEDIATELY continue the user's original
+request and build it end to end — do not stop to ask "what next?". If it prints
+`TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup finished), run the exact same
+command again; after a couple of pending rounds with no progress, tell the user to
+finish the wizard and wait for their go-ahead. (If you genuinely cannot run a shell
+command, fall back to: when the wizard says it is done, continue the request.)
+
 The wizard runs locally, installs the tools it needs (showing progress), and writes
-the configuration. Read-only orientation (pwd, ls, reading files, searching) is
-allowed now, but feature writes, installs, and subagent work stay blocked until
-setup completes. When the wizard says it is done, continue your request and Traffic
-One picks up where you left off. Do NOT restart the host, do NOT answer these setup
-questions yourself in chat, and do NOT hand-write launch.json — the wizard owns the
-questions and Traffic One owns the preview config.
+the configuration. Read-only orientation (pwd, ls, reading files, searching) and the
+wait command above are allowed now, but feature writes, installs, and subagent work
+stay blocked until setup completes. Do NOT restart the host, do NOT answer these
+setup questions yourself in chat, and do NOT hand-write launch.json — the wizard owns
+the questions and Traffic One owns the preview config.
 
 If the user would rather not use Traffic One, they can choose "Continue without
 Traffic One" from the Traffic One auth prompt.

@@ -19,11 +19,12 @@ import { detectMode } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { normalizeState, readEffectiveState } from '../../shared/state';
-import { isMutatingPreToolUse, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
+import { isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -62,8 +63,11 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Read-only orientation (pwd, ls, Read, Glob, Grep) is allowed so the agent
     // can find its bearings while the user completes the wizard.
     if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+    // The blocking "wait for setup" command is allowed so the agent can keep its
+    // turn open until the wizard finishes, then continue the build automatically.
+    if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
     const server = ensureOnboardingServer(cwd);
-    return deny(block('server-deny-reason', { URL: server.url }));
+    return deny(block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) }));
   }
 
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic pre-tool convergence' });
