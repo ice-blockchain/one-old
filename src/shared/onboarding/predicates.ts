@@ -62,8 +62,10 @@ export function isNewProjectOnboardingIncomplete(state: unknown): boolean {
     || s.confirmedAt.trim() === '';
 }
 
-// True when a Balanced/High new project still needs the user to approve the
-// subagent role/model line-up (team.mode="subagents" but team.approved !== true).
+// True when a Balanced/High new project still needs the user to confirm the
+// subagent role/model line-up in the wizard's team step (team.mode="subagents" but
+// team.approved !== true). This is the SINGLE confirmation — the agent never
+// re-asks after onboarding (see senior-engineer-team rules).
 export function needsTeamConfirmation(state: unknown): boolean {
   const s = obj(state);
   if (!s) return false;

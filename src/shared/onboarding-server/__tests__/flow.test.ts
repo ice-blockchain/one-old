@@ -193,6 +193,21 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
   });
 });
 
+test('team step reads as a single "Start the build" confirmation (continue alias approves)', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    assert.equal(view.meta.title, 'Your team');
+    assert.deepEqual(view.meta.options?.map((o) => o.label), ['Start the build', 'Re-pick performance']);
+    // "Start the build" (continue) is the single confirmation — it approves the team.
+    assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'continue' }).ok);
+    assert.equal(asRec(readProjectPrefs(cwd).team).approved, true);
+    assert.equal(computeOnboarding(cwd).step, 'project-context');
+  });
+});
+
 test('existing project: the team step also carries the resolved line-up', () => {
   const committed = {
     mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',

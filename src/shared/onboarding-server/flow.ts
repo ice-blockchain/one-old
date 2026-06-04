@@ -161,10 +161,10 @@ const STEP_META: Record<Exclude<WizardStep, null | 'finalize'>, Omit<StepMeta, '
   },
   'team-confirmation': {
     kind: 'single_select',
-    title: 'Team',
-    question: 'Approve the subagent team line-up for this build?',
+    title: 'Your team',
+    question: 'Set by your performance choice — this is the senior team that will build. Start when you are ready, or re-pick performance to change it.',
     options: [
-      { id: 'approve', label: 'Approve' },
+      { id: 'approve', label: 'Start the build' },
       { id: 'repick_performance', label: 'Re-pick performance' },
     ],
   },
@@ -321,7 +321,11 @@ export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOu
     case 'team-confirmation': {
       const v = obj(value);
       const action = (v && typeof v.action === 'string' ? v.action : String(value));
-      if (action === 'approve' || action === 'customise') {
+      // "Start the build" confirms the line-up shown for the chosen performance.
+      // This is the SINGLE team confirmation — once set, the agent auto-runs the
+      // team and never re-asks (see senior-engineer-team rules). "Re-pick
+      // performance" clears performance + team to choose again.
+      if (action === 'approve' || action === 'continue' || action === 'customise') {
         const overrides = v && obj(v.overrides);
         mergeProjectPrefs(cwd, {
           team: { mode: 'subagents', source: 'prompted', approved: true, ...(overrides ? { overrides } : {}) },

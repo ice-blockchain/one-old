@@ -70,7 +70,7 @@ test('team not approved → deny with the Team Confirmation prose', () => {
   withMaterialized({ teamApproved: false }, (cwd) => {
     const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(r.kind, 'deny');
-    if (r.kind === 'deny') assert.ok(r.reason.includes('Team Confirmation gate'));
+    if (r.kind === 'deny') assert.ok(r.reason.includes('Team gate') && r.reason.includes('team.approved'));
   });
 });
 
