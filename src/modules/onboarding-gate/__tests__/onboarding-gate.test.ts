@@ -17,13 +17,18 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // Never spawn a real wizard server from a unit test; ensure() hands back a
+  // deterministic placeholder URL instead.
+  env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
   }
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -74,25 +79,26 @@ test('noop inside the plugin authoring root', () => {
   assert.equal(onboardingGate(ctx(process.cwd(), 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
 });
 
-test('new project with no Traffic One state: a mutating feature write is denied with onboarding', () => {
+test('new project with no Traffic One state: a mutating feature write is denied with the wizard URL', () => {
   withProject(null, (cwd) => {
     const r = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
-      assert.ok(r.reason.includes('onboarding gate'));
-      assert.ok(r.promptRequest); // the next-step popup request is attached
+      assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
+      assert.ok(/setup/i.test(r.reason));
+      assert.equal(r.promptRequest, undefined); // no per-step popup any more — the wizard owns the questions
     }
   });
 });
 
-test('existing project with Traffic One state but no local prefs: mutating tools are denied', () => {
+test('existing project with Traffic One state but no local prefs: mutating tools are denied with the wizard URL', () => {
   withProject(existingState(), (cwd) => {
     materializeFixture(cwd);
     const r = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
-      assert.ok(r.reason.includes('local preferences are required'));
-      assert.equal((r.promptRequest as { id?: string } | undefined)?.id, 'traffic-one.onboarding.open-code');
+      assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
+      assert.equal(r.promptRequest, undefined);
     }
   });
 });

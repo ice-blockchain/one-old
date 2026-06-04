@@ -51,8 +51,10 @@ test('new policy rules exist and carry their canonical text', () => {
   assert.ok(routing, 'project-routing.md missing');
   assert.ok(onboarding, 'onboarding.md missing');
   assert.ok(precedence, 'skill-precedence.md missing');
-  // onboarding carries the invariant moved off the dissolved stack-setup skill.
-  assert.match(onboarding.content, /Existing projects do not ask MVP context or\s*Mobile App prompts/);
+  // onboarding carries the invariant that existing projects skip new-project Q&A
+  // (the wizard owns the questions now; this rule must not re-introduce a chat flow).
+  assert.match(onboarding.content, /without\s+new-project Q&A/);
+  assert.match(onboarding.content, /local setup wizard/);
   // skill-precedence carries the precedence policy moved off every skill.
   assert.match(precedence.content, /take precedence/);
   assert.match(precedence.content, /Do not implement via any skill until the setup gate/);

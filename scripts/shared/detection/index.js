@@ -44,6 +44,7 @@ exports.countSourceFiles = countSourceFiles;
 exports.detectMode = detectMode;
 exports.detectStackFromCodebase = detectStackFromCodebase;
 exports.classifyPromptForStack = classifyPromptForStack;
+exports.isLikelyCodingPrompt = isLikelyCodingPrompt;
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
 const fsjson_1 = require("../fsjson");
@@ -305,4 +306,22 @@ function classifyPromptForStack(prompt) {
             wantsMinimal,
         },
     };
+}
+// Deterministic coding-intent heuristic. Used only to suppress PREMATURE Traffic
+// One activation: on a brand-new project with no active wizard, a clearly
+// non-coding prompt (greeting, question, chit-chat) should not kick off setup.
+// Biased toward `true` (false positives merely activate a beat early); the moment
+// state exists, a wizard is running, or a tool is attempted, the normal path runs
+// regardless — so an active project is never mis-skipped.
+const CODING_INTENT_PATTERNS = [
+    /\b(build|create|make|add|implement|scaffold|generate|set ?up|develop|write|wire|integrate|configure|deploy|ship|fix|refactor|debug|optimi[sz]e|migrate|test|lint|typecheck|install|update|upgrade|rename|delete|remove|extract|split)\b/,
+    /\b(app|application|web ?app|website|site|landing page|page|route|screen|view|component|feature|module|api|endpoint|backend|frontend|server|client|database|db|schema|table|migration|query|auth|login|signup|dashboard|form|button|modal|chart|service|function|hook|store|repo|repository|codebase|project|monorepo|package|library|dependency|bug|error|stack ?trace|test|ci|pipeline)\b/,
+    /\b(react|vite|next\.?js|vue|svelte|angular|astro|solid|remix|supabase|postgres|mysql|mongo|firebase|tailwind|typescript|javascript|node|python|django|express|stripe|expo|capacitor|ionic|playwright|vitest|jest|docker|kubernetes|graphql|rest)\b/,
+    /[`{}();]|=>|\bnpm\b|\bpnpm\b|\byarn\b|\bgit\b|\.(ts|tsx|js|jsx|py|go|rs|sql|json|md)\b/,
+];
+function isLikelyCodingPrompt(prompt) {
+    const text = String(prompt || '').toLowerCase().trim();
+    if (!text)
+        return false;
+    return CODING_INTENT_PATTERNS.some((pattern) => pattern.test(text));
 }

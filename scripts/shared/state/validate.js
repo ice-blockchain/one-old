@@ -51,8 +51,10 @@ function hasValidProjectContext(projectContext) {
         && answers && typeof answers === 'object' && !Array.isArray(answers)
         && typeof c.collectedAt === 'string' && c.collectedAt.trim() !== '');
 }
-// team.approved === true means the user explicitly Approved the line-up — the
-// spawn gate enforces this so the model can't bypass confirmation.
+// team.approved === true means the user confirmed the line-up in the wizard's team
+// step (the single "Start the build" confirmation, which shows the role→model
+// line-up for the chosen performance). The spawn gate reads this; once it is set
+// during onboarding, nothing re-asks afterward.
 function isTeamApproved(team) {
     const t = asObject(team);
     return Boolean(t && t.approved === true);

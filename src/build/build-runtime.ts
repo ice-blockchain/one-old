@@ -33,6 +33,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'one-mcp-report.cjs': './runners/one-mcp-report/index.js',
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',
+  'onboarding-server.cjs': './runners/onboarding-server/index.js',
 };
 
 function shimSource(target: string): string {
@@ -62,6 +63,7 @@ export function writeShims(outDir: string): string[] {
 // toolchain spec; add here if a runner gains a sibling data file.
 const RUNNER_ASSETS: ReadonlyArray<string> = [
   path.join('runners', 'toolchain', 'toolchain-versions.json'),
+  path.join('runners', 'onboarding-server', 'wizard.html'),
 ];
 
 export function copyRunnerAssets(outDir: string): string[] {

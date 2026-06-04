@@ -18,11 +18,8 @@ import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { autoDetectedAnnouncement } from '../../shared/directives';
-import { onboardingDirectiveNewProject } from '../../shared/onboarding/session-directive';
-import type { OnboardingBlock } from '../../shared/onboarding/fallbacks';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
-import { localPreferenceContext } from '../../shared/onboarding/local-prefs';
-import { nextOnboardingPromptRequest, nextOnboardingStepPrompt } from '../../shared/onboarding/fallbacks';
+import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
@@ -30,10 +27,12 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   hasRunAgentState,
+  hookSessionIdentity,
   legacyRunAgentContext,
   normalizeState,
   readEffectiveState,
   resolveRunAgentContext,
+  type RunAgentContext,
   stackFingerprint,
   stateVersion,
   writeState,
@@ -45,12 +44,84 @@ import { authGateForHook, authRequiredHookResult } from './auth-gate';
 import { ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block: OnboardingBlock = (name, vars, fallback) => skillBlock('onboarding-gate', name, vars, fallback);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
+  skillBlock('onboarding-gate', name, vars);
 const STACK_IDS = new Set(Object.keys(STACKS));
+
+// Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
+// resolved and whose project is already materialized. Shared by the subagent
+// SessionStart path and the legacy run-agent fast path.
+function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext, root: string): HookResult {
+  const cwd = ctx.cwd;
+  const role = typeof agentContext.role === 'string' ? agentContext.role : '';
+  const runId = String(agentContext.runId ?? '');
+  const spawnIndex = agentContext.spawnIndex || 0;
+
+  if (role && spawnIndex > 1) {
+    // Fix-cycle: same role re-spawned in the same run → tiny pointer header.
+    const { body } = packFixCycleHeader(cwd, role, runId, spawnIndex);
+    return context(body);
+  }
+
+  const ruleSet = role ? roleScopedRules(role, state) : null;
+  const rules = ruleSet || stackSpecForState(state).mandatory;
+  copyActiveSkills(state);
+  const skillDirective = pruneSkillsDirective(state, listAllSkills());
+  const { body } = packRuleIndex(root, rules);
+  const graphPreview = readGraphPreview(cwd);
+  const roleLabel = role || 'subagent';
+  const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
+    + '[subagent] Full rules already loaded by parent session and materialized to '
+    + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand.\n';
+  return context(`${header}${skillDirective}${graphPreview}\n${body}`);
+}
+
+// A subagent NEVER runs the full session-start hook. The auth gate and onboarding
+// belong to the parent/main agent; a subagent only needs its role-scoped rules
+// materialized. This path conditionally materializes and returns the role context —
+// so a subagent can never re-trigger auth or onboarding mid-build.
+export function runSubagentSessionStart(ctx: Ctx): HookResult {
+  const cwd = ctx.cwd;
+  const root = pluginRoot();
+  const raw = ctx.input.raw;
+  const state = readEffectiveState(cwd);
+
+  cleanActiveSkills();
+  try {
+    ensureSessionMaterialization(cwd, state);
+  } catch {
+    // best-effort; the parent already materialized the bundle
+  }
+
+  const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true })
+    || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
+  if (agentContext && hasMaterializedProjectAssets(cwd, state)) {
+    return subagentRoleContext(ctx, state, agentContext, root);
+  }
+
+  // Role/claim not resolved yet — still never onboard. Hand over whatever rules are
+  // materialized; if none yet, stay silent and let the parent's materialization land.
+  if (hasMaterializedProjectAssets(cwd, state)) {
+    copyActiveSkills(state);
+    const { body } = packRuleIndex(root, stackSpecForState(state).mandatory);
+    return context('═══ traffic-one — subagent ═══\n'
+      + '[subagent] Rules already materialized to .traffic-one/rules/; read role-scoped rules on demand.\n'
+      + body);
+  }
+  return noop();
+}
 
 function runSessionStartInner(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
   if (isPluginAuthoringRoot(cwd)) return noop();
+
+  // A subagent must never run the full session-start hook (auth gate + onboarding +
+  // mode routing). Onboarding belongs to the parent/main agent; the subagent only
+  // needs its role-scoped rules. Intercept BEFORE auth + onboarding so a subagent
+  // can never re-trigger onboarding while the team is building.
+  if (hookSessionIdentity(ctx.input.raw).isSubagent) {
+    return runSubagentSessionStart(ctx);
+  }
 
   const authGate = authGateForHook({ forceRemote: true });
   if (!authGate.authenticated) {
@@ -82,31 +153,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     // best-effort; the full branches below still provide rule context
   }
 
-  // ── Subagent fast path ──
+  // ── Subagent fast path (legacy run-agent contexts; detected subagents are
+  // already intercepted before auth in runSessionStartInner) ──
   const agentContext = resolveRunAgentContext(cwd, state, raw, { claimPending: true })
     || (!hasRunAgentState(cwd, state) ? legacyRunAgentContext(state) : null);
   if (agentContext && hasMaterializedProjectAssets(cwd, state)) {
-    const role = typeof agentContext.role === 'string' ? agentContext.role : '';
-    const runId = String(agentContext.runId ?? '');
-    const spawnIndex = agentContext.spawnIndex || 0;
-
-    if (role && spawnIndex > 1) {
-      // Fix-cycle: same role re-spawned in the same run → tiny pointer header.
-      const { body } = packFixCycleHeader(cwd, role, runId, spawnIndex);
-      return context(body);
-    }
-
-    const ruleSet = role ? roleScopedRules(role, state) : null;
-    const rules = ruleSet || stackSpecForState(state).mandatory;
-    copyActiveSkills(state);
-    const skillDirective = pruneSkillsDirective(state, listAllSkills());
-    const { body } = packRuleIndex(root, rules);
-    const graphPreview = readGraphPreview(cwd);
-    const roleLabel = role || 'subagent';
-    const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
-      + '[subagent] Full rules already loaded by parent session and materialized to '
-      + '.traffic-one/rules/. This index lists role-scoped rules; Read them on demand.\n';
-    return context(`${header}${skillDirective}${graphPreview}\n${body}`);
+    return subagentRoleContext(ctx, state, agentContext, root);
   }
 
   const mode = (state.mode as string) || detectMode(cwd);
@@ -125,11 +177,9 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   // ── Flow 1 — already onboarded → pack the rule bundle ──
   if (onboardingReady) {
     const activeStackId = String(stackId);
-    const localPrefs = localPreferenceContext(state, activeStackId, 'session-start', block);
-    if (localPrefs) {
-      return context(localPrefs.context, {
-        systemMessage: `traffic-one [${activeStackId}] local preferences required`,
-        ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+    if (nextLocalPreferenceStep(state)) {
+      return context(`[ACTIVE STACK: ${activeStackId}]\n\n${block('setup-pending')}`, {
+        systemMessage: `traffic-one [${activeStackId}] setup required`,
       });
     }
 
@@ -192,32 +242,22 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     header += tokenEconomyBanner(cwd);
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
-    const localPrefs = localPreferenceContext(state, String(state.stack || mode), 'session-start', block);
-    if (localPrefs) {
-      return context(`${banner}\n\n${localPrefs.context}`, {
-        systemMessage: `traffic-one [${state.stack || mode}] local preferences required`,
-        ...(localPrefs.promptRequest ? { promptRequest: localPrefs.promptRequest } : {}),
+    if (nextLocalPreferenceStep(state)) {
+      return context(`${banner}\n\n${block('setup-pending')}`, {
+        systemMessage: `traffic-one [${state.stack || mode}] setup required`,
       });
     }
     return context(`${banner}\n\n${header}${graphPreview}\n${body}`);
   }
 
   if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state)) {
-    const localPrefs = localPreferenceContext(state, stackId, 'session-start', block);
-    const nextPrompt = localPrefs?.context || [
-      `[ACTIVE STACK: ${stackId}]`,
-      '',
-      nextOnboardingStepPrompt(state, 'user-prompt', block),
-    ].join('\n');
-    const promptRequest = localPrefs?.promptRequest || nextOnboardingPromptRequest(state, 'user-prompt', block);
-    return context(nextPrompt, {
-      systemMessage: 'traffic-one [onboarding incomplete]',
-      ...(promptRequest ? { promptRequest } : {}),
+    return context(`[ACTIVE STACK: ${stackId}]\n\n${block('setup-pending')}`, {
+      systemMessage: 'traffic-one [setup required]',
     });
   }
 
-  // ── Flow 3 — new project (or undetectable existing) → onboarding directive ──
-  const directive = onboardingDirectiveNewProject(block);
+  // ── Flow 3 — new project (or undetectable existing) → point at the setup wizard ──
+  const directive = block('setup-pending');
   const spec = STACKS.minimal;
   const { body } = packBundle(root, spec.mandatory, spec.optional);
   if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();
