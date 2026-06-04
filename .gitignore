@@ -8,7 +8,6 @@
 .claude/
 
 # traffic-one per-project state — written at session start, not committed
-.traffic-one/.one.json
 .traffic-one/
 .claude-plugin-mode
 .orphaned_at
@@ -16,7 +15,6 @@
 # codebase-graph artefacts (generated; consumed but never committed)
 graphify-out/
 .gitnexus/
-.traffic-one/backups/
 
 # OS
 .DS_Store
@@ -26,6 +24,7 @@ Thumbs.db
 __pycache__/
 *.pyc
 
-# Node build tooling (devDeps only; never shipped — the plugin runs the committed scripts/ directly)
+# Node build tooling and generated plugin output
 node_modules/
+dist/
 *.tsbuildinfo

@@ -15,7 +15,7 @@ import {
 } from '../sources/product';
 
 export function emitManifests(run: GenRun): void {
-  const version = pluginVersion();
+  const version = pluginVersion(run.sourceRoot);
   run.json('.claude-plugin/plugin.json', claudePluginManifest(version));
   run.json('.claude-plugin/marketplace.json', claudeMarketplaceManifest(version));
   run.json('.codex-plugin/plugin.json', codexPluginManifest(version));

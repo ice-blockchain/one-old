@@ -50,15 +50,17 @@ login.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
-hook because the hook never starts. Run `node scripts/doctor.cjs` from the
-workspace to verify the Codex plugin is enabled, Traffic One hook trust records
-are present, and the current `cwd` is covered by a trusted project root. Trust
-the generated-project parent or create projects under Codex's trusted default
-project root before starting Traffic One work.
+hook because the hook never starts. Run `node scripts/doctor.cjs` from an
+installed plugin root, or `node dist/scripts/doctor.cjs` from this source
+checkout after `npm run plugin:build`, to verify the Codex plugin is enabled,
+Traffic One hook trust records are present, and the current `cwd` is covered by
+a trusted project root. Trust the generated-project parent or create projects
+under Codex's trusted default project root before starting Traffic One work.
 
 If Traffic One skills are visible but hooks or root instructions were not
 injected, do not treat that as a safe inactive state. Run
-`node scripts/doctor.cjs --session <session-id>` to inspect the Codex transcript.
+`node dist/scripts/doctor.cjs --session <session-id>` from this source checkout
+to inspect the Codex transcript.
 Traffic One implementation must remain gated until the user authenticates or
 explicitly chooses to continue ordinary work without Traffic One.
 
@@ -93,61 +95,32 @@ Codex, Cursor) via the shared hooks.
 
 ```
 .
-├── skills/                  ← Runtime filtered active skills
-├── skills-catalog/          ← Full skill source pool (materialized per stack)
-│   ├── create-component/
-│   ├── create-feature/
-│   ├── create-page/
-│   ├── create-service/
-│   ├── ionic-mobile/
-│   ├── create-native-component/
-│   ├── create-native-screen/
-│   ├── create-native-feature/
-│   ├── create-native-service/
-│   ├── execution-discipline/
-│   ├── security-review/
-│   ├── predeploy-security-check/
-│   ├── auto-documentation-generator/
-│   ├── jwt-security/
-│   └── refactor/
-│
-├── rules/                   ← SHARED — single source of truth for all rule content
-│   ├── core.md              always loaded (no path filter)
-│   ├── common/execution-discipline.md always loaded: assumptions, simplicity, surgical edits, verification
-│   ├── common/stack-recommendations.md always loaded: provider-first stack defaults
-│   ├── common/project-memory.md always loaded: .traffic-one persistent agent memory
-│   ├── common/documentation.md always loaded: human + agent docs defaults
-│   ├── common/library-catalog.md always loaded: curated package defaults
-│   ├── frontend/react/            React web stack rules
-│   ├── frontend/ionic/            Ionic Framework + Capacitor hybrid mobile rules
-│   ├── frontend/react-native/     Expo React Native stack rules, explicit only
-│   ├── frontend/ui-quality.md     modern clean UI gate + visual QA
-│   ├── frontend/typography.md     typography and copy polish rules
-│   ├── frontend/services.md       shared frontend service rules
-│   ├── frontend/testing.md        shared frontend testing rules
-│   └── backend/                   Node/Postgres + backend technology rules
-│
-├── CLAUDE.md                ← Claude Code   — entry point, @imports rules/core.md
-├── AGENTS.md                ← Codex CLI     — entry point, inlines rules/ content
-├── settings.json            ← Claude Code   — hooks (onboarding, materialization, graph, deploy gates)
-├── hooks/hooks.json         ← Codex CLI     — hooks (onboarding, materialization, graph, deploy gates)
-├── .mcp.json                ← MCP           — mcp-auth auth server declaration
-├── scripts/hook-runtime.cjs ← Hooks         — dependency-free Node hook runtime
-├── scripts/traffic-one-auth.cjs ← Auth      — mcp-auth login/refresh/status/logout
-├── src/gen/index.ts         ← Generator     — emits manifests, hooks, rules, skills, agents, and Cursor mirrors
-├── .githooks/pre-commit     ← Git           — auto-runs codegen and stages generated files
+├── src/                     ← Source of truth for runtime, rules, skills, agents, and generator
+├── src/gen/index.ts         ← Generator     — emits plugin content into dist/
+├── dist/                    ← Ignored generated plugin root; install this folder locally
+│   ├── skills/              ← Runtime filtered active skills
+│   ├── skills-catalog/      ← Full skill source pool (materialized per stack)
+│   ├── rules/               ← Shared rule templates generated from src/modules/**/rules
+│   ├── agents/              ← Senior role docs generated from src/modules/**/agent.md
+│   ├── CLAUDE.md            ← Claude Code entry point
+│   ├── AGENTS.md            ← Codex CLI entry point
+│   ├── settings.json        ← Claude Code hooks
+│   ├── hooks/hooks.json     ← Codex CLI hooks
+│   ├── .mcp.json            ← mcp-auth server declaration
+│   ├── scripts/hook-runtime.cjs
+│   ├── scripts/traffic-one-auth.cjs
+│   ├── .cursor/rules/*.mdc  ← Cursor mirrors
+│   ├── .claude-plugin/
+│   ├── .codex-plugin/
+│   └── .cursor-plugin/
+├── .githooks/pre-commit     ← Git           — regenerates and verifies ignored dist/
 ├── .githooks/prepare-commit-msg ← Git       — appends Traffic One integration trailer
-├── .github/workflows/       ← CI            — checks Cursor sync stays deterministic
-│
-├── .cursor/rules/*.mdc      ← Cursor        — mirrors rules/ in Cursor's .mdc format
-│
-├── .claude-plugin/          ← Claude Code   — marketplace manifest
-├── .codex-plugin/           ← Codex CLI     — marketplace manifest
-└── .cursor-plugin/          ← Cursor        — marketplace manifest
+└── .github/workflows/       ← CI            — regenerates dist and verifies determinism
 ```
 
-**Maintenance rule:** `src/modules/**` is the source of truth for generated content.
-Run `npm run gen` after source changes; `.cursor/rules/*.mdc` files are generated mirrors with headers pointing back to their sources.
+**Maintenance rule:** `src/modules/**` and root source docs are the source of truth.
+Run `npm run plugin:build` after source changes; `dist/` is generated output and
+is intentionally ignored by git.
 
 ---
 
@@ -202,20 +175,21 @@ Path-scoped rules load only when a matching file is open — zero token cost oth
 - Open `src/services/users.ts` → service + security rules appear
 - Open `Button.test.tsx` → testing rules appear
 
-### Cursor sync automation
+### Generated plugin automation
 Regenerate generated artifacts after editing content under `src/modules/`:
 
 ```
-npm run gen
+npm run plugin:build
 ```
 
-CI verifies determinism without writing files:
+CI verifies determinism after materializing `dist/`:
 
 ```
 npm run gen -- --check
+npm run build:verify
 ```
 
-The tracked `.githooks/pre-commit` hook runs generation automatically and stages generated files.
+The tracked `.githooks/pre-commit` hook refreshes and verifies ignored `dist/`.
 The tracked `.githooks/prepare-commit-msg` hook appends
 `Integrated-With: Traffic One plugin <noreply@traffic.io>` so commits record
 the active plugin integration alongside agent co-author trailers. Enable them in a clone with:
@@ -258,27 +232,28 @@ If Homebrew is missing, Traffic One asks the user to install Homebrew first.
 ## Installation
 
 Until Traffic One is published to the public plugin marketplace, install it from
-a local checkout of this repository. Replace `/absolute/path/to/traffic-one`
-with this repo's absolute path, for example `/Users/John/Projects/traffic-one`.
+a generated local checkout. Run `npm run plugin:build`, then replace
+`/absolute/path/to/traffic-one/dist` with this repo's generated `dist` path, for
+example `/Users/John/Projects/traffic-one/dist`.
 
 ### Claude Code
 
 ```
-claude plugin marketplace add /absolute/path/to/traffic-one --scope user
+claude plugin marketplace add /absolute/path/to/traffic-one/dist --scope user
 claude plugin install traffic-one@traffic-one --scope user
 ```
 
 ### Codex CLI
 
 ```
-codex plugin marketplace add /absolute/path/to/traffic-one
+codex plugin marketplace add /absolute/path/to/traffic-one/dist
 codex plugin add traffic-one@traffic-one-local
 ```
 
 ### Cursor
 
 ```
-/add-plugin /absolute/path/to/traffic-one
+/add-plugin /absolute/path/to/traffic-one/dist
 ```
 Or via Cursor Settings → Plugins → Add.
 
@@ -303,22 +278,22 @@ codex plugin add traffic-one
 
 | What to change | Where |
 |----------------|-------|
-| Library stack, folder structure, core rules | `src/modules/**/rules/core.md`, then run `npm run gen` |
-| Provider-first stack recommendations | `src/modules/**/rules/common/stack-recommendations.md`, then run `npm run gen` |
-| Curated library catalog | `src/modules/**/rules/common/library-catalog.md`, then run `npm run gen` |
-| Post-deploy observability defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| App launch checklist defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| Generated/existing frontend i18n baseline | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| Generated/existing web SEO baseline | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| Project memory defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| Documentation defaults | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| Senior-engineer orchestration workflow | Source rule/skill under `src/modules/`, then run `npm run gen` |
-| React web stack rules | `src/modules/**/rules/frontend/react/*.md`, then run `npm run gen` |
-| Ionic/Capacitor hybrid mobile rules | `src/modules/**/rules/frontend/ionic/*.md`, then run `npm run gen` |
-| React Native stack rules, explicit only | `src/modules/**/rules/frontend/react-native/*.md`, then run `npm run gen` |
-| UI quality and typography rules | Source frontend rule under `src/modules/`, then run `npm run gen` |
-| Backend and backend technology rules | `src/modules/**/rules/backend/*.md`, then run `npm run gen` |
-| Agent behavior, assumptions, surgical edits | Source common rule under `src/modules/`, then run `npm run gen` |
-| Add a new skill | Add `skills/your-skill/SKILL.md` with `description:` trigger phrases |
-| Blocked libraries | Edit the `PreToolUse[Bash]` hook in `settings.json` and `hooks/hooks.json` |
+| Library stack, folder structure, core rules | `src/modules/**/rules/core.md`, then run `npm run plugin:build` |
+| Provider-first stack recommendations | `src/modules/**/rules/common/stack-recommendations.md`, then run `npm run plugin:build` |
+| Curated library catalog | `src/modules/**/rules/common/library-catalog.md`, then run `npm run plugin:build` |
+| Post-deploy observability defaults | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| App launch checklist defaults | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| Generated/existing frontend i18n baseline | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| Generated/existing web SEO baseline | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| Project memory defaults | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| Documentation defaults | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| Senior-engineer orchestration workflow | Source rule/skill under `src/modules/`, then run `npm run plugin:build` |
+| React web stack rules | `src/modules/**/rules/frontend/react/*.md`, then run `npm run plugin:build` |
+| Ionic/Capacitor hybrid mobile rules | `src/modules/**/rules/frontend/ionic/*.md`, then run `npm run plugin:build` |
+| React Native stack rules, explicit only | `src/modules/**/rules/frontend/react-native/*.md`, then run `npm run plugin:build` |
+| UI quality and typography rules | Source frontend rule under `src/modules/`, then run `npm run plugin:build` |
+| Backend and backend technology rules | `src/modules/**/rules/backend/*.md`, then run `npm run plugin:build` |
+| Agent behavior, assumptions, surgical edits | Source common rule under `src/modules/`, then run `npm run plugin:build` |
+| Add a new skill | Add `src/modules/skills/skills-catalog/your-skill/SKILL.md` with `description:` trigger phrases, then run `npm run plugin:build` |
+| Blocked libraries | Edit `src/modules/plan-guard/forbidden.ts`, then cover it with `npm test` |
 | Architecture / onboarding / materialization checks | Edit the matching source under `src/modules/`, then cover it with `npm test` |

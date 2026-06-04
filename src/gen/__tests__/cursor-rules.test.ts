@@ -1,8 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { generatedCursorRules } from '../emit/cursor-rules';
+import { runGen } from '../index';
 import {
   cursorFrontmatter,
   parseFrontmatter,
@@ -31,25 +34,31 @@ test('cursorFrontmatter emits description + globs + alwaysApply', () => {
 });
 
 test('generatedCursorRules gathers rule + agent docs from the repo tree', () => {
-  const docs = generatedCursorRules(REPO_ROOT);
-  // 76 rule templates + 6 agents (00-auth-required.mdc is hand-authored, not generated).
-  assert.equal(docs.length, 82);
-  const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-rules-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const docs = generatedCursorRules(dir);
+    // 76 rule templates + 6 agents (00-auth-required.mdc is emitted separately as a static seed).
+    assert.equal(docs.length, 82);
+    const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
-  // common/auth-gate.md → auth-required.mdc (special slug).
-  const authPath = path.join('.cursor', 'rules', 'auth-required.mdc');
-  assert.ok(byPath.has(authPath));
-  assert.ok(byPath.get(authPath)?.startsWith('<!-- GENERATED FROM: rules/common/auth-gate.md;'));
+    // common/auth-gate.md -> auth-required.mdc (special slug).
+    const authPath = path.join('.cursor', 'rules', 'auth-required.mdc');
+    assert.ok(byPath.has(authPath));
+    assert.ok(byPath.get(authPath)?.startsWith('<!-- GENERATED FROM: rules/common/auth-gate.md;'));
 
-  // agents/senior-architect.md → 00-agent-senior-architect.mdc (always-on mirror).
-  const agentPath = path.join('.cursor', 'rules', '00-agent-senior-architect.mdc');
-  assert.ok(byPath.has(agentPath));
-  assert.ok(byPath.get(agentPath)?.includes('alwaysApply: true'));
-  assert.ok(byPath.get(agentPath)?.includes('Cursor has no first-class'));
+    // agents/senior-architect.md -> 00-agent-senior-architect.mdc (always-on mirror).
+    const agentPath = path.join('.cursor', 'rules', '00-agent-senior-architect.mdc');
+    assert.ok(byPath.has(agentPath));
+    assert.ok(byPath.get(agentPath)?.includes('alwaysApply: true'));
+    assert.ok(byPath.get(agentPath)?.includes('Cursor has no first-class'));
 
-  // Every generated doc carries the GENERATED-FROM marker + ends with a newline.
-  for (const doc of docs) {
-    assert.ok(doc.content.startsWith('<!-- GENERATED FROM: '), `missing marker: ${doc.relPath}`);
-    assert.ok(doc.content.endsWith('\n'), `missing trailing newline: ${doc.relPath}`);
+    // Every generated mirror carries the GENERATED-FROM marker + ends with a newline.
+    for (const doc of docs) {
+      assert.ok(doc.content.startsWith('<!-- GENERATED FROM: '), `missing marker: ${doc.relPath}`);
+      assert.ok(doc.content.endsWith('\n'), `missing trailing newline: ${doc.relPath}`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });

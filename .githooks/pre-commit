@@ -10,18 +10,6 @@ if [ ! -x node_modules/.bin/tsx ]; then
 fi
 
 node_modules/.bin/tsx src/gen/index.ts
-git add -A \
-  .agents/plugins/marketplace.json \
-  .claude-plugin/plugin.json \
-  .claude-plugin/marketplace.json \
-  .codex-plugin/plugin.json \
-  .cursor-plugin/plugin.json \
-  .cursor/rules \
-  .mcp.json \
-  agents \
-  hooks/hooks.json \
-  hooks/hooks-cursor.json \
-  rules \
-  settings.json \
-  skills \
-  skills-catalog
+npm run build
+npm run gen:check
+npm run build:verify

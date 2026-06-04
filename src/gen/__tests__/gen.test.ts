@@ -4,24 +4,50 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { runGen } from '../index';
+import { distRoot, runGen } from '../index';
 import { GenRun } from '../lib/run';
 import { emitManifests, emitMcp } from '../emit/manifests';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-test('gen --check reports the committed manifests + .mcp.json as in sync', () => {
-  const run = runGen({ check: true, root: REPO_ROOT });
-  assert.deepEqual(run.drift, [], `generated manifests drifted: ${run.drift.join(', ')}`);
+test('runGen writes a generated plugin root and --check round-trips', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-plugin-'));
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    assert.ok(write.written.length > 250, `expected generated plugin files, got ${write.written.length}`);
+    assert.ok(fs.existsSync(path.join(dir, '.codex-plugin', 'plugin.json')));
+    assert.ok(fs.existsSync(path.join(dir, '.cursor', 'rules', '00-auth-required.mdc')));
+    assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(dir, 'package.json')));
+    assert.ok(!fs.existsSync(path.join(dir, 'src')));
+
+    const check = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
+    assert.deepEqual(check.drift, [], `generated plugin drifted: ${check.drift.join(', ')}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('emitManifests produces all five manifests', () => {
-  const run = new GenRun({ check: true, root: REPO_ROOT });
-  emitManifests(run);
-  emitMcp(run);
-  // check-mode never writes; drift must stay empty against the committed tree.
-  assert.deepEqual(run.drift, []);
-  assert.equal(run.written.length, 0);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-manifests-'));
+  try {
+    const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    emitManifests(write);
+    emitMcp(write);
+    assert.equal(write.written.length, 6);
+
+    const check = new GenRun({ check: true, root: dir, sourceRoot: REPO_ROOT });
+    emitManifests(check);
+    emitMcp(check);
+    assert.deepEqual(check.drift, []);
+    assert.equal(check.written.length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('distRoot points generation at dist under the source checkout by default', () => {
+  assert.equal(distRoot(REPO_ROOT), path.join(REPO_ROOT, 'dist'));
 });
 
 test('GenRun.json writes canonical 2-space JSON with a trailing newline; --check round-trips', () => {

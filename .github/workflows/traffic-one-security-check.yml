@@ -14,6 +14,18 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Generate plugin dist
+        run: npm run plugin:build
+
       - name: Install gitleaks v8.30.1
         run: |
           set -euo pipefail
@@ -31,4 +43,4 @@ jobs:
           sudo install /tmp/trufflehog/trufflehog /usr/local/bin/trufflehog
 
       - name: Run Traffic One security check
-        run: node scripts/security-check-runner.cjs --strict --no-stamp
+        run: node dist/scripts/security-check-runner.cjs --strict --no-stamp
