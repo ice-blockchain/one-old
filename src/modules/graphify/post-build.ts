@@ -14,7 +14,7 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { bootstrap as gitnexusBootstrapImpl } from '../../runners/gitnexus';
+import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl } from '../../runners/graphify';
 import { isAuthenticatedLocal } from '../../shared/auth';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
@@ -69,7 +69,11 @@ export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
     ? path.join(cwd, '.gitnexus')
     : path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
   const artefactExists = fs.existsSync(artefactPath);
-  const artefactFresh = artefactExists
+  // An existing-but-empty gitnexus index (built pre-scaffold, files:0) is NOT
+  // fresh — force a rebuild so it picks up the real code (graphify produces no
+  // report on an empty project, so it self-heals without this check).
+  const artefactEmpty = provider === 'gitnexus' && gitnexusGraphIsEmpty(cwd);
+  const artefactFresh = artefactExists && !artefactEmpty
     ? (Date.now() - fs.statSync(artefactPath).mtimeMs) < GRAPHIFY_FRESH_MS
     : false;
   if (artefactFresh) return noop();

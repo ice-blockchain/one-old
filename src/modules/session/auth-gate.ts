@@ -10,8 +10,9 @@ import * as path from 'path';
 
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { AUTH_ENABLED, FRESHNESS_REASON } from '../../config/auth';
+import { FRESHNESS_REASON } from '../../config/auth';
 import {
+  authEnforced,
   authRemoteCheckDue,
   authRequiredMessage,
   authStateFreshness,
@@ -54,15 +55,9 @@ export interface AuthGate {
   priorReason?: string | null;
 }
 
-// Effective auth enforcement: the committed default (config/auth AUTH_ENABLED),
-// overridable per-process via TRAFFIC_ONE_AUTH (1/true/on → enforce,
-// 0/false/off → bypass) so ops and tests can toggle without a code edit.
-export function authEnforced(env: NodeJS.ProcessEnv = process.env): boolean {
-  const o = (env.TRAFFIC_ONE_AUTH ?? '').trim().toLowerCase();
-  if (o === '1' || o === 'true' || o === 'on' || o === 'yes') return true;
-  if (o === '0' || o === 'false' || o === 'off' || o === 'no') return false;
-  return AUTH_ENABLED;
-}
+// Effective auth enforcement now lives in shared/auth (so lower-level features
+// like the one-mcp reporter can consult it too); re-exported here for back-compat.
+export { authEnforced };
 
 export function authGateForHook({ forceRemote = false }: { forceRemote?: boolean } = {}): AuthGate {
   // Master kill-switch (config/auth.ts AUTH_ENABLED + TRAFFIC_ONE_AUTH override).

@@ -18,12 +18,11 @@ export const handlers: Handler[] = [
     subcommands: ['post-stack-setup'],
     priority: 60,
     run: (ctx) => runPostStackSetup(ctx, {
+      // Single onboarding-finalized report gate (see runPostStackSetup). Auth is
+      // enforced inside prepareReport and bypassed when AUTH_ENABLED is off, so no
+      // per-trigger allowUnauthenticated flag is needed here.
       reportOneMcp: (cwd, state, trigger) => {
-        maybeStartOneMcpReport(cwd, {
-          state,
-          trigger,
-          allowUnauthenticated: trigger === 'architect PLAN_READY',
-        });
+        maybeStartOneMcpReport(cwd, { state, trigger });
       },
     }),
   },

@@ -27,7 +27,8 @@ import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
 import { readEffectiveState } from '../../shared/state';
-import { inferTrafficOneSpawnRole } from '../agent-model/role-infer';
+import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { ONE_UID_FIELD } from '../../config/reporting';
 import {
   type MaterializeOutcome,
   materializeProjectFromState,
@@ -37,7 +38,6 @@ import { materializeFromProjectMemoryWrite, materializeFromToolInputHints, type 
 import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath } from './post-helpers';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const PLAN_READY_RE = /(?:^|\n)\s*(?:verdict:\s*)?PLAN_READY\s*(?:\n|$)/i;
 const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
 
 export interface PostStackSetupDeps {
@@ -46,16 +46,6 @@ export interface PostStackSetupDeps {
   reportOneMcp?: ReportOneMcp;
 }
 
-function stringifySearchValue(value: unknown): string {
-  if (value == null) return '';
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return '';
-  }
-}
 function outcomeToResult(out: MaterializeOutcome | null): HookResult {
   return out ? context(out.context, { systemMessage: out.systemMessage }) : noop();
 }
@@ -72,55 +62,10 @@ function digestWarning(role: string, kb: number): string {
   return skillBlock('materialize', 'digest-size', { ROLE: role, KB: kb }, verbatim);
 }
 
-function planReadyText(value: unknown): boolean {
-  return PLAN_READY_RE.test(stringifySearchValue(value));
-}
-
 function architectDigestProjectRoot(filePath: string): string | null {
   const normalized = filePath.replace(/\\/g, '/');
   const match = normalized.match(/^(.*)\/\.traffic-one\/digests\/[^/]+\/architect\.md$/);
   return match?.[1] ?? null;
-}
-
-function isArchitectPlanReadyDigest(filePath: string): boolean {
-  if (!filePath || !architectDigestProjectRoot(filePath)) return false;
-  try {
-    return planReadyText(fs.readFileSync(filePath, 'utf8'));
-  } catch {
-    return false;
-  }
-}
-
-function agentResponseText(raw: Rec): string {
-  return [
-    raw.tool_response,
-    raw.tool_result,
-    raw.toolResponse,
-    raw.toolResult,
-    raw.response,
-    raw.result,
-    raw.output,
-  ].map(stringifySearchValue).filter(Boolean).join('\n');
-}
-
-function isArchitectPlanReadyAgentResult(ctx: Ctx, raw: Rec, toolInput: Rec): boolean {
-  const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
-  if (!SPAWN_TOOL_RE.test(toolName)) return false;
-
-  const responseText = agentResponseText(raw);
-  if (!PLAN_READY_RE.test(responseText)) return false;
-
-  const role = inferTrafficOneSpawnRole(toolInput);
-  if (role) return role === 'senior-architect';
-
-  // `wait_agent` returns may not carry the original spawn prompt, so the
-  // terminal PLAN_READY token is enough to identify the architect phase.
-  return /^wait_agent$/i.test(toolName);
-}
-
-function triggerArchitectPlanReadyReport(cwd: string, state: Rec, reportOneMcp: ReportOneMcp | undefined): void {
-  if (!reportOneMcp) return;
-  reportOneMcp(cwd, state, 'architect PLAN_READY');
 }
 
 export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): HookResult {
@@ -144,8 +89,14 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const state = readEffectiveState(reportRoot);
   const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
 
-  if (isArchitectPlanReadyDigest(targetPath || filePath) || isArchitectPlanReadyAgentResult(ctx, raw, toolInput)) {
-    triggerArchitectPlanReadyReport(reportRoot, state, reportOneMcp);
+  // Single one-mcp report gate: fire ONLY once onboarding is finalized — new-project
+  // (canonical state committed) or existing-project (local prefs resolved), via
+  // computeOnboarding(...).done. Runs BEFORE the auth gate below so an
+  // AUTH_ENABLED=false dev/test run still reports. prepareReport then enforces
+  // real-codebase + auth (bypassed when auth isn't enforced) + once-per-project.
+  const oneUidMissing = !(typeof state[ONE_UID_FIELD] === 'string' && state[ONE_UID_FIELD]);
+  if (reportOneMcp && oneUidMissing && computeOnboarding(reportRoot).done) {
+    reportOneMcp(reportRoot, state, 'onboarding-complete');
   }
 
   if (!isAuthenticatedLocal()) return noop();
@@ -177,15 +128,17 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // 3. Non-state-file write → write-triggered convergence.
   if (!isStateFilePath(filePath)) {
-    const mem = materializeFromProjectMemoryWrite(cwd, targetPath || filePath, { reportOneMcp });
+    const mem = materializeFromProjectMemoryWrite(cwd, targetPath || filePath);
     if (mem) return outcomeToResult(mem);
     const hintInput = targetPath ? { ...toolInput, file_path: targetPath } : toolInput;
-    const hint = materializeFromToolInputHints(cwd, hintInput, { reportOneMcp });
+    const hint = materializeFromToolInputHints(cwd, hintInput);
     if (hint) return outcomeToResult(hint);
-    return outcomeToResult(materializeProjectIfNeeded(cwd, { trigger: 'generic post-tool convergence', reportOneMcp }));
+    return outcomeToResult(materializeProjectIfNeeded(cwd, { trigger: 'generic post-tool convergence' }));
   }
 
   // 4. State-file write → validate + materialize (writeState strips local prefs).
+  // The one-mcp report is NOT fired here — only the single onboarding-finalized
+  // gate above reports.
   if (!targetPath || !fs.existsSync(targetPath)) return noop();
-  return outcomeToResult(materializeProjectFromState(projectRootFromStateFilePath(targetPath), { trigger: 'post-stack-setup', reportOneMcp }));
+  return outcomeToResult(materializeProjectFromState(projectRootFromStateFilePath(targetPath), { trigger: 'post-stack-setup' }));
 }

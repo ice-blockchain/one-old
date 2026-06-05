@@ -8,7 +8,7 @@ import { exec } from '../../shared/exec';
 import { nowIso } from '../../shared/text';
 import { bootstrap } from './bootstrap';
 
-export { bootstrap, ensureGitnexusTool } from './bootstrap';
+export { bootstrap, ensureGitnexusTool, gitnexusGraphIsEmpty } from './bootstrap';
 export type { BootstrapResult, BootstrapOpts, GitnexusToolResult } from './bootstrap';
 export { CONFLICT_PATHS, GITNEXUS_MIN_NODE_MAJOR } from '../../config/gitnexus';
 export {

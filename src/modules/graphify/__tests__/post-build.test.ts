@@ -131,3 +131,26 @@ test('post-build code-graph hint stamps the cooldown so a second build is thrott
     assert.equal(called, 1);
   });
 });
+
+test('post-build rebuilds a fresh-but-EMPTY gitnexus graph (files:0) — reindex after scaffold', () => {
+  withProject({ provider: 'gitnexus', freshArtefact: true }, (cwd) => {
+    // graph built pre-scaffold on the empty project: fresh mtime, but 0 files.
+    fs.writeFileSync(path.join(cwd, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
+    let called = 0;
+    __setCodeGraphBootstraps({ gitnexus: () => { called += 1; return { ok: true, action: 'used-managed', durationMs: 5 }; } });
+    const r = postBuildCodeGraphHint(ctxFor(cwd, 'npm run build'));
+    assert.equal(called, 1); // rebuilt despite the fresh mtime, because the graph was empty
+    assert.equal(r.kind, 'context');
+  });
+});
+
+test('post-build skips a fresh NON-empty gitnexus graph (no needless rebuild)', () => {
+  withProject({ provider: 'gitnexus', freshArtefact: true }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 12, nodes: 40 } }), 'utf8');
+    let called = 0;
+    __setCodeGraphBootstraps({ gitnexus: () => { called += 1; return { ok: true, action: 'used-managed', durationMs: 5 }; } });
+    const r = postBuildCodeGraphHint(ctxFor(cwd, 'npm run build'));
+    assert.equal(called, 0); // fresh + non-empty → noop
+    assert.equal(r.kind, 'noop');
+  });
+});

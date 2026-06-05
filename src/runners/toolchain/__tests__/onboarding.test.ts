@@ -75,3 +75,23 @@ test('ensureOpenCodeTool reports install-skipped when npm is not on PATH', () =>
     assert.match(r.error || '', /npm/);
   });
 });
+
+test('ensureOpenCodeTool recognizes a present managed bin even if --version yields no version', () => {
+  withTemp((cwd) => {
+    // Managed OpenCode present, but its `--version` prints nothing — e.g. the
+    // first-run DB migration timed out the 10s probe (the `_6_`-style
+    // "enabled but installedVersion:null"). It must still be stamped, not dropped.
+    const binDir = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    // Empty PATH → no npm: a reinstall is impossible, so only the present-bin
+    // fallback can make this succeed (proves the fix, not a reinstall).
+    process.env.PATH = path.join(cwd, 'empty-bin');
+    const r = ensureOpenCodeTool(cwd);
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'used-managed');
+    assert.equal(r.installedVersion, '1.15.13'); // recommended fallback
+    const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || '', 'utf8'));
+    assert.equal(prefs.toolchain?.opencode?.installedVersion, '1.15.13');
+  });
+});

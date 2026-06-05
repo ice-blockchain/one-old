@@ -20,7 +20,7 @@ import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
 import { recommendTierForPlan } from '../model-tiers';
-import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
+import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
 import {
@@ -265,7 +265,7 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
   const host = detectHost();
-  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: obj(state.openCode)?.enabled === true };
+  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
   meta.team = buildTeamLineup(level, host, overrides, planCtx);
   meta.performanceLevel = level;
   meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
@@ -278,7 +278,7 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
 function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
   const host = detectHost();
   const plan = detectHostPlan(host);
-  const useOpenCode = obj(state.openCode)?.enabled === true;
+  const useOpenCode = openCodeDelegationActive(state);
   const recommended = recommendLevelForPlan(host, plan, useOpenCode);
   const options = (meta.options || []).map((o) => ({ ...o }));
   for (const o of options) {

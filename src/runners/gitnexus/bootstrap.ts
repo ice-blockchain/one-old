@@ -369,6 +369,22 @@ export function ensureGitnexusTool(cwd: string = process.cwd(), opts: BootstrapO
   };
 }
 
+// A gitnexus index built on a pre-scaffold/empty project records `stats.files: 0`.
+// Treat that as stale so the next build / orchestrator Phase 5 reindexes the real
+// code once it exists — otherwise the 7-day freshness window keeps the empty graph.
+export function gitnexusGraphIsEmpty(cwd: string): boolean {
+  try {
+    const meta = JSON.parse(fs.readFileSync(path.join(cwd, GITNEXUS_DIR, 'meta.json'), 'utf8')) as Rec;
+    const stats = meta && typeof meta.stats === 'object' && meta.stats ? (meta.stats as Rec) : null;
+    if (!stats) return false;
+    const files = Number(stats.files);
+    const nodes = Number(stats.nodes);
+    return (Number.isFinite(files) && files === 0) || (Number.isFinite(nodes) && nodes === 0);
+  } catch {
+    return false; // no/unreadable meta → can't tell → don't force a rebuild
+  }
+}
+
 export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {}): BootstrapResult {
   const startedAt = Date.now();
   const reportAbs = path.join(cwd, GITNEXUS_DIR);
@@ -384,7 +400,7 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
   if (!opts.force && fs.existsSync(reportAbs)) {
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(reportAbs).mtimeMs; } catch { mtimeMs = 0; }
-    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS) {
+    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS && !gitnexusGraphIsEmpty(cwd)) {
       return { ok: true, action: 'fresh', report: reportAbs, error: null, durationMs: 0, license: 'PolyForm Noncommercial' };
     }
   }

@@ -32,7 +32,8 @@
       "versionCommand": "opencode --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
       "installCommand": "Traffic One managed npm-prefix install/upgrade",
-      "notes": "OpenCode CLI for future Traffic One delegation. Hooks install it into a Traffic One-managed npm prefix; do not ask users to run the upstream curl installer."
+      "delegateModel": "opencode/deepseek-v4-flash-free",
+      "notes": "OpenCode CLI used to delegate bounded, low-risk coding tasks (free local agent). Hooks install it into a Traffic One-managed npm prefix; do not ask users to run the upstream curl installer. `delegateModel` is a free `opencode/*` gateway model so delegation needs NO sign-in/API key (runs headless via `opencode run --format json`); set it to a local `ollama/*` model to keep code on-device."
     },
     "gitleaks": {
       "recommended": "8.30.1",

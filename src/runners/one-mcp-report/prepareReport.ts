@@ -8,7 +8,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 
-import { isAuthenticatedLocal } from '../../shared/auth';
+import { authEnforced, isAuthenticatedLocal } from '../../shared/auth';
 import { pluginRoot } from '../../shared/paths';
 import { hasRealCodebase } from './hasRealCodebase';
 import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
@@ -38,7 +38,10 @@ export interface PrepareResult {
 export function prepareReport(cwd: string, options: PrepareOptions = {}): PrepareResult {
   if (!REPORTING_ACTIVE) return { started: false, reason: 'reporting-inactive' };
   if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') return { started: false, reason: 'disabled' };
-  if (!options.allowUnauthenticated && !isAuthenticatedLocal()) return { started: false, reason: 'auth-required' };
+  // Auth-required ONLY when auth is actually enforced (config/auth AUTH_ENABLED /
+  // TRAFFIC_ONE_AUTH). When enforcement is off, treat as authenticated — so the
+  // first-look report fires in dev/test runs without a real token.
+  if (!options.allowUnauthenticated && !isAuthenticatedLocal() && authEnforced()) return { started: false, reason: 'auth-required' };
   const root = path.resolve(cwd);
   if (!hasRealCodebase(root)) return { started: false, reason: 'no-codebase' };
 

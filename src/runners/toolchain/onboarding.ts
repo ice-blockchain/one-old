@@ -59,6 +59,19 @@ function opencodeRecommendedVersion(): string | null {
   return typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
 }
 
+// The first `opencode <anything>` on a machine triggers a one-time DB migration
+// that "may take a few minutes" — a 10s version probe would time out and report
+// no version, leaving OpenCode unstamped (which silently disables delegation +
+// the tier-shift). Warm it up with a generous timeout so the probe is fast and
+// reliable. Best-effort; never throws.
+function warmUpOpencode(binPath: string): void {
+  try {
+    spawnSync(binPath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5 * 60 * 1000 });
+  } catch {
+    // best-effort
+  }
+}
+
 export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolResult {
   const managedBin = managedNpmBin('opencode', 'opencode');
   const candidates = [
@@ -71,6 +84,18 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     if (isToolUsable(probed.status)) {
       stampToolchain(cwd, 'opencode', candidate.binPath, probed.version);
       return { tool: 'opencode', ok: true, action: candidate.action, error: null, binPath: candidate.binPath, installedVersion: probed.version };
+    }
+    // A present managed bin with no parseable version is almost always the
+    // first-run migration timing out the probe — warm it up and assume the pinned
+    // recommended version we installed, so a present OpenCode is never left
+    // unstamped (the `_6_`-style "enabled but installedVersion:null" case).
+    if (candidate.binPath === managedBin && probed.version === null) {
+      warmUpOpencode(candidate.binPath);
+      const version = probeToolVersion('opencode', { binPath: candidate.binPath }) || opencodeRecommendedVersion();
+      if (version) {
+        stampToolchain(cwd, 'opencode', candidate.binPath, version);
+        return { tool: 'opencode', ok: true, action: 'used-managed', error: null, binPath: candidate.binPath, installedVersion: version };
+      }
     }
   }
 
@@ -94,6 +119,9 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     };
   }
 
+  // Complete the one-time DB migration now (generous timeout) so the version
+  // probe — and the first real delegation — don't pay it / time out later.
+  warmUpOpencode(managedBin);
   const installedVersion = probeToolVersion('opencode', { binPath: managedBin }) || opencodeRecommendedVersion();
   stampToolchain(cwd, 'opencode', managedBin, installedVersion);
   return { tool: 'opencode', ok: true, action: 'installed-managed-npm', error: null, binPath: managedBin, installedVersion };
