@@ -19,8 +19,8 @@ import { writeGraphPreview } from '../../shared/materialize';
 import { readEffectiveState, mergeProjectPrefs } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { mergeToolchainStamp, probeToolVersion } from '../toolchain';
+import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
 import {
-  GITNEXUS_MIN_NODE_MAJOR,
   currentNodeMajor,
   findNvmNode22,
   nodeVersionMismatchMessage,
@@ -30,10 +30,6 @@ import {
 
 type Rec = Record<string, unknown>;
 const which = exec.which;
-
-export const GITNEXUS_DIR = '.gitnexus';
-export const REPORT_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
-export const CONFLICT_PATHS = ['AGENTS.md', 'CLAUDE.md', '.claude/skills'];
 
 export interface BootstrapResult {
   ok: boolean;

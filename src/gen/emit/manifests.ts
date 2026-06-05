@@ -1,10 +1,10 @@
 // src/gen/emit/manifests.ts
 // Emits the five host manifests + .mcp.json from product.ts + the single
-// version source (shared/version → package.json) + the single endpoint source
-// (shared/auth DEFAULT_ENDPOINT). One version bump → all manifests in lockstep.
+// version source (config/plugin-identity → package.json) + the single endpoint source
+// (config/auth DEFAULT_ENDPOINT). One version bump → all manifests in lockstep.
 
-import { DEFAULT_ENDPOINT } from '../../shared/auth';
-import { pluginVersion } from '../../shared/version';
+import { DEFAULT_ENDPOINT } from '../../config/auth';
+import { pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
 import {
   agentsMarketplaceManifest,

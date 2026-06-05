@@ -8,7 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { authStatePath, readAuthState } from '../../shared/auth';
-import { STACK_IDS } from '../../shared/config';
+import { STACK_IDS } from '../../config/stacks';
 import { exec } from '../../shared/exec';
 import { pluginRoot } from '../../shared/paths';
 import { teamModeForLevel } from '../../shared/performance';

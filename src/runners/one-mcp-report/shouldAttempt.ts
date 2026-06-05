@@ -2,7 +2,8 @@
 // Retry policy for the fire-and-forget report given the persisted status.
 // Ported 1:1 from one-mcp-report/shouldAttempt.cjs.
 
-import { FAILED_RETRY_MS, parseTimestamp, QUEUED_RETRY_MS } from './lib';
+import { FAILED_RETRY_MS, QUEUED_RETRY_MS } from '../../config/reporting';
+import { parseTimestamp } from './lib';
 
 type Rec = Record<string, unknown>;
 

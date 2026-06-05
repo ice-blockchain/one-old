@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { STACK_IDS } from '../../shared/config';
+import { STACK_IDS } from '../../config/stacks';
 import { detectMode } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { nowIsoNoMs } from '../../shared/text';

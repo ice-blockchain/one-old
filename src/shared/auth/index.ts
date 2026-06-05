@@ -7,32 +7,17 @@ import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
 
+import {
+  AUTH_STATE_VERSION,
+  DEFAULT_ENDPOINT,
+  EXPIRY_SKEW_MS,
+  FRESHNESS_REASON,
+  REFRESH_BACKOFF_CAP_MS,
+  REFRESH_FAILURE_THRESHOLD,
+  REMOTE_AUTH_CHECK_INTERVAL_MS,
+} from '../../config/auth';
 import { readJson } from '../fsjson';
 import { pluginRoot } from '../paths';
-
-export const DEFAULT_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-export const AUTH_STATE_VERSION = 1;
-export const EXPIRY_SKEW_MS = 30 * 1000;
-export const REMOTE_AUTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
-
-// Silent-refresh resilience. When a stale/expired session cannot refresh (a
-// transient network blip or server hiccup), retry INVISIBLY with a small
-// exponential backoff for up to REFRESH_FAILURE_THRESHOLD consecutive failures
-// before surfacing a re-auth prompt. The consecutive-failure count and the
-// next-eligible-attempt time are persisted on the auth state (`refreshFailures`
-// / `nextRefreshAt`) and reset to zero on any successful (re)authentication.
-export const REFRESH_FAILURE_THRESHOLD = 5;
-export const REFRESH_BACKOFF_CAP_MS = 64 * 1000;
-
-export const FRESHNESS_REASON = {
-  OK: 'ok',
-  MISSING: 'missing-auth-state',
-  VERSION_MISMATCH: 'version-mismatch',
-  MALFORMED_TOKEN: 'malformed-token',
-  MALFORMED_EXPIRY: 'malformed-expiry',
-  ENDPOINT_MISMATCH: 'endpoint-mismatch',
-  EXPIRED: 'expired',
-} as const;
 
 export type AuthState = Record<string, unknown>;
 export interface Freshness {

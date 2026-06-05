@@ -10,23 +10,11 @@ import * as fs from 'fs';
 import * as https from 'https';
 import * as path from 'path';
 
-import { LEGACY_STATE_FILE, STATE_FILE } from '../../shared/config';
+import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
+import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
 import { buildMcpPayload } from './buildMcpPayload';
 
 type Rec = Record<string, unknown>;
-
-export const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/one-mcp';
-export const ONE_UID_FIELD = 'one-uid';
-export const LEGACY_ID_FILE = '.one-mcp-id';
-export const STATUS_FILE = path.join('.traffic-one', 'one-mcp-report.json');
-export const QUEUED_RETRY_MS = 5 * 60 * 1000;
-export const FAILED_RETRY_MS = 60 * 60 * 1000;
-
-export const SKIP_DIRS = new Set([
-  '.cache', '.git', '.gitnexus', '.next', '.nuxt', '.traffic-one', '.turbo',
-  'build', 'coverage', 'dist', 'graphify-out', 'node_modules', 'out', 'Pods', 'target', 'vendor',
-]);
-export const SKIP_FILES = new Set(['.DS_Store', 'package-lock.json', 'pnpm-lock.yaml', 'yarn.lock']);
 
 export function readText(filePath: string): string | null {
   try {

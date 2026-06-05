@@ -8,7 +8,8 @@ import * as path from 'path';
 
 import { buildMcpPayload } from './buildMcpPayload';
 import { collectMetadata } from './collectMetadata';
-import { DEFAULT_ENDPOINT, mcpRequest, nowIso, readJson, STATUS_FILE, stateForReport, writeJson } from './lib';
+import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { mcpRequest, nowIso, readJson, stateForReport, writeJson } from './lib';
 import { readReportIdState } from './readReportIdState';
 
 type Rec = Record<string, unknown>;
@@ -20,16 +21,20 @@ export interface RunOptions {
 }
 
 export async function runReport(cwd: string, options: RunOptions = {}): Promise<{ ok: boolean; reportId?: string; skipped?: string; error?: unknown }> {
+  if (!REPORTING_ACTIVE) return { ok: false, skipped: 'reporting-inactive' };
   const root = path.resolve(cwd);
-  const endpoint = options.endpoint || process.env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || DEFAULT_ENDPOINT;
+  const endpoint = options.endpoint || process.env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || MCP_REPORT_ENDPOINT;
   const idState = readReportIdState(root);
   if (!idState) return { ok: false, skipped: 'missing-report-id' };
   if (idState.invalid) return { ok: false, skipped: 'invalid-report-id' };
 
   const state = stateForReport(root, options);
   const statusPath = path.join(root, STATUS_FILE);
-  const previous = readJson(statusPath, {}) as Rec;
-  if (options.requireQueued !== false) {
+  // No status file when saving is disabled: skip the queued gate and treat prior
+  // status as empty. The report still collects + POSTs below; it just isn't
+  // tracked on disk.
+  const previous = SAVE_MCP_REPORT ? (readJson(statusPath, {}) as Rec) : ({} as Rec);
+  if (SAVE_MCP_REPORT && options.requireQueued !== false) {
     const queuedForThisId = previous && previous.status === 'queued' && previous.reportId === idState.id;
     if (!queuedForThisId) return { ok: false, skipped: 'not-queued' };
   }
@@ -39,17 +44,19 @@ export async function runReport(cwd: string, options: RunOptions = {}): Promise<
   const attempts = previous && Number.isInteger(previous.attempts) ? (previous.attempts as number) + 1 : 1;
   const queuedAt = previous && previous.queuedAt ? previous.queuedAt : null;
   const trigger = previous && previous.trigger ? previous.trigger : null;
-  writeJson(statusPath, { status: 'pending', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload });
+  if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'pending', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload });
 
   try {
     await (options.transport || mcpRequest)(endpoint, payload);
-    writeJson(statusPath, { status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload });
+    if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload });
     return { ok: true, reportId: idState.id };
   } catch (error) {
-    writeJson(statusPath, {
-      status: 'failed', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload,
-      error: error && (error as Error).message ? (error as Error).message : String(error || 'unknown error'),
-    });
+    if (SAVE_MCP_REPORT) {
+      writeJson(statusPath, {
+        status: 'failed', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload,
+        error: error && (error as Error).message ? (error as Error).message : String(error || 'unknown error'),
+      });
+    }
     return { ok: false, error };
   }
 }

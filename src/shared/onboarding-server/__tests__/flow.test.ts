@@ -23,6 +23,10 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
     delete process.env[key];
   }
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // Pin the detected plan so plan-aware line-up / recommendation assertions are
+  // deterministic across machines; tests needing another plan override it inline.
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
   if (committed) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(committed), 'utf8');
@@ -32,6 +36,8 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     for (const [key, value] of prevHostEnv) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -188,7 +194,7 @@ test('buildTeamLineup: balanced uses sonnet for builders, haiku for tester', () 
 test('buildTeamLineup: host changes the concrete model ids (codex)', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'codex').map((m) => [m.role, m]));
   assert.equal(requireRole(by, 'senior-architect').model, 'gpt-5.5');
-  assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5-mini');
+  assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5.4-mini');
 });
 
 test('buildTeamLineup: low (main-agent) has no subagent line-up', () => {
@@ -210,6 +216,7 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.performanceLevel, 'high');
+    assert.equal(view.meta.recommendedTier, 'highest'); // pinned plan 'max' → highest headline tier
     assert.ok(Array.isArray(view.meta.team) && view.meta.team?.length === 6);
     const architect = view.meta.team?.find((m) => m.role === 'senior-architect');
     assert.equal(architect?.model, 'opus');
@@ -260,5 +267,44 @@ test('finalize falls back to the MVP answers when no prompt was captured', () =>
     applyAnswer(cwd, 'finalize', null);
     // marketplace + payments + signup → backend needed → default stack, not minimal
     assert.equal(readState(cwd).stack, 'default');
+  });
+});
+
+test('plan-aware line-up: free runs the team cheaper than the (max-shaped) default', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    const view = computeOnboarding(cwd);
+    const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
+    // headline plan tier (free) is surfaced for the wizard; per-role tiers may differ
+    assert.equal(view.meta.recommendedTier, 'cheapest');
+    // free + high: builders drop to balanced/sonnet; the hand-tuned tester stays cheapest
+    assert.equal(requireRole(by, 'senior-architect').tier, 'balanced');
+    assert.equal(requireRole(by, 'senior-architect').model, 'sonnet');
+    assert.equal(requireRole(by, 'senior-tester').tier, 'cheapest');
+  });
+});
+
+test('plan-aware performance step: the recommended option follows the plan', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'performance');
+    assert.equal(view.meta.recommendedLevel, 'low');
+    assert.equal(view.meta.recommendedTier, 'cheapest'); // headline plan tier surfaced on the step
+    assert.equal(view.meta.options?.[0]?.id, 'low'); // recommended floats to the top
+    assert.ok(/Recommended/.test(view.meta.options?.[0]?.hint || ''));
+  });
+});
+
+test('plan-aware performance step: enabling OpenCode bumps the recommendation a step', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'enable');
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    const view = computeOnboarding(cwd);
+    assert.equal(view.meta.recommendedLevel, 'balanced'); // free + OpenCode = one step up from low
+    assert.equal(view.meta.options?.[0]?.id, 'balanced');
   });
 });

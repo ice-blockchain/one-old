@@ -8,10 +8,10 @@ import { exec } from '../../shared/exec';
 import { nowIso } from '../../shared/text';
 import { bootstrap } from './bootstrap';
 
-export { bootstrap, CONFLICT_PATHS } from './bootstrap';
+export { bootstrap } from './bootstrap';
 export type { BootstrapResult, BootstrapOpts } from './bootstrap';
+export { CONFLICT_PATHS, GITNEXUS_MIN_NODE_MAJOR } from '../../config/gitnexus';
 export {
-  GITNEXUS_MIN_NODE_MAJOR,
   currentNodeMajor,
   findNvmNode22,
   nodeVersionMismatchMessage,

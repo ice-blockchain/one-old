@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { PROJECT_CONTEXT_ANSWER_KEYS } from '../../../config/onboarding';
 import {
-  PROJECT_CONTEXT_ANSWER_KEYS,
   projectContextDomainQuestionLines,
   projectContextOriginalPrompt,
 } from '../project-context';

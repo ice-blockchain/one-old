@@ -11,7 +11,8 @@ import * as path from 'path';
 import { isAuthenticatedLocal } from '../../shared/auth';
 import { pluginRoot } from '../../shared/paths';
 import { hasRealCodebase } from './hasRealCodebase';
-import { DEFAULT_ENDPOINT, nowIso, readJson, STATUS_FILE, stateForReport, writeJson } from './lib';
+import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
+import { nowIso, readJson, stateForReport, writeJson } from './lib';
 import { readReportIdState } from './readReportIdState';
 import { createReportId } from './report-id-mint';
 import { backfillDebugPayload, debugPayloadForReport } from './report-payload';
@@ -35,6 +36,7 @@ export interface PrepareResult {
 }
 
 export function prepareReport(cwd: string, options: PrepareOptions = {}): PrepareResult {
+  if (!REPORTING_ACTIVE) return { started: false, reason: 'reporting-inactive' };
   if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') return { started: false, reason: 'disabled' };
   if (!options.allowUnauthenticated && !isAuthenticatedLocal()) return { started: false, reason: 'auth-required' };
   const root = path.resolve(cwd);
@@ -53,23 +55,27 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
   stageReportId(root);
 
   const statusPath = path.join(root, STATUS_FILE);
-  const status = readJson(statusPath, null) as Rec | null;
+  const status = SAVE_MCP_REPORT ? (readJson(statusPath, null) as Rec | null) : null;
   if (status && status.reportId === idState.id && !shouldAttempt(status)) {
     return { started: false, reason: (status && (status.status as string)) || 'recent' };
   }
 
-  const state = stateForReport(root, options);
-  const nextStatus = {
-    status: 'queued',
-    reportId: idState.id,
-    endpoint: options.endpoint || DEFAULT_ENDPOINT,
-    queuedAt: nowIso(),
-    lastAttemptAt: status && status.lastAttemptAt ? status.lastAttemptAt : null,
-    attempts: status && Number.isInteger(status.attempts) ? status.attempts : 0,
-    trigger: options.trigger || 'hook',
-    mcpPayload: debugPayloadForReport(root, state, idState.id),
-  };
-  writeJson(statusPath, nextStatus);
+  // Persist the queued status file unless saving is disabled — the report still
+  // gets spawned + POSTed below either way.
+  if (SAVE_MCP_REPORT) {
+    const state = stateForReport(root, options);
+    const nextStatus = {
+      status: 'queued',
+      reportId: idState.id,
+      endpoint: options.endpoint || MCP_REPORT_ENDPOINT,
+      queuedAt: nowIso(),
+      lastAttemptAt: status && status.lastAttemptAt ? status.lastAttemptAt : null,
+      attempts: status && Number.isInteger(status.attempts) ? status.attempts : 0,
+      trigger: options.trigger || 'hook',
+      mcpPayload: debugPayloadForReport(root, state, idState.id),
+    };
+    writeJson(statusPath, nextStatus);
+  }
 
   if (options.spawn === false || process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN === '1') {
     return { started: true, reportId: idState.id, spawned: false };
@@ -81,7 +87,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     stdio: 'ignore',
     env: {
       ...process.env,
-      TRAFFIC_ONE_ONE_MCP_ENDPOINT: options.endpoint || process.env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || DEFAULT_ENDPOINT,
+      TRAFFIC_ONE_ONE_MCP_ENDPOINT: options.endpoint || process.env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || MCP_REPORT_ENDPOINT,
     },
   });
   child.unref();

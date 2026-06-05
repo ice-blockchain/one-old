@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { LEGACY_STATE_FILE, STATE_FILE } from './config';
+import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
 import { legacyStatePath, statePath } from './state';
 
 type Rec = Record<string, unknown>;

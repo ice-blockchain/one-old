@@ -3,7 +3,7 @@
 // scripts/hook-runtime/handlers/_helpers.cjs.
 
 import { obj, type Rec } from '../obj';
-import { RN_STACKS, WEB_STACKS } from '../config';
+import { RN_STACKS, WEB_STACKS } from '../../config/stacks';
 
 export function isNativeState(state: unknown): boolean {
   const s = obj(state);

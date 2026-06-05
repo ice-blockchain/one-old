@@ -1,46 +1,40 @@
 // src/shared/performance-config.ts
-// Per-performance-level defaults. Ported 1:1 from
-// scripts/hook-runtime/performance-config.cjs. `tier` is a host-agnostic
-// capability tier (see model-tiers); the model id resolves per host at spawn.
+// Functions that resolve plan-aware performance levels and per-subagent tiers.
+// The tunable tables (PERFORMANCE_CONFIG, DEFAULT_AGENT_TIERS, plan recommendations)
+// live in src/config/performance.ts — edit knobs there, not here.
 
-import type { TierId } from './model-tiers';
+import { DEFAULT_HOST_PLAN, type TierId } from '../config/model-tiers';
+import {
+  DEFAULT_AGENT_TIERS,
+  PERFORMANCE_CONFIG,
+  PLAN_AGENT_TIERS,
+  PLAN_PERFORMANCE_RECOMMENDATIONS,
+  type AgentRole,
+  type PerformanceLevelId,
+} from '../config/performance';
+import { canonicalHost, canonicalPlan } from './model-tiers';
 
-export const PERFORMANCE_LEVEL_IDS = new Set(['low', 'balanced', 'high']);
-
-export interface PerformanceLevelConfig {
-  readonly teamMode: 'main-agent' | 'subagents';
-  readonly useRoadmapChecklist: boolean;
-  readonly agents: Readonly<Record<string, { tier: TierId }>>;
+export function recommendLevelForPlan(host: unknown, plan: unknown, useOpenCode = false): PerformanceLevelId {
+  const h = canonicalHost(host);
+  const p = canonicalPlan(h, plan);
+  const table = PLAN_PERFORMANCE_RECOMMENDATIONS[h];
+  const choice = table[p] ?? table[DEFAULT_HOST_PLAN[h]];
+  if (!choice) return 'balanced';
+  return useOpenCode ? choice.withOpenCode : choice.base;
 }
 
-export const PERFORMANCE_CONFIG: Readonly<Record<string, PerformanceLevelConfig>> = {
-  low: {
-    teamMode: 'main-agent',
-    useRoadmapChecklist: true,
-    agents: {},
-  },
-  balanced: {
-    teamMode: 'subagents',
-    useRoadmapChecklist: false,
-    agents: {
-      'senior-architect': { tier: 'balanced' },
-      'senior-frontend': { tier: 'balanced' },
-      'senior-backend': { tier: 'balanced' },
-      'senior-reviewer': { tier: 'balanced' },
-      'senior-tester': { tier: 'cheapest' },
-      'senior-shipper': { tier: 'balanced' },
-    },
-  },
-  high: {
-    teamMode: 'subagents',
-    useRoadmapChecklist: false,
-    agents: {
-      'senior-architect': { tier: 'highest' },
-      'senior-frontend': { tier: 'highest' },
-      'senior-backend': { tier: 'highest' },
-      'senior-reviewer': { tier: 'highest' },
-      'senior-tester': { tier: 'cheapest' },
-      'senior-shipper': { tier: 'balanced' },
-    },
-  },
-};
+// Resolve the capability tier for one subagent given host + plan + level + OpenCode.
+// Precedence: PLAN_AGENT_TIERS deviation → DEFAULT_AGENT_TIERS → PERFORMANCE_CONFIG
+// (last resort, one tier for both modes). Returns null for solo/unknown levels or
+// unconfigured roles. (User `team.overrides` win a layer up in effectiveTierForRole.)
+export function agentTierForPlan(
+  host: unknown, plan: unknown, level: string, role: string, useOpenCode = false,
+): TierId | null {
+  if (level !== 'balanced' && level !== 'high') return null;
+  const h = canonicalHost(host);
+  const p = canonicalPlan(h, plan);
+  const r = role as AgentRole;
+  const choice = PLAN_AGENT_TIERS[h]?.[p]?.[level]?.[r] ?? DEFAULT_AGENT_TIERS[level][r];
+  if (choice) return useOpenCode ? choice.withOpenCode : choice.base;
+  return PERFORMANCE_CONFIG[level]?.agents[role]?.tier ?? null;
+}

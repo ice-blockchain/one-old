@@ -25,6 +25,11 @@ function withMaterialized(opts: { teamApproved: boolean }, fn: (cwd: string) => 
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // Pin a paid plan so the plan-aware gate resolves deterministic tiers regardless
+  // of the test machine's real ~/.claude.json|~/.codex auth (a non-free plan inherits
+  // DEFAULT_AGENT_TIERS → the high=highest behavior these assertions encode).
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
   fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
@@ -47,6 +52,7 @@ function withMaterialized(opts: { teamApproved: boolean }, fn: (cwd: string) => 
     fn(dir);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

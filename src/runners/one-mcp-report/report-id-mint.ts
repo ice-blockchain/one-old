@@ -3,7 +3,8 @@
 // ensureReportId (one-mcp-report/_helpers.cjs). Kept separate from lib.ts to
 // keep the import tree acyclic (readReportIdState imports lib).
 
-import { ONE_UID_FIELD, readProjectState, writeProjectState } from './lib';
+import { ONE_UID_FIELD } from '../../config/reporting';
+import { readProjectState, writeProjectState } from './lib';
 import { readReportIdState, type ReportIdState } from './readReportIdState';
 import { uuidV7 } from './uuidV7';
 

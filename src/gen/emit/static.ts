@@ -4,9 +4,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { pluginVersion } from '../../shared/version';
+import { NAME, pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
-import { NAME } from '../sources/product';
 
 const STATIC_TEXT_FILES = [
   'AGENTS.md',

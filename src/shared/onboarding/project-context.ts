@@ -7,23 +7,6 @@
 
 import { obj, type Rec } from '../obj';
 
-export const PROJECT_CONTEXT_ANSWER_KEYS = [
-  'audience',
-  'coreFlows',
-  'v1Features',
-  'rolesAuth',
-  'businessModel',
-  'payments',
-  'admin',
-  'dataModel',
-  'contentSource',
-  'integrations',
-  'engagement',
-  'successMetrics',
-  'constraints',
-  'domainSpecific',
-] as const;
-
 // The user's first request, used to tailor onboarding questions. Checks the
 // persisted projectContext.originalPrompt first, then loose top-level aliases.
 export function projectContextOriginalPrompt(state: unknown): string {

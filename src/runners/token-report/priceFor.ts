@@ -1,7 +1,7 @@
 // src/runners/token-report/priceFor.ts
 // Longest-prefix model → pricing lookup. Ported 1:1 from token-report/priceFor.cjs.
 
-import { PRICING, type Pricing } from './lib';
+import { PRICING, type Pricing } from '../../config/pricing';
 
 export function priceFor(model: unknown): Pricing {
   if (!model || typeof model !== 'string') return PRICING._default as Pricing;

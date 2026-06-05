@@ -11,8 +11,9 @@ import { deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
+import { detectHostPlan } from '../../shared/host-plan';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
-import { PERFORMANCE_LEVEL_IDS } from '../../shared/performance-config';
+import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
@@ -61,7 +62,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
-  const expected = modelForRoleHost(level, role, ctx.host, overrides);
+  const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host), useOpenCode: obj(state.openCode)?.enabled === true };
+  const expected = modelForRoleHost(level, role, ctx.host, overrides, planCtx);
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';

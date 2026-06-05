@@ -6,9 +6,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
-  type AddIssue, type CommandResult, type Issue, type Rec,
   FINGERPRINT_IGNORES, LEGACY_STATE_REL_PATH, SECURITY_STAMP_FIELDS,
   STATE_REL_PATH, TEXT_EXTENSIONS, WALK_IGNORES,
+} from '../../config/security';
+import {
+  type AddIssue, type CommandResult, type Issue, type Rec,
 } from './constants';
 
 export function toPosix(filePath: string): string {

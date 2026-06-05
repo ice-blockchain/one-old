@@ -13,11 +13,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-// GitNexus's package.json declares `engines.node: ">=22"`. Running
-// `npm install -g gitnexus` on a lower Node prints a noisy EBADENGINE error
-// that beginners can't decode. We pre-flight and refuse with a clean,
-// actionable banner BEFORE wasting ~3 minutes on a doomed npm install.
-export const GITNEXUS_MIN_NODE_MAJOR = 22;
+import { GITNEXUS_MIN_NODE_MAJOR } from '../../config/gitnexus';
 
 export interface NvmNode22 {
   root: string;

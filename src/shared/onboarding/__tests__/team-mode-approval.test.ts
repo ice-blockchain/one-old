@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { TEAM_MODE_CHANGE_APPROVAL_TTL_MS } from '../../../config/onboarding';
 import {
   clearTeamModeChangeApproval,
   hasFreshTeamModeChangeApproval,
@@ -13,7 +14,6 @@ import {
   teamModeDowngradeViolation,
   teamModeMarkerWriteViolation,
   updateTeamModeChangeApprovalFromPrompt,
-  TEAM_MODE_CHANGE_APPROVAL_TTL_MS,
 } from '../team-mode-approval';
 
 function withProject(fn: (cwd: string) => void): void {

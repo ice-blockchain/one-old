@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { BOOTSTRAP_SKILLS } from '../../../config/skill-filters';
 import {
-  BOOTSTRAP_SKILLS,
   activeSkillsFor,
   cleanActiveSkills,
   copyActiveSkills,

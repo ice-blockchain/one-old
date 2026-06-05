@@ -6,7 +6,7 @@ import * as path from 'path';
 import { type Rec, type Report } from './constants';
 import { relativePath, timestampSlug } from './helpers';
 import { legacyStatePath, statePath } from '../../shared/state';
-import { pluginVersion } from '../../shared/version';
+import { pluginVersion } from '../../config/plugin-identity';
 
 export interface ReportPaths { jsonPath: string; markdownPath: string; relativeJsonPath: string; relativeMarkdownPath: string; }
 

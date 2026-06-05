@@ -1,39 +1,14 @@
 // src/shared/config.ts
-// Runtime constants + pitch helpers. Ported from scripts/hook-runtime/config.cjs
-// (pluginRoot / cache helpers live in shared/paths.ts).
+// Stack/pitch helper functions. The tunable data moved to config/stacks.ts
+// (stack ids/aliases, INFRA_CONFIG) and config/paths.ts (state file locations).
 
-import * as path from 'path';
-
-export const MAX_STDIN = 1024 * 1024;
-export const STATE_DIR = '.traffic-one';
-export const STATE_BASENAME = '.one.json';
-export const STATE_FILE = path.join(STATE_DIR, STATE_BASENAME);
-export const LEGACY_STATE_FILE = STATE_FILE;
-export const LEGACY_LOCK_FILE = '.claude-plugin-mode';
-
-export const STACK_IDS = new Set(['minimal', 'default', 'custom-frontend', 'custom-backend', 'custom-stack']);
-
-export const LEGACY_STACK_ALIASES: Readonly<Record<string, string>> = {
-  'react-realtime-monorepo': 'default',
-  'react-frontend-only': 'custom-backend',
-  'react-native-expo-monorepo': 'custom-frontend',
-  'react-native-expo-app': 'custom-frontend',
-  'node-backend': 'custom-backend',
-  'framework-web': 'custom-frontend',
-};
+import { INFRA_CONFIG, LEGACY_STACK_ALIASES, STACK_IDS } from '../config/stacks';
 
 // A stack id is "known" if it's a current id or a recognized legacy alias.
 export function isKnownStack(stack: unknown): boolean {
   return typeof stack === 'string'
     && (STACK_IDS.has(stack) || Object.prototype.hasOwnProperty.call(LEGACY_STACK_ALIASES, stack));
 }
-
-export const RN_STACKS = new Set(['react-native-expo-monorepo', 'react-native-expo-app']);
-export const WEB_STACKS = new Set([
-  'default', 'custom-frontend', 'custom-backend', 'custom-stack', 'react-realtime-monorepo', 'react-frontend-only',
-]);
-
-export const INFRA_CONFIG = { ourDeployConfigured: false };
 
 export function defaultBackendValue(): string {
   return 'supabase';

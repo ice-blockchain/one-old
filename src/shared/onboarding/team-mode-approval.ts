@@ -20,7 +20,7 @@ import {
 } from '../tool-classify';
 import * as fs from 'fs';
 
-export const TEAM_MODE_CHANGE_APPROVAL_TTL_MS = 10 * 60 * 1000;
+import { TEAM_MODE_CHANGE_APPROVAL_TTL_MS } from '../../config/onboarding';
 
 export function hashPromptText(promptText: unknown): string {
   return sha256(String(promptText || '').trim());

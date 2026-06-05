@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { LEGACY_STATE_FILE, STATE_FILE } from '../config';
+import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { readJson, writeJson } from '../fsjson';
 import { sha256 } from '../text';
 import {
@@ -25,7 +25,7 @@ import {
   PERFORMANCE_SOURCE_IDS,
   TEAM_MODE_IDS,
   TEAM_SOURCE_IDS,
-} from './constants';
+} from '../../config/state';
 import { stateTimestamp } from './io';
 import { initializeLocalToolchainState } from './toolchain';
 

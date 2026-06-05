@@ -8,7 +8,8 @@ import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { LEGACY_LOCK_FILE, LEGACY_STACK_ALIASES, LEGACY_STATE_FILE, STACK_IDS, STATE_FILE } from '../config';
+import { LEGACY_STACK_ALIASES, STACK_IDS } from '../../config/stacks';
+import { LEGACY_LOCK_FILE, LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { readJson, readText, writeJson } from '../fsjson';
 import {
   canonicalizeStateShape,
@@ -21,7 +22,7 @@ import {
   mobileStateFromString,
   overridesEqual,
 } from './canonicalize';
-import { KNOWN_ADDONS } from './constants';
+import { KNOWN_ADDONS } from '../../config/state';
 import { stateTimestamp, stateVersion } from './io';
 import { splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
