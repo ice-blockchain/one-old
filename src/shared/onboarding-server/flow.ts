@@ -140,7 +140,10 @@ export interface OnboardingView {
 export interface AnswerOutcome {
   ok: boolean;
   error?: string;
-  task?: { kind: 'code-graph'; provider: 'gitnexus' | 'graphify' };
+  // The code-graph answer is the last question in BOTH the new-project and the
+  // existing-project flows. Answering it kicks the consolidated install task
+  // (graph provider + OpenCode) so the wizard can gate "Setup complete" on it.
+  task?: { kind: 'onboarding-toolchain' };
 }
 
 // ── Step copy (the questions now live in the wizard, not in agent prose) ─────────
@@ -369,7 +372,9 @@ export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOu
       const provider = String(value);
       if (provider !== 'gitnexus' && provider !== 'graphify') return { ok: false, error: 'invalid code-graph provider' };
       mergeProjectPrefs(cwd, { codeGraphProvider: provider });
-      return { ok: true, task: { kind: 'code-graph', provider } };
+      // Provider is now committed (and OpenCode was decided at the first step),
+      // so the consolidated install task can read the final choices from state.
+      return { ok: true, task: { kind: 'onboarding-toolchain' } };
     }
     case 'project-context': {
       const v = obj(value) || {};

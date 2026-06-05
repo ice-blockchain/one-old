@@ -117,7 +117,7 @@ test('post-build code-graph hint surfaces the gitnexus nvm-install-needed branch
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('Node 22 not installed yet'));
-      assert.ok(r.context.includes('Bash permission prompt is the consent gate'));
+      assert.ok(r.context.includes('No user-run install command is required'));
     }
   });
 });

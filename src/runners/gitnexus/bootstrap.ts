@@ -18,13 +18,20 @@ import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
 import { readEffectiveState, mergeProjectPrefs } from '../../shared/state';
 import { nowIso } from '../../shared/text';
-import { mergeToolchainStamp, probeToolVersion } from '../toolchain';
+import {
+  getToolSpec,
+  isToolUsable,
+  managedNpmBin,
+  managedNpmPrefix,
+  mergeToolchainStamp,
+  probeTool,
+  probeToolVersion,
+  toolStatus,
+} from '../toolchain';
 import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
 import {
   currentNodeMajor,
   findNvmNode22,
-  nodeVersionMismatchMessage,
-  nvmInstallCommand,
   nvmPresent,
 } from './nvm';
 
@@ -43,7 +50,6 @@ export interface BootstrapResult {
   installedVersion?: string | null;
   nodeMajor?: number | null;
   requiredNodeMajor?: number;
-  recommendedCommand?: string;
 }
 
 export interface BootstrapOpts {
@@ -151,54 +157,115 @@ interface InstallResult {
   action: string;
   error: string | null;
   gitnexusBin?: string | null;
-  fallback?: string;
+  nodeBin?: string | null;
+  installedVersion?: string | null;
 }
 
-function tryInstall(): InstallResult {
-  // Prefer the absolute nvm-v22 npm when available so the install lands in the
-  // v22 nvm folder regardless of which Node is "active" in PATH. This matters
-  // when Claude Code's hook shell was snapshotted before the user bumped their
-  // nvm default to 22 — `npm` on PATH would still point at Node 20, and
-  // installing gitnexus there places a broken binary that crashes with
-  // `SyntaxError: Cannot use import statement` on every run.
+export interface GitnexusToolResult {
+  ok: boolean;
+  action: string;
+  error: string | null;
+  gitnexusBin: string | null;
+  nodeBin?: string | null;
+  installedVersion?: string | null;
+}
+
+function gitnexusPackageSpec(): string {
+  const spec = getToolSpec('gitnexus');
+  return typeof spec?.recommended === 'string' && spec.recommended
+    ? `gitnexus@${spec.recommended}`
+    : 'gitnexus';
+}
+
+function probeGitnexusVersion(gitnexusBin: string, nodeBin?: string | null): string | null {
+  if (nodeBin && fs.existsSync(nodeBin)) {
+    try {
+      const result = spawnSync(nodeBin, [gitnexusBin, '--version'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: 10 * 1000,
+      });
+      const blob = `${(result.stdout || '').trim()}\n${(result.stderr || '').trim()}`;
+      const regex = new RegExp(getToolSpec('gitnexus')?.versionRegex || 'v?(\\d+\\.\\d+\\.\\d+)');
+      const match = regex.exec(blob);
+      return match && match[1] ? match[1] : null;
+    } catch {
+      return null;
+    }
+  }
+  return probeToolVersion('gitnexus', { binPath: gitnexusBin });
+}
+
+function stampToolchain(cwd: string, gitnexusBin: string, version?: string | null): void {
+  if (!version) return;
+  const current = readState(cwd);
+  const updated = mergeToolchainStamp(current, 'gitnexus', {
+    version,
+    binPath: gitnexusBin,
+    at: nowIso(),
+  });
+  writeStateMerge(cwd, { toolchain: updated.toolchain });
+}
+
+function installNode22WithNvm(): { ok: boolean; error: string | null } {
+  if (!nvmPresent()) return { ok: false, error: 'nvm is not installed, so the hook cannot prepare Node 22 for GitNexus automatically' };
+  const result = spawnSync('bash', ['-lc', `. "$HOME/.nvm/nvm.sh" && nvm install ${GITNEXUS_MIN_NODE_MAJOR}`], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 5 * 60 * 1000,
+  });
+  if (result.status === 0) return { ok: true, error: null };
+  return { ok: false, error: `nvm install ${GITNEXUS_MIN_NODE_MAJOR} failed: ${(result.stderr || result.stdout || '').trim() || 'non-zero exit'}` };
+}
+
+function npmForGitnexus(): { npmCmd: string; nodeBin?: string | null; action: string; error: string | null } {
   const nvm22 = findNvmNode22();
-  let npmCmd: string;
-  let installAction: string;
-  if (nvm22 && nvm22.npm) {
-    npmCmd = nvm22.npm;
-    installAction = 'installed-nvm-v22';
-  } else if (which('npm')) {
-    npmCmd = 'npm';
-    installAction = 'installed-npm-global';
-  } else {
+  if (nvm22 && nvm22.npm && nvm22.node) {
+    return { npmCmd: nvm22.npm, nodeBin: nvm22.node, action: 'installed-managed-nvm-v22', error: null };
+  }
+  const major = currentNodeMajor();
+  if (major !== null && major >= GITNEXUS_MIN_NODE_MAJOR && which('npm')) {
+    return { npmCmd: 'npm', nodeBin: which('node'), action: 'installed-managed-npm', error: null };
+  }
+  const nvmInstall = installNode22WithNvm();
+  if (nvmInstall.ok) {
+    const installed = findNvmNode22();
+    if (installed && installed.npm && installed.node) {
+      return { npmCmd: installed.npm, nodeBin: installed.node, action: 'installed-managed-nvm-v22', error: null };
+    }
+  }
+  return {
+    npmCmd: '',
+    nodeBin: null,
+    action: 'install-skipped',
+    error: nvmInstall.error || `GitNexus needs Node >=${GITNEXUS_MIN_NODE_MAJOR}, and no compatible npm is available for hook-owned install.`,
+  };
+}
+
+function tryInstall(cwd: string): InstallResult {
+  const npm = npmForGitnexus();
+  if (npm.error || !npm.npmCmd) {
     return {
       action: 'install-skipped',
-      error: '`npm` not on PATH and no `~/.nvm/versions/node/v22.*` install detected. Install Node.js >=22 (`nvm install 22 && nvm alias default 22`) or pick `graphify` as the codeGraphProvider.',
+      error: npm.error || 'npm unavailable for GitNexus install',
     };
   }
-  const result = spawnSync(npmCmd, ['install', '-g', 'gitnexus'], {
+  const prefix = managedNpmPrefix('gitnexus');
+  const result = spawnSync(npm.npmCmd, ['install', '-g', '--prefix', prefix, gitnexusPackageSpec()], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,
   });
-  // Post-install: prefer the absolute v22 gitnexus path; fall back to PATH.
-  const installedAbs = nvm22 && fs.existsSync(path.join(nvm22.root, 'bin', 'gitnexus'))
-    ? path.join(nvm22.root, 'bin', 'gitnexus')
-    : null;
-  if (result.status === 0 && (installedAbs || which('gitnexus'))) {
-    return { action: installAction, error: null, gitnexusBin: installedAbs };
+  const installedAbs = managedNpmBin('gitnexus', 'gitnexus');
+  if (result.status === 0 && fs.existsSync(installedAbs)) {
+    const installedVersion = probeGitnexusVersion(installedAbs, npm.nodeBin);
+    stampToolchain(cwd, installedAbs, installedVersion);
+    return { action: npm.action, error: null, gitnexusBin: installedAbs, nodeBin: npm.nodeBin, installedVersion };
   }
   const stderr = (result.stderr || '').trim();
-  if (/EACCES|permission denied|EPERM/i.test(stderr)) {
-    return {
-      action: 'install-skipped',
-      error: 'npm global install failed (EACCES). Try `sudo npm install -g gitnexus` or set npm prefix to a user-writable path. As an alternative, the runner can use `npx gitnexus@latest` on each run — slower but no global install needed.',
-      fallback: 'npx',
-    };
-  }
   return {
     action: 'install-skipped',
-    error: `npm install -g gitnexus failed: ${stderr || 'non-zero exit'}`,
+    error: `managed npm install of gitnexus failed: ${stderr || 'non-zero exit'}`,
   };
 }
 
@@ -208,16 +275,22 @@ interface RunResult {
   stdout: string;
   skippedGit: boolean;
   binUsed: string;
+  nodeUsed?: string | null;
 }
 
-function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string | null }): RunResult {
+function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string | null; nodeBin?: string | null }): RunResult {
   // Pick the gitnexus binary in priority order: explicit opts.gitnexusBin (just
   // installed) → absolute nvm-v22 gitnexus (PATH-independent) → npx fallback →
   // bare `gitnexus` from PATH.
   let cmd: string;
   let baseArgs = ['analyze', '.'];
   const nvm22 = findNvmNode22();
-  if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin)) {
+  let nodeUsed: string | null | undefined;
+  if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin) && opts.nodeBin && fs.existsSync(opts.nodeBin)) {
+    cmd = opts.nodeBin;
+    baseArgs = [opts.gitnexusBin, ...baseArgs];
+    nodeUsed = opts.nodeBin;
+  } else if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin)) {
     cmd = opts.gitnexusBin;
   } else if (opts.useNpx) {
     cmd = 'npx';
@@ -245,6 +318,54 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
     stdout: (result.stdout || '').trim(),
     skippedGit: !hasGit,
     binUsed: cmd,
+    nodeUsed,
+  };
+}
+
+export function ensureGitnexusTool(cwd: string = process.cwd(), opts: BootstrapOpts = {}): GitnexusToolResult {
+  const state = readState(cwd);
+  if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) {
+    return { ok: false, action: 'install-skipped', error: 'codeGraphAutoRun is false in local Traffic One preferences', gitnexusBin: null };
+  }
+
+  const nvm22 = findNvmNode22();
+  const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
+  const managedBin = managedNpmBin('gitnexus', 'gitnexus');
+  const candidates = [
+    { binPath: fs.existsSync(managedBin) ? managedBin : null, action: 'used-managed', nodeBin: (nvm22 && nvm22.node) || (major !== null && major >= GITNEXUS_MIN_NODE_MAJOR ? which('node') : null) },
+    { binPath: nvm22 && nvm22.gitnexus ? nvm22.gitnexus : null, action: 'used-nvm-v22', nodeBin: nvm22 && nvm22.node },
+    { binPath: which('gitnexus'), action: 'used-existing', nodeBin: null },
+  ];
+  for (const candidate of candidates) {
+    if (!candidate.binPath) continue;
+    const version = candidate.nodeBin
+      ? probeGitnexusVersion(candidate.binPath, candidate.nodeBin)
+      : probeTool('gitnexus', candidate.binPath).version;
+    const status = toolStatus('gitnexus', version);
+    const usable = version ? isToolUsable(status.status) : false;
+    if (usable) {
+      stampToolchain(cwd, candidate.binPath, version);
+      return { ok: true, action: candidate.action, error: null, gitnexusBin: candidate.binPath, nodeBin: candidate.nodeBin, installedVersion: version };
+    }
+  }
+
+  if (opts.skipInstall) {
+    return { ok: false, action: 'install-skipped', error: 'gitnexus is missing or below the minimum supported version and skipInstall=true', gitnexusBin: null };
+  }
+
+  const installResult = tryInstall(cwd);
+  if (installResult.error || !installResult.gitnexusBin) {
+    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: installResult.error || 'gitnexus still not available after install attempt' });
+    return { ok: false, action: installResult.action, error: installResult.error || 'gitnexus not available after install', gitnexusBin: null };
+  }
+
+  return {
+    ok: true,
+    action: installResult.action,
+    error: null,
+    gitnexusBin: installResult.gitnexusBin,
+    nodeBin: installResult.nodeBin,
+    installedVersion: installResult.installedVersion,
   };
 }
 
@@ -268,108 +389,21 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
     }
   }
 
-  const nvm22 = findNvmNode22();
-  const hasGitnexusOnPath = which('gitnexus') !== null;
-  const hasAbsoluteGitnexus = !!(nvm22 && nvm22.gitnexus);
-  const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
-  const canInstallOnV22 = !!(nvm22 && nvm22.npm);
-
-  // Refuse early only if there's no path forward: no v22 nvm install AND no
-  // gitnexus on PATH AND current Node is too old to install gitnexus.
-  if (
-    !hasAbsoluteGitnexus
-    && !hasGitnexusOnPath
-    && !canInstallOnV22
-    && major !== null
-    && major < GITNEXUS_MIN_NODE_MAJOR
-  ) {
-    if (nvmPresent()) {
-      const command = nvmInstallCommand();
-      const error = (
-        `GitNexus needs Node >=${GITNEXUS_MIN_NODE_MAJOR}. `
-        + `nvm is installed but has no v${GITNEXUS_MIN_NODE_MAJOR} version yet.\n`
-        + 'One bash command sets it all up (install + default + gitnexus). '
-        + 'Run it via the Bash tool — the user\'s permission prompt is the consent gate:\n\n'
-        + `  ${command}\n\n`
-        + 'After it succeeds, re-invoke the runner (or wait for the next post-build hook).'
-      );
-      writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
-      return {
-        ok: false,
-        action: 'nvm-install-needed',
-        report: null,
-        error,
-        durationMs: Date.now() - startedAt,
-        license: 'PolyForm Noncommercial',
-        nodeMajor: major,
-        requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
-        recommendedCommand: command,
-      };
-    }
-
-    const error = nodeVersionMismatchMessage(major);
-    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
-    return {
-      ok: false,
-      action: 'node-version-mismatch',
-      report: null,
-      error,
-      durationMs: Date.now() - startedAt,
-      license: 'PolyForm Noncommercial',
-      nodeMajor: major,
-      requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
-    };
-  }
-
-  if (
-    !hasAbsoluteGitnexus
-    && !hasGitnexusOnPath
-    && !canInstallOnV22
-    && !which('npm')
-    && nvmPresent()
-  ) {
-    const command = nvmInstallCommand();
-    const error = (
-      `GitNexus needs Node >=${GITNEXUS_MIN_NODE_MAJOR}. `
-      + `nvm is installed but has no v${GITNEXUS_MIN_NODE_MAJOR} version yet.\n`
-      + 'One bash command sets it all up (install + default + gitnexus). '
-      + 'Run it via the Bash tool — the user\'s permission prompt is the consent gate:\n\n'
-      + `  ${command}\n\n`
-      + 'After it succeeds, re-invoke the runner (or wait for the next post-build hook).'
-    );
-    writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: error });
-    return {
-      ok: false,
-      action: 'nvm-install-needed',
-      report: null,
-      error,
-      durationMs: Date.now() - startedAt,
-      license: 'PolyForm Noncommercial',
-      nodeMajor: major,
-      requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
-      recommendedCommand: command,
-    };
-  }
-
   let action = 'used-existing';
-  let useNpx = false;
-  let gitnexusBin: string | null = hasAbsoluteGitnexus && nvm22 ? nvm22.gitnexus : null;
-  if (!hasAbsoluteGitnexus && !hasGitnexusOnPath) {
-    if (opts.skipInstall) {
-      return { ok: false, action: 'install-skipped', report: null, error: 'gitnexus not on PATH and skipInstall=true', durationMs: 0 };
-    }
-    const installResult = tryInstall();
-    action = installResult.action;
-    if (installResult.gitnexusBin) gitnexusBin = installResult.gitnexusBin;
-    if (installResult.fallback === 'npx' && which('npx')) {
-      // Use `npx gitnexus@latest analyze .` for this run; future runs continue
-      // to use npx until the user fixes their npm prefix.
-      useNpx = true;
-      action = 'installed-npx-fallback';
-    } else if (installResult.error || (!gitnexusBin && !which('gitnexus'))) {
-      writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: installResult.error || 'gitnexus still not on PATH after install attempt' });
-      return { ok: false, action, report: null, error: installResult.error || 'gitnexus not available after install', durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial' };
-    }
+  const useNpx = false;
+  const ensured = ensureGitnexusTool(cwd, opts);
+  action = ensured.action;
+  if (!ensured.ok || !ensured.gitnexusBin) {
+    return {
+      ok: false,
+      action,
+      report: null,
+      error: ensured.error || 'gitnexus not available after install',
+      durationMs: Date.now() - startedAt,
+      license: 'PolyForm Noncommercial',
+      nodeMajor: typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor(),
+      requiredNodeMajor: GITNEXUS_MIN_NODE_MAJOR,
+    };
   }
 
   // Conflict mitigation: GitNexus auto-writes AGENTS.md / CLAUDE.md /
@@ -377,7 +411,7 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
   const runStamp = runStampForFs();
   const backups = backupConflicts(cwd, runStamp);
 
-  const run = runGitnexus(cwd, { useNpx, gitnexusBin });
+  const run = runGitnexus(cwd, { useNpx, gitnexusBin: ensured.gitnexusBin, nodeBin: ensured.nodeBin });
   if (run.status !== 0) {
     // GitNexus writes diagnostic tips to STDOUT, not stderr; surface stdout
     // when stderr is empty so the agent has something actionable to relay.
@@ -402,8 +436,11 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
   let installedVersion: string | null = null;
   let probedBin: string | null = null;
   try {
-    const binCandidate = run.binUsed || (nvm22 && nvm22.gitnexus) || (which('gitnexus') || null);
-    if (binCandidate && fs.existsSync(binCandidate.replace(/\s.*/, ''))) {
+    const binCandidate = ensured.gitnexusBin || run.binUsed || (which('gitnexus') || null);
+    if (binCandidate && run.nodeUsed && fs.existsSync(binCandidate.replace(/\s.*/, ''))) {
+      probedBin = binCandidate;
+      installedVersion = probeGitnexusVersion(binCandidate, run.nodeUsed);
+    } else if (binCandidate && fs.existsSync(binCandidate.replace(/\s.*/, ''))) {
       probedBin = binCandidate;
       installedVersion = probeToolVersion('gitnexus', { binPath: binCandidate });
     } else if (binCandidate) {

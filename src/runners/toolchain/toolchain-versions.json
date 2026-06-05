@@ -9,8 +9,8 @@
       "npmPackage": "gitnexus",
       "versionCommand": "gitnexus --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
-      "installCommand": "npm install -g gitnexus",
-      "notes": "Requires Node >=22. Runner discovers `~/.nvm/versions/node/v22.*/bin/gitnexus` via absolute path so PATH order doesn't matter."
+      "installCommand": "Traffic One managed npm-prefix install/upgrade",
+      "notes": "Requires Node >=22. Hooks install GitNexus into a Traffic One-managed npm prefix; runner invokes it through an absolute Node 22 binary so PATH order doesn't matter."
     },
     "graphify": {
       "recommended": "0.7.10",
@@ -20,8 +20,19 @@
       "pipxPackage": "graphifyy",
       "versionCommand": "graphify --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
-      "installCommand": "pipx install graphifyy",
-      "notes": "Python CLI. The `graphifyy` package name is intentional (not a typo) — that's how it's published on PyPI."
+      "installCommand": "Traffic One managed pipx or venv install/upgrade",
+      "notes": "Python CLI. The `graphifyy` package name is intentional (not a typo) — that's how it's published on PyPI. graphify exposes NO `--version` (every form errors), so Traffic One reads the installed version from `pip show graphifyy` next to the binary, falling back to the pinned `recommended`; `versionCommand` is retained only as a forward-compatible fallback. `graphify update .` exits non-zero on a project with no code files, so onboarding gates on install (not on the first scan)."
+    },
+    "opencode": {
+      "recommended": "1.15.13",
+      "minimum": "1.15.13",
+      "license": "MIT",
+      "url": "https://opencode.ai",
+      "npmPackage": "opencode-ai",
+      "versionCommand": "opencode --version",
+      "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
+      "installCommand": "Traffic One managed npm-prefix install/upgrade",
+      "notes": "OpenCode CLI for future Traffic One delegation. Hooks install it into a Traffic One-managed npm prefix; do not ask users to run the upstream curl installer."
     },
     "gitleaks": {
       "recommended": "8.30.1",

@@ -8,14 +8,13 @@ import { exec } from '../../shared/exec';
 import { nowIso } from '../../shared/text';
 import { bootstrap } from './bootstrap';
 
-export { bootstrap } from './bootstrap';
-export type { BootstrapResult, BootstrapOpts } from './bootstrap';
+export { bootstrap, ensureGitnexusTool } from './bootstrap';
+export type { BootstrapResult, BootstrapOpts, GitnexusToolResult } from './bootstrap';
 export { CONFLICT_PATHS, GITNEXUS_MIN_NODE_MAJOR } from '../../config/gitnexus';
 export {
   currentNodeMajor,
   findNvmNode22,
   nodeVersionMismatchMessage,
-  nvmInstallCommand,
   nvmPresent,
 } from './nvm';
 export type { NvmNode22 } from './nvm';

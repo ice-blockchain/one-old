@@ -288,8 +288,12 @@
       } catch (err) { return render({ error: err.message }); }
       if (resp && resp.taskId) {
         showLoading("Installing — this can take a minute…");
-        const status = await pollTask(resp.taskId);
-        if (status === "error") { /* non-blocking: setup still completes */ }
+        const task = await pollTask(resp.taskId);
+        if (task.status === "error" || task.status === "timeout") {
+          // A required dependency (the code-graph tool) failed to install — gate
+          // here so setup never reports complete with a broken provider.
+          return renderInstallBlocked(step, value, task);
+        }
       }
       render(resp.view);
     }
@@ -297,11 +301,11 @@
     async function pollTask(id) {
       for (let i = 0; i < 600; i++) {
         let t;
-        try { t = await api("/task/" + id); } catch (_) { return "error"; }
-        if (t.status === "done" || t.status === "error") return t.status;
+        try { t = await api("/task/" + id); } catch (_) { return { status: "error", error: "Lost contact with the setup server during install." }; }
+        if (t.status === "done" || t.status === "error") return t;
         await new Promise((r) => setTimeout(r, 500));
       }
-      return "timeout";
+      return { status: "timeout", error: "Install timed out after 5 minutes." };
     }
 
     function stepHead(v) {
@@ -418,6 +422,46 @@
       setActions(actionBar(v, submit));
     }
 
+    // Required-tool install failed/timed out: pause setup here. We deliberately
+    // do NOT render the done state or POST /complete, so the gate stays closed
+    // until the user retries (or switches the graph provider) successfully.
+    function renderInstallBlocked(step, value, task) {
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "step-title" }, ["Couldn't install a required tool"]));
+      view.appendChild(el("p", { className: "step-desc" }, [
+        "Traffic One installs the code-graph tool before finishing setup, and that didn't complete. Setup is paused — nothing was marked complete.",
+      ]));
+      showError((task && task.error) ? task.error : "The install failed or timed out.");
+      if (step === "code-graph" && (value === "graphify" || value === "gitnexus")) {
+        const other = value === "graphify" ? "gitnexus" : "graphify";
+        const alt = el("button", { className: "opt", type: "button" }, [
+          el("div", { className: "opt-main" }, [
+            el("div", { className: "label" }, ["Use " + other + " instead"]),
+            el("div", { className: "hint" }, [other === "graphify" ? "Python CLI" : "Node CLI"]),
+          ]),
+          el("span", { className: "opt-go" }, ["→"]),
+        ]);
+        alt.addEventListener("click", () => submitAnswer("code-graph", other, "Switching provider…"));
+        view.appendChild(alt);
+      }
+      const retry = el("button", { className: "btn", type: "button" }, ["Retry install"]);
+      retry.addEventListener("click", () => submitAnswer(step, value, "Retrying install…"));
+      setActions(el("div", { className: "bar-row" }, [el("div", {}), retry]));
+    }
+
+    // The done view kicks no install task (e.g. a reopened/already-complete
+    // wizard), so verify the required toolchain is actually present first; if the
+    // graph provider is missing, re-run the gated install before completing.
+    async function verifyThenDone() {
+      showLoading("Checking your toolchain…");
+      let probe = null;
+      try { probe = await api("/verify-toolchain"); } catch (_) { probe = null; }
+      if (probe && probe.graphMissing && probe.provider) {
+        return submitAnswer("code-graph", probe.provider, "Installing required tools…");
+      }
+      renderDone();
+    }
+
     function renderDone() {
       setActions(null);
       view.innerHTML = "";
@@ -432,7 +476,7 @@
     function render(v) {
       if (!v) { setActions(null); return showError("No response from the setup server."); }
       if (v.error) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
-      if (v.done) return renderDone();
+      if (v.done) return verifyThenDone();
       if (v.step === "finalize") return submitAnswer("finalize", null, "Finishing setup…");
       if (v.meta && v.meta.kind === "form") return renderForm(v);
       return renderSingleSelect(v);

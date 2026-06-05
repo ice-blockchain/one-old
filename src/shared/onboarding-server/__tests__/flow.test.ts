@@ -75,7 +75,7 @@ test('new-project: the full wizard sequence completes onboarding', () => {
     assert.equal(computeOnboarding(cwd).step, 'code-graph');
     const cg = applyAnswer(cwd, 'code-graph', 'gitnexus');
     assert.ok(cg.ok);
-    assert.deepEqual(cg.task, { kind: 'code-graph', provider: 'gitnexus' });
+    assert.deepEqual(cg.task, { kind: 'onboarding-toolchain' });
 
     assert.equal(computeOnboarding(cwd).step, 'finalize');
     assert.ok(applyAnswer(cwd, 'finalize', null).ok);
