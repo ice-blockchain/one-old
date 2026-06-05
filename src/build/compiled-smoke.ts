@@ -47,8 +47,12 @@ function main(): void {
 
     // 2. Invoke through the legacy-path shims under bare node. UNAUTHENTICATED
     //    tool use must be denied. pluginRoot=REPO so skillBlock reads src skills.
+    //    Auth is enforced explicitly (TRAFFIC_ONE_AUTH=on): the shipped default
+    //    config/auth AUTH_ENABLED=false treats everyone as authenticated, so the
+    //    deny path this smoke exercises only exists under enforcement.
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      TRAFFIC_ONE_AUTH: 'on',
       TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:8787/mcp',
       TRAFFIC_ONE_AUTH_STATE_PATH: path.join(authTmp, 'auth.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),

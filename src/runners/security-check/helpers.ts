@@ -6,9 +6,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
-  FINGERPRINT_IGNORES, LEGACY_STATE_REL_PATH, SECURITY_STAMP_FIELDS,
-  STATE_REL_PATH, TEXT_EXTENSIONS, WALK_IGNORES,
+  AUTHORING_SCAN_SKIP_PREFIXES, FINGERPRINT_IGNORES, LEGACY_STATE_REL_PATH,
+  SECURITY_STAMP_FIELDS, STATE_REL_PATH, TEXT_EXTENSIONS, WALK_IGNORES,
 } from '../../config/security';
+import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   type AddIssue, type CommandResult, type Issue, type Rec,
 } from './constants';
@@ -181,11 +182,19 @@ export function readTextFile(cwd: string, relPath: string): string | null {
 }
 
 export function projectFiles(cwd: string): string[] {
+  // On Traffic One's own authoring repo, drop the template/detector/onboarding
+  // trees that legitimately carry example secrets + detection regexes (see
+  // AUTHORING_SCAN_SKIP_PREFIXES). Real end-user scans (not authoring-root) keep
+  // full coverage.
+  const skipAuthoring = isPluginAuthoringRoot(cwd);
+  const keep = (filePath: string): boolean =>
+    !shouldIgnoreFingerprint(filePath)
+    && !(skipAuthoring && AUTHORING_SCAN_SKIP_PREFIXES.some((prefix) => filePath.startsWith(prefix)));
   if (isInsideGitWorkTree(cwd)) {
     const files = splitNul(gitOutput(cwd, ['ls-files', '-z', '--cached', '--others', '--exclude-standard']));
-    return [...new Set(files)].map(toPosix).filter((filePath) => !shouldIgnoreFingerprint(filePath)).sort();
+    return [...new Set(files)].map(toPosix).filter(keep).sort();
   }
-  return walkFiles(cwd).filter((filePath) => !shouldIgnoreFingerprint(filePath));
+  return walkFiles(cwd).filter(keep);
 }
 
 export function lineForIndex(text: string, index: number): number {

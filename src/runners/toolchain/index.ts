@@ -8,6 +8,7 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { nowIsoNoMs } from '../../shared/text';
@@ -22,6 +23,16 @@ export interface ToolSpec {
   versionRegex?: string;
   installCommand?: string;
   [k: string]: unknown;
+}
+
+export type ToolStatusKind = 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
+
+export interface ToolProbe {
+  binPath: string | null;
+  version: string | null;
+  status: ToolStatusKind;
+  recommended: string | null;
+  minimum: string | null;
 }
 
 let cachedSpec: Record<string, ToolSpec> | null = null;
@@ -39,6 +50,39 @@ export function loadSpec(): Record<string, ToolSpec> {
 export function getToolSpec(toolName: string): ToolSpec | null {
   const spec = loadSpec();
   return Object.prototype.hasOwnProperty.call(spec, toolName) ? (spec[toolName] as ToolSpec) : null;
+}
+
+export function toolchainRoot(): string {
+  if (process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT) return path.resolve(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT);
+  const stateHome = process.env.XDG_STATE_HOME
+    ? path.join(process.env.XDG_STATE_HOME, 'traffic-one')
+    : path.join(process.env.HOME || os.homedir(), '.traffic-one');
+  return path.join(stateHome, 'toolchains');
+}
+
+export function managedToolDir(toolName: string): string {
+  return path.join(toolchainRoot(), toolName);
+}
+
+export function managedVenvBin(toolName: string, binName: string = toolName): string {
+  const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  return path.join(managedToolDir(toolName), 'venv', binDir, `${binName}${ext}`);
+}
+
+export function managedVenvPython(toolName: string): string {
+  const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  return path.join(managedToolDir(toolName), 'venv', binDir, `python${ext}`);
+}
+
+export function managedNpmPrefix(toolName: string): string {
+  return path.join(managedToolDir(toolName), 'npm-prefix');
+}
+
+export function managedNpmBin(toolName: string, binName: string = toolName): string {
+  const ext = process.platform === 'win32' ? '.cmd' : '';
+  return path.join(managedNpmPrefix(toolName), 'bin', `${binName}${ext}`);
 }
 
 // Compare two semver strings (no dep). -1 / 0 / 1, or null for non-semver.
@@ -84,7 +128,7 @@ export interface ToolStatus {
   installed: string | null;
   recommended: string | null;
   minimum: string | null;
-  status: 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
+  status: ToolStatusKind;
 }
 
 // Where a tool sits vs. spec: unknown / missing / too-old / outdated / current.
@@ -102,6 +146,22 @@ export function toolStatus(toolName: string, installedVersion: unknown): ToolSta
   if (vMin !== null && vMin < 0) status = 'too-old';
   else if (vRec !== null && vRec < 0) status = 'outdated';
   return { installed: installedVersion as string, recommended: spec.recommended ?? null, minimum: spec.minimum ?? null, status };
+}
+
+export function probeTool(toolName: string, binPath: string | null): ToolProbe {
+  const version = binPath ? probeToolVersion(toolName, { binPath }) : null;
+  const status = toolStatus(toolName, version);
+  return {
+    binPath,
+    version,
+    status: status.status,
+    recommended: status.recommended,
+    minimum: status.minimum,
+  };
+}
+
+export function isToolUsable(status: ToolStatusKind): boolean {
+  return status === 'current' || status === 'outdated';
 }
 
 // Merge a toolchain stamp into the in-memory state object (caller persists).

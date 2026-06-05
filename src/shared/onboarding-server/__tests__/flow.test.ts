@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { readProjectPrefs, readState, writeState } from '../../state';
+import { mergeProjectPrefs, readProjectPrefs, readState, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
   'CURSOR_PLUGIN_ROOT',
@@ -75,7 +75,7 @@ test('new-project: the full wizard sequence completes onboarding', () => {
     assert.equal(computeOnboarding(cwd).step, 'code-graph');
     const cg = applyAnswer(cwd, 'code-graph', 'gitnexus');
     assert.ok(cg.ok);
-    assert.deepEqual(cg.task, { kind: 'code-graph', provider: 'gitnexus' });
+    assert.deepEqual(cg.task, { kind: 'onboarding-toolchain' });
 
     assert.equal(computeOnboarding(cwd).step, 'finalize');
     assert.ok(applyAnswer(cwd, 'finalize', null).ok);
@@ -299,12 +299,17 @@ test('plan-aware performance step: the recommended option follows the plan', () 
   });
 });
 
-test('plan-aware performance step: enabling OpenCode bumps the recommendation a step', () => {
+test('plan-aware performance step: OpenCode bumps the recommendation only once it is installed', () => {
   withProject(null, (cwd) => {
     applyAnswer(cwd, 'open-code', 'enable');
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    // Enabled but NOT installed yet → no tier-shift (don't promise pricier
+    // models for an offload that can't run). free plan recommends 'low'.
+    assert.equal(computeOnboarding(cwd).meta.recommendedLevel, 'low');
+    // Once OpenCode is actually installed (stamped), the recommendation bumps.
+    mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
     const view = computeOnboarding(cwd);
-    assert.equal(view.meta.recommendedLevel, 'balanced'); // free + OpenCode = one step up from low
+    assert.equal(view.meta.recommendedLevel, 'balanced'); // free + active OpenCode = one step up
     assert.equal(view.meta.options?.[0]?.id, 'balanced');
   });
 });

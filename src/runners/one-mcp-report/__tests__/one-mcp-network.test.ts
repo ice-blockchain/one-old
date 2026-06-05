@@ -90,16 +90,38 @@ test('prepareReport skips when disabled / unauthenticated / no codebase, and que
   });
 });
 
-test('prepareReport returns auth-required without an auth state', () => {
+test('prepareReport returns auth-required without an auth state WHEN auth is enforced', () => {
   withProject((cwd) => {
     const env = process.env;
     const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    const prevEnforce = env.TRAFFIC_ONE_AUTH;
     env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
+    env.TRAFFIC_ONE_AUTH = 'on'; // enforce → a real token is required
     try {
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
       assert.equal(prepareReport(cwd, { spawn: false }).reason, 'auth-required');
     } finally {
       if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
+      if (prevEnforce === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevEnforce;
+    }
+  });
+});
+
+test('prepareReport treats auth-not-enforced (AUTH_ENABLED off) as authenticated — bypass for dev/tests', () => {
+  withProject((cwd) => {
+    const env = process.env;
+    const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    const prevEnforce = env.TRAFFIC_ONE_AUTH;
+    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
+    env.TRAFFIC_ONE_AUTH = 'off'; // not enforced → treated as authenticated
+    try {
+      fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+      const r = prepareReport(cwd, { spawn: false });
+      assert.notEqual(r.reason, 'auth-required'); // bypassed → proceeds to mint
+      assert.equal(r.started, true);
+    } finally {
+      if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
+      if (prevEnforce === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevEnforce;
     }
   });
 });

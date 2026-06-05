@@ -14,7 +14,7 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { bootstrap as gitnexusBootstrapImpl } from '../../runners/gitnexus';
+import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl } from '../../runners/graphify';
 import { isAuthenticatedLocal } from '../../shared/auth';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
@@ -69,7 +69,11 @@ export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
     ? path.join(cwd, '.gitnexus')
     : path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
   const artefactExists = fs.existsSync(artefactPath);
-  const artefactFresh = artefactExists
+  // An existing-but-empty gitnexus index (built pre-scaffold, files:0) is NOT
+  // fresh — force a rebuild so it picks up the real code (graphify produces no
+  // report on an empty project, so it self-heals without this check).
+  const artefactEmpty = provider === 'gitnexus' && gitnexusGraphIsEmpty(cwd);
+  const artefactFresh = artefactExists && !artefactEmpty
     ? (Date.now() - fs.statSync(artefactPath).mtimeMs) < GRAPHIFY_FRESH_MS
     : false;
   if (artefactFresh) return noop();
@@ -121,13 +125,14 @@ function buildHintMessage(provider: 'gitnexus' | 'graphify', result: CodeGraphRe
     }
     const actionLabel = result.action === 'used-existing'
       ? 'used existing `graphify` install'
-      : (result.action === 'installed-pipx'
-        ? 'installed `graphifyy` via pipx'
-        : 'installed `graphifyy` via `pip --user`');
+      : (result.action === 'used-managed'
+        ? 'used Traffic One managed `graphify` install'
+        : (result.action === 'installed-pipx'
+          ? 'installed `graphifyy` via pipx'
+          : 'installed `graphifyy` in a Traffic One managed venv'));
     return `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
       + 'Report at `graphify-out/GRAPH_REPORT.md`. Subagents and skills will consult it '
-      + 'before grep/glob for module/structure questions. To auto-rebuild on each git commit: '
-      + '`graphify hook install`. Add `graphify-out/` to .gitignore if not already.';
+      + 'before grep/glob for module/structure questions. Add `graphify-out/` to .gitignore if not already.';
   }
 
   if (provider === 'gitnexus') {
@@ -135,31 +140,21 @@ function buildHintMessage(provider: 'gitnexus' | 'graphify', result: CodeGraphRe
     if (result.action === 'nvm-install-needed') {
       return '[gitnexus] Auto-bootstrap blocked — Node 22 not installed yet.\n'
         + `${result.error}\n`
-        + 'AGENT: present the bash command above to the user, then run it via '
-        + 'your Bash tool. The Bash permission prompt is the consent gate — '
-        + 'do NOT install Node without it. After it succeeds, the runner will '
-        + 'pick up the new Node 22 binary automatically (no host '
-        + 'restart needed; the runner globs `~/.nvm/versions/node/v22.*` '
-        + 'directly).';
+        + 'The hook will retry the managed install on the next onboarding or build event. '
+        + 'No user-run install command is required.';
     }
     if (result.action === 'node-version-mismatch') {
       return '[gitnexus] Auto-bootstrap blocked — Node version too old + nvm not present.\n'
         + `${result.error}\n`
-        + 'Install nvm first (https://github.com/nvm-sh/nvm), then re-invoke '
-        + 'the runner. Or pick `codeGraphProvider: "graphify"` (Python; works '
-        + 'on any Node) by updating local Traffic One preferences.';
+        + 'Traffic One could not prepare a Node 22 GitNexus toolchain automatically. '
+        + 'Pick `codeGraphProvider: "graphify"` if you want a Python-based graph provider.';
     }
     return `[gitnexus] Auto-bootstrap failed (${seconds}s): ${result.error || 'unknown error'}. `
-      + 'Falling back to a manual hint — install + build once when convenient:\n'
-      + '  npm install -g gitnexus   # or: npx gitnexus@latest analyze .\n'
-      + '  gitnexus analyze\n'
+      + 'The hook attempted a managed install/upgrade and will retry on the next build. '
       + 'License: PolyForm Noncommercial. Disable auto-bootstrap with `"codeGraphAutoRun": false` in local Traffic One preferences.';
   }
 
   return `[graphify] Auto-bootstrap failed (${seconds}s): ${result.error || 'unknown error'}. `
-    + 'Falling back to a manual hint — install + build once when convenient:\n'
-    + '  pipx install graphifyy   # or: python3 -m pip install --user graphifyy\n'
-    + '  graphify update .\n'
-    + '  graphify hook install    # optional: regenerate on every git commit\n'
+    + 'The hook attempted a managed install/upgrade and will retry on the next build. '
     + 'To disable auto-bootstrap entirely, set `"codeGraphAutoRun": false` in local Traffic One preferences.';
 }

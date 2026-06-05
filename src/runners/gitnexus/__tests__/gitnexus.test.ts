@@ -9,8 +9,8 @@ import {
   bootstrap,
   currentNodeMajor,
   findNvmNode22,
+  gitnexusGraphIsEmpty,
   nodeVersionMismatchMessage,
-  nvmInstallCommand,
   nvmPresent,
 } from '../index';
 
@@ -87,9 +87,6 @@ test('currentNodeMajor returns the running major', () => {
 
 test('constants + messages are stable', () => {
   assert.equal(GITNEXUS_MIN_NODE_MAJOR, 22);
-  const cmd = nvmInstallCommand();
-  assert.ok(cmd.includes('nvm install 22'));
-  assert.ok(cmd.includes('npm install -g gitnexus'));
   const msg = nodeVersionMismatchMessage(20);
   assert.ok(msg.includes('Node 20'));
   assert.ok(msg.includes('>=22'));
@@ -130,4 +127,18 @@ test('bootstrap short-circuits on a fresh .gitnexus/ cache', () => {
     assert.ok(r.report?.endsWith('.gitnexus'));
     assert.equal(r.license, 'PolyForm Noncommercial');
   });
+});
+
+test('gitnexusGraphIsEmpty flags a 0-file index (so a pre-scaffold graph reindexes)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gnempty-'));
+  try {
+    assert.equal(gitnexusGraphIsEmpty(dir), false); // no meta → can't tell → not empty
+    fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
+    assert.equal(gitnexusGraphIsEmpty(dir), true);
+    fs.writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 7, nodes: 20 } }), 'utf8');
+    assert.equal(gitnexusGraphIsEmpty(dir), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

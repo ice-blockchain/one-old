@@ -12,7 +12,6 @@ import {
   GITNEXUS_MIN_NODE_MAJOR,
   currentNodeMajor,
   findNvmNode22,
-  nvmInstallCommand,
   nvmPresent,
   type NvmNode22,
 } from '../gitnexus';
@@ -76,7 +75,7 @@ export function probeNvm(): NvmProbe {
     installedVersions: versions,
     hasV22: !!nvm22,
     v22Paths: nvm22,
-    installCommand: nvm22 ? null : nvmInstallCommand(),
+    installCommand: null,
   };
 }
 

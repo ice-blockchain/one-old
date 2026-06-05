@@ -15,6 +15,7 @@ import {
   normalizeTrafficState,
   parseArgs,
   parseAuditJson,
+  projectFiles,
   relativePath,
   renderMarkdownReport,
   scanAppSecurity,
@@ -179,5 +180,39 @@ test('runSecurityCheck writes reports + a hex fingerprint (non-strict passes)', 
     assert.ok(fs.existsSync(path.join(dir, paths.relativeMarkdownPath)));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('projectFiles skips template/detector/onboarding trees ONLY on the plugin authoring root', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sec-authoring-'));
+  try {
+    // Make `authoring/` look like the Traffic One source repo (package.json name
+    // + a source-tree entry → isPluginAuthoringRoot true).
+    const authoring = path.join(base, 'authoring');
+    fs.mkdirSync(path.join(authoring, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(authoring, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.writeFileSync(path.join(authoring, 'src', 'gen', 'index.ts'), '// gen entry\n', 'utf8');
+    // Skipped: skill template (example creds) + the scanner's own source.
+    fs.mkdirSync(path.join(authoring, 'skills', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(authoring, 'skills', 'demo', 'SKILL.md'), '# example\npostgres://u:p@h/db\n', 'utf8');
+    fs.mkdirSync(path.join(authoring, 'src', 'runners', 'security-check'), { recursive: true });
+    fs.writeFileSync(path.join(authoring, 'src', 'runners', 'security-check', 'detector.ts'), '// regex\n', 'utf8');
+    // Kept: real plugin code outside the authoring trees stays in scope.
+    fs.mkdirSync(path.join(authoring, 'src', 'app'), { recursive: true });
+    fs.writeFileSync(path.join(authoring, 'src', 'app', 'real.ts'), 'export const x = 1;\n', 'utf8');
+
+    const picked = projectFiles(authoring);
+    assert.equal(picked.includes('skills/demo/SKILL.md'), false, 'skill template skipped on authoring root');
+    assert.equal(picked.includes('src/runners/security-check/detector.ts'), false, 'detector source skipped on authoring root');
+    assert.equal(picked.includes('src/app/real.ts'), true, 'real app code must still be scanned');
+
+    // A non-authoring project keeps the same tree fully in scope.
+    const plain = path.join(base, 'plain');
+    fs.mkdirSync(path.join(plain, 'skills', 'demo'), { recursive: true });
+    fs.writeFileSync(path.join(plain, 'package.json'), JSON.stringify({ name: 'my-app' }), 'utf8');
+    fs.writeFileSync(path.join(plain, 'skills', 'demo', 'SKILL.md'), '# example\npostgres://u:p@h/db\n', 'utf8');
+    assert.equal(projectFiles(plain).includes('skills/demo/SKILL.md'), true, 'non-authoring project keeps full coverage');
+  } finally {
+    fs.rmSync(base, { recursive: true, force: true });
   }
 });

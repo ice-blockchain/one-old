@@ -13,7 +13,7 @@ export interface ToolStamp {
   binPath?: string;
 }
 
-const FALLBACK_TOOLS = ['gitnexus', 'graphify', 'gitleaks', 'trufflehog'];
+const FALLBACK_TOOLS = ['gitnexus', 'graphify', 'opencode', 'gitleaks', 'trufflehog'];
 
 export function toolNamesFromSpec(): string[] {
   try {

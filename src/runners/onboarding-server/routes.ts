@@ -9,8 +9,9 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { applyAnswer, computeOnboarding } from '../../shared/onboarding-server/flow';
 import { writeCompletionSentinel } from '../../shared/onboarding-server/registry';
 import { obj } from '../../shared/obj';
+import { probeOnboardingToolchain } from '../toolchain/onboarding';
 import { wizardHtml } from './html';
-import { getTask, startCodeGraphTask } from './tasks';
+import { getTask, startInstallTask } from './tasks';
 
 export interface RouteContext {
   cwd: string;
@@ -94,11 +95,20 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
     }
     const view = computeOnboarding(ctx.cwd);
     if (outcome.task) {
-      const taskId = startCodeGraphTask(outcome.task.provider, ctx.cwd, ctx.env);
+      const taskId = startInstallTask(ctx.cwd, ctx.env);
       sendJson(res, 200, { ok: true, taskId, view });
       return;
     }
     sendJson(res, 200, { ok: true, view });
+    return;
+  }
+
+  if (method === 'GET' && pathname === '/verify-toolchain') {
+    // Probe-only (no install) gate for the done path: a reopened/already-complete
+    // wizard jumps straight to "complete" without kicking an install task, so the
+    // frontend calls this first and re-installs when a REQUIRED tool is absent.
+    const probe = probeOnboardingToolchain(ctx.cwd);
+    sendJson(res, 200, { ok: !probe.graphMissing, ...probe });
     return;
   }
 

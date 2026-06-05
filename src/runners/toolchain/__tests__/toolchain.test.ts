@@ -1,14 +1,67 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import * as path from 'path';
 
-import { compareSemver, getToolSpec, loadSpec, mergeToolchainStamp, toolStatus } from '../index';
+import {
+  compareSemver,
+  getToolSpec,
+  isToolUsable,
+  loadSpec,
+  managedNpmBin,
+  managedNpmPrefix,
+  managedToolDir,
+  managedVenvBin,
+  managedVenvPython,
+  mergeToolchainStamp,
+  toolStatus,
+  toolchainRoot,
+} from '../index';
 
 test('loadSpec / getToolSpec read the curated spec (via __dirname)', () => {
   const spec = loadSpec();
   assert.ok(Object.keys(spec).length >= 4);
   assert.equal(getToolSpec('gitnexus')?.recommended, '1.6.4');
   assert.equal(getToolSpec('graphify')?.minimum, '0.4.0');
+  assert.equal(getToolSpec('opencode')?.npmPackage, 'opencode-ai');
+  assert.equal(getToolSpec('opencode')?.recommended, '1.15.13');
   assert.equal(getToolSpec('not-a-tool'), null);
+});
+
+test('isToolUsable accepts current/outdated, rejects the rest', () => {
+  assert.equal(isToolUsable('current'), true);
+  assert.equal(isToolUsable('outdated'), true);
+  assert.equal(isToolUsable('too-old'), false);
+  assert.equal(isToolUsable('missing'), false);
+  assert.equal(isToolUsable('unknown'), false);
+});
+
+test('toolchainRoot honours TRAFFIC_ONE_TOOLCHAIN_ROOT, then XDG_STATE_HOME', () => {
+  const savedRoot = process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  const savedXdg = process.env.XDG_STATE_HOME;
+  try {
+    process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(path.sep, 'tmp', 't1-explicit');
+    assert.equal(toolchainRoot(), path.resolve(path.join(path.sep, 'tmp', 't1-explicit')));
+    delete process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+    process.env.XDG_STATE_HOME = path.join(path.sep, 'tmp', 'xdg');
+    assert.equal(toolchainRoot(), path.join(path.sep, 'tmp', 'xdg', 'traffic-one', 'toolchains'));
+  } finally {
+    if (savedRoot === undefined) delete process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = savedRoot;
+    if (savedXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = savedXdg;
+  }
+});
+
+test('managed path helpers build venv + npm-prefix layouts under the root', () => {
+  const savedRoot = process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  try {
+    process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(path.sep, 'tmp', 't1-root');
+    assert.equal(managedToolDir('graphify'), path.join(path.sep, 'tmp', 't1-root', 'graphify'));
+    assert.ok(managedVenvBin('graphify', 'graphify').includes(path.join('graphify', 'venv')));
+    assert.ok(managedVenvPython('graphify').includes(path.join('graphify', 'venv')));
+    assert.equal(managedNpmPrefix('opencode'), path.join(path.sep, 'tmp', 't1-root', 'opencode', 'npm-prefix'));
+    assert.ok(managedNpmBin('opencode', 'opencode').includes(path.join('opencode', 'npm-prefix', 'bin')));
+  } finally {
+    if (savedRoot === undefined) delete process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = savedRoot;
+  }
 });
 
 test('compareSemver orders semvers and rejects non-semver', () => {

@@ -8,6 +8,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  AUTH_ENABLED,
   AUTH_STATE_VERSION,
   DEFAULT_ENDPOINT,
   EXPIRY_SKEW_MS,
@@ -93,6 +94,18 @@ export function isAuthStateFresh(state: unknown, env: NodeJS.ProcessEnv = proces
 
 export function isAuthenticatedLocal(env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): boolean {
   return isAuthStateFresh(readAuthState(env), env, nowMs);
+}
+
+// Effective auth ENFORCEMENT: committed default (config/auth AUTH_ENABLED),
+// overridable per-process via TRAFFIC_ONE_AUTH (1/true/on → enforce, 0/false/off
+// → bypass) for ops + tests. When auth is NOT enforced, callers may treat the
+// user as authenticated (e.g. the one-mcp report fires in AUTH_ENABLED=false dev/
+// test runs). Re-exported from session/auth-gate for back-compat.
+export function authEnforced(env: NodeJS.ProcessEnv = process.env): boolean {
+  const o = (env.TRAFFIC_ONE_AUTH ?? '').trim().toLowerCase();
+  if (o === '1' || o === 'true' || o === 'on' || o === 'yes') return true;
+  if (o === '0' || o === 'false' || o === 'off' || o === 'no') return false;
+  return AUTH_ENABLED;
 }
 
 export function authRemoteCheckDue(state: AuthState | null = readAuthState(), env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): boolean {

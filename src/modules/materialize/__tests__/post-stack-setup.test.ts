@@ -8,6 +8,7 @@ import { runPostStackSetup } from '../post-stack-setup';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { endpointFromEnv } from '../../../shared/auth';
 import { toolClassForRawName } from '../../../core/events';
+import { applyAnswer } from '../../../shared/onboarding-server/flow';
 
 function ctx(cwd: string, toolInput: Record<string, unknown>): Ctx {
   return rawCtx(cwd, 'Write', toolInput);
@@ -67,6 +68,78 @@ test('noop when not authenticated (no auth state)', () => {
   }
 });
 
+// An UNAUTHENTICATED, fully-onboarded project: local prefs resolved via applyAnswer
+// so computeOnboarding(...).done === true, plus a real-codebase marker. The single
+// report gate should fire here (auth bypassed because AUTH_ENABLED is off).
+function withDoneProject(extraOne: Record<string, unknown>, fn: (dir: string) => void): void {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-done-')));
+  const env = process.env;
+  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'no-auth.json'); // absent → unauthenticated
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal', confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z', ...extraOne }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x"}', 'utf8'); // real-codebase marker
+    // Resolve local prefs → computeOnboarding(...).done (low ⇒ main-agent, no team step).
+    applyAnswer(dir, 'open-code', 'not_now');
+    applyAnswer(dir, 'performance', 'low');
+    applyAnswer(dir, 'code-graph', 'graphify');
+    fn(dir);
+  } finally {
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('single gate: onboarding finalized + one-uid missing → fires the one-mcp report (onboarding-complete), even unauthenticated', () => {
+  withDoneProject({}, (dir) => {
+    const calls: string[] = [];
+    const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+    });
+    assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate, no auth required
+    assert.equal(r.kind, 'noop'); // unauthenticated → rest gated; the report already fired
+  });
+});
+
+test('single gate: skipped once one-uid is already minted', () => {
+  withDoneProject({ 'one-uid': '0192e7c0-0000-7000-8000-000000000000' }, (dir) => {
+    const calls: string[] = [];
+    runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+    });
+    assert.deepEqual(calls, []); // one-uid present → no re-report
+  });
+});
+
+test('single gate: does NOT fire while onboarding is not finalized', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-notdone-')));
+  const env = process.env;
+  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'no-auth.json');
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    // existing-codebase with a stack but UNRESOLVED local prefs → computeOnboarding not done.
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal' }), 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x"}', 'utf8');
+    const calls: string[] = [];
+    runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+    });
+    assert.deepEqual(calls, []); // onboarding not finalized → no report
+  } finally {
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('noop in the plugin authoring root for a write inside cwd', () => {
   // process.cwd() is the authoring root; a file_path inside it → noop (auth not reached for authoring).
   const env = process.env;
@@ -93,84 +166,6 @@ test('oversized handoff digest → trim warning', () => {
       assert.ok(r.systemMessage?.includes('digest architect.md'));
       assert.ok(r.context.includes('[digest-size]'));
     }
-  });
-});
-
-test('architect PLAN_READY digest triggers the one-mcp reporter', () => {
-  withAuthedProject(true, (cwd) => {
-    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run1');
-    fs.mkdirSync(digestDir, { recursive: true });
-    const digestFile = path.join(digestDir, 'architect.md');
-    fs.writeFileSync(digestFile, '# architect digest\n\nverdict: PLAN_READY\n', 'utf8');
-    const reports: { cwd: string; trigger: string }[] = [];
-
-    const r = runPostStackSetup(ctx(cwd, { file_path: digestFile }), {
-      reportOneMcp: (root, _state, trigger) => { reports.push({ cwd: root, trigger }); },
-    });
-
-    assert.equal(r.kind, 'noop');
-    assert.deepEqual(reports, [{ cwd, trigger: 'architect PLAN_READY' }]);
-  });
-});
-
-test('architect spawn result PLAN_READY triggers the one-mcp reporter', () => {
-  withAuthedProject(true, (cwd) => {
-    const reports: { cwd: string; trigger: string }[] = [];
-    const r = runPostStackSetup(rawCtx(cwd, 'spawn_agent', {
-      message: 'You are Traffic One `senior-architect` for this run.',
-    }, {
-      tool_response: 'Architecture complete.\n\nPLAN_READY\n',
-    }), {
-      reportOneMcp: (root, _state, trigger) => { reports.push({ cwd: root, trigger }); },
-    });
-
-    assert.equal(r.kind, 'noop');
-    assert.deepEqual(reports, [{ cwd, trigger: 'architect PLAN_READY' }]);
-  });
-});
-
-test('unauthenticated wait_agent PLAN_READY still triggers the one-mcp reporter', () => {
-  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-noauth-planready-')));
-  const env = process.env;
-  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
-  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'missing-auth.json');
-  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
-    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
-    mobile: { framework: 'none' }, onboardingComplete: true,
-  }), 'utf8');
-  try {
-    const reports: { cwd: string; trigger: string }[] = [];
-    const r = runPostStackSetup(rawCtx(dir, 'wait_agent', {}, {
-      tool_response: 'Architecture complete.\n\nPLAN_READY\n',
-    }), {
-      reportOneMcp: (root, _state, trigger) => { reports.push({ cwd: root, trigger }); },
-    });
-
-    assert.equal(r.kind, 'noop');
-    assert.deepEqual(reports, [{ cwd: dir, trigger: 'architect PLAN_READY' }]);
-  } finally {
-    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
-    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test('architect prompt mentioning PLAN_READY does not trigger without a result token', () => {
-  withAuthedProject(true, (cwd) => {
-    let reported = 0;
-    const r = runPostStackSetup(rawCtx(cwd, 'spawn_agent', {
-      message: 'You are Traffic One `senior-architect`; end with PLAN_READY.',
-    }, {
-      tool_response: 'Architecture still running.',
-    }), {
-      reportOneMcp: () => { reported += 1; },
-    });
-
-    assert.equal(r.kind, 'noop');
-    assert.equal(reported, 0);
   });
 });
 

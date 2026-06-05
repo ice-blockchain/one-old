@@ -56,6 +56,29 @@ work already started, pause at the next safe point, resolve it, then continue.
 - Include the relevant `agents/senior-*.md` role text or a concise equivalent in every subagent prompt.
 - If subagents are unavailable or blocked, or the user picks Low: continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
 
+## OpenCode delegation (optional token-saver — bounded tasks only)
+
+When `openCode.enabled` is true in the effective Traffic One state AND the OpenCode CLI is installed (the onboarding hook installs it; `scripts/opencode-runner.cjs` is present), you MAY hand a **bounded, low-risk, easily verifiable** implementation unit to the free local OpenCode agent INSTEAD of spawning a paid subagent, to save the user's token budget.
+
+Delegate ONLY tasks like boilerplate/CRUD scaffolding, mechanical refactors/renames, simple test scaffolding, formatting/codemods. NEVER delegate architecture, public contracts, security/auth, data-model, migrations, or cross-file-invariant work — those stay on the named senior subagents.
+
+This is run by the orchestrator (it is NOT a subagent spawn and is NOT subject to the spawn `model` param):
+
+1. Write the **self-contained** task (acceptance criteria + the exact files/area, no external context the run can't see) to `.traffic-one/opencode-task.md`.
+2. Run the delegation runner:
+
+   ```bash
+   node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" \
+     --run-id "$RUN_ID" --role <frontend|backend|tester> --task-file .traffic-one/opencode-task.md
+   ```
+
+   It runs OpenCode headless on a free model (no sign-in) inside a throwaway git worktree, applies ONLY a clean, error-free result back to the working tree, and writes `.traffic-one/digests/<run-id>/<role>.md`. It prints one JSON line: `{ ok, action, digest, touched, error }`.
+
+3. **On `ok: true`** (action `delegated`) → the change is already in the working tree and the digest is written. Proceed to Phase 3 review as usual; `senior-reviewer` MUST verify the diff (it came from a weaker model) before the unit counts as done.
+4. **On `ok: false`** (action `skipped` / `failed` / `no-changes` — not enabled/installed, gateway error, throttle, timeout, or it changed nothing) → **fall back**: spawn the normal Traffic One subagent for that unit exactly as you otherwise would. Never block, retry-loop, or fail the build because OpenCode was unavailable.
+
+Privacy: the default free model is hosted — the task + code are sent to the opencode.ai gateway. Delegate only non-sensitive, bounded units; for on-device-only execution the user can point `openCode.model` (or the `delegateModel` spec field) at a local `ollama/*` model.
+
 ## When you fire
 
 Auto-trigger keywords: "build me", "make me", "create me", "scaffold a", "ship a", "end to end", "I want an app", "I need a site for", "turn this into", "habit tracker", "dashboard", "SaaS", "mobile app", "MVP", "landing page that does X".
@@ -191,6 +214,8 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 Run `senior-frontend` and `senior-backend` **concurrently** — they share the architect's plan/digest for contracts, so neither waits on the other. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue both spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue the `senior-frontend` and `senior-backend` `spawn_agent` calls **consecutively** and do **NOT** call `wait_agent` until BOTH have returned their `agent_id` — a `wait_agent` after the first spawn blocks the turn and serializes the roles (architect → backend → frontend instead of architect → frontend ∥ backend). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Give the implementers disjoint write scopes and tell each they are not alone in the codebase.
 
 Synthetic prompts — use the **Phase 2 — Frontend** and **Phase 2 — Backend** templates from `resources/prompt-templates.md`. Each template instructs the implementer to read the architect digest first, then the relevant plan section, then graph nodes, raw files only as last resort. Each writes its own digest (`.traffic-one/digests/<run-id>/{frontend,backend}.md`) before reporting.
+
+For an individual unit that is bounded and low-risk, you may first try OpenCode delegation (see "OpenCode delegation") instead of spawning the paid implementer; on `ok:false` fall back to the subagent. Architecture/contract/security/data work always uses the named subagents.
 
 Wait for both to return before Phase 3.
 

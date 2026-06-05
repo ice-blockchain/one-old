@@ -20,7 +20,7 @@ import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
 import { recommendTierForPlan } from '../model-tiers';
-import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
+import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
 import {
@@ -140,7 +140,10 @@ export interface OnboardingView {
 export interface AnswerOutcome {
   ok: boolean;
   error?: string;
-  task?: { kind: 'code-graph'; provider: 'gitnexus' | 'graphify' };
+  // The code-graph answer is the last question in BOTH the new-project and the
+  // existing-project flows. Answering it kicks the consolidated install task
+  // (graph provider + OpenCode) so the wizard can gate "Setup complete" on it.
+  task?: { kind: 'onboarding-toolchain' };
 }
 
 // ── Step copy (the questions now live in the wizard, not in agent prose) ─────────
@@ -262,7 +265,7 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
   const host = detectHost();
-  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: obj(state.openCode)?.enabled === true };
+  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
   meta.team = buildTeamLineup(level, host, overrides, planCtx);
   meta.performanceLevel = level;
   meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
@@ -275,7 +278,7 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
 function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
   const host = detectHost();
   const plan = detectHostPlan(host);
-  const useOpenCode = obj(state.openCode)?.enabled === true;
+  const useOpenCode = openCodeDelegationActive(state);
   const recommended = recommendLevelForPlan(host, plan, useOpenCode);
   const options = (meta.options || []).map((o) => ({ ...o }));
   for (const o of options) {
@@ -369,7 +372,9 @@ export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOu
       const provider = String(value);
       if (provider !== 'gitnexus' && provider !== 'graphify') return { ok: false, error: 'invalid code-graph provider' };
       mergeProjectPrefs(cwd, { codeGraphProvider: provider });
-      return { ok: true, task: { kind: 'code-graph', provider } };
+      // Provider is now committed (and OpenCode was decided at the first step),
+      // so the consolidated install task can read the final choices from state.
+      return { ok: true, task: { kind: 'onboarding-toolchain' } };
     }
     case 'project-context': {
       const v = obj(value) || {};

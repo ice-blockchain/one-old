@@ -55,12 +55,13 @@ function call(port: number, method: string, p: string, body?: unknown): Promise<
 async function withServer(
   committed: Record<string, unknown> | null,
   fn: (server: RunningServer, cwd: string) => Promise<void>,
+  taskCmd: string = 'noop',
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-routes-'));
   const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevTask = process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD = 'noop';
+  process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD = taskCmd;
   if (committed) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(committed), 'utf8');
@@ -131,6 +132,36 @@ test('routes: answering steps advances; code-graph runs a task; complete writes 
     assert.equal(done.status, 200);
     assert.equal(rec(done.json).ok, true);
     assert.equal(completionSentinelExists(cwd), true);
+  });
+});
+
+test('routes: a failed install task leaves the completion sentinel unwritten (gate stays closed)', async () => {
+  await withServer(existing, async (server, cwd) => {
+    await call(server.port, 'POST', '/answer', { step: 'open-code', value: 'enable' });
+    await call(server.port, 'POST', '/answer', { step: 'performance', value: 'low' });
+    const res = await call(server.port, 'POST', '/answer', { step: 'code-graph', value: 'gitnexus' });
+    const taskId = rec(res.json).taskId;
+    assert.equal(typeof taskId, 'string');
+
+    const taskStatus = await waitForTask(server.port, String(taskId));
+    assert.equal(taskStatus, 'error');
+    // The frontend withholds POST /complete on a failed install, so the server
+    // never wrote the sentinel — onboarding is NOT marked complete.
+    assert.equal(completionSentinelExists(cwd), false);
+  }, 'fail');
+});
+
+test('routes: /verify-toolchain reports the provider + a boolean graphMissing', async () => {
+  await withServer(existing, async (server) => {
+    await call(server.port, 'POST', '/answer', { step: 'open-code', value: 'not_now' });
+    await call(server.port, 'POST', '/answer', { step: 'performance', value: 'low' });
+    await call(server.port, 'POST', '/answer', { step: 'code-graph', value: 'graphify' });
+
+    const res = await call(server.port, 'GET', '/verify-toolchain');
+    assert.equal(res.status, 200);
+    assert.equal(rec(res.json).provider, 'graphify');
+    assert.equal(typeof rec(res.json).graphMissing, 'boolean');
+    assert.equal(rec(res.json).ok, !rec(res.json).graphMissing);
   });
 });
 
