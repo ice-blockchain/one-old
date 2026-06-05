@@ -39,7 +39,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): vo
 function stubOpencode(behavior: 'edit' | 'error' | 'noop'): void {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
   fs.mkdirSync(bin, { recursive: true });
-  const scripts: Record<string, string> = {
+  const scripts: Record<typeof behavior, string> = {
     // emits a text event AND writes a file in its cwd (the worktree)
     edit: `#!/bin/sh
 echo '{"type":"text","part":{"type":"text","text":"created foo.txt"}}'
