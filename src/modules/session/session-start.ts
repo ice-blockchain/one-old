@@ -30,13 +30,17 @@ import {
   hookSessionIdentity,
   legacyRunAgentContext,
   normalizeState,
+  planRoleRules,
+  planRoleSkills,
   readEffectiveState,
+  readOrchestrationPlan,
   resolveRunAgentContext,
   type RunAgentContext,
   stackFingerprint,
   stateVersion,
   writeState,
 } from '../../shared/state';
+import { orchestrationEnabled } from '../../config/orchestration';
 import { initializeToolchainState } from '../../shared/state/toolchain';
 import { nowIsoNoMs } from '../../shared/text';
 import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
@@ -47,6 +51,16 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
 const STACK_IDS = new Set(Object.keys(STACKS));
+
+// Narrow `base` to the orchestrator's declared allow-list, never widening it. A null
+// list (no per-role narrowing) or an empty intersection (nonsensical narrowing) keeps
+// the full static `base` — a plan can scope a subagent down, never strip it to nothing.
+function intersectKeep(base: string[], narrow: string[] | null): string[] {
+  if (!narrow || narrow.length === 0) return base;
+  const allow = new Set(narrow);
+  const kept = base.filter((item) => allow.has(item));
+  return kept.length > 0 ? kept : base;
+}
 
 // Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
 // resolved and whose project is already materialized. Shared by the subagent
@@ -64,9 +78,14 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
   }
 
   const ruleSet = role ? roleScopedRules(role, state) : null;
-  const rules = ruleSet || stackSpecForState(state).mandatory;
+  const baseRules = ruleSet || stackSpecForState(state).mandatory;
+  // First-spawn role context: intersect the orchestrator's declared per-role rule/skill
+  // scope into the static role-scoped bundle (fix-cycle re-spawns returned above and
+  // keep their slim pointer). No plan / feature disabled ⇒ identical to before.
+  const plan = role && orchestrationEnabled() ? readOrchestrationPlan(cwd, runId) : null;
+  const rules = intersectKeep(baseRules, role ? planRoleRules(plan, role) : null);
   copyActiveSkills(state);
-  const skillDirective = pruneSkillsDirective(state, listAllSkills());
+  const skillDirective = pruneSkillsDirective(state, listAllSkills(), role ? planRoleSkills(plan, role) : null);
   const { body } = packRuleIndex(root, rules);
   const graphPreview = readGraphPreview(cwd);
   const roleLabel = role || 'subagent';

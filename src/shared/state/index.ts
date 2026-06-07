@@ -10,4 +10,5 @@ export * from './local-prefs';
 export * from './normalize';
 export * from './materialization';
 export * from './run-agent';
+export * from './orchestration-plan';
 export * from './web';

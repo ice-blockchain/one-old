@@ -8,7 +8,7 @@ import { agentModelGate } from '../handler';
 import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
-import { readEffectiveState, resolveRunAgentContext } from '../../../shared/state';
+import { readEffectiveState, resolveRunAgentContext, writeOrchestrationPlan } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', () => {
@@ -122,6 +122,54 @@ test('codex: namespaced spawn enforces gpt-5.5 and stakes a senior-frontend clai
     const state = readEffectiveState(cwd) as { currentRunId?: string };
     const pending = path.join(cwd, '.traffic-one', 'runs', String(state.currentRunId), 'pending');
     assert.equal(fs.readdirSync(pending).filter((f) => f.endsWith('.json')).length, 1);
+  });
+});
+
+// Declare a run-scoped orchestration plan: stamp currentRunId into the shared state
+// and write the validated plan beside the run's claims. Returns the run id.
+function declarePlan(cwd: string, plan: Record<string, unknown>): string {
+  const runId = '1700000000001';
+  const oneJson = path.join(cwd, '.traffic-one', '.one.json');
+  const state = JSON.parse(fs.readFileSync(oneJson, 'utf8'));
+  state.currentRunId = runId;
+  fs.writeFileSync(oneJson, JSON.stringify(state), 'utf8');
+  const written = writeOrchestrationPlan(cwd, { version: 1, runId, ...plan });
+  assert.ok(written, 'plan fixture should validate');
+  return runId;
+}
+
+test('declared plan tier replaces the static expected model (cheaper for a minor task)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // High senior-frontend defaults to highest → claude "opus". The plan pins cheapest.
+    declarePlan(cwd, { taskClass: 'minor', roster: ['senior-frontend'], roles: { 'senior-frontend': { tier: 'cheapest' } } });
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'deny');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'haiku' })).kind, 'noop');
+  });
+});
+
+test('a role absent from the declared roster is denied', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    declarePlan(cwd, { taskClass: 'minor', roster: ['senior-frontend'], roles: { 'senior-frontend': { tier: 'cheapest' } } });
+    const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' }));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(r.reason.includes('roster') || r.reason.includes('Orchestration gate'));
+  });
+});
+
+test('feature disabled → declared plan ignored, static tier enforced, off-roster role allowed', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    declarePlan(cwd, { taskClass: 'minor', roster: ['senior-frontend'], roles: { 'senior-frontend': { tier: 'cheapest' } } });
+    const prev = process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION;
+    process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION = '1';
+    try {
+      // Disabled: senior-frontend resolves the STATIC highest tier (opus), not the plan's haiku.
+      assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+      // Disabled: an off-roster role is NOT denied (static path, no roster gate).
+      assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
+    } finally {
+      if (prev === undefined) delete process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION;
+      else process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION = prev;
+    }
   });
 });
 

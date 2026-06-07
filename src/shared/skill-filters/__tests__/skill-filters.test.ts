@@ -41,6 +41,23 @@ test('pruneSkillsDirective lists active + flags wrong-stack skills', () => {
   assert.ok(directive.includes('django-patterns'));
 });
 
+test('pruneSkillsDirective allow-list narrows the active set to the task scope', () => {
+  const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true };
+  const directive = pruneSkillsDirective(state, ['library-pick'], ['i18n-text']);
+  const activeLine = directive.split('\n')[0] ?? '';
+  // Narrowed active set is exactly the allow ∩ active (i18n-text is _common, so stack-active).
+  assert.ok(activeLine.includes('[ACTIVE SKILLS for stack=default]: i18n-text'));
+  // create-component is stack-active but out of this task's scope → not in the active line.
+  assert.ok(!/\bcreate-component\b/.test(activeLine));
+});
+
+test('pruneSkillsDirective allow-list with no overlap falls open to the full active set (never strip all)', () => {
+  const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true };
+  const narrowed = (pruneSkillsDirective(state, ['library-pick'], ['totally-unknown-skill']).split('\n')[0]) ?? '';
+  const full = (pruneSkillsDirective(state, ['library-pick']).split('\n')[0]) ?? '';
+  assert.equal(narrowed, full);
+});
+
 test('cache surgery is a no-op outside the plugin cache path', () => {
   // pluginRoot resolves to this repo (not a .claude/plugins/cache path), so both return 0.
   assert.equal(cleanActiveSkills(), 0);

@@ -80,8 +80,20 @@ export function activeSkillsFor(stackOrState: unknown): Set<string> {
   return out;
 }
 
-export function pruneSkillsDirective(stackOrState: unknown, allSkills: Iterable<string>): string {
-  const active = activeSkillsFor(stackOrState);
+export function pruneSkillsDirective(
+  stackOrState: unknown,
+  allSkills: Iterable<string>,
+  allow?: Iterable<string> | null,
+): string {
+  let active = activeSkillsFor(stackOrState);
+  // Optional per-prompt narrowing (the orchestrator's declared plan): intersect the
+  // stack-active set with the allow-list so a scoped subagent sees only task-relevant
+  // skills. An empty intersection falls open to the full active set (never strip all).
+  if (allow) {
+    const allowSet = new Set(allow);
+    const narrowed = new Set([...active].filter((name) => allowSet.has(name)));
+    if (narrowed.size > 0) active = narrowed;
+  }
   const wrongStack: string[] = [];
   for (const name of allSkills) {
     if (!active.has(name)) wrongStack.push(name);

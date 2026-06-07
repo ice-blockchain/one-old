@@ -14,8 +14,9 @@ import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
+import { orchestrationEnabled } from '../../config/orchestration';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
+import { ensureRunAgentClaim, isTeamApproved, planHasRole, planRoleTier, readEffectiveState, readOrchestrationPlan } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -62,8 +63,19 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
+
+  // LLM-authority orchestration: if the orchestrator declared a run-scoped plan, the
+  // roster gates which roles may spawn and the per-role tier replaces the static
+  // default (user `team.overrides` still win). Absent/disabled ⇒ today's behavior.
+  const currentRunId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  const plan = orchestrationEnabled() && currentRunId ? readOrchestrationPlan(cwd, currentRunId) : null;
+  if (plan && !planHasRole(plan, role)) {
+    return deny(block('role-not-in-plan', { ROLE: role, ROSTER: plan.roster.join(', ') }));
+  }
+  const planTier = plan ? planRoleTier(plan, role) : null;
+
   const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host), useOpenCode: openCodeDelegationActive(state) };
-  const expected = modelForRoleHost(level, role, ctx.host, overrides, planCtx);
+  const expected = modelForRoleHost(level, role, ctx.host, overrides, planCtx, planTier);
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';

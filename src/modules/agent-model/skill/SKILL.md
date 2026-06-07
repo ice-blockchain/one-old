@@ -32,3 +32,15 @@ Team gate: spawning subagents needs `team.approved: true`, which the Traffic One
 <!-- T1BLOCK:BEGIN performance-model-param -->
 Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect. Per-role model tiers live in `performance-config.cjs` / `model-tiers.cjs`.
 <!-- T1BLOCK:END performance-model-param -->
+
+<!-- T1BLOCK:BEGIN role-not-in-plan -->
+Orchestration gate: `{{ROLE}}` is not in this run's declared roster [{{ROSTER}}]. The orchestrator's plan at `.traffic-one/runs/<currentRunId>/orchestration.json` decides which roles run for this request. If `{{ROLE}}` is genuinely needed (e.g. the task is bigger than first classified), add it to the plan's `roster` (and a `roles.{{ROLE}}` tier) and re-spawn. If it is not needed, do not spawn it. Never bypass the plan by spawning an off-roster role.
+<!-- T1BLOCK:END role-not-in-plan -->
+
+<!-- T1BLOCK:BEGIN orchestration-directive -->
+[ORCHESTRATION] You are the orchestrator — work only through subagents; do not edit code yourself. Before spawning, classify this request and DECLARE a plan by writing `.traffic-one/runs/<currentRunId>/orchestration.json` (see the senior-eng-orchestrator skill for the schema + roster/tier catalog), then spawn only the declared roster, in the declared order, each at its declared `model` tier:
+- minor (text/copy edit, small UI tweak, single-file fix) → ONE cheapest-tier subagent of the relevant role (usually senior-frontend); skip architect/backend/tester; optional light reviewer.
+- standard build → senior-architect first, then senior-frontend ∥ senior-backend, then senior-reviewer ∥ senior-tester. Include senior-backend only when the request actually touches server/data/API (else drop it from the roster).
+- performance-critical work → raise the owning role's tier (e.g. `highest`).
+The spawn gate enforces this: a role absent from the roster is denied, and each spawn's `model` must match its declared tier.
+<!-- T1BLOCK:END orchestration-directive -->

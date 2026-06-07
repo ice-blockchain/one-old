@@ -7,6 +7,7 @@ import * as path from 'path';
 import { runSessionStart, runSessionStartAuthed } from '../session-start';
 import type { Ctx, HookInput } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
+import { stackFingerprint, writeOrchestrationPlan } from '../../../shared/state';
 
 function ctx(cwd: string): Ctx {
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
@@ -218,5 +219,88 @@ test('subagent: a materialized project hands back rules, never onboarding', () =
     const text = r.kind === 'context' ? (r.context || '') : '';
     assert.ok(!/setup required|quick setup|setup wizard/i.test(text), 'subagent never onboarded even when materialized');
     assert.ok(!/authenticat/i.test(String((r as { systemMessage?: string }).systemMessage || '')));
+  });
+});
+
+test('subagent first-spawn role context: a declared plan narrows the role-scoped rules + skills', () => {
+  withProject(null, (cwd) => {
+    const RUN = '1700000000077';
+    const sharedState: Record<string, unknown> = {
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      onboardingComplete: true, currentRunId: RUN,
+    };
+    const fp = stackFingerprint(sharedState);
+    sharedState.materializedStack = fp;
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(sharedState), 'utf8');
+    writeLocalPrefs({ performance: { level: 'high', source: 'prompted' }, team: { mode: 'subagents', source: 'prompted', approved: true } });
+    materializeFixture(cwd, 'default');
+
+    // Claim a senior-frontend thread keyed by the subagent's session id (exact-match path).
+    fs.mkdirSync(path.join(t1, 'runs', RUN), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', RUN, 'child-xyz.json'), JSON.stringify({
+      version: 1, runId: RUN, claimId: 'senior-frontend-1-x', role: 'senior-frontend', spawnIndex: 1,
+      status: 'claimed', sessionId: 'child-xyz', parentSessionId: 'parent-abc',
+      createdAt: new Date().toISOString(), claimedAt: new Date().toISOString(), stackFingerprint: fp,
+    }), 'utf8');
+
+    // Narrow senior-frontend to ONLY the i18n rule + the i18n-text skill.
+    const written = writeOrchestrationPlan(cwd, {
+      version: 1, runId: RUN, taskClass: 'minor', roster: ['senior-frontend'], graph: [['senior-frontend']],
+      roles: { 'senior-frontend': { tier: 'cheapest', rules: ['rules/frontend/i18n.md'], skills: ['i18n-text'] } },
+    });
+    assert.ok(written, 'plan should validate');
+
+    const r = runSessionStart(subagentCtx(cwd));
+    assert.equal(r.kind, 'context');
+    const text = r.kind === 'context' ? (r.context || '') : '';
+    // The claim resolved to senior-frontend (role header proves the plan-aware path ran).
+    assert.ok(/senior-frontend \(run 1700000000077\)/.test(text), 'resolved the senior-frontend role context');
+    // Skill directive narrowed to exactly the one allowed skill (create-component etc. dropped).
+    assert.ok(/\[ACTIVE SKILLS[^\n]*\bi18n-text\b/.test(text), 'skills narrowed to i18n-text');
+    assert.ok(!/\[ACTIVE SKILLS[^\n]*\bcreate-component\b/.test(text), 'out-of-scope skill dropped by the plan');
+  });
+});
+
+test('subagent role context falls back to the full role scope when the feature is disabled', () => {
+  withProject(null, (cwd) => {
+    const RUN = '1700000000078';
+    const sharedState: Record<string, unknown> = {
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'none' },
+      onboardingComplete: true, currentRunId: RUN,
+    };
+    const fp = stackFingerprint(sharedState);
+    sharedState.materializedStack = fp;
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(sharedState), 'utf8');
+    writeLocalPrefs({ performance: { level: 'high', source: 'prompted' }, team: { mode: 'subagents', source: 'prompted', approved: true } });
+    materializeFixture(cwd, 'default');
+    fs.mkdirSync(path.join(t1, 'runs', RUN), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', RUN, 'child-xyz.json'), JSON.stringify({
+      version: 1, runId: RUN, claimId: 'senior-frontend-1-x', role: 'senior-frontend', spawnIndex: 1,
+      status: 'claimed', sessionId: 'child-xyz', parentSessionId: 'parent-abc',
+      createdAt: new Date().toISOString(), claimedAt: new Date().toISOString(), stackFingerprint: fp,
+    }), 'utf8');
+    writeOrchestrationPlan(cwd, {
+      version: 1, runId: RUN, taskClass: 'minor', roster: ['senior-frontend'], graph: [['senior-frontend']],
+      roles: { 'senior-frontend': { tier: 'cheapest', rules: ['rules/frontend/i18n.md'], skills: ['i18n-text'] } },
+    });
+
+    const prev = process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION;
+    process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION = '1';
+    try {
+      const r = runSessionStart(subagentCtx(cwd));
+      const text = r.kind === 'context' ? (r.context || '') : '';
+      // Disabled ⇒ the plan is ignored; the full stack-active skill set returns (not narrowed).
+      assert.ok(/senior-frontend \(run 1700000000078\)/.test(text), 'resolved the senior-frontend role context');
+      assert.ok(/\[ACTIVE SKILLS[^\n]*\bcreate-component\b/.test(text), 'disabled feature → full role skill scope');
+    } finally {
+      if (prev === undefined) delete process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION;
+      else process.env.TRAFFIC_ONE_DISABLE_ORCHESTRATION = prev;
+    }
   });
 });

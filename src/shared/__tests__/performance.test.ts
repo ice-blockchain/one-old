@@ -53,3 +53,19 @@ test('modelForRoleHost threads planCtx → plan-aware model id', () => {
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free), 'sonnet'); // free → balanced
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null), 'opus'); // legacy → highest
 });
+
+test('planTier precedence: team.overrides > planTier > plan-aware > default; absent ⇒ unchanged', () => {
+  const max = { host: 'claude', plan: 'max', useOpenCode: false };
+  const free = { host: 'claude', plan: 'free', useOpenCode: false };
+  // planTier replaces the static/plan-aware default for that role
+  assert.equal(effectiveTierForRole('high', 'senior-frontend', null, null, 'cheapest'), 'cheapest');
+  assert.equal(effectiveTierForRole('high', 'senior-frontend', null, max, 'cheapest'), 'cheapest');
+  // a user override still wins over the orchestrator's per-prompt planTier
+  assert.equal(effectiveTierForRole('high', 'senior-frontend', { 'senior-frontend': 'highest' }, null, 'cheapest'), 'highest');
+  // planTier beats the plan-aware tier (free high frontend would be 'balanced')
+  assert.equal(effectiveTierForRole('high', 'senior-frontend', null, free, 'highest'), 'highest');
+  // null/undefined planTier ⇒ behavior identical to before
+  assert.equal(effectiveTierForRole('high', 'senior-frontend', null, null, null), 'highest');
+  // resolves to a host model id through modelForRoleHost
+  assert.equal(modelForRoleHost('high', 'senior-frontend', 'claude', null, max, 'cheapest'), 'haiku');
+});

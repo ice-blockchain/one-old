@@ -38,13 +38,16 @@ export function autoLaunchesTeam(level: string): boolean {
 }
 
 // Effective tier for a role at a level. Precedence: user `team.overrides` →
-// plan-aware tier (when planCtx is given) → PERFORMANCE_CONFIG default. Null when
-// the level has no subagents (low) or the role isn't configured.
+// per-prompt `planTier` (the orchestrator's declared plan, when given) → plan-aware
+// tier (when planCtx is given) → PERFORMANCE_CONFIG default. An explicit user
+// override still wins over the orchestrator's per-prompt choice. Null when the level
+// has no subagents (low) or the role isn't configured.
 export function effectiveTierForRole(
   level: string,
   role: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
+  planTier?: TierId | null,
 ): TierId | null {
   const cfg = PERFORMANCE_CONFIG[level];
   const agent = cfg ? cfg.agents[role] : undefined;
@@ -52,6 +55,10 @@ export function effectiveTierForRole(
   if (overrides && typeof overrides === 'object') {
     const override = canonicalTier(overrides[role]);
     if (override) return override;
+  }
+  if (planTier) {
+    const planned = canonicalTier(planTier);
+    if (planned) return planned;
   }
   if (planCtx) {
     const planned = agentTierForPlan(planCtx.host, planCtx.plan, level, role, planCtx.useOpenCode);
@@ -76,7 +83,8 @@ export function modelForRoleHost(
   host: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
+  planTier?: TierId | null,
 ): string | null {
-  const tier = effectiveTierForRole(level, role, overrides, planCtx);
+  const tier = effectiveTierForRole(level, role, overrides, planCtx, planTier);
   return tier ? resolveModel(tier, host) : null;
 }

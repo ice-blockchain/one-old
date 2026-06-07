@@ -39,9 +39,9 @@ work already started, pause at the next safe point, resolve it, then continue.
 
 ## Runtime compatibility
 
-- **Per-agent model is set by the spawn tool's `model` PARAMETER — never by prompt text.** The `agents/senior-*.md` files declare no `model:` frontmatter, so a subagent spawned without a `model` param silently inherits the parent model. For Balanced/High you MUST pass the model param on every spawn. Each role is assigned a host-agnostic capability TIER (`highest`|`balanced`|`cheapest`, see `model-tiers.cjs`); resolve the tier to YOUR host's model:
-  - Balanced → architect/frontend/backend/reviewer/shipper = `balanced` tier, tester = `cheapest` tier.
-  - High → architect/frontend/backend/reviewer = `highest` tier, tester = `cheapest` tier, shipper = `balanced` tier.
+- **Per-agent model is set by the spawn tool's `model` PARAMETER — never by prompt text.** The `agents/senior-*.md` files declare no `model:` frontmatter, so a subagent spawned without a `model` param silently inherits the parent model. For Balanced/High you MUST pass the model param on every spawn. Each role is assigned a host-agnostic capability TIER (`highest`|`balanced`|`cheapest`, see `model-tiers.cjs`); resolve the tier to YOUR host's model.
+  - **Tier source = the declared plan.** Each role's tier is whatever you wrote in `.traffic-one/runs/<RUN_ID>/orchestration.json` under `roles.<role>.tier` (see "Classify + declare the plan" below). The spawn gate enforces it: the `model` you pass must equal that tier's host model, and a role absent from the plan's `roster` is denied. A user `team.overrides` entry still wins over the plan.
+  - When you do not narrow a role, fall back to the level defaults: Balanced → architect/frontend/backend/reviewer/shipper = `balanced`, tester = `cheapest`; High → architect/frontend/backend/reviewer = `highest`, tester = `cheapest`, shipper = `balanced`.
   - Tier → model: resolve each tier (`highest`|`balanced`|`cheapest`) to your host's concrete model via the tier→model table in `model-tiers.cjs`; the Team Confirmation line-up renders the resolved per-host models.
 - **Spawn**: auto-spawn each role with your host's subagent tool when this skill triggers, passing the `model` parameter resolved to that role's tier on EVERY spawn (a model name in prompt text has no effect). Where the host uses model aliases, the alias auto-tracks the newest model of that family.
 - Subagents do not inherit the parent's skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
@@ -132,6 +132,55 @@ Expected shape: a 13-digit epoch-millisecond string such as `1715091785000`. Pas
 
 Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
 
+### Classify the request + declare the orchestration plan
+
+You are the orchestrator — you work ONLY through subagents and never edit feature code yourself. Before spawning, classify the request and DECLARE the run's plan so the spawn gate and each subagent's rule/skill scope follow your decision.
+
+**Classify** into one of:
+- **minor** — a text/copy edit, a small UI tweak, or a single-file fix with no contract/data/auth impact.
+- **standard** — a multi-file feature or a build spanning UI and/or server/data.
+- **performance-critical** — work whose dominant risk is correctness/security/data-integrity/perf and warrants a stronger model on the owning role.
+
+**Decide the roster** (which roles actually run), from the request + the onboarding stack:
+- minor → a SINGLE role, usually `senior-frontend` (or `senior-backend` for a pure server/data edit) at the `cheapest` tier; skip architect/backend/tester. Add `senior-reviewer` (also `cheapest`) only if the edit touches auth/security/data.
+- standard → `senior-architect`, then `senior-frontend` ∥ `senior-backend`, then `senior-reviewer` ∥ `senior-tester`. Include `senior-backend` ONLY when the request touches server/API/database/migrations; for a frontend-only change, drop it from the roster entirely.
+- performance-critical → same shape as standard, but raise the owning role's tier to `highest`.
+
+**Write the plan** to `.traffic-one/runs/<RUN_ID>/orchestration.json` BEFORE the first spawn:
+
+```jsonc
+{
+  "version": 1,
+  "runId": "<RUN_ID>",
+  "taskClass": "standard",
+  "roster": ["senior-architect", "senior-frontend", "senior-backend", "senior-reviewer", "senior-tester"],
+  "graph":  [["senior-architect"], ["senior-frontend", "senior-backend"], ["senior-reviewer", "senior-tester"]],
+  "roles": {
+    "senior-architect": { "tier": "highest" },
+    "senior-frontend":  { "tier": "highest" },
+    "senior-backend":   { "tier": "highest" },
+    "senior-reviewer":  { "tier": "highest" },
+    "senior-tester":    { "tier": "cheapest" }
+    // optional per-role NARROWING (subset only, never widens the role scope):
+    // "senior-frontend": { "tier": "cheapest", "rules": ["rules/frontend/i18n.md"], "skills": ["i18n-text"] }
+  }
+}
+```
+
+A minor task is one cheap subagent:
+
+```jsonc
+{ "version": 1, "runId": "<RUN_ID>", "taskClass": "minor",
+  "roster": ["senior-frontend"], "graph": [["senior-frontend"]],
+  "roles": { "senior-frontend": { "tier": "cheapest" } } }
+```
+
+- `roster` lists exactly the roles you will spawn; the gate DENIES any role not in it.
+- `graph` is your execution order — each inner array is one parallel group. The hooks do not schedule it; YOU spawn the groups in sequence (architect group, wait, then the implementer group in one message, etc.).
+- `roles.<role>.tier` is the enforced model tier (omit → the level default above). Optional `rules`/`skills` are a NARROWING: the subagent receives only the listed subset of its role-scoped rules/skills (a missing or empty list = its full role scope; the narrowing can never strip a role to nothing).
+
+If a "minor" task turns out larger, rewrite the plan (add the role to `roster` + a tier) before spawning the added role — the gate blocks off-roster spawns.
+
 ### Subagent token-economy: per-agent run claims
 
 After computing `RUN_ID`, persist only the active run pointer in `.traffic-one/.one.json`:
@@ -211,7 +260,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 ### Phase 2 — Implement (parallel)
 
-Run `senior-frontend` and `senior-backend` **concurrently** — they share the architect's plan/digest for contracts, so neither waits on the other. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue both spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue the `senior-frontend` and `senior-backend` `spawn_agent` calls **consecutively** and do **NOT** call `wait_agent` until BOTH have returned their `agent_id` — a `wait_agent` after the first spawn blocks the turn and serializes the roles (architect → backend → frontend instead of architect → frontend ∥ backend). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Give the implementers disjoint write scopes and tell each they are not alone in the codebase.
+Spawn the implementer roles **in your declared `roster`** — usually `senior-frontend` and `senior-backend` **concurrently** (they share the architect's plan/digest for contracts, so neither waits on the other). If the plan's roster omits `senior-backend` (a frontend-only change), spawn only `senior-frontend`; the gate denies an off-roster backend spawn. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue both spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue the `senior-frontend` and `senior-backend` `spawn_agent` calls **consecutively** and do **NOT** call `wait_agent` until BOTH have returned their `agent_id` — a `wait_agent` after the first spawn blocks the turn and serializes the roles (architect → backend → frontend instead of architect → frontend ∥ backend). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Give the implementers disjoint write scopes and tell each they are not alone in the codebase.
 
 Synthetic prompts — use the **Phase 2 — Frontend** and **Phase 2 — Backend** templates from `resources/prompt-templates.md`. Each template instructs the implementer to read the architect digest first, then the relevant plan section, then graph nodes, raw files only as last resort. Each writes its own digest (`.traffic-one/digests/<run-id>/{frontend,backend}.md`) before reporting.
 

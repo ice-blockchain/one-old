@@ -9,8 +9,11 @@
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { orchestrationEnabled } from '../../config/orchestration';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode, isLikelyCodingPrompt } from '../../shared/detection';
+import { obj } from '../../shared/obj';
+import { teamModeForLevel } from '../../shared/performance';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -21,7 +24,7 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { isTeamApproved, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
 import {
   authApiKeyPromptHookResult,
   authChoiceHookResult,
@@ -43,6 +46,20 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
 const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
+
+// The per-prompt orchestration directive (LLM-authority orchestration): injected only
+// for an onboarded, subagents-mode, team-approved project with the feature enabled.
+// Tells the orchestrator to classify the request, declare a run-scoped plan, and spawn
+// only the declared roster. Empty string ⇒ not applicable (Low/main-agent, unapproved,
+// or feature disabled) ⇒ the steady-state context is unchanged.
+function orchestrationDirective(state: Rec): string {
+  if (!orchestrationEnabled()) return '';
+  const performance = obj(state.performance);
+  const level = performance && typeof performance.level === 'string' ? performance.level : '';
+  if (teamModeForLevel(level) !== 'subagents') return '';
+  if (!isTeamApproved(state.team)) return '';
+  return skillBlock('agent-model', 'orchestration-directive', {});
+}
 
 // Persist the user's first request into the new-project state so the wizard can
 // tailor its questions AND derive the right stack (without it, an empty prompt
@@ -158,5 +175,8 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     return context(materialized.context, { systemMessage: materialized.systemMessage });
   }
 
-  return context(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
+  // ── Steady state → active-stack marker + (when applicable) the orchestration directive ──
+  const directive = orchestrationDirective(normalizedState);
+  const stackContext = `[ACTIVE STACK: ${stack}]`;
+  return context(directive ? `${stackContext}\n\n${directive}` : stackContext, { systemMessage: `traffic-one [${stack}]` });
 }

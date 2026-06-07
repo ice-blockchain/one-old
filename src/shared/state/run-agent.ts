@@ -29,7 +29,9 @@ function safePathSegment(value: unknown): string {
 function runsRoot(cwd: string): string {
   return path.join(cwd, RUNS_REL_DIR);
 }
-function runDir(cwd: string, runId: string): string {
+// Exported so the run-scoped orchestration-plan helper lands its artifact in the
+// exact run folder the per-agent claims use, without duplicating the path rule.
+export function runDir(cwd: string, runId: string): string {
   return path.join(runsRoot(cwd), safePathSegment(runId));
 }
 function pendingDir(cwd: string, runId: string): string {
