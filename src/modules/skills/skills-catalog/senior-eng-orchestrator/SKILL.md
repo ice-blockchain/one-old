@@ -85,9 +85,9 @@ Auto-trigger keywords: "build me", "make me", "create me", "scaffold a", "ship a
 
 On all hosts these triggers mean: clear the setup gate (per `rules/common/setup-gate.md` + `rules/common/onboarding.md`), then run the Traffic One workflow at the approved performance level. The onboarding prompts are blocking — do not implement, write final `.traffic-one/.one.json`, or spawn while an answer is pending.
 
-Skip if:
-- The request is for a single component, page, or service ("add a logout button"). Route to the matching specialist skill (`create-component`, `create-page`, `create-service`) directly and do not ask for subagents.
-- The user asks a research/audit question without intent to ship ("review this design", "what's the right stack here"). Route to a specialist skill or subagent.
+Don't run the FULL team for small work — right-size it instead:
+- A single component, page, service, or other minor change ("add a logout button", a copy edit) is the **minor-task fast path**: in subagents mode, declare a one-role plan and spawn a single `cheapest`-tier subagent (which uses the matching specialist skill — `create-component`, `create-page`, `create-service`); you still do not edit code yourself. In Low / main-agent mode, run that specialist skill in this thread.
+- A research/audit question with no intent to ship ("review this design", "what's the right stack here") routes to the matching specialist skill or a single read-only subagent — no plan, no team.
 
 ## Agentic quality lane
 
@@ -412,11 +412,13 @@ Next steps:
 - The deploy-gate hook (`runCheckLibraryAllowlist`) will deny `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, etc. without both a fresh `lastShipperApprovalAt` stamp and a fresh passing `lastSecurityCheck*` stamp whose fingerprint matches the current worktree. Only `senior-shipper` writes the shipper stamp; `predeploy-security-check` writes the security stamp.
 - When subagents are available and permitted (Balanced or High), you do NOT write feature source files. You do NOT run deploy commands. You only spawn subagents and summarise. If subagents are unavailable, blocked, or the user chose Low, execute the same phases manually with the role roadmap checklist and clearly say so.
 
-## When NOT to use this orchestrator
+## When NOT to run the full team
 
-- Single-component requests: route to `create-component` / `create-native-component` skill.
-- Single-page or single-route additions on an existing project: route to `create-page` / `create-native-screen`.
-- Single-service or single-endpoint additions: route to `create-service`.
-- Read-only audits: route to `design-audit`, `security-review`, `repo-scan`.
-- Refactor-only requests: route to `refactor` / `simplify`.
-- The user already has a plan and just wants implementation: spawn `senior-frontend` + `senior-backend` directly, skip architect.
+These do not warrant the architect→implement→verify team. In **subagents mode** they are the minor-task fast path (one `cheapest`-tier subagent — you still never edit code yourself); the named specialist skill below is what that subagent uses. In **Low / main-agent mode** the main agent runs that skill in this thread.
+
+- Single-component requests: `create-component` / `create-native-component`.
+- Single-page or single-route additions on an existing project: `create-page` / `create-native-screen`.
+- Single-service or single-endpoint additions: `create-service`.
+- Read-only audits: `design-audit`, `security-review`, `repo-scan` (a single read-only subagent in subagents mode).
+- Refactor-only requests: `refactor` / `simplify`.
+- The user already has a plan and just wants implementation: declare a roster without `senior-architect` and spawn the implementers directly.
