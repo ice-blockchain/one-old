@@ -15,7 +15,8 @@ Before mutating Traffic One work, the setup gate must be clear:
 - Shared project state exists at the resolved target root and has
   `onboardingComplete: true`.
 - The current user's local preferences for that target root contain
-  `openCode`, `performance`/`team`, and `codeGraphProvider`.
+  `openCode` and `performance`/`team`, and the machine-wide `codeGraphProvider`
+  setting is present.
 - Balanced/High performance has explicit Team Confirmation with
   `team.approved: true`.
 - New projects have completed the new-project-only `projectContext` and Mobile
@@ -32,6 +33,7 @@ Read-only orientation is allowed while preferences are missing. Feature writes,
 dependency installs, scaffolding, materialized implementation skills, and
 subagent work must wait until the hook/gate context is clear. Never auto-pick
 defaults and never store local-only fields in shared `.traffic-one/.one.json`;
-hooks split `openCode`, `performance`, `team`, `codeGraphProvider`,
-`toolchain`, and graph runner stamps into
-`~/.traffic-one/projects/<hash(targetRoot)>/preferences.json`.
+hooks split `openCode`, `performance`, `team`, `toolchain`, and graph runner
+stamps into `~/.traffic-one/projects/<hash(targetRoot)>/preferences.json`, while
+`codeGraphProvider` is a machine-wide setting in `~/.traffic-one/one.json`
+(reused across projects).

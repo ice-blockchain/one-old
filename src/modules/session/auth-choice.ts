@@ -1,13 +1,19 @@
 // src/modules/session/auth-choice.ts
-// The per-project "continue without" / global "authenticate" choice state.
-// Ported 1:1 from the auth-choice cluster in scripts/hook-runtime/handlers/auth.cjs.
-// Secure-write semantics (0o700 dir / 0o600 file) preserved.
+// The per-project "continue without" / global "authenticate" choice state. It now
+// lives in the `authChoice` SECTION of the consolidated one.json (see
+// shared/one-settings); the public surface (read/write/delete/exists + the choice
+// helpers) is unchanged. Secure-write semantics (0o700 dir / 0o600 file) preserved.
+//
+// Two side files keep the previous resilience WITHOUT ever holding the auth token:
+//   - TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH → a standalone, section-only override file
+//     (same shape as the old auth-choice.json) for isolation in tests/tooling;
+//   - an os.tmpdir() fallback (section-only) used when one.json is not writable.
 
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { authStatePath } from '../../shared/auth';
+import { deleteOneSection, oneSettingsPath, readOneSettings, writeOneSection } from '../../shared/one-settings';
 import { readJson } from '../../shared/fsjson';
 import { nowIsoNoMs, sha256 } from '../../shared/text';
 
@@ -15,15 +21,34 @@ import { AUTH_CHOICE_CONTINUE_TTL_MS, AUTH_CHOICE_STATE_VERSION } from '../../co
 
 type Rec = Record<string, unknown>;
 
-export function authChoiceStatePath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return path.resolve(env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH);
-  return path.join(path.dirname(authStatePath(env)), 'auth-choice.json');
+interface AuthChoiceState {
+  version: number;
+  globalChoice: Rec | null;
+  choices: Record<string, Rec>;
 }
 
+function emptyAuthChoiceState(): AuthChoiceState {
+  return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+}
+
+// A standalone, section-only file (NOT one.json) holding just the auth-choice
+// state. Set in tests/tooling to isolate the choice without touching one.json.
+function authChoiceOverridePath(env: NodeJS.ProcessEnv = process.env): string | null {
+  return env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH ? path.resolve(env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) : null;
+}
+
+// Tmpdir fallback (section-only) for when one.json cannot be written. Never holds
+// the token. Keyed off the one.json path so isolated state dirs don't collide.
 function authChoiceFallbackStatePath(env: NodeJS.ProcessEnv = process.env): string | null {
-  if (env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH) return null;
-  const digest = sha256(authStatePath(env)).slice(0, 16);
-  return path.join(os.tmpdir(), 'traffic-one', `auth-choice-${digest}.json`);
+  if (authChoiceOverridePath(env)) return null;
+  const digest = sha256(oneSettingsPath(env)).slice(0, 16);
+  return path.join(os.tmpdir(), 'traffic-one', `one-choice-${digest}.json`);
+}
+
+// The canonical auth-choice location (the override file, or one.json). Informational
+// (e.g. logout output); the actual store is the `authChoice` section of one.json.
+export function authChoiceStatePath(env: NodeJS.ProcessEnv = process.env): string {
+  return authChoiceOverridePath(env) ?? oneSettingsPath(env);
 }
 
 export function authChoiceStatePaths(env: NodeJS.ProcessEnv = process.env): string[] {
@@ -32,19 +57,48 @@ export function authChoiceStatePaths(env: NodeJS.ProcessEnv = process.env): stri
   return fallback && fallback !== primary ? [primary, fallback] : [primary];
 }
 
-// Whether any auth-choice state file is present (primary or tmpdir fallback).
+// Whether an auth-choice is present anywhere (override file, one.json section, or
+// the tmpdir fallback).
 export function authChoiceStateExists(env: NodeJS.ProcessEnv = process.env): boolean {
-  return authChoiceStatePaths(env).some((filePath) => fs.existsSync(filePath));
+  const override = authChoiceOverridePath(env);
+  if (override) return fs.existsSync(override);
+  if (readOneSettings(env).authChoice) return true;
+  const fb = authChoiceFallbackStatePath(env);
+  return Boolean(fb && fs.existsSync(fb));
 }
 
-// Clear the auth-choice state (both primary + fallback). Returns false if any
-// removal threw. Called by the auth CLI on login (a fresh session supersedes a
-// prior "continue without" choice) and on logout.
+function writeChoiceFile(filePath: string, state: AuthChoiceState): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
+  fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  try {
+    fs.chmodSync(filePath, 0o600);
+  } catch {
+    // best-effort; some filesystems ignore chmod
+  }
+}
+
+// Clear the auth-choice state (override file, one.json section, AND tmpdir
+// fallback). Returns false if any removal threw. Called by the auth CLI on logout.
 export function deleteAuthChoiceState(env: NodeJS.ProcessEnv = process.env): boolean {
-  let ok = true;
-  for (const filePath of authChoiceStatePaths(env)) {
+  const override = authChoiceOverridePath(env);
+  if (override) {
     try {
-      fs.rmSync(filePath, { force: true });
+      fs.rmSync(override, { force: true });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  let ok = true;
+  try {
+    deleteOneSection('authChoice', env);
+  } catch {
+    ok = false;
+  }
+  const fb = authChoiceFallbackStatePath(env);
+  if (fb) {
+    try {
+      fs.rmSync(fb, { force: true });
     } catch {
       ok = false;
     }
@@ -52,15 +106,23 @@ export function deleteAuthChoiceState(env: NodeJS.ProcessEnv = process.env): boo
   return ok;
 }
 
-interface AuthChoiceState {
-  version: number;
-  globalChoice: Rec | null;
-  choices: Record<string, Rec>;
+// Remove ONLY the auth-choice side files (override + tmpdir fallback) WITHOUT
+// touching one.json — used by writeSessionResult, which already clears the one.json
+// authChoice section in its single atomic auth write (a fresh session supersedes a
+// prior "continue without" choice).
+export function clearAuthChoiceSideFiles(env: NodeJS.ProcessEnv = process.env): void {
+  for (const p of [authChoiceOverridePath(env), authChoiceFallbackStatePath(env)]) {
+    if (!p) continue;
+    try {
+      fs.rmSync(p, { force: true });
+    } catch {
+      // best-effort
+    }
+  }
 }
 
 export function normalizeAuthChoiceState(state: unknown): AuthChoiceState {
-  const empty = (): AuthChoiceState => ({ version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} });
-  if (!state || typeof state !== 'object') return empty();
+  if (!state || typeof state !== 'object') return emptyAuthChoiceState();
   const s = state as Rec;
   if (s.version === AUTH_CHOICE_STATE_VERSION) {
     return {
@@ -71,7 +133,7 @@ export function normalizeAuthChoiceState(state: unknown): AuthChoiceState {
   }
   if (s.choice && typeof s.choice === 'object') {
     const choice = s.choice as Rec;
-    const migrated: AuthChoiceState = empty();
+    const migrated: AuthChoiceState = emptyAuthChoiceState();
     if (choice.status === 'authenticate') {
       migrated.globalChoice = { ...choice, scope: 'global' };
     } else if (typeof choice.cwd === 'string' && choice.cwd.trim()) {
@@ -97,16 +159,24 @@ export function normalizeAuthChoiceState(state: unknown): AuthChoiceState {
     }
     return { version: AUTH_CHOICE_STATE_VERSION, globalChoice, choices };
   }
-  return empty();
+  return emptyAuthChoiceState();
 }
 
 export function readAuthChoiceState(env: NodeJS.ProcessEnv = process.env): AuthChoiceState {
-  for (const filePath of authChoiceStatePaths(env)) {
-    if (!fs.existsSync(filePath)) continue;
-    const state = readJson<Rec | null>(filePath, null);
-    if (state && typeof state === 'object') return normalizeAuthChoiceState(state);
+  const override = authChoiceOverridePath(env);
+  if (override) {
+    const raw = readJson<Rec | null>(override, null);
+    return raw && typeof raw === 'object' ? normalizeAuthChoiceState(raw) : emptyAuthChoiceState();
   }
-  return { version: AUTH_CHOICE_STATE_VERSION, globalChoice: null, choices: {} };
+  const section = readOneSettings(env).authChoice;
+  if (section && typeof section === 'object') return normalizeAuthChoiceState(section);
+  // one.json had no choice (or wasn't writable when the choice was made) → fallback.
+  const fb = authChoiceFallbackStatePath(env);
+  if (fb && fs.existsSync(fb)) {
+    const raw = readJson<Rec | null>(fb, null);
+    if (raw && typeof raw === 'object') return normalizeAuthChoiceState(raw);
+  }
+  return emptyAuthChoiceState();
 }
 
 export interface WriteResult {
@@ -118,24 +188,27 @@ export interface WriteResult {
 }
 
 export function writeAuthChoiceState(state: AuthChoiceState, env: NodeJS.ProcessEnv = process.env): WriteResult {
-  const paths = authChoiceStatePaths(env);
-  const errors: { filePath: string; error: NodeJS.ErrnoException }[] = [];
-  for (const filePath of paths) {
-    try {
-      fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-      fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-      try {
-        fs.chmodSync(filePath, 0o600);
-      } catch {
-        // best-effort; some filesystems ignore chmod
-      }
-      return { ok: true, filePath, fallback: filePath !== paths[0] };
-    } catch (error) {
-      errors.push({ filePath, error: error as NodeJS.ErrnoException });
-    }
+  const override = authChoiceOverridePath(env);
+  if (override) {
+    writeChoiceFile(override, state);
+    return { ok: true, filePath: override, fallback: false };
   }
-  const first = errors[0]?.error ?? new Error('auth choice state write failed');
-  throw first;
+  try {
+    const filePath = writeOneSection('authChoice', state, env);
+    return { ok: true, filePath, fallback: false };
+  } catch (primaryError) {
+    // home not writable → section-only tmpdir fallback (NEVER holds the token).
+    const fb = authChoiceFallbackStatePath(env);
+    if (fb) {
+      try {
+        writeChoiceFile(fb, state);
+        return { ok: true, filePath: fb, fallback: true };
+      } catch {
+        // fall through to throw the primary error
+      }
+    }
+    throw primaryError;
+  }
 }
 
 export function readAuthChoice(cwd: string = process.cwd(), env: NodeJS.ProcessEnv = process.env): Rec | null {

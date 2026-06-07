@@ -9,6 +9,7 @@ import { dispatch } from '../../../core/dispatch';
 import { runUserPromptSubmit } from '../prompt-submit';
 import type { Ctx, Handler, HookInput, HookResult } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
+import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
@@ -39,8 +40,11 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-    expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    version: 1,
+    auth: {
+      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
+      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    },
   }), 'utf8');
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -88,12 +92,13 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
   fs.writeFileSync(prefsPath, JSON.stringify({
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    codeGraphProvider: 'graphify',
     performance: { level: 'high', source: 'prompted' },
     team: { mode: 'subagents', source: 'prompted', approved: true },
     toolchain: TOOLCHAIN,
     ...extra,
   }), 'utf8');
+  // codeGraphProvider is machine-wide (one.json, the AUTH_STATE_PATH alias here).
+  writeGlobalCodeGraphProvider('graphify');
 }
 
 function writeExistingNextCodebase(cwd: string): void {
@@ -153,8 +158,11 @@ test('codex prompt mentioning an inner existing app bootstraps Traffic One in th
     env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(root, 'prefs.json');
     env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
     fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+      version: 1,
+      auth: {
+        version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
+        expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+      },
     }), 'utf8');
 
     fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });

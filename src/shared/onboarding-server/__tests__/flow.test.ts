@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { mergeProjectPrefs, readProjectPrefs, readState, writeState } from '../../state';
+import { mergeProjectPrefs, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
   'CURSOR_PLUGIN_ROOT',
@@ -17,12 +17,16 @@ const HOST_ENV_KEYS = [
 function withProject(committed: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
   const prevHostEnv = new Map<string, string | undefined>();
   for (const key of HOST_ENV_KEYS) {
     prevHostEnv.set(key, process.env[key]);
     delete process.env[key];
   }
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // codeGraphProvider is machine-wide now — isolate one.json so applyAnswer's
+  // writeGlobalCodeGraphProvider never touches the real ~/.traffic-one.
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   // Pin the detected plan so plan-aware line-up / recommendation assertions are
   // deterministic across machines; tests needing another plan override it inline.
   const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
@@ -36,6 +40,8 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
     else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     for (const [key, value] of prevHostEnv) {
@@ -92,7 +98,8 @@ test('new-project: the full wizard sequence completes onboarding', () => {
     assert.equal(asRec(prefs.openCode).enabled, false);
     assert.equal(asRec(prefs.performance).level, 'high');
     assert.equal(asRec(prefs.team).approved, true);
-    assert.equal(prefs.codeGraphProvider, 'gitnexus');
+    // codeGraphProvider is machine-wide (one.json), not a per-project pref.
+    assert.equal(readGlobalCodeGraphProvider(), 'gitnexus');
   });
 });
 
@@ -136,7 +143,7 @@ test('existing project: only the local-preference steps are asked, then done', (
     const view = computeOnboarding(cwd);
     assert.equal(view.done, true);
     assert.equal(view.step, null);
-    assert.equal(readProjectPrefs(cwd).codeGraphProvider, 'graphify');
+    assert.equal(readGlobalCodeGraphProvider(), 'graphify');
   });
 });
 

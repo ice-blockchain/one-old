@@ -2,7 +2,7 @@
 # Always loaded. Tells every agent / skill / subagent to consult the
 # active codebase-graph provider's report before falling back to broad
 # Glob/Grep. The provider is chosen at onboarding and recorded as the
-# current user's local `codeGraphProvider` preference (required field).
+# machine-wide `codeGraphProvider` setting (required field), reused across projects.
 ---
 
 # Codebase graph — token-cheap structure cache
@@ -13,9 +13,10 @@ question.** It is a one-shot file-read that replaces dozens of `Glob` / `Grep`
 calls and cuts cross-session token usage by an estimated 50–70% on multi-file
 work.
 
-The active provider is selected at onboarding and stored as the current user's
-local Traffic One `codeGraphProvider` preference under
-`~/.traffic-one/projects/<project-hash>/preferences.json`. Valid values:
+The active provider is selected at onboarding and stored as the machine-wide
+Traffic One `codeGraphProvider` setting in `~/.traffic-one/one.json`, reused
+across projects (a provider already installed locally is detected and reused, so
+onboarding stops re-prompting). Valid values:
 `gitnexus`, `graphify`. Both produce different on-disk artefacts; the read
 protocol below covers each.
 

@@ -5,18 +5,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { normalizeState, readState, requireAddon, statePath, writeState } from '../normalize';
-import { readEffectiveState } from '../local-prefs';
+import { readEffectiveState, writeGlobalCodeGraphProvider } from '../local-prefs';
 import { nextLocalPreferenceStep } from '../../onboarding/local-prefs';
 
+// Isolate BOTH the per-project prefs file and one.json (the machine-wide store that
+// now holds codeGraphProvider) so tests never read/write the real ~/.traffic-one.
 function withPrefs<T>(fn: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-state-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   try {
     return fn(dir);
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -47,9 +53,14 @@ test('writeState keeps local prefs out of .one.json; readEffectiveState merges t
     assert.equal(onDisk.stack, 'default');
     assert.equal(typeof onDisk.version, 'string');
 
-    const eff = readEffectiveState(dir);
-    assert.equal(eff.codeGraphProvider, 'gitnexus');
-    assert.deepEqual(eff.performance, { level: 'high', source: 'prompted' });
+    // performance (a per-project pref) merges back from preferences.json …
+    const effBefore = readEffectiveState(dir);
+    assert.deepEqual(effBefore.performance, { level: 'high', source: 'prompted' });
+    // … codeGraphProvider is machine-wide now (one.json), so writeState drops it; it
+    // only appears in the effective state once set globally.
+    assert.equal('codeGraphProvider' in effBefore, false);
+    writeGlobalCodeGraphProvider('gitnexus');
+    assert.equal(readEffectiveState(dir).codeGraphProvider, 'gitnexus');
   });
 });
 
@@ -68,11 +79,13 @@ test('readState strips local-pref fields embedded in .one.json', () => {
   });
 });
 
-test('local onboarding preferences are isolated per user for the same project', () => {
+test('per-user prefs are isolated; codeGraphProvider is shared machine-wide', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-state-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
   const userAPrefs = path.join(dir, 'user-a-preferences.json');
   const userBPrefs = path.join(dir, 'user-b-preferences.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   try {
     process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = userAPrefs;
     writeState(dir, {
@@ -94,10 +107,11 @@ test('local onboarding preferences are isolated per user for the same project', 
       onboardingComplete: true,
       confirmedAt: '2026-01-01T00:00:00Z',
       openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-      codeGraphProvider: 'gitnexus',
       performance: { level: 'high', source: 'prompted' },
       team: { mode: 'subagents', source: 'prompted', approved: true },
     });
+    // codeGraphProvider is machine-wide (one.json), not a per-user pref.
+    writeGlobalCodeGraphProvider('gitnexus');
 
     const onDisk = JSON.parse(fs.readFileSync(statePath(dir), 'utf8'));
     assert.equal('openCode' in onDisk, false);
@@ -112,15 +126,19 @@ test('local onboarding preferences are isolated per user for the same project', 
 
     process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = userBPrefs;
     const userBState = readEffectiveState(dir);
+    // user B has their own (empty) prefs …
     assert.equal('openCode' in userBState, false);
-    assert.equal('codeGraphProvider' in userBState, false);
     assert.equal('performance' in userBState, false);
     assert.equal('team' in userBState, false);
     assert.equal(userBState.stack, 'default');
+    // … but shares the machine-wide codeGraphProvider with user A.
+    assert.equal(userBState.codeGraphProvider, 'gitnexus');
     assert.equal(nextLocalPreferenceStep(userBState), 'open-code');
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

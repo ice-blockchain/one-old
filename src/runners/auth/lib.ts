@@ -6,15 +6,11 @@
 // writeAuthState,deleteAuthState}.cjs.
 
 import * as fs from 'fs';
-import * as path from 'path';
 
-import { deleteAuthChoiceState } from '../../modules/session/auth-choice';
+import { clearAuthChoiceSideFiles } from '../../modules/session/auth-choice';
 import { AUTH_STATE_VERSION, REFRESH_FAILURE_THRESHOLD } from '../../config/auth';
-import {
-  authStatePath,
-  refreshBackoffMs,
-  refreshFailureCount,
-} from '../../shared/auth';
+import { refreshBackoffMs, refreshFailureCount } from '../../shared/auth';
+import { deleteOneSection, updateOneSettings, writeOneSection } from '../../shared/one-settings';
 import { nowIsoNoMs } from '../../shared/text';
 import {
   type CredentialRef,
@@ -26,25 +22,17 @@ import {
 
 type Rec = Record<string, unknown>;
 
+// The auth session is the `auth` section of one.json. writeOneSection re-reads and
+// patches only that section (atomic temp+rename), so the auth-choice +
+// codeGraphProvider sections are preserved across writes.
 export function writeAuthState(state: Rec, env: NodeJS.ProcessEnv = process.env): string {
-  const filePath = authStatePath(env);
-  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(filePath, `${JSON.stringify(state, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
-  try {
-    fs.chmodSync(filePath, 0o600);
-  } catch {
-    // best-effort; some filesystems ignore chmod.
-  }
-  return filePath;
+  return writeOneSection('auth', state, env);
 }
 
+// Logout drops the auth session but leaves the rest of one.json (the
+// codeGraphProvider stays; the auth-choice is cleared separately).
 export function deleteAuthState(env: NodeJS.ProcessEnv = process.env): boolean {
-  try {
-    fs.rmSync(authStatePath(env), { force: true });
-    return true;
-  } catch {
-    return false;
-  }
+  return deleteOneSection('auth', env);
 }
 
 export function isRemoteAuthRejection(error: unknown): boolean {
@@ -169,7 +157,11 @@ export function writeSessionResult(endpoint: string, result: Rec, env: NodeJS.Pr
     state.credentialRef = previousRef;
     credential = { ok: true, stored: false, reused: true, store: previousRef.store };
   }
-  const filePath = writeAuthState(state, env);
-  deleteAuthChoiceState(env);
+  // One atomic write installs the fresh session AND clears any prior auth-choice (a
+  // new session supersedes a "continue without" choice) — no two-write ordering
+  // hazard now that both share one.json. The choice SIDE files (override / tmpdir
+  // fallback) are separate files, cleared without a further one.json write.
+  const filePath = updateOneSettings({ auth: state, authChoice: null }, env);
+  clearAuthChoiceSideFiles(env);
   return { state, filePath, credential };
 }

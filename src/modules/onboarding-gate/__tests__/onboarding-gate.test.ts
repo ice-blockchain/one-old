@@ -7,6 +7,7 @@ import * as path from 'path';
 import { onboardingGate } from '../handler';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
+import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
@@ -17,8 +18,11 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   // Never spawn a real wizard server from a unit test; ensure() hands back a
   // deterministic placeholder URL instead.
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
@@ -28,6 +32,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   }
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -41,12 +46,13 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
   fs.writeFileSync(prefsPath, JSON.stringify({
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    codeGraphProvider: 'graphify',
     performance: { level: 'high', source: 'prompted' },
     team: { mode: 'subagents', source: 'prompted', approved: true },
     toolchain: TOOLCHAIN,
     ...extra,
   }), 'utf8');
+  // codeGraphProvider is machine-wide (one.json), not a per-project pref.
+  writeGlobalCodeGraphProvider('graphify');
 }
 
 function existingState(extra: Record<string, unknown> = {}): Record<string, unknown> {

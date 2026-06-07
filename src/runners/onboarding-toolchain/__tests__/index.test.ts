@@ -6,23 +6,31 @@ import * as path from 'path';
 
 import { ensureOnboardingToolchain } from '../index';
 
-// Run with a sandboxed project-prefs file + managed-toolchain root, then restore.
+// Run with a sandboxed project-prefs file + machine-wide one.json + managed-
+// toolchain root, then restore. codeGraphProvider is machine-wide now, so it goes
+// into one.json (TRAFFIC_ONE_STATE_PATH); any other keys stay per-project prefs.
 function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbtc-'));
   const env = process.env;
   const savedPath = env.PATH;
   const savedRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
   const savedPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const savedState = env.TRAFFIC_ONE_STATE_PATH;
   const prefsPath = path.join(dir, 'prefs.json');
+  const onePath = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefsPath;
-  fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+  env.TRAFFIC_ONE_STATE_PATH = onePath;
+  const { codeGraphProvider, ...projectPrefs } = prefs;
+  fs.writeFileSync(prefsPath, JSON.stringify(projectPrefs), 'utf8');
+  if (codeGraphProvider) fs.writeFileSync(onePath, JSON.stringify({ version: 1, codeGraphProvider }), 'utf8');
   try {
     fn(dir);
   } finally {
     if (savedPath === undefined) delete env.PATH; else env.PATH = savedPath;
     if (savedRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = savedRoot;
     if (savedPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = savedPrefs;
+    if (savedState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = savedState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

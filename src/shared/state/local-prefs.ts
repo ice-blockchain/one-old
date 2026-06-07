@@ -9,6 +9,7 @@ import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { readJson, writeJson } from '../fsjson';
+import { readOneSettings, writeOneSection } from '../one-settings';
 import { sha256 } from '../text';
 import {
   canonicalOpenCodeSource,
@@ -33,8 +34,11 @@ function inSet(set: Set<string>, value: unknown): boolean {
   return typeof value === 'string' && set.has(value);
 }
 
+// codeGraphProvider is intentionally NOT here: it is a MACHINE-WIDE setting (the
+// codeGraphProvider section of one.json), injected into the effective state by
+// applyGlobalCodeGraphProvider rather than carried per-project.
 export const LOCAL_PREF_KEYS = new Set([
-  'openCode', 'codeGraphProvider', 'performance', 'team', 'toolchain',
+  'openCode', 'performance', 'team', 'toolchain',
   'codeGraphAutoRun', 'graphifyAutoRun', 'graphifyLastHintedAt', 'graphifyLastRunAt',
   'graphifyLastErrorAt', 'graphifyLastError', 'gitnexusLastRunAt', 'gitnexusLastErrorAt', 'gitnexusLastError',
 ]);
@@ -63,11 +67,9 @@ export function normalizeProjectPrefs(prefs: unknown): Rec {
   const out: Rec = { ...base };
   let changed = false;
 
-  const provider = codeGraphProviderFromValue(out.codeGraphProvider);
-  if (provider) {
-    if (out.codeGraphProvider !== provider) changed = true;
-    out.codeGraphProvider = provider;
-  } else if (Object.prototype.hasOwnProperty.call(out, 'codeGraphProvider')) {
+  // codeGraphProvider is machine-wide now (one.json), not a per-project pref —
+  // strip any stale value left in an old preferences.json.
+  if (Object.prototype.hasOwnProperty.call(out, 'codeGraphProvider')) {
     delete out.codeGraphProvider;
     changed = true;
   }
@@ -230,10 +232,8 @@ export function extractProjectPrefs(value: unknown): Rec {
   for (const key of LOCAL_PREF_KEYS) {
     if (Object.prototype.hasOwnProperty.call(source, key)) prefs[key] = source[key];
   }
-  const stack = obj(source.stack);
-  const nestedProvider = codeGraphProviderFromValue(source.codeGraph)
-    || codeGraphProviderFromValue(stack ? (stack.codeGraph || stack.codeGraphProvider) : null);
-  if (nestedProvider && !prefs.codeGraphProvider) prefs.codeGraphProvider = nestedProvider;
+  // codeGraphProvider is no longer extracted into per-project prefs — it is a
+  // machine-wide setting (one.json) injected by applyGlobalCodeGraphProvider.
   if (!prefs.team && source.subagentTeam !== undefined) prefs.team = source.subagentTeam;
   return normalizeProjectPrefs(prefs);
 }
@@ -242,6 +242,9 @@ export function stripLocalPreferenceFields(value: unknown): Rec {
   const out: Rec = obj(value) ? { ...(value as Rec) } : {};
   for (const key of LOCAL_PREF_KEYS) delete out[key];
   delete out.codeGraph;
+  // codeGraphProvider is machine-wide (one.json) — keep it out of shared state.
+  // (No longer covered by the LOCAL_PREF_KEYS loop above.)
+  delete out.codeGraphProvider;
   delete out.subagentTeam;
   const stack = obj(out.stack);
   if (stack) {
@@ -272,6 +275,32 @@ export function splitLocalPreferences(cwd: string, state: unknown, env: NodeJS.P
     const prefs = mergeProjectPrefsObject(readProjectPrefs(cwd, env), localPatch);
     return { state: stateRec, prefs, changed: false };
   }
+}
+
+// ── Machine-wide code-graph provider (one.json, not per-project) ─────────────────
+// The provider becomes a global setting so a provider already chosen/installed
+// locally is reused across projects (onboarding stops re-prompting).
+
+export function readGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env): string | null {
+  return codeGraphProviderFromValue(readOneSettings(env).codeGraphProvider);
+}
+
+export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const canonical = codeGraphProviderFromValue(provider);
+  if (!canonical) return null;
+  writeOneSection('codeGraphProvider', canonical, env);
+  return canonical;
+}
+
+// Inject the machine-wide provider onto an ALREADY-effective state object, so every
+// downstream `state.codeGraphProvider` consumer + the onboarding routers read it
+// from the same place. Mutates and returns `state`. Used by readEffectiveState and
+// by the doctor's raw-state path (which builds effectiveState directly).
+export function applyGlobalCodeGraphProvider(state: Rec, env: NodeJS.ProcessEnv = process.env): Rec {
+  const provider = readGlobalCodeGraphProvider(env);
+  if (provider) state.codeGraphProvider = provider;
+  else delete state.codeGraphProvider;
+  return state;
 }
 
 export function effectiveState(projectState: unknown, prefs: unknown): Rec {
@@ -306,5 +335,5 @@ export function readEffectiveState(cwd: string, env: NodeJS.ProcessEnv = process
   const prefs = Object.keys(embeddedPrefs).length > 0
     ? mergeProjectPrefsObject(readProjectPrefs(cwd, env), embeddedPrefs)
     : readProjectPrefs(cwd, env);
-  return effectiveState(stripLocalPreferenceFields(state), prefs);
+  return applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), prefs), env);
 }

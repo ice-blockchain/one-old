@@ -28,6 +28,7 @@ import {
   readEffectiveState,
   readProjectPrefs,
   readState,
+  writeGlobalCodeGraphProvider,
   writeProjectPrefs,
   writeState,
 } from '../state';
@@ -371,9 +372,10 @@ export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOu
     case 'code-graph': {
       const provider = String(value);
       if (provider !== 'gitnexus' && provider !== 'graphify') return { ok: false, error: 'invalid code-graph provider' };
-      mergeProjectPrefs(cwd, { codeGraphProvider: provider });
-      // Provider is now committed (and OpenCode was decided at the first step),
-      // so the consolidated install task can read the final choices from state.
+      // The provider is machine-wide (one.json), not a per-project pref — once set
+      // it is reused across projects. OpenCode was decided at the first step, so the
+      // consolidated install task can read the final choices from the effective state.
+      writeGlobalCodeGraphProvider(provider);
       return { ok: true, task: { kind: 'onboarding-toolchain' } };
     }
     case 'project-context': {
