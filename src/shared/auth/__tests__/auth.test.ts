@@ -48,9 +48,10 @@ test('isAuthenticatedLocal reads the state file (no network)', () => {
   try {
     const statePath = path.join(dir, 'auth.json');
     const env = { TRAFFIC_ONE_AUTH_STATE_PATH: statePath } as NodeJS.ProcessEnv;
-    fs.writeFileSync(statePath, JSON.stringify(freshState()), 'utf8');
+    // The session lives in the `auth` section of one.json now.
+    fs.writeFileSync(statePath, JSON.stringify({ version: 1, auth: freshState() }), 'utf8');
     assert.equal(isAuthenticatedLocal(env), true);
-    fs.writeFileSync(statePath, JSON.stringify(freshState({ expiresAt: '2000-01-01T00:00:00Z' })), 'utf8');
+    fs.writeFileSync(statePath, JSON.stringify({ version: 1, auth: freshState({ expiresAt: '2000-01-01T00:00:00Z' }) }), 'utf8');
     assert.equal(isAuthenticatedLocal(env), false);
     assert.equal(isAuthenticatedLocal({ TRAFFIC_ONE_AUTH_STATE_PATH: path.join(dir, 'nope.json') } as NodeJS.ProcessEnv), false);
   } finally {

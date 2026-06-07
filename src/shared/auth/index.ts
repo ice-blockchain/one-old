@@ -4,7 +4,6 @@
 // credential-store/MCP client lives with the auth CLI runner (Step 5).
 
 import * as net from 'net';
-import * as os from 'os';
 import * as path from 'path';
 
 import {
@@ -17,7 +16,7 @@ import {
   REFRESH_FAILURE_THRESHOLD,
   REMOTE_AUTH_CHECK_INTERVAL_MS,
 } from '../../config/auth';
-import { readJson } from '../fsjson';
+import { oneSettingsPath, readOneSettings } from '../one-settings';
 import { pluginRoot } from '../paths';
 
 export type AuthState = Record<string, unknown>;
@@ -58,16 +57,15 @@ export function endpointFromEnv(env: NodeJS.ProcessEnv = process.env): string {
   return env.TRAFFIC_ONE_MCP_KEY_ENDPOINT || DEFAULT_ENDPOINT;
 }
 
+// The auth session now lives in the `auth` section of the consolidated one.json
+// (see shared/one-settings). authStatePath returns that file so the auth-required
+// message + auth-choice path derivation keep pointing at the right place.
 export function authStatePath(env: NodeJS.ProcessEnv = process.env): string {
-  if (env.TRAFFIC_ONE_AUTH_STATE_PATH) return path.resolve(env.TRAFFIC_ONE_AUTH_STATE_PATH);
-  const base = env.XDG_STATE_HOME
-    ? path.join(env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(env.HOME || os.homedir(), '.traffic-one');
-  return path.join(base, 'auth.json');
+  return oneSettingsPath(env);
 }
 
 export function readAuthState(env: NodeJS.ProcessEnv = process.env): AuthState | null {
-  return readJson<AuthState | null>(authStatePath(env), null);
+  return (readOneSettings(env).auth as AuthState | null) ?? null;
 }
 
 // Precise reason a stored session is (not) usable. Endpoint mismatch is reported

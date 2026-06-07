@@ -7,6 +7,7 @@ import * as path from 'path';
 import { runSessionStart, runSessionStartAuthed } from '../session-start';
 import type { Ctx, HookInput } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
+import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 
 function ctx(cwd: string): Ctx {
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
@@ -19,13 +20,17 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sstart-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
   }
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -35,7 +40,6 @@ function localPrefs(extra: Record<string, unknown> = {}): Record<string, unknown
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
     performance: { level: 'low', source: 'prompted' },
     team: { mode: 'main-agent', source: 'prompted' },
-    codeGraphProvider: 'graphify',
     toolchain: initializeToolchainState({}),
     ...extra,
   };
@@ -46,6 +50,8 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
   assert.ok(prefsPath, 'test prefs path must be configured');
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
   fs.writeFileSync(prefsPath, JSON.stringify(localPrefs(extra)), 'utf8');
+  // codeGraphProvider is machine-wide (one.json), not a per-project pref.
+  writeGlobalCodeGraphProvider('graphify');
 }
 
 function existingState(extra: Record<string, unknown> = {}): Record<string, unknown> {

@@ -74,9 +74,13 @@ function withAuthEnv(fn: (dir: string) => void): void {
 }
 
 function freshFixture(dir: string): void {
+  // one.json (the AUTH_STATE_PATH alias) carries the session in its `auth` section.
   fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
-    version: 1, endpoint: DEAD_ENDPOINT, sessionToken: 'tok_x.sig',
-    expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z', keyId: 'k1',
+    version: 1,
+    auth: {
+      version: 1, endpoint: DEAD_ENDPOINT, sessionToken: 'tok_x.sig',
+      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z', keyId: 'k1',
+    },
   }), 'utf8');
 }
 
@@ -110,13 +114,14 @@ test('credential store (file backend) round-trips the secret + never returns it 
   });
 });
 
-test('writeAuthState writes 0o600; deleteAuthState removes it', () => {
+test('writeAuthState writes 0o600; deleteAuthState clears the auth section', () => {
   withAuthEnv((dir) => {
     const p = writeAuthState({ version: 1, sessionToken: 'tok_x.sig' });
     assert.equal(p, path.join(dir, 'auth.json'));
     assert.equal((fs.statSync(p).mode & 0o777), 0o600);
     assert.equal(deleteAuthState(), true);
-    assert.equal(fs.existsSync(p), false);
+    // one.json persists (it may hold other sections); only the auth section is dropped.
+    assert.equal('auth' in JSON.parse(fs.readFileSync(p, 'utf8')), false);
   });
 });
 
@@ -232,7 +237,8 @@ test('recordRefreshFailure increments + arms backoff, preserving session token +
     const r1 = recordRefreshFailure(seed);
     assert.equal(r1.failures, 1);
     assert.equal(r1.exhausted, false);
-    let cur = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+    // The auth state lives in the `auth` section of one.json now.
+    let cur = (JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>).auth as Record<string, unknown>;
     assert.equal(cur.refreshFailures, 1);
     assert.equal(typeof cur.nextRefreshAt, 'string');
     assert.equal(cur.sessionToken, 'tok_x.sig'); // session token NOT discarded
@@ -240,7 +246,7 @@ test('recordRefreshFailure increments + arms backoff, preserving session token +
     let last = r1;
     for (let i = 2; i <= 6; i++) {
       last = recordRefreshFailure(cur);
-      cur = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>;
+      cur = (JSON.parse(fs.readFileSync(stateFile, 'utf8')) as Record<string, unknown>).auth as Record<string, unknown>;
     }
     assert.equal(cur.refreshFailures, 6);
     assert.equal(last.exhausted, true);
@@ -255,8 +261,11 @@ test('status() expired + failing refresh: silent grace under threshold, re-auth 
     storeCredential(ref, 'sk-stored');
     const stateFile = path.join(dir, 'auth.json');
     const writeExpired = (extra: Record<string, unknown> = {}): void => fs.writeFileSync(stateFile, JSON.stringify({
-      version: 1, endpoint: UNREACHABLE_ENDPOINT, sessionToken: 'tok_x.sig',
-      expiresAt: '2000-01-01T00:00:00Z', lastRemoteCheckedAt: '2000-01-01T00:00:00Z', keyId: 'k1', credentialRef: ref, ...extra,
+      version: 1,
+      auth: {
+        version: 1, endpoint: UNREACHABLE_ENDPOINT, sessionToken: 'tok_x.sig',
+        expiresAt: '2000-01-01T00:00:00Z', lastRemoteCheckedAt: '2000-01-01T00:00:00Z', keyId: 'k1', credentialRef: ref, ...extra,
+      },
     }), 'utf8');
 
     // 1st failed silent refresh → grace: still authenticated, no prompt.

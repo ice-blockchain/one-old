@@ -33,8 +33,11 @@ function withAuthedProject(materialized: boolean, fn: (cwd: string) => void): vo
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1, endpoint: endpointFromEnv(), sessionToken: 'tok_x.sig',
-    expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    version: 1,
+    auth: {
+      version: 1, endpoint: endpointFromEnv(), sessionToken: 'tok_x.sig',
+      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    },
   }), 'utf8');
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(t1, { recursive: true });
@@ -145,7 +148,7 @@ test('noop in the plugin authoring root for a write inside cwd', () => {
   const env = process.env;
   const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(os.tmpdir(), 'pss-authoring-auth.json');
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({ version: 1, endpoint: endpointFromEnv(), sessionToken: 'tok_x.sig', expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString() }), 'utf8');
+  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({ version: 1, auth: { version: 1, endpoint: endpointFromEnv(), sessionToken: 'tok_x.sig', expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString() } }), 'utf8');
   try {
     assert.equal(runPostStackSetup(ctx(process.cwd(), { file_path: 'src/x.ts' })).kind, 'noop');
   } finally {

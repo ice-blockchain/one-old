@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
+import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
 import {
   GITNEXUS_MIN_NODE_MAJOR,
   currentNodeMajor,
@@ -114,7 +114,7 @@ export function probeProject(cwd: string): ProjectProbe {
   if (state && typeof state === 'object') {
     localPreferencesPath = projectPrefsPath(cwd);
     localPreferences = readProjectPrefs(cwd);
-    normalizedState = effectiveState(stripLocalPreferenceFields(state), localPreferences);
+    normalizedState = applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), localPreferences));
     normalizeState(normalizedState, (typeof normalizedState.mode === 'string' && normalizedState.mode)
       || (typeof normalizedState.projectMode === 'string' && normalizedState.projectMode)
       || 'new-project');

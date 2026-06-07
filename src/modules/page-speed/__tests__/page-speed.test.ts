@@ -15,9 +15,13 @@ function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cw
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   if (authed) {
+    // Auth lives in the `auth` section of one.json (the AUTH_STATE_PATH alias).
     fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+      version: 1,
+      auth: {
+        version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
+        expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+      },
     }), 'utf8');
   }
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });

@@ -28,8 +28,11 @@ function withFreshAuth<T>(fn: (dir: string) => T): T {
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_AUTH = '1'; // these tests exercise the real authed path; pin enforcement on
   fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-    expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    version: 1,
+    auth: {
+      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
+      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    },
   }), 'utf8');
   try {
     return fn(dir);

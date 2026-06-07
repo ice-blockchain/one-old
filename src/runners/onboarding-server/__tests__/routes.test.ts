@@ -59,8 +59,11 @@ async function withServer(
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-routes-'));
   const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
   const prevTask = process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  // code-graph answers write the machine-wide provider — isolate one.json.
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD = taskCmd;
   if (committed) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -73,6 +76,8 @@ async function withServer(
     await server.close();
     if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevTask === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD;
     else process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD = prevTask;
     fs.rmSync(dir, { recursive: true, force: true });

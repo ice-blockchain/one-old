@@ -5,17 +5,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { materializeProjectFromState, materializeProjectIfNeeded } from '../converge';
+import { writeGlobalCodeGraphProvider } from '../../state';
 
-// Isolate local-prefs so readEffectiveState never reads the developer's machine.
+// Isolate local-prefs AND one.json (the machine-wide store) so readEffectiveState
+// never reads the developer's machine.
 function withTempProject(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-converge-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   try {
     fn(dir);
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -75,18 +80,23 @@ test('materializeProjectFromState: moves local-only fields out of shared .one.js
       onboardingComplete: true,
       confirmedAt: '2026-01-01T00:00:00Z',
     });
+    // codeGraphProvider is machine-wide now — completeness needs it set globally.
+    writeGlobalCodeGraphProvider('graphify');
 
     const out = materializeProjectFromState(dir, { trigger: 'unit' });
     assert.notEqual(out.status, 'incomplete');
     const onDisk = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal('openCode' in onDisk, false);
+    // codeGraphProvider is machine-wide now — stripped from shared state and NOT
+    // promoted into per-project prefs.
     assert.equal('codeGraphProvider' in onDisk, false);
     assert.equal('performance' in onDisk, false);
     assert.equal('team' in onDisk, false);
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     assert.ok(prefsPath);
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
-    assert.equal(prefs.codeGraphProvider, 'graphify');
+    assert.deepEqual(prefs.performance, { level: 'low', source: 'prompted' });
+    assert.equal('codeGraphProvider' in prefs, false);
   });
 });
 

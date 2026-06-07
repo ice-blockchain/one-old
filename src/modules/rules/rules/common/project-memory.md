@@ -150,7 +150,7 @@ Keep persistent memory useful, not encyclopedic:
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
   `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
   asks to preserve a report. The codebase-graph artefact location depends on
-  the current user's local `codeGraphProvider` preference.
+  the machine-wide `codeGraphProvider` setting.
 - Do not place secrets, service-role keys, database passwords, raw customer data,
   or production connection strings in project memory.
 - Append to `agent-log.md` and `deployments.jsonl`; do not rewrite history except

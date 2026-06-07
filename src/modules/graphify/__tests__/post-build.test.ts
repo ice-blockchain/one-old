@@ -22,12 +22,17 @@ function withProject(
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  // one.json (the TRAFFIC_ONE_AUTH_STATE_PATH alias) holds BOTH the auth session and
+  // the machine-wide codeGraphProvider now.
+  const oneSettings: Record<string, unknown> = { version: 1 };
   if (opts.authed !== false) {
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
+    oneSettings.auth = {
       version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
       expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
-    }), 'utf8');
+    };
   }
+  if (opts.provider) oneSettings.codeGraphProvider = opts.provider;
+  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify(oneSettings), 'utf8');
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const state: Record<string, unknown> = {
     stack: 'default',
@@ -35,8 +40,6 @@ function withProject(
     onboardingComplete: opts.onboardingComplete ?? true,
   };
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
-  // codeGraphProvider is a local pref — persist it there.
-  if (opts.provider) fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({ codeGraphProvider: opts.provider }), 'utf8');
   if (opts.freshArtefact) {
     if (opts.provider === 'gitnexus') fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
     else { fs.mkdirSync(path.join(dir, 'graphify-out'), { recursive: true }); fs.writeFileSync(path.join(dir, 'graphify-out', 'GRAPH_REPORT.md'), '# g\n', 'utf8'); }
