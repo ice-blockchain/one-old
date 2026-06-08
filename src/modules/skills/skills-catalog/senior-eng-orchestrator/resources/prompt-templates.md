@@ -7,10 +7,11 @@ context stays clean.
 
 ## Run-id format
 
-ISO-8601 UTC, second precision, filesystem-safe: `2026-05-07T14-23-05Z`. The
-orchestrator generates it once in Phase 0 and passes it to every spawn. On
-collision (two parallel orchestrator runs in the same second, rare), append
-a 4-char random suffix: `2026-05-07T14-23-05Z-a3f2`.
+The orchestrator generates the run-id once in Phase 0 (a filesystem-safe epoch-millisecond
+string such as `1715091785000`, stored as `currentRunId`) and passes it to every spawn
+VERBATIM. Use that exact value everywhere — the claim files, the `assignments.json` manifest,
+and the digest folder all key off it, so any divergence breaks role resolution and scope
+enforcement.
 
 ## Phase 1 — Architect
 
@@ -44,6 +45,13 @@ surfaces apply. Create/update the
 plus the SEO and i18n baseline reconciliation, to create missing memory/docs,
 update existing files in place, fill missing web metadata, and extend any
 existing translation catalogs instead of creating parallel systems.
+
+Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json: one entry
+per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
+patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
+directories — not guessed names. This is the machine-readable Module map; the run-team gate
+uses it so the parallel implementers never collide. See "Assignments manifest" in your role
+instructions for the schema and guarantees. Write it before PLAN_READY.
 
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md
@@ -80,6 +88,13 @@ Read in priority order:
      `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`,
      `packages/ui*` nodes.
   5. Specific source files only when 1–4 don't answer the question.
+
+Your owned write paths for this run are:
+  <FRONTEND_OWNED_PATHS>
+Write ONLY inside these paths — this is your entry in
+.traffic-one/runs/<run-id>/assignments.json. Everything else belongs to another role and the
+run-team gate will block out-of-scope writes. If you believe you must write outside your
+scope, stop and surface it in your digest rather than widening it.
 
 Implement only the frontend layer of the plan. The other implementer
 (senior-backend) is running in parallel — assume their public contract from
@@ -131,6 +146,13 @@ Read in priority order:
      `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`,
      `packages/api*`, `services/*`, `supabase/` nodes.
   5. Specific source / migration files only when 1–4 don't answer the question.
+
+Your owned write paths for this run are:
+  <BACKEND_OWNED_PATHS>
+Write ONLY inside these paths — this is your entry in
+.traffic-one/runs/<run-id>/assignments.json. Everything else belongs to another role and the
+run-team gate will block out-of-scope writes. If you believe you must write outside your
+scope, stop and surface it in your digest rather than widening it.
 
 Implement only the backend layer of the plan. The other implementer
 (senior-frontend) is running in parallel — assume their public contract from
