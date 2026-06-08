@@ -155,6 +155,42 @@ test('Flow 1: an onboarded new project with shared state + local prefs runs norm
   });
 });
 
+// Note: tests run via tsx on src, so pluginRoot()=repo root (no rules/ or skills/
+// source pool) → the rule bundle is empty here. These assert on the parts the
+// SessionStart layer owns and that are independent of the on-disk source pool: the
+// orchestrator header and the [ACTIVE SKILLS] directive (derived from the override /
+// activeSkillsFor, not disk). Rule subsetting is verified in materialize-writer.test.ts.
+function subagentsPrefs(): Record<string, unknown> {
+  return { performance: { level: 'high', source: 'prompted' }, team: { mode: 'subagents', source: 'prompted', approved: true } };
+}
+
+test('Flow 1: subagents mode → main agent gets an orchestration-only context', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    writeLocalPrefs(subagentsPrefs());
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('[orchestrator] subagents mode'), 'orchestrator header present');
+      const activeLine = r.context.split('\n').find((l) => l.startsWith('[ACTIVE SKILLS'));
+      assert.ok(activeLine && activeLine.includes('senior-eng-orchestrator'), 'orchestrator skill is active');
+      assert.ok(activeLine && !activeLine.includes('create-component'), 'implementation skills are not active for the orchestrator');
+    }
+  });
+});
+
+test('Flow 1: main-agent mode keeps the full implementation skill set (regression)', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    writeLocalPrefs(); // performance low → team main-agent
+    const r = runSessionStartAuthed(ctx(cwd));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(!r.context.includes('[orchestrator] subagents mode'), 'no orchestrator header in main-agent mode');
+      const activeLine = r.context.split('\n').find((l) => l.startsWith('[ACTIVE SKILLS'));
+      assert.ok(activeLine && activeLine.includes('create-component'), 'implementation skills active in main-agent mode');
+    }
+  });
+});
+
 test('Flow 1: an onboarded new project without local prefs asks local-pref steps', () => {
   withProject(newProjectSharedState(), (cwd) => {
     const r = runSessionStartAuthed(ctx(cwd));

@@ -7,6 +7,7 @@ import {
   canonicalTeamOverrides,
   canonicalizeStateShape,
   codeGraphProviderFromValue,
+  resolvedTeamMode,
 } from '../canonicalize';
 
 test('canonicalizeStateShape migrates a compact stack object into flat fields', () => {
@@ -41,6 +42,16 @@ test('canonicalTeamOverrides drops defaults + unknown roles, keeps real override
   assert.deepEqual(canonicalTeamOverrides({ 'senior-tester': 'highest' }, 'high'), { 'senior-tester': 'highest' });
   assert.equal(canonicalTeamOverrides({ 'senior-frontend': 'highest' }, 'high'), null); // equals the level default
   assert.equal(canonicalTeamOverrides({ 'bogus-role': 'highest' }, 'high'), null);
+});
+
+test('resolvedTeamMode reads state.team.mode, applies aliases, and defaults to main-agent', () => {
+  assert.equal(resolvedTeamMode({ team: { mode: 'subagents' } }), 'subagents');
+  assert.equal(resolvedTeamMode({ team: { mode: 'main-agent' } }), 'main-agent');
+  assert.equal(resolvedTeamMode({ team: { mode: 'enabled' } }), 'subagents'); // alias → subagents
+  assert.equal(resolvedTeamMode({ team: { mode: 'disabled' } }), 'main-agent'); // alias → main-agent
+  assert.equal(resolvedTeamMode({}), 'main-agent'); // team absent
+  assert.equal(resolvedTeamMode({ team: {} }), 'main-agent'); // mode absent
+  assert.equal(resolvedTeamMode(null), 'main-agent');
 });
 
 test('vocab canonicalizers match legacy aliasing', () => {

@@ -22,9 +22,10 @@ import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predic
 import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
+import { ORCHESTRATOR_SKILLS } from '../../config/skill-filters';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
+import { ORCHESTRATOR_RULES, roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   hasRunAgentState,
   hookSessionIdentity,
@@ -32,6 +33,7 @@ import {
   normalizeState,
   readEffectiveState,
   resolveRunAgentContext,
+  resolvedTeamMode,
   type RunAgentContext,
   stackFingerprint,
   stateVersion,
@@ -47,6 +49,28 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
 const STACK_IDS = new Set(Object.keys(STACKS));
+
+const ORCHESTRATOR_HEADER = '[orchestrator] subagents mode — implementation rules & skills are delegated to '
+  + 'role agents; this context is orchestration-only.\n';
+
+// Build the main-agent rule bundle + skill directive for an onboarded session.
+// In team.mode="subagents" the main agent is a pure orchestrator: it is shown only
+// ORCHESTRATOR_RULES + the orchestration skill, never the implementation/stack
+// rules & skills — those are delegated to the role subagents and stay materialized
+// on disk for them (copyActiveSkills still writes the FULL set every session).
+function mainAgentBundle(
+  root: string,
+  state: Rec,
+  modeMandatory: readonly string[],
+  optional: readonly string[],
+): { body: string; skillDirective: string; copied: number; orchestrating: boolean } {
+  const orchestrating = resolvedTeamMode(state) === 'subagents';
+  const mandatory = orchestrating ? ORCHESTRATOR_RULES : modeMandatory;
+  const { body } = packBundle(root, mandatory, orchestrating ? [] : optional);
+  const copied = copyActiveSkills(state);
+  const skillDirective = pruneSkillsDirective(state, listAllSkills(), orchestrating ? ORCHESTRATOR_SKILLS : undefined);
+  return { body, skillDirective, copied, orchestrating };
+}
 
 // Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
 // resolved and whose project is already materialized. Shared by the subagent
@@ -186,14 +210,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const spec = stackSpecForState(state);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
-    const { body } = packBundle(root, modeMandatory, spec.optional);
-
-    const copied = copyActiveSkills(state);
-    const skillDirective = pruneSkillsDirective(state, listAllSkills());
+    const { body, skillDirective, copied, orchestrating } = mainAgentBundle(root, state, modeMandatory, spec.optional);
     stampMaterialization(cwd, state);
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
-    if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
+    if (orchestrating) header += ORCHESTRATOR_HEADER;
+    else if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
@@ -228,17 +250,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const spec = stackSpecForState(state);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
-    const { body } = packBundle(root, modeMandatory, spec.optional);
-
-    const copied = copyActiveSkills(state);
-    const allSkills = listAllSkills();
+    const { body, skillDirective, copied, orchestrating } = mainAgentBundle(root, state, modeMandatory, spec.optional);
     stampMaterialization(cwd, state);
     writeState(cwd, state);
-    const skillDirective = pruneSkillsDirective(state, allSkills);
 
     const banner = autoDetectedAnnouncement(detected as never);
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
-    if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
+    if (orchestrating) header += ORCHESTRATOR_HEADER;
+    else if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);

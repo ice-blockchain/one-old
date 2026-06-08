@@ -80,8 +80,15 @@ export function activeSkillsFor(stackOrState: unknown): Set<string> {
   return out;
 }
 
-export function pruneSkillsDirective(stackOrState: unknown, allSkills: Iterable<string>): string {
-  const active = activeSkillsFor(stackOrState);
+export function pruneSkillsDirective(
+  stackOrState: unknown,
+  allSkills: Iterable<string>,
+  activeOverride?: Iterable<string>,
+): string {
+  // activeOverride lets the orchestrator main agent (team.mode="subagents") present
+  // only its orchestration skill set; the delegated implementation skills then fall
+  // into the [DO NOT INVOKE] list, which is the desired semantics for the parent.
+  const active = activeOverride ? new Set(activeOverride) : activeSkillsFor(stackOrState);
   const wrongStack: string[] = [];
   for (const name of allSkills) {
     if (!active.has(name)) wrongStack.push(name);

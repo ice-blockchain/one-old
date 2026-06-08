@@ -41,6 +41,20 @@ test('pruneSkillsDirective lists active + flags wrong-stack skills', () => {
   assert.ok(directive.includes('django-patterns'));
 });
 
+test('pruneSkillsDirective(activeOverride) lists only the override; the rest fall into DO NOT INVOKE', () => {
+  const directive = pruneSkillsDirective(
+    { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true },
+    ['senior-eng-orchestrator', 'create-component', 'postgres-patterns'],
+    ['senior-eng-orchestrator'], // orchestrator main-agent set
+  );
+  const activeLine = directive.split('\n').find((l) => l.startsWith('[ACTIVE SKILLS'));
+  assert.ok(activeLine && activeLine.includes('senior-eng-orchestrator'));
+  assert.ok(activeLine && !activeLine.includes('create-component'), 'implementation skills are not active for the orchestrator');
+  assert.ok(directive.includes('[DO NOT INVOKE'));
+  assert.ok(directive.includes('create-component'));
+  assert.ok(directive.includes('postgres-patterns'));
+});
+
 test('cache surgery is a no-op outside the plugin cache path', () => {
   // pluginRoot resolves to this repo (not a .claude/plugins/cache path), so both return 0.
   assert.equal(cleanActiveSkills(), 0);

@@ -37,6 +37,16 @@ export function canonicalTeamMode(mode: unknown): unknown {
   return TEAM_MODE_ALIASES.get(normalized) || mode;
 }
 
+// Resolve the effective team mode from a (preferably effective) state object.
+// Reads state.team.mode through canonicalTeamMode and defaults to 'main-agent'
+// when team is absent/unknown — so non-effective states and every pre-onboarding
+// flow keep the full main-agent bundle.
+export function resolvedTeamMode(state: unknown): 'subagents' | 'main-agent' {
+  const team = state && typeof state === 'object' ? (state as StateRecord).team : undefined;
+  const mode = team && typeof team === 'object' ? (team as StateRecord).mode : undefined;
+  return canonicalTeamMode(mode) === 'subagents' ? 'subagents' : 'main-agent';
+}
+
 export function canonicalTeamSource(source: unknown): unknown {
   if (typeof source !== 'string') return source;
   if (TEAM_SOURCE_IDS.has(source)) return source;

@@ -63,6 +63,18 @@ test('detectHostPlan claude: reads ~/.claude.json oauthAccount (rate-limit tier 
   const h3 = tmpHome();
   fs.writeFileSync(path.join(h3, '.claude.json'), JSON.stringify({ oauthAccount: { organizationType: 'claude_enterprise' } }), 'utf8');
   assert.equal(detectHostPlan('claude', env({ HOME: h3 })), 'enterprise');
+
+  // Real-world Max account: the per-user tier fields are null and the plan lives
+  // ONLY in organizationType ("claude_max"). Regression for the wizard recommending
+  // Low to Max users.
+  const h4 = tmpHome();
+  fs.writeFileSync(path.join(h4, '.claude.json'), JSON.stringify({ oauthAccount: { organizationType: 'claude_max', userRateLimitTier: null, subscriptionType: null, seatTier: null } }), 'utf8');
+  assert.equal(detectHostPlan('claude', env({ HOME: h4 })), 'max');
+
+  // Plan carried only in the org-level rate-limit tier string.
+  const h5 = tmpHome();
+  fs.writeFileSync(path.join(h5, '.claude.json'), JSON.stringify({ oauthAccount: { organizationRateLimitTier: 'default_claude_max_20x' } }), 'utf8');
+  assert.equal(detectHostPlan('claude', env({ HOME: h5 })), 'max');
 });
 
 test('detectHostPlan claude: missing/garbage file → default (free)', () => {

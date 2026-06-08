@@ -67,7 +67,12 @@ function detectClaudePlan(env: NodeJS.ProcessEnv): string | null {
     if (orgType.includes('team')) return 'team';
     const fromTier = planFromTierString(acct.userRateLimitTier)
       ?? planFromTierString(acct.subscriptionType)
-      ?? planFromTierString(acct.seatTier);
+      ?? planFromTierString(acct.seatTier)
+      ?? planFromTierString(acct.organizationRateLimitTier)
+      // Max/Pro accounts increasingly leave the per-user tier fields null and only
+      // carry the plan in organizationType (e.g. "claude_max" → max). Enterprise/team
+      // already returned above; this catches max/pro/free.
+      ?? planFromTierString(acct.organizationType);
     if (fromTier) return fromTier;
   }
   // Linux/Windows persist the OAuth blob to a file; macOS uses the Keychain.

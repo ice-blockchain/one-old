@@ -157,6 +157,22 @@ export const AGENT_ROLE_BASE_RULES: Readonly<Record<string, string[]>> = {
   ],
 };
 
+// In team.mode="subagents" the main agent is a pure orchestrator: it gates,
+// spawns the senior-role subagents, and integrates their output — it never writes
+// feature source. So it is shown ONLY these orchestration rules (gates +
+// team coordination + digest/codebase-graph), never the implementation/stack
+// rules, which are delegated to the role agents and remain on disk for them.
+export const ORCHESTRATOR_RULES: readonly string[] = [
+  'rules/common/auth-gate.md',
+  'rules/common/setup-gate.md',
+  'rules/common/project-routing.md',
+  'rules/common/onboarding.md',
+  'rules/common/skill-precedence.md',
+  'rules/common/senior-engineer-team.md',
+  'rules/common/agent-handoff-digests.md',
+  'rules/common/codebase-graph.md',
+];
+
 function unique(values: readonly string[]): string[] {
   const seen = new Set<string>();
   const out: string[] = [];

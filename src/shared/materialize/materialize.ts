@@ -9,9 +9,10 @@ import * as path from 'path';
 import { isPluginAuthoringRoot } from '../authoring-root';
 import { toPosix, writeTextIfChanged } from '../fs-text';
 import { pluginRoot } from '../paths';
-import { BOOTSTRAP_SKILLS } from '../../config/skill-filters';
+import { BOOTSTRAP_SKILLS, ORCHESTRATOR_SKILLS } from '../../config/skill-filters';
 import { activeSkillsFor } from '../skill-filters';
-import { stackSpecForState, templatePath } from '../stacks';
+import { ORCHESTRATOR_RULES, stackSpecForState, templatePath } from '../stacks';
+import { resolvedTeamMode } from '../state';
 import { nowIsoNoMs } from '../text';
 import { cleanupPrevious, loadPreviousManifest, modeRulesForState } from './cleanup';
 import { GENERATED_MARKER, copySkillDir } from './generated';
@@ -77,7 +78,18 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (preserveManualRootContext(cwd, 'AGENTS.md', state)) written += 1;
   if (preserveManualRootContext(cwd, 'CLAUDE.md', state)) written += 1;
 
-  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, skills, { mandatoryRules, referenceRules });
+  // The main agent in team.mode="subagents" is a pure orchestrator: its root
+  // AGENTS.md/CLAUDE.md lists only the orchestration rules & skill. The full set is
+  // still written to disk above (and recorded in manifest.json below) so the role
+  // subagents can read every stack rule/skill on demand.
+  const orchestrating = resolvedTeamMode(state) === 'subagents';
+  const agentsMandatory = orchestrating
+    ? ORCHESTRATOR_RULES.filter((relPath) => fs.existsSync(path.join(root, templatePath(relPath))))
+    : mandatoryRules;
+  const agentsReference = orchestrating ? [] : referenceRules;
+  const agentsRules = orchestrating ? agentsMandatory : rules;
+  const agentsSkills = orchestrating ? skills.filter((name) => ORCHESTRATOR_SKILLS.has(name)) : skills;
+  const localAgents = renderAgentsWithLocalContext(cwd, state, agentsRules, agentsSkills, { mandatoryRules: agentsMandatory, referenceRules: agentsReference });
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
 

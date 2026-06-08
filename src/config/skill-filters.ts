@@ -6,6 +6,11 @@
 
 export const BOOTSTRAP_SKILLS = new Set<string>();
 
+// The only skill shown to the main agent when team.mode="subagents": the
+// orchestration playbook. Implementation skills are delegated to the role
+// subagents (and stay on disk for them); the parent must not invoke them.
+export const ORCHESTRATOR_SKILLS = new Set<string>(['senior-eng-orchestrator']);
+
 export const SKILL_FILTERS: Readonly<Record<string, Set<string>>> = {
   _common: new Set([
     'library-pick', 'context-budget', 'execution-discipline',
