@@ -5,16 +5,18 @@
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
 import { obj, type Rec } from '../../shared/obj';
-import {
-  roleCanWriteFeatureSource,
-  subagentMayWriteFeatureSource,
-} from '../../shared/feature-source';
+import { roleCanWriteFeatureSource } from '../../shared/feature-source';
+import { matchesScope } from '../../shared/scope';
 import {
   activeAgentRole,
+  assignmentForContext,
   hasRunAgentState,
   isSubagentSession,
   legacyRunAgentContext,
+  readRunAssignments,
   resolveRunAgentContext,
+  tryFallbackClaim,
+  type RunAgentContext,
 } from '../../shared/state';
 
 type Vars = Record<string, string | number | null | undefined>;
@@ -37,55 +39,82 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const team = obj(state.team);
   if (!writingFeatureSource || !team || team.mode !== 'subagents') return null;
 
+  const suffix = block('run-team-suffix',
+    'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
+  const deny = (reason: string): string => `${reason} ${suffix}`;
+
+  // Shell writes can't be ownership-verified from a command line.
+  if (writingFeatureSourceViaCommand) {
+    return deny(block('run-team-shell',
+      'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
+  }
+
   const agentContext = resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true })
     || (!hasRunAgentState(projectRoot, state) ? legacyRunAgentContext(state) : null);
   const acRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
-  const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
-  const useLegacySubagentFallback = !agentContext && !hasRunAgentState(projectRoot, state);
-
-  const mayWrite = (target: string): boolean => (
-    agentContext
-      ? subagentMayWriteFeatureSource(state, target, agentContext)
-      : useLegacySubagentFallback && subagentMayWriteFeatureSource(state, target, null)
-  );
-  const agentMayWriteFeatureTargets = featureTargetPaths.length > 0
-    ? featureTargetPaths.every(mayWrite)
-    : mayWrite(filePath);
-
-  if (agentMayWriteFeatureTargets && !writingFeatureSourceViaCommand) return null;
-
-  const role = acRole || activeAgentRole(state) || 'main agent';
   const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, state) && isSubagentSession(state));
-  const ownedBySome = ownershipTargets.every((target) => (
-    roleCanWriteFeatureSource('senior-frontend', target)
-    || roleCanWriteFeatureSource('senior-backend', target)
-  ));
-  const ownedByActiveRole = Boolean(agentContext)
-    && ownershipTargets.every((target) => roleCanWriteFeatureSource(acRole, target));
+  const role = acRole || activeAgentRole(state) || 'main agent';
+  const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
 
-  let reason: string;
-  if (writingFeatureSourceViaCommand) {
-    reason = block('run-team-shell',
-      'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.');
-  } else if (!inSubagent) {
-    reason = block('run-team-not-subagent',
+  if (!inSubagent) {
+    return deny(block('run-team-not-subagent',
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. Spawn the appropriate role first; senior-frontend and senior-backend ownership is enforced by \`roleCanWriteFeatureSource\`.`,
-      { ROLE: role });
-  } else if (!ownedBySome) {
-    reason = block('run-team-not-owned',
-      `Run-team enforcement gate: the file \`${filePath}\` is not under any Traffic One role's owned path patterns (senior-frontend: \`apps/*/src|app/\` + \`packages/(ui|i18n|utils)/src/\`; senior-backend: \`packages/(api-client|ws-client|utils)/src/\`, \`services/*/src/\`, \`apps/*/src/(services|store)/\`). If this is a legitimate project layout (e.g. root \`src/\`), the role-pattern definitions in \`roleCanWriteFeatureSource\` need to be extended.`,
-      { FILEPATH: filePath });
-  } else if (agentContext && !ownedByActiveRole) {
-    reason = block('run-team-wrong-role',
-      `Run-team enforcement gate: the active Traffic One role \`${role}\` does not own \`${ownershipTargets.join(', ')}\`. Use the role that owns the path, or split the patch by role ownership.`,
-      { ROLE: role, TARGETS: ownershipTargets.join(', ') });
-  } else {
-    reason = block('run-team-unexpected',
-      `Run-team enforcement gate: unexpected denial for ${role} writing \`${filePath}\`. This is a gate bug — please report.`,
-      { ROLE: role, FILEPATH: filePath });
+      { ROLE: role }));
   }
 
-  const suffix = block('run-team-suffix',
-    'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
-  return `${reason} ${suffix}`;
+  // Preferred path: explicit per-run assignment manifest authored by the architect.
+  // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.
+  const runId = agentContext && agentContext.runId != null ? String(agentContext.runId) : null;
+  const manifest = runId ? readRunAssignments(projectRoot, runId) : null;
+
+  if (manifest && agentContext) {
+    const mine = assignmentForContext(manifest, agentContext);
+    const myKey = (mine && (mine.agentKey || mine.role)) || role;
+    for (const target of ownershipTargets) {
+      if (mine && matchesScope(target, mine.scope)) continue; // inside my scope -> allowed
+      const conflict = manifest.assignments.find((a) => a !== mine && matchesScope(target, a.scope));
+      if (conflict) {
+        return deny(block('run-team-scope-conflict',
+          `Run-team enforcement gate: \`${target}\` is in \`${conflict.agentKey || conflict.role}\`'s assigned scope for this run, not \`${myKey}\`'s. Each subagent writes only within its own assignment in \`.traffic-one/runs/<runId>/assignments.json\`. Let the owning role write this file, or split the patch by assignment.`,
+          { TARGET: target, OWNER: String(conflict.agentKey || conflict.role), ROLE: String(myKey) }));
+      }
+      // Outside every assignment -> dynamic first-write claim (no hard deadlock).
+      const decision = tryFallbackClaim(projectRoot, agentContext, target);
+      if (decision.blocked) {
+        return deny(block('run-team-fallback-taken',
+          `Run-team enforcement gate: \`${target}\` is outside every role's assigned scope and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path, or add it to an assignment in \`.traffic-one/runs/<runId>/assignments.json\`.`,
+          { TARGET: target, HOLDER: String(decision.holder) }));
+      }
+    }
+    return null;
+  }
+
+  // Legacy fallback: no manifest. Use the regex ownership oracle, but route paths owned
+  // by NO role through the dynamic claim instead of the former hard deadlock.
+  const ownedByActiveRole = Boolean(agentContext)
+    && ownershipTargets.every((target) => roleCanWriteFeatureSource(acRole, target));
+  if (ownedByActiveRole) return null;
+
+  for (const target of ownershipTargets) {
+    const ownedBySomeRole = roleCanWriteFeatureSource('senior-frontend', target)
+      || roleCanWriteFeatureSource('senior-backend', target);
+    if (ownedBySomeRole) {
+      if (agentContext && !roleCanWriteFeatureSource(acRole, target)) {
+        return deny(block('run-team-wrong-role',
+          `Run-team enforcement gate: the active Traffic One role \`${role}\` does not own \`${target}\`. Use the role that owns the path, or split the patch by role ownership.`,
+          { ROLE: role, TARGETS: target }));
+      }
+      continue; // owned by the active role (or legacy either-role fallback) -> allowed
+    }
+    // Owned by no role -> dynamic first-write claim (was the run-team-not-owned deadlock).
+    if (agentContext) {
+      const decision = tryFallbackClaim(projectRoot, agentContext, target);
+      if (decision.blocked) {
+        return deny(block('run-team-fallback-taken',
+          `Run-team enforcement gate: \`${target}\` is outside every Traffic One role's owned paths and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path.`,
+          { TARGET: target, HOLDER: String(decision.holder) }));
+      }
+    }
+  }
+  return null;
 }

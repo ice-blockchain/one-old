@@ -76,13 +76,21 @@ Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase readin
 
 ## Your scope
 
-You write to:
+When the architect produced a per-run assignments manifest
+(`.traffic-one/runs/<run-id>/assignments.json`), the AUTHORITATIVE scope is your role's entry
+there — the exact owned paths are also embedded in your spawn prompt. Treat that list as
+definitive over any assumption below, and never write outside it: if a change seems to need an
+out-of-scope path, stop and surface it in your digest rather than widening your scope (the
+run-team gate will block the write regardless). When no manifest exists, the typical Traffic
+One monorepo shape below applies; on other stacks your manifest names the real directories.
+
+Typical frontend paths (illustrative, not normative):
 - `apps/*/src/**` (excluding `apps/*/server/`, `apps/*/api/`).
 - `apps/*/app/**` (Expo Router routes only).
 - `packages/ui/**`, `packages/ui-native/**`, `packages/i18n/**`, `packages/tailwind-config/**`.
 - `src/**` for `custom-backend` React/Vite frontend-only or external-API projects.
 
-You do **not** touch `apps/*/server/`, `packages/api*`, `services/*`, `supabase/migrations/`, `prisma/`, `db/`, or any backend module.
+You do **not** touch backend modules (`apps/*/server/`, `packages/api*`, `services/*`, `supabase/migrations/`, `prisma/`, `db/`, …) unless your assignment explicitly includes them.
 
 ## How you work
 

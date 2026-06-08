@@ -8,6 +8,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { parseJson, readJson, writeJson } from '../fsjson';
+import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
   PENDING_AGENT_CLAIM_STALE_MS,
   RUNS_REL_DIR,
@@ -37,6 +38,15 @@ function pendingDir(cwd: string, runId: string): string {
 }
 function runAgentFile(cwd: string, runId: string, sessionId: string): string {
   return path.join(runDir(cwd, runId), `${safePathSegment(sessionId)}.json`);
+}
+function assignmentsFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'assignments.json');
+}
+function fallbackClaimsDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'claims');
+}
+function fallbackClaimFile(cwd: string, runId: string, target: string): string {
+  return path.join(fallbackClaimsDir(cwd, runId), `${safePathSegment(target)}.json`);
 }
 
 function firstString(...values: unknown[]): string | null {
@@ -457,4 +467,125 @@ export function legacyRunAgentContext(state: unknown): RunAgentContext | null {
     sessionId: null,
     claimId: null,
   };
+}
+
+// --- Explicit per-run write assignments (scope manifest) -------------------
+// The architect authors .traffic-one/runs/<runId>/assignments.json: a disjoint
+// partition of the writable surface into role-owned scopes. The run-team gate reads
+// it to allow/deny feature-source writes by ASSIGNED SCOPE rather than by guessed
+// path-kind. Any feature path outside every assignment is governed by tryFallbackClaim,
+// so the gate can never hard-deadlock. Roles here are free-form (NOT validated against
+// VALID_AGENT_ROLES) so future streams (e.g. senior-mobile) are purely additive.
+
+export interface AssignmentEntry {
+  role: string;
+  agentKey?: string;
+  summary?: string;
+  scope: AssignedScope;
+}
+
+export interface RunManifest {
+  version: number;
+  runId: string;
+  createdAt?: string;
+  createdBy?: string;
+  stackFingerprint?: string;
+  assignments: AssignmentEntry[];
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+// Read + validate the run's assignment manifest. Returns null when absent or
+// structurally invalid. The manifest's runId dir is the same fingerprint-guarded run
+// that resolved the agent's claim, so no extra fingerprint check is needed here.
+export function readRunAssignments(cwd: string, runId: unknown): RunManifest | null {
+  if (typeof runId !== 'string' || !runId) return null;
+  const raw = obj(readJson(assignmentsFile(cwd, runId), null));
+  if (!raw || !Array.isArray(raw.assignments)) return null;
+  const assignments: AssignmentEntry[] = [];
+  for (const entry of raw.assignments as unknown[]) {
+    const e = obj(entry);
+    if (!e) continue;
+    const scope = obj(e.scope);
+    const include = scope ? stringArray(scope.include) : [];
+    if (include.length === 0) continue;
+    const role = typeof e.role === 'string' && e.role
+      ? e.role
+      : (typeof e.agentKey === 'string' && e.agentKey ? e.agentKey : null);
+    if (!role) continue;
+    const exclude = scope ? stringArray(scope.exclude) : [];
+    assignments.push({
+      role,
+      agentKey: typeof e.agentKey === 'string' && e.agentKey ? e.agentKey : undefined,
+      summary: typeof e.summary === 'string' ? e.summary : undefined,
+      scope: exclude.length ? { include, exclude } : { include },
+    });
+  }
+  if (!assignments.length) return null;
+  return {
+    version: typeof raw.version === 'number' ? raw.version : 1,
+    runId: typeof raw.runId === 'string' && raw.runId ? raw.runId : runId,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : undefined,
+    createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : undefined,
+    stackFingerprint: typeof raw.stackFingerprint === 'string' ? raw.stackFingerprint : undefined,
+    assignments,
+  };
+}
+
+// Resolve which assignment a writing agent owns. Prefer an indexed agentKey
+// (`<role>#<spawnIndex>`), then a role-named agentKey, then the sole entry for the
+// role. Null when the role maps to zero or ambiguously-many entries.
+export function assignmentForContext(manifest: RunManifest, ctx: RunAgentContext): AssignmentEntry | null {
+  const role = typeof ctx.role === 'string' && ctx.role ? ctx.role : null;
+  if (!role) return null;
+  const indexed = `${role}#${ctx.spawnIndex}`;
+  const byIndexed = manifest.assignments.find((a) => a.agentKey === indexed);
+  if (byIndexed) return byIndexed;
+  const byRoleKey = manifest.assignments.find((a) => a.agentKey === role);
+  if (byRoleKey) return byRoleKey;
+  const byRole = manifest.assignments.filter((a) => a.role === role);
+  return byRole.length === 1 ? (byRole[0] as AssignmentEntry) : null;
+}
+
+// Dynamic first-write claim for a feature path outside every assignment: the first
+// agent to write it records a per-path lock so a DIFFERENT live agent is blocked, but
+// the first writer (and that same agent re-writing) is never blocked. This is the
+// totality guarantee — no feature path can be "owned by nobody -> hard block". Per-path
+// file (never the shared .one.json) so parallel agents on different paths don't contend.
+// Best-effort: if the lock can't be written, the writer is allowed.
+export function tryFallbackClaim(
+  cwd: string,
+  ctx: RunAgentContext,
+  target: string,
+): { blocked: boolean; holder?: string } {
+  const runId = ctx && ctx.runId != null ? String(ctx.runId) : '';
+  if (!runId) return { blocked: false };
+  const myKey = String(ctx.sessionId || ctx.claimId || ctx.role || '');
+  const file = fallbackClaimFile(cwd, runId, normalizeRelPath(target));
+  const existing = obj(readJson(file, null));
+  if (existing
+    && isFreshTimestamp(existing.createdAt, SUBAGENT_STALE_MS)
+    && typeof existing.holder === 'string' && existing.holder
+    && existing.holder !== myKey) {
+    return { blocked: true, holder: existing.holder };
+  }
+  const claim: Rec = {
+    version: 1,
+    runId,
+    path: normalizeRelPath(target),
+    holder: myKey,
+    role: typeof ctx.role === 'string' ? ctx.role : null,
+    sessionId: ctx.sessionId || null,
+    createdAt: stateTimestamp(),
+  };
+  try {
+    fs.mkdirSync(fallbackClaimsDir(cwd, runId), { recursive: true });
+    writeJson(file, claim);
+  } catch {
+    // best-effort lock; never block the writer on a lock-write failure
+  }
+  return { blocked: false };
 }

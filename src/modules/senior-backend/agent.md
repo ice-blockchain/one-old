@@ -109,13 +109,22 @@ Token budget: ~12k total. The `senior-frontend` is running in parallel and will 
 
 ## Your scope
 
-You write to:
+When the architect produced a per-run assignments manifest
+(`.traffic-one/runs/<run-id>/assignments.json`), the AUTHORITATIVE scope is your role's entry
+there — the exact owned paths are also embedded in your spawn prompt. Treat that list as
+definitive over any assumption below, and never write outside it: if a change seems to need an
+out-of-scope path, stop and surface it in your digest rather than widening your scope (the
+run-team gate will block the write regardless). When no manifest exists, the typical Traffic
+One monorepo shape below applies; on other stacks (Laravel, Django, Go, …) your manifest names
+the real directories.
+
+Typical backend paths (illustrative, not normative):
 - `apps/*/server/**`, `apps/*/api/**`.
 - `packages/api*`, `packages/db*`, `packages/auth*`, `packages/jobs*`.
 - `services/*/src/**`.
 - `supabase/migrations/**`, `supabase/functions/**`, `prisma/**`, `db/**`.
 
-You do **not** touch `apps/*/src/**` (that's frontend's), `packages/ui*`, `packages/i18n*`, or any UI artefact.
+You do **not** touch UI artefacts (`apps/*/src/**`, `packages/ui*`, `packages/i18n*`, …) unless your assignment explicitly includes them.
 
 ## How you work
 

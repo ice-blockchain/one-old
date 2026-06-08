@@ -1,0 +1,240 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+
+import { runTeamEnforcementViolation, type RunTeamArgs } from '../plan-runteam';
+import {
+  assignmentForContext,
+  claimThreadRole,
+  readRunAssignments,
+  type RunAgentContext,
+} from '../../../shared/state';
+
+const STACK = 'default|react-vite|supabase|none';
+const RUN = 'run-1';
+const THREAD = '019e7390-ca45-7e03-84d3-284bda1ba905';
+
+function baseState(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mobile: { framework: 'none' }, onboardingComplete: true, materializedStack: STACK,
+    currentRunId: RUN, team: { mode: 'subagents', source: 'prompted', approved: true },
+    ...extra,
+  };
+}
+
+// Test block(): the gate's fallback string is already fully interpolated via template
+// literals, so returning it verbatim is what the runtime does when SKILL.md is absent.
+const block = (_name: string, fallback: string) => fallback;
+
+function rawFor(threadId: string): Record<string, unknown> {
+  return { session_id: 'orchestrator', transcript_path: `/tmp/rollout-2026-06-07T00-00-00-${threadId}.jsonl` };
+}
+
+function safeKey(p: string): string {
+  return p.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160);
+}
+function manifestFile(dir: string, runId = RUN): string {
+  return path.join(dir, '.traffic-one', 'runs', runId, 'assignments.json');
+}
+function claimsDir(dir: string, runId = RUN): string {
+  return path.join(dir, '.traffic-one', 'runs', runId, 'claims');
+}
+function writeManifest(dir: string, assignments: unknown[], runId = RUN): void {
+  const file = manifestFile(dir, runId);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, runId, assignments }), 'utf8');
+}
+function seedFallbackClaim(dir: string, target: string, holder: string, createdAt: string): void {
+  const file = path.join(claimsDir(dir), `${safeKey(target)}.json`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ version: 1, runId: RUN, path: target, holder, createdAt }), 'utf8');
+}
+
+function withDir(fn: (dir: string) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runteam-'));
+  try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+
+function gate(dir: string, state: Record<string, unknown>, filePath: string, raw: unknown, overrides: Partial<RunTeamArgs> = {}): string | null {
+  return runTeamEnforcementViolation({
+    projectRoot: dir,
+    filePath,
+    state: state as RunTeamArgs['state'],
+    rawData: raw,
+    featureTargetPaths: [filePath],
+    writingFeatureSource: true,
+    writingFeatureSourceViaCommand: false,
+    block,
+    ...overrides,
+  });
+}
+
+// FE owns all of src/app except the api carve-out; BE owns the api carve-out + server.
+const FE_BE_MANIFEST = [
+  { role: 'senior-frontend', agentKey: 'senior-frontend', scope: { include: ['src/app/', 'src/components/'], exclude: ['src/app/api/'] } },
+  { role: 'senior-backend', agentKey: 'senior-backend', scope: { include: ['src/app/api/', 'src/server/'] } },
+];
+
+test('manifest mode: writing inside my assigned scope is allowed', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', rawFor(THREAD)), null);
+    assert.equal(gate(dir, state, 'src/components/Button.tsx', rawFor(THREAD)), null);
+  });
+});
+
+test('manifest mode: writing inside another role\'s scope is a scope conflict', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    const reason = gate(dir, state, 'src/app/api/route.ts', rawFor(THREAD)); // carved out of FE, owned by BE
+    assert.ok(reason && reason.includes('assigned scope'));
+    assert.ok(reason && reason.includes('src/app/api/route.ts'));
+    assert.ok(reason && reason.includes('senior-backend'));
+  });
+});
+
+test('manifest mode: unassigned path -> first writer allowed and a claim is recorded', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    const target = 'scripts/seed-data.ts'; // outside every assignment
+    assert.equal(gate(dir, state, target, rawFor(THREAD)), null);
+    const lock = JSON.parse(fs.readFileSync(path.join(claimsDir(dir), `${safeKey(target)}.json`), 'utf8'));
+    assert.equal(lock.holder, THREAD);
+    assert.equal(lock.path, target);
+  });
+});
+
+test('manifest mode: unassigned path already held by another live agent is blocked', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    const target = 'scripts/seed-data.ts';
+    seedFallbackClaim(dir, target, 'another-thread-id', new Date().toISOString());
+    const reason = gate(dir, state, target, rawFor(THREAD));
+    assert.ok(reason && reason.includes('already being written'));
+    assert.ok(reason && reason.includes('another-thread-id'));
+  });
+});
+
+test('manifest mode: a stale fallback claim is reclaimable', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    const target = 'scripts/seed-data.ts';
+    seedFallbackClaim(dir, target, 'abandoned-thread', '2000-01-01T00:00:00.000Z');
+    assert.equal(gate(dir, state, target, rawFor(THREAD)), null); // stale -> reclaimed, allowed
+  });
+});
+
+test('shell-command feature write is denied (cannot verify ownership)', () => {
+  withDir((dir) => {
+    const state = baseState();
+    const reason = gate(dir, state, 'src/app/page.tsx', rawFor(THREAD), { writingFeatureSourceViaCommand: true });
+    assert.ok(reason && reason.includes('shell command'));
+  });
+});
+
+test('not a subagent session in a subagents project is denied', () => {
+  withDir((dir) => {
+    const state = baseState({ currentRunId: undefined }); // no run state, no claim -> main agent
+    const reason = gate(dir, state, 'src/app/page.tsx', {});
+    assert.ok(reason && reason.includes('team.mode'));
+  });
+});
+
+test('legacy mode (no manifest): a path owned by the active role is allowed', () => {
+  withDir((dir) => {
+    const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    // no manifest written
+    assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', rawFor(THREAD)), null);
+  });
+});
+
+test('legacy mode (no manifest): an unowned path falls back to a first-write claim, not a deadlock', () => {
+  withDir((dir) => {
+    const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    const target = 'src/models/user.ts'; // unowned by the legacy regex -> would have hard-deadlocked before
+    assert.equal(gate(dir, state, target, rawFor(THREAD)), null);
+    assert.ok(fs.existsSync(path.join(claimsDir(dir), `${safeKey(target)}.json`)));
+  });
+});
+
+test('totality invariant: the gate never hard-deadlocks (no run-team-not-owned prose, never throws)', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    const probes = [
+      'src/app/page.tsx',         // mine
+      'src/app/api/route.ts',     // another's
+      'scripts/x.ts',             // unassigned
+      'src/models/user.ts',       // unassigned, would deadlock under old regex
+      'packages/core/src/i.ts',   // unassigned monorepo pkg, would deadlock under old regex
+      'weird/totally/novel.kt',   // any stack
+    ];
+    for (const p of probes) {
+      let result: string | null = null;
+      assert.doesNotThrow(() => { result = gate(dir, state, p, rawFor(THREAD)); });
+      // result is exactly null (allow) or a deny string — never the old deadlock/"gate bug" prose.
+      if (result !== null) {
+        assert.equal(typeof result, 'string');
+        assert.ok(!(result as string).includes('not under any Traffic One role'));
+        assert.ok(!(result as string).includes('gate bug'));
+      }
+    }
+  });
+});
+
+// --- pure-function coverage: readRunAssignments + assignmentForContext --------
+
+test('readRunAssignments accepts arbitrary role labels and N>2 streams', () => {
+  withDir((dir) => {
+    writeManifest(dir, [
+      { role: 'web', scope: { include: ['resources/js/'] } },
+      { role: 'api', scope: { include: ['app/Http/', 'routes/'] } },
+      { role: 'worker', scope: { include: ['app/Jobs/'] } },
+    ]);
+    const manifest = readRunAssignments(dir, RUN);
+    assert.ok(manifest);
+    assert.equal(manifest!.assignments.length, 3);
+    assert.deepEqual(manifest!.assignments.map((a) => a.role), ['web', 'api', 'worker']);
+  });
+});
+
+test('assignmentForContext joins by indexed agentKey, then role key, then sole role', () => {
+  const manifest = {
+    version: 1, runId: RUN, assignments: [
+      { role: 'senior-frontend', agentKey: 'senior-frontend#2', scope: { include: ['b/'] } },
+      { role: 'senior-frontend', agentKey: 'senior-frontend', scope: { include: ['a/'] } },
+      { role: 'senior-backend', scope: { include: ['c/'] } },
+    ],
+  };
+  const ctx = (role: string, spawnIndex = 1): RunAgentContext =>
+    ({ source: 't', runId: RUN, role, spawnIndex, sessionId: null, claimId: null });
+  assert.equal(assignmentForContext(manifest, ctx('senior-frontend', 2))?.agentKey, 'senior-frontend#2');
+  assert.equal(assignmentForContext(manifest, ctx('senior-frontend', 9))?.agentKey, 'senior-frontend'); // role-key fallback
+  assert.equal(assignmentForContext(manifest, ctx('senior-backend'))?.role, 'senior-backend'); // sole role
+});
+
+test('readRunAssignments returns null for absent or malformed manifests', () => {
+  withDir((dir) => {
+    assert.equal(readRunAssignments(dir, RUN), null); // absent
+    writeManifest(dir, 'not-an-array' as unknown as unknown[]);
+    assert.equal(readRunAssignments(dir, RUN), null); // assignments not an array
+    writeManifest(dir, [{ role: 'x', scope: { include: [] } }, { scope: { include: ['a/'] } }]);
+    assert.equal(readRunAssignments(dir, RUN), null); // no entry has both a role and a non-empty include
+  });
+});
