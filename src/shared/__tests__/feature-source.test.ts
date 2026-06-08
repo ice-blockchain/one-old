@@ -20,15 +20,28 @@ test('FEATURE_SOURCE_RE matches monorepo + flat feature-source layouts', () => {
 });
 
 test('roleCanWriteFeatureSource enforces per-role owned path patterns', () => {
-  // senior-frontend owns app UI + ui/i18n/utils packages
+  // senior-frontend owns app UI + flat root UI/SEO/i18n + ui/i18n/utils packages
   assert.equal(roleCanWriteFeatureSource('senior-frontend', 'apps/web/src/x.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/app/(public)/news/page.tsx'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/app/sitemap.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/features/news/news-page.tsx'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/i18n/resources.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/lib/seo.ts'), true);
   assert.equal(roleCanWriteFeatureSource('senior-frontend', 'packages/ui/src/btn.tsx'), true);
   assert.equal(roleCanWriteFeatureSource('senior-frontend', 'services/api/src/s.ts'), false);
-  // senior-backend owns services + api/ws/utils packages + apps services/store
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/app/api/join/route.ts'), false);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/services/http.ts'), false);
+  assert.equal(roleCanWriteFeatureSource('senior-frontend', 'src/lib/db.ts'), false);
+  // senior-backend owns services + api/ws/utils packages + apps/root services/store/API
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'services/api/src/s.ts'), true);
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'packages/api-client/src/c.ts'), true);
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'apps/web/src/services/x.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/app/api/join/route.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/services/http.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/lib/db.ts'), true);
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'packages/ui/src/btn.tsx'), false);
+  assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/app/(public)/news/page.tsx'), false);
+  assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/lib/seo.ts'), false);
   // unknown role owns nothing
   assert.equal(roleCanWriteFeatureSource('senior-architect', 'apps/web/src/x.ts'), false);
 });

@@ -149,6 +149,47 @@ update the canonical docs after the plan so they describe the accepted shape;
 do not leave only a README. Unknown deployment/database facts must be marked
 `Unverified` with the exact command or input needed.
 
+## Assignments manifest (REQUIRED)
+
+Before emitting `PLAN_READY`, write a machine-readable counterpart of the Module map to:
+
+```
+.traffic-one/runs/<run-id>/assignments.json
+```
+
+This is what makes parallel implementers conflict-free across ANY stack. Each implementer role gets one entry with a DISJOINT set of owned path patterns; the run-team write gate lets a role write only inside its own scope. Use the exact `<run-id>` the orchestrator gave you (the same id as the run's claim dir) — never invent one.
+
+```jsonc
+{
+  "version": 1,
+  "runId": "<run-id>",
+  "createdBy": "senior-architect",
+  "stackFingerprint": "<stack|frontend|backend|mobile.framework, from .one.json>",
+  "assignments": [
+    { "role": "senior-frontend", "agentKey": "senior-frontend",
+      "summary": "UI, routing, i18n, SEO",
+      "scope": { "include": ["<real dirs>"], "exclude": ["<carve-outs>"] } },
+    { "role": "senior-backend", "agentKey": "senior-backend",
+      "summary": "API, persistence, auth, migrations",
+      "scope": { "include": ["<real dirs>"] } }
+  ]
+}
+```
+
+Patterns are project-relative, `/`-separated; a trailing `/` is a directory prefix, and `*`/`**`/`?` are globs (`**` crosses `/`). Emit exactly `senior-frontend` and `senior-backend` for now — the format allows N roles / arbitrary labels (e.g. a future `senior-mobile`) but this version spawns only those two.
+
+Derive the partition from REAL paths, never guessed directory names:
+- Existing project: classify the directories you actually read in the tree (where routes/components/controllers/migrations live for THIS repo's stack — Next.js `src/app`, Laravel `app/Http` + `routes` + `database`, Django `*/views.py` + `*/migrations`, Flutter `lib/`, etc.).
+- New project: derive from the Module map you just designed (the apps/packages/services you will scaffold).
+- Optional starting point: `proposeLayoutSeed(state)` in `src/shared/stack-layout.ts` returns default seeds per stack id, but you MUST override them with the repo's real paths; unknown stacks return `[]` and you write the observed/designed paths yourself. Correctness must not depend on this helper.
+
+Guarantees you must uphold (the gate trusts the manifest):
+- **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).
+- **Covers the work surface** — every module an implementer will build falls in exactly one role's scope. Anything left uncovered is governed by a first-writer fallback lock — a safety net, not the plan.
+- **Real paths only** — every `include`/`exclude` is a directory that exists or that this run creates.
+
+If you cannot partition the surface disjointly, report the blocker instead of emitting `PLAN_READY`.
+
 ## Digest output (REQUIRED)
 
 The orchestrator will pass you a `<run-id>` in your synthetic prompt (UTC second-precision, e.g. `2026-05-07T14-23-05Z`). Before emitting `PLAN_READY`, write your handoff digest to:
@@ -164,6 +205,7 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 - You do **not** write feature source files (no `apps/*/src/**`, `packages/*/src/**` other than empty package skeletons that are part of scaffolding the workspace itself).
 - On `stack: default` or `frontend: react-vite`, the "Required workspace scaffold" subsection of "What you write" is non-negotiable: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls pnpm-workspace.yaml turbo.json packages/ui/package.json packages/tailwind-config/package.json packages/i18n/package.json` — if any is missing, the run is incomplete. The "least amount of architecture" principle (above) does not override this — workspace skeleton is baseline, not speculative.
 - You do not skip the plan to "save time". The plan-gate hook will deny feature writes until `.traffic-one/plan.md` exists.
+- Before `PLAN_READY` you MUST write `.traffic-one/runs/<run-id>/assignments.json` with a disjoint scope for `senior-frontend` and `senior-backend`, derived from real paths (see "Assignments manifest"). Verify it exists and parses. If the surface can't be partitioned disjointly, report the blocker instead of `PLAN_READY`.
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.
 - The plan stays under ~250 lines. If a section is bigger, link out to the relevant root doc.
 - End your final reply with the literal token `PLAN_READY` on its own line so the orchestrator can detect completion.

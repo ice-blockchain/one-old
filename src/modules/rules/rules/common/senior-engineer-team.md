@@ -13,10 +13,10 @@
 - When onboarding is complete (`.traffic-one/.one.json` has `onboardingComplete: true`) and local preferences have `team.mode: "subagents"` with `team.approved: true`, AUTO-RUN the team for a non-trivial multi-layer build without asking: spawn architect first, then frontend + backend in parallel, then reviewer + tester in parallel (shipper only on explicit deploy intent). Then immediately continue the user's original request end to end — do not stop to ask "what next?", to re-confirm the team, or to wait for further go-ahead.
 - Only fall back to asking when local preferences carry no team decision at all (no `team.mode`). If `team.mode: "main-agent"` (Low), run the roles in this thread per the role roadmap checklist; do not spawn subagents. If subagents are genuinely unavailable or blocked at runtime, continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
 - When `team.mode="subagents"`, the parent/orchestrator must not write feature source files. It coordinates only: updates run state, spawns Traffic One role agents, integrates their results, and summarizes. The architecture hook denies feature-source writes unless they come from an active allowed role session. If subagents are genuinely unavailable or blocked, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` is not an authorization to downgrade.
-- Map each Traffic One role to the host's subagent capabilities — implementers get a writer-capable agent scoped to their owned write area; the reviewer is read-only:
-  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, and docs only.
-  - `senior-frontend` — owned write scope frontend/UI/i18n files only.
-  - `senior-backend` — owned write scope backend/API/database files only.
+- Map each Traffic One role to the host's subagent capabilities — implementers get a writer-capable agent scoped to their owned write area; the reviewer is read-only. For implementers the owned write area is the role's entry in the per-run assignments manifest `.traffic-one/runs/<runId>/assignments.json` (authored by the architect, enforced by the run-team gate); the descriptions below are the human summary:
+  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, and the per-run `assignments.json` manifest.
+  - `senior-frontend` — owned write scope = its `assignments.json` entry (frontend/UI/i18n for the project's actual layout).
+  - `senior-backend` — owned write scope = its `assignments.json` entry (backend/API/database for the project's actual layout).
   - `senior-reviewer` — read-only.
   - `senior-tester` — owned write scope test files and test infrastructure only.
   - `senior-shipper` — deploy/release only after the shipper gate is satisfied.

@@ -39,8 +39,16 @@ Run-team enforcement gate: this project was onboarded with `team.mode="subagents
 <!-- T1BLOCK:END run-team-not-subagent -->
 
 <!-- T1BLOCK:BEGIN run-team-not-owned -->
-Run-team enforcement gate: the file `{{FILEPATH}}` is not under any Traffic One role's owned path patterns (senior-frontend: `apps/*/src|app/` + `packages/(ui|i18n|utils)/src/`; senior-backend: `packages/(api-client|ws-client|utils)/src/`, `services/*/src/`, `apps/*/src/(services|store)/`). If this is a legitimate project layout (e.g. root `src/`), the role-pattern definitions in `roleCanWriteFeatureSource` need to be extended.
+Run-team enforcement gate: the file `{{FILEPATH}}` is not under any Traffic One role's owned path patterns (senior-frontend: flat root UI/SEO/i18n paths, `apps/*/src|app/`, and `packages/(ui|i18n|utils)/src/`; senior-backend: flat root API/server/service paths, `packages/(api-client|ws-client|utils)/src/`, `services/*/src/`, `apps/*/src/(services|store)/`). If this is a legitimate project layout, the role-pattern definitions in `roleCanWriteFeatureSource` need to be extended.
 <!-- T1BLOCK:END run-team-not-owned -->
+
+<!-- T1BLOCK:BEGIN run-team-scope-conflict -->
+Run-team enforcement gate: `{{TARGET}}` is in `{{OWNER}}`'s assigned scope for this run, not `{{ROLE}}`'s. Each subagent writes only within its own assignment in `.traffic-one/runs/<runId>/assignments.json`. Let the owning role write this file, or split the patch by assignment.
+<!-- T1BLOCK:END run-team-scope-conflict -->
+
+<!-- T1BLOCK:BEGIN run-team-fallback-taken -->
+Run-team enforcement gate: `{{TARGET}}` is outside every role's assigned scope and is already being written by `{{HOLDER}}` in this run. Coordinate so a single role owns this path, or add it to an assignment in `.traffic-one/runs/<runId>/assignments.json`.
+<!-- T1BLOCK:END run-team-fallback-taken -->
 
 <!-- T1BLOCK:BEGIN run-team-wrong-role -->
 Run-team enforcement gate: the active Traffic One role `{{ROLE}}` does not own `{{TARGETS}}`. Use the role that owns the path, or split the patch by role ownership.

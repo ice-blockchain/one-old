@@ -7,6 +7,7 @@ import * as path from 'path';
 import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { writeAuthChoice } from '../../session/auth-choice';
+import { claimThreadRole } from '../../../shared/state/run-agent';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
@@ -39,10 +40,16 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
   }
 }
 
-function writeCtx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
+function writeCtx(
+  cwd: string,
+  rawName: string,
+  cls: ToolClass,
+  toolInput: Record<string, unknown>,
+  rawExtra: Record<string, unknown> = {},
+): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host: 'claude', cwd,
-    raw: { tool_name: rawName, tool_input: toolInput },
+    raw: { ...rawExtra, tool_name: rawName, tool_input: toolInput },
     tool: { class: cls, rawName },
   };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
@@ -67,6 +74,70 @@ test('subagents project: a feature write outside any role session is denied (run
       assert.ok(r.reason.includes('Run-team enforcement gate'));
       assert.ok(r.reason.includes('team.mode'));
     }
+  });
+});
+
+test('subagents project: claimed senior-frontend can write flat root Next UI source', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    frontend: 'nextjs',
+    backend: 'none',
+    materializedStack: 'default|nextjs|none|none',
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const threadId = '019e7390-ca45-7e03-84d3-284bda1ba905';
+    const transcript = path.join(cwd, `rollout-2026-05-29T14-48-49-${threadId}.jsonl`);
+    assert.ok(claimThreadRole(cwd, state, threadId, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const route = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'src/app/(public)/news/page.tsx',
+      content: 'export default function NewsPage() { return null; }',
+    }, { session_id: 'orchestrator', transcript_path: transcript }));
+    assert.equal(route.kind, 'noop');
+
+    const feature = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'src/features/news/news-page.tsx',
+      content: 'export function NewsPage() { return null; }',
+    }, { session_id: 'orchestrator', transcript_path: transcript }));
+    assert.equal(feature.kind, 'noop');
+  });
+});
+
+test('subagents project: assignment manifest routes writes by scope end-to-end', () => {
+  withMaterialized({
+    mode: 'existing-codebase',
+    frontend: 'nextjs',
+    backend: 'none',
+    materializedStack: 'default|nextjs|none|none',
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const threadId = '019e7390-ca45-7e03-84d3-284bda1ba905';
+    const transcript = path.join(cwd, `rollout-2026-05-29T14-48-49-${threadId}.jsonl`);
+    assert.ok(claimThreadRole(cwd, state, threadId, 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const manifest = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json');
+    fs.mkdirSync(path.dirname(manifest), { recursive: true });
+    fs.writeFileSync(manifest, JSON.stringify({
+      version: 1, runId: 'run-1', assignments: [
+        { role: 'senior-frontend', agentKey: 'senior-frontend', scope: { include: ['src/app/'], exclude: ['src/app/api/'] } },
+        { role: 'senior-backend', agentKey: 'senior-backend', scope: { include: ['src/app/api/'] } },
+      ],
+    }), 'utf8');
+
+    const mine = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'src/app/(public)/news/page.tsx', content: 'export default function P() { return null; }',
+    }, { session_id: 'orchestrator', transcript_path: transcript }));
+    assert.equal(mine.kind, 'noop');
+
+    const theirs = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'src/app/api/news/route.ts', content: 'export function GET() {}',
+    }, { session_id: 'orchestrator', transcript_path: transcript }));
+    assert.equal(theirs.kind, 'deny');
+    if (theirs.kind === 'deny') assert.ok(theirs.reason.includes('assigned scope'));
   });
 });
 
