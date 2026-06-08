@@ -23,6 +23,18 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(out.includes('## Read Rules When'));
   assert.ok(out.includes('### Mandatory Baseline'));
   assert.ok(out.includes('### Reference On Demand'));
+  // Lean mode must list each rule path EXACTLY ONCE (in the index), not also in a
+  // redundant top "## Active Rules" block — that duplicated paths every session.
+  const occurrences = out.split('- .traffic-one/rules/common/auth-gate.md').length - 1;
+  assert.equal(occurrences, 1, 'rule path should appear once in lean mode');
+  assert.ok(!out.includes('## Active Rules'), 'lean mode should not emit the redundant top rule list');
+});
+
+test('renderAgents (non-lean) keeps the Active Rules list + inlines rule bodies', () => {
+  const out = renderAgents(STATE, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: false });
+  assert.ok(out.includes('## Active Rules'));
+  assert.ok(out.includes('## Active Rule Contents'));
+  assert.ok(out.includes('## Active Skills'));
 });
 
 test('writeRootAgents writes a generated AGENTS.md; writeRootClaude creates CLAUDE.md; manual files preserved', () => {

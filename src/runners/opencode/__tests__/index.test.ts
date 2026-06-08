@@ -18,8 +18,15 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): vo
   const env = process.env;
   const savedPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const savedRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  const savedPwd = env.PWD;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed');
+  // Mirror production: the caller's PWD is the project root (`dir`), not the
+  // worktree. The real `opencode run` resolves its working dir from PWD, so the
+  // runner MUST repoint PWD (+ --dir) at the worktree; if it regresses, the
+  // PWD-honoring stub below writes into `dir` instead of the sandbox and the
+  // success test fails. (See the --dir/PWD pinning in delegate().)
+  env.PWD = dir;
   fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
   sh(dir, 'git', ['init', '-q']);
   sh(dir, 'git', ['config', 'user.email', 't@example.com']);
@@ -32,19 +39,28 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): vo
   } finally {
     if (savedPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = savedPrefs;
     if (savedRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = savedRoot;
+    if (savedPwd === undefined) delete env.PWD; else env.PWD = savedPwd;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function stubOpencode(behavior: 'edit' | 'error' | 'noop'): void {
+function stubOpencode(behavior: 'edit' | 'error' | 'noop' | 'retry'): void {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const scripts: Record<typeof behavior, string> = {
-    // emits a text event AND writes a file in its cwd (the worktree)
-    edit: `#!/bin/sh
-echo '{"type":"text","part":{"type":"text","text":"created foo.txt"}}'
-printf 'delegated\\n' > foo.txt
-exit 0
+    // emits a text event AND writes a file. A NODE stub (not /bin/sh): the real
+    // opencode resolves its working dir from the --dir flag / process.env.PWD and
+    // does NOT normalize PWD to the actual cwd the way a shell does. So this only
+    // lands in the worktree when delegate() pins --dir/PWD at the sandbox; if that
+    // regresses, it writes into the project dir and the success test fails. Do not
+    // port this back to a shell stub or a bare cwd write — that silently defeats
+    // the regression guard for the PWD/--dir sandbox-escape bug.
+    edit: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt' } }) + '\\n');
+fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
 `,
     // opencode-style failure: error event, but exit 0 (the real CLI does this)
     error: `#!/bin/sh
@@ -55,6 +71,18 @@ exit 0
     noop: `#!/bin/sh
 echo '{"type":"text","part":{"type":"text","text":"nothing to do"}}'
 exit 0
+`,
+    // non-deterministic: no-op on attempt 1, edits on attempt 2 (counter file next
+    // to the stub survives the worktree reset). Exercises the bounded free retry.
+    retry: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+const counter = path.join(__dirname, 'attempts');
+const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 0 : 0) + 1;
+fs.writeFileSync(counter, String(n));
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'attempt ' + n } }) + '\\n');
+if (n >= 2) fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
 `,
   };
   fs.writeFileSync(path.join(bin, 'opencode'), scripts[behavior], { mode: 0o755 });
@@ -97,6 +125,20 @@ test('delegate returns no-changes when opencode edits nothing (→ fallback)', (
     const r = delegate(dir, { task: 'no-op', runId: 'r1' });
     assert.equal(r.ok, false);
     assert.equal(r.action, 'no-changes');
+  });
+});
+
+test('delegate retries once on a no-op and applies the second attempt (free model is non-deterministic)', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('retry'); // attempt 1 chats only, attempt 2 writes foo.txt
+    const r = delegate(dir, { role: 'frontend', task: 'create foo.txt', runId: 'retry-1' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'delegated');
+    assert.ok(r.touched.includes('foo.txt'));
+    assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8').trim(), 'delegated');
+    // exactly 2 attempts were made (bounded retry, not a loop)
+    const attempts = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin', 'attempts');
+    assert.equal(fs.readFileSync(attempts, 'utf8').trim(), '2');
   });
 });
 

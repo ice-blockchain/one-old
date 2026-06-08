@@ -51,8 +51,10 @@ graphify is Python-based (pipx-installed) and writes a Markdown report plus
 a structured JSON graph under `graphify-out/`. License: **MIT**.
 
 1. **`graphify-out/GRAPH_REPORT.md`** — module map, file inventory,
-   dependency summary, public-API surface per package. Few-thousand-tokens,
-   single Read.
+   dependency summary, public-API surface per package. A few-thousand-token
+   single Read on a small repo, but it scales with the codebase (tens of
+   thousands of tokens on a large one) — read it selectively (see "Read large
+   graphs selectively" below).
 2. **`graphify-out/graph.json`** — full structured graph. Reach for this only
    when the report doesn't have the answer (e.g. "what calls function X").
 3. **`Glob`/`Grep`/raw `Read`** — last resort, scoped to the area the graph
@@ -68,6 +70,22 @@ graphify hook install    # optional: regenerate on every git commit
 
 The post-build hook emits a one-time hint after the first successful build
 on `mode: 'new-project'`; you don't need to nag the user every session.
+
+## Read large graphs selectively
+
+The report grows with the repo — on a large codebase it can reach tens of
+thousands of tokens, so reading the whole file every time defeats the savings.
+Instead:
+
+- Read the **Summary** + the navigation index first (graphify's "Community
+  Hubs" / "God Nodes"; gitnexus's top-level module/symbol maps). These are
+  small and tell you WHERE to look.
+- Then read ONLY the relevant section — use `Read` with `offset`/`limit`, or
+  `Grep` the report for the symbol/module in question, instead of pulling the
+  entire file into context.
+- Reach for `graph.json` / the MCP server only for a targeted query the report
+  can't answer (e.g. "exact callers of function X"); never read the full
+  `graph.json` (it can be several MB).
 
 ## License & conflict notes
 
