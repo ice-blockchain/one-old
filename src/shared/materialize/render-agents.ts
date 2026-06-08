@@ -100,10 +100,12 @@ export function renderAgents(state: Rec, rules: string[], skills: string[], opti
     `- Backend: ${(state.backend as string) || 'none'}`,
     `- Mobile: ${(mobile && (mobile.framework as string)) || 'none'}`,
     '',
-    '## Active Rules',
-    '',
-    ...rules.map((relPath) => `- .traffic-one/${relPath}`),
-    '',
+    // Lean mode lists the active rules exactly once — in the "Active Rule Index"
+    // below (with read-on-demand guidance). Non-lean mode lists them here, where
+    // the full bodies follow under "Active Rule Contents". Emitting a bare list
+    // here in lean mode too would duplicate the same paths in every generated
+    // AGENTS.md/CLAUDE.md, on every session.
+    ...(leanMode ? [] : ['## Active Rules', '', ...rules.map((relPath) => `- .traffic-one/${relPath}`), '']),
     '## Active Skills',
     '',
     ...skills.map((name) => `- .traffic-one/skills/${name}/SKILL.md`),
