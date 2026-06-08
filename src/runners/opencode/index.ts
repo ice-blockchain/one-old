@@ -32,6 +32,10 @@ const which = exec.which;
 const DEFAULT_MODEL = 'opencode/deepseek-v4-flash-free';
 const RUN_TIMEOUT_MS = 8 * 60 * 1000;
 const DIGEST_HARD_BYTES = 3072;
+// The free gateway model is non-deterministic and sometimes "chats" without
+// editing. Allow ONE bounded retry (still free) on a clean no-op before falling
+// back to a paid subagent — this measurably raises the delegation hit-rate.
+const MAX_DELEGATE_ATTEMPTS = 2;
 
 export interface DelegateOpts {
   role?: string;
@@ -168,25 +172,45 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   }
 
   try {
-    const run = spawnSync(bin, ['run', task, '-m', model, '--format', 'json'], {
-      cwd: wt,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeout: RUN_TIMEOUT_MS,
-    });
-    if (run.error || run.status === null) {
-      return { ok: false, action: 'failed', digest: null, touched: [], error: `opencode run failed: ${run.error ? run.error.message : 'timed out'}`, model };
-    }
-    const parsed = parseStream(run.stdout || '');
-    if (parsed.errored) {
-      return { ok: false, action: 'failed', digest: null, touched: [], error: `opencode: ${parsed.errorMsg || 'error'}`, model };
+    // `opencode run` resolves its project directory from $PWD, NOT the spawn cwd:
+    // Node's spawnSync sets the child's real cwd but leaves PWD pointing at the
+    // parent (only a shell `cd` updates PWD). Without pinning the directory,
+    // opencode edits the CALLER's tree (the user's real repo) instead of the
+    // sandbox worktree, the worktree diff comes back empty, and EVERY delegation
+    // falsely returns "no-changes" while stray edits leak into the real tree.
+    // Pin both the explicit --dir flag and PWD to the worktree so the sandbox
+    // actually contains the work.
+    const runArgs = ['run', task, '--dir', wt, '-m', model, '--format', 'json'];
+    let summary = '';
+    // Retry only a CLEAN no-op (the weak model occasionally produces nothing). A
+    // gateway error or process failure won't fix itself on retry, so bail at once.
+    for (let attempt = 1; attempt <= MAX_DELEGATE_ATTEMPTS; attempt++) {
+      const run = spawnSync(bin, runArgs, {
+        cwd: wt,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: RUN_TIMEOUT_MS,
+        env: { ...process.env, PWD: wt },
+      });
+      if (run.error || run.status === null) {
+        return { ok: false, action: 'failed', digest: null, touched: [], error: `opencode run failed: ${run.error ? run.error.message : 'timed out'}`, model };
+      }
+      const parsed = parseStream(run.stdout || '');
+      if (parsed.errored) {
+        return { ok: false, action: 'failed', digest: null, touched: [], error: `opencode: ${parsed.errorMsg || 'error'}`, model };
+      }
+      // Stage everything opencode changed; non-empty staged diff ⇒ we have work.
+      git(wt, ['add', '-A']);
+      if (git(wt, ['diff', '--cached', '--quiet']).status !== 0) { summary = parsed.summary; break; }
+      if (attempt >= MAX_DELEGATE_ATTEMPTS) {
+        return { ok: false, action: 'no-changes', digest: null, touched: [], error: 'OpenCode produced no file changes', model };
+      }
+      // Reset the throwaway worktree to pristine HEAD before the free retry.
+      git(wt, ['reset', '--hard', '-q', 'HEAD']);
+      git(wt, ['clean', '-fdq']);
     }
 
-    // Stage everything opencode changed and capture the patch + touched list.
-    git(wt, ['add', '-A']);
-    if (git(wt, ['diff', '--cached', '--quiet']).status === 0) {
-      return { ok: false, action: 'no-changes', digest: null, touched: [], error: 'OpenCode produced no file changes', model };
-    }
+    // Capture the patch + touched list from the winning attempt.
     const touched = git(wt, ['diff', '--cached', '--name-only']).stdout.split('\n').map((s) => s.trim()).filter(Boolean);
     const patch = git(wt, ['diff', '--cached', '--binary']).stdout;
     const patchPath = path.join(parent, 'delegated.patch');
@@ -200,7 +224,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       return { ok: false, action: 'failed', digest: null, touched, error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}`, model };
     }
 
-    const digest = writeDigest(cwd, runId, role, model, touched, parsed.summary);
+    const digest = writeDigest(cwd, runId, role, model, touched, summary);
     return { ok: true, action: 'delegated', digest, touched, error: null, model };
   } finally {
     removeWorktree(cwd, parent, wt);
