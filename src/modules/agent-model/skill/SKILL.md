@@ -34,10 +34,14 @@ Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires 
 <!-- T1BLOCK:END performance-model-param -->
 
 <!-- T1BLOCK:BEGIN opencode-role-delegate -->
-OpenCode role gate: `{{ROLE}}` is configured to run on the free OpenCode agent (it is in `openCode.delegateRoles`, and `openCode.enabled` is true), so do NOT spawn it as a paid subagent yet. First delegate its work to OpenCode:
-1. Write the role's self-contained task (its assigned scope + acceptance criteria, no external context the run can't see) to `.traffic-one/opencode-task.md`.
-2. Run: `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" --run-id {{RUN_ID}} --role {{ROLE}} --task-file .traffic-one/opencode-task.md`
-3. On `ok:true` (delegated) → the change is applied to the tree and a digest is written; proceed to review (`senior-reviewer` verifies the weaker model's diff). Do NOT spawn the paid `{{ROLE}}`.
-4. On `ok:false` (skipped/failed/no-changes) → the runner has recorded the attempt for this run, so just re-spawn `{{ROLE}}` exactly as usual — this gate now allows it (fallback).
+OpenCode role gate: `{{ROLE}}` is configured to run on the free OpenCode agent (it is in `openCode.delegateRoles`, and `openCode.enabled` is true), so do NOT spawn it as a paid subagent yet. First delegate its work to OpenCode via the bundled `opencode-worker` MCP tool — it runs OpenCode in a host-launched process OUTSIDE the per-tool sandbox, so the network + git it needs work even on hosts where your own shell is sandboxed (e.g. Codex):
+1. Call the `opencode_delegate` tool (MCP server `opencode-worker`) with:
+   - `role`: `{{ROLE}}`
+   - `runId`: `{{RUN_ID}}`
+   - `projectRoot`: `{{PROJECT_ROOT}}`  (absolute path — the directory holding `.traffic-one`)
+   - `task`: the role's self-contained task (its assigned scope + acceptance criteria, no external context the run can't see).
+2. On `ok:true` (delegated) → the change is applied to the tree and a digest is written; proceed to review (`senior-reviewer` verifies the weaker model's diff). Do NOT spawn the paid `{{ROLE}}`.
+3. On `ok:false` (skipped/failed/no-changes) → the attempt for this run is recorded, so just re-spawn `{{ROLE}}` exactly as usual — this gate now allows it (fallback).
+Fallback if the `opencode-worker` tool is unavailable: write the task to `.traffic-one/opencode-task.md` and run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" --run-id {{RUN_ID}} --role {{ROLE}} --task-file .traffic-one/opencode-task.md` (same `ok:true`/`ok:false` semantics). The runner is the same engine the tool invokes; on a sandboxed host the shell path may fail to reach the network, so prefer the tool.
 To stop routing this role through OpenCode, remove it from `openCode.delegateRoles` in local preferences.
 <!-- T1BLOCK:END opencode-role-delegate -->

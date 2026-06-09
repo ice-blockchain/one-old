@@ -14,7 +14,7 @@ export const REPORTING_ACTIVE = true;
 // retry timing). When false the report is still collected + POSTed (deduped by
 // the report id in .one.json), but the status file is never read or written —
 // the rest of the module behaves as before.
-export const SAVE_MCP_REPORT = true;
+export const SAVE_MCP_REPORT = false;
 
 // Renamed from DEFAULT_ENDPOINT to disambiguate from the auth MCP endpoint.
 export const MCP_REPORT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/one-mcp';

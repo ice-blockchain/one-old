@@ -23,6 +23,25 @@ export function runIdNow(): string {
   return Date.now().toString();
 }
 
+// Ensure the project has a currentRunId, WITHOUT the full run-claim ceremony.
+// The OpenCode delegation gate runs in all modes and scopes its per-role attempt
+// marker by currentRunId, but ensureRunAgentClaim (which mints one) is reached
+// only on the new-project path — so on existing-codebase projects a configured
+// delegate role would slip past the gate whenever the orchestrator hasn't already
+// persisted a run id (e.g. a fresh materialization, or an interrupted/resumed
+// session that skipped Phase 0). Mirrors ensureRunAgentClaim's persist pattern;
+// writeState splits local prefs back out, so .one.json stays canonical. Returns
+// the existing or newly minted run id.
+export function ensureCurrentRunId(cwd: string, state: unknown): string {
+  const source: Rec = obj(state) ? { ...(state as Rec) } : {};
+  const existing = typeof source.currentRunId === 'string' ? source.currentRunId.trim() : '';
+  if (existing) return existing;
+  const runId = runIdNow();
+  source.currentRunId = runId;
+  writeState(cwd, source);
+  return runId;
+}
+
 function safePathSegment(value: unknown): string {
   return String(value ?? '').trim().replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 160);
 }

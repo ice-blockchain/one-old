@@ -10,8 +10,10 @@
 // parameter.
 
 // The literal plugin-root shell expansion (NOT a JS template — single-quoted so
-// the ${...} stays verbatim in the emitted command).
-const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}';
+// the ${...} stays verbatim in the emitted command). Exported so the .mcp.json
+// generator launches the bundled MCP server through the SAME chain (one shared
+// .mcp.json must resolve on Claude/Codex/Cursor alike).
+export const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}';
 
 export function claudeCommand(subcommand: string): string {
   return `node "${PLUGIN_ROOT_EXPR}/scripts/hook-runtime.cjs" ${subcommand}`;

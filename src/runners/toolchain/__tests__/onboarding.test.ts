@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ensureOpenCodeTool } from '../onboarding';
+import { reconcileManagedToolStamp } from '../index';
 
 function withTemp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-'));
@@ -63,6 +64,35 @@ exit 0
     assert.ok(args.includes('opencode-ai@1.15.13'));
     const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || '', 'utf8'));
     assert.equal(prefs.toolchain?.opencode?.installedVersion, '1.15.13');
+  });
+});
+
+test('reconcileManagedToolStamp backfills the pinned version for a present managed bin (no spawn, no install)', () => {
+  withTemp((cwd) => {
+    // Managed opencode present on disk, but state has no stamp — the real-world
+    // "installed but installedVersion:null" case (out-of-band install, or a
+    // re-materialization that reset the toolchain record). The bin is never
+    // executed (we stamp the pinned recommended version), so its body is inert.
+    const binDir = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, 'opencode'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    process.env.PATH = path.join(cwd, 'empty-bin'); // no npm → proves it stamps, never installs
+
+    const v = reconcileManagedToolStamp(cwd, 'opencode');
+    assert.equal(v, '1.15.13'); // the spec's pinned recommended version
+    const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || '', 'utf8'));
+    assert.equal(prefs.toolchain?.opencode?.installedVersion, '1.15.13');
+    assert.ok(prefs.toolchain?.opencode?.installedAt);
+    assert.ok(prefs.toolchain?.opencode?.binPath?.includes(path.join('opencode', 'npm-prefix', 'bin', 'opencode')));
+    // Idempotent: a second call is a no-op once stamped.
+    assert.equal(reconcileManagedToolStamp(cwd, 'opencode'), null);
+  });
+});
+
+test('reconcileManagedToolStamp is a no-op when nothing is installed', () => {
+  withTemp((cwd) => {
+    assert.equal(reconcileManagedToolStamp(cwd, 'opencode'), null);
+    assert.ok(!fs.existsSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || ''));
   });
 });
 

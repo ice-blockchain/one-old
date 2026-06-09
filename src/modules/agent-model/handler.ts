@@ -16,7 +16,7 @@ import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '..
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { openCodeRoleAttempted, shouldRunRoleOnOpenCode } from '../../shared/opencode-roles';
-import { ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -44,12 +44,16 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // OpenCode role delegation (all modes): a configured role MUST run on the free
   // OpenCode agent first (when `openCode.enabled`). Deny its paid spawn until
   // OpenCode has been tried for this role in the current run — the runner writes
-  // a per-run attempt marker, after which the fallback spawn is allowed. Needs a
-  // currentRunId to scope the marker; without one we can't track attempts, so skip.
+  // a per-run attempt marker, after which the fallback spawn is allowed. The
+  // marker is scoped by currentRunId; mint one when absent so existing-codebase
+  // runs (and fresh/interrupted sessions that skipped the orchestrator's Phase 0)
+  // still enforce — ensureRunAgentClaim below is reached only on the new-project
+  // path. A freshly minted run id has no marker yet, so this always denies once
+  // before allowing the fallback.
   if (shouldRunRoleOnOpenCode(role, state)) {
-    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    const runId = ensureCurrentRunId(cwd, state);
     if (runId && !openCodeRoleAttempted(cwd, runId, role)) {
-      return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId }));
+      return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
     }
   }
 

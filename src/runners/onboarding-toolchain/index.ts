@@ -14,6 +14,8 @@
 import { bootstrap as graphifyBootstrap, ensureGraphifyTool } from '../graphify';
 import { bootstrap as gitnexusBootstrap, ensureGitnexusTool } from '../gitnexus';
 import { readEffectiveState } from '../../shared/state';
+import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
+import { reconcileManagedToolStamp } from '../toolchain';
 import { ensureOpenCodeTool } from '../toolchain/onboarding';
 
 type Rec = Record<string, unknown>;
@@ -76,16 +78,50 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
 
   const results: ToolOutcome[] = [];
 
-  // Required: the chosen code-graph provider must be INSTALLED, plus the first
-  // scan must succeed on an existing codebase (see installGraphProvider).
-  let graphFailed = false;
-  if (provider === 'graphify' || provider === 'gitnexus') {
-    const r = installGraphProvider(cwd, provider, requireScan);
-    graphFailed = !r.ok;
-    results.push(r);
+  // OpenCode setup runs FIRST — BEFORE the required graph provider. The graph
+  // install+scan on a real repo is slow and can throw or get the runner killed
+  // before the OpenCode branch is reached (observed: graphify stamps, then neither
+  // the opencode stamp NOR the Codex MCP registration ever run). These two steps
+  // are cheap, spawn-free, and graph-independent, so do them up front where they
+  // can't be skipped:
+  //   1. stamp the present managed opencode bin (no `opencode --version` probe —
+  //      that probe/5-min warm-up is exactly what was failing to persist), and
+  //   2. on Codex, register the opencode-worker MCP server in ~/.codex/config.toml
+  //      (Codex ignores the plugin's bundled .mcp.json; this runner is unsandboxed
+  //      so it can write the user's Codex config). No-op on Claude/Cursor.
+  if (openCodeEnabled) {
+    reconcileManagedToolStamp(cwd, 'opencode');
+    const reg = ensureCodexMcpServerRegistered();
+    if (reg !== 'skipped-not-codex') {
+      results.push({
+        tool: 'opencode-mcp',
+        ok: reg !== 'failed',
+        action: `codex-register:${reg}`,
+        error: reg === 'failed' ? 'could not write ~/.codex/config.toml' : null,
+        installedVersion: null,
+      });
+    }
   }
 
-  // Optional: OpenCode (warn-and-proceed — never gates completion).
+  // Required: the chosen code-graph provider must be INSTALLED, plus the first
+  // scan must succeed on an existing codebase (see installGraphProvider). Guard
+  // against a throw so a scan failure can't take down the optional OpenCode
+  // install below (or the setup above) — it degrades to a gated completion.
+  let graphFailed = false;
+  if (provider === 'graphify' || provider === 'gitnexus') {
+    try {
+      const r = installGraphProvider(cwd, provider, requireScan);
+      graphFailed = !r.ok;
+      results.push(r);
+    } catch (e) {
+      graphFailed = true;
+      results.push({ tool: provider, ok: false, action: 'install-threw', error: (e as Error)?.message || 'graph provider threw', installedVersion: null });
+    }
+  }
+
+  // Optional: install OpenCode when the managed bin is ABSENT (warn-and-proceed —
+  // never gates completion). Runs LAST because its `--version` probe + first-run
+  // warm-up can be slow; the stamp above already recorded a present bin.
   if (openCodeEnabled) {
     const r = ensureOpenCodeTool(cwd);
     results.push({ tool: 'opencode', ok: r.ok, action: r.action, error: r.error, installedVersion: r.installedVersion ?? null });

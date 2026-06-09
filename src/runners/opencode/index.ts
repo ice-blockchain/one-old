@@ -25,7 +25,7 @@ import { exec } from '../../shared/exec';
 import { markOpenCodeRoleAttempted } from '../../shared/opencode-roles';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
-import { getToolSpec, managedNpmBin } from '../toolchain';
+import { getToolSpec, managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 
 type Rec = Record<string, unknown>;
 const which = exec.which;
@@ -158,6 +158,10 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   if (!bin) {
     return { ok: false, action: 'skipped', digest: null, touched: [], error: 'OpenCode CLI is not installed' };
   }
+  // We resolved a real binary — self-heal a stale/missing toolchain stamp so the
+  // orchestrator + tier logic stop treating OpenCode as "not installed" on the
+  // next run. Best-effort; never blocks delegation.
+  reconcileManagedToolStamp(cwd, 'opencode');
   const task = (opts.task || '').trim();
   if (!task) {
     return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No task provided to delegate' };

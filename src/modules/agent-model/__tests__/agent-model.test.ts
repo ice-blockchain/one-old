@@ -19,6 +19,32 @@ test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', 
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'just do something' }), null);
 });
 
+test('inferTrafficOneSpawnRole anchors on the declared role despite sibling mentions (Codex parallel spawn)', () => {
+  // The Codex spawn carries no structured subagent_type (agent_type is the generic
+  // "worker"); the role lives only in the message, which also names the SIBLING
+  // role in a scope-coordination note. The primary "acting as Traffic One `<role>`"
+  // declaration must win over the ambiguous count-the-mentions fallback.
+  const frontend = {
+    agent_type: 'worker',
+    message:
+      'You are acting as Traffic One `senior-frontend` for run-id 1780993268965 in /repo. ' +
+      'You are not alone: senior-backend owns only `src/features/news/data.ts` and its types.',
+  };
+  const backend = {
+    agent_type: 'worker',
+    message:
+      'You are acting as Traffic One `senior-backend` for run-id 1780993268965 in /repo. ' +
+      'senior-frontend is running in parallel and owns UI/routes.',
+  };
+  assert.equal(inferTrafficOneSpawnRole(frontend), 'senior-frontend');
+  assert.equal(inferTrafficOneSpawnRole(backend), 'senior-backend');
+  // Plain (no backticks) and the architect single-mention case still resolve.
+  assert.equal(inferTrafficOneSpawnRole({ message: 'You are acting as Traffic One senior-tester for run 1.' }), 'senior-tester');
+  assert.equal(inferTrafficOneSpawnRole({ message: 'Acting as Traffic One senior-architect; produce the plan.' }), 'senior-architect');
+  // A non-role declaration falls through to the unique-match fallback (here: none) → null.
+  assert.equal(inferTrafficOneSpawnRole({ message: 'You are acting as Traffic One worker for some run.' }), null);
+});
+
 // A fully-materialized new-project temp dir with performance/team in local prefs
 // so readEffectiveState surfaces only the current user's choices.
 function withMaterialized(opts: { teamApproved: boolean }, fn: (cwd: string) => void): void {
@@ -115,6 +141,35 @@ test('opencode role gate: a configured role is denied until OpenCode is tried, t
 
     // a role NOT in the configured set (senior-backend) is never opencode-gated
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
+  });
+});
+
+test('opencode role gate: mints currentRunId when absent (existing-codebase) so enforcement is not skipped', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    // The exact gap: existing-codebase + NO currentRunId. ensureRunAgentClaim is
+    // never reached for this mode, so before the fix the gate silently skipped.
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    delete one.currentRunId;
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    // senior-frontend (a default delegate role) → the gate mints a run id + denies.
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
+
+    // The minted run id was persisted to .one.json (so the runner + next gate agree).
+    const minted = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    assert.ok(minted.length > 0, 'currentRunId should be minted + persisted');
+
+    // Recording the attempt under the minted run id lets the fallback spawn through.
+    markOpenCodeRoleAttempted(cwd, minted, 'senior-frontend');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
   });
 });
 

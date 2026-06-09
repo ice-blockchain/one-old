@@ -74,22 +74,22 @@ How it works:
 
    ONLY queue boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding, mechanical refactors/renames, formatting/codemods. NEVER queue architecture, public contracts, security/auth, data-model, migrations, or cross-file-invariant work — those stay on the named senior subagents.
 
-2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param):
+2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs OpenCode in a host-launched process OUTSIDE the per-tool sandbox, so it reaches the network + git even on sandboxed hosts (Codex). It reads the queue and delegates EVERY listed unit to OpenCode (free model, no sign-in; each in a throwaway worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build.
+
+   Fallback if the `opencode-worker` tool is unavailable — the same engine via the shell runner (may fail to reach the network on a sandboxed host):
 
    ```bash
    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" \
      --run-id "$RUN_ID" --from-plan
    ```
 
-   It reads the queue and delegates EVERY listed unit to OpenCode (free model, no sign-in; each in a throwaway worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It prints one JSON line: `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build.
-
 3. **Then spawn implementers ONLY for the rest:** the senior units, plus any queued unit whose `action !== "delegated"` (skipped/failed/no-changes → fall back to the paid subagent). Tell each implementer which files OpenCode already produced (`touched`) so it builds ON them, not over them.
 
 4. **`senior-reviewer` MUST verify the delegated diffs** in Phase 3 — they came from a weaker model.
 
-(A single ad-hoc unit can still be delegated directly with `--role <r> --task-file <path>` instead of `--from-plan`.) Privacy: the default free model is hosted — only non-sensitive bounded units are queued; point `openCode.model` (or the `delegateModel` spec field) at a local `ollama/*` model for on-device execution.
+(A single ad-hoc unit can be delegated with the `opencode_delegate` tool — `{ role, task, runId, projectRoot }` — or the runner's `--role <r> --task-file <path>` mode.) Privacy: the default free model is hosted — only non-sensitive bounded units are queued; point `openCode.model` (or the `delegateModel` spec field) at a local `ollama/*` model for on-device execution.
 
-**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-shipper`, `senior-tester`, `senior-frontend`) MUST run on OpenCode when `openCode.enabled`. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have run `opencode-runner.cjs --run-id "$RUN_ID" --role <role> --task-file <task>` for it. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` the runner has recorded the attempt, so the gate then allows the fallback paid spawn. So for these roles: write the role's self-contained task → run the runner → only spawn the paid subagent if OpenCode declined. (Requires `currentRunId` set — you write it in Phase 0.) Adjust the set by editing `openCode.delegateRoles` in local preferences.
+**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-shipper`, `senior-tester`, `senior-frontend`) MUST run on OpenCode when `openCode.enabled`. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run — call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, task }`. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` the attempt is recorded, so the gate then allows the fallback paid spawn. So for these roles: delegate via the tool → only spawn the paid subagent if OpenCode declined. (Requires `currentRunId` set — you write it in Phase 0.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
 
 ## When you fire
 
@@ -223,13 +223,11 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 ### Phase 2 — Implement (parallel)
 
-**Step 0 — OpenCode delegation batch (when `openCode.enabled` + the CLI is present).** BEFORE spawning any implementer, run the plan delegation batch ONCE (see "OpenCode delegation"):
+**Step 0 — OpenCode delegation batch (when `openCode.enabled`).** BEFORE spawning any implementer, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to the free OpenCode agent and returns `{ total, delegated, units }`. This is the token-saver the user enabled — do NOT skip it when `openCode.enabled`. Fallback if the tool is unavailable (same engine via the shell runner; may not reach the network on a sandboxed host):
 
 ```bash
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" --run-id "$RUN_ID" --from-plan
 ```
-
-It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to the free OpenCode agent and prints `{ total, delegated, units }`. This is the token-saver the user enabled — do NOT skip it when `openCode.enabled`; skip only when it is false or the CLI is missing.
 
 Then run `senior-frontend` and `senior-backend` **concurrently** — they share the architect's plan/digest for contracts, so neither waits on the other. **Host concurrency mechanic:** on hosts where one assistant message carries multiple tool calls (Claude `Task`), issue both spawns in a single message. On Codex (`spawn_agent`/`wait_agent`), issue the `senior-frontend` and `senior-backend` `spawn_agent` calls **consecutively** and do **NOT** call `wait_agent` until BOTH have returned their `agent_id` — a `wait_agent` after the first spawn blocks the turn and serializes the roles (architect → backend → frontend instead of architect → frontend ∥ backend). Both use the implementation tier: `balanced` for Balanced, `highest` for High — pass the `model` param resolved to your host. Resolve each implementer's owned paths from `.traffic-one/runs/<runId>/assignments.json` (its role entry's `scope.include`/`scope.exclude`) and embed that exact list in its spawn prompt, so each role knows its boundary and that it is not alone in the codebase. If the manifest is absent (architect was skipped), fall back to the legacy role scopes and say so — the run-team gate still prevents collisions via per-path first-write locks, so no role can clobber another's files.
 

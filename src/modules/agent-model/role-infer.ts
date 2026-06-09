@@ -21,6 +21,16 @@ export function inferTrafficOneSpawnRole(toolInput: Record<string, unknown>): st
     .join('\n');
   if (!/\bTraffic One\b/i.test(message)) return null;
 
+  // Primary declaration wins. Every orchestrator spawn prompt opens with
+  // "You are acting as Traffic One `<role>`" (the host with no structured
+  // subagent_type field — e.g. Codex's generic `agent_type: "worker"` — carries
+  // the role only here). Anchoring on that declaration is essential because the
+  // prompt also names SIBLING roles in scope-coordination notes ("senior-backend
+  // owns …"), which would otherwise make the count-the-mentions fallback below
+  // ambiguous and silently disable the gate for every parallel role spawn.
+  const declared = /acting as Traffic One[\s`'"*]*([a-z][a-z-]+)/i.exec(message);
+  if (declared && VALID_AGENT_ROLES.has(declared[1] as string)) return declared[1] as string;
+
   const matches = Array.from(VALID_AGENT_ROLES).filter((role) => new RegExp(`\\b${role}\\b`, 'i').test(message));
   return matches.length === 1 ? (matches[0] as string) : null;
 }

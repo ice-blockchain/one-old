@@ -12,6 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { nowIsoNoMs } from '../../shared/text';
+import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 
 export const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
 
@@ -162,6 +163,35 @@ export function probeTool(toolName: string, binPath: string | null): ToolProbe {
 
 export function isToolUsable(status: ToolStatusKind): boolean {
   return status === 'current' || status === 'outdated';
+}
+
+// Reconcile state→disk: when a MANAGED tool binary is present but state carries
+// no installedVersion (installed out-of-band, or a re-materialization reset the
+// toolchain record), backfill the stamp so the orchestrator and downstream gates
+// (e.g. openCodeDelegationActive) stop treating the tool as absent. The managed
+// install is pinned to the spec's `recommended` version, so we record that
+// WITHOUT spawning the binary — a `--version` probe on the hot delegation path
+// would add a process per call and, with a side-effecting CLI, risk touching the
+// repo. Does NOT install. Best-effort and never throws — a stamp failure must
+// never block the caller. Returns the stamped version, or null when nothing
+// changed (already stamped / nothing present / no recommended version).
+export function reconcileManagedToolStamp(cwd: string, toolName: string, binName: string = toolName): string | null {
+  try {
+    const state = readEffectiveState(cwd);
+    const tc = state.toolchain && typeof state.toolchain === 'object' ? (state.toolchain as Rec) : {};
+    const entry = tc[toolName] && typeof tc[toolName] === 'object' ? (tc[toolName] as Rec) : null;
+    if (entry && typeof entry.installedVersion === 'string' && entry.installedVersion) return null;
+    const managedBin = managedNpmBin(toolName, binName);
+    if (!fs.existsSync(managedBin)) return null;
+    const spec = getToolSpec(toolName);
+    const version = typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
+    if (!version) return null;
+    const updated = mergeToolchainStamp(state, toolName, { version, binPath: managedBin, at: nowIsoNoMs() });
+    mergeProjectPrefs(cwd, { toolchain: updated.toolchain });
+    return version;
+  } catch {
+    return null;
+  }
 }
 
 // Merge a toolchain stamp into the in-memory state object (caller persists).
