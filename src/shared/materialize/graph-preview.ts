@@ -9,6 +9,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../codegraph';
+
 const GRAPH_PREVIEW_MAX_BYTES = 2048;
 const GRAPH_PREVIEW_MAX_MODULES = 30;
 
@@ -17,7 +19,7 @@ type Rec = Record<string, unknown>;
 export function generateGraphPreview(cwd: string, provider: string): string | null {
   const lines = ['## Codebase graph preview', ''];
   if (provider === 'graphify') {
-    const reportPath = path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+    const reportPath = path.join(cwd, GRAPHIFY_REPORT_REL);
     if (!fs.existsSync(reportPath)) return null;
     let text: string;
     try { text = fs.readFileSync(reportPath, 'utf8'); } catch { return null; }
@@ -34,9 +36,9 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
       lines.push(`- … +${modules.length - GRAPH_PREVIEW_MAX_MODULES} more`);
     }
     lines.push('');
-    lines.push('Read `graphify-out/GRAPH_REPORT.md` for module-specific scoping.');
+    lines.push('Read `.traffic-one/graphify-out/GRAPH_REPORT.md` for module-specific scoping.');
   } else if (provider === 'gitnexus') {
-    const gnDir = path.join(cwd, '.gitnexus');
+    const gnDir = path.join(cwd, GITNEXUS_REL);
     if (!fs.existsSync(gnDir)) return null;
     const indexPath = path.join(gnDir, 'index.json');
     let listed = false;
@@ -64,10 +66,10 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
       }
     }
     if (!listed) {
-      lines.push('Provider: gitnexus · graph available at `.gitnexus/`');
+      lines.push('Provider: gitnexus · graph available at `.traffic-one/.gitnexus/`');
     }
     lines.push('');
-    lines.push('Read `.gitnexus/` artefacts for module-specific scoping.');
+    lines.push('Read `.traffic-one/.gitnexus/` artefacts for module-specific scoping.');
   } else {
     return null;
   }

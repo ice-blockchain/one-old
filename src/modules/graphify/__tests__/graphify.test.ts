@@ -29,10 +29,10 @@ function withGraphProject(opts: { provider?: string; makeArtefact?: boolean; aut
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ stack: 'default' }), 'utf8');
   if (opts.makeArtefact) {
     if (provider === 'gitnexus') {
-      fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.traffic-one', '.gitnexus'), { recursive: true });
     } else {
-      fs.mkdirSync(path.join(dir, 'graphify-out'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'graphify-out', 'GRAPH_REPORT.md'), '# graph\n', 'utf8');
+      fs.mkdirSync(path.join(dir, '.traffic-one', 'graphify-out'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '# graph\n', 'utf8');
     }
   }
   resetGraphifyHintThrottle();

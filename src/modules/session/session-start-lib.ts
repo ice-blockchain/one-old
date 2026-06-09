@@ -5,13 +5,16 @@
 // drift probe + the one-mcp reporter are Step-5 runner concerns, injected here
 // as optional dependencies (default: no-op) so this stays runner-free.
 
+import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { STACK_IDS } from '../../config/stacks';
 import { detectMode } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
+import { pluginRoot } from '../../shared/paths';
 import { nowIsoNoMs } from '../../shared/text';
 import {
   isMaterialized,
@@ -48,6 +51,70 @@ export function sweepOldDigests(cwd: string, keepCount = 5): number {
     }
   }
   return removed;
+}
+
+// Re-attempt a missing code-graph build at most once per this window. Covers an
+// in-flight detached build and backs off after a failed attempt. Tracked via a
+// disk lock under .traffic-one/ (gitignored) — NOT state, because pref timestamps
+// are filtered out of the effective state and would not round-trip.
+const CODE_GRAPH_SELF_HEAL_COOLDOWN_MS = 30 * 60 * 1000;
+const CODE_GRAPH_BUILD_LOCK = '.codegraph-build-lock';
+
+function codeGraphBuildLockMs(cwd: string): number {
+  const lock = path.join(cwd, '.traffic-one', CODE_GRAPH_BUILD_LOCK);
+  try {
+    if (!fs.existsSync(lock)) return 0;
+    const t = Date.parse(fs.readFileSync(lock, 'utf8').trim());
+    return Number.isNaN(t) ? fs.statSync(lock).mtimeMs : t;
+  } catch {
+    return 0;
+  }
+}
+
+// Should we (re)build the code graph for this EXISTING project? Auto-detected
+// existing projects (SessionStart Flow 2) never run the wizard's onboarding
+// scan, and a project onboarded before that scan existed has no graph either —
+// so without this, the whole codebase-graph token economy (read the map once
+// instead of Glob/Grep) never activates. True only when: existing-codebase mode,
+// a provider is set, auto-run isn't disabled, the artifact is missing, and no
+// build was attempted within the cooldown (disk lock).
+export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): boolean {
+  const mode = state.mode;
+  if (mode !== 'existing-codebase' && mode !== 'existing-with-supabase') return false;
+  if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) return false;
+  const provider = state.codeGraphProvider;
+  if (provider !== 'graphify' && provider !== 'gitnexus') return false;
+  const hasGraph = provider === 'graphify'
+    ? fs.existsSync(path.join(cwd, GRAPHIFY_REPORT_REL))
+    : fs.existsSync(path.join(cwd, GITNEXUS_REL));
+  if (hasGraph) return false;
+  const lockMs = codeGraphBuildLockMs(cwd);
+  if (lockMs && (nowMs - lockMs) < CODE_GRAPH_SELF_HEAL_COOLDOWN_MS) return false;
+  return true;
+}
+
+// Best-effort, NON-BLOCKING self-heal: when an existing project is missing its
+// code graph, fire the provider's runner DETACHED (same pattern as the onboarding
+// server / one-mcp worker) so the graph lands by the next turn/session without
+// blocking SessionStart. Writes the cooldown lock BEFORE spawning so a rapid
+// second call (or a concurrent session) won't double-spawn. Never throws.
+// Returns true if a build was spawned (used by tests).
+export function ensureCodeGraphForExistingProject(cwd: string, state: Rec): boolean {
+  try {
+    if (!shouldBuildCodeGraph(cwd, state, Date.now())) return false;
+    const provider = String(state.codeGraphProvider);
+    const runner = provider === 'graphify' ? 'graphify-runner.cjs' : 'gitnexus-runner.cjs';
+    const entry = path.join(pluginRoot(), 'scripts', runner);
+    if (!fs.existsSync(entry)) return false;
+    const lock = path.join(cwd, '.traffic-one', CODE_GRAPH_BUILD_LOCK);
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, nowIsoNoMs(), 'utf8');
+    const child = spawn(process.execPath, [entry], { cwd, detached: true, stdio: 'ignore' });
+    child.unref();
+    return true;
+  } catch {
+    return false; // self-heal is best-effort; never block or throw in SessionStart
+  }
 }
 
 // The ~500-token graph preview written by the gitnexus/graphify runners.

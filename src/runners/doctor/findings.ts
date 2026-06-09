@@ -204,7 +204,7 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
       findings.push({
         severity: 'info',
         code: 'GITNEXUS_STALE',
-        message: `\`.gitnexus/\` is ${Math.round(ageDays)} days old. The next build will refresh it; or manually run \`gitnexus analyze .\` to update now.`,
+        message: `\`.traffic-one/.gitnexus/\` is ${Math.round(ageDays)} days old. The next build or session refreshes it automatically (the gitnexus runner rebuilds and relocates it under .traffic-one/).`,
       });
     }
   }

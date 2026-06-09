@@ -41,7 +41,7 @@ import { initializeToolchainState } from '../../shared/state/toolchain';
 import { nowIsoNoMs } from '../../shared/text';
 import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
-import { ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
+import { ensureCodeGraphForExistingProject, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -191,6 +191,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const copied = copyActiveSkills(state);
     const skillDirective = pruneSkillsDirective(state, listAllSkills());
     stampMaterialization(cwd, state);
+    ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the code graph if an existing project is missing it
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
@@ -233,6 +234,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const copied = copyActiveSkills(state);
     const allSkills = listAllSkills();
     stampMaterialization(cwd, state);
+    ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the graph for a freshly auto-detected existing project
     writeState(cwd, state);
     const skillDirective = pruneSkillsDirective(state, allSkills);
 

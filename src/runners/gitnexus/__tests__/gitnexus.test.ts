@@ -120,7 +120,7 @@ test('bootstrap honours the codeGraphAutoRun:false opt-out', () => {
 
 test('bootstrap short-circuits on a fresh .gitnexus/ cache', () => {
   withGnProject((cwd) => {
-    fs.mkdirSync(path.join(cwd, '.gitnexus'), { recursive: true });
+    fs.mkdirSync(path.join(cwd, '.traffic-one', '.gitnexus'), { recursive: true });
     const r = bootstrap(cwd);
     assert.equal(r.ok, true);
     assert.equal(r.action, 'fresh');
@@ -133,10 +133,10 @@ test('gitnexusGraphIsEmpty flags a 0-file index (so a pre-scaffold graph reindex
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gnempty-'));
   try {
     assert.equal(gitnexusGraphIsEmpty(dir), false); // no meta → can't tell → not empty
-    fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one', '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
     assert.equal(gitnexusGraphIsEmpty(dir), true);
-    fs.writeFileSync(path.join(dir, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 7, nodes: 20 } }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 7, nodes: 20 } }), 'utf8');
     assert.equal(gitnexusGraphIsEmpty(dir), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });

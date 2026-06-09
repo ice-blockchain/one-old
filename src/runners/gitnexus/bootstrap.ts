@@ -29,6 +29,7 @@ import {
   toolStatus,
 } from '../toolchain';
 import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
+import { GITNEXUS_ROOT_DIRNAME, relocateUnderTrafficOne } from '../../shared/codegraph';
 import {
   currentNodeMajor,
   findNvmNode22,
@@ -312,8 +313,12 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 5 * 60 * 1000,
   });
+  const status = typeof result.status === 'number' ? result.status : 1;
+  // GitNexus writes ./.gitnexus in the project root (no output-dir flag).
+  // Relocate it under .traffic-one/ so the graph never pollutes the root.
+  if (status === 0) relocateUnderTrafficOne(cwd, GITNEXUS_ROOT_DIRNAME, GITNEXUS_DIR);
   return {
-    status: typeof result.status === 'number' ? result.status : 1,
+    status,
     stderr: (result.stderr || '').trim(),
     stdout: (result.stdout || '').trim(),
     skippedGit: !hasGit,

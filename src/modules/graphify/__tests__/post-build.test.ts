@@ -41,8 +41,8 @@ function withProject(
   };
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
   if (opts.freshArtefact) {
-    if (opts.provider === 'gitnexus') fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
-    else { fs.mkdirSync(path.join(dir, 'graphify-out'), { recursive: true }); fs.writeFileSync(path.join(dir, 'graphify-out', 'GRAPH_REPORT.md'), '# g\n', 'utf8'); }
+    if (opts.provider === 'gitnexus') fs.mkdirSync(path.join(dir, '.traffic-one', '.gitnexus'), { recursive: true });
+    else { fs.mkdirSync(path.join(dir, '.traffic-one', 'graphify-out'), { recursive: true }); fs.writeFileSync(path.join(dir, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '# g\n', 'utf8'); }
   }
   try {
     fn(dir);
@@ -138,7 +138,7 @@ test('post-build code-graph hint stamps the cooldown so a second build is thrott
 test('post-build rebuilds a fresh-but-EMPTY gitnexus graph (files:0) — reindex after scaffold', () => {
   withProject({ provider: 'gitnexus', freshArtefact: true }, (cwd) => {
     // graph built pre-scaffold on the empty project: fresh mtime, but 0 files.
-    fs.writeFileSync(path.join(cwd, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
     let called = 0;
     __setCodeGraphBootstraps({ gitnexus: () => { called += 1; return { ok: true, action: 'used-managed', durationMs: 5 }; } });
     const r = postBuildCodeGraphHint(ctxFor(cwd, 'npm run build'));
@@ -149,7 +149,7 @@ test('post-build rebuilds a fresh-but-EMPTY gitnexus graph (files:0) — reindex
 
 test('post-build skips a fresh NON-empty gitnexus graph (no needless rebuild)', () => {
   withProject({ provider: 'gitnexus', freshArtefact: true }, (cwd) => {
-    fs.writeFileSync(path.join(cwd, '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 12, nodes: 40 } }), 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 12, nodes: 40 } }), 'utf8');
     let called = 0;
     __setCodeGraphBootstraps({ gitnexus: () => { called += 1; return { ok: true, action: 'used-managed', durationMs: 5 }; } });
     const r = postBuildCodeGraphHint(ctxFor(cwd, 'npm run build'));

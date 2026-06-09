@@ -14,6 +14,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
@@ -263,16 +264,20 @@ export function ensureGraphifyTool(cwd: string = process.cwd(), opts: GraphifyOp
 
 function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr: string; stdout: string } {
   // graphify's CLI requires a subcommand. `update <path>` (re-)extracts code
-  // files and writes graphify-out/{GRAPH_REPORT.md, graph.json, graph.html}.
-  // Works on a fresh directory too — no separate init step.
+  // files and writes graphify-out/{GRAPH_REPORT.md, graph.json, graph.html} in
+  // the project ROOT (no output-dir flag). Works on a fresh directory too.
   const result = spawnSync(graphifyBin, ['update', '.'], {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 5 * 60 * 1000,
   });
+  const status = typeof result.status === 'number' ? result.status : 1;
+  // Relocate the root-level graphify-out/ under .traffic-one/ so the graph never
+  // pollutes the project root. (graphify has no --out flag → move after the scan.)
+  if (status === 0) relocateUnderTrafficOne(cwd, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_OUT_REL);
   return {
-    status: typeof result.status === 'number' ? result.status : 1,
+    status,
     stderr: (result.stderr || '').trim(),
     stdout: (result.stdout || '').trim(),
   };
@@ -280,7 +285,7 @@ function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr
 
 export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}): GraphifyResult {
   const startedAt = Date.now();
-  const reportRel = path.join('graphify-out', 'GRAPH_REPORT.md');
+  const reportRel = GRAPHIFY_REPORT_REL;
   const reportAbs = path.join(cwd, reportRel);
 
   // Opt-out: `graphifyAutoRun: false` in local preferences disables foreground

@@ -14,6 +14,7 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl } from '../../runners/graphify';
 import { isAuthenticatedLocal } from '../../shared/auth';
@@ -66,8 +67,8 @@ export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
 
   // Provider-specific artefact path for freshness check.
   const artefactPath = provider === 'gitnexus'
-    ? path.join(cwd, '.gitnexus')
-    : path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md');
+    ? path.join(cwd, GITNEXUS_REL)
+    : path.join(cwd, GRAPHIFY_REPORT_REL);
   const artefactExists = fs.existsSync(artefactPath);
   // An existing-but-empty gitnexus index (built pre-scaffold, files:0) is NOT
   // fresh — force a rebuild so it picks up the real code (graphify produces no
@@ -119,9 +120,8 @@ function buildHintMessage(provider: 'gitnexus' | 'graphify', result: CodeGraphRe
         ? ` Restored traffic-one's ${result.restored.join(', ')} (GitNexus auto-write conflicted).`
         : '';
       return `[gitnexus] Codebase graph built (${seconds}s, ${result.action}). `
-        + `Index at \`.gitnexus/\`. License reminder: PolyForm Noncommercial — only legal on non-commercial projects.${restored} `
-        + 'Subagents and skills will consult `.gitnexus/` before grep/glob for module/structure questions. '
-        + 'Add `.gitnexus/` and `.traffic-one/backups/` to .gitignore if not already.';
+        + `Index at \`.traffic-one/.gitnexus/\` (under .traffic-one, already gitignored). License reminder: PolyForm Noncommercial — only legal on non-commercial projects.${restored} `
+        + 'Subagents and skills will consult `.traffic-one/.gitnexus/` before grep/glob for module/structure questions.';
     }
     const actionLabel = result.action === 'used-existing'
       ? 'used existing `graphify` install'
@@ -131,8 +131,8 @@ function buildHintMessage(provider: 'gitnexus' | 'graphify', result: CodeGraphRe
           ? 'installed `graphifyy` via pipx'
           : 'installed `graphifyy` in a Traffic One managed venv'));
     return `[graphify] Codebase graph built (${seconds}s, ${actionLabel}). `
-      + 'Report at `graphify-out/GRAPH_REPORT.md`. Subagents and skills will consult it '
-      + 'before grep/glob for module/structure questions. Add `graphify-out/` to .gitignore if not already.';
+      + 'Report at `.traffic-one/graphify-out/GRAPH_REPORT.md` (under .traffic-one, already gitignored). '
+      + 'Subagents and skills will consult it before grep/glob for module/structure questions.';
   }
 
   if (provider === 'gitnexus') {

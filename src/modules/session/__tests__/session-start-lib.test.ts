@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from '../session-start-lib';
+import { ensureSessionMaterialization, readGraphPreview, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner } from '../session-start-lib';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sslib-'));
@@ -16,6 +16,36 @@ function withTmp(fn: (cwd: string) => void): void {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+test('shouldBuildCodeGraph: builds for existing project missing a graph; guards otherwise', () => {
+  withTmp((cwd) => {
+    const NOW = Date.parse('2026-06-08T12:00:00Z');
+    const base = { mode: 'existing-codebase', codeGraphProvider: 'graphify' };
+    // existing + provider + no artifact → build
+    assert.equal(shouldBuildCodeGraph(cwd, { ...base }, NOW), true);
+    // artifact present → skip
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '# g', 'utf8');
+    assert.equal(shouldBuildCodeGraph(cwd, { ...base }, NOW), false);
+    fs.rmSync(path.join(cwd, '.traffic-one', 'graphify-out'), { recursive: true, force: true });
+    // cooldown via disk lock: recent attempt → skip; stale (>30min) → build again
+    const lock = path.join(cwd, '.traffic-one', '.codegraph-build-lock');
+    fs.mkdirSync(path.dirname(lock), { recursive: true });
+    fs.writeFileSync(lock, '2026-06-08T11:50:00Z', 'utf8'); // 10 min ago
+    assert.equal(shouldBuildCodeGraph(cwd, { ...base }, NOW), false);
+    fs.writeFileSync(lock, '2026-06-08T11:00:00Z', 'utf8'); // 60 min ago
+    assert.equal(shouldBuildCodeGraph(cwd, { ...base }, NOW), true);
+    fs.rmSync(lock, { force: true });
+    // new-project mode → never; no provider → never; auto-run off → never
+    assert.equal(shouldBuildCodeGraph(cwd, { mode: 'new-project', codeGraphProvider: 'graphify' }, NOW), false);
+    assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase' }, NOW), false);
+    assert.equal(shouldBuildCodeGraph(cwd, { ...base, codeGraphAutoRun: false }, NOW), false);
+    // gitnexus keys on .gitnexus/
+    assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase', codeGraphProvider: 'gitnexus' }, NOW), true);
+    fs.mkdirSync(path.join(cwd, '.traffic-one', '.gitnexus'), { recursive: true });
+    assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase', codeGraphProvider: 'gitnexus' }, NOW), false);
+  });
+});
 
 test('sweepOldDigests keeps the newest N digest runs', () => {
   withTmp((cwd) => {

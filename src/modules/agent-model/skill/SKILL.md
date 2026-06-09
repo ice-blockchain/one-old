@@ -32,3 +32,12 @@ Team gate: spawning subagents needs `team.approved: true`, which the Traffic One
 <!-- T1BLOCK:BEGIN performance-model-param -->
 Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect. Per-role model tiers live in `performance-config.cjs` / `model-tiers.cjs`.
 <!-- T1BLOCK:END performance-model-param -->
+
+<!-- T1BLOCK:BEGIN opencode-role-delegate -->
+OpenCode role gate: `{{ROLE}}` is configured to run on the free OpenCode agent (it is in `openCode.delegateRoles`, and `openCode.enabled` is true), so do NOT spawn it as a paid subagent yet. First delegate its work to OpenCode:
+1. Write the role's self-contained task (its assigned scope + acceptance criteria, no external context the run can't see) to `.traffic-one/opencode-task.md`.
+2. Run: `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" --run-id {{RUN_ID}} --role {{ROLE}} --task-file .traffic-one/opencode-task.md`
+3. On `ok:true` (delegated) → the change is applied to the tree and a digest is written; proceed to review (`senior-reviewer` verifies the weaker model's diff). Do NOT spawn the paid `{{ROLE}}`.
+4. On `ok:false` (skipped/failed/no-changes) → the runner has recorded the attempt for this run, so just re-spawn `{{ROLE}}` exactly as usual — this gate now allows it (fallback).
+To stop routing this role through OpenCode, remove it from `openCode.delegateRoles` in local preferences.
+<!-- T1BLOCK:END opencode-role-delegate -->

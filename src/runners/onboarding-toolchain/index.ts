@@ -26,17 +26,30 @@ interface ToolOutcome {
   installedVersion?: string | null;
 }
 
-// Install the chosen graph provider and gate ONLY on "is it installed/usable".
-// The first scan is best-effort and must NOT block onboarding: a brand-new
-// project is empty at this point, so graphify/gitnexus legitimately find "no
-// code files to index" (graphify even exits non-zero). The post-build hook
-// rebuilds the graph once real code exists, so a deferred scan is not a failure.
-function installGraphProvider(cwd: string, provider: 'graphify' | 'gitnexus'): ToolOutcome {
+// Install the chosen graph provider, then run the first scan.
+//   - NEW/empty project: the scan is best-effort. The project is empty at this
+//     point, so graphify/gitnexus legitimately find "no code files to index"
+//     (graphify even exits non-zero); the post-build hook rebuilds it later, so a
+//     deferred scan is NOT a failure → gate only on "installed/usable".
+//   - EXISTING codebase (`requireScan`): the repo already has code AND there is
+//     no later reliable trigger (the post-build hook needs a `build` command,
+//     Phase 5 only fires on full orchestrator runs). So the first scan MUST
+//     produce a graph before "Setup complete" — a failed scan gates completion.
+function installGraphProvider(cwd: string, provider: 'graphify' | 'gitnexus', requireScan: boolean): ToolOutcome {
   const ensured = provider === 'graphify' ? ensureGraphifyTool(cwd) : ensureGitnexusTool(cwd);
   if (!ensured.ok) {
     return { tool: provider, ok: false, action: ensured.action, error: ensured.error, installedVersion: ensured.installedVersion ?? null };
   }
   const scan = provider === 'graphify' ? graphifyBootstrap(cwd, { force: false }) : gitnexusBootstrap(cwd, { force: false });
+  if (!scan.ok && requireScan) {
+    return {
+      tool: provider,
+      ok: false,
+      action: `${ensured.action}; scan failed`,
+      error: scan.error || 'graph scan produced no report on an existing codebase',
+      installedVersion: ensured.installedVersion ?? null,
+    };
+  }
   const action = scan.ok
     ? scan.action
     : `${ensured.action}; scan deferred (${(scan.error || 'no code files yet').split('\n')[0]})`;
@@ -54,16 +67,20 @@ export interface OnboardingToolchainResult {
 export function ensureOnboardingToolchain(cwd: string = process.cwd()): OnboardingToolchainResult {
   const state = readEffectiveState(cwd);
   const provider = typeof state.codeGraphProvider === 'string' ? state.codeGraphProvider : null;
+  const mode = typeof state.mode === 'string' ? state.mode : '';
+  // Existing codebases have code to index now and no later reliable trigger, so
+  // the first scan is REQUIRED before "Setup complete"; new/empty projects defer.
+  const requireScan = mode === 'existing-codebase' || mode === 'existing-with-supabase';
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   const openCodeEnabled = openCode?.enabled === true;
 
   const results: ToolOutcome[] = [];
 
-  // Required: the chosen code-graph provider must be INSTALLED (the first scan
-  // is best-effort — see installGraphProvider).
+  // Required: the chosen code-graph provider must be INSTALLED, plus the first
+  // scan must succeed on an existing codebase (see installGraphProvider).
   let graphFailed = false;
   if (provider === 'graphify' || provider === 'gitnexus') {
-    const r = installGraphProvider(cwd, provider);
+    const r = installGraphProvider(cwd, provider, requireScan);
     graphFailed = !r.ok;
     results.push(r);
   }

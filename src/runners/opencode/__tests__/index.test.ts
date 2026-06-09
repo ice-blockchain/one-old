@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate } from '../index';
+import { delegate, delegateFromPlan, parsePlanDelegationQueue } from '../index';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -44,7 +44,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): vo
   }
 }
 
-function stubOpencode(behavior: 'edit' | 'error' | 'noop' | 'retry'): void {
+function stubOpencode(behavior: 'edit' | 'error' | 'noop' | 'retry' | 'multi'): void {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
   fs.mkdirSync(bin, { recursive: true });
   const scripts: Record<typeof behavior, string> = {
@@ -83,6 +83,18 @@ const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 
 fs.writeFileSync(counter, String(n));
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'attempt ' + n } }) + '\\n');
 if (n >= 2) fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+`,
+    // writes a UNIQUE file per invocation (counter) so multiple queued plan units
+    // produce disjoint diffs that all apply cleanly.
+    multi: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+const counter = path.join(__dirname, 'plan-attempts');
+const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 0 : 0) + 1;
+fs.writeFileSync(counter, String(n));
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'unit ' + n } }) + '\\n');
+fs.writeFileSync(path.join(dir, 'unit-' + n + '.txt'), 'u' + n + '\\n');
 `,
   };
   fs.writeFileSync(path.join(bin, 'opencode'), scripts[behavior], { mode: 0o755 });
@@ -139,6 +151,56 @@ test('delegate retries once on a no-op and applies the second attempt (free mode
     // exactly 2 attempts were made (bounded retry, not a loop)
     const attempts = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin', 'attempts');
     assert.equal(fs.readFileSync(attempts, 'utf8').trim(), '2');
+  });
+});
+
+test('parsePlanDelegationQueue extracts only the marked queue block', () => {
+  const plan = [
+    '# Plan', 'prose',
+    '<!-- opencode-delegate:start -->',
+    '- role: backend | files: src/seed.ts | task: Create dummy seed data',
+    '- role: frontend | task: Boilerplate card component',
+    '- not a unit line (ignored)',
+    '<!-- opencode-delegate:end -->',
+    '- role: architect | task: outside the block — must be ignored',
+  ].join('\n');
+  const q = parsePlanDelegationQueue(plan);
+  assert.equal(q.length, 2);
+  assert.equal(q[0]?.role, 'backend');
+  assert.equal(q[0]?.files, 'src/seed.ts');
+  assert.equal(q[1]?.role, 'frontend');
+  assert.equal(q[1]?.task, 'Boilerplate card component');
+  assert.deepEqual(parsePlanDelegationQueue('# plan with no queue'), []);
+});
+
+test('delegateFromPlan deterministically delegates every queued bounded unit', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- role: backend | files: a | task: make unit A',
+      '- role: frontend | files: b | task: make unit B',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'plan-1' });
+    assert.equal(r.total, 2);
+    assert.equal(r.delegated, 2);
+    assert.equal(r.units.every((u) => u.action === 'delegated'), true);
+    // both units' disjoint diffs landed in the real working tree
+    assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), true);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), true);
+  });
+});
+
+test('delegateFromPlan is a no-op when the plan has no delegation queue', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), '# Plan\nno queue here\n', 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'plan-2' });
+    assert.equal(r.total, 0);
+    assert.equal(r.delegated, 0);
   });
 });
 

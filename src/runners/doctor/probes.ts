@@ -7,6 +7,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
 import {
   GITNEXUS_MIN_NODE_MAJOR,
@@ -121,8 +122,8 @@ export function probeProject(cwd: string): ProjectProbe {
   }
   const nvmrcRaw = safeRead(path.join(cwd, '.nvmrc'));
   const gitDir = safeStat(path.join(cwd, '.git'));
-  const gitnexusOut = safeStat(path.join(cwd, '.gitnexus'));
-  const graphifyOut = safeStat(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'));
+  const gitnexusOut = safeStat(path.join(cwd, GITNEXUS_REL));
+  const graphifyOut = safeStat(path.join(cwd, GRAPHIFY_REPORT_REL));
   return {
     cwd,
     hasState: !!state,

@@ -21,9 +21,15 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefsPath;
   env.TRAFFIC_ONE_STATE_PATH = onePath;
-  const { codeGraphProvider, ...projectPrefs } = prefs;
+  const { codeGraphProvider, mode, ...projectPrefs } = prefs;
   fs.writeFileSync(prefsPath, JSON.stringify(projectPrefs), 'utf8');
+  // codeGraphProvider is machine-wide → one.json (TRAFFIC_ONE_STATE_PATH).
   if (codeGraphProvider) fs.writeFileSync(onePath, JSON.stringify({ version: 1, codeGraphProvider }), 'utf8');
+  // mode is a per-PROJECT state field → cwd/.traffic-one/.one.json.
+  if (mode) {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ mode }), 'utf8');
+  }
   try {
     fn(dir);
   } finally {
@@ -110,6 +116,42 @@ test('graph provider installs but the first scan finds no code → ok=true (scan
       const gf = r.results.find((x) => x.tool === 'graphify');
       assert.equal(gf?.ok, true);
       assert.match(gf?.action || '', /scan deferred/);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('existing-codebase: a failed first scan GATES completion (graph required, no later trigger)', () => {
+  withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
+    const bin = path.join(cwd, 'bin');
+    writeGraphifyStubPythonScanFails(bin);
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = ensureOnboardingToolchain(cwd);
+      // Existing repo has code now → the graph MUST build; a failed scan blocks.
+      assert.equal(r.ok, false);
+      const gf = r.results.find((x) => x.tool === 'graphify');
+      assert.equal(gf?.ok, false);
+      assert.match(gf?.action || '', /scan failed/);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('existing-codebase: a successful first scan completes onboarding + builds the graph', () => {
+  withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
+    const bin = path.join(cwd, 'bin');
+    writeGraphifyStubPython(bin);
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = ensureOnboardingToolchain(cwd);
+      assert.equal(r.ok, true);
+      assert.equal(r.results.find((x) => x.tool === 'graphify')?.ok, true);
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md')), true);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }

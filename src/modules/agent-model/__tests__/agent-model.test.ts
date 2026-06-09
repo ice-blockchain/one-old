@@ -8,6 +8,7 @@ import { agentModelGate } from '../handler';
 import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
+import { markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { readEffectiveState, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
@@ -88,6 +89,32 @@ test('team approved but wrong model → deny model-param; correct model → allo
     // high senior-frontend → highest tier → claude "opus"
     const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('opencode role gate: a configured role is denied until OpenCode is tried, then allowed (fallback)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // Enable OpenCode + set a currentRunId so the gate can scope the attempt marker.
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-X';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    // senior-frontend is in the default delegateRoles → deny until OpenCode tried
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
+
+    // runner records the attempt → gate falls through to the normal model check → allow
+    markOpenCodeRoleAttempted(cwd, 'run-X', 'senior-frontend');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+
+    // a role NOT in the configured set (senior-backend) is never opencode-gated
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
   });
 });
 

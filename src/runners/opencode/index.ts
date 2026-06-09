@@ -22,6 +22,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { exec } from '../../shared/exec';
+import { markOpenCodeRoleAttempted } from '../../shared/opencode-roles';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { getToolSpec, managedNpmBin } from '../toolchain';
@@ -141,6 +142,13 @@ function removeWorktree(cwd: string, parent: string, wt: string): void {
 }
 
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
+  // Record the attempt (per run + role) BEFORE doing anything, so the spawn gate
+  // lets the orchestrator fall back to a paid spawn after OpenCode has been tried
+  // for a configured role — regardless of the outcome (skipped/failed/delegated).
+  const markRunId = (opts.runId || '').trim();
+  const markRole = (opts.role || '').trim();
+  if (markRunId && markRole) markOpenCodeRoleAttempted(cwd, markRunId, markRole);
+
   const state = readEffectiveState(cwd);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   if (openCode?.enabled !== true) {
@@ -231,15 +239,75 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   }
 }
 
-// CLI entry. Args: --run-id <id> --role <role> (--task "<t>" | --task-file <path>)
-// [--model <provider/model>]. Prints a one-line JSON result; exit 1 → orchestrator
-// falls back to a normal subagent.
+export interface PlanDelegationResult {
+  total: number;
+  delegated: number;
+  units: Array<{ role: string; task: string; action: DelegateResult['action']; touched: string[] }>;
+}
+
+// Parse the architect's plan.md delegation queue. The architect emits a
+// machine-readable block listing ONLY bounded/low-risk units (senior work is
+// never queued), so delegation does not depend on the orchestrator re-deciding
+// per unit mid-flight:
+//   <!-- opencode-delegate:start -->
+//   - role: backend | files: src/lib/seed.ts | task: <self-contained task>
+//   <!-- opencode-delegate:end -->
+export function parsePlanDelegationQueue(planText: string): Array<{ role: string; files: string; task: string }> {
+  const start = planText.indexOf('opencode-delegate:start');
+  const end = planText.indexOf('opencode-delegate:end');
+  if (start < 0 || end < 0 || end < start) return [];
+  const units: Array<{ role: string; files: string; task: string }> = [];
+  for (const raw of planText.slice(start, end).split('\n')) {
+    const line = raw.trim();
+    if (!line.startsWith('- ')) continue;
+    const fields: Record<string, string> = {};
+    for (const part of line.slice(2).split('|')) {
+      const idx = part.indexOf(':');
+      if (idx < 0) continue;
+      const key = part.slice(0, idx).trim().toLowerCase();
+      if (key) fields[key] = part.slice(idx + 1).trim();
+    }
+    if (fields.task) units.push({ role: fields.role || 'opencode', files: fields.files || '', task: fields.task });
+  }
+  return units;
+}
+
+// Deterministically delegate EVERY queued bounded unit to OpenCode. Reuses
+// delegate() per unit (each in its own worktree from HEAD). A unit that opencode
+// can't deliver (skipped/failed/no-changes) simply isn't applied — the orchestrator
+// then spawns a normal subagent for it. Never throws.
+export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string } = {}): PlanDelegationResult {
+  let planText = '';
+  try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
+  const queue = parsePlanDelegationQueue(planText);
+  const units: PlanDelegationResult['units'] = [];
+  let delegated = 0;
+  for (const u of queue) {
+    const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
+    const r = delegate(cwd, { role: u.role, task, runId: opts.runId, model: opts.model });
+    if (r.ok) delegated += 1;
+    units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched });
+  }
+  return { total: queue.length, delegated, units };
+}
+
+// CLI entry. Either:
+//   --from-plan                         delegate every bounded unit in plan.md's queue
+//   --role <r> (--task <t>|--task-file <p>)   delegate one explicit unit
+// plus --run-id <id> [--model <provider/model>]. Prints a one-line JSON result.
 export function main(): number {
   const args = process.argv.slice(2);
   const get = (flag: string): string | undefined => {
     const i = args.indexOf(flag);
     return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
   };
+
+  if (args.includes('--from-plan')) {
+    const summary = delegateFromPlan(process.cwd(), { runId: get('--run-id'), model: get('--model') });
+    process.stdout.write(`${JSON.stringify(summary)}\n`);
+    return 0; // batch is best-effort: un-delegated units fall back to subagents, never fail the run
+  }
+
   const taskFile = get('--task-file');
   let task = get('--task');
   if (!task && taskFile && fs.existsSync(taskFile)) task = fs.readFileSync(taskFile, 'utf8');

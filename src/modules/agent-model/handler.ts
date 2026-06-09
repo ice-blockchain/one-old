@@ -15,6 +15,7 @@ import { detectHostPlan } from '../../shared/host-plan';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { makeSkillBlock } from '../../shared/skill-block';
+import { openCodeRoleAttempted, shouldRunRoleOnOpenCode } from '../../shared/opencode-roles';
 import { ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
@@ -39,6 +40,19 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return noop();
+
+  // OpenCode role delegation (all modes): a configured role MUST run on the free
+  // OpenCode agent first (when `openCode.enabled`). Deny its paid spawn until
+  // OpenCode has been tried for this role in the current run — the runner writes
+  // a per-run attempt marker, after which the fallback spawn is allowed. Needs a
+  // currentRunId to scope the marker; without one we can't track attempts, so skip.
+  if (shouldRunRoleOnOpenCode(role, state)) {
+    const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+    if (runId && !openCodeRoleAttempted(cwd, runId, role)) {
+      return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId }));
+    }
+  }
+
   if (state.mode !== 'new-project') return noop();
 
   if (!isCompletedTrafficOneMaterialization(cwd, state)) {

@@ -28,9 +28,19 @@ rules/common/codebase-graph.md): `.gitnexus/` when codeGraphProvider is
 "gitnexus", `graphify-out/GRAPH_REPORT.md` when "graphify". Skip silently if
 missing.
 
-Produce .traffic-one/plan.md (≤250 lines, six sections: Goal, Stack & rationale,
-Module map, Public contracts, Risks, Cut-list). Cite skills by name; do not
-inline their content.
+Produce .traffic-one/plan.md (≤250 lines, seven sections: Goal, Stack & rationale,
+Module map, Public contracts, Risks, Cut-list, OpenCode delegation queue). Cite
+skills by name; do not inline their content.
+
+When `openCode.enabled`, the "OpenCode delegation queue" section is REQUIRED: list
+every bounded, low-risk unit (boilerplate/CRUD scaffolding, dummy/seed/fixture
+data, simple test scaffolding, mechanical refactors/renames, formatting/codemods)
+in the machine-readable `<!-- opencode-delegate:start -->`…`<!-- opencode-delegate:end -->`
+block (one self-contained `- role: … | files: … | task: …` line each). NEVER queue
+architecture/contracts/security/data-model/migrations/cross-file-invariant work.
+The orchestrator delegates these to the free OpenCode agent before the implementers,
+so a thorough queue is what actually saves the user's tokens. See the
+senior-architect role instructions for the exact format.
 
 For `mode: new-project`, run `project-memory` and
 `auto-documentation-generator` after the plan even when the user did not ask for
