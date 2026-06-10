@@ -1,6 +1,6 @@
 ---
 name: traffic-one-onboarding-gate
-description: Wording source for the Traffic One setup gate. The onboarding questions now live in the local wizard server (shared/onboarding-server), so this only holds the gate's agent-facing prose — the wizard-URL deny, the short "setup pending" note, the team-mode write guards, and the post-materialization re-run note. Read at runtime via skillBlock(); the routing + deny LOGIC lives in TS.
+description: Wording source for the Traffic One setup gate. The onboarding questions now live in the local wizard server (shared/onboarding-server), so this only holds the gate's agent-facing prose — the wizard-URL deny, the short "setup pending" note, the team-mode write guards, the post-materialization re-run note, and the post-build maintenance-triage directives. Read at runtime via skillBlock(); the routing + deny LOGIC lives in TS.
 ---
 
 # Traffic One Onboarding Gate
@@ -85,3 +85,19 @@ Traffic One team mode guard: local Traffic One preferences currently record `tea
 <!-- T1BLOCK:BEGIN team-mode-switch-authorized -->
 The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.
 <!-- T1BLOCK:END team-mode-switch-authorized -->
+
+<!-- T1BLOCK:BEGIN maintenance-triage-subagents -->
+[MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. Classify its complexity BEFORE acting and scale the machinery to it. You decide authoritatively — the keyword hint below is a prior, not a verdict.
+- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: delegate to a `quick-fix` subagent. With OpenCode active it runs free on OpenCode first; otherwise pass the cheapest model for this host. No architect, no full team. Still verify visually if the change is visual.
+- small — one component, one small endpoint, or a scoped bug fix: a single role subagent (senior-frontend OR senior-backend) at its normal tier; no architect unless it turns cross-cutting.
+- complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: re-engage the senior team for a SINGLE-FEATURE run via the senior-eng-orchestrator. The architect plans just this feature, decides frontend/backend/both and the per-role model tiers, then implement → review → test.
+Heuristic hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. OpenCode: {{OPENCODE}}. If the user explicitly asked for a quick/small change, honor that over the hint. Full rubric: read the `task-triage` skill.
+<!-- T1BLOCK:END maintenance-triage-subagents -->
+
+<!-- T1BLOCK:BEGIN maintenance-triage-main-agent -->
+[MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. This project runs in main-agent mode (no subagents). Classify its complexity BEFORE acting and scale your effort to it. You decide authoritatively — the keyword hint below is a prior, not a verdict.
+- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: make the edit directly. With OpenCode active you MAY delegate it free via the OpenCode tool. No planning ceremony. Still verify visually if the change is visual.
+- small — one component, one small endpoint, or a scoped bug fix: implement it directly after a brief plan.
+- complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: run the senior-eng-orchestrator phases INLINE via the roadmap checklist — plan the feature, decide the surface, implement, then self-review and test. Do not spawn subagents.
+Heuristic hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. OpenCode: {{OPENCODE}}. If the user explicitly asked for a quick/small change, honor that over the hint. Full rubric: read the `task-triage` skill.
+<!-- T1BLOCK:END maintenance-triage-main-agent -->

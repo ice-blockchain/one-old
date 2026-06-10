@@ -12,6 +12,7 @@ import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
+import { resolveModel } from '../../shared/model-tiers';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { makeSkillBlock } from '../../shared/skill-block';
@@ -76,6 +77,28 @@ export function agentModelGate(ctx: Ctx): HookResult {
           : '',
       }));
     }
+  }
+
+  // quick-fix is the post-build maintenance worker: its cheapest-model pin is
+  // enforced in EVERY mode — the per-role tier gate below is new-project-scoped,
+  // but maintenance triage mostly fires on existing codebases — and the pin is
+  // absolute (team.overrides cannot lift it). Stake the run claim too, so the
+  // run-team write gate can resolve the worker's role on its first write.
+  if (role === 'quick-fix') {
+    const expected = resolveModel('cheapest', ctx.host);
+    const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+    if (expected && passedModel !== expected) {
+      const passedNote = passedModel
+        ? `You passed model="${passedModel}". `
+        : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
+      return deny(block('performance-model-param', { LEVEL: 'maintenance', HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
+    }
+    ensureRunAgentClaim(cwd, state, role, raw, {
+      toolName,
+      agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+      model: passedModel,
+    });
+    return noop();
   }
 
   if (state.mode !== 'new-project') return noop();

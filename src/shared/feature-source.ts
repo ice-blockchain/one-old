@@ -26,6 +26,13 @@ export function roleCanWriteFeatureSource(role: unknown, filePath: string): bool
     return /^(packages\/(api-client|ws-client|utils)\/src\/|services\/[^/]+\/src\/|apps\/[^/]+\/src\/(services|store)\/)/.test(filePath)
       || FLAT_BACKEND_SOURCE_RE.test(filePath);
   }
+  // The post-build maintenance worker fixes trivial issues anywhere an
+  // implementer could write — its scope is bounded by the triage spawn prompt
+  // (named files, no exploration), not by the frontend/backend layer split.
+  if (role === 'quick-fix') {
+    return roleCanWriteFeatureSource('senior-frontend', filePath)
+      || roleCanWriteFeatureSource('senior-backend', filePath);
+  }
   return false;
 }
 

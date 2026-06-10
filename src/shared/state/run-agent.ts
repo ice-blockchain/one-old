@@ -473,6 +473,28 @@ export function hasRunAgentState(cwd: string, state: unknown): boolean {
   return fs.existsSync(runDir(cwd, runId));
 }
 
+// True when any subagent is currently in flight across all runs: a fresh pending
+// claim (within PENDING_AGENT_CLAIM_STALE_MS) or a fresh claimed agent (within
+// SUBAGENT_STALE_MS). Used by the build-completion heuristic to never flip a
+// project to maintenance phase while an orchestration run is still active.
+// `options.since` is the lifecycle completion watermark: claims created at or
+// before it belong to a FINISHED run and do not count — without it, a completed
+// build's claims would look "active" for up to 30 minutes and suppress the
+// post-build triage directive at exactly the moment the user starts iterating.
+export function hasActiveRunClaims(cwd: string, state: unknown, options: { since?: string | null } = {}): boolean {
+  const sinceTs = typeof options.since === 'string' && options.since.trim() ? Date.parse(options.since) : NaN;
+  const afterWatermark = (claim: Rec): boolean => {
+    if (!Number.isFinite(sinceTs)) return true;
+    const created = typeof claim.createdAt === 'string' ? Date.parse(claim.createdAt) : NaN;
+    return !Number.isFinite(created) || created > sinceTs;
+  };
+  for (const runId of runIdsForLookup(cwd, state)) {
+    if (listPendingClaims(cwd, runId).some(({ claim }) => afterWatermark(claim))) return true;
+    if (listClaimedAgents(cwd, runId).some((claim) => isFreshTimestamp(claim.createdAt, SUBAGENT_STALE_MS) && afterWatermark(claim))) return true;
+  }
+  return false;
+}
+
 export function legacyRunAgentContext(state: unknown): RunAgentContext | null {
   if (!isSubagentSession(state)) return null;
   const role = activeAgentRole(state);

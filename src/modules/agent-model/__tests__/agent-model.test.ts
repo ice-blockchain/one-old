@@ -118,6 +118,80 @@ test('team approved but wrong model → deny model-param; correct model → allo
   });
 });
 
+test('quick-fix maintenance worker is pinned to the cheapest model even at high tier', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // Level is high (senior roles → opus), but the quick-fix worker resolves to the
+    // cheapest tier → claude "haiku". A pricier model is denied; haiku is allowed.
+    const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
+    assert.equal(wrong.kind, 'deny');
+    if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('quick-fix pin is enforced on existing codebases too, and stakes a run claim', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // The per-role tier gate is new-project-only, but quick-fix must stay pinned
+    // in the primary maintenance population: existing codebases.
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
+    assert.equal(wrong.kind, 'deny');
+    if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
+
+    // No model param at all → still denied (would inherit the parent model).
+    const none = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix' }));
+    assert.equal(none.kind, 'deny');
+
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    assert.equal(ok.kind, 'noop');
+    // The allowed spawn staked a pending run claim so the run-team write gate
+    // can resolve the worker's role on its first write.
+    const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    assert.ok(runId.length > 0, 'currentRunId minted');
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', runId, 'pending');
+    const pending = fs.readdirSync(pendingDir).filter((f) => f.startsWith('quick-fix-'));
+    assert.ok(pending.length > 0, 'pending quick-fix claim staked');
+  });
+});
+
+test('team.overrides cannot lift the quick-fix pin', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.team = { ...prefs.team, overrides: { 'quick-fix': 'highest' } };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    // Even with an explicit override to the highest tier, the pin holds.
+    const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'opus' }));
+    assert.equal(wrong.kind, 'deny');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' })).kind, 'noop');
+  });
+});
+
+test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls back to cheapest', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-Q';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
+
+    markOpenCodeRoleAttempted(cwd, 'run-Q', 'quick-fix');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' })).kind, 'noop');
+  });
+});
+
 test('opencode role gate: a configured role is denied until OpenCode is tried, then allowed (fallback)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // Enable OpenCode + set a currentRunId so the gate can scope the attempt marker.

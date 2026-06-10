@@ -8,6 +8,7 @@ export * from './validate';
 export * from './canonicalize';
 export * from './local-prefs';
 export * from './normalize';
+export * from './lifecycle';
 export * from './materialization';
 export * from './run-agent';
 export * from './web';

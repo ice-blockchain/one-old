@@ -26,8 +26,9 @@ import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
-import { readEffectiveState } from '../../shared/state';
+import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { maybeFlipToMaintenance } from './build-complete';
 import { ONE_UID_FIELD } from '../../config/reporting';
 import {
   type MaterializeOutcome,
@@ -97,6 +98,19 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const oneUidMissing = !(typeof state[ONE_UID_FIELD] === 'string' && state[ONE_UID_FIELD]);
   if (reportOneMcp && oneUidMissing && computeOnboarding(reportRoot).done) {
     reportOneMcp(reportRoot, state, 'onboarding-complete');
+  }
+
+  // Build-completion fallback: flip a finished new-project build to maintenance
+  // phase (the primary signal is the orchestrator's explicit Phase-5 write). Cheap
+  // guards first so computeOnboarding + the disk scans inside maybeFlipToMaintenance
+  // only run for a new-project still in the building window — once flipped,
+  // isMaintenancePhase short-circuits. Independent of one-mcp; runs before the auth
+  // gate so it also works in AUTH_ENABLED=false dev/test.
+  if (!isSpawnAgentLifecycleTool
+    && state.mode === 'new-project'
+    && !isMaintenancePhase(state, 'new-project')
+    && computeOnboarding(reportRoot).done) {
+    maybeFlipToMaintenance(reportRoot, state);
   }
 
   if (!isAuthenticatedLocal()) return noop();

@@ -12,8 +12,8 @@ import {
 } from '../opencode-roles';
 
 test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', () => {
-  assert.deepEqual(openCodeDelegateRoles({}), ['senior-shipper', 'senior-tester', 'senior-frontend']);
-  assert.deepEqual(openCodeDelegateRoles({ openCode: {} }), ['senior-shipper', 'senior-tester', 'senior-frontend']);
+  assert.deepEqual(openCodeDelegateRoles({}), ['senior-shipper', 'senior-tester', 'senior-frontend', 'quick-fix']);
+  assert.deepEqual(openCodeDelegateRoles({ openCode: {} }), ['senior-shipper', 'senior-tester', 'senior-frontend', 'quick-fix']);
   assert.deepEqual(openCodeDelegateRoles({ openCode: { delegateRoles: ['senior-backend'] } }), ['senior-backend']);
   // sanitizes non-strings/blanks
   assert.deepEqual(openCodeDelegateRoles({ openCode: { delegateRoles: ['senior-frontend', '', 3, '  '] } }), ['senior-frontend']);

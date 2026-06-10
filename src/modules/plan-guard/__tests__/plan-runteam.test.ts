@@ -162,6 +162,17 @@ test('legacy mode (no manifest): a path owned by the active role is allowed', ()
   });
 });
 
+test('legacy mode (no manifest): the quick-fix maintenance worker may write both FE- and BE-owned paths', () => {
+  withDir((dir) => {
+    const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'quick-fix', { parentSessionId: 'orchestrator' }));
+    // Regression: these used to hit run-team-wrong-role because the ownership
+    // oracle only knew senior-frontend / senior-backend.
+    assert.equal(gate(dir, state, 'src/components/Button.tsx', rawFor(THREAD)), null);
+    assert.equal(gate(dir, state, 'src/app/api/join/route.ts', rawFor(THREAD)), null);
+  });
+});
+
 test('legacy mode (no manifest): an unowned path falls back to a first-write claim, not a deadlock', () => {
   withDir((dir) => {
     const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
