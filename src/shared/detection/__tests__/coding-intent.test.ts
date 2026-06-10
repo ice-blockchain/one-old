@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { isLikelyCodingPrompt } from '../index';
+import { isLikelyCodingPrompt, isLikelyEditRequest } from '../index';
 
 test('isLikelyCodingPrompt: build/implementation prompts are coding', () => {
   for (const prompt of [
@@ -34,5 +34,28 @@ test('isLikelyCodingPrompt: chit-chat / questions are not coding', () => {
     '',
   ]) {
     assert.equal(isLikelyCodingPrompt(prompt), false, `expected non-coding: ${prompt}`);
+  }
+});
+
+test('isLikelyEditRequest: copy/UI tweaks the coding-intent heuristic misses still count', () => {
+  for (const prompt of [
+    'Change the hero headline to Master Software without Development', // the reported miss
+    'shorten the title',
+    'reword the tagline',
+    'move the footer below the form',
+    'make the headline bigger',          // also matches coding-intent ("make")
+    'tweak the spacing on the pricing cards',
+    'swap the hero copy',
+  ]) {
+    assert.equal(isLikelyEditRequest(prompt), true, `expected edit request: ${prompt}`);
+    // None of the first few are caught by the narrower onboarding heuristic.
+  }
+  // The narrow heuristic genuinely missed the reported prompt — confirm the gap it closes.
+  assert.equal(isLikelyCodingPrompt('Change the hero headline to Master Software without Development'), false);
+});
+
+test('isLikelyEditRequest: still rejects pure chit-chat / questions', () => {
+  for (const prompt of ['how are you today?', 'thanks, that was helpful', 'good morning', 'tell me a joke', '']) {
+    assert.equal(isLikelyEditRequest(prompt), false, `expected non-edit: ${prompt}`);
   }
 });

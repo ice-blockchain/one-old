@@ -10,7 +10,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt } from '../../shared/detection';
+import { detectMode, isLikelyCodingPrompt, isLikelyEditRequest } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -21,7 +21,11 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, legacyStatePath, lifecycleCompletedAt, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { obj } from '../../shared/obj';
+import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
+import { resolveModel } from '../../shared/model-tiers';
+import { classifyPromptComplexity } from '../../shared/triage/classify';
 import {
   authApiKeyPromptHookResult,
   authChoiceHookResult,
@@ -69,6 +73,52 @@ function prependContext(prefix: string, result: HookResult): HookResult {
     ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
     ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
   });
+}
+
+// Post-build maintenance triage. Once the main build is complete (existing
+// codebases from the start; new projects once the build flips them to maintenance)
+// the machinery should scale to the request rather than treating every prompt the
+// same: trivial → a cheap/OpenCode quick-fix, small → a single role, complex →
+// re-engage the orchestrator. Hooks can't classify with an LLM, so we inject a
+// compact directive plus a deterministic keyword hint and let the agent decide.
+// Returns the directive string, or '' when triage does not apply. Guards: must be
+// maintenance phase, a coding/implementation prompt (skip questions/chat), not a
+// subagent session, and no orchestration run / fix-cycle currently in flight (never
+// re-triage mid-run). The directive branches on team mode so it never promises a
+// subagent that main-agent mode can't spawn.
+function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string, raw: unknown, host: string): string {
+  const mode = (state.mode as string) || detectMode(cwd);
+  if (!isMaintenancePhase(state, mode)) return '';
+  // Broader than the onboarding coding-intent gate: a finished app's copy/UI tweaks
+  // ("change the hero headline", "shorten the title") must still route through triage.
+  if (!isLikelyEditRequest(promptText)) return '';
+  if (hookSessionIdentity(raw).isSubagent) return '';
+  // Claims from a run that finished BEFORE the lifecycle stamp are settled —
+  // only claims newer than the watermark mean an orchestration is in flight.
+  if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) })) return '';
+
+  const hint = classifyPromptComplexity(promptText);
+  const team = obj(state.team);
+  const perf = obj(state.performance);
+  const level = perf && typeof perf.level === 'string' ? perf.level : '';
+  const teamMode = team && (team.mode === 'main-agent' || team.mode === 'subagents')
+    ? (team.mode as string)
+    : teamModeForLevel(level);
+  const ocActive = openCodeDelegationActive(state);
+  // Name the concrete cheapest model so the agent passes it on the quick-fix spawn
+  // without resolving an indirection (haiku on Claude/Cursor, gpt-5.4-mini on Codex).
+  const cheapest = resolveModel('cheapest', host) || 'the cheapest model for this host';
+  const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
+  // Render the OpenCode instruction only when delegation is actually active, so an
+  // off state doesn't leave a dead-branch clause a literal reader must evaluate.
+  let openCodeClause = '';
+  if (ocActive) {
+    openCodeClause = teamMode === 'main-agent'
+      ? ' If you prefer, offload it free via the `opencode_delegate` tool (role "quick-fix").'
+      : ' OpenCode is active — call the `opencode_delegate` tool (role "quick-fix") FIRST; only if it declines, spawn the paid worker.';
+  }
+  const blockName = teamMode === 'main-agent' ? 'maintenance-triage-main-agent' : 'maintenance-triage-subagents';
+  return block(blockName, { HINT: hint.tier, CONFIDENCE: hint.confidence, SIGNALS: signals, CHEAPEST_MODEL: cheapest, OPENCODE_CLAUSE: openCodeClause });
 }
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
@@ -152,11 +202,18 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     });
   }
 
+  // ── Post-build maintenance triage (appended to whatever context we return) ──
+  const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
+
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });
   if (materialized) {
-    return context(materialized.context, { systemMessage: materialized.systemMessage });
+    const body = triage ? `${materialized.context}\n\n${triage}` : materialized.context;
+    return context(body, { systemMessage: materialized.systemMessage });
   }
 
+  if (triage) {
+    return context(`[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
+  }
   return context(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

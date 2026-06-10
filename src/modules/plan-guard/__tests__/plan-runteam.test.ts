@@ -16,9 +16,13 @@ const STACK = 'default|react-vite|supabase|none';
 const RUN = 'run-1';
 const THREAD = '019e7390-ca45-7e03-84d3-284bda1ba905';
 
+// A BUILDING-phase subagents project — the context run-team enforcement is for
+// (parallel implementers coordinated by the architect's assignments manifest).
+// In maintenance phase the gate stands down (separate test below), so these
+// enforcement cases pin the building phase explicitly via mode:new-project.
 function baseState(extra: Record<string, unknown> = {}): Record<string, unknown> {
   return {
-    mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
     mobile: { framework: 'none' }, onboardingComplete: true, materializedStack: STACK,
     currentRunId: RUN, team: { mode: 'subagents', source: 'prompted', approved: true },
     ...extra,
@@ -145,11 +149,25 @@ test('shell-command feature write is denied (cannot verify ownership)', () => {
   });
 });
 
-test('not a subagent session in a subagents project is denied', () => {
+test('not a subagent session in a subagents project is denied (building phase)', () => {
   withDir((dir) => {
     const state = baseState({ currentRunId: undefined }); // no run state, no claim -> main agent
     const reason = gate(dir, state, 'src/app/page.tsx', {});
     assert.ok(reason && reason.includes('team.mode'));
+  });
+});
+
+test('maintenance phase: run-team stands down so the quick-fix worker can write', () => {
+  withDir((dir) => {
+    // existing-codebase infers maintenance (also covers a new-project flipped to it).
+    // The host where this bit users keeps every run-claim `pending`, so the worker's
+    // write resolves to no context → would deny run-team-not-subagent in a build.
+    const state = baseState({ mode: 'existing-codebase' });
+    assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', {}), null);
+    // Even a stale BUILD manifest that scopes the path to another role must not block
+    // a maintenance edit (the quick-fix worker is never in that manifest).
+    writeManifest(dir, FE_BE_MANIFEST);
+    assert.equal(gate(dir, state, 'src/app/api/route.ts', rawFor(THREAD)), null);
   });
 });
 
@@ -159,6 +177,17 @@ test('legacy mode (no manifest): a path owned by the active role is allowed', ()
     assert.ok(claimThreadRole(dir, state, THREAD, 'senior-frontend', { parentSessionId: 'orchestrator' }));
     // no manifest written
     assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', rawFor(THREAD)), null);
+  });
+});
+
+test('legacy mode (no manifest): the quick-fix maintenance worker may write both FE- and BE-owned paths', () => {
+  withDir((dir) => {
+    const state = baseState({ frontend: 'nextjs', materializedStack: 'default|nextjs|supabase|none' });
+    assert.ok(claimThreadRole(dir, state, THREAD, 'quick-fix', { parentSessionId: 'orchestrator' }));
+    // Regression: these used to hit run-team-wrong-role because the ownership
+    // oracle only knew senior-frontend / senior-backend.
+    assert.equal(gate(dir, state, 'src/components/Button.tsx', rawFor(THREAD)), null);
+    assert.equal(gate(dir, state, 'src/app/api/join/route.ts', rawFor(THREAD)), null);
   });
 });
 

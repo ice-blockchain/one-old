@@ -7,11 +7,11 @@ import { claudePluginManifest, codexPluginManifest, cursorPluginManifest } from 
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-test('generatedSkillDocs re-gathers both skill trees (104 catalog + 0 bootstrap)', () => {
+test('generatedSkillDocs re-gathers both skill trees (105 catalog + 0 bootstrap)', () => {
   const docs = generatedSkillDocs(REPO_ROOT);
   const templates = docs.filter((d) => d.relPath.startsWith(`skills-catalog${path.sep}`));
   const bootstrap = docs.filter((d) => d.relPath.startsWith(`skills${path.sep}`));
-  assert.equal(templates.length, 104);
+  assert.equal(templates.length, 105);
   assert.equal(bootstrap.length, 0);
   // traffic-one-doctor is a normal catalog skill now — present in skills-catalog/, absent from the (empty) bootstrap tree.
   assert.ok(!docs.some((d) => d.relPath === path.join('skills', 'traffic-one-doctor', 'SKILL.md')));

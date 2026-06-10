@@ -28,6 +28,7 @@ export const PERFORMANCE_CONFIG: Readonly<Record<string, PerformanceLevelConfig>
       'senior-reviewer': { tier: 'balanced' },
       'senior-tester': { tier: 'cheapest' },
       'senior-shipper': { tier: 'balanced' },
+      'quick-fix': { tier: 'cheapest' },
     },
   },
   high: {
@@ -40,6 +41,7 @@ export const PERFORMANCE_CONFIG: Readonly<Record<string, PerformanceLevelConfig>
       'senior-reviewer': { tier: 'highest' },
       'senior-tester': { tier: 'cheapest' },
       'senior-shipper': { tier: 'balanced' },
+      'quick-fix': { tier: 'cheapest' },
     },
   },
 };
@@ -48,7 +50,10 @@ export const PERFORMANCE_CONFIG: Readonly<Record<string, PerformanceLevelConfig>
 
 export type PerformanceLevelId = 'low' | 'balanced' | 'high';
 
-// The senior roster, in roster order; matches VALID_AGENT_ROLES (config/state).
+// The senior roster, in roster order. A strict subset of VALID_AGENT_ROLES
+// (config/state): the `quick-fix` maintenance worker is a valid spawn role but is
+// deliberately NOT part of the roster or the plan-aware tier tables — it is pinned
+// to `cheapest` via PERFORMANCE_CONFIG and never tier-shifts with plan/OpenCode.
 export const AGENT_ROLES = [
   'senior-architect',
   'senior-frontend',

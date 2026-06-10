@@ -42,6 +42,12 @@ test('roleCanWriteFeatureSource enforces per-role owned path patterns', () => {
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'packages/ui/src/btn.tsx'), false);
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/app/(public)/news/page.tsx'), false);
   assert.equal(roleCanWriteFeatureSource('senior-backend', 'src/lib/seo.ts'), false);
+  // quick-fix (maintenance worker) owns the union of frontend + backend paths
+  assert.equal(roleCanWriteFeatureSource('quick-fix', 'src/app/(public)/news/page.tsx'), true);
+  assert.equal(roleCanWriteFeatureSource('quick-fix', 'packages/ui/src/btn.tsx'), true);
+  assert.equal(roleCanWriteFeatureSource('quick-fix', 'src/app/api/join/route.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('quick-fix', 'services/api/src/s.ts'), true);
+  assert.equal(roleCanWriteFeatureSource('quick-fix', 'README.md'), false);
   // unknown role owns nothing
   assert.equal(roleCanWriteFeatureSource('senior-architect', 'apps/web/src/x.ts'), false);
 });

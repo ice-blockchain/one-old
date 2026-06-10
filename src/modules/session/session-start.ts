@@ -29,6 +29,7 @@ import {
   hasRunAgentState,
   hookSessionIdentity,
   legacyRunAgentContext,
+  maintenanceLifecycle,
   normalizeState,
   readEffectiveState,
   resolveRunAgentContext,
@@ -224,6 +225,9 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
       confirmedAt: nowIsoNoMs(),
       autoDetected: true,
       evidence: detected.evidence,
+      // An existing codebase is already built → maintenance phase from first
+      // detection, so post-build triage applies to the user's first prompt.
+      lifecycle: maintenanceLifecycle('existing-detected'),
     });
     normalizeState(state, mode);
 

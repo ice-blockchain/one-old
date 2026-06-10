@@ -9,6 +9,10 @@ export const DEFAULT_OPENCODE_DELEGATE_ROLES: readonly string[] = [
   'senior-shipper',
   'senior-tester',
   'senior-frontend',
+  // The maintenance quick-fix worker handles trivial edits — exactly the bounded,
+  // low-risk work OpenCode is meant to absorb for free. When OpenCode is active the
+  // spawn gate forces a free OpenCode attempt first, then falls back to the cheapest paid model.
+  'quick-fix',
 ];
 
 // Free OpenCode Zen gateway models, in fallback order. These need ZERO user

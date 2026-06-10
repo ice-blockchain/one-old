@@ -18,6 +18,7 @@ export const SKILL_FILTERS: Readonly<Record<string, Set<string>>> = {
     'documentation-lookup', 'observability', 'app-launch-checklist',
     'design-audit', 'browser-qa', 'supabase-setup', 'predeploy-security-check',
     'senior-eng-orchestrator', 'token-usage-report', 'model-tier-sync',
+    'task-triage',
   ]),
   'react-vite': new Set([
     'create-component', 'create-feature', 'create-page', 'create-service',

@@ -1,0 +1,5 @@
+{
+  "id": "quick-fix",
+  "kind": "content",
+  "agents": ["agent.md"]
+}
