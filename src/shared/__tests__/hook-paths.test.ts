@@ -154,3 +154,27 @@ test('resolveProjectRoot: a stray shallow sub-package state never shadows the re
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('resolveProjectRoot never escapes into the home directory (stray ~/.traffic-one)', () => {
+  const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-home-')));
+  const prevHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    // This test relies on os.homedir() honoring $HOME (POSIX); assert it up front so
+    // a platform that ignores it fails loudly rather than silently passing.
+    assert.equal(require('os').homedir(), fakeHome, 'os.homedir() must honor $HOME for this test');
+    // A stray mode-bearing state in the home dir — e.g. from running the plugin in ~ once.
+    writeState(fakeHome, { mode: 'new-project', onboardingComplete: true });
+    // A project under home that has NO state file of its own.
+    const proj = path.join(fakeHome, 'work', 'myapp');
+    const file = path.join(proj, 'src', 'a.ts');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'x', 'utf8');
+    // Must fall back to the project dir — never adopt the home-dir state.
+    assert.equal(resolveProjectRoot(proj, file), proj);
+    assert.equal(resolveProjectRoot(proj, ''), proj);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
+});

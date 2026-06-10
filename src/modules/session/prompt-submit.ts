@@ -24,6 +24,7 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, legacyStatePath, lifecycleCompletedAt, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
 import { obj } from '../../shared/obj';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
+import { resolveModel } from '../../shared/model-tiers';
 import { classifyPromptComplexity } from '../../shared/triage/classify';
 import {
   authApiKeyPromptHookResult,
@@ -85,7 +86,7 @@ function prependContext(prefix: string, result: HookResult): HookResult {
 // subagent session, and no orchestration run / fix-cycle currently in flight (never
 // re-triage mid-run). The directive branches on team mode so it never promises a
 // subagent that main-agent mode can't spawn.
-function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string, raw: unknown): string {
+function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string, raw: unknown, host: string): string {
   const mode = (state.mode as string) || detectMode(cwd);
   if (!isMaintenancePhase(state, mode)) return '';
   if (!isLikelyCodingPrompt(promptText)) return '';
@@ -101,10 +102,21 @@ function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string,
   const teamMode = team && (team.mode === 'main-agent' || team.mode === 'subagents')
     ? (team.mode as string)
     : teamModeForLevel(level);
-  const openCode = openCodeDelegationActive(state) ? 'active' : 'off';
+  const ocActive = openCodeDelegationActive(state);
+  // Name the concrete cheapest model so the agent passes it on the quick-fix spawn
+  // without resolving an indirection (haiku on Claude/Cursor, gpt-5.4-mini on Codex).
+  const cheapest = resolveModel('cheapest', host) || 'the cheapest model for this host';
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
+  // Render the OpenCode instruction only when delegation is actually active, so an
+  // off state doesn't leave a dead-branch clause a literal reader must evaluate.
+  let openCodeClause = '';
+  if (ocActive) {
+    openCodeClause = teamMode === 'main-agent'
+      ? ' If you prefer, offload it free via the `opencode_delegate` tool (role "quick-fix").'
+      : ' OpenCode is active — call the `opencode_delegate` tool (role "quick-fix") FIRST; only if it declines, spawn the paid worker.';
+  }
   const blockName = teamMode === 'main-agent' ? 'maintenance-triage-main-agent' : 'maintenance-triage-subagents';
-  return block(blockName, { HINT: hint.tier, CONFIDENCE: hint.confidence, SIGNALS: signals, OPENCODE: openCode });
+  return block(blockName, { HINT: hint.tier, CONFIDENCE: hint.confidence, SIGNALS: signals, CHEAPEST_MODEL: cheapest, OPENCODE_CLAUSE: openCodeClause });
 }
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
@@ -189,7 +201,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   // ── Post-build maintenance triage (appended to whatever context we return) ──
-  const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw);
+  const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });

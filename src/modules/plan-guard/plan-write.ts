@@ -17,6 +17,7 @@ import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import {
   applyPatchTargetPaths,
@@ -47,6 +48,10 @@ export function planWriteGate(ctx: Ctx): HookResult {
     : [];
 
   const cwd = ctx.cwd;
+  // Never gate the plugin's own authoring repo — the gate/materialiser must never
+  // act on it (mirrors the onboarding gate). Without this, a stale or missing
+  // .traffic-one here makes the plan gate fire on plugin development.
+  if (isPluginAuthoringRoot(cwd)) return noop();
   if (authChoiceAllowsContinue(cwd)) return noop();
 
   const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '');

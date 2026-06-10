@@ -257,8 +257,11 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
-      assert.ok(r.context.includes('Heuristic hint: trivial'), 'trivial hint');
+      assert.ok(r.context.includes('Keyword hint: trivial'), 'trivial hint');
       assert.ok(r.context.includes('quick-fix'), 'subagents variant routes to quick-fix');
+      // Prescriptive: force delegation + name the concrete cheapest model (host=claude → haiku).
+      assert.ok(r.context.includes('Do NOT make the edit yourself'), 'directive forbids inline work in subagents mode');
+      assert.ok(r.context.includes('model "haiku"'), 'names the concrete cheapest model');
     }
   });
 });
@@ -270,7 +273,7 @@ test('maintenance + complex coding prompt → complex hint, orchestrator route',
     const r = runUserPromptSubmit(ctx(cwd, 'add Stripe checkout and subscription billing'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
-      assert.ok(r.context.includes('Heuristic hint: complex'), 'complex hint');
+      assert.ok(r.context.includes('Keyword hint: complex'), 'complex hint');
       assert.ok(r.context.includes('senior-eng-orchestrator'), 'routes to the orchestrator');
     }
   });

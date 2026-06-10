@@ -70,6 +70,19 @@ test('subscription billing fires the payments signal in verb form too', () => {
   }
 });
 
+test('a copy change with the text-noun after a long phrase is trivial (headline rewrite)', () => {
+  // Regression: the real prompt "change the <long hero headline> text with X" — the
+  // text-noun sits well past the change-verb, so the tight 24-char window missed it
+  // and it fell to the `small` residual. The widened window catches it as trivial.
+  for (const p of [
+    'we need to change the Master Web Development, One Project at a Time text with software development',
+    'update the hero headline to something punchier',
+    'reword the tagline on the pricing page',
+  ]) {
+    assert.equal(tier(p), 'trivial', `expected trivial for: ${p}`);
+  }
+});
+
 test('mixed evidence demotes confidence and surfaces the trivial co-signals', () => {
   // A strong domain word used as a page/column NAME next to trivial signals must
   // not anchor the agent with a confident complex label.

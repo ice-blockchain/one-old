@@ -2,6 +2,7 @@
 // Project-root resolution from a hook tool's file path + new-project monorepo
 // predicates. Ported 1:1 from scripts/hook-runtime/handlers/_helpers.cjs.
 
+import * as os from 'os';
 import * as path from 'path';
 
 import { STATE_FILE } from '../config/paths';
@@ -47,8 +48,16 @@ export function isOnboardedProjectRoot(dir: string): boolean {
 const MAX_ROOT_WALK = 40;
 
 function nearestOnboardedRoot(startDir: string): string | null {
+  // The home dir is machine-wide config space (`~/.traffic-one`), never a project
+  // root. Stop the walk there (and never above it): a stray mode-bearing
+  // `~/.traffic-one/.one.json` — e.g. from running the plugin in `~` once — must
+  // NOT be adopted as the root for a project that lacks its own state file.
+  // Computed per-call (not module-scoped) so tests can pin $HOME.
+  let home = '';
+  try { home = path.resolve(os.homedir()); } catch { /* no home → unbounded but MAX-capped */ }
   let current = path.resolve(startDir);
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
+    if (home && current === home) break; // reached the home dir — don't treat it (or above) as a root
     if (isOnboardedProjectRoot(current)) return current;
     const parent = path.dirname(current);
     if (parent === current) break; // filesystem root

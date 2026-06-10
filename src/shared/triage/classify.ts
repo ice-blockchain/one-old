@@ -43,8 +43,12 @@ const TRIVIAL: Signal[] = [
   { re: /\b(colou?rs?|css|styl(e|es|ing)|paddings?|margins?|spacing|font([\s-]?size)?|borders?|background|align(ment)?)\b/i, tag: 'styling' },
   { re: /\brename\b/i, tag: 'rename' },
   { re: /\b(format(ting)?|prettier|lint(ing)?|indentation|whitespace)\b/i, tag: 'formatting' },
-  { re: /\b(change|updat\w+|fix|edit|tweak|adjust|reword|correct)\b[^.]{0,24}\b(text|copy|wording|labels?|captions?|placeholders?|headings?|titles?|messages?|strings?)\b/i, tag: 'copy' },
-  { re: /\b(text|copy|labels?|wording)\b[^.]{0,16}\b(change|updat\w+|fix|typo|wrong|incorrect)\b/i, tag: 'copy' },
+  // change-verb … text-noun within one clause. The window is generous (80) so a
+  // headline sits between them — "change the <long hero headline> text" — without
+  // needing the noun adjacent to the verb. Gated behind no strong/weak signal, so a
+  // domain request ("change the auth flow text") is still complex, not trivial.
+  { re: /\b(change|updat\w+|fix|edit|tweak|adjust|reword|rewrit\w*|replac\w*|swap|correct|set)\b[^.]{0,80}\b(text|copy|wording|labels?|captions?|placeholders?|headings?|headlines?|taglines?|titles?|messages?|strings?|cta)\b/i, tag: 'copy' },
+  { re: /\b(text|copy|labels?|wording|headlines?|taglines?|titles?)\b[^.]{0,40}\b(change|updat\w+|fix|typo|wrong|incorrect|reword|replac\w*)\b/i, tag: 'copy' },
 ];
 
 // "just/quick/small/…" — an explicit smallness modifier from the user.
