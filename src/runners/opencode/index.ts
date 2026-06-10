@@ -1,9 +1,11 @@
 // src/runners/opencode/index.ts
 // Headless OpenCode delegation runner (compiles to scripts/opencode-runner.cjs).
 // The senior-eng-orchestrator calls this to hand a bounded, low-risk coding task
-// to the installed OpenCode CLI (a free `opencode/*` gateway model — runs headless
-// via `opencode run --format json`, NO sign-in/API key) INSTEAD of spawning a paid
-// Traffic One subagent.
+// to the installed OpenCode CLI INSTEAD of spawning a paid Traffic One subagent.
+// It runs a free `opencode/*` Zen gateway model — headless via `opencode run
+// --format json`, NO account/API key on ANY host — walking OPENCODE_FREE_MODELS
+// in order and advancing to the next free model when the gateway rejects one
+// (the free ids are promotional and rotate).
 //
 // Safety model: the task runs inside a throwaway git WORKTREE (sandbox cut from
 // HEAD). Only a clean, error-free, non-empty result is applied back to the real
@@ -21,22 +23,41 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
 import { markOpenCodeRoleAttempted } from '../../shared/opencode-roles';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
-import { getToolSpec, managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
+import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 
 type Rec = Record<string, unknown>;
 const which = exec.which;
 
-const DEFAULT_MODEL = 'opencode/deepseek-v4-flash-free';
 const RUN_TIMEOUT_MS = 8 * 60 * 1000;
 const DIGEST_HARD_BYTES = 3072;
-// The free gateway model is non-deterministic and sometimes "chats" without
+// The free gateway models are non-deterministic and sometimes "chat" without
 // editing. Allow ONE bounded retry (still free) on a clean no-op before falling
 // back to a paid subagent — this measurably raises the delegation hit-rate.
 const MAX_DELEGATE_ATTEMPTS = 2;
+
+// Headless hardening for the spawned CLI (verified against the pinned 1.15.13
+// binary, which supports all three env vars): never self-update mid-run, never
+// share sessions, don't inject the user's global ~/.claude/CLAUDE.md into the
+// delegation context, and pin the two ask-default permissions to a deterministic
+// `deny`. `opencode run` already auto-rejects permission asks headlessly on the
+// pinned version, but resolveBin() can fall back to an unpinned PATH binary —
+// and an allowed `external_directory` would let the model write OUTSIDE the
+// throwaway worktree, escaping the diff-capture sandbox entirely. Config layers
+// merge key-by-key, so this overrides only these keys, not the user's config.
+const OPENCODE_RUN_ENV: Readonly<Record<string, string>> = {
+  OPENCODE_DISABLE_AUTOUPDATE: '1',
+  OPENCODE_DISABLE_CLAUDE_CODE_PROMPT: '1',
+  OPENCODE_CONFIG_CONTENT: JSON.stringify({
+    autoupdate: false,
+    share: 'disabled',
+    permission: { external_directory: 'deny', doom_loop: 'deny' },
+  }),
+};
 
 export interface DelegateOpts {
   role?: string;
@@ -67,19 +88,40 @@ function resolveBin(): string | null {
   return which('opencode');
 }
 
-function resolveModel(state: Rec, opts: DelegateOpts): string {
-  if (opts.model) return opts.model;
+// The free-model chain is walked per delegation; remember (for this process —
+// the MCP server is long-lived, and --from-plan loops units in one process) how
+// far we got, so a retired promo model is not re-tried on every single unit.
+// Never persisted: a plugin update with a fresh chain resets it naturally.
+let freeChainStart = 0;
+
+// Test-only: the memo is module-level process state, so in-process tests must
+// reset it between cases to stay order-independent.
+export function resetOpenCodeModelMemo(): void {
+  freeChainStart = 0;
+}
+
+// Model resolution. An EXPLICIT model (opts.model or openCode.model in local
+// preferences) is the user's choice: it is tried alone, with NO fallback — we
+// never silently swap a model someone pinned. Only the default free chain
+// falls back, advancing on model-class errors.
+function resolveModels(state: Rec, opts: DelegateOpts): { models: string[]; fromChain: boolean } {
+  if (opts.model) return { models: [opts.model], fromChain: false };
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
-  if (openCode && typeof openCode.model === 'string' && openCode.model) return openCode.model;
-  const spec = getToolSpec('opencode');
-  return typeof spec?.delegateModel === 'string' && spec.delegateModel ? spec.delegateModel : DEFAULT_MODEL;
+  if (openCode && typeof openCode.model === 'string' && openCode.model) {
+    return { models: [openCode.model], fromChain: false };
+  }
+  const start = Math.min(freeChainStart, OPENCODE_FREE_MODELS.length - 1);
+  return { models: OPENCODE_FREE_MODELS.slice(start), fromChain: true };
 }
 
 // `opencode run` emits NDJSON. Pull out error events + the assistant text.
-// Non-JSON lines (e.g. a first-run DB-migration banner) are ignored.
-function parseStream(stdout: string): { errored: boolean; errorMsg: string | null; summary: string } {
+// Non-JSON lines (e.g. a first-run DB-migration banner) are ignored. The error
+// name AND message are both kept: classification needs the raw class name
+// (e.g. "ProviderModelNotFoundError") when the message is empty.
+function parseStream(stdout: string): { errored: boolean; errName: string; errorMsg: string; summary: string } {
   let errored = false;
-  let errorMsg: string | null = null;
+  let errName = '';
+  let errorMsg = '';
   const texts: string[] = [];
   for (const raw of stdout.split('\n')) {
     const line = raw.trim();
@@ -90,9 +132,8 @@ function parseStream(stdout: string): { errored: boolean; errorMsg: string | nul
       errored = true;
       const err = obj.error && typeof obj.error === 'object' ? (obj.error as Rec) : {};
       const data = err.data && typeof err.data === 'object' ? (err.data as Rec) : {};
-      errorMsg = (typeof data.message === 'string' && data.message)
-        || (typeof err.name === 'string' && err.name)
-        || 'opencode reported an error';
+      if (typeof data.message === 'string' && data.message) errorMsg = data.message;
+      if (typeof err.name === 'string' && err.name) errName = err.name;
     }
     if (obj.type === 'text') {
       const part = obj.part && typeof obj.part === 'object' ? (obj.part as Rec) : {};
@@ -100,7 +141,23 @@ function parseStream(stdout: string): { errored: boolean; errorMsg: string | nul
       if (txt) texts.push(txt);
     }
   }
-  return { errored, errorMsg, summary: texts.join(' ').replace(/\s+/g, ' ').trim() };
+  return { errored, errName, errorMsg, summary: texts.join(' ').replace(/\s+/g, ' ').trim() };
+}
+
+// Decide whether the NEXT free model in the chain should be tried after an
+// opencode-reported error. LIVE-VERIFIED on the pinned 1.15.13: a RETIRED or
+// unknown gateway model is reported as a generic "Unexpected server error.
+// Check server logs for details." — no model name, no "not found", no 401 in
+// the message — so a positive match on model-error vocabulary would miss the
+// exact case the chain exists for (promo rotation). Inverted policy instead:
+// advance on EVERY server/model-side error, and fail fast ONLY on clearly
+// environmental failures (DNS, refused/reset connections, TLS, proxy, offline)
+// where a different model cannot possibly help. The asymmetry is deliberate:
+// a false advance costs at most two fast-failing extra runs before the paid
+// fallback; a false fail-fast kills delegation until the next plugin update.
+const ENVIRONMENTAL_ERROR_RE = /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENETUNREACH|EHOSTUNREACH|fetch failed|network|socket|TLS|certificate|proxy|offline/i;
+function shouldTryNextModel(errName: string, errorMsg: string): boolean {
+  return !ENVIRONMENTAL_ERROR_RE.test(`${errName}: ${errorMsg}`);
 }
 
 function runStamp(): string {
@@ -141,6 +198,95 @@ function removeWorktree(cwd: string, parent: string, wt: string): void {
   try { fs.rmSync(parent, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
+// Outcome of trying ONE model in its own fresh worktree.
+type ModelRunOutcome =
+  | { kind: 'delegated'; touched: string[]; summary: string }
+  | { kind: 'try-next'; error: string }      // server/model-side error → try the next model
+  | { kind: 'failed'; error: string }        // terminal: environmental/process/apply failure
+  | { kind: 'no-changes' };                  // terminal: model ran clean but produced nothing
+
+// Run one model against the task in a FRESH throwaway worktree (created here,
+// removed here). A fresh worktree per model — rather than resetting one — wipes
+// every residue class at once: commits the model may have made, gitignored
+// build output, lockfiles. On success the staged diff (vs baseSha) is applied
+// to the real working tree before returning.
+function runModel(cwd: string, bin: string, baseSha: string, model: string, task: string): ModelRunOutcome {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-'));
+  const wt = path.join(parent, 'wt');
+  const added = git(cwd, ['worktree', 'add', '--detach', wt, baseSha], 60_000);
+  if (added.status !== 0) {
+    removeWorktree(cwd, parent, wt);
+    return { kind: 'failed', error: `git worktree add failed: ${added.stderr || 'non-zero exit'}` };
+  }
+
+  try {
+    // `opencode run` resolves its project directory from $PWD, NOT the spawn cwd:
+    // Node's spawnSync sets the child's real cwd but leaves PWD pointing at the
+    // parent (only a shell `cd` updates PWD). Without pinning the directory,
+    // opencode edits the CALLER's tree (the user's real repo) instead of the
+    // sandbox worktree, the worktree diff comes back empty, and EVERY delegation
+    // falsely returns "no-changes" while stray edits leak into the real tree.
+    // Pin both the explicit --dir flag and PWD to the worktree so the sandbox
+    // actually contains the work.
+    const runArgs = ['run', task, '--dir', wt, '-m', model, '--format', 'json'];
+    let summary = '';
+    // Retry only a CLEAN no-op (the weak model occasionally produces nothing). A
+    // gateway error or process failure won't fix itself on retry, so bail at once.
+    for (let attempt = 1; attempt <= MAX_DELEGATE_ATTEMPTS; attempt++) {
+      const run = spawnSync(bin, runArgs, {
+        cwd: wt,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: RUN_TIMEOUT_MS,
+        env: { ...process.env, ...OPENCODE_RUN_ENV, PWD: wt },
+      });
+      if (run.error || run.status === null) {
+        // Process-level failure (incl. a deployment so slow it hits our timeout).
+        // Deliberately NOT model-class: the chain does not advance on stalls.
+        return { kind: 'failed', error: `opencode run failed: ${run.error ? run.error.message : 'timed out'}` };
+      }
+      const parsed = parseStream(run.stdout || '');
+      if (parsed.errored) {
+        const msg = parsed.errorMsg || parsed.errName || 'error';
+        if (shouldTryNextModel(parsed.errName, parsed.errorMsg)) {
+          return { kind: 'try-next', error: msg };
+        }
+        return { kind: 'failed', error: `opencode: ${msg}` };
+      }
+      // Stage everything opencode changed; non-empty staged diff vs the BASE sha
+      // ⇒ we have work. Diffing against baseSha (not symbolic HEAD) keeps the
+      // work visible even when the model `git commit`ed inside the detached
+      // worktree (which moves HEAD and would make a HEAD-relative diff empty).
+      git(wt, ['add', '-A']);
+      if (git(wt, ['diff', '--cached', '--quiet', baseSha]).status !== 0) { summary = parsed.summary; break; }
+      if (attempt >= MAX_DELEGATE_ATTEMPTS) {
+        return { kind: 'no-changes' };
+      }
+      // Reset the throwaway worktree to the pristine base before the free retry
+      // (-x also drops gitignored residue the first attempt may have written).
+      git(wt, ['reset', '--hard', '-q', baseSha]);
+      git(wt, ['clean', '-fdxq']);
+    }
+
+    // Capture the patch + touched list from the winning attempt (vs baseSha).
+    const touched = git(wt, ['diff', '--cached', '--name-only', baseSha]).stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    const patch = git(wt, ['diff', '--cached', '--binary', baseSha]).stdout;
+    const patchPath = path.join(parent, 'delegated.patch');
+    fs.writeFileSync(patchPath, patch, 'utf8');
+
+    // Apply to the real working tree (unstaged, like a subagent edit). Same base,
+    // so a clean tree applies cleanly; a conflict → fail → fallback.
+    let applied = git(cwd, ['apply', '--whitespace=nowarn', patchPath]);
+    if (applied.status !== 0) applied = git(cwd, ['apply', '--3way', patchPath]);
+    if (applied.status !== 0) {
+      return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}` };
+    }
+    return { kind: 'delegated', touched, summary };
+  } finally {
+    removeWorktree(cwd, parent, wt);
+  }
+}
+
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
   // Record the attempt (per run + role) BEFORE doing anything, so the spawn gate
   // lets the orchestrator fall back to a paid spawn after OpenCode has been tried
@@ -166,87 +312,63 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   if (!task) {
     return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No task provided to delegate' };
   }
-  // Sandbox requires a committed HEAD to branch the worktree from.
-  if (git(cwd, ['rev-parse', '--verify', 'HEAD']).status !== 0) {
+  // Sandbox requires a committed HEAD to branch the worktree from. Pin the exact
+  // sha once: every worktree, reset, and diff below is relative to it.
+  const head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
+  if (head.status !== 0) {
     return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
   }
+  const baseSha = head.stdout.trim();
 
-  const model = resolveModel(state, opts);
+  const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';
   const runId = (opts.runId || '').trim() || runStamp();
 
-  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-'));
-  const wt = path.join(parent, 'wt');
-  const added = git(cwd, ['worktree', 'add', '--detach', wt, 'HEAD'], 60_000);
-  if (added.status !== 0) {
-    removeWorktree(cwd, parent, wt);
-    return { ok: false, action: 'failed', digest: null, touched: [], error: `git worktree add failed: ${added.stderr || 'non-zero exit'}`, model };
-  }
-
-  try {
-    // `opencode run` resolves its project directory from $PWD, NOT the spawn cwd:
-    // Node's spawnSync sets the child's real cwd but leaves PWD pointing at the
-    // parent (only a shell `cd` updates PWD). Without pinning the directory,
-    // opencode edits the CALLER's tree (the user's real repo) instead of the
-    // sandbox worktree, the worktree diff comes back empty, and EVERY delegation
-    // falsely returns "no-changes" while stray edits leak into the real tree.
-    // Pin both the explicit --dir flag and PWD to the worktree so the sandbox
-    // actually contains the work.
-    const runArgs = ['run', task, '--dir', wt, '-m', model, '--format', 'json'];
-    let summary = '';
-    // Retry only a CLEAN no-op (the weak model occasionally produces nothing). A
-    // gateway error or process failure won't fix itself on retry, so bail at once.
-    for (let attempt = 1; attempt <= MAX_DELEGATE_ATTEMPTS; attempt++) {
-      const run = spawnSync(bin, runArgs, {
-        cwd: wt,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: RUN_TIMEOUT_MS,
-        env: { ...process.env, PWD: wt },
-      });
-      if (run.error || run.status === null) {
-        return { ok: false, action: 'failed', digest: null, touched: [], error: `opencode run failed: ${run.error ? run.error.message : 'timed out'}`, model };
+  // Walk the models: a fresh worktree per model; advance on server/model-side
+  // errors (see shouldTryNextModel). Environmental failures are terminal.
+  const modelErrors: string[] = [];
+  let lastModel = models[models.length - 1] as string;
+  for (const model of models) {
+    lastModel = model;
+    const outcome = runModel(cwd, bin, baseSha, model, task);
+    if (outcome.kind === 'delegated') {
+      if (fromChain) {
+        const idx = OPENCODE_FREE_MODELS.indexOf(model);
+        if (idx >= 0) freeChainStart = idx;
       }
-      const parsed = parseStream(run.stdout || '');
-      if (parsed.errored) {
-        return { ok: false, action: 'failed', digest: null, touched: [], error: `opencode: ${parsed.errorMsg || 'error'}`, model };
-      }
-      // Stage everything opencode changed; non-empty staged diff ⇒ we have work.
-      git(wt, ['add', '-A']);
-      if (git(wt, ['diff', '--cached', '--quiet']).status !== 0) { summary = parsed.summary; break; }
-      if (attempt >= MAX_DELEGATE_ATTEMPTS) {
-        return { ok: false, action: 'no-changes', digest: null, touched: [], error: 'OpenCode produced no file changes', model };
-      }
-      // Reset the throwaway worktree to pristine HEAD before the free retry.
-      git(wt, ['reset', '--hard', '-q', 'HEAD']);
-      git(wt, ['clean', '-fdq']);
+      const digest = writeDigest(cwd, runId, role, model, outcome.touched, outcome.summary);
+      return { ok: true, action: 'delegated', digest, touched: outcome.touched, error: null, model };
     }
-
-    // Capture the patch + touched list from the winning attempt.
-    const touched = git(wt, ['diff', '--cached', '--name-only']).stdout.split('\n').map((s) => s.trim()).filter(Boolean);
-    const patch = git(wt, ['diff', '--cached', '--binary']).stdout;
-    const patchPath = path.join(parent, 'delegated.patch');
-    fs.writeFileSync(patchPath, patch, 'utf8');
-
-    // Apply to the real working tree (unstaged, like a subagent edit). Same HEAD,
-    // so a clean tree applies cleanly; a conflict → fail → fallback.
-    let applied = git(cwd, ['apply', '--whitespace=nowarn', patchPath]);
-    if (applied.status !== 0) applied = git(cwd, ['apply', '--3way', patchPath]);
-    if (applied.status !== 0) {
-      return { ok: false, action: 'failed', digest: null, touched, error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}`, model };
+    if (outcome.kind === 'try-next') {
+      modelErrors.push(`${model}: ${outcome.error}`);
+      if (fromChain) {
+        const idx = OPENCODE_FREE_MODELS.indexOf(model);
+        // Skip the dead id for the rest of this process, but always keep at
+        // least the LAST chain entry tryable so delegation degrades to one fast
+        // failing probe per unit instead of disappearing silently.
+        if (idx >= 0) freeChainStart = Math.min(idx + 1, OPENCODE_FREE_MODELS.length - 1);
+      }
+      continue;
     }
-
-    const digest = writeDigest(cwd, runId, role, model, touched, summary);
-    return { ok: true, action: 'delegated', digest, touched, error: null, model };
-  } finally {
-    removeWorktree(cwd, parent, wt);
+    if (outcome.kind === 'no-changes') {
+      return { ok: false, action: 'no-changes', digest: null, touched: [], error: 'OpenCode produced no file changes', model };
+    }
+    return { ok: false, action: 'failed', digest: null, touched: [], error: outcome.error, model };
   }
+  return {
+    ok: false,
+    action: 'failed',
+    digest: null,
+    touched: [],
+    error: `no usable OpenCode model — ${modelErrors.join('; ')}`,
+    model: lastModel,
+  };
 }
 
 export interface PlanDelegationResult {
   total: number;
   delegated: number;
-  units: Array<{ role: string; task: string; action: DelegateResult['action']; touched: string[] }>;
+  units: Array<{ role: string; task: string; action: DelegateResult['action']; touched: string[]; model?: string }>;
 }
 
 // Parse the architect's plan.md delegation queue. The architect emits a
@@ -277,9 +399,11 @@ export function parsePlanDelegationQueue(planText: string): Array<{ role: string
 }
 
 // Deterministically delegate EVERY queued bounded unit to OpenCode. Reuses
-// delegate() per unit (each in its own worktree from HEAD). A unit that opencode
-// can't deliver (skipped/failed/no-changes) simply isn't applied — the orchestrator
-// then spawns a normal subagent for it. Never throws.
+// delegate() per unit (each in its own worktree from HEAD); the free-model
+// chain position is memoized across units, so a retired promo id is skipped
+// after the first unit discovers it. A unit that opencode can't deliver
+// (skipped/failed/no-changes) simply isn't applied — the orchestrator then
+// spawns a normal subagent for it. Never throws.
 export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string } = {}): PlanDelegationResult {
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
@@ -290,7 +414,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
     const r = delegate(cwd, { role: u.role, task, runId: opts.runId, model: opts.model });
     if (r.ok) delegated += 1;
-    units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched });
+    units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched, model: r.model });
   }
   return { total: queue.length, delegated, units };
 }

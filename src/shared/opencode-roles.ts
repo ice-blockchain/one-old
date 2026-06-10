@@ -63,3 +63,35 @@ export function openCodeRoleAttempted(cwd: string, runId: string, role: string):
     return false;
   }
 }
+
+// Per-run marker that the GATE has already denied a paid spawn of this role
+// once. The deny → delegate → re-spawn loop assumes the delegate tool CAN run;
+// on Codex the host's safety reviewer can reject the opencode_delegate call
+// ABOVE our code, so the runner's attempt marker is never written and a
+// marker-only gate would deadlock (delegate blocked by the reviewer, spawn
+// blocked by the gate). The gate therefore denies a (runId, role) at most
+// ONCE: it records the denial here and lets the second spawn attempt through.
+function denyMarkerPath(cwd: string, runId: string, role: string): string {
+  const safe = role.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-gate-denies', safe);
+}
+
+export function markOpenCodeGateDenied(cwd: string, runId: string, role: string): void {
+  if (!runId || !role) return;
+  try {
+    const p = denyMarkerPath(cwd, runId, role);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '', 'utf8');
+  } catch {
+    // best-effort; a missing marker only risks one extra deny, never a deadlock
+  }
+}
+
+export function openCodeGateDenied(cwd: string, runId: string, role: string): boolean {
+  if (!runId || !role) return false;
+  try {
+    return fs.existsSync(denyMarkerPath(cwd, runId, role));
+  } catch {
+    return false;
+  }
+}

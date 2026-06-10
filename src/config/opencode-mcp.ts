@@ -26,6 +26,9 @@ export const OPENCODE_MCP_PROTOCOL_VERSION = '2025-06-18';
 //   opencode_delegate_from_plan  → opencode-runner.cjs --from-plan
 export const OPENCODE_MCP_TOOL_DELEGATE = 'opencode_delegate';
 export const OPENCODE_MCP_TOOL_DELEGATE_FROM_PLAN = 'opencode_delegate_from_plan';
+// Non-blocking poll of a background run (decoupled from the call so long opencode
+// runs survive the host's ~120s tool-call timeout).
+export const OPENCODE_MCP_TOOL_STATUS = 'opencode_status';
 
 // The server shim the host launches (relative to the resolved plugin root). The
 // build writes this shim (see SHIMS in build-runtime.ts); it forwards to the

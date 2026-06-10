@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { attach, dispatch, parseRunnerResult, runDelegate, runDelegateFromPlan } from '../index';
+import { attach, delegateResumable, delegateStatus, dispatch, parseRunnerResult, runDelegate, runDelegateFromPlan } from '../index';
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../../config/opencode-mcp';
 
 type Any = Record<string, any>;
@@ -25,10 +25,10 @@ test('initialize falls back to a default protocol version when none requested', 
   assert.match(resp.result.protocolVersion, /^\d{4}-\d{2}-\d{2}$/);
 });
 
-test('tools/list advertises both delegation tools with their schemas', async () => {
+test('tools/list advertises the delegation + status tools with their schemas', async () => {
   const resp = (await dispatch({ jsonrpc: '2.0', id: 2, method: 'tools/list' })) as Any;
   const names = resp.result.tools.map((t: Any) => t.name).sort();
-  assert.deepEqual(names, ['opencode_delegate', 'opencode_delegate_from_plan']);
+  assert.deepEqual(names, ['opencode_delegate', 'opencode_delegate_from_plan', 'opencode_status']);
   const del = resp.result.tools.find((t: Any) => t.name === 'opencode_delegate');
   assert.deepEqual(del.inputSchema.required, ['role', 'task', 'runId']);
   const batch = resp.result.tools.find((t: Any) => t.name === 'opencode_delegate_from_plan');
@@ -132,6 +132,56 @@ test('runDelegateFromPlan passes --from-plan + run-id', async () => {
     const r = (await runDelegateFromPlan({ runId: 'rp1', projectRoot })) as Any;
     assert.equal(r.fromPlan, true);
     assert.equal(r.runId, 'rp1');
+  });
+});
+
+// ── Resumable (background) delegation: survive the host's ~120s tool-call timeout ─
+
+// A runner stub that takes longer than the bounded wait window, so the first
+// resumable call returns {running} and a later call returns the result.
+const SLOW_STUB = [
+  'const a = process.argv.slice(2);',
+  'const get = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : null; };',
+  'setTimeout(() => { console.log(JSON.stringify({ ok: true, action: "delegated", role: get("--role"), digest: null, touched: [] })); }, 1200);',
+].join('\n');
+
+test('delegateResumable returns {running} within the wait window, then the result on re-call (idempotent)', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow unit', runId: 'res-1', projectRoot };
+    const first = (await delegateResumable(args, 200)) as Any; // run sleeps 1200ms > 200ms window
+    assert.equal(first.running, true);
+    assert.equal(first.runId, 'res-1');
+    assert.equal(first.ok, undefined); // not a terminal result → not a fallback signal
+    await new Promise((r) => setTimeout(r, 1400)); // let the background run finish
+    const second = (await delegateResumable(args, 200)) as Any;
+    assert.equal(second.ok, true);
+    assert.equal(second.action, 'delegated');
+    assert.equal(second.role, 'senior-frontend');
+    const third = (await delegateResumable(args, 50)) as Any; // cached → idempotent
+    assert.equal(third.ok, true);
+  });
+});
+
+test('delegateResumable re-call without a task keeps waiting on the in-flight run', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const start = (await delegateResumable({ role: 'senior-tester', task: 'slow', runId: 'res-3', projectRoot }, 100)) as Any;
+    assert.equal(start.running, true);
+    // re-call omits task — must NOT error ("task is required") since the run exists
+    const again = (await delegateResumable({ role: 'senior-tester', runId: 'res-3', projectRoot, task: '' } as any, 1500)) as Any;
+    assert.equal(again.ok, true);
+  });
+});
+
+test('delegateStatus reports running → done', async () => {
+  await withStubRunner(SLOW_STUB, async (projectRoot) => {
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-2', projectRoot };
+    await delegateResumable(args, 100); // start (returns running)
+    assert.equal((delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any).status, 'running');
+    await delegateResumable(args, 2000); // wait for completion
+    const st = delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any;
+    assert.equal(st.status, 'done');
+    assert.equal(st.result.ok, true);
+    assert.equal((delegateStatus({ runId: 'nope', projectRoot }) as Any).status, 'unknown');
   });
 });
 

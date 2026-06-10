@@ -320,3 +320,24 @@ test('plan-aware performance step: OpenCode bumps the recommendation only once i
     assert.equal(view.meta.options?.[0]?.id, 'balanced');
   });
 });
+
+test('open-code answer records the delegation authorization in committed .one.json (not just prefs)', () => {
+  withProject({ mode: 'existing-codebase' }, (cwd) => {
+    assert.ok(applyAnswer(cwd, 'open-code', 'enable').ok);
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, true);
+    assert.equal(one.openCodeDelegation?.source, 'onboarding');
+    assert.ok(one.openCodeDelegation?.decidedAt);
+    // prefs still carry the per-user toggle
+    const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'));
+    assert.equal(prefs.openCode?.enabled, true);
+  });
+});
+
+test('open-code "not now" records approved:false (an explicit decision, not an omission)', () => {
+  withProject({ mode: 'existing-codebase' }, (cwd) => {
+    assert.ok(applyAnswer(cwd, 'open-code', 'not_now').ok);
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, false);
+  });
+});

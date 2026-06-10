@@ -9,7 +9,15 @@
 import { attach } from './server';
 
 export { attach, dispatch } from './server';
-export { parseRunnerResult, resolveRunnerPath, runDelegate, runDelegateFromPlan } from './delegate';
+export {
+  delegateFromPlanResumable,
+  delegateResumable,
+  delegateStatus,
+  parseRunnerResult,
+  resolveRunnerPath,
+  runDelegate,
+  runDelegateFromPlan,
+} from './delegate';
 
 // Returns void (not a promise): the stdin data listener attach() installs keeps
 // the event loop alive until the host closes the pipe. The build shim calls this

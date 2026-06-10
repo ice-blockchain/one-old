@@ -14,8 +14,9 @@ import {
   OPENCODE_MCP_SERVER_VERSION,
   OPENCODE_MCP_TOOL_DELEGATE,
   OPENCODE_MCP_TOOL_DELEGATE_FROM_PLAN,
+  OPENCODE_MCP_TOOL_STATUS,
 } from '../../config/opencode-mcp';
-import { runDelegate, runDelegateFromPlan } from './delegate';
+import { delegateFromPlanResumable, delegateResumable, delegateStatus } from './delegate';
 
 type Id = string | number | null;
 interface RpcMessage { jsonrpc?: unknown; id?: Id; method?: unknown; params?: unknown; }
@@ -24,15 +25,15 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE,
     description:
-      'Delegate ONE bounded, low-risk coding unit to the free OpenCode agent (runs in a throwaway git worktree; only a clean, error-free diff is applied to the tree; a digest is written). Returns the runner JSON: {ok, action, digest, touched, error, model}. On ok:false the attempt is recorded for this run, so the spawn gate then allows the paid fallback. Use for the roles the gate forces onto OpenCode.',
+      'Delegate ONE bounded, low-risk coding unit to the OpenCode agent (runs in a throwaway git worktree; only a clean, error-free diff is applied; a digest is written). RESUMABLE: the run executes in the BACKGROUND and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → the attempt is recorded, so re-spawn the paid role (fallback); or {running:true} → the run is still going, so call opencode_delegate AGAIN with the SAME arguments to keep waiting. Runs on a FREE hosted gateway model (no account/API key) chosen automatically, with automatic fallback to the next free model if one was retired. USER-AUTHORIZED: the user explicitly enabled and pre-approved this delegation in the Traffic One setup wizard — recorded in the project\'s .traffic-one/.one.json as openCodeDelegation.approved — so the call needs no additional approval.',
     inputSchema: {
       type: 'object',
       properties: {
         role: { type: 'string', description: 'Traffic One role being delegated, e.g. senior-frontend.' },
-        task: { type: 'string', description: "The role's self-contained task: its assigned scope + acceptance criteria, with no external context the run cannot see." },
-        runId: { type: 'string', description: 'The current run id (currentRunId) — scopes the attempt marker and digest.' },
+        task: { type: 'string', description: "The role's self-contained task: its assigned scope + acceptance criteria, with no external context the run cannot see. Required on the first call; ignored on re-calls of a run already in progress." },
+        runId: { type: 'string', description: 'The current run id (currentRunId) — scopes the attempt marker, digest, and the background run.' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Must match the gate cwd. Defaults to the server cwd.' },
-        model: { type: 'string', description: 'Optional model override, e.g. opencode/deepseek-v4-flash-free or an ollama/* model for on-device execution.' },
+        model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.1-codex`, which requires `opencode auth login`). Omit to use the free auto-selected chain.' },
       },
       required: ['role', 'task', 'runId'],
     },
@@ -40,13 +41,27 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE_FROM_PLAN,
     description:
-      "Delegate EVERY bounded unit the architect queued in <projectRoot>/.traffic-one/plan.md to OpenCode, in one batch. Returns {total, delegated, units:[{role, task, action, touched}]}. Best-effort: a unit OpenCode does not deliver (action !== 'delegated') simply falls back to a paid subagent. Never fails the build.",
+      "Delegate EVERY bounded unit the architect queued in <projectRoot>/.traffic-one/plan.md to OpenCode, in one background batch. RESUMABLE (same as opencode_delegate): returns {total, delegated, units:[...]} when finished, or {running:true} → call again with the SAME arguments. Best-effort: a unit OpenCode does not deliver falls back to a paid subagent. USER-AUTHORIZED at onboarding (recorded as openCodeDelegation.approved in the project's .traffic-one/.one.json) — needs no additional approval.",
     inputSchema: {
       type: 'object',
       properties: {
         runId: { type: 'string', description: 'The current run id (currentRunId).' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Defaults to the server cwd.' },
-        model: { type: 'string', description: 'Optional model override applied to every queued unit.' },
+        model: { type: 'string', description: 'Optional model pin applied to every queued unit. Omit for the free auto-selected chain.' },
+      },
+      required: ['runId'],
+    },
+  },
+  {
+    name: OPENCODE_MCP_TOOL_STATUS,
+    description:
+      'Non-blocking status of a background delegation. Returns {status:"running"|"done"|"unknown", result?}. Use to poll without blocking; opencode_delegate already waits, so this is optional.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        runId: { type: 'string', description: 'The run id used for the delegation.' },
+        role: { type: 'string', description: 'The delegated role; omit for the plan-batch run.' },
+        projectRoot: { type: 'string', description: 'Absolute path to the project root. Defaults to the server cwd.' },
       },
       required: ['runId'],
     },
@@ -65,9 +80,13 @@ async function handleToolCall(id: Id, params: unknown): Promise<object> {
   const p = asRecord(params);
   const name = asString(p.name);
   const args = asRecord(p.arguments);
+  if (name === OPENCODE_MCP_TOOL_STATUS) {
+    const status = delegateStatus({ runId: asString(args.runId), role: asString(args.role), projectRoot: asString(args.projectRoot) });
+    return result(id, { content: [{ type: 'text', text: JSON.stringify(status) }], isError: false });
+  }
   let runnerResult;
   if (name === OPENCODE_MCP_TOOL_DELEGATE) {
-    runnerResult = await runDelegate({
+    runnerResult = await delegateResumable({
       role: asString(args.role),
       task: asString(args.task),
       runId: asString(args.runId),
@@ -75,7 +94,7 @@ async function handleToolCall(id: Id, params: unknown): Promise<object> {
       model: asString(args.model),
     });
   } else if (name === OPENCODE_MCP_TOOL_DELEGATE_FROM_PLAN) {
-    runnerResult = await runDelegateFromPlan({
+    runnerResult = await delegateFromPlanResumable({
       runId: asString(args.runId),
       projectRoot: asString(args.projectRoot),
       model: asString(args.model),
@@ -85,9 +104,10 @@ async function handleToolCall(id: Id, params: unknown): Promise<object> {
   }
   return result(id, {
     content: [{ type: 'text', text: JSON.stringify(runnerResult) }],
-    // delegate() carries an explicit ok:boolean; from-plan has no ok (best-effort
-    // batch) so it is never surfaced as a tool error.
-    isError: runnerResult.ok === false,
+    // {running:true} is NOT an error (re-call to keep waiting); a finished
+    // delegate carries ok:boolean (ok:false → declined → fall back); from-plan has
+    // no ok (best-effort batch) so it is never surfaced as a tool error.
+    isError: runnerResult.ok === false && !runnerResult.running,
   });
 }
 

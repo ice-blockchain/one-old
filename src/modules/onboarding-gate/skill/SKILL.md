@@ -33,7 +33,10 @@ finishes setup (run it with a long timeout, ~9 minutes / 540000 ms):
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, IMMEDIATELY continue the user's original
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, first CLOSE the wizard view you opened
+(the page also closes itself where the host allows it): Claude Code → `preview_stop`
+for "traffic-one-setup"; Codex/Cursor → close the in-app browser tab you opened.
+Then IMMEDIATELY continue the user's original
 request and build it end to end — do not stop to ask "what next?". If it prints
 `TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup finished), run the exact same
 command again; after a couple of pending rounds with no progress, tell the user to

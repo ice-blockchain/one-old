@@ -12,14 +12,18 @@ import * as path from 'path';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { STACK_IDS } from '../../config/stacks';
+import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
+import { exec } from '../../shared/exec';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { nowIsoNoMs } from '../../shared/text';
+import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
   isMaterialized,
   normalizeState,
   readEffectiveState,
+  readState,
   stackFingerprint,
   stateVersion,
   writeState,
@@ -61,14 +65,7 @@ const CODE_GRAPH_SELF_HEAL_COOLDOWN_MS = 30 * 60 * 1000;
 const CODE_GRAPH_BUILD_LOCK = '.codegraph-build-lock';
 
 function codeGraphBuildLockMs(cwd: string): number {
-  const lock = path.join(cwd, '.traffic-one', CODE_GRAPH_BUILD_LOCK);
-  try {
-    if (!fs.existsSync(lock)) return 0;
-    const t = Date.parse(fs.readFileSync(lock, 'utf8').trim());
-    return Number.isNaN(t) ? fs.statSync(lock).mtimeMs : t;
-  } catch {
-    return 0;
-  }
+  return diskLockMs(path.join(cwd, '.traffic-one', CODE_GRAPH_BUILD_LOCK));
 }
 
 // Should we (re)build the code graph for this EXISTING project? Auto-detected
@@ -114,6 +111,79 @@ export function ensureCodeGraphForExistingProject(cwd: string, state: Rec): bool
     return true;
   } catch {
     return false; // self-heal is best-effort; never block or throw in SessionStart
+  }
+}
+
+// ── OpenCode delegation readiness (zero-touch) ──────────────────────────────
+// Two session-start self-heals so OpenCode delegation needs NOTHING manual
+// beyond the onboarding wizard answer:
+//   1. Codex MCP registration: Codex only launches MCP servers from its own
+//      ~/.codex/config.toml — projects onboarded before that registration
+//      existed (or whose onboarding runner died early) never got the entry.
+//      Re-ensure it every session (idempotent: a single config.toml read).
+//      A FRESH registration needs a one-time Codex restart to load — that's
+//      the returned notice. (Codex Desktop without CODEX_PLUGIN_ROOT in the
+//      env resolves no stable root and stays 'skipped-no-root' — out of scope.)
+//   2. Missing CLI install: onboarding's OpenCode install is warn-and-proceed
+//      (e.g. npm wasn't on PATH), which left `openCode.enabled` projects
+//      silently skipping every delegation. Spawn the managed install DETACHED
+//      (same pattern as the code-graph self-heal) behind a disk-lock cooldown.
+const OPENCODE_HEAL_COOLDOWN_MS = 30 * 60 * 1000;
+const OPENCODE_HEAL_LOCK = '.opencode-heal-lock';
+
+function diskLockMs(lock: string): number {
+  try {
+    if (!fs.existsSync(lock)) return 0;
+    const t = Date.parse(fs.readFileSync(lock, 'utf8').trim());
+    return Number.isNaN(t) ? fs.statSync(lock).mtimeMs : t;
+  } catch {
+    return 0;
+  }
+}
+
+export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
+  try {
+    const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
+    if (openCode?.enabled !== true) return '';
+    let notice = '';
+    if (ensureCodexMcpServerRegistered() === 'registered') {
+      notice += '[opencode] opencode-worker MCP server registered in ~/.codex/config.toml — restart Codex once to load it.\n';
+    }
+    // Durable authorization record (.one.json `openCodeDelegation`): hosts with
+    // an action-level safety reviewer (Codex) reject opencode_delegate as "not
+    // explicitly authorized" unless the user's consent is visible, so the gate
+    // cites this field. The wizard writes it at onboarding; BACKFILL it for
+    // projects enabled before the field existed — the wizard's OpenCode opt-in
+    // WAS the consent, this only makes it machine-readable. Mutate the passed
+    // state too: the SessionStart flows call writeState(cwd, state) afterwards,
+    // which would otherwise clobber the committed write below.
+    const delegation = state.openCodeDelegation && typeof state.openCodeDelegation === 'object' ? (state.openCodeDelegation as Rec) : null;
+    if (delegation?.approved !== true) {
+      const record = { approved: true, source: 'backfilled-from-enabled-pref', decidedAt: nowIsoNoMs() };
+      state.openCodeDelegation = record;
+      try {
+        writeState(cwd, { ...readState(cwd), openCodeDelegation: record });
+      } catch { /* best-effort */ }
+    }
+    // Cheap presence check only (existsSync + PATH lookup) — a version probe can
+    // stall SessionStart. The spawned runner does the real probe + stamp.
+    const installed = fs.existsSync(managedNpmBin('opencode', 'opencode')) || Boolean(exec.which('opencode'));
+    if (!installed) {
+      const lock = path.join(cwd, '.traffic-one', OPENCODE_HEAL_LOCK);
+      if (!diskLockMs(lock) || (Date.now() - diskLockMs(lock)) >= OPENCODE_HEAL_COOLDOWN_MS) {
+        const entry = path.join(pluginRoot(), 'scripts', 'onboarding-toolchain-runner.cjs');
+        if (fs.existsSync(entry)) {
+          fs.mkdirSync(path.dirname(lock), { recursive: true });
+          fs.writeFileSync(lock, nowIsoNoMs(), 'utf8');
+          const child = spawn(process.execPath, [entry, '--opencode-only'], { cwd, detached: true, stdio: 'ignore' });
+          child.unref();
+          notice += '[opencode] OpenCode CLI missing — managed install started in the background (ready next session).\n';
+        }
+      }
+    }
+    return notice;
+  } catch {
+    return ''; // best-effort; never block or throw in SessionStart
   }
 }
 

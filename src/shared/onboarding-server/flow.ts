@@ -152,7 +152,7 @@ const STEP_META: Record<Exclude<WizardStep, null | 'finalize'>, Omit<StepMeta, '
   'open-code': {
     kind: 'single_select',
     title: 'OpenCode',
-    question: 'Save tokens by delegating coding tasks to OpenCode (a free local agent)?',
+    question: 'Save tokens by delegating bounded coding tasks to OpenCode (free hosted model — no account or API key needed)? Enabling authorizes sending those bounded task prompts and the relevant code context to the OpenCode gateway, so delegation runs without asking again.',
     options: [
       { id: 'enable', label: 'Enable OpenCode delegation' },
       { id: 'not_now', label: 'Not now' },
@@ -336,6 +336,16 @@ export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOu
     case 'open-code': {
       const enabled = value === true || value === 'enable' || value === 'enabled';
       mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } });
+      // Record the consent as a DURABLE AUTHORIZATION in committed project state
+      // (.traffic-one/.one.json), not just per-user prefs. Hosts with an
+      // action-level safety reviewer (Codex) reject the opencode_delegate tool
+      // call as "external delegation … not explicitly authorized" unless the
+      // user's authorization is visible at call time — this field is that
+      // machine-readable record, cited by the spawn gate's deny message so
+      // delegation never re-asks the user for approval.
+      patchSharedState(cwd, {
+        openCodeDelegation: { approved: enabled, source: 'onboarding', decidedAt: stateTimestamp() },
+      });
       return { ok: true };
     }
     case 'performance': {

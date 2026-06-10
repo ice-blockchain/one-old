@@ -173,6 +173,70 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
   });
 });
 
+test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even when no attempt is ever recorded', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // The live Codex failure mode: the host's safety reviewer rejects the
+    // opencode_delegate MCP call ABOVE our code, so the runner never writes the
+    // attempt marker. The gate must still let the second spawn through, or the
+    // delegate path AND the spawn path are both blocked forever.
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-reviewer-reject';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    // First spawn → denied (with the delegate instructions), deny recorded.
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    // Second spawn, with NO attempt marker (delegate was rejected externally) → allowed.
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+  });
+});
+
+test('opencode role gate: cites the recorded user authorization when .one.json has openCodeDelegation.approved', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-auth';
+    one.openCodeDelegation = { approved: true, source: 'onboarding', decidedAt: '2026-06-10T00:00:00Z' };
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.ok(denied.reason.includes('AUTHORIZATION'), 'deny should cite the recorded authorization');
+      assert.ok(denied.reason.includes('openCodeDelegation.approved'), 'deny should name the .one.json field');
+    }
+  });
+});
+
+test('opencode role gate: no authorization claim when consent was never recorded', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-noauth';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.ok(!denied.reason.includes('AUTHORIZATION:'), 'must not claim an authorization that was never given');
+      assert.ok(!denied.reason.includes('{{AUTHORIZATION}}'), 'placeholder must be substituted away');
+    }
+  });
+});
+
 // Codex spawn ctx: namespaced multi-agent tool, role conveyed in the prose message
 // (Codex passes agent_type:"worker", not a Traffic One subagent_type), session_id is
 // the spawner/parent thread. Host 'codex' so the model tier resolves to gpt-5.5.

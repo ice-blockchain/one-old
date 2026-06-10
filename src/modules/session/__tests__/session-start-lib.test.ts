@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ensureSessionMaterialization, readGraphPreview, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner } from '../session-start-lib';
+import { ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner } from '../session-start-lib';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sslib-'));
@@ -108,5 +108,102 @@ test('ensureSessionMaterialization no-ops for incomplete / already-current state
     let reported = 0;
     assert.equal(ensureSessionMaterialization(cwd, state, () => { reported += 1; }), false);
     assert.equal(reported, 1);
+  });
+});
+
+// Env sandbox for ensureOpenCodeDelegationReady: a fake plugin root (with the
+// runner script the self-heal spawns), a sandboxed managed-toolchain root, a
+// tmp CODEX_HOME, and explicit host control via the *_PLUGIN_ROOT vars.
+function withOpenCodeEnv(host: 'codex' | 'other', fn: (cwd: string, fixtures: { codexHome: string; managedBin: string }) => void): void {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocready-'));
+  const env = process.env;
+  const saved: Record<string, string | undefined> = {};
+  for (const k of ['TRAFFIC_ONE_PROJECT_PREFS_PATH', 'TRAFFIC_ONE_TOOLCHAIN_ROOT', 'TRAFFIC_ONE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CURSOR_PLUGIN_ROOT', 'CODEX_HOME']) saved[k] = env[k];
+  const cwd = path.join(dir, 'proj');
+  const pluginDir = path.join(dir, 'plugin');
+  const codexHome = path.join(dir, 'codex-home');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  fs.mkdirSync(path.join(pluginDir, 'scripts'), { recursive: true });
+  // The self-heal spawns this detached; a no-op keeps the test hermetic.
+  fs.writeFileSync(path.join(pluginDir, 'scripts', 'onboarding-toolchain-runner.cjs'), 'process.exit(0);\n', 'utf8');
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed');
+  env.TRAFFIC_ONE_PLUGIN_ROOT = pluginDir;
+  env.CODEX_HOME = codexHome;
+  delete env.CURSOR_PLUGIN_ROOT;
+  if (host === 'codex') env.CODEX_PLUGIN_ROOT = pluginDir; else delete env.CODEX_PLUGIN_ROOT;
+  const managedBin = path.join(env.TRAFFIC_ONE_TOOLCHAIN_ROOT, 'opencode', 'npm-prefix', 'bin', 'opencode');
+  try {
+    fn(cwd, { codexHome, managedBin });
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete env[k]; else env[k] = v; }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function installStubCli(managedBin: string): void {
+  fs.mkdirSync(path.dirname(managedBin), { recursive: true });
+  fs.writeFileSync(managedBin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+}
+
+test('ensureOpenCodeDelegationReady: codex + enabled → registers MCP server once with a restart notice', () => {
+  withOpenCodeEnv('codex', (cwd, { codexHome, managedBin }) => {
+    installStubCli(managedBin); // CLI present → no install branch
+    const notice = ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } });
+    assert.ok(notice.includes('restart Codex once'));
+    const toml = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+    assert.ok(toml.includes('[mcp_servers.opencode-worker]'));
+    // idempotent: second session → already-present → silent
+    assert.equal(ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } }), '');
+  });
+});
+
+test('ensureOpenCodeDelegationReady: silent no-op when delegation is disabled or host is not codex', () => {
+  withOpenCodeEnv('codex', (cwd, { codexHome }) => {
+    // disabled → nothing happens (no registration, no heal lock) even with CLI missing
+    assert.equal(ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: false } }), '');
+    assert.equal(ensureOpenCodeDelegationReady(cwd, {}), '');
+    assert.equal(fs.existsSync(path.join(codexHome, 'config.toml')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.opencode-heal-lock')), false);
+  });
+  withOpenCodeEnv('other', (cwd, { codexHome, managedBin }) => {
+    installStubCli(managedBin);
+    // non-codex host: registration skipped, no notice
+    assert.equal(ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } }), '');
+    assert.equal(fs.existsSync(path.join(codexHome, 'config.toml')), false);
+  });
+});
+
+test('ensureOpenCodeDelegationReady: backfills the .one.json authorization record for enabled projects', () => {
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin);
+    const state: Record<string, unknown> = { openCode: { enabled: true } };
+    ensureOpenCodeDelegationReady(cwd, state);
+    // committed .one.json got the durable record…
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, true);
+    assert.equal(one.openCodeDelegation?.source, 'backfilled-from-enabled-pref');
+    // …and the in-memory state too (SessionStart writes state afterwards).
+    assert.equal((state.openCodeDelegation as Record<string, unknown>)?.approved, true);
+    // already recorded → untouched (no re-stamp)
+    const before = fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8');
+    ensureOpenCodeDelegationReady(cwd, state);
+    assert.equal(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'), before);
+  });
+  withOpenCodeEnv('other', (cwd) => {
+    // disabled → nothing recorded
+    ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: false } });
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), false);
+  });
+});
+
+test('ensureOpenCodeDelegationReady: missing CLI → background managed install behind a cooldown lock', () => {
+  withOpenCodeEnv('other', (cwd) => {
+    const notice = ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } });
+    assert.ok(notice.includes('managed install started'));
+    const lock = path.join(cwd, '.traffic-one', '.opencode-heal-lock');
+    assert.equal(fs.existsSync(lock), true);
+    // cooldown: an immediate second session does not re-spawn or re-notice
+    assert.equal(ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } }), '');
   });
 });

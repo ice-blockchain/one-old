@@ -41,7 +41,7 @@ import { initializeToolchainState } from '../../shared/state/toolchain';
 import { nowIsoNoMs } from '../../shared/text';
 import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
-import { ensureCodeGraphForExistingProject, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
+import { ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -196,6 +196,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
+    header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     writeState(cwd, state);
@@ -242,6 +243,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
+    header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     if (nextLocalPreferenceStep(state)) {

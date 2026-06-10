@@ -133,10 +133,44 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
   return { ok, action: 'onboarding-toolchain', provider, openCodeEnabled, results };
 }
 
+// Targeted OpenCode-only pass: the SessionStart self-heal spawns this (detached,
+// `--opencode-only`) when `openCode.enabled` but the CLI is missing — e.g. npm
+// was unavailable during onboarding, so the warn-and-proceed install never
+// landed. Skips the graph provider entirely (it has its own self-heal with its
+// own cooldown); runs the same stamp + Codex registration + managed install the
+// full onboarding pass would. Best-effort: always exits 0.
+export function ensureOpenCodeOnly(cwd: string = process.cwd()): OnboardingToolchainResult {
+  const state = readEffectiveState(cwd);
+  const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
+  const openCodeEnabled = openCode?.enabled === true;
+  const results: ToolOutcome[] = [];
+  if (openCodeEnabled) {
+    reconcileManagedToolStamp(cwd, 'opencode');
+    const reg = ensureCodexMcpServerRegistered();
+    if (reg !== 'skipped-not-codex') {
+      results.push({
+        tool: 'opencode-mcp',
+        ok: reg !== 'failed',
+        action: `codex-register:${reg}`,
+        error: reg === 'failed' ? 'could not write ~/.codex/config.toml' : null,
+        installedVersion: null,
+      });
+    }
+    const r = ensureOpenCodeTool(cwd);
+    results.push({ tool: 'opencode', ok: r.ok, action: r.action, error: r.error, installedVersion: r.installedVersion ?? null });
+  }
+  return { ok: true, action: 'opencode-only', provider: null, openCodeEnabled, results };
+}
+
 // CLI entry. Returns the process exit code (the shim + the wizard task runner
 // map non-zero → task `error` → blocked "Setup complete" screen). The failing
 // provider's detail is echoed to stderr so the task surfaces it to the user.
 export function main(): number {
+  if (process.argv.includes('--opencode-only')) {
+    const result = ensureOpenCodeOnly(process.cwd());
+    process.stdout.write(`${JSON.stringify(result)}\n`);
+    return 0; // self-heal is best-effort; never surfaces as a task error
+  }
   const result = ensureOnboardingToolchain(process.cwd());
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (!result.ok) {
