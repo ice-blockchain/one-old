@@ -10,7 +10,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt } from '../../shared/detection';
+import { detectMode, isLikelyCodingPrompt, isLikelyEditRequest } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -89,7 +89,9 @@ function prependContext(prefix: string, result: HookResult): HookResult {
 function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string, raw: unknown, host: string): string {
   const mode = (state.mode as string) || detectMode(cwd);
   if (!isMaintenancePhase(state, mode)) return '';
-  if (!isLikelyCodingPrompt(promptText)) return '';
+  // Broader than the onboarding coding-intent gate: a finished app's copy/UI tweaks
+  // ("change the hero headline", "shorten the title") must still route through triage.
+  if (!isLikelyEditRequest(promptText)) return '';
   if (hookSessionIdentity(raw).isSubagent) return '';
   // Claims from a run that finished BEFORE the lifecycle stamp are settled —
   // only claims newer than the watermark mean an orchestration is in flight.

@@ -299,3 +299,24 @@ export function isLikelyCodingPrompt(prompt: unknown): boolean {
   if (!text) return false;
   return CODING_INTENT_PATTERNS.some((pattern) => pattern.test(text));
 }
+
+// Broader edit-intent patterns for POST-BUILD MAINTENANCE: once the app exists, the
+// bar for "this is an edit request" is lower than the onboarding coding-intent bar.
+// Copy tweaks ("change the hero headline"), restyles ("shorten the title", "move the
+// footer"), and other imperative edits use verbs/nouns the coding-intent heuristic
+// omits, so they would otherwise skip post-build triage entirely.
+const EDIT_INTENT_PATTERNS: RegExp[] = [
+  /\b(chang\w+|tweak|adjust|reword|rewrit\w+|replac\w+|swap|shorten|lengthen|expand|moves?|moving|relocat\w+|hide|hidden|show|reveal|increas\w+|decreas\w+|bump|drop|switch|toggl\w+|reorder|re-?order|align|cent(er|re)\w*|resiz\w+|restyl\w+|re-?colou?r|recolou?r|tighten|loosen|capitali[sz]\w+|bold|italici[sz]\w+|underlin\w+|uppercase|lowercase|shrink|enlarge|nudge|polish|simplif\w+|trim|truncat\w+|tidy|cleanup|clean up)\b/,
+  /\b(headlines?|hero|sub[- ]?headlines?|sub[- ]?titles?|taglines?|titles?|headings?|copy|wording|labels?|captions?|placeholders?|colou?rs?|fonts?|font[- ]?sizes?|spacing|paddings?|margins?|banners?|footers?|headers?|nav(bar|igation)?|menus?|tooltips?|paragraphs?|sentences?|texts?|wordings?|icons?|logos?|images?|spinners?|badges?|tabs?)\b/,
+];
+
+// True when a maintenance-phase prompt looks like an edit/work request (a superset
+// of isLikelyCodingPrompt). Used to gate post-build triage so trivial copy/UI edits
+// route through it; biased toward firing (a stray directive on a read prompt is
+// cheap, a missed directive on an edit is the bug this guards against).
+export function isLikelyEditRequest(prompt: unknown): boolean {
+  const text = String(prompt || '').toLowerCase().trim();
+  if (!text) return false;
+  if (isLikelyCodingPrompt(text)) return true;
+  return EDIT_INTENT_PATTERNS.some((pattern) => pattern.test(text));
+}

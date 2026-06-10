@@ -266,6 +266,22 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
   });
 });
 
+test('maintenance + a copy/headline tweak (missed by the coding-intent heuristic) still triages', () => {
+  // Regression: "Change the hero headline ..." has no coding verb/noun, so the
+  // narrow isLikelyCodingPrompt suppressed the directive and the main agent edited
+  // inline instead of routing to quick-fix. isLikelyEditRequest now fires it.
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'Change the hero headline to Master Software without Development'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('MAINTENANCE PHASE'), 'triage fires for a copy/headline tweak');
+      assert.ok(r.context.includes('quick-fix'), 'routes to the quick-fix worker');
+    }
+  });
+});
+
 test('maintenance + complex coding prompt → complex hint, orchestrator route', () => {
   withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
     writeLocalPrefs();
