@@ -18,7 +18,7 @@ after(() => {
   else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
 });
 
-interface ProjectOpts { mode?: string; files?: number; digest?: boolean; claimFresh?: boolean; }
+interface ProjectOpts { mode?: string; files?: number; digest?: boolean; verified?: boolean; claimFresh?: boolean; }
 
 function mkproject(opts: ProjectOpts): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-build-complete-'));
@@ -33,10 +33,12 @@ function mkproject(opts: ProjectOpts): string {
     fs.mkdirSync(src, { recursive: true });
     for (let i = 0; i < files; i += 1) fs.writeFileSync(path.join(src, `f${i}.ts`), 'export const x = 1;\n');
   }
-  if (opts.digest) {
+  if (opts.digest || opts.verified) {
     const dd = path.join(dir, '.traffic-one', 'digests', '123');
     fs.mkdirSync(dd, { recursive: true });
-    fs.writeFileSync(path.join(dd, 'architect.md'), '# plan\n');
+    // architect.md = Phase 1 (early); reviewer.md = Phase 3 (build reached verification).
+    if (opts.digest) fs.writeFileSync(path.join(dd, 'architect.md'), '# plan\n');
+    if (opts.verified) fs.writeFileSync(path.join(dd, 'reviewer.md'), '# APPROVED\n');
   }
   if (opts.claimFresh) {
     const rd = path.join(dir, '.traffic-one', 'runs', '123');
@@ -55,28 +57,37 @@ function run(dir: string): boolean {
 }
 
 test('no flip for an existing-codebase (heuristic is new-project only)', () => {
-  const dir = mkproject({ mode: 'existing-codebase', files: 30, digest: true });
+  const dir = mkproject({ mode: 'existing-codebase', files: 30, verified: true });
   assert.equal(run(dir), false);
 });
 
-test('no flip without an architect digest (orchestrator never planned a build)', () => {
+test('no flip without any digest (orchestrator never ran)', () => {
   const dir = mkproject({ files: 30, digest: false });
   assert.equal(run(dir), false);
 });
 
+test('no flip with only an architect digest — build has not reached verification', () => {
+  // Regression for the premature-flip bug: a long/blocked build whose implementer
+  // claims aged out (no-active-claims passes) but that never reached review must
+  // NOT flip. The architect digest lands in Phase 1; review is Phase 3.
+  const dir = mkproject({ files: 30, digest: true, verified: false });
+  assert.equal(run(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
+});
+
 test('no flip while a subagent claim is still active (never mid-orchestration)', () => {
-  const dir = mkproject({ files: 30, digest: true, claimFresh: true });
+  const dir = mkproject({ files: 30, verified: true, claimFresh: true });
   assert.equal(run(dir), false);
   assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
 });
 
 test('no flip when the codebase has not produced real output yet', () => {
-  const dir = mkproject({ files: 4, digest: true });
+  const dir = mkproject({ files: 4, verified: true });
   assert.equal(run(dir), false);
 });
 
-test('flips to maintenance when every guard holds, and is idempotent', () => {
-  const dir = mkproject({ files: 30, digest: true });
+test('flips to maintenance when the build reached verification and every guard holds; idempotent', () => {
+  const dir = mkproject({ files: 30, digest: true, verified: true });
   assert.equal(run(dir), true);
   const state = readState(dir);
   assert.equal(projectPhase(state, 'new-project'), 'maintenance');

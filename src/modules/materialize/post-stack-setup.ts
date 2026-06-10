@@ -27,6 +27,7 @@ import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { maybeFlipToMaintenance } from './build-complete';
 import { ONE_UID_FIELD } from '../../config/reporting';
@@ -86,7 +87,10 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const fp = filePath.replace(/\\/g, '/');
   const reportOneMcp = deps.reportOneMcp;
   const digestRoot = architectDigestProjectRoot(targetPath || filePath);
-  const reportRoot = digestRoot || cwd;
+  // Resolve UP to the workspace root so the one-mcp report + maintenance flip + state
+  // read target the real project, not a monorepo sub-package whose stray shallow
+  // .one.json would otherwise mint a one-uid / hide maintenance phase there.
+  const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath);
   const state = readEffectiveState(reportRoot);
   const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
 
@@ -147,7 +151,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     const hintInput = targetPath ? { ...toolInput, file_path: targetPath } : toolInput;
     const hint = materializeFromToolInputHints(cwd, hintInput);
     if (hint) return outcomeToResult(hint);
-    return outcomeToResult(materializeProjectIfNeeded(cwd, { trigger: 'generic post-tool convergence' }));
+    return outcomeToResult(materializeProjectIfNeeded(reportRoot, { trigger: 'generic post-tool convergence' }));
   }
 
   // 4. State-file write → validate + materialize (writeState strips local prefs).

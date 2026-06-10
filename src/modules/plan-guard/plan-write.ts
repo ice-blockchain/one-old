@@ -23,7 +23,7 @@ import {
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
 } from '../../shared/feature-source';
-import { findProjectRootForHookFile, projectRelativeHookPath } from '../../shared/hook-paths';
+import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
@@ -49,7 +49,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
   if (authChoiceAllowsContinue(cwd)) return noop();
 
-  const projectRoot = findProjectRootForHookFile(cwd, rawFilePath || patchTargetPaths[0] || '');
+  const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '');
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
 
   // Preflight convergence: ensure .traffic-one/** is current for this project

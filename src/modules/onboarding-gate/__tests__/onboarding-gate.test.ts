@@ -152,18 +152,37 @@ test('hand-writing the team modeChangeApproval marker is denied (team-mode guard
   });
 });
 
+const completeNewProject = (): Record<string, unknown> => ({
+  mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+  mobile: { enabled: false, framework: 'none', source: 'prompted' },
+  technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
+  projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
+  confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
+  materializedStack: 'default|react-vite|supabase|none',
+});
+
 test('a fully materialized, complete new project lets tool use through (noop)', () => {
-  const complete = {
-    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
-    mobile: { enabled: false, framework: 'none', source: 'prompted' },
-    technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
-    projectContext: { source: 'prompted', originalPrompt: 'x', summary: 's', answers: { a: 1 }, collectedAt: '2026-01-01T00:00:00Z' },
-    confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
-    materializedStack: 'default|react-vite|supabase|none',
-  };
-  withProject(complete, (cwd) => {
+  withProject(completeNewProject(), (cwd) => {
     writeLocalPrefs();
     materializeFixture(cwd, 'default');
     assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'apps/web/src/x.ts', content: 'export const x = 1;' })).kind, 'noop');
+  });
+});
+
+test('monorepo: a write from an onboarded workspace sub-package is NOT blocked (resolves up to the root)', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    // The bug trigger: a sub-package accrued a stray SHALLOW state file (just
+    // one-uid, no mode) from cwd-scoped materialization while a scaffolder was
+    // cd'd into it.
+    const appWeb = path.join(cwd, 'apps', 'web');
+    fs.mkdirSync(path.join(appWeb, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(appWeb, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'stray' }), 'utf8');
+    // The hook now runs with cwd = the sub-package, targeting a file inside it.
+    // Before the fix this resolved apps/web as its own un-onboarded project and
+    // denied with a bogus wizard URL; now it resolves up to the onboarded root.
+    const r = onboardingGate(ctx(appWeb, 'Write', 'file-write', { file_path: 'src/LandingPage.tsx', content: 'export const x = 1;' }));
+    assert.equal(r.kind, 'noop');
   });
 });

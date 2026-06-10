@@ -6,10 +6,17 @@ import * as path from 'path';
 
 import {
   findProjectRootForHookFile,
+  isOnboardedProjectRoot,
   packageJsonDeclaresWorkspace,
   projectRelativeHookPath,
+  resolveProjectRoot,
   stateRequiresNewProjectMonorepo,
 } from '../hook-paths';
+
+function writeState(dir: string, json: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(json), 'utf8');
+}
 
 test('stateRequiresNewProjectMonorepo: default/realtime stacks and react+backend require monorepo', () => {
   assert.equal(stateRequiresNewProjectMonorepo({ mode: 'new-project', stack: 'default' }), true);
@@ -93,6 +100,56 @@ test('findProjectRootForHookFile + projectRelativeHookPath resolve nested .traff
     // Empty file path → cwd / empty relative.
     assert.equal(findProjectRootForHookFile(root, ''), root);
     assert.equal(projectRelativeHookPath(root, root, ''), '');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('isOnboardedProjectRoot: only a mode-bearing .one.json counts', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onboarded-')));
+  try {
+    assert.equal(isOnboardedProjectRoot(dir), false);          // no state file
+    writeState(dir, { 'one-uid': 'x' });
+    assert.equal(isOnboardedProjectRoot(dir), false);          // shallow stray (no mode)
+    writeState(dir, { mode: 'new-project' });
+    assert.equal(isOnboardedProjectRoot(dir), true);           // real root
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: a stray shallow sub-package state never shadows the real monorepo root', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-resolveroot-')));
+  try {
+    // Onboarded monorepo root + a sub-package that accrued a stray shallow state.
+    writeState(root, { mode: 'new-project', onboardingComplete: true });
+    const appRoot = path.join(root, 'apps', 'web');
+    writeState(appRoot, { 'one-uid': 'stray' });               // no mode — not a real root
+    const target = path.join(appRoot, 'src', 'main.ts');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'x', 'utf8');
+
+    // Resolves to the workspace root whether cwd is the root OR the sub-package.
+    assert.equal(resolveProjectRoot(root, target), root);
+    assert.equal(resolveProjectRoot(appRoot, target), root);
+    assert.equal(resolveProjectRoot(appRoot, ''), root);        // bash-style: no file, sub-package cwd
+
+    // A genuinely nested project (its own mode-bearing state) resolves to itself.
+    const nested = path.join(root, 'packages', 'standalone');
+    writeState(nested, { mode: 'new-project' });
+    const nestedFile = path.join(nested, 'src', 'x.ts');
+    fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+    fs.writeFileSync(nestedFile, 'x', 'utf8');
+    assert.equal(resolveProjectRoot(root, nestedFile), nested);
+
+    // No onboarded ancestor anywhere → falls back to cwd (gating of a fresh
+    // project is unchanged).
+    const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-fresh-')));
+    try {
+      assert.equal(resolveProjectRoot(fresh, path.join(fresh, 'a.ts')), fresh);
+    } finally {
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
