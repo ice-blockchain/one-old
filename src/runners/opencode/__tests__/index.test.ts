@@ -14,7 +14,7 @@ function sh(cwd: string, cmd: string, args: string[]): void {
 
 // A real git repo (HEAD commit so the worktree sandbox can branch) + sandboxed
 // prefs/toolchain root, then a stubbed managed `opencode` binary.
-function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): void {
+function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opts: { noInitialCommit?: boolean } = {}): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocdel-'));
   const env = process.env;
   const savedPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -33,8 +33,12 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): vo
   sh(dir, 'git', ['config', 'user.email', 't@example.com']);
   sh(dir, 'git', ['config', 'user.name', 'T']);
   fs.writeFileSync(path.join(dir, 'README.md'), '# repo\n');
-  sh(dir, 'git', ['add', '-A']);
-  sh(dir, 'git', ['commit', '-q', '-m', 'init']);
+  // opts.noInitialCommit leaves the repo with NO HEAD (a fresh scaffold mid-build) so
+  // a test can exercise the delegate() self-heal path.
+  if (!opts.noInitialCommit) {
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'init']);
+  }
   // The free-model chain memo is module-level process state — reset so every
   // test starts at the head of the chain regardless of execution order.
   resetOpenCodeModelMemo();
@@ -237,6 +241,26 @@ test('delegate sandboxes from the live WORKING TREE, not stale HEAD — an uncom
     // conflicts against the 'WORKING' tree → action:'failed'.
     assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8').trim(), 'WORKING-EDITED');
   });
+});
+
+test('delegate self-heals a missing HEAD on a fresh scaffold (git repo, no commits) → delegates instead of skipping', () => {
+  // The new-project case: OpenCode runs DURING the build, before the build-completion
+  // commit lands, so the repo has no HEAD to sandbox. Old behavior: skip with "No git
+  // HEAD" → paid fallback for the whole build. Now: create the initial commit + retry.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('edit');
+    assert.notEqual(
+      spawnSync('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' }).status, 0,
+      'precondition: a fresh scaffold with no commit',
+    );
+    const r = delegate(dir, { role: 'quick-fix', task: 'create foo.txt', runId: 'np-1' });
+    assert.equal(r.action, 'delegated', 'self-heals the initial commit, then sandboxes');
+    assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8').trim(), 'delegated');
+    assert.equal(
+      spawnSync('git', ['-C', dir, 'rev-parse', '--verify', 'HEAD'], { encoding: 'utf8' }).status, 0,
+      'HEAD now exists so future delegations sandbox normally',
+    );
+  }, { noInitialCommit: true });
 });
 
 test('delegate fails closed on an opencode error event — working tree untouched (→ fallback)', () => {

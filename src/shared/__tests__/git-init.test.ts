@@ -65,6 +65,23 @@ test('ensureInitialCommit: fresh repo with nothing to stage → no empty commit'
   }
 });
 
+test('ensureInitialCommit: initIfNeeded git-inits a non-git dir then commits (new-project scaffold path)', () => {
+  const dir = tmp();
+  try {
+    fs.writeFileSync(path.join(dir, 'x.ts'), 'export const x = 1;\n', 'utf8');
+    // Default: a non-git dir is left alone (never silently `git init`).
+    assert.equal(ensureInitialCommit(dir), false, 'default leaves a non-git dir untouched');
+    assert.equal(fs.existsSync(path.join(dir, '.git')), false);
+    // Opt-in: initialize the repo and commit the scaffold.
+    assert.equal(ensureInitialCommit(dir, { initIfNeeded: true }), true);
+    assert.equal(fs.existsSync(path.join(dir, '.git')), true, 'repo initialized');
+    assert.ok(git(dir, ['rev-parse', '--verify', 'HEAD']).trim().length >= 7, 'HEAD now resolves');
+    assert.ok(git(dir, ['ls-files']).includes('x.ts'), 'the scaffold file is committed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('ensureInitialCommit: never auto-commits the plugin authoring root', () => {
   const dir = tmp();
   try {

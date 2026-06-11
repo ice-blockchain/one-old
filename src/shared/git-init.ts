@@ -17,11 +17,19 @@ function git(root: string, args: readonly string[]): { code: number; stdout: str
 }
 
 // Returns true iff it created the initial commit. Best-effort — never throws.
-export function ensureInitialCommit(root: string): boolean {
+// opts.initIfNeeded: when the path is NOT a git work tree yet, `git init` it first.
+// Reserved for the new-project scaffold path (the user consented to Traffic One
+// managing git via the build-time commit) — OpenCode delegation needs a repo+HEAD to
+// sandbox, and a fresh scaffold may not be a repo at all. Off by default so the other
+// callers never silently `git init` an intentionally un-versioned project.
+export function ensureInitialCommit(root: string, opts: { initIfNeeded?: boolean } = {}): boolean {
   try {
     if (!root || isPluginAuthoringRoot(root)) return false;
     // Must be the top of a git work tree…
-    if (git(root, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') return false;
+    if (git(root, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') {
+      if (!opts.initIfNeeded || git(root, ['init', '-q']).code !== 0) return false;
+      if (git(root, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') return false;
+    }
     // …with NO commits yet (a repo with history is never touched).
     if (git(root, ['rev-parse', '--verify', '--quiet', 'HEAD']).code === 0) return false;
     if (git(root, ['add', '-A']).code !== 0) return false;

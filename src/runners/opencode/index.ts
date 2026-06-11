@@ -25,6 +25,7 @@ import * as path from 'path';
 
 import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
+import { ensureInitialCommit } from '../../shared/git-init';
 import { markOpenCodeRoleAttempted } from '../../shared/opencode-roles';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -314,9 +315,19 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   }
   // Sandbox requires a committed HEAD to branch the worktree from. Pin the exact
   // sha once: every worktree, reset, and diff below is relative to it.
-  const head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
+  let head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
   if (head.status !== 0) {
-    return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
+    // NEW-PROJECT case: a fresh scaffold has no commit (and may not be a git repo at
+    // all) until the build-completion flip — but the orchestrator delegates to
+    // OpenCode DURING the build, so declining here forces a paid fallback for the
+    // whole build. Self-heal: initialize (new-project only) + initial-commit the
+    // scaffold, then retry. Still skips when no HEAD can be produced (a non-git folder
+    // outside new-project mode, or nothing to commit) → caller falls back as before.
+    ensureInitialCommit(cwd, { initIfNeeded: state.mode === 'new-project' });
+    head = git(cwd, ['rev-parse', '--verify', 'HEAD']);
+    if (head.status !== 0) {
+      return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
+    }
   }
   // Sandbox from the CURRENT WORKING TREE, not just committed HEAD. `git stash
   // create` snapshots uncommitted (tracked) changes into a throwaway commit without
