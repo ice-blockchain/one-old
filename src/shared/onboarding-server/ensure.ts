@@ -9,6 +9,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 
+import { isPluginAuthoringRoot } from '../authoring-root';
 import { pluginRoot } from '../paths';
 import { writeLaunchConfig } from './launch-config';
 import { clearServerRecord, readServerRecord } from './registry';
@@ -63,6 +64,12 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const env = options.env || process.env;
   const isAlive = options.isAlive || processAlive;
   const launch = options.launch || defaultLaunch;
+
+  // The plugin's own repo/install never onboards: no server spawn, no
+  // .claude/launch.json, no registry record — hand back the inert placeholder.
+  if (isPluginAuthoringRoot(cwd)) {
+    return { url: 'http://127.0.0.1:0/?t=pending', port: 0, token: '', started: false };
+  }
 
   // Register the in-app preview entry (.claude/launch.json) SYNCHRONOUSLY before
   // returning, so preview_start finds it the instant the gate denies — never rely

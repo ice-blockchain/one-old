@@ -6,6 +6,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { STATE_FILE } from '../config/paths';
+import { hasPluginAuthoringMarkers } from './authoring-root';
 import { readJson } from './fsjson';
 import { isNativeState } from './state';
 import { hasStateFile } from './tool-classify';
@@ -30,7 +31,8 @@ export function findProjectRootForHookFile(cwd: string, filePath: unknown): stri
   const within = (dir: string): boolean => dir === cwdAbs || dir.startsWith(cwdAbs + path.sep);
   let current = path.dirname(absPath);
   while (within(current)) {
-    if (hasStateFile(current)) return current;
+    // The plugin's own repo is never a project root, even with a stray state file.
+    if (hasStateFile(current) && !hasPluginAuthoringMarkers(current)) return current;
     if (current === cwdAbs) break;
     current = path.dirname(current);
   }
@@ -61,7 +63,10 @@ function nearestOnboardedRoot(startDir: string): string | null {
   let current = path.resolve(startDir);
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
     if (home && current === home) break; // reached the home dir — don't treat it (or above) as a root
-    if (isOnboardedProjectRoot(current)) return current;
+    // A mode-bearing .one.json INSIDE the plugin authoring repo is a stray, never
+    // a project — skip it and keep walking so an enclosing real workspace (if
+    // any) still resolves. The repo can therefore never be adopted as a project.
+    if (isOnboardedProjectRoot(current) && !hasPluginAuthoringMarkers(current)) return current;
     const parent = path.dirname(current);
     if (parent === current) break; // filesystem root
     current = parent;

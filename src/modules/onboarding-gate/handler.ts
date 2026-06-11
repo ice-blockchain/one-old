@@ -47,6 +47,9 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // so a stray per-package state file can't trip a bogus per-package wizard or hide
   // that the root is already onboarded. Falls back to cwd for a standalone project.
   const root = resolveProjectRoot(cwd, filePath);
+  // The resolver skips authoring roots, but its fallback can still return cwd /
+  // a hint dir inside the plugin repo — never gate or materialize there.
+  if (isPluginAuthoringRoot(root)) return noop();
 
   if (authChoiceAllowsContinue(root)) return noop();
   // Auth is enforced by the priority-0 session gate before this gate runs.

@@ -10,6 +10,7 @@ import * as path from 'path';
 
 import { LEGACY_STACK_ALIASES, STACK_IDS } from '../../config/stacks';
 import { LEGACY_LOCK_FILE, LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
+import { isPluginAuthoringRoot } from '../authoring-root';
 import { readJson, readText, writeJson } from '../fsjson';
 import {
   canonicalizeStateShape,
@@ -118,6 +119,10 @@ export function readState(cwd: string): Rec {
 }
 
 export function writeState(cwd: string, state: unknown): void {
+  // Contract: the plugin's own repo/install never gets a .one.json — a silent
+  // no-op here covers every state writer (onboarding server, run claims, session
+  // flows) in one place. See authoring-root.test.ts + normalize tests.
+  if (isPluginAuthoringRoot(cwd)) return;
   let source: Rec = obj(state) ? { ...(state as Rec) } : {};
   delete source.pluginVersion;
   if (source.stack) {

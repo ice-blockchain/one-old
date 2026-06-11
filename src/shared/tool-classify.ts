@@ -60,7 +60,7 @@ export function patchTextFromToolInput(toolInput: unknown): string {
   return '';
 }
 
-function patchTouchedFiles(patchText: string): string[] {
+export function patchTouchedFiles(patchText: string): string[] {
   const files: string[] = [];
   for (const line of String(patchText || '').split(/\r?\n/)) {
     const match = line.match(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/) || line.match(/^\*\*\* Move to: (.+)$/);

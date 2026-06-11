@@ -47,6 +47,7 @@ function compactRuleKernel(): string[] {
     '- Backend/data work must keep API contracts explicit, schema changes reviewed, migrations reversible where practical, RLS/storage policies safe, and generated clients or schema snapshots refreshed when applicable.',
     '- Verification should match risk: reproduce bugs when practical, run focused tests/build/lint for touched surfaces, and report any skipped check with the exact reason.',
     '- External or destructive actions still need explicit current confirmation: deploy, publish, push protected environments, run shared/prod migrations, send messages, delete data/files, or call side-effecting external APIs.',
+    '- Nested plugin-authoring repos are exempt: a subdirectory that is itself the Traffic One plugin source or an installed plugin tree is never part of this project — do not create `.traffic-one/**` or generated agent-context files inside it.',
     '',
   ];
 }

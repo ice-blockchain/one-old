@@ -55,6 +55,8 @@ export function planWriteGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(cwd)) return noop();
 
   const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '');
+  // The resolver's fallback can still hand back a dir inside the plugin repo.
+  if (isPluginAuthoringRoot(projectRoot)) return noop();
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
 
   // Preflight convergence: ensure .traffic-one/** is current for this project

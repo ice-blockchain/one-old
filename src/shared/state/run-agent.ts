@@ -7,6 +7,7 @@ import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isPluginAuthoringRoot } from '../authoring-root';
 import { parseJson, readJson, writeJson } from '../fsjson';
 import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
@@ -297,6 +298,7 @@ export function ensureRunAgentClaim(
   metadata: { toolName?: string; agentType?: string; model?: string } = {},
 ): Rec | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
+  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
   const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
@@ -431,6 +433,7 @@ export function claimThreadRole(
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
+  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const id = threadId.trim();
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
@@ -604,6 +607,7 @@ export function tryFallbackClaim(
 ): { blocked: boolean; holder?: string } {
   const runId = ctx && ctx.runId != null ? String(ctx.runId) : '';
   if (!runId) return { blocked: false };
+  if (isPluginAuthoringRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
   const myKey = String(ctx.sessionId || ctx.claimId || ctx.role || '');
   const file = fallbackClaimFile(cwd, runId, normalizeRelPath(target));
   const existing = obj(readJson(file, null));

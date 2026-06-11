@@ -21,7 +21,7 @@ import * as path from 'path';
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isAuthenticatedLocal } from '../../shared/auth';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
@@ -83,6 +83,9 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(pathBase, filePath)) : '';
   const targetInsideCwd = Boolean(targetPath && (targetPath === cwdAbs || targetPath.startsWith(`${cwdAbs}${path.sep}`)));
   if (isPluginAuthoringRoot(cwd) && (!targetPath || targetInsideCwd)) return noop();
+  // A write LANDING inside the plugin's own repo must stand down even when the
+  // session cwd is a parent workspace (the cwd-only check above can't see it).
+  if (targetPath && isInsidePluginAuthoringRoot(targetPath)) return noop();
 
   const fp = filePath.replace(/\\/g, '/');
   const reportOneMcp = deps.reportOneMcp;
@@ -91,6 +94,8 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // read target the real project, not a monorepo sub-package whose stray shallow
   // .one.json would otherwise mint a one-uid / hide maintenance phase there.
   const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath);
+  // digestRoot bypasses resolveProjectRoot's authoring filter — re-check the result.
+  if (isPluginAuthoringRoot(reportRoot)) return noop();
   const state = readEffectiveState(reportRoot);
   const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
 

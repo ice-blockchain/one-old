@@ -6,8 +6,13 @@
 //   2. a GENERATED plugin tree — hook-runtime + auth shim + a plugin manifest named
 //      traffic-one, which since the dist/ refactor lives under dist/ (older layouts
 //      kept it at the repo root).
+// Detection walks UP (bounded, stopping at $HOME) so a session cwd or write
+// target anywhere INSIDE the repo also stands down — a hook invoked from
+// one/src, or from a parent workspace targeting a file in the repo, must never
+// treat the plugin's own codebase as an end-user project.
 
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { pluginRoot } from './paths';
@@ -57,7 +62,52 @@ export function hasPluginAuthoringMarkers(root: string): boolean {
     || hasGeneratedPluginTree(path.join(root, 'dist'));
 }
 
+// Mirrors MAX_ROOT_WALK in hook-paths.ts: a hook never spends unbounded fs
+// reads climbing toward /.
+const MAX_AUTHORING_WALK = 40;
+
+// Hooks are one process per event, but Cursor's fan-out runs many handlers per
+// process and each guard probes ~3 paths per level — memoize per start dir.
+const authoringRootMemo = new Map<string, string | null>();
+
+// Test helper: forget memoized lookups (tmp fixtures reuse paths).
+export function resetAuthoringRootCache(): void {
+  authoringRootMemo.clear();
+}
+
+// Nearest ancestor (or `start` itself; file or dir path) that is the plugin
+// authoring repo / a generated plugin tree. Stops at $HOME (exclusive) and the
+// filesystem root. Returns null when `start` is not inside any authoring root.
+export function findAuthoringRootContaining(start: string): string | null {
+  const resolved = path.resolve(start);
+  const cached = authoringRootMemo.get(resolved);
+  if (cached !== undefined) return cached;
+
+  let home = '';
+  try { home = path.resolve(os.homedir()); } catch { /* no home → MAX-capped walk */ }
+  const installedRoot = path.resolve(pluginRoot());
+
+  let current = resolved;
+  let found: string | null = null;
+  for (let i = 0; i < MAX_AUTHORING_WALK; i += 1) {
+    if (home && current === home) break; // $HOME is machine config space, never the repo
+    if (current === installedRoot || hasPluginAuthoringMarkers(current)) {
+      found = current;
+      break;
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break; // filesystem root
+    current = parent;
+  }
+  authoringRootMemo.set(resolved, found);
+  return found;
+}
+
+// `p` is the plugin authoring repo, inside it, or inside a generated plugin tree.
+export function isInsidePluginAuthoringRoot(p: string): boolean {
+  return findAuthoringRootContaining(p) !== null;
+}
+
 export function isPluginAuthoringRoot(cwd: string): boolean {
-  const root = path.resolve(cwd);
-  return root === path.resolve(pluginRoot()) || hasPluginAuthoringMarkers(root);
+  return isInsidePluginAuthoringRoot(cwd);
 }

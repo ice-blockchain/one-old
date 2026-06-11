@@ -178,3 +178,24 @@ test('resolveProjectRoot never escapes into the home directory (stray ~/.traffic
     fs.rmSync(fakeHome, { recursive: true, force: true });
   }
 });
+
+test('resolveProjectRoot skips an authoring repo with a stray onboarded state file and resolves the parent workspace', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-hookpaths-parent-'));
+  try {
+    // Parent = a real onboarded workspace.
+    fs.mkdirSync(path.join(parent, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(parent, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal' }), 'utf8');
+    // Nested plugin authoring repo carrying a STRAY onboarded state file (the incident).
+    const repo = path.join(parent, 'one');
+    fs.mkdirSync(path.join(repo, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'gen', 'index.ts'), '// gen', 'utf8');
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(repo, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal' }), 'utf8');
+
+    const resolved = resolveProjectRoot(parent, path.join(repo, 'src', 'shared', 'x.ts'));
+    assert.equal(fs.realpathSync(resolved), fs.realpathSync(parent), 'must skip the authoring repo and adopt the parent workspace');
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});

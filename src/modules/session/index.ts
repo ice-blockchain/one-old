@@ -5,6 +5,7 @@
 // onboarding-reminder / convergence handler.
 
 import type { Handler } from '../../core/types';
+import { authoringWriteGuard } from './authoring-guard';
 import { authPreToolGate } from './auth-gate';
 import { runSessionStart } from './session-start';
 import { runUserPromptSubmit } from './prompt-submit';
@@ -16,6 +17,18 @@ export const handlers: Handler[] = [
     subcommands: ['session-start'],
     priority: 0,
     run: (ctx) => runSessionStart(ctx),
+  },
+  {
+    // Deny model-steered writes into the plugin's own repo (.traffic-one/** or
+    // generated AGENTS.md/CLAUDE.md content). Path-scoped — inert everywhere
+    // else, including Cursor's full-pipeline fan-out. Piggybacks the existing
+    // PreToolUse gate pipelines, so no hook wiring changes.
+    id: 'session.authoring-guard',
+    event: 'PreToolUse',
+    tools: ['file-write', 'file-edit', 'shell'],
+    subcommands: ['check-onboarding-gate', 'check-plan-write'],
+    priority: 5,
+    run: (ctx) => authoringWriteGuard(ctx),
   },
   {
     // The priority-0 auth gate participates in every PreToolUse gate subcommand,

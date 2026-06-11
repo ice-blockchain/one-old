@@ -104,3 +104,17 @@ test('GenRun.json writes canonical 2-space JSON with a trailing newline; --check
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('dist AGENTS.md/CLAUDE.md ship the end-user plugin instructions, not the maintainer guide', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-agents-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'gen', 'static', 'plugin-instructions.md'), 'utf8');
+    assert.equal(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), source);
+    assert.equal(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8'), source);
+    // The maintainer guide (repo root AGENTS.md) must never ship.
+    assert.ok(!fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8').includes('Stand Down'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

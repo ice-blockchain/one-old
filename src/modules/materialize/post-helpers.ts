@@ -8,6 +8,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { hasPluginAuthoringMarkers } from '../../shared/authoring-root';
 import { isOnboardedProjectRoot } from '../../shared/hook-paths';
 import { hasStateFile } from '../../shared/tool-classify';
 
@@ -42,7 +43,8 @@ export function projectRootForPathHint(cwd: string, hintPath: unknown): string |
   // nearest any-state dir only as a fallback when no onboarded root encloses it.
   let firstAnyState: string | null = null;
   for (;;) {
-    if (hasStateFile(current)) {
+    // Stray state files inside the plugin authoring repo are never a project.
+    if (hasStateFile(current) && !hasPluginAuthoringMarkers(current)) {
       if (isOnboardedProjectRoot(current)) return current;
       if (firstAnyState === null) firstAnyState = current;
     }
