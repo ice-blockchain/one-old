@@ -118,7 +118,16 @@ function withOpenCodeEnv(host: 'codex' | 'other', fn: (cwd: string, fixtures: { 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocready-'));
   const env = process.env;
   const saved: Record<string, string | undefined> = {};
-  for (const k of ['TRAFFIC_ONE_PROJECT_PREFS_PATH', 'TRAFFIC_ONE_TOOLCHAIN_ROOT', 'TRAFFIC_ONE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CURSOR_PLUGIN_ROOT', 'CODEX_HOME']) saved[k] = env[k];
+  for (const k of [
+    'TRAFFIC_ONE_PROJECT_PREFS_PATH',
+    'TRAFFIC_ONE_TOOLCHAIN_ROOT',
+    'TRAFFIC_ONE_PLUGIN_ROOT',
+    'CODEX_PLUGIN_ROOT',
+    'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
+    'CODEX_THREAD_ID',
+    'CURSOR_PLUGIN_ROOT',
+    'CODEX_HOME',
+  ]) saved[k] = env[k];
   const cwd = path.join(dir, 'proj');
   const pluginDir = path.join(dir, 'plugin');
   const codexHome = path.join(dir, 'codex-home');
@@ -130,6 +139,8 @@ function withOpenCodeEnv(host: 'codex' | 'other', fn: (cwd: string, fixtures: { 
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed');
   env.TRAFFIC_ONE_PLUGIN_ROOT = pluginDir;
   env.CODEX_HOME = codexHome;
+  delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  delete env.CODEX_THREAD_ID;
   delete env.CURSOR_PLUGIN_ROOT;
   if (host === 'codex') env.CODEX_PLUGIN_ROOT = pluginDir; else delete env.CODEX_PLUGIN_ROOT;
   const managedBin = path.join(env.TRAFFIC_ONE_TOOLCHAIN_ROOT, 'opencode', 'npm-prefix', 'bin', 'opencode');
