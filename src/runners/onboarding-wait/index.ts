@@ -2,9 +2,13 @@
 // A BLOCKING wait the agent runs right after opening the setup wizard, so the build
 // resumes automatically when setup finishes — with no extra message from the user.
 // It polls the SAME completeness predicate the gate uses (computeOnboarding(cwd).done),
-// sleeping between checks, and is read-only (no writes; the only child process is the
-// degraded-path /bin/sleep fallback). Compiles to dist/scripts/onboarding-wait.cjs
-// via the build SHIM.
+// sleeping between checks (the only child process is the degraded-path /bin/sleep
+// fallback). On completion it ALSO emits the maintenance-triage routing for the
+// user's seeded original request: the agent continues that request inside the
+// SAME turn, so no UserPromptSubmit hook ever fires for it — without this, the
+// quick-fix/role/orchestrator + OpenCode-first rubric is never injected and the
+// agent implements inline (which may write a fresh runId + once-marker).
+// Compiles to dist/scripts/onboarding-wait.cjs via the build SHIM.
 //
 //   node onboarding-wait.cjs <cwd> [--timeout-ms <n>] [--interval-ms <n>]
 //
@@ -13,7 +17,11 @@
 
 import { execFileSync } from 'child_process';
 
+import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
+import { detectMode } from '../../shared/detection';
+import { detectHost } from '../../shared/host';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { normalizeState, readEffectiveState } from '../../shared/state';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
@@ -75,6 +83,22 @@ export function waitForOnboarding(cwd: string, options: WaitOptions = {}): WaitO
   }
 }
 
+// The post-setup routing for the request the agent is about to continue. The
+// prompt was seeded into state.originalPrompt by the setup-required branch of
+// UserPromptSubmit; non-maintenance projects (fresh new-project builds) and
+// non-edit prompts return '' — the orchestrator flow owns those.
+export function postSetupTriage(cwd: string): string {
+  try {
+    const state = JSON.parse(JSON.stringify(readEffectiveState(cwd))) as Record<string, unknown>;
+    const prompt = typeof state.originalPrompt === 'string' ? state.originalPrompt.trim() : '';
+    if (!prompt) return '';
+    normalizeState(state, (state.mode as string) || detectMode(cwd));
+    return maintenanceTriageDirective(cwd, state, prompt, {}, detectHost());
+  } catch {
+    return '';
+  }
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const outcome = waitForOnboarding(cwd, {
@@ -83,6 +107,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   });
   if (outcome === 'complete') {
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
+    const triage = postSetupTriage(cwd);
+    if (triage) {
+      process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);
+    }
     process.exit(0);
   }
   process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');

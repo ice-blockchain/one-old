@@ -29,7 +29,7 @@ import {
   toolStatus,
 } from '../toolchain';
 import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
-import { GITNEXUS_ROOT_DIRNAME, relocateUnderTrafficOne } from '../../shared/codegraph';
+import { GITNEXUS_ROOT_DIRNAME, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import {
   currentNodeMajor,
   findNvmNode22,
@@ -440,6 +440,11 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
     writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: detail });
     return { ok: false, action, report: null, error: detail, durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial', backupRoot: backups.backupRoot };
   }
+
+  // Adopt the skills GitNexus generated under .claude/skills/ into Traffic One's
+  // per-project skills (.traffic-one/skills/<name>/) BEFORE the restore below —
+  // restore then cleanly reinstates whatever .claude/skills the project had.
+  relocateProviderSkills(cwd);
 
   // Restore traffic-one's versions of AGENTS.md / CLAUDE.md / .claude/skills
   // if GitNexus's run changed them.

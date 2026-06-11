@@ -10,7 +10,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt, isLikelyEditRequest } from '../../shared/detection';
+import { detectMode, isLikelyCodingPrompt } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -21,12 +21,10 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, legacyStatePath, lifecycleCompletedAt, normalizeState, readEffectiveState, readState, runIdNow, statePath, writeState } from '../../shared/state';
+import { hookSessionIdentity, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
-import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
-import { resolveModel } from '../../shared/model-tiers';
-import { classifyPromptComplexity } from '../../shared/triage/classify';
+import { maintenanceTriageDirective } from './triage-directive';
 import {
   authApiKeyPromptHookResult,
   authChoiceHookResult,
@@ -58,7 +56,11 @@ function seedOriginalPrompt(cwd: string, prompt: string): void {
   const text = (prompt || '').trim();
   if (!text) return;
   const state = readState(cwd);
-  if (state.mode !== 'new-project') return;
+  // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
+  // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing
+  // for the continued request — existing codebases are exactly where that
+  // continuation lands in maintenance phase. Never overwrite an existing seed.
+  if (typeof state.originalPrompt === 'string' && state.originalPrompt.trim()) return;
   if (projectContextOriginalPrompt(state)) return;
   try {
     writeState(cwd, { ...state, originalPrompt: text });
@@ -77,83 +79,9 @@ function prependContext(prefix: string, result: HookResult): HookResult {
   });
 }
 
-function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
-  const runId = runIdNow();
-  const sharedState = readState(cwd);
-  writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });
-  state.currentRunId = runId;
-  state.spawnIndex = {};
-}
-
-// Post-build maintenance triage. Once the main build is complete (existing
-// codebases from the start; new projects once the build flips them to maintenance)
-// the machinery should scale to the request rather than treating every prompt the
-// same: trivial → a cheap/OpenCode quick-fix, small → a single role, complex →
-// re-engage the orchestrator. Hooks can't classify with an LLM, so we inject a
-// compact directive plus a deterministic keyword hint and let the agent decide.
-// Returns the directive string, or '' when triage does not apply. Guards: must be
-// maintenance phase, a coding/implementation prompt (skip questions/chat), not a
-// subagent session, and no orchestration run / fix-cycle currently in flight (never
-// re-triage mid-run). The directive branches on team mode so it never promises a
-// subagent that main-agent mode can't spawn.
-function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string, raw: unknown, host: string): string {
-  const mode = (state.mode as string) || detectMode(cwd);
-  if (!isMaintenancePhase(state, mode)) return '';
-  // Broader than the onboarding coding-intent gate: a finished app's copy/UI tweaks
-  // ("change the hero headline", "shorten the title") must still route through triage.
-  if (!isLikelyEditRequest(promptText)) return '';
-  if (hookSessionIdentity(raw).isSubagent) return '';
-  // Claims from a run that finished BEFORE the lifecycle stamp are settled —
-  // only claims newer than the watermark mean an orchestration is in flight.
-  if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) })) return '';
-
-  const hint = classifyPromptComplexity(promptText);
-  const team = obj(state.team);
-  const perf = obj(state.performance);
-  const level = perf && typeof perf.level === 'string' ? perf.level : '';
-  const teamMode = team && (team.mode === 'main-agent' || team.mode === 'subagents')
-    ? (team.mode as string)
-    : teamModeForLevel(level);
-  // Name the concrete cheapest model so the agent passes it on the quick-fix spawn
-  // without resolving an indirection (haiku on Claude/Cursor, gpt-5.4-mini on Codex).
-  const cheapest = resolveModel('cheapest', host) || 'the cheapest model for this host';
-  const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
-  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state);
-  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
-  const ocActive = openCodeDelegationActive(state);
-  // Render the OpenCode instruction only when delegation is actually active, so an
-  // off state doesn't leave a dead-branch clause a literal reader must evaluate.
-  let openCodeClause = '';
-  let quickFixOpenCodeClause = '';
-  let smallOpenCodeClause = '';
-  if (ocActive) {
-    if (teamMode === 'main-agent') {
-      openCodeClause = ` If you prefer, offload it via the \`opencode_delegate\` tool (role "quick-fix").`;
-    } else {
-      quickFixOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with role "quick-fix", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid worker. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
-      smallOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with the chosen role "senior-frontend" or "senior-backend", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid role subagent. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
-    }
-  }
-  // The rubric is ~95% static prose: inject it in full once per session, then a
-  // one-line reminder with the per-prompt variables (tier hint + fresh runId).
-  // beginFreshMaintenanceRun above still runs on every triage prompt.
-  if (!firstEmitThisSession(cwd, 'maintenance-triage', hookSessionIdentity(raw).sessionId)) {
-    const ocReminder = ocActive && teamMode === 'subagents'
-      ? ` OpenCode runId for \`opencode_delegate\`: "${runId}".`
-      : '';
-    return `[MAINTENANCE PHASE — triage reminder] hint: ${hint.tier} (confidence ${hint.confidence})${signals} — route per the maintenance-triage rubric from earlier in this session (full rubric: \`task-triage\` skill).${ocReminder}`;
-  }
-  const blockName = teamMode === 'main-agent' ? 'maintenance-triage-main-agent' : 'maintenance-triage-subagents';
-  return `${block(blockName, {
-    HINT: hint.tier,
-    CONFIDENCE: hint.confidence,
-    SIGNALS: signals,
-    CHEAPEST_MODEL: cheapest,
-    OPENCODE_CLAUSE: openCodeClause,
-    QUICK_FIX_OPENCODE_CLAUSE: quickFixOpenCodeClause,
-    SMALL_OPENCODE_CLAUSE: smallOpenCodeClause,
-  })}`;
-}
+// Post-build maintenance triage lives in ./triage-directive (shared with the
+// onboarding-wait runner, which emits it for the SETUP-COMPLETE continuation —
+// that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;

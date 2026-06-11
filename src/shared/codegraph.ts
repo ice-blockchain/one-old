@@ -33,3 +33,66 @@ export function relocateUnderTrafficOne(cwd: string, rootDirname: string, destRe
     // best-effort; leave the artifact in place rather than throw
   }
 }
+
+// Graph providers (gitnexus today) also auto-write agent skills under
+// .claude/skills/ — sometimes grouped (e.g. .claude/skills/gitnexus/<name>/).
+// Those belong with Traffic One's per-project skills: move every LEAF skill dir
+// (a dir containing SKILL.md) into .traffic-one/skills/<name>/ so they live
+// beside the materialized set (the materializer's cleanup never touches them —
+// they are not manifest-tracked). Existing destinations are preserved; emptied
+// group dirs (and an emptied .claude/skills) are removed. Returns the relocated
+// skill names. Best-effort: never throws.
+export function relocateProviderSkills(cwd: string): string[] {
+  const sourceRoot = path.join(cwd, '.claude', 'skills');
+  const destRoot = path.join(cwd, '.traffic-one', 'skills');
+  const relocated: string[] = [];
+  try {
+    if (!fs.existsSync(sourceRoot)) return relocated;
+
+    const leafSkillDirs: string[] = [];
+    const collect = (dir: string): void => {
+      if (fs.existsSync(path.join(dir, 'SKILL.md'))) {
+        leafSkillDirs.push(dir);
+        return;
+      }
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.isDirectory()) collect(path.join(dir, entry.name));
+      }
+    };
+    collect(sourceRoot);
+
+    for (const skillDir of leafSkillDirs) {
+      const name = path.basename(skillDir);
+      const dest = path.join(destRoot, name);
+      try {
+        if (fs.existsSync(dest)) continue; // never clobber an existing skill
+        fs.mkdirSync(destRoot, { recursive: true });
+        fs.renameSync(skillDir, dest);
+        relocated.push(name);
+      } catch {
+        // best-effort per skill
+      }
+    }
+
+    // Sweep now-empty group dirs, then .claude/skills (and .claude) if emptied.
+    const removeIfEmpty = (dir: string): void => {
+      try {
+        if (fs.existsSync(dir) && fs.readdirSync(dir).length === 0) fs.rmdirSync(dir);
+      } catch {
+        // best-effort
+      }
+    };
+    try {
+      for (const entry of fs.readdirSync(sourceRoot, { withFileTypes: true })) {
+        if (entry.isDirectory()) removeIfEmpty(path.join(sourceRoot, entry.name));
+      }
+    } catch {
+      // best-effort
+    }
+    removeIfEmpty(sourceRoot);
+    removeIfEmpty(path.join(cwd, '.claude'));
+  } catch {
+    // best-effort
+  }
+  return relocated.sort();
+}

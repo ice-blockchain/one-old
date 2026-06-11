@@ -14,7 +14,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateUnderTrafficOne } from '../../shared/codegraph';
+import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
@@ -275,7 +275,12 @@ function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr
   const status = typeof result.status === 'number' ? result.status : 1;
   // Relocate the root-level graphify-out/ under .traffic-one/ so the graph never
   // pollutes the project root. (graphify has no --out flag → move after the scan.)
-  if (status === 0) relocateUnderTrafficOne(cwd, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_OUT_REL);
+  // Provider-skill adoption mirrors the gitnexus runner: graphify writes no
+  // .claude/skills today, but if a future version does, they land with ours.
+  if (status === 0) {
+    relocateUnderTrafficOne(cwd, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_OUT_REL);
+    relocateProviderSkills(cwd);
+  }
   return {
     status,
     stderr: (result.stderr || '').trim(),

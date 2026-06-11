@@ -40,6 +40,19 @@ function unique(values: readonly string[]): string[] {
   return out;
 }
 
+// On-disk skill dirs (containing SKILL.md) that the manifest doesn't track.
+function extraSkillDirs(skillsRoot: string, tracked: ReadonlySet<string>): string[] {
+  try {
+    return fs.readdirSync(skillsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !tracked.has(entry.name))
+      .filter((entry) => fs.existsSync(path.join(skillsRoot, entry.name, 'SKILL.md')))
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
 export function materializeProjectAssets(cwd: string, state: Rec): MaterializeResult {
   if (isPluginAuthoringRoot(cwd)) {
     return { rules: 0, skills: 0, written: 0, removed: 0, contextProfile: 'plugin-authoring', skipped: 'plugin-authoring-root' };
@@ -77,7 +90,11 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (preserveManualRootContext(cwd, 'AGENTS.md', state)) written += 1;
   if (preserveManualRootContext(cwd, 'CLAUDE.md', state)) written += 1;
 
-  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, skills, { mandatoryRules, referenceRules });
+  // Provider-adopted skills (e.g. gitnexus's, relocated by the graph runners)
+  // live on disk but are deliberately NOT manifest-tracked (cleanup never sweeps
+  // them). List them in the Active Skills index so agents discover them.
+  const indexSkills = [...skills, ...extraSkillDirs(skillsRoot, new Set(skills))].sort();
+  const localAgents = renderAgentsWithLocalContext(cwd, state, rules, indexSkills, { mandatoryRules, referenceRules });
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
 
