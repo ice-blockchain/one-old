@@ -266,6 +266,27 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
   });
 });
 
+test('maintenance + OpenCode ACTIVE → triage routes to the free opencode_delegate FIRST (paid worker only as fallback)', () => {
+  // The reported gap: quick-fix went straight to the paid model because the project's
+  // opencode (enabled + present) was never stamped, so openCodeDelegationActive() was
+  // false and the directive dropped its OpenCode clause. With opencode enabled AND
+  // stamped, the directive must push the free delegate tool first.
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color to blue'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
+      assert.ok(r.context.includes('opencode_delegate'), 'routes to the free OpenCode delegate tool');
+      assert.ok(r.context.includes('FIRST'), 'OpenCode is the FIRST attempt; the paid worker is the fallback');
+    }
+  });
+});
+
 test('maintenance + a copy/headline tweak (missed by the coding-intent heuristic) still triages', () => {
   // Regression: "Change the hero headline ..." has no coding verb/noun, so the
   // narrow isLikelyCodingPrompt suppressed the directive and the main agent edited

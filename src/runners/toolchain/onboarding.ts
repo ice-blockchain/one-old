@@ -85,16 +85,18 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
       stampToolchain(cwd, 'opencode', candidate.binPath, probed.version);
       return { tool: 'opencode', ok: true, action: candidate.action, error: null, binPath: candidate.binPath, installedVersion: probed.version };
     }
-    // A present managed bin with no parseable version is almost always the
-    // first-run migration timing out the probe — warm it up and assume the pinned
-    // recommended version we installed, so a present OpenCode is never left
-    // unstamped (the `_6_`-style "enabled but installedVersion:null" case).
-    if (candidate.binPath === managedBin && probed.version === null) {
+    // A present bin with no parseable version is almost always the first-run
+    // migration timing out the probe — warm it up and assume the pinned recommended
+    // version, so a present OpenCode is never left unstamped (the "enabled but
+    // installedVersion:null" case that makes openCodeDelegationActive() false and
+    // silently disables delegation + the tier-shift). Applies to a managed bin AND a
+    // user's global opencode on PATH (`used-existing`) — both run the delegate alike.
+    if (probed.version === null) {
       warmUpOpencode(candidate.binPath);
       const version = probeToolVersion('opencode', { binPath: candidate.binPath }) || opencodeRecommendedVersion();
       if (version) {
         stampToolchain(cwd, 'opencode', candidate.binPath, version);
-        return { tool: 'opencode', ok: true, action: 'used-managed', error: null, binPath: candidate.binPath, installedVersion: version };
+        return { tool: 'opencode', ok: true, action: candidate.action, error: null, binPath: candidate.binPath, installedVersion: version };
       }
     }
   }
