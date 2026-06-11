@@ -20,6 +20,7 @@ import { pluginRoot } from '../../shared/paths';
 import { nowIsoNoMs } from '../../shared/text';
 import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
+  isMaintenancePhase,
   isMaterialized,
   normalizeState,
   readEffectiveState,
@@ -28,6 +29,7 @@ import {
   stateVersion,
   writeState,
 } from '../../shared/state';
+import { ensureInitialCommit } from '../../shared/git-init';
 
 type Rec = Record<string, unknown>;
 
@@ -145,6 +147,15 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
   try {
     const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
     if (openCode?.enabled !== true) return '';
+    // Catch-up for the build-time commit: a maintenance-phase project that OpenCode
+    // will delegate into needs a git HEAD to sandbox — a never-committed scaffold (or
+    // one that flipped to maintenance on an older build) makes every delegation decline
+    // and fall back to a paid worker. Give it the initial commit now. Gated on
+    // maintenance so a mid-build scaffold isn't committed out from under the
+    // orchestrator; idempotent (skips committed repos / non-git dirs).
+    if (isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) {
+      ensureInitialCommit(cwd);
+    }
     let notice = '';
     if (ensureCodexMcpServerRegistered() === 'registered') {
       notice += '[opencode] opencode-worker MCP server registered in ~/.codex/config.toml — restart Codex once to load it.\n';
@@ -168,7 +179,18 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
     // Cheap presence check only (existsSync + PATH lookup) — a version probe can
     // stall SessionStart. The spawned runner does the real probe + stamp.
     const installed = fs.existsSync(managedNpmBin('opencode', 'opencode')) || Boolean(exec.which('opencode'));
-    if (!installed) {
+    // openCodeDelegationActive() — which gates the maintenance-triage OpenCode-first
+    // clause AND the spawn gate's free-delegation push — requires a non-empty
+    // toolchain.opencode.installedVersion. A user's GLOBAL opencode (on PATH, not a
+    // Traffic One managed install) is present but onboarding's managed-only stamp
+    // skips it, so it stays unstamped and delegation SILENTLY never fires (the worker
+    // goes straight to the paid model). Heal that case too — not just a missing CLI:
+    // the spawned runner's ensureOpenCodeTool probes the present bin (managed OR on
+    // PATH) and stamps it, so the next prompt's directive/gate finally see it.
+    const tc = state.toolchain && typeof state.toolchain === 'object' ? (state.toolchain as Rec) : null;
+    const ocStamp = tc && tc.opencode && typeof tc.opencode === 'object' ? (tc.opencode as Rec) : null;
+    const stamped = typeof ocStamp?.installedVersion === 'string' && (ocStamp.installedVersion as string).length > 0;
+    if (!installed || !stamped) {
       const lock = path.join(cwd, '.traffic-one', OPENCODE_HEAL_LOCK);
       if (!diskLockMs(lock) || (Date.now() - diskLockMs(lock)) >= OPENCODE_HEAL_COOLDOWN_MS) {
         const entry = path.join(pluginRoot(), 'scripts', 'onboarding-toolchain-runner.cjs');
@@ -177,7 +199,9 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
           fs.writeFileSync(lock, nowIsoNoMs(), 'utf8');
           const child = spawn(process.execPath, [entry, '--opencode-only'], { cwd, detached: true, stdio: 'ignore' });
           child.unref();
-          notice += '[opencode] OpenCode CLI missing — managed install started in the background (ready next session).\n';
+          // Only a MISSING CLI warrants a user-facing "installing" notice; a
+          // present-but-unstamped heal is a silent background stamp.
+          if (!installed) notice += '[opencode] OpenCode CLI missing — managed install started in the background (ready next session).\n';
         }
       }
     }

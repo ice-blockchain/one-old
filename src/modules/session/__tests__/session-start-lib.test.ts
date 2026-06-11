@@ -218,3 +218,25 @@ test('ensureOpenCodeDelegationReady: missing CLI → background managed install 
     assert.equal(ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } }), '');
   });
 });
+
+test('ensureOpenCodeDelegationReady: present-but-UNSTAMPED opencode → silent background stamp-heal (no install notice)', () => {
+  // A user's global opencode is present (CLI resolves) but toolchain.opencode was
+  // never stamped, so openCodeDelegationActive() is false and triage/gate silently
+  // skip free delegation. The heal must still fire (to stamp it) — without a
+  // user-facing "installing" notice, since nothing is being installed.
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin); // CLI present (installed=true), but state carries no toolchain stamp
+    const notice = ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } });
+    assert.ok(!notice.includes('managed install started'), 'present CLI → no install notice');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.opencode-heal-lock')), true, 'heal fired to stamp the present CLI');
+  });
+});
+
+test('ensureOpenCodeDelegationReady: present AND already-stamped opencode → no heal (idempotent, no lock)', () => {
+  withOpenCodeEnv('other', (cwd, { managedBin }) => {
+    installStubCli(managedBin);
+    const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.15.13', installedAt: 'now' } } };
+    ensureOpenCodeDelegationReady(cwd, state);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.opencode-heal-lock')), false, 'stamped → nothing to heal');
+  });
+});

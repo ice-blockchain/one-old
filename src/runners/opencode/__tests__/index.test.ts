@@ -48,7 +48,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void): vo
   }
 }
 
-type StubBehavior = 'edit' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit';
+type StubBehavior = 'edit' | 'append' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -67,6 +67,19 @@ const i = process.argv.indexOf('--dir');
 const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt' } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+`,
+    // reads the worktree's foo.txt (which reflects the sandbox BASE) and appends a
+    // marker. Lets a test assert which base the sandbox branched from: if the runner
+    // branches off the live working tree, the stub sees the uncommitted content; if
+    // it (wrongly) branches off committed HEAD, it sees the stale content instead.
+    append: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'edited foo.txt' } }) + '\\n');
+const p = path.join(dir, 'foo.txt');
+const cur = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
+fs.writeFileSync(p, cur.replace(/\\n+$/, '') + '-EDITED\\n');
 `,
     // opencode-style failure: error event, but exit 0 (the real CLI does this)
     error: `#!/bin/sh
@@ -201,6 +214,28 @@ test('delegate applies a successful run to the working tree + writes a digest', 
     assert.match(fs.readFileSync(digest, 'utf8'), /verdict: DELEGATED_OK/);
     // worktree cleaned up
     assert.equal(spawnSync('git', ['-C', dir, 'worktree', 'list'], { encoding: 'utf8' }).stdout.trim().split('\n').length, 1);
+  });
+});
+
+test('delegate sandboxes from the live WORKING TREE, not stale HEAD — an uncommitted prior edit is seen (no cached base)', () => {
+  // Regression: two sequential delegations reuse the same runId and leave their
+  // edits UNCOMMITTED. The 2nd must branch its sandbox off the current working tree,
+  // not the committed HEAD — else it operates on a "cached" snapshot of the repo and
+  // its diff fails to apply / lands the wrong content.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('append');
+    // HEAD has foo.txt='base'; the working tree carries an UNCOMMITTED change to
+    // 'WORKING' (stands in for a previous delegation's not-yet-committed edit).
+    fs.writeFileSync(path.join(dir, 'foo.txt'), 'base\n');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'add foo']);
+    fs.writeFileSync(path.join(dir, 'foo.txt'), 'WORKING\n'); // uncommitted
+    const r = delegate(dir, { role: 'quick-fix', task: 'edit foo', runId: 'seq-1' });
+    assert.equal(r.action, 'delegated', 'a sandbox built on the live tree applies cleanly');
+    // The stub appended to what it SAW in the sandbox: 'WORKING' (live), not 'base'
+    // (HEAD). With the old HEAD-based sandbox this is 'base-EDITED' and the apply
+    // conflicts against the 'WORKING' tree → action:'failed'.
+    assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8').trim(), 'WORKING-EDITED');
   });
 });
 
