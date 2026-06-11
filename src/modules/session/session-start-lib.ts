@@ -20,6 +20,7 @@ import { pluginRoot } from '../../shared/paths';
 import { nowIsoNoMs } from '../../shared/text';
 import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
+  isMaintenancePhase,
   isMaterialized,
   normalizeState,
   readEffectiveState,
@@ -28,6 +29,7 @@ import {
   stateVersion,
   writeState,
 } from '../../shared/state';
+import { ensureInitialCommit } from '../../shared/git-init';
 
 type Rec = Record<string, unknown>;
 
@@ -145,6 +147,15 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
   try {
     const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
     if (openCode?.enabled !== true) return '';
+    // Catch-up for the build-time commit: a maintenance-phase project that OpenCode
+    // will delegate into needs a git HEAD to sandbox — a never-committed scaffold (or
+    // one that flipped to maintenance on an older build) makes every delegation decline
+    // and fall back to a paid worker. Give it the initial commit now. Gated on
+    // maintenance so a mid-build scaffold isn't committed out from under the
+    // orchestrator; idempotent (skips committed repos / non-git dirs).
+    if (isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) {
+      ensureInitialCommit(cwd);
+    }
     let notice = '';
     if (ensureCodexMcpServerRegistered() === 'registered') {
       notice += '[opencode] opencode-worker MCP server registered in ~/.codex/config.toml — restart Codex once to load it.\n';

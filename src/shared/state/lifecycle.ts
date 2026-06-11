@@ -12,6 +12,7 @@ import { obj } from '../obj';
 import { LIFECYCLE_PHASE_IDS } from '../../config/state';
 import { stateTimestamp } from './io';
 import { readState, writeState } from './normalize';
+import { ensureInitialCommit } from '../git-init';
 
 export type LifecyclePhase = 'building' | 'maintenance';
 
@@ -69,6 +70,10 @@ export function markMaintenance(cwd: string, source: string): boolean {
     const state = readState(cwd);
     if (projectPhase(state, state.mode) === 'maintenance' && source !== 'orchestrator') return false;
     writeState(cwd, { ...state, lifecycle: maintenanceLifecycle(source) });
+    // Main build complete → give a never-committed scaffold its initial git commit so
+    // OpenCode delegation (which needs a HEAD to sandbox) works for free from here on.
+    // Idempotent + best-effort: a no-op for an already-committed repo or a non-git dir.
+    ensureInitialCommit(cwd);
     return true;
   } catch {
     return false;
