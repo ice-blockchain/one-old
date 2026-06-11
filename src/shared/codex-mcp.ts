@@ -75,12 +75,17 @@ function discoverCodexPluginRoot(env: NodeJS.ProcessEnv): string | null {
 
 // The config.toml block. `sh -lc … exec node` gives the server (and its git/
 // opencode child processes) the login-shell PATH; `exec` keeps stdio = the server.
+// The path rides through TWO quoting layers — single-quote it for the shell
+// (inert to $-expansion and spaces), then escape backslashes/double-quotes for
+// the TOML basic string, so quotes or backslashes in the path can't break either.
 export function codexMcpServerBlock(serverPath: string): string {
+  const shellQuoted = `'${serverPath.replace(/'/g, `'\\''`)}'`;
+  const tomlEscaped = `exec node ${shellQuoted}`.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return [
     '',
     `[mcp_servers.${OPENCODE_MCP_SERVER_KEY}]`,
     'command = "sh"',
-    `args = ["-lc", "exec node \\"${serverPath}\\""]`,
+    `args = ["-lc", "${tomlEscaped}"]`,
     'startup_timeout_sec = 120',
     '',
   ].join('\n');

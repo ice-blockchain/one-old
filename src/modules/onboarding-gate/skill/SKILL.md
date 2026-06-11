@@ -54,6 +54,18 @@ If the user would rather not use Traffic One, they can choose "Continue without
 Traffic One" from the Traffic One auth prompt.
 <!-- T1BLOCK:END server-deny-reason -->
 
+<!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
+Traffic One setup is still pending — building stays blocked until the wizard finishes.
+Wizard (open in the in-app preview pane, not an external browser): {{URL}}
+Keep your turn open by running the wait command again (long timeout, ~9 minutes):
+
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, close the wizard view and IMMEDIATELY
+continue the user's original request. Full instructions were given on the first
+denial this session.
+<!-- T1BLOCK:END server-deny-reason-repeat -->
+
 <!-- T1BLOCK:BEGIN setup-pending -->
 Traffic One needs a quick setup before it can build in this project. When you start
 a coding task, Traffic One opens a local setup wizard — shown in your editor's

@@ -187,11 +187,17 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const spec = stackSpecForState(state);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
-    const { body } = packBundle(root, modeMandatory, spec.optional);
 
     const copied = copyActiveSkills(state);
     const skillDirective = pruneSkillsDirective(state, listAllSkills());
     stampMaterialization(cwd, state);
+    // The materialized project AGENTS.md/CLAUDE.md (just re-stamped) carries the
+    // same Active Rule Index and is auto-loaded by every host — re-listing the
+    // paths here duplicates ~400-500 tokens per session. Emit the full bundle
+    // only when the mirror is missing.
+    const body = hasMaterializedProjectAssets(cwd, state)
+      ? 'Active rules are indexed in the project AGENTS.md / CLAUDE.md (read rule bodies on demand from `.traffic-one/rules/**`).\n'
+      : packBundle(root, modeMandatory, spec.optional).body;
     ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the code graph if an existing project is missing it
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;

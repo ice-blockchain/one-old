@@ -27,6 +27,7 @@ import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { markOpenCodeRoleAttempted } from '../../shared/opencode-roles';
+import { roleDigestName } from '../../shared/packing';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
@@ -189,7 +190,10 @@ function writeDigest(cwd: string, runId: string, role: string, model: string, to
     '- Changes produced by OpenCode (free model). Reviewer MUST verify the diff before commit.',
     '',
   ].join('\n');
-  const p = path.join(dir, `${role}.md`);
+  // Same filename rule as every other digest writer/reader (senior-frontend →
+  // frontend.md): successor roles and the build-complete verification heuristic
+  // look for the stripped name, so the full role string would hide the digest.
+  const p = path.join(dir, `${roleDigestName(role)}.md`);
   fs.writeFileSync(p, body.slice(0, DIGEST_HARD_BYTES), 'utf8');
   return p;
 }

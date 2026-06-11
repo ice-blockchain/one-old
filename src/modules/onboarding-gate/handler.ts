@@ -23,8 +23,9 @@ import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
+import { firstEmitThisSession } from '../../shared/once';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { normalizeState, readEffectiveState } from '../../shared/state';
+import { hookSessionIdentity, normalizeState, readEffectiveState } from '../../shared/state';
 import { isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
@@ -75,7 +76,12 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // turn open until the wizard finishes, then continue the build automatically.
     if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
     const server = ensureOnboardingServer(root);
-    return deny(block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(root) }));
+    // The full preview-pane walkthrough (~2.3 KB) injects once per session; every
+    // further denied attempt repeats only the URL + wait-command essentials.
+    const denyBlock = firstEmitThisSession(root, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
+      ? 'server-deny-reason'
+      : 'server-deny-reason-repeat';
+    return deny(block(denyBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(root) }));
   }
 
   const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });

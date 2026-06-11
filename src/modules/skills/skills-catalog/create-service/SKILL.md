@@ -27,7 +27,7 @@ Plus the typed return value and the RTK Query hook (or React Query hook if non-R
 
 ## Step 3 — Add-on gate (Supabase only)
 
-If using a Supabase feature that needs an add-on, check `.traffic-one/.one.json` → `supabaseAddons[<name>]` via the `requireAddon` helper in `scripts/hook-runtime/state.cjs`. Statuses:
+If using a Supabase feature that needs an add-on, check `.traffic-one/.one.json` → `supabaseAddons[<name>]` via the plugin's `requireAddon` gate (`scripts/shared/state/normalize.js` in the installed plugin). Statuses:
 
 | Status | Action |
 |---|---|

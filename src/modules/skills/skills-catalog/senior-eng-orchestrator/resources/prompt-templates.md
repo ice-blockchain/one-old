@@ -24,8 +24,8 @@ Read .traffic-one/.one.json plus existing project memory:
 .traffic-one/product.md, .traffic-one/stack.md, .traffic-one/rules/*.md,
 .traffic-one/known-issues.md, and .traffic-one/agent-log.md when present.
 Also read the codebase-graph artefact at the active provider's location (per
-rules/common/codebase-graph.md): `.gitnexus/` when codeGraphProvider is
-"gitnexus", `graphify-out/GRAPH_REPORT.md` when "graphify". Skip silently if
+rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` when codeGraphProvider is
+"gitnexus", `.traffic-one/graphify-out/GRAPH_REPORT.md` when "graphify". Skip silently if
 missing.
 
 Produce .traffic-one/plan.md (≤250 lines, seven sections: Goal, Stack & rationale,
@@ -95,8 +95,8 @@ Read in priority order:
      .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Frontend + § Module map (only your scope)
   4. Codebase-graph artefact at active provider's location (per
-     rules/common/codebase-graph.md): `.gitnexus/` for gitnexus,
-     `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`,
+     rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` for gitnexus,
+     `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`,
      `packages/ui*` nodes.
   5. Specific source files only when 1–4 don't answer the question.
 
@@ -153,8 +153,8 @@ Read in priority order:
      .traffic-one/schema.sql, .traffic-one/known-issues.md if present
   3. .traffic-one/plan.md § Backend + § Public contracts
   4. Codebase-graph artefact at active provider's location (per
-     rules/common/codebase-graph.md): `.gitnexus/` for gitnexus,
-     `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`,
+     rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` for gitnexus,
+     `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`,
      `packages/api*`, `services/*`, `supabase/` nodes.
   5. Specific source / migration files only when 1–4 don't answer the question.
 
@@ -195,8 +195,8 @@ Read in priority order:
   3. `git diff --name-only HEAD`, then `git diff HEAD <file>` ONLY for files
      listed in the digests' "Touched" or "Next-phase reading hints" sections.
   4. Codebase-graph artefact at active provider's location (per
-     rules/common/codebase-graph.md): `.gitnexus/` or
-     `graphify-out/GRAPH_REPORT.md`. Use it to find neighbors of changed
+     rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` or
+     `.traffic-one/graphify-out/GRAPH_REPORT.md`. Use it to find neighbors of changed
      nodes.
   5. Full file Reads only when a violation requires it.
 
@@ -237,8 +237,8 @@ Read in priority order:
   3. .traffic-one/plan.md § Public contracts.
   4. `git diff --name-only HEAD` + existing test files adjacent to the touched code.
   5. Codebase-graph artefact at active provider's location (per
-     rules/common/codebase-graph.md): `.gitnexus/` or
-     `graphify-out/GRAPH_REPORT.md`. Use it to find related modules and call
+     rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` or
+     `.traffic-one/graphify-out/GRAPH_REPORT.md`. Use it to find related modules and call
      sites that should be covered.
 
 Add or update tests for the changed surface. Run them. Verdict format:

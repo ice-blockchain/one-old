@@ -48,15 +48,10 @@ yes in the current message.
 
 ## Logs, replay, and AI fixes
 
-- Logs, analytics events, replay payloads, Sentry contexts, and deployment logs
-  must redact emails, access/refresh tokens, session cookies, payment fields,
-  precise location, contact data, and customer secrets by default.
-- Do not enable session replay in EU/CA or other privacy-sensitive jurisdictions
-  until masking, query-string/body redaction, consent/legal basis, and retention
-  are documented.
-- AI-generated remediation may summarize an error class and propose a patch, but
-  opening a PR, pushing a branch, changing provider settings, running migrations,
-  or redeploying requires explicit approval in the current user turn.
+Redaction defaults, session-replay privacy gates (masking, consent/legal basis,
+retention), and the AI-remediation approval boundary are owned by the
+`observability` skill — read it before wiring logging, analytics, replay, or
+auto-fix flows; do not fork that policy here.
 
 ## Traffic One pre-deployment security check
 

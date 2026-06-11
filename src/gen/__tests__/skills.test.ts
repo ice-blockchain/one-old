@@ -40,6 +40,9 @@ test('generated skills carry no Traffic One governance boilerplate', () => {
     // Skill files reference neither dissolved policy skill.
     assert.doesNotMatch(doc.content, /`detect-project`/, doc.relPath);
     assert.doesNotMatch(doc.content, /`stack-setup`/, doc.relPath);
+    // Upstream provenance frontmatter is stripped at emit time (kept in src).
+    assert.doesNotMatch(doc.content, /source_commit:/, doc.relPath);
+    assert.doesNotMatch(doc.content, /everything-claude-code/, doc.relPath);
   }
   // The two policy skills are gone from both trees entirely.
   assert.ok(!docs.some((d) => d.relPath.includes('detect-project')));

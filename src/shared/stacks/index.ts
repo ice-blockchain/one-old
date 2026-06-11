@@ -3,6 +3,7 @@
 // relPath strings use the LOGICAL `rules/...` namespace; use templatePath() to
 // read the source file from disk.
 
+import { isMaintenancePhase } from '../state/lifecycle';
 import { templatePath } from './template-path';
 
 export { templatePath };
@@ -13,7 +14,6 @@ const COMMON_MANDATORY = [
   'rules/common/auth-gate.md',
   'rules/common/setup-gate.md',
   'rules/common/project-routing.md',
-  'rules/common/onboarding.md',
   'rules/common/skill-precedence.md',
   'rules/common/clean-code.md',
   'rules/common/execution-discipline.md',
@@ -28,9 +28,17 @@ const COMMON_MANDATORY = [
 ];
 
 const COMMON_REFERENCES = [
-  'rules/common/stack-recommendations.md',
   'rules/common/library-catalog.md',
 ];
+
+// Setup-time-only content (~19.5 KB): the onboarding Q&A protocol and the stack
+// pitches matter while a new project is still being set up / built, and never
+// again — a maintenance-phase project carries neither in its materialized set
+// or index. Existing codebases are maintenance from first detection, so they
+// never receive these; cleanupPrevious sweeps them out of already-materialized
+// projects when the build completes.
+const ONBOARDING_ONLY_MANDATORY = ['rules/common/onboarding.md'];
+const ONBOARDING_ONLY_REFERENCES = ['rules/common/stack-recommendations.md'];
 
 const TYPESCRIPT_CORE = ['rules/core.md'];
 
@@ -46,6 +54,7 @@ const FRONTEND_OPTIONAL = [
   'rules/frontend/realtime.md',
   'rules/frontend/services.md',
   'rules/frontend/testing.md',
+  'rules/frontend/ui-quality-reference.md', // on-demand slice of ui-quality.md
 ];
 
 const REACT_VITE_MANDATORY = [
@@ -203,8 +212,9 @@ export interface RuleManifest {
 
 export function composeRuleManifest(input: unknown): RuleManifest {
   const state = normalizedManifestState(input);
-  const mandatory = [...COMMON_MANDATORY];
-  const optional = [...COMMON_REFERENCES];
+  const setupEra = !isMaintenancePhase(state, state.mode);
+  const mandatory = [...COMMON_MANDATORY, ...(setupEra ? ONBOARDING_ONLY_MANDATORY : [])];
+  const optional = [...COMMON_REFERENCES, ...(setupEra ? ONBOARDING_ONLY_REFERENCES : [])];
   const frontend = (state.frontend as string) || 'none';
   const backend = (state.backend as string) || 'none';
   const mobile = state.mobile as Rec | undefined;
@@ -236,7 +246,7 @@ export function composeRuleManifest(input: unknown): RuleManifest {
   if (backendRules) optional.push(...backendRules);
 
   if (state.stack === 'minimal') {
-    mandatory.push(...COMMON_REFERENCES);
+    mandatory.push(...COMMON_REFERENCES, ...(setupEra ? ONBOARDING_ONLY_REFERENCES : []));
   }
 
   return { label: stackLabel(state), mandatory: unique(mandatory), optional: unique(optional) };

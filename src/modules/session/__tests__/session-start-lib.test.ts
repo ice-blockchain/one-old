@@ -75,8 +75,13 @@ test('tokenEconomyBanner surfaces memory + graph hints, and toolchain drift via 
     assert.equal(tokenEconomyBanner(cwd), ''); // nothing present
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.traffic-one', 'stack.md'), 'x', 'utf8');
+    // Graph artifacts live under .traffic-one/ (relocated); the banner must
+    // probe the relocated paths, not the legacy root ones.
     fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
     fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), 'g', 'utf8');
+    assert.ok(!tokenEconomyBanner(cwd).includes('[graph: graphify]'), 'legacy root path must not trigger the banner');
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), 'g', 'utf8');
     const banner = tokenEconomyBanner(cwd);
     assert.ok(banner.includes('[memory]'));
     assert.ok(banner.includes('[graph: graphify]'));

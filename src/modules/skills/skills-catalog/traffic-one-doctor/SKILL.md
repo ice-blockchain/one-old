@@ -1,6 +1,6 @@
 ---
 name: traffic-one-doctor
-description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.gitnexus/` / `graphify-out/` artefacts, `.traffic-one/.one.json` integrity, mcp-auth configuration, Codex hook trust, and specific Codex session ids where hooks may not have run. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup", or gives a Codex session id to debug. Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
+description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.traffic-one/.gitnexus/` / `graphify-out/` artefacts, `.traffic-one/.one.json` integrity, mcp-auth configuration, Codex hook trust, and specific Codex session ids where hooks may not have run. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup", or gives a Codex session id to debug. Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
 ---
 
 # traffic-one Doctor
@@ -11,7 +11,7 @@ emits a report; never installs, never modifies, never deletes.
 ## When to trigger
 
 - "diagnose traffic-one", "traffic one doctor", "/doctor", "check my setup".
-- "the graph isn't working", "gitnexus isn't running", "why doesn't `.gitnexus/`
+- "the graph isn't working", "gitnexus isn't running", "why doesn't `.traffic-one/.gitnexus/`
   get created", "what's wrong with my graph".
 - After a `pnpm build` where the post-build banner reported a gitnexus error.
 - After installing/reinstalling Node, nvm, gitnexus.
@@ -34,7 +34,7 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
    (binary lives inside an old nvm Node folder → will crash with
    `SyntaxError: Cannot use import statement`).
 4. **Project** — `.traffic-one/.one.json` state, `.nvmrc`, `.git/` presence,
-   `.gitnexus/` and `graphify-out/GRAPH_REPORT.md` artefact ages.
+   `.traffic-one/.gitnexus/` and `.traffic-one/graphify-out/GRAPH_REPORT.md` artefact ages.
 5. **Codex/MCP activation** — plugin enabled flag, trusted hook state, trusted
    workspace coverage, and whether `mcp-auth` is configured.
 6. **Session incident debug** — with `--session <id>`, resolves the Codex JSONL
@@ -88,7 +88,7 @@ fixes that aren't needed.
 | `GITNEXUS_IN_OLD_NVM_NODE` | gitnexus on PATH lives in old nvm Node folder → will crash. Reinstall against Node 22. | Yes, via Bash tool |
 | `NVMRC_PINNED_TO_OLD_NODE` | Project `.nvmrc` < 22 while provider is gitnexus → overwrite `.nvmrc` with `22`. | Yes, via Write tool |
 | `NO_GIT_DIR` | No `.git/` at project root. Runner handles via `--skip-git`; informational. | n/a (info) |
-| `GITNEXUS_STALE` | `.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
+| `GITNEXUS_STALE` | `.traffic-one/.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
 | `LAST_RUN_FAILED` | Most recent runner stamp shows an error. Surface the message and pair with other findings. | Depends |
 | `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one/.one.json` missing the field. Re-run onboarding. | Via onboarding (`rules/common/onboarding.md`) |
 | `CODEX_TRAFFIC_ONE_PLUGIN_DISABLED` | Codex config does not enable the Traffic One plugin, so hooks will not run. | No (user enables plugin) |
@@ -128,5 +128,5 @@ the Bash tool's permission prompt is the consent gate.
   user approval in this turn.
 - Never modify `.traffic-one/.one.json` directly from this skill; route field
   changes through onboarding (`rules/common/onboarding.md`).
-- Never delete `.gitnexus/`, `.traffic-one/backups/`, or any project file.
+- Never delete `.traffic-one/.gitnexus/`, `.traffic-one/backups/`, or any project file.
 - Never share the user's filesystem layout to a remote endpoint.

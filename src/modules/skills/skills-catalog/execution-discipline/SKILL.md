@@ -36,33 +36,13 @@ Apply the compact behavioral checklist before and during implementation.
 6. **Loop honestly** - run the checks when feasible. If blocked, report the exact
    blocker and the residual risk.
 
-## Extended behavioral rules
+## Full behavioral baseline
 
-Use this 12-rule layer for non-trivial coding-agent work:
+The complete discipline (think-before-coding, simplicity-first, surgical
+changes, goal-driven execution, agent run control, external-action boundaries)
+lives in `rules/common/execution-discipline.md` — the always-on source of
+truth. Read it for non-trivial work instead of restating it here.
 
-1. Think before coding: state assumptions, ambiguity, and uncertainty.
-2. Simplicity first: solve the current problem only.
-3. Surgical changes: touch only the requested surface and verification fallout.
-4. Goal-driven execution: define success and loop until it is verified.
-5. Model for judgment only: code handles deterministic routing, retries,
-   status handling, parsing, formatting, and repeatable transforms.
-6. Token budgets matter: when context grows stale or large, summarize and reset
-   rather than continuing in a degraded session.
-7. Surface conflicts: do not average contradictory local patterns.
-8. Read before writing: exports, immediate callers, and shared utilities first.
-9. Tests verify intent: passing shallow tests is not enough evidence.
-10. Checkpoint long tasks: what changed, what is verified, what remains.
-11. Convention beats novelty: conformance over taste inside existing code.
-12. Fail loudly: surface skipped checks, uncertainty, and partial success.
-
-## Agentic execution layer
-
-- Define the capability check and regression check before AI-generated edits.
-- Split work into independently verifiable units with one dominant risk.
-- Use deeper reasoning for architecture, security, root-cause debugging, and
-  cross-file invariants; keep routine transforms on normal effort.
-- Review AI-generated code for hidden coupling, edge cases, data integrity,
-  auth assumptions, and rollout risk before style preferences.
-
-Use `rules/common/execution-discipline.md` as the source of truth when updating
-the always-on rule text.
+Review-only addition not in the rule: review AI-generated code for hidden
+coupling, edge cases, data integrity, auth assumptions, and rollout risk
+before style preferences.

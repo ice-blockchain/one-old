@@ -57,8 +57,8 @@ explain something at length, link out to a doc — don't inline it.
    Reviewer-tester → shipper reads both.
 2. **The plan section** the digest pointed at (`.traffic-one/plan.md` § X).
 3. **Codebase-graph artefact** at the active provider's location (per
-   `rules/common/codebase-graph.md`): `.gitnexus/` when
-   `codeGraphProvider: "gitnexus"`, `graphify-out/GRAPH_REPORT.md` when
+   `rules/common/codebase-graph.md`): `.traffic-one/.gitnexus/` when
+   `codeGraphProvider: "gitnexus"`, `.traffic-one/graphify-out/GRAPH_REPORT.md` when
    `codeGraphProvider: "graphify"`.
 4. **Raw `git diff`, `Glob`, `Grep`, `Read`** — only when 1–3 don't answer it.
 

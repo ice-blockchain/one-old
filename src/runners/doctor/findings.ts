@@ -217,6 +217,14 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     });
   }
 
+  if (state && typeof state.graphifyLastError === 'string') {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'LAST_RUN_FAILED',
+      message: `Most recent graphify runner failed: ${state.graphifyLastError.split('\n')[0]}`,
+    });
+  }
+
   if (rawState && !provider) {
     findings.push({
       severity: 'fix-needed',

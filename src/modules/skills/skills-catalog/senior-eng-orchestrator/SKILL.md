@@ -39,10 +39,10 @@ work already started, pause at the next safe point, resolve it, then continue.
 
 ## Runtime compatibility
 
-- **Per-agent model is set by the spawn tool's `model` PARAMETER — never by prompt text.** The `agents/senior-*.md` files declare no `model:` frontmatter, so a subagent spawned without a `model` param silently inherits the parent model. For Balanced/High you MUST pass the model param on every spawn. Each role is assigned a host-agnostic capability TIER (`highest`|`balanced`|`cheapest`, see `model-tiers.cjs`); resolve the tier to YOUR host's model:
+- **Per-agent model is set by the spawn tool's `model` PARAMETER — never by prompt text.** The `agents/senior-*.md` files declare no `model:` frontmatter, so a subagent spawned without a `model` param silently inherits the parent model. For Balanced/High you MUST pass the model param on every spawn. Each role is assigned a host-agnostic capability TIER (`highest`|`balanced`|`cheapest`, from the plugin's model-tiers config); resolve the tier to YOUR host's model:
   - Balanced → architect/frontend/backend/reviewer/shipper = `balanced` tier, tester = `cheapest` tier.
   - High → architect/frontend/backend/reviewer = `highest` tier, tester = `cheapest` tier, shipper = `balanced` tier.
-  - Tier → model: resolve each tier (`highest`|`balanced`|`cheapest`) to your host's concrete model via the tier→model table in `model-tiers.cjs`; the Team Confirmation line-up renders the resolved per-host models.
+  - Tier → model: resolve each tier (`highest`|`balanced`|`cheapest`) to your host's concrete model via the plugin's tier→model table; the Team Confirmation line-up renders the resolved per-host models.
 - **Spawn**: auto-spawn each role with your host's subagent tool when this skill triggers, passing the `model` parameter resolved to that role's tier on EVERY spawn (a model name in prompt text has no effect). Where the host uses model aliases, the alias auto-tracks the newest model of that family.
 - Subagents do not inherit the parent's skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
 - If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). If the host exposes no callable agent facility, Low is chosen, or subagents are blocked, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*` role contexts.
@@ -422,5 +422,5 @@ Next steps:
 - Single-page or single-route additions on an existing project: route to `create-page` / `create-native-screen`.
 - Single-service or single-endpoint additions: route to `create-service`.
 - Read-only audits: route to `design-audit`, `security-review`, `repo-scan`.
-- Refactor-only requests: route to `refactor` / `simplify`.
+- Refactor-only requests: route to `refactor`.
 - The user already has a plan and just wants implementation: spawn `senior-frontend` + `senior-backend` directly, skip architect.

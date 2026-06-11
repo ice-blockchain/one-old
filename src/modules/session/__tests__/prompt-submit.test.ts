@@ -305,6 +305,23 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
   });
 });
 
+test('maintenance triage: full rubric once per session, then a one-line reminder with fresh hint', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const first = runUserPromptSubmit(ctx(cwd, 'change the button color to blue'));
+    assert.equal(first.kind, 'context');
+    if (first.kind === 'context') assert.ok(first.context.includes('MAINTENANCE PHASE — post-build triage'), 'first prompt gets the full rubric');
+    const second = runUserPromptSubmit(ctx(cwd, 'now fix the headline copy'));
+    assert.equal(second.kind, 'context');
+    if (second.kind === 'context') {
+      assert.ok(second.context.includes('triage reminder'), 'second prompt gets the one-liner');
+      assert.ok(!second.context.includes('post-build triage] The main build is complete'), 'rubric body not repeated');
+      assert.ok(second.context.includes('hint: trivial'), 'reminder still carries the per-prompt hint');
+    }
+  });
+});
+
 test('maintenance + OpenCode ACTIVE → triage routes to opencode_delegate FIRST (paid worker only as fallback)', () => {
   // The reported gap: quick-fix went straight to the paid model because the project's
   // opencode (enabled + present) was never stamped, so openCodeDelegationActive() was

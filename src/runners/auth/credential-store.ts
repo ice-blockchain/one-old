@@ -157,7 +157,12 @@ function deleteFileCredential(ref: CredentialRef, env: NodeJS.ProcessEnv = proce
 }
 
 function storeMacosCredential(ref: CredentialRef, secret: string): CredentialResult {
-  const result = run('/usr/bin/security', ['add-generic-password', '-U', '-s', ref.service, '-a', ref.account, '-w', secret]);
+  // `security -i` reads the command from stdin, so the secret never appears in
+  // argv (argv is readable by any local process via `ps` for the call's
+  // lifetime — the libsecret path below avoids this the same way).
+  const quote = (value: string): string => `"${value.replace(/[\\"]/g, '\\$&')}"`;
+  const command = `add-generic-password -U -s ${quote(ref.service)} -a ${quote(ref.account)} -w ${quote(secret)}\n`;
+  const result = run('/usr/bin/security', ['-i'], { input: command });
   return result.ok ? { ok: true, stored: true, store: ref.store } : { ...result, store: ref.store };
 }
 

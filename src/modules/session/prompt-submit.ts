@@ -23,6 +23,7 @@ import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, legacyStatePath, lifecycleCompletedAt, normalizeState, readEffectiveState, readState, runIdNow, statePath, writeState } from '../../shared/state';
 import { obj } from '../../shared/obj';
+import { firstEmitThisSession } from '../../shared/once';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { resolveModel } from '../../shared/model-tiers';
 import { classifyPromptComplexity } from '../../shared/triage/classify';
@@ -133,6 +134,15 @@ function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string,
       smallOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with the chosen role "senior-frontend" or "senior-backend", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid role subagent. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
     }
   }
+  // The rubric is ~95% static prose: inject it in full once per session, then a
+  // one-line reminder with the per-prompt variables (tier hint + fresh runId).
+  // beginFreshMaintenanceRun above still runs on every triage prompt.
+  if (!firstEmitThisSession(cwd, 'maintenance-triage', hookSessionIdentity(raw).sessionId)) {
+    const ocReminder = ocActive && teamMode === 'subagents'
+      ? ` OpenCode runId for \`opencode_delegate\`: "${runId}".`
+      : '';
+    return `[MAINTENANCE PHASE — triage reminder] hint: ${hint.tier} (confidence ${hint.confidence})${signals} — route per the maintenance-triage rubric from earlier in this session (full rubric: \`task-triage\` skill).${ocReminder}`;
+  }
   const blockName = teamMode === 'main-agent' ? 'maintenance-triage-main-agent' : 'maintenance-triage-subagents';
   return `${block(blockName, {
     HINT: hint.tier,
@@ -221,7 +231,12 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   if (!computeOnboarding(cwd).done) {
     seedOriginalPrompt(cwd, promptText);
     const server = ensureOnboardingServer(cwd);
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
+    // Full walkthrough once per session (shared marker with the PreToolUse gate);
+    // repeat prompts get the short URL + wait-command essentials.
+    const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
+      ? 'server-deny-reason'
+      : 'server-deny-reason-repeat';
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
       systemMessage: 'traffic-one [setup required]',
     });
   }

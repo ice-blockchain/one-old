@@ -33,7 +33,10 @@ function entryFilename(): string {
 export function isLoopbackHostname(hostname: string): boolean {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   const ipVersion = net.isIP(host);
-  if (ipVersion === 4) return host === '0.0.0.0' || host.startsWith('127.');
+  // 0.0.0.0 is the wildcard address, not loopback — it has no legitimate
+  // client-connect use that 127.0.0.1 doesn't cover, so keep the plaintext-HTTP
+  // exception to genuine loopback only.
+  if (ipVersion === 4) return host.startsWith('127.');
   if (ipVersion === 6) return host === '::1' || host === '0:0:0:0:0:0:0:1';
   return host === 'localhost' || host === 'localhost.';
 }

@@ -2,13 +2,16 @@
 // A BLOCKING wait the agent runs right after opening the setup wizard, so the build
 // resumes automatically when setup finishes — with no extra message from the user.
 // It polls the SAME completeness predicate the gate uses (computeOnboarding(cwd).done),
-// sleeping between checks, and is read-only (no writes, no child processes). Compiles
-// to dist/scripts/onboarding-wait.cjs via the build SHIM.
+// sleeping between checks, and is read-only (no writes; the only child process is the
+// degraded-path /bin/sleep fallback). Compiles to dist/scripts/onboarding-wait.cjs
+// via the build SHIM.
 //
 //   node onboarding-wait.cjs <cwd> [--timeout-ms <n>] [--interval-ms <n>]
 //
 // stdout TRAFFIC_ONE_SETUP_COMPLETE, exit 0 → setup finished; continue the build now.
 // stdout TRAFFIC_ONE_SETUP_PENDING,  exit 2 → still pending after the timeout; re-run.
+
+import { execFileSync } from 'child_process';
 
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 
@@ -27,12 +30,17 @@ function positiveIntFlag(args: readonly string[], flag: string): number | null {
 }
 
 // Block the thread for `ms` without busy-spinning the CPU (no event-loop work runs
-// between polls). Mirrors the sleepSync in shared/onboarding-server/ensure.ts.
+// between polls). Falls back to /bin/sleep when SharedArrayBuffer is disabled —
+// re-polling immediately here would spin a core for the whole (up to 8-minute) wait.
 function sleepSync(ms: number): void {
   try {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
   } catch {
-    // SharedArrayBuffer disabled — re-poll immediately rather than throw.
+    try {
+      execFileSync('/bin/sleep', [String(Math.max(0, ms) / 1000)], { stdio: 'ignore' });
+    } catch {
+      // No sleep available either — re-poll immediately rather than throw.
+    }
   }
 }
 

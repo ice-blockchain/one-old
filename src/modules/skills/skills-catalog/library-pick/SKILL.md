@@ -44,7 +44,7 @@ Shifter (`https://shifter.io/`). **Do not double up.**
 ### Supabase add-on shortcut
 If the active backend is `supabase` / `our-fork` and the capability maps to a
 Supabase add-on, prefer the add-on over a separate library — but go through the
-**add-on approval gate** first (`requireAddon` in `scripts/hook-runtime/state.cjs`).
+**add-on approval gate** first (the plugin's `requireAddon` gate — `scripts/shared/state/normalize.js` in the installed plugin).
 
 | Capability | Use Supabase | Don't use |
 |---|---|---|

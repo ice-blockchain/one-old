@@ -7,7 +7,8 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isAuthenticatedLocal } from '../../shared/auth';
-import { isWebState, readEffectiveState } from '../../shared/state';
+import { firstEmitThisSession } from '../../shared/once';
+import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
 import { logToolUse } from '../../shared/token-logger';
 
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
@@ -18,6 +19,14 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
   const command = ctx.input.tool?.command ?? '';
   if (!BUILD_COMMAND_RE.test(command)) return noop();
   if (!isWebState(readEffectiveState(ctx.cwd))) return noop();
+  // Iterative implement-verify loops run `npm run build` many times; the full
+  // advisory injects once per session, later builds get a one-line reminder.
+  if (!firstEmitThisSession(ctx.cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
+    return context(
+      '[traffic-one] Lighthouse mobile gate still pending — run scripts/lighthouse-runner.mjs (full instructions after the first build this session).',
+      { systemMessage: 'traffic-one page-speed gate pending after build' },
+    );
+  }
   return context(
     [
       '[traffic-one] A production build just ran for a web stack.',

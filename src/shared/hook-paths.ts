@@ -25,8 +25,11 @@ export function findProjectRootForHookFile(cwd: string, filePath: unknown): stri
   if (!normalized) return cwd;
   const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
   const cwdAbs = path.resolve(cwd);
+  // Segment-aware containment: a sibling dir sharing a name prefix (/repo vs
+  // /repo2) must not be walked as if it were inside cwd.
+  const within = (dir: string): boolean => dir === cwdAbs || dir.startsWith(cwdAbs + path.sep);
   let current = path.dirname(absPath);
-  while (current.startsWith(cwdAbs)) {
+  while (within(current)) {
     if (hasStateFile(current)) return current;
     if (current === cwdAbs) break;
     current = path.dirname(current);

@@ -245,11 +245,11 @@ export function tokenEconomyBanner(cwd: string, probe?: ToolchainProbe | null): 
   if (memoryPaths.some((relPath) => fs.existsSync(path.join(cwd, relPath)))) {
     lines.push('[memory] .traffic-one/ project memory present — read product/stack/rules/known-issues before broad source reads.');
   }
-  if (fs.existsSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'))) {
-    lines.push('[graph: graphify] graphify-out/GRAPH_REPORT.md present — consult before grep/glob for module/structure questions.');
+  if (fs.existsSync(path.join(cwd, GRAPHIFY_REPORT_REL))) {
+    lines.push(`[graph: graphify] ${GRAPHIFY_REPORT_REL} present — consult before grep/glob for module/structure questions.`);
   }
-  if (fs.existsSync(path.join(cwd, '.gitnexus'))) {
-    lines.push('[graph: gitnexus] .gitnexus/ present — consult before grep/glob for module/structure questions.');
+  if (fs.existsSync(path.join(cwd, GITNEXUS_REL))) {
+    lines.push(`[graph: gitnexus] ${GITNEXUS_REL} present — consult before grep/glob for module/structure questions.`);
   }
   try {
     const digestsRoot = path.join(cwd, '.traffic-one', 'digests');
