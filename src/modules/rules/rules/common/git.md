@@ -1,4 +1,5 @@
 ---
+description: "Apply when committing, branching, or opening pull requests: commit message and PR conventions."
 # Always loaded — commit + PR conventions only.
 # Branching strategy is project-specific (Gitflow / GitHub Flow / trunk) and
 # lives in the stack core (`rules/core.md` or `frontend/<flavour>/core.md`).

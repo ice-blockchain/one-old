@@ -1,4 +1,5 @@
 ---
+description: "Apply when resolving which project root Traffic One state belongs to: wrapper directories, monorepos, nested checkouts."
 # Always loaded
 ---
 

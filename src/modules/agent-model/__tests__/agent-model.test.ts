@@ -270,7 +270,7 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
   });
 });
 
-test('opencode role gate: cites the recorded user authorization when .one.json has openCodeDelegation.approved', () => {
+test('opencode role gate: deny block is clean (no leftover template placeholders)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
@@ -278,20 +278,20 @@ test('opencode role gate: cites the recorded user authorization when .one.json h
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-auth';
-    one.openCodeDelegation = { approved: true, source: 'onboarding', decidedAt: '2026-06-10T00:00:00Z' };
+    one.currentRunId = 'run-clean';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') {
-      assert.ok(denied.reason.includes('AUTHORIZATION'), 'deny should cite the recorded authorization');
-      assert.ok(denied.reason.includes('openCodeDelegation.approved'), 'deny should name the .one.json field');
+      assert.ok(denied.reason.includes('OpenCode role gate'));
+      assert.ok(denied.reason.includes('opencode_delegate'));
+      assert.ok(!/\{\{[A-Z_]+\}\}/.test(denied.reason), 'all template placeholders must be substituted away');
     }
   });
 });
 
-test('opencode role gate: no authorization claim when consent was never recorded', () => {
+test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
@@ -299,14 +299,43 @@ test('opencode role gate: no authorization claim when consent was never recorded
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-noauth';
+    one.currentRunId = 'run-codex';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    // A configured role on Codex is delegated to OpenCode first, exactly like Claude/Cursor.
+    const denied = agentModelGate(codexSpawnCtx(cwd, {
+      agent_type: 'worker',
+      message: 'You are acting as Traffic One `senior-frontend` for this Codex run.',
+      model: 'gpt-5.5',
+    }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
+    // Deny-once: a second spawn (no attempt recorded — e.g. tool unavailable) falls through.
+    assert.equal(agentModelGate(codexSpawnCtx(cwd, {
+      agent_type: 'worker',
+      message: 'You are acting as Traffic One `senior-frontend` for this Codex run.',
+      model: 'gpt-5.5',
+    })).kind, 'noop');
+  });
+});
+
+test('a pinned openCode.model does not change gating (no per-model branch)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true, model: 'opencode/gpt-5.1-codex' };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-pinned';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') {
-      assert.ok(!denied.reason.includes('AUTHORIZATION:'), 'must not claim an authorization that was never given');
-      assert.ok(!denied.reason.includes('{{AUTHORIZATION}}'), 'placeholder must be substituted away');
+      assert.ok(denied.reason.includes('OpenCode role gate'));
+      // the gate no longer injects a per-model instruction into the deny
+      assert.ok(!denied.reason.includes('opencode/gpt-5.1-codex'));
     }
   });
 });

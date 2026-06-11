@@ -38,21 +38,38 @@ test('generatedCursorRules gathers rule + agent docs from the repo tree', () => 
   try {
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const docs = generatedCursorRules(dir);
-    // 76 rule templates + 7 agents (00-auth-required.mdc is emitted separately as a static seed).
+    // 76 rule templates + 7 agents.
     assert.equal(docs.length, 83);
     const byPath = new Map(docs.map((d) => [d.relPath, d.content]));
 
-    // common/auth-gate.md -> auth-required.mdc (special slug).
+    // common/auth-gate.md -> auth-required.mdc (special slug, always-on kernel).
     const authPath = path.join('.cursor', 'rules', 'auth-required.mdc');
     assert.ok(byPath.has(authPath));
     assert.ok(byPath.get(authPath)?.startsWith('---\n'));
     assert.ok(byPath.get(authPath)?.includes('<!-- GENERATED FROM: rules/common/auth-gate.md;'));
+    assert.ok(byPath.get(authPath)?.includes('alwaysApply: true'));
 
-    // agents/senior-architect.md -> 00-agent-senior-architect.mdc (always-on mirror).
+    // agents/senior-architect.md -> 00-agent-senior-architect.mdc — attached on
+    // demand via description, NOT pinned to every request.
     const agentPath = path.join('.cursor', 'rules', '00-agent-senior-architect.mdc');
     assert.ok(byPath.has(agentPath));
-    assert.ok(byPath.get(agentPath)?.includes('alwaysApply: true'));
+    assert.ok(byPath.get(agentPath)?.includes('alwaysApply: false'));
     assert.ok(byPath.get(agentPath)?.includes('Cursor has no first-class'));
+
+    // Only the small behavioral kernel stays always-on; bulky paths-less rules
+    // (stack pitches, onboarding, role-team docs) ship agent-requested.
+    const alwaysOn = docs.filter((d) => d.content.includes('alwaysApply: true')).map((d) => path.basename(d.relPath)).sort();
+    assert.deepEqual(alwaysOn, [
+      'auth-required.mdc',
+      'common-clean-code.mdc',
+      'common-execution-discipline.mdc',
+      'common-security.mdc',
+      'common-setup-gate.mdc',
+      'common-skill-precedence.mdc',
+      'core.mdc',
+    ]);
+    const stackRec = byPath.get(path.join('.cursor', 'rules', 'common-stack-recommendations.mdc'));
+    assert.ok(stackRec?.includes('alwaysApply: false'));
 
     // Cursor requires .mdc frontmatter to be the first bytes. The generated
     // marker lives below the frontmatter so Cursor does not reject the file.

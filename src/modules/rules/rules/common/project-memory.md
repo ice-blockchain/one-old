@@ -1,4 +1,5 @@
 ---
+description: "Apply when reading or writing .traffic-one project memory: product/stack/coding/security notes, known issues, and the agent log."
 # Persistent project memory for cross-session, cross-agent work.
 ---
 

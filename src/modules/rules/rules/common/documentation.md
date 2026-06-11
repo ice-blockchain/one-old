@@ -1,4 +1,5 @@
 ---
+description: "Apply when creating or updating project documentation or READMEs, or after adding features/services that change public behavior."
 # Human and agent documentation defaults
 ---
 

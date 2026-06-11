@@ -7,6 +7,7 @@ import * as path from 'path';
 
 import { delegate, delegateFromPlan, parsePlanDelegationQueue, resetOpenCodeModelMemo } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/opencode';
+import { openCodeRoleAttempted } from '../../../shared/opencode-roles';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -52,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -84,6 +85,19 @@ process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 
 const p = path.join(dir, 'foo.txt');
 const cur = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : '';
 fs.writeFileSync(p, cur.replace(/\\n+$/, '') + '-EDITED\\n');
+`,
+    // Writes a worktree patch and simulates a concurrent real-tree edit before
+    // delegate() applies that patch back. This reproduces the failed-apply path
+    // that must be atomic: no conflict markers or partial files may leak.
+    conflict: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'edited foo.txt with concurrent main change' } }) + '\\n');
+fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+fs.writeFileSync(path.join(dir, 'new-page.txt'), 'delegated page\\n');
+const real = process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO;
+if (real) fs.writeFileSync(path.join(real, 'foo.txt'), 'concurrent\\n');
 `,
     // opencode-style failure: error event, but exit 0 (the real CLI does this)
     error: `#!/bin/sh
@@ -202,6 +216,69 @@ function modelsSeen(bin: string): string[] {
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean) : [];
 }
 
+function failWorktreeAddViaPath(dir: string): () => void {
+  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim() || '/usr/bin/git';
+  const savedPath = process.env.PATH;
+  const fakeBin = path.join(dir, 'fake-bin');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(path.join(fakeBin, 'git'), `#!/usr/bin/env node
+const { spawnSync } = require('child_process');
+const args = process.argv.slice(2);
+if (args[0] === 'worktree' && args[1] === 'add') {
+  process.stderr.write('fatal: could not create worktree metadata: Permission denied\\n');
+  process.exit(128);
+}
+const child = spawnSync(${JSON.stringify(realGit)}, args, { encoding: 'utf8' });
+if (child.stdout) process.stdout.write(child.stdout);
+if (child.stderr) process.stderr.write(child.stderr);
+if (child.error) {
+  process.stderr.write(child.error.message + '\\n');
+  process.exit(1);
+}
+process.exit(typeof child.status === 'number' ? child.status : 1);
+`, { mode: 0o755 });
+  process.env.PATH = `${fakeBin}${path.delimiter}${savedPath || ''}`;
+  return () => {
+    if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+  };
+}
+
+function failApplyWithPartialViaPath(dir: string): () => void {
+  const realGit = spawnSync('which', ['git'], { encoding: 'utf8' }).stdout.trim() || '/usr/bin/git';
+  const savedPath = process.env.PATH;
+  const fakeBin = path.join(dir, 'fake-apply-bin');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(path.join(fakeBin, 'git'), `#!/usr/bin/env node
+const { spawnSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+if (args[0] === 'apply' && args.includes('--whitespace=nowarn')) {
+  process.stderr.write('error: direct apply failed\\n');
+  process.exit(1);
+}
+if (args[0] === 'apply' && args.includes('--3way')) {
+  fs.writeFileSync(path.join(process.cwd(), 'foo.txt'), 'partial leaked foo\\n');
+  fs.writeFileSync(path.join(process.cwd(), 'new-page.txt'), 'partial leaked page\\n');
+  process.stderr.write("Applied patch to 'foo.txt' cleanly.\\n");
+  process.stderr.write("error: src/app/(public)/news/page.tsx: patch does not apply\\n");
+  process.exit(1);
+}
+const child = spawnSync(${JSON.stringify(realGit)}, args, { encoding: 'utf8' });
+if (child.stdout) process.stdout.write(child.stdout);
+if (child.stderr) process.stderr.write(child.stderr);
+if (child.error) {
+  process.stderr.write(child.error.message + '\\n');
+  process.exit(1);
+}
+process.exit(typeof child.status === 'number' ? child.status : 1);
+`, { mode: 0o755 });
+  process.env.PATH = `${fakeBin}${path.delimiter}${savedPath || ''}`;
+  return () => {
+    if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+  };
+}
+
 test('delegate applies a successful run to the working tree + writes a digest', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('edit');
@@ -263,6 +340,52 @@ test('delegate self-heals a missing HEAD on a fresh scaffold (git repo, no commi
   }, { noInitialCommit: true });
 });
 
+test('delegate failed apply is atomic: concurrent main-tree edits survive without partial conflict files', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('conflict');
+    fs.writeFileSync(path.join(dir, 'foo.txt'), 'base\n');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'add foo']);
+
+    const saved = process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO;
+    process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO = dir;
+    try {
+      const r = delegate(dir, { role: 'senior-frontend', task: 'edit foo with a concurrent conflict', runId: 'apply-conflict' });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'failed');
+      assert.match(r.error || '', /could not apply delegated diff/);
+      assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8'), 'concurrent\n');
+      assert.equal(fs.existsSync(path.join(dir, 'new-page.txt')), false);
+      assert.equal(fs.existsSync(path.join(dir, 'foo.txt.rej')), false);
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', 'apply-conflict')), false);
+    } finally {
+      if (saved === undefined) delete process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO;
+      else process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO = saved;
+    }
+  });
+});
+
+test('delegate rolls back files that git apply --3way partially writes before failing', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('conflict');
+    fs.writeFileSync(path.join(dir, 'foo.txt'), 'base\n');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'add foo']);
+    const restorePath = failApplyWithPartialViaPath(dir);
+    try {
+      const r = delegate(dir, { role: 'senior-frontend', task: 'edit foo and add page', runId: 'partial-apply' });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'failed');
+      assert.match(r.error || '', /could not apply delegated diff/);
+      assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8'), 'base\n');
+      assert.equal(fs.existsSync(path.join(dir, 'new-page.txt')), false);
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', 'partial-apply')), false);
+    } finally {
+      restorePath();
+    }
+  });
+});
+
 test('delegate fails closed on an opencode error event — working tree untouched (→ fallback)', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('error');
@@ -270,8 +393,27 @@ test('delegate fails closed on an opencode error event — working tree untouche
     assert.equal(r.ok, false);
     assert.equal(r.action, 'failed');
     assert.match(r.error || '', /boom from gateway/);
+    assert.equal(openCodeRoleAttempted(dir, 'r1', 'frontend'), true);
     assert.equal(fs.existsSync(path.join(dir, 'foo.txt')), false);
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', 'r1')), false);
+  });
+});
+
+test('delegate does not record a role attempt when git worktree creation is sandbox-blocked', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('edit');
+    const restorePath = failWorktreeAddViaPath(dir);
+    try {
+      const r = delegate(dir, { role: 'senior-frontend', task: 'create foo.txt', runId: 'ro-git' });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'failed');
+      assert.match(r.error || '', /worktree add failed: .*Permission denied/);
+      assert.equal(openCodeRoleAttempted(dir, 'ro-git', 'senior-frontend'), false);
+      assert.equal(fs.existsSync(path.join(dir, 'foo.txt')), false);
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', 'ro-git')), false);
+    } finally {
+      restorePath();
+    }
   });
 });
 
@@ -361,7 +503,7 @@ test('delegate is skipped when OpenCode is not enabled (→ fallback)', () => {
   });
 });
 
-test('delegate defaults to the head of the free-model chain (same on every host)', () => {
+test('delegate defaults to the head of the hosted free-model chain when host policy allows it', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('model');
     const r = delegate(dir, { role: 'frontend', task: 'echo model', runId: 'chain-head' });

@@ -32,14 +32,15 @@ Produce .traffic-one/plan.md (≤250 lines, seven sections: Goal, Stack & ration
 Module map, Public contracts, Risks, Cut-list, OpenCode delegation queue). Cite
 skills by name; do not inline their content.
 
-When `openCode.enabled`, the "OpenCode delegation queue" section is REQUIRED: list
-every bounded, low-risk unit (boilerplate/CRUD scaffolding, dummy/seed/fixture
-data, simple test scaffolding, mechanical refactors/renames, formatting/codemods)
-in the machine-readable `<!-- opencode-delegate:start -->`…`<!-- opencode-delegate:end -->`
-block (one self-contained `- role: … | files: … | task: …` line each). NEVER queue
+When `openCode.enabled`, the "OpenCode
+delegation queue" section is REQUIRED: list every bounded, low-risk unit
+(boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding,
+mechanical refactors/renames, formatting/codemods) in the machine-readable
+`<!-- opencode-delegate:start -->`…`<!-- opencode-delegate:end -->` block (one
+self-contained `- role: … | files: … | task: …` line each). NEVER queue
 architecture/contracts/security/data-model/migrations/cross-file-invariant work.
-The orchestrator delegates these to the free OpenCode agent before the implementers,
-so a thorough queue is what actually saves the user's tokens. See the
+The orchestrator delegates these to OpenCode before the implementers, so a
+thorough queue is what actually saves the user's tokens. See the
 senior-architect role instructions for the exact format.
 
 For `mode: new-project`, run `project-memory` and

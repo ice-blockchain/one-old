@@ -152,7 +152,7 @@ const STEP_META: Record<Exclude<WizardStep, null | 'finalize'>, Omit<StepMeta, '
   'open-code': {
     kind: 'single_select',
     title: 'OpenCode',
-    question: 'Save tokens by delegating bounded coding tasks to OpenCode (free hosted model — no account or API key needed)? Enabling authorizes sending those bounded task prompts and the relevant code context to the OpenCode gateway, so delegation runs without asking again.',
+    question: 'Save tokens by delegating bounded coding tasks to OpenCode (a free coding agent — no account or API key needed)? It implements the task in an isolated git worktree and only a clean diff is applied. Enabling authorizes the bounded task prompts and relevant code context for those delegated units.',
     options: [
       { id: 'enable', label: 'Enable OpenCode delegation' },
       { id: 'not_now', label: 'Not now' },

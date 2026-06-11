@@ -6,13 +6,31 @@ import * as path from 'path';
 
 import { makeClaudeAdapter } from '../../../adapters/claude';
 import { dispatch } from '../../../core/dispatch';
+import { agentModelGate } from '../../agent-model/handler';
 import { runUserPromptSubmit } from '../prompt-submit';
-import type { Ctx, Handler, HookInput, HookResult } from '../../../core/types';
+import type { Ctx, Handler, HookInput, HookResult, ToolClass } from '../../../core/types';
+import { markOpenCodeGateDenied, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function ctxHost(cwd: string, prompt: string, host: HookInput['host']): Ctx {
+  const input: HookInput = { event: 'UserPromptSubmit', host, cwd, prompt, raw: { prompt } };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
+  const input: HookInput = {
+    event: 'PreToolUse',
+    host: 'claude',
+    cwd,
+    raw: { tool_name: 'Task', tool_input: toolInput },
+    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+  };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
@@ -35,10 +53,24 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  const prevToolchainRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  const prevCodexHome = env.CODEX_HOME;
+  const prevCodexPluginRoot = env.CODEX_PLUGIN_ROOT;
+  const prevTrafficOnePluginRoot = env.TRAFFIC_ONE_PLUGIN_ROOT;
+  const prevCodexOriginator = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  const prevCodexThreadId = env.CODEX_THREAD_ID;
+  const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
+  env.CODEX_HOME = path.join(dir, 'codex-home');
+  delete env.CODEX_PLUGIN_ROOT;
+  delete env.TRAFFIC_ONE_PLUGIN_ROOT;
+  delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  delete env.CODEX_THREAD_ID;
+  delete env.CURSOR_PLUGIN_ROOT;
   fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
     version: 1,
     auth: {
@@ -55,6 +87,13 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
+    if (prevToolchainRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = prevToolchainRoot;
+    if (prevCodexHome === undefined) delete env.CODEX_HOME; else env.CODEX_HOME = prevCodexHome;
+    if (prevCodexPluginRoot === undefined) delete env.CODEX_PLUGIN_ROOT; else env.CODEX_PLUGIN_ROOT = prevCodexPluginRoot;
+    if (prevTrafficOnePluginRoot === undefined) delete env.TRAFFIC_ONE_PLUGIN_ROOT; else env.TRAFFIC_ONE_PLUGIN_ROOT = prevTrafficOnePluginRoot;
+    if (prevCodexOriginator === undefined) delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = prevCodexOriginator;
+    if (prevCodexThreadId === undefined) delete env.CODEX_THREAD_ID; else env.CODEX_THREAD_ID = prevCodexThreadId;
+    if (prevCursorPluginRoot === undefined) delete env.CURSOR_PLUGIN_ROOT; else env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -266,11 +305,11 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
   });
 });
 
-test('maintenance + OpenCode ACTIVE → triage routes to the free opencode_delegate FIRST (paid worker only as fallback)', () => {
+test('maintenance + OpenCode ACTIVE → triage routes to opencode_delegate FIRST (paid worker only as fallback)', () => {
   // The reported gap: quick-fix went straight to the paid model because the project's
   // opencode (enabled + present) was never stamped, so openCodeDelegationActive() was
   // false and the directive dropped its OpenCode clause. With opencode enabled AND
-  // stamped, the directive must push the free delegate tool first.
+  // stamped, the directive must push the delegate tool first.
   withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
     writeLocalPrefs({
       openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
@@ -281,9 +320,71 @@ test('maintenance + OpenCode ACTIVE → triage routes to the free opencode_deleg
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
-      assert.ok(r.context.includes('opencode_delegate'), 'routes to the free OpenCode delegate tool');
+      assert.ok(r.context.includes('opencode_delegate'), 'routes to the OpenCode delegate tool');
       assert.ok(r.context.includes('FIRST'), 'OpenCode is the FIRST attempt; the paid worker is the fallback');
     }
+  });
+});
+
+test('maintenance + OpenCode ACTIVE on Codex → routes to opencode_delegate FIRST (host-agnostic) + self-registers the MCP server', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    const env = process.env;
+    assert.ok(env.CODEX_HOME, 'test CODEX_HOME is sandboxed');
+    const pluginRoot = path.join(env.CODEX_HOME, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, 'scripts', 'opencode-mcp.cjs'), '#!/usr/bin/env node\n', 'utf8');
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'minimal');
+
+    const r = runUserPromptSubmit(ctxHost(cwd, 'create new page called news and add some dummy data', 'codex'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      // Codex behaves like every other host now: delegate FIRST, no host-blocked clause.
+      assert.ok(r.context.includes('opencode_delegate'), 'Codex routes to the OpenCode delegate tool');
+      assert.ok(r.context.includes('FIRST'), 'OpenCode is the FIRST attempt; the paid worker is the fallback');
+      assert.ok(!r.context.includes('Codex blocks'), 'no host-blocked clause');
+      assert.ok(!r.context.includes('Do NOT call `opencode_delegate`'), 'Codex is not steered away from the tool');
+    }
+    // Still self-registers the MCP server in config.toml when session-start missed it.
+    const cfg = fs.readFileSync(path.join(env.CODEX_HOME, 'config.toml'), 'utf8');
+    assert.ok(cfg.includes('[mcp_servers.opencode-worker]'));
+    assert.ok(cfg.includes('local-marketplaces/traffic-one-local/plugins/traffic-one/scripts/opencode-mcp.cjs'));
+  });
+});
+
+test('maintenance triage mints a fresh run id so stale OpenCode role attempts do not bypass the next request', () => {
+  withAuthedProject(existingSharedState({
+    materializedStack: 'minimal|none|other|none',
+    currentRunId: 'old-maintenance-run',
+    spawnIndex: { 'senior-frontend': 1 },
+  }), (cwd) => {
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'minimal');
+    markOpenCodeGateDenied(cwd, 'old-maintenance-run', 'senior-frontend');
+    markOpenCodeRoleAttempted(cwd, 'old-maintenance-run', 'senior-frontend');
+
+    const triage = runUserPromptSubmit(ctx(cwd, 'create new page called news and add some dummy data'));
+    assert.equal(triage.kind, 'context');
+    if (triage.kind === 'context') {
+      assert.ok(triage.context.includes('MAINTENANCE PHASE'), 'triage directive present');
+      assert.ok(triage.context.includes('role "senior-frontend"'), 'small single-role work is explicitly OpenCode-delegated first');
+    }
+
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.notEqual(one.currentRunId, 'old-maintenance-run', 'new maintenance request gets a fresh run id');
+    assert.deepEqual(one.spawnIndex || {}, {}, 'fresh maintenance run starts with a clean spawn index');
+
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
   });
 });
 

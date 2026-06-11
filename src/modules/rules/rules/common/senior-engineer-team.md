@@ -1,3 +1,7 @@
+---
+description: "Apply when orchestrating the senior role team (architect/frontend/backend/tester/reviewer/shipper): spawn order, scopes, and write ownership."
+---
+
 # Senior-engineer team orchestration
 
 - For non-trivial multi-layer builds, the Traffic One flow is identical across all supported hosts: architect first, frontend and backend in parallel, reviewer and tester in parallel, shipper only on explicit deploy intent.

@@ -1,4 +1,5 @@
 ---
+description: "Apply during first-time Traffic One project setup: onboarding questions, answer handling, and setup-gate order."
 # Always loaded
 ---
 

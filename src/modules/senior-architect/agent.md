@@ -144,7 +144,7 @@ The 3 things most likely to derail the build. One mitigation each.
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
 
 ## OpenCode delegation queue
-Bounded, low-risk units the orchestrator delegates to the free OpenCode agent BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's token budget. Queue ONLY: boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding, mechanical refactors/renames, formatting/codemods. NEVER queue architecture, public contracts, security/auth, data-model, migrations, or cross-file-invariant work — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Leave the block empty (or omit it) when `openCode.enabled` is false or there are no bounded units.
+Bounded, low-risk units the orchestrator delegates to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's token budget. Queue ONLY: boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding, mechanical refactors/renames, formatting/codemods. NEVER queue architecture, public contracts, security/auth, data-model, migrations, or cross-file-invariant work — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Leave the block empty (or omit it) when `openCode.enabled` is false or there are no bounded units.
 
 <!-- opencode-delegate:start -->
 - role: <frontend|backend|tester> | files: <exact path(s)> | task: <self-contained task: acceptance criteria + exact files/area, no external context>

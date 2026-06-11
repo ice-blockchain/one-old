@@ -1,10 +1,14 @@
 // src/gen/emit/cursor-rules.ts
 // Emits .cursor/rules/*.mdc from the rule templates (rules/**) and the
-// agent role docs (agents/*.md). Absorbs the legacy Cursor sync task. Byte-identical
-// to the committed .mdc files (golden-verified). The "GENERATED FROM … run
-// `npm run gen`" marker is load-bearing for stale-rule detection + the snapshot.
+// agent role docs (agents/*.md). Absorbs the legacy Cursor sync task. The
+// "GENERATED FROM … run `npm run gen`" marker is load-bearing for stale-rule
+// detection + the snapshot.
+//
+// Token economy: Cursor attaches every alwaysApply rule body to every request,
+// so only a small behavioral kernel stays always-on. Everything else ships
+// agent-requested (description-only frontmatter) or glob-scoped, mirroring the
+// lean pointer-index design used on Claude Code and Codex.
 
-import * as fs from 'fs';
 import * as path from 'path';
 
 import { pluginRoot } from '../../shared/paths';
@@ -17,20 +21,29 @@ import {
   toPosix,
   walkMarkdownFiles,
 } from '../lib/frontmatter';
+import * as fs from 'fs';
 
 export interface RuleDocument { relPath: string; content: string; }
+
+// Rules (paths relative to rules/) whose full body stays attached to every
+// Cursor request. Everything else without globs becomes agent-requested via
+// its description. Keep this set small: it is a per-request token cost.
+const CURSOR_ALWAYS_KERNEL = new Set([
+  'core.md',
+  'common/auth-gate.md',
+  'common/setup-gate.md',
+  'common/skill-precedence.md',
+  'common/execution-discipline.md',
+  'common/security.md',
+  'common/clean-code.md',
+]);
 
 function titleCase(name: string): string {
   return name.replace(/-/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
 }
 
-function relativeTo(repoRoot: string, filePath: string): string {
-  return toPosix(path.relative(repoRoot, filePath));
-}
-
-function slugForSource(sourcePath: string, rulesRoot: string): string {
-  const sourceWithoutSuffix = path.relative(rulesRoot, sourcePath).replace(/\.md$/, '');
-  let parts = toPosix(sourceWithoutSuffix).split('/');
+function slugForRule(ruleRel: string): string {
+  let parts = ruleRel.replace(/\.md$/, '').split('/');
   if (parts[0] === 'common' && parts[1] === 'auth-gate') {
     return 'auth-required';
   }
@@ -46,23 +59,22 @@ function slugForSource(sourcePath: string, rulesRoot: string): string {
   return parts.join('-');
 }
 
-function shouldAlwaysApply(sourcePath: string, paths: string[], explicit: boolean | null, rulesRoot: string): boolean {
+function shouldAlwaysApply(ruleRel: string, paths: string[], explicit: boolean | null): boolean {
   if (explicit !== null) return explicit;
   if (paths.length > 0) return false;
-  const relativeParts = toPosix(path.relative(rulesRoot, sourcePath)).split('/');
-  return relativeParts[0] !== 'modes';
+  return CURSOR_ALWAYS_KERNEL.has(ruleRel);
 }
 
-function renderCursorRule(sourcePath: string, repoRoot: string, rulesRoot: string): RuleDocument {
-  const sourceText = fs.readFileSync(sourcePath, 'utf8');
+// ruleRel is the rule's path under rules/ (posix), sourceText its emitted content.
+function renderCursorRule(ruleRel: string, sourceText: string): RuleDocument {
   const { frontmatterLines, body } = splitFrontmatter(sourceText);
   const { paths, description: frontmatterDescription, alwaysApply: explicitAlwaysApply } = parseFrontmatter(frontmatterLines);
-  const sourceRelative = relativeTo(repoRoot, sourcePath);
-  const fallbackTitle = titleCase(path.basename(sourcePath, '.md'));
+  const sourceRelative = `rules/${ruleRel}`;
+  const fallbackTitle = titleCase(path.posix.basename(ruleRel, '.md'));
   const title = titleFromBody(body, fallbackTitle);
   const description = frontmatterDescription || `${title}. Generated from ${sourceRelative}.`;
-  const alwaysApply = shouldAlwaysApply(sourcePath, paths, explicitAlwaysApply, rulesRoot);
-  const relPath = path.join('.cursor', 'rules', `${slugForSource(sourcePath, rulesRoot)}.mdc`);
+  const alwaysApply = shouldAlwaysApply(ruleRel, paths, explicitAlwaysApply);
+  const relPath = path.join('.cursor', 'rules', `${slugForRule(ruleRel)}.mdc`);
 
   const contentLines = [
     ...cursorFrontmatter(description, paths, alwaysApply),
@@ -74,23 +86,23 @@ function renderCursorRule(sourcePath: string, repoRoot: string, rulesRoot: strin
   return { relPath, content: contentLines.join('\n') };
 }
 
-function renderAgentRule(sourcePath: string, repoRoot: string): RuleDocument {
-  const sourceText = fs.readFileSync(sourcePath, 'utf8');
+// agentRel is the agent doc's filename under agents/ (posix, flat).
+function renderAgentRule(agentRel: string, sourceText: string): RuleDocument {
   const { frontmatterLines, body } = splitFrontmatter(sourceText);
   const { description: frontmatterDescription } = parseFrontmatter(frontmatterLines);
-  const sourceRelative = relativeTo(repoRoot, sourcePath);
-  const baseName = path.basename(sourcePath, '.md');
+  const sourceRelative = `agents/${agentRel}`;
+  const baseName = path.posix.basename(agentRel, '.md');
   const fallbackTitle = titleCase(baseName);
   const title = titleFromBody(body, fallbackTitle);
   const description = frontmatterDescription || `${title}. Generated from ${sourceRelative}.`;
   const relPath = path.join('.cursor', 'rules', `00-agent-${baseName}.mdc`);
 
   const note = '> Mirrored from ' + sourceRelative + ' — Cursor has no first-class '
-    + 'subagents; treat this as an always-on role context. The orchestrator skill '
-    + '(`senior-eng-orchestrator`) describes how the roles compose.';
+    + 'subagents; Cursor attaches this role context on demand from the description. '
+    + 'The orchestrator skill (`senior-eng-orchestrator`) describes how the roles compose.';
 
   const contentLines = [
-    ...cursorFrontmatter(description, [], true),
+    ...cursorFrontmatter(description, [], false),
     `<!-- GENERATED FROM: ${sourceRelative}; run \`npm run gen\` to update. -->`,
     '',
     note,
@@ -101,16 +113,29 @@ function renderAgentRule(sourcePath: string, repoRoot: string): RuleDocument {
   return { relPath, content: contentLines.join('\n') };
 }
 
+// Walk a generated plugin tree on disk (tests + tooling). The gen pipeline
+// itself uses emitCursorRules, which derives from the current run's emitted
+// content instead of reading the output tree back.
 export function generatedCursorRules(repoRoot: string = pluginRoot()): RuleDocument[] {
   const rulesRoot = path.join(repoRoot, 'rules');
   const agentsRoot = path.join(repoRoot, 'agents');
-  const ruleDocs = walkMarkdownFiles(rulesRoot, repoRoot).map((source) => renderCursorRule(source, repoRoot, rulesRoot));
-  const agentDocs = walkMarkdownFiles(agentsRoot, repoRoot).map((source) => renderAgentRule(source, repoRoot));
+  const ruleDocs = walkMarkdownFiles(rulesRoot, repoRoot)
+    .map((source) => renderCursorRule(toPosix(path.relative(rulesRoot, source)), fs.readFileSync(source, 'utf8')));
+  const agentDocs = walkMarkdownFiles(agentsRoot, repoRoot)
+    .map((source) => renderAgentRule(toPosix(path.relative(agentsRoot, source)), fs.readFileSync(source, 'utf8')));
   return [...ruleDocs, ...agentDocs];
 }
 
 export function emitCursorRules(run: GenRun): void {
-  for (const doc of generatedCursorRules(run.root)) {
+  // Derive from this run's emitted rules/ + agents/ trees (not the on-disk
+  // output), so --check reports .mdc drift caused by source rule/agent edits.
+  const docs = [
+    ...run.emitted('rules/').filter((doc) => doc.relPath.endsWith('.md'))
+      .map((doc) => renderCursorRule(doc.relPath.slice('rules/'.length), doc.content)),
+    ...run.emitted('agents/').filter((doc) => doc.relPath.endsWith('.md'))
+      .map((doc) => renderAgentRule(doc.relPath.slice('agents/'.length), doc.content)),
+  ];
+  for (const doc of docs) {
     run.file(doc.relPath, doc.content);
   }
 }

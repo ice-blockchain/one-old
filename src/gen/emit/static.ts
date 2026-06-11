@@ -14,19 +14,13 @@ const STATIC_TEXT_FILES = [
   'ref.md',
 ] as const;
 
-const STATIC_SOURCE_FILES: ReadonlyArray<{ sourceRel: string; outputRel: string }> = [
-  {
-    sourceRel: path.join('src', 'gen', 'static', '00-auth-required.mdc'),
-    outputRel: path.join('.cursor', 'rules', '00-auth-required.mdc'),
-  },
-];
+// The auth gate ships as the generated .cursor/rules/auth-required.mdc kernel
+// rule (from rules/common/auth-gate.md); no separate static seed — two
+// always-on copies of the same guidance double the per-request cost on Cursor.
 
 export function emitStaticPluginFiles(run: GenRun): void {
   for (const rel of STATIC_TEXT_FILES) {
     run.file(rel, fs.readFileSync(path.join(run.sourceRoot, rel), 'utf8'));
-  }
-  for (const file of STATIC_SOURCE_FILES) {
-    run.file(file.outputRel, fs.readFileSync(path.join(run.sourceRoot, file.sourceRel), 'utf8'));
   }
   run.file(path.join('skills', '.gitkeep'), '');
   run.json('package.json', {

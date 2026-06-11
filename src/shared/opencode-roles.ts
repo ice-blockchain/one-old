@@ -30,15 +30,19 @@ export function openCodeEnabled(state: unknown): boolean {
   return obj(obj(state)?.openCode)?.enabled === true;
 }
 
-// Should this role run on OpenCode rather than a paid subagent?
+// Should this role run on OpenCode rather than a paid subagent? Host-agnostic:
+// OpenCode is a locally-installed CLI invoked the same way on every host, so the
+// only gate is the user's opt-in plus the role being in the configured set.
 export function shouldRunRoleOnOpenCode(role: string, state: unknown): boolean {
   if (!role || !openCodeEnabled(state)) return false;
   return openCodeDelegateRoles(state).includes(role);
 }
 
-// Per-run marker that an OpenCode delegation was ATTEMPTED for a role (written by
-// the runner on ANY outcome). The spawn gate denies a configured role's paid
-// spawn until this exists, then allows the fallback spawn once OpenCode has tried.
+// Per-run marker that an OpenCode delegation reached the CLI for a role. The
+// runner intentionally writes this only after setup/preconditions pass; sandbox
+// worktree failures and host-policy rejections are not real OpenCode attempts.
+// The spawn gate denies a configured role's paid spawn until this exists, then
+// allows the fallback spawn once OpenCode has tried.
 function attemptMarkerPath(cwd: string, runId: string, role: string): string {
   const safe = role.replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-attempts', safe);
@@ -69,8 +73,9 @@ export function openCodeRoleAttempted(cwd: string, runId: string, role: string):
 // on Codex the host's safety reviewer can reject the opencode_delegate call
 // ABOVE our code, so the runner's attempt marker is never written and a
 // marker-only gate would deadlock (delegate blocked by the reviewer, spawn
-// blocked by the gate). The gate therefore denies a (runId, role) at most
-// ONCE: it records the denial here and lets the second spawn attempt through.
+// blocked by the gate). Host rejection is not an OpenCode attempt; it is a
+// policy fallback. The gate therefore denies a (runId, role) at most ONCE: it
+// records the denial here and lets the second spawn attempt through.
 function denyMarkerPath(cwd: string, runId: string, role: string): string {
   const safe = role.replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-gate-denies', safe);

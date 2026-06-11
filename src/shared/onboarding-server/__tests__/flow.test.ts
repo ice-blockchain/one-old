@@ -316,7 +316,23 @@ test('plan-aware performance step: OpenCode bumps the recommendation only once i
     // Once OpenCode is actually installed (stamped), the recommendation bumps.
     mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
     const view = computeOnboarding(cwd);
-    assert.equal(view.meta.recommendedLevel, 'balanced'); // free + active OpenCode = one step up
+    assert.equal(view.meta.recommendedLevel, 'balanced'); // host-eligible OpenCode = one step up
+    assert.equal(view.meta.options?.[0]?.id, 'balanced');
+  });
+});
+
+test('plan-aware performance step: Codex bumps the OpenCode recommendation like every host (host-agnostic)', () => {
+  withProject(null, (cwd) => {
+    process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    applyAnswer(cwd, 'open-code', 'enable');
+    mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
+
+    // Installed OpenCode bumps the recommendation on Codex exactly as elsewhere —
+    // no per-host / per-model gate.
+    const view = computeOnboarding(cwd);
+    assert.equal(view.meta.host, 'codex');
+    assert.equal(view.meta.recommendedLevel, 'balanced');
     assert.equal(view.meta.options?.[0]?.id, 'balanced');
   });
 });

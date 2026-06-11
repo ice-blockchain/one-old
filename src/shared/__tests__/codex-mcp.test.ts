@@ -29,6 +29,17 @@ test('codexStablePluginRoot derives the version-stable marketplace source from t
   assert.equal(codexStablePluginRoot({ CODEX_PLUGIN_ROOT: '/opt/plugin' } as NodeJS.ProcessEnv), '/opt/plugin');
 });
 
+test('codexStablePluginRoot discovers the local marketplace install in Codex Desktop without plugin-root env', () => {
+  withCodexHome((home, env) => {
+    const root = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'opencode-mcp.cjs'), '#!/usr/bin/env node\n', 'utf8');
+    delete env.CODEX_PLUGIN_ROOT;
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+    assert.equal(codexStablePluginRoot(env), root);
+  });
+});
+
 test('ensureCodexMcpServerRegistered writes the [mcp_servers.opencode-worker] block at the STABLE path (idempotent)', () => {
   withCodexHome((home, env) => {
     assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
@@ -42,6 +53,21 @@ test('ensureCodexMcpServerRegistered writes the [mcp_servers.opencode-worker] bl
     // idempotent: a second call leaves the file byte-identical
     assert.equal(ensureCodexMcpServerRegistered(env), 'already-present');
     assert.equal(fs.readFileSync(codexConfigPath(env), 'utf8'), cfg);
+  });
+});
+
+test('ensureCodexMcpServerRegistered works in Codex Desktop when no plugin-root env is set', () => {
+  withCodexHome((home, env) => {
+    const root = path.join(home, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'opencode-mcp.cjs'), '#!/usr/bin/env node\n', 'utf8');
+    delete env.CODEX_PLUGIN_ROOT;
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+
+    assert.equal(ensureCodexMcpServerRegistered(env), 'registered');
+    const cfg = fs.readFileSync(codexConfigPath(env), 'utf8');
+    assert.match(cfg, /\[mcp_servers\.opencode-worker\]/);
+    assert.match(cfg, /local-marketplaces\/traffic-one-local\/plugins\/traffic-one\/scripts\/opencode-mcp\.cjs/);
   });
 });
 

@@ -1,4 +1,5 @@
 ---
+description: "Apply when adding or choosing a dependency or library: pick from the curated catalog before reaching for npm."
 # Always loaded
 ---
 

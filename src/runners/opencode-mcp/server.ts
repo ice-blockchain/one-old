@@ -25,7 +25,7 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE,
     description:
-      'Delegate ONE bounded, low-risk coding unit to the OpenCode agent (runs in a throwaway git worktree; only a clean, error-free diff is applied; a digest is written). RESUMABLE: the run executes in the BACKGROUND and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → the attempt is recorded, so re-spawn the paid role (fallback); or {running:true} → the run is still going, so call opencode_delegate AGAIN with the SAME arguments to keep waiting. Runs on a FREE hosted gateway model (no account/API key) chosen automatically, with automatic fallback to the next free model if one was retired. USER-AUTHORIZED: the user explicitly enabled and pre-approved this delegation in the Traffic One setup wizard — recorded in the project\'s .traffic-one/.one.json as openCodeDelegation.approved — so the call needs no additional approval.',
+      'Run the locally-installed OpenCode CLI (`opencode run`) to implement ONE bounded, low-risk coding unit in this workspace. The edit happens in an isolated throwaway git worktree and only a clean, error-free diff is applied back; a review digest is written. RESUMABLE: the run executes in the background and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → re-spawn the paid role (fallback); or {running:true} → still running, so call opencode_delegate AGAIN with the SAME arguments to keep waiting. The user enabled this delegation in the Traffic One setup wizard; OpenCode selects its own model (a free model by default), so no `model` argument is needed.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -33,7 +33,7 @@ const TOOLS = [
         task: { type: 'string', description: "The role's self-contained task: its assigned scope + acceptance criteria, with no external context the run cannot see. Required on the first call; ignored on re-calls of a run already in progress." },
         runId: { type: 'string', description: 'The current run id (currentRunId) — scopes the attempt marker, digest, and the background run.' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Must match the gate cwd. Defaults to the server cwd.' },
-        model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.1-codex`, which requires `opencode auth login`). Omit to use the free auto-selected chain.' },
+        model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.1-codex`, which requires `opencode auth login`). Omit to let OpenCode use its default free model.' },
       },
       required: ['role', 'task', 'runId'],
     },
@@ -41,13 +41,13 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE_FROM_PLAN,
     description:
-      "Delegate EVERY bounded unit the architect queued in <projectRoot>/.traffic-one/plan.md to OpenCode, in one background batch. RESUMABLE (same as opencode_delegate): returns {total, delegated, units:[...]} when finished, or {running:true} → call again with the SAME arguments. Best-effort: a unit OpenCode does not deliver falls back to a paid subagent. USER-AUTHORIZED at onboarding (recorded as openCodeDelegation.approved in the project's .traffic-one/.one.json) — needs no additional approval.",
+      "Run the locally-installed OpenCode CLI to implement EVERY bounded unit the architect queued in <projectRoot>/.traffic-one/plan.md, in one background batch (each in its own isolated worktree, only clean diffs applied). RESUMABLE (same as opencode_delegate): returns {total, delegated, units:[...]} when finished, or {running:true} → call again with the SAME arguments. Best-effort: a unit OpenCode does not deliver falls back to a paid subagent. The user enabled this delegation in the Traffic One setup wizard; OpenCode picks its own free model unless `model` is set.",
     inputSchema: {
       type: 'object',
       properties: {
         runId: { type: 'string', description: 'The current run id (currentRunId).' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Defaults to the server cwd.' },
-        model: { type: 'string', description: 'Optional model pin applied to every queued unit. Omit for the free auto-selected chain.' },
+        model: { type: 'string', description: 'Optional model pin applied to every queued unit. Omit to let OpenCode use its default free model.' },
       },
       required: ['runId'],
     },

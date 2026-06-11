@@ -33,6 +33,16 @@ test('shouldRunRoleOnOpenCode: requires enabled + role in the configured set', (
   assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, delegateRoles: ['senior-backend'] } }), false);
 });
 
+test('shouldRunRoleOnOpenCode is host-agnostic (same on Codex, Claude, Cursor)', () => {
+  const enabled = { openCode: { enabled: true } };
+  // OpenCode is a local CLI invoked identically on every host — no per-host gate.
+  for (const role of ['senior-frontend', 'senior-tester', 'quick-fix']) {
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled), true);
+  }
+  // a pinned model does not change eligibility — only enabled + role-in-set do
+  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.1-codex' } }), true);
+});
+
 test('opencode role attempt marker: write then detect (per run + role)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocrole-'));
   try {

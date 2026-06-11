@@ -114,7 +114,7 @@ test('ensureSessionMaterialization no-ops for incomplete / already-current state
 // Env sandbox for ensureOpenCodeDelegationReady: a fake plugin root (with the
 // runner script the self-heal spawns), a sandboxed managed-toolchain root, a
 // tmp CODEX_HOME, and explicit host control via the *_PLUGIN_ROOT vars.
-function withOpenCodeEnv(host: 'codex' | 'other', fn: (cwd: string, fixtures: { codexHome: string; managedBin: string }) => void): void {
+function withOpenCodeEnv(host: 'codex' | 'codex-desktop' | 'other', fn: (cwd: string, fixtures: { codexHome: string; managedBin: string }) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocready-'));
   const env = process.env;
   const saved: Record<string, string | undefined> = {};
@@ -135,14 +135,26 @@ function withOpenCodeEnv(host: 'codex' | 'other', fn: (cwd: string, fixtures: { 
   fs.mkdirSync(path.join(pluginDir, 'scripts'), { recursive: true });
   // The self-heal spawns this detached; a no-op keeps the test hermetic.
   fs.writeFileSync(path.join(pluginDir, 'scripts', 'onboarding-toolchain-runner.cjs'), 'process.exit(0);\n', 'utf8');
+  const marketplacePlugin = path.join(codexHome, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
+  fs.mkdirSync(path.join(marketplacePlugin, 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(marketplacePlugin, 'scripts', 'opencode-mcp.cjs'), '#!/usr/bin/env node\n', 'utf8');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed');
-  env.TRAFFIC_ONE_PLUGIN_ROOT = pluginDir;
   env.CODEX_HOME = codexHome;
   delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   delete env.CODEX_THREAD_ID;
   delete env.CURSOR_PLUGIN_ROOT;
-  if (host === 'codex') env.CODEX_PLUGIN_ROOT = pluginDir; else delete env.CODEX_PLUGIN_ROOT;
+  if (host === 'codex') {
+    env.TRAFFIC_ONE_PLUGIN_ROOT = pluginDir;
+    env.CODEX_PLUGIN_ROOT = pluginDir;
+  } else if (host === 'codex-desktop') {
+    delete env.TRAFFIC_ONE_PLUGIN_ROOT;
+    delete env.CODEX_PLUGIN_ROOT;
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+  } else {
+    env.TRAFFIC_ONE_PLUGIN_ROOT = pluginDir;
+    delete env.CODEX_PLUGIN_ROOT;
+  }
   const managedBin = path.join(env.TRAFFIC_ONE_TOOLCHAIN_ROOT, 'opencode', 'npm-prefix', 'bin', 'opencode');
   try {
     fn(cwd, { codexHome, managedBin });
@@ -166,6 +178,20 @@ test('ensureOpenCodeDelegationReady: codex + enabled → registers MCP server on
     assert.ok(toml.includes('[mcp_servers.opencode-worker]'));
     // idempotent: second session → already-present → silent
     assert.equal(ensureOpenCodeDelegationReady(cwd, { openCode: { enabled: true } }), '');
+  });
+});
+
+test('ensureOpenCodeDelegationReady: Codex Desktop without plugin-root env discovers marketplace install', () => {
+  withOpenCodeEnv('codex-desktop', (cwd, { codexHome, managedBin }) => {
+    installStubCli(managedBin);
+    const notice = ensureOpenCodeDelegationReady(cwd, {
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    assert.ok(notice.includes('restart Codex once'));
+    const toml = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+    assert.ok(toml.includes('[mcp_servers.opencode-worker]'));
+    assert.ok(toml.includes('local-marketplaces/traffic-one-local/plugins/traffic-one/scripts/opencode-mcp.cjs'));
   });
 });
 

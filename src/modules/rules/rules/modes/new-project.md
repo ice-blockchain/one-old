@@ -1,4 +1,5 @@
 ---
+description: "Apply when scaffolding a brand-new Traffic One project: the full setup flow, gates, and project structure."
 # Loaded when mode = new-project (≤5 source files detected)
 ---
 

@@ -2,10 +2,10 @@
 // Headless OpenCode delegation runner (compiles to scripts/opencode-runner.cjs).
 // The senior-eng-orchestrator calls this to hand a bounded, low-risk coding task
 // to the installed OpenCode CLI INSTEAD of spawning a paid Traffic One subagent.
-// It runs a free `opencode/*` Zen gateway model — headless via `opencode run
-// --format json`, NO account/API key on ANY host — walking OPENCODE_FREE_MODELS
-// in order and advancing to the next free model when the gateway rejects one
-// (the free ids are promotional and rotate).
+// It runs headless via `opencode run --format json`. By default it walks the
+// free `opencode/*` gateway chain, advancing to the next free model when the
+// gateway rejects one (the free ids are promotional and rotate). When the
+// project pins `openCode.model`, that explicit model is tried alone.
 //
 // Safety model: the task runs inside a throwaway git WORKTREE (sandbox cut from
 // HEAD). Only a clean, error-free, non-empty result is applied back to the real
@@ -199,6 +199,124 @@ function removeWorktree(cwd: string, parent: string, wt: string): void {
   try { fs.rmSync(parent, { recursive: true, force: true }); } catch { /* best-effort */ }
 }
 
+type ApplyTargetBackup = {
+  rel: string;
+  abs: string;
+  existed: boolean;
+  backupPath?: string;
+  createdParentDirs: string[];
+};
+
+function formatError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function parseNulPaths(stdout: string): string[] {
+  return stdout.split('\0').filter(Boolean);
+}
+
+function parseNameStatusZ(stdout: string): string[] {
+  const fields = parseNulPaths(stdout);
+  const paths: string[] = [];
+  for (let i = 0; i < fields.length;) {
+    const status = fields[i++];
+    if (!status) continue;
+    const first = fields[i++];
+    if (first) paths.push(first);
+    if (/^[RC]/.test(status)) {
+      const second = fields[i++];
+      if (second) paths.push(second);
+    }
+  }
+  return uniquePaths(paths);
+}
+
+function uniquePaths(paths: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of paths) {
+    if (!p || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+  }
+  return out;
+}
+
+function isInsideRoot(root: string, abs: string): boolean {
+  return abs === root || abs.startsWith(root + path.sep);
+}
+
+function resolveRepoPath(root: string, rel: string): string | null {
+  const abs = path.resolve(root, rel);
+  return abs !== root && isInsideRoot(root, abs) ? abs : null;
+}
+
+function pathExists(abs: string): boolean {
+  try {
+    fs.lstatSync(abs);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function copyPath(src: string, dst: string): void {
+  fs.mkdirSync(path.dirname(dst), { recursive: true });
+  const stat = fs.lstatSync(src);
+  if (stat.isSymbolicLink()) {
+    fs.symlinkSync(fs.readlinkSync(src), dst);
+    return;
+  }
+  if (stat.isDirectory()) {
+    fs.cpSync(src, dst, { recursive: true, force: true });
+    return;
+  }
+  fs.copyFileSync(src, dst);
+}
+
+function backupApplyTargets(cwd: string, targetPaths: string[], parent: string): ApplyTargetBackup[] {
+  const root = path.resolve(cwd);
+  const backupRoot = path.join(parent, 'pre-apply-backup');
+  const backups: ApplyTargetBackup[] = [];
+  for (const rel of uniquePaths(targetPaths)) {
+    const abs = resolveRepoPath(root, rel);
+    if (!abs) throw new Error(`unsafe patch path: ${rel}`);
+
+    const createdParentDirs: string[] = [];
+    if (!pathExists(abs)) {
+      for (let cur = path.dirname(abs); cur !== root && isInsideRoot(root, cur) && !pathExists(cur); cur = path.dirname(cur)) {
+        createdParentDirs.push(cur);
+      }
+      backups.push({ rel, abs, existed: false, createdParentDirs });
+      continue;
+    }
+
+    const backupPath = path.join(backupRoot, String(backups.length));
+    copyPath(abs, backupPath);
+    backups.push({ rel, abs, existed: true, backupPath, createdParentDirs });
+  }
+  return backups;
+}
+
+function restoreApplyTargets(backups: ApplyTargetBackup[]): string | null {
+  const errors: string[] = [];
+  for (const backup of backups) {
+    try {
+      fs.rmSync(backup.abs, { recursive: true, force: true });
+      if (backup.existed && backup.backupPath) {
+        copyPath(backup.backupPath, backup.abs);
+      } else {
+        for (const dir of backup.createdParentDirs) {
+          try { fs.rmdirSync(dir); } catch { /* non-empty or already gone */ }
+        }
+      }
+    } catch (err) {
+      errors.push(`${backup.rel}: ${formatError(err)}`);
+    }
+  }
+  return errors.length ? errors.join('; ') : null;
+}
+
 // Outcome of trying ONE model in its own fresh worktree.
 type ModelRunOutcome =
   | { kind: 'delegated'; touched: string[]; summary: string }
@@ -211,7 +329,7 @@ type ModelRunOutcome =
 // every residue class at once: commits the model may have made, gitignored
 // build output, lockfiles. On success the staged diff (vs baseSha) is applied
 // to the real working tree before returning.
-function runModel(cwd: string, bin: string, baseSha: string, model: string, task: string): ModelRunOutcome {
+function runModel(cwd: string, bin: string, baseSha: string, model: string, task: string, onCliAttempt?: () => void): ModelRunOutcome {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-'));
   const wt = path.join(parent, 'wt');
   const added = git(cwd, ['worktree', 'add', '--detach', wt, baseSha], 60_000);
@@ -234,6 +352,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
     // Retry only a CLEAN no-op (the weak model occasionally produces nothing). A
     // gateway error or process failure won't fix itself on retry, so bail at once.
     for (let attempt = 1; attempt <= MAX_DELEGATE_ATTEMPTS; attempt++) {
+      onCliAttempt?.();
       const run = spawnSync(bin, runArgs, {
         cwd: wt,
         encoding: 'utf8',
@@ -270,17 +389,38 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
     }
 
     // Capture the patch + touched list from the winning attempt (vs baseSha).
-    const touched = git(wt, ['diff', '--cached', '--name-only', baseSha]).stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+    const touched = parseNulPaths(git(wt, ['diff', '--cached', '--name-only', '-z', baseSha]).stdout);
+    const applyTargets = uniquePaths([
+      ...touched,
+      ...parseNameStatusZ(git(wt, ['diff', '--cached', '--name-status', '-z', baseSha]).stdout),
+    ]);
     const patch = git(wt, ['diff', '--cached', '--binary', baseSha]).stdout;
     const patchPath = path.join(parent, 'delegated.patch');
     fs.writeFileSync(patchPath, patch, 'utf8');
 
     // Apply to the real working tree (unstaged, like a subagent edit). Same base,
     // so a clean tree applies cleanly; a conflict → fail → fallback.
+    let backups: ApplyTargetBackup[];
+    try {
+      backups = backupApplyTargets(cwd, applyTargets, parent);
+    } catch (err) {
+      return { kind: 'failed', error: `could not prepare atomic delegated diff apply: ${formatError(err)}` };
+    }
     let applied = git(cwd, ['apply', '--whitespace=nowarn', patchPath]);
-    if (applied.status !== 0) applied = git(cwd, ['apply', '--3way', patchPath]);
     if (applied.status !== 0) {
-      return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}` };
+      const rollbackError = restoreApplyTargets(backups);
+      if (rollbackError) {
+        return {
+          kind: 'failed',
+          error: `could not roll back failed delegated diff apply: ${rollbackError}`,
+        };
+      }
+      applied = git(cwd, ['apply', '--3way', patchPath]);
+    }
+    if (applied.status !== 0) {
+      const rollbackError = restoreApplyTargets(backups);
+      const rollbackSuffix = rollbackError ? `; rollback failed: ${rollbackError}` : '';
+      return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}${rollbackSuffix}` };
     }
     return { kind: 'delegated', touched, summary };
   } finally {
@@ -289,13 +429,6 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
 }
 
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
-  // Record the attempt (per run + role) BEFORE doing anything, so the spawn gate
-  // lets the orchestrator fall back to a paid spawn after OpenCode has been tried
-  // for a configured role — regardless of the outcome (skipped/failed/delegated).
-  const markRunId = (opts.runId || '').trim();
-  const markRole = (opts.role || '').trim();
-  if (markRunId && markRole) markOpenCodeRoleAttempted(cwd, markRunId, markRole);
-
   const state = readEffectiveState(cwd);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   if (openCode?.enabled !== true) {
@@ -342,6 +475,12 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';
   const runId = (opts.runId || '').trim() || runStamp();
+  let markedAttempt = false;
+  const markCliAttempt = (): void => {
+    if (markedAttempt || !runId || !role) return;
+    markedAttempt = true;
+    markOpenCodeRoleAttempted(cwd, runId, role);
+  };
 
   // Walk the models: a fresh worktree per model; advance on server/model-side
   // errors (see shouldTryNextModel). Environmental failures are terminal.
@@ -349,7 +488,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   let lastModel = models[models.length - 1] as string;
   for (const model of models) {
     lastModel = model;
-    const outcome = runModel(cwd, bin, baseSha, model, task);
+    const outcome = runModel(cwd, bin, baseSha, model, task, markCliAttempt);
     if (outcome.kind === 'delegated') {
       if (fromChain) {
         const idx = OPENCODE_FREE_MODELS.indexOf(model);

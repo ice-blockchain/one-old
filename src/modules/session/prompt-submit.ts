@@ -21,7 +21,7 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, legacyStatePath, lifecycleCompletedAt, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, legacyStatePath, lifecycleCompletedAt, normalizeState, readEffectiveState, readState, runIdNow, statePath, writeState } from '../../shared/state';
 import { obj } from '../../shared/obj';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { resolveModel } from '../../shared/model-tiers';
@@ -39,6 +39,7 @@ import {
 } from './auth-gate';
 import { authChoiceAllowsContinue, authChoiceStatus, tryWriteAuthChoice } from './auth-choice';
 import { runSessionStartAuthed } from './session-start';
+import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
 
 type Rec = Record<string, unknown>;
@@ -75,6 +76,14 @@ function prependContext(prefix: string, result: HookResult): HookResult {
   });
 }
 
+function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
+  const runId = runIdNow();
+  const sharedState = readState(cwd);
+  writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });
+  state.currentRunId = runId;
+  state.spawnIndex = {};
+}
+
 // Post-build maintenance triage. Once the main build is complete (existing
 // codebases from the start; new projects once the build flips them to maintenance)
 // the machinery should scale to the request rather than treating every prompt the
@@ -104,21 +113,36 @@ function maintenanceTriageDirective(cwd: string, state: Rec, promptText: string,
   const teamMode = team && (team.mode === 'main-agent' || team.mode === 'subagents')
     ? (team.mode as string)
     : teamModeForLevel(level);
-  const ocActive = openCodeDelegationActive(state);
   // Name the concrete cheapest model so the agent passes it on the quick-fix spawn
   // without resolving an indirection (haiku on Claude/Cursor, gpt-5.4-mini on Codex).
   const cheapest = resolveModel('cheapest', host) || 'the cheapest model for this host';
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
+  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state);
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  const ocActive = openCodeDelegationActive(state);
   // Render the OpenCode instruction only when delegation is actually active, so an
   // off state doesn't leave a dead-branch clause a literal reader must evaluate.
   let openCodeClause = '';
+  let quickFixOpenCodeClause = '';
+  let smallOpenCodeClause = '';
   if (ocActive) {
-    openCodeClause = teamMode === 'main-agent'
-      ? ' If you prefer, offload it free via the `opencode_delegate` tool (role "quick-fix").'
-      : ' OpenCode is active — call the `opencode_delegate` tool (role "quick-fix") FIRST; only if it declines, spawn the paid worker.';
+    if (teamMode === 'main-agent') {
+      openCodeClause = ` If you prefer, offload it via the \`opencode_delegate\` tool (role "quick-fix").`;
+    } else {
+      quickFixOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with role "quick-fix", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid worker. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
+      smallOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with the chosen role "senior-frontend" or "senior-backend", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid role subagent. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
+    }
   }
   const blockName = teamMode === 'main-agent' ? 'maintenance-triage-main-agent' : 'maintenance-triage-subagents';
-  return block(blockName, { HINT: hint.tier, CONFIDENCE: hint.confidence, SIGNALS: signals, CHEAPEST_MODEL: cheapest, OPENCODE_CLAUSE: openCodeClause });
+  return `${block(blockName, {
+    HINT: hint.tier,
+    CONFIDENCE: hint.confidence,
+    SIGNALS: signals,
+    CHEAPEST_MODEL: cheapest,
+    OPENCODE_CLAUSE: openCodeClause,
+    QUICK_FIX_OPENCODE_CLAUSE: quickFixOpenCodeClause,
+    SMALL_OPENCODE_CLAUSE: smallOpenCodeClause,
+  })}`;
 }
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
@@ -203,17 +227,19 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   }
 
   // ── Post-build maintenance triage (appended to whatever context we return) ──
+  const openCodeReadiness = ensureOpenCodeDelegationReady(cwd, normalizedState);
   const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
 
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });
   if (materialized) {
-    const body = triage ? `${materialized.context}\n\n${triage}` : materialized.context;
+    const readiness = openCodeReadiness ? `${openCodeReadiness}\n` : '';
+    const body = triage ? `${readiness}${materialized.context}\n\n${triage}` : `${readiness}${materialized.context}`;
     return context(body, { systemMessage: materialized.systemMessage });
   }
 
   if (triage) {
-    return context(`[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
+    return context(`${openCodeReadiness}[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
   }
-  return context(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
+  return context(`${openCodeReadiness}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

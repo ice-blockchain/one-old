@@ -23,17 +23,23 @@ export function distRoot(sourceRoot: string = pluginRoot()): string {
   return path.join(sourceRoot, 'dist');
 }
 
+// Output dirs gen owns end-to-end: files inside them that no emitter produced
+// are stale copies of deleted source content and get swept. skills/ stays out —
+// the session-start surgery populates it at runtime.
+export const MANAGED_OUTPUT_DIRS = ['agents', 'rules', 'skills-catalog', path.join('.cursor', 'rules')] as const;
+
 export function runGen(opts: { check: boolean; root?: string; sourceRoot?: string }): GenRun {
   const sourceRoot = opts.sourceRoot ?? pluginRoot();
   const run = new GenRun({ check: opts.check, root: opts.root ?? distRoot(sourceRoot), sourceRoot });
   emitManifests(run);
   emitMcp(run);
   emitHooks(run);
-  emitAgents(run); // before cursor-rules: the cursor mirror reads agents/
-  emitRules(run); // before cursor-rules: slugForSource reads rules/
+  emitAgents(run); // before cursor-rules: the cursor mirror derives from emitted agents/
+  emitRules(run); // before cursor-rules: the cursor mirror derives from emitted rules/
   emitSkills(run);
   emitCursorRules(run);
   emitStaticPluginFiles(run);
+  run.sweepOrphans(MANAGED_OUTPUT_DIRS);
   return run;
 }
 
@@ -50,7 +56,8 @@ export function main(argv: string[] = process.argv.slice(2)): void {
     process.stdout.write('gen --check: all generated dist artifacts are in sync.\n');
     return;
   }
-  process.stdout.write(`gen: wrote ${run.written.length} file(s) to dist.\n`);
+  const prunedNote = run.pruned.length > 0 ? `, pruned ${run.pruned.length} orphan(s)` : '';
+  process.stdout.write(`gen: wrote ${run.written.length} file(s) to dist${prunedNote}.\n`);
 }
 
 if (require.main === module) main();

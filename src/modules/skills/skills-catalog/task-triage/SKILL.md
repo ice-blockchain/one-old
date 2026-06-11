@@ -53,9 +53,11 @@ The directive states the project's **team mode** and whether **OpenCode** is act
     report back instead of expanding scope", (d) "report the outcome in at most two sentences."
     Never spawn `quick-fix` with a bare restatement of the user prompt — a cheap model given a vague
     task burns its savings re-discovering context.
-  - **OpenCode active:** the gate forces a free OpenCode attempt FIRST — call the `opencode_delegate`
+  - **OpenCode active:** the gate forces an OpenCode attempt FIRST — call the `opencode_delegate`
     tool (server `opencode-worker`) with `{ role: "quick-fix", runId, projectRoot, task }`. Only if it
-    declines does the gate allow the cheap paid `quick-fix` spawn.
+    declines does the gate allow the cheap paid `quick-fix` spawn. If the tool is not exposed, say the
+    opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback for
+    this request.
 - **Main-agent mode (Low):** no subagents — make the edit yourself directly. If OpenCode is active you
   MAY offload it free via the `opencode_delegate` tool, but inline is fine for a one-file change.
 - No architect, no plan, no full team. **Still verify** if the change is visual (a screenshot per
@@ -65,6 +67,10 @@ The directive states the project's **team mode** and whether **OpenCode** is act
 - **Subagents mode:** spawn a SINGLE role — `senior-frontend` OR `senior-backend`, whichever layer the
   change lives in — at its normal tier for the performance level. No architect unless the change turns
   out to be cross-cutting (then escalate to complex).
+  - **OpenCode active:** call the `opencode_delegate` tool FIRST with that chosen role, the current
+    maintenance `runId`, `projectRoot`, and the bounded task. Only if it declines should you spawn the
+    paid role subagent. If the tool is not exposed, say the opencode-worker MCP server is not loaded and
+    Codex needs one restart, then use the paid fallback for this request.
 - **Main-agent mode:** implement it directly after a brief plan; add/keep a regression check.
 
 ### complex

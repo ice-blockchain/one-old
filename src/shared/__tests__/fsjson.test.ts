@@ -24,3 +24,17 @@ test('readText returns null when missing; writeJson/readJson round-trips with tr
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('writeJson is atomic: replaces existing content via rename and leaves no temp file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fsjson-atomic-'));
+  try {
+    const filePath = path.join(dir, 'state.json');
+    writeJson(filePath, { generation: 1 });
+    writeJson(filePath, { generation: 2 });
+    assert.deepEqual(readJson(filePath, {}), { generation: 2 });
+    const leftovers = fs.readdirSync(dir).filter((name) => name.includes('.tmp'));
+    assert.deepEqual(leftovers, []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

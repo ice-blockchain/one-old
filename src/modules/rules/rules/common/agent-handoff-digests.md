@@ -1,4 +1,5 @@
 ---
+description: "Apply when spawning, resuming, or completing subagent/role work: the handoff digest contract between agents (write digests/<runId>/<role>.md, read predecessors first)."
 # Always loaded. The handoff contract between subagents in the
 # senior-eng-orchestrator flow. Cuts redundant codebase reads across phases.
 ---

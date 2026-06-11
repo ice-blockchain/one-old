@@ -1,4 +1,5 @@
 ---
+description: "Apply when choosing a stack, framework, or provider for a new project or a major new surface."
 # Always loaded
 ---
 

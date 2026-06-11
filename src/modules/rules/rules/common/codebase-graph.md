@@ -1,4 +1,5 @@
 ---
+description: "Apply before broad code exploration (Grep/Glob/multi-file reads): consult the .traffic-one code-graph report first when one exists."
 # Always loaded. Tells every agent / skill / subagent to consult the
 # active codebase-graph provider's report before falling back to broad
 # Glob/Grep. The provider is chosen at onboarding and recorded as the
