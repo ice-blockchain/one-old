@@ -318,7 +318,15 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   if (head.status !== 0) {
     return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
   }
-  const baseSha = head.stdout.trim();
+  // Sandbox from the CURRENT WORKING TREE, not just committed HEAD. `git stash
+  // create` snapshots uncommitted (tracked) changes into a throwaway commit without
+  // touching the tree or the stash list; fall back to HEAD when the tree is clean
+  // (it prints nothing). Without this, sequential delegations each branch the
+  // worktree from the same stale HEAD and silently ignore the PREVIOUS delegation's
+  // still-uncommitted edit — the 2nd+ task runs against a "cached" snapshot of the
+  // repo, so its diff is computed off the wrong base and the change fails to land.
+  const snapshot = git(cwd, ['stash', 'create']);
+  const baseSha = (snapshot.status === 0 && snapshot.stdout.trim()) ? snapshot.stdout.trim() : head.stdout.trim();
 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';
