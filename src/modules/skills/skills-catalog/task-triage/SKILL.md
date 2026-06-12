@@ -62,6 +62,11 @@ The directive states the project's **team mode** and whether **OpenCode** is act
   MAY offload it free via the `opencode_delegate` tool, but inline is fine for a one-file change.
 - No architect, no plan, no full team. **Still verify** if the change is visual (a screenshot per
   `ui-quality`) — "trivial" scales the planning down, not the proof that it works.
+- **Reuse the worker across requests:** when this session already spawned a `quick-fix` (or role) worker
+  for an earlier request, send the next bounded task to the SAME agent — on Claude
+  `SendMessage { to: <agentId from the spawn result>, message: <the new task> }` — instead of a fresh
+  spawn; the spawn gate denies a duplicate while a live agent is recorded for the run. Each task message
+  stays self-contained and bounded exactly like a spawn prompt.
 
 ### small
 - **Subagents mode:** spawn a SINGLE role — `senior-frontend` OR `senior-backend`, whichever layer the

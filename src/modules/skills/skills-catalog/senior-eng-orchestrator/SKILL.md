@@ -203,11 +203,25 @@ before spawning with at least `runId`, `claimId`, `role`, `spawnIndex`,
 After the orchestrator run finishes (Phase 5), clear `currentRunId` or leave it;
 the hook ignores stale runs after 30 minutes.
 
-### Fix-cycle re-spawn (CHANGES_REQUESTED loop)
+### Agent reuse — ONE live agent per role (continuation-first)
+
+**Each role gets ONE agent for the whole run; every later task for that role goes to the SAME agent.** A fresh same-role spawn re-loads the entire rules+skills context (~20k tokens before any work) and re-explores the codebase — a measured build spent 7 senior-frontend spawns (≈46M tokens) where 1 agent should have served. Context must load once per role (5 roles ⇒ ~5 context loads), not once per task.
+
+Mechanics on hosts with agent continuation (Claude with the agent-teams flag — `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` in the session env enables the `SendMessage` tool; Codex equivalently via `send_input` to the agent thread):
+
+1. **First task for a role** → normal spawn (model param per tier). The spawn tool result footer prints the agent id (`agentId: <id> (use SendMessage …)`). The PostToolUse hook records it automatically in `.traffic-one/runs/<runId>/agents.json`.
+2. **Every later task for that role** — the next planned part (e.g. frontend: foundation → learner journey → admin area), a fix cycle, a re-review, a re-test — goes to the SAME agent: `SendMessage { to: "<agentId>", message: <task> }`. The PreToolUse gate DENIES a duplicate same-role spawn and names the recorded id, so following this protocol is also the only path the gate allows.
+3. **The continuation message carries ONLY what is new**: task spec, exact file paths, acceptance criteria, reviewer/tester findings verbatim. The agent keeps everything it already read (rules, skills, plan, digests, source) — never re-paste those. Treat the reply exactly like a spawn's final report: same digest + terminal-token contract.
+4. **Parallel roles stay parallel**: frontend ∥ backend follow-ups are two `SendMessage` calls in ONE message, exactly like parallel spawns.
+5. **Big roles split into sequential parts on purpose**: each SendMessage turn gets a fresh tool/turn budget, so "foundation, then admin" runs as message 1, then message 2 to the SAME agent — splitting no longer costs a context reload per part.
+6. **Replacement (rare)**: only when SendMessage errors ("agent not found") or the agent's replies show context exhaustion, re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id.
+7. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below.
+
+### Fix-cycle follow-up (CHANGES_REQUESTED loop)
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
 
-Instead, follow this protocol for each fix-cycle re-spawn:
+**Continuation-first:** with a live role agent (see "Agent reuse" above), a fix cycle is ONE SendMessage to that agent — the reviewer findings verbatim (`file:line` + concrete change per item) plus "apply ONLY these fixes, update your digest, end with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>`)". Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued:
 
 1. **Write the fix-cycle context file** with exact reviewer findings. Use the reviewer's `CHANGES_REQUESTED <numbered list>` verbatim — paste `file:line` references and concrete suggested changes; do not paraphrase. Save to:
 
@@ -232,7 +246,7 @@ Instead, follow this protocol for each fix-cycle re-spawn:
 
    > "You are continuing as `<role>` in run `<currentRunId>`, fix cycle #N. Read your prior digest at `.traffic-one/digests/<runId>/<role-name>.md` to recall your previous work, then apply ONLY the exact fixes listed in `.traffic-one/fix-cycles/<runId>/<role>-fix-<n>.md`. Do not re-read source files except those the fix-cycle context names. Re-emit your digest when done. End with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>` on partial failure)."
 
-4. **After the fix-cycle subagent returns**, loop back to `senior-reviewer` (which also gets a fresh spawn with its own `spawnIndex[senior-reviewer]++` to leverage the same fix-cycle saving on re-reviews).
+4. **After the fix-cycle reply returns**, loop back to `senior-reviewer` — continuation-first there too: SendMessage to the live reviewer agent with "re-review ONLY the fixes for findings <list>" (fresh re-spawn with `spawnIndex[senior-reviewer]++` only when no live reviewer agent exists).
 
 The 2-cycle reviewer cap (architect / orchestrator level) still applies — if the second fix cycle also gets `CHANGES_REQUESTED`, stop and surface the unresolved findings to the user.
 
@@ -274,13 +288,13 @@ If both green → proceed.
 
 ### Phase 3a — Reviewer fix loop (capped at 2 cycles)
 
-Re-spawn the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) with the numbered fix list. After their reply, re-spawn `senior-reviewer`.
+Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: SendMessage to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way.
 
 After 2 cycles, escalate to the user with both diffs and the latest review.
 
 ### Phase 3b — Tester fix loop (capped at 2 cycles)
 
-Re-spawn the relevant implementer with the failing-test list. After their reply, re-spawn `senior-tester`.
+Send the failing-test list to the relevant implementer (continuation-first, as above). After their reply, send the re-test to the live `senior-tester`.
 
 After 2 cycles, escalate to the user.
 
@@ -410,6 +424,7 @@ Next steps:
 - On every host, do not silently skip the Traffic One team for matching end-to-end tasks. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. Where the host requires explicit user intent before spawning, always ask for subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined or subagents are unavailable, simulate the same phases manually and state why.
 - Frontend ∥ backend in parallel — single message, two subagent calls.
 - Reviewer ∥ tester in parallel — single message, two subagent calls.
+- ONE agent per role per run: after a role's first spawn, its later tasks are SendMessage continuations of that agent (the spawn gate denies duplicates). Never spawn `senior-frontend` twice for parts/fixes — same agent, next message.
 - Shipper only on explicit deploy intent in the user's most recent message.
 - Cycle cap = 2 for both reviewer and tester loops; after that, escalate.
 - The plan-gate hook (`check-plan-write`) will deny feature writes if `.traffic-one/plan.md` is missing — even if you skipped Phase 1, the implementers will fail fast. Do not try to bypass.

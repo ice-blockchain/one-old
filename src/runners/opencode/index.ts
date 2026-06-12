@@ -79,9 +79,46 @@ export interface DelegateResult {
   model?: string;
 }
 
-function git(cwd: string, args: string[], timeout = 60_000): { status: number; stdout: string; stderr: string } {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+function git(cwd: string, args: string[], timeout = 60_000, env?: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout, ...(env ? { env } : {}) });
   return { status: typeof r.status === 'number' ? r.status : 1, stdout: r.stdout || '', stderr: (r.stderr || '').trim() };
+}
+
+// Snapshot the FULL working tree (tracked changes AND untracked files, minus
+// .gitignore'd paths) into a throwaway dangling commit, without touching the
+// user's index, stash list, or tree. `git stash create` is NOT enough here: it
+// snapshots only TRACKED changes, so mid-build (when most new source is not
+// yet committed) the sandbox worktree lacked those files entirely — OpenCode
+// re-created them from scratch, the patch came back as "new file", plain apply
+// collided with the real tree ("already exists in working directory") and the
+// --3way fallback died with "does not exist in index" (untracked files have no
+// index entry). Building the snapshot through a TEMPORARY index also puts the
+// pre-image blobs in the object DB, so --3way has real ancestors when it IS
+// needed. Falls back to plain HEAD on any failure (old behavior, still safe:
+// worst case is the pre-fix sandbox).
+function snapshotWorkingTree(cwd: string, headSha: string): string {
+  // Clean tree (no staged/unstaged/untracked) → HEAD already IS the snapshot.
+  const status = git(cwd, ['status', '--porcelain']);
+  if (status.status === 0 && !status.stdout.trim()) return headSha;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-idx-'));
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    GIT_INDEX_FILE: path.join(tmpDir, 'index'),
+    // commit-tree needs an ident; don't depend on user.name/email being set.
+    GIT_AUTHOR_NAME: 'traffic-one', GIT_AUTHOR_EMAIL: 'traffic-one@localhost',
+    GIT_COMMITTER_NAME: 'traffic-one', GIT_COMMITTER_EMAIL: 'traffic-one@localhost',
+  };
+  try {
+    if (git(cwd, ['read-tree', headSha], 60_000, env).status !== 0) return headSha;
+    if (git(cwd, ['add', '-A'], 120_000, env).status !== 0) return headSha;
+    const tree = git(cwd, ['write-tree'], 60_000, env);
+    if (tree.status !== 0 || !tree.stdout.trim()) return headSha;
+    const commit = git(cwd, ['commit-tree', tree.stdout.trim(), '-p', headSha, '-m', 'traffic-one opencode delegation snapshot'], 60_000, env);
+    if (commit.status !== 0 || !commit.stdout.trim()) return headSha;
+    return commit.stdout.trim();
+  } finally {
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
 }
 
 function resolveBin(): string | null {
@@ -466,15 +503,12 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
     }
   }
-  // Sandbox from the CURRENT WORKING TREE, not just committed HEAD. `git stash
-  // create` snapshots uncommitted (tracked) changes into a throwaway commit without
-  // touching the tree or the stash list; fall back to HEAD when the tree is clean
-  // (it prints nothing). Without this, sequential delegations each branch the
-  // worktree from the same stale HEAD and silently ignore the PREVIOUS delegation's
-  // still-uncommitted edit — the 2nd+ task runs against a "cached" snapshot of the
-  // repo, so its diff is computed off the wrong base and the change fails to land.
-  const snapshot = git(cwd, ['stash', 'create']);
-  const baseSha = (snapshot.status === 0 && snapshot.stdout.trim()) ? snapshot.stdout.trim() : head.stdout.trim();
+  // Sandbox from the CURRENT WORKING TREE — uncommitted tracked changes AND
+  // untracked files — not just committed HEAD. Without this, sequential
+  // delegations each branch the worktree from a stale base and silently ignore
+  // prior uncommitted edits, and any task touching a not-yet-committed file
+  // fails on apply with "does not exist in index" (see snapshotWorkingTree).
+  const baseSha = snapshotWorkingTree(cwd, head.stdout.trim());
 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';

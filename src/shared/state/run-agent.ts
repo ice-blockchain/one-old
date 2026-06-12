@@ -634,3 +634,120 @@ export function tryFallbackClaim(
   }
   return { blocked: false };
 }
+
+// ── Per-run live-agent registry (subagent reuse) ──────────────────────────────
+// .traffic-one/runs/<runId>/agents.json maps role → the LIVE agent id returned
+// by the host's spawn tool. The PostToolUse recorder writes it; the PreToolUse
+// reuse gate denies a SECOND same-role spawn and points the orchestrator at the
+// recorded id, so the role's later tasks continue ONE agent (SendMessage) and
+// the rules+skills context loads once per role instead of once per task.
+// Entries are parent-session-bound: an in-process agent dies with its parent
+// session, so an id recorded by ANOTHER session never blocks a spawn.
+
+export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
+
+// Continuation needs the host's send-to-agent tool. On Claude that is
+// SendMessage, which only registers when the agent-teams feature flag was set
+// at session start; respect explicit falsy values so users can switch it off.
+export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
+  return flag !== '' && flag !== '0' && flag !== 'false' && flag !== 'off';
+}
+
+function agentRegistryFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'agents.json');
+}
+
+export interface RunAgentEntry {
+  agentId: string;
+  role: string;
+  model: string | null;
+  agentType: string | null;
+  parentSessionId: string | null;
+  recordedAt: string;
+  tasks: number;
+  replaced: boolean;
+}
+
+export function readRunAgentRegistry(cwd: string, runId: string): Record<string, RunAgentEntry> {
+  const raw = obj(readJson(agentRegistryFile(cwd, runId), null));
+  const agents = raw ? obj(raw.agents) : null;
+  if (!agents) return {};
+  const out: Record<string, RunAgentEntry> = {};
+  for (const [role, value] of Object.entries(agents)) {
+    const entry = obj(value);
+    if (!entry || typeof entry.agentId !== 'string' || !entry.agentId) continue;
+    out[role] = {
+      agentId: entry.agentId,
+      role,
+      model: typeof entry.model === 'string' ? entry.model : null,
+      agentType: typeof entry.agentType === 'string' ? entry.agentType : null,
+      parentSessionId: typeof entry.parentSessionId === 'string' ? entry.parentSessionId : null,
+      recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : '',
+      tasks: typeof entry.tasks === 'number' && Number.isInteger(entry.tasks) && entry.tasks > 0 ? entry.tasks : 1,
+      replaced: entry.replaced === true,
+    };
+  }
+  return out;
+}
+
+export function recordRunAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  entry: { agentId: string; model?: string | null; agentType?: string | null; parentSessionId?: string | null },
+): void {
+  if (!VALID_AGENT_ROLES.has(role)) return;
+  if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
+  const agents = readRunAgentRegistry(cwd, runId) as Rec;
+  const prior = obj(agents[role]);
+  agents[role] = {
+    agentId: entry.agentId,
+    model: entry.model || null,
+    agentType: entry.agentType || null,
+    parentSessionId: entry.parentSessionId || null,
+    recordedAt: stateTimestamp(),
+    tasks: prior && prior.agentId === entry.agentId && typeof prior.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
+    replaced: false,
+  };
+  try {
+    fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents });
+  } catch {
+    // best-effort registry; reuse falls back to fresh spawns when unwritable
+  }
+}
+
+// The live (reusable) agent for a role, or null. parentSessionId binding: when
+// BOTH sides are known they must match — an agent spawned by a different parent
+// session no longer exists in-process. When either side is unknown (host did
+// not surface a session id), fall back to a freshness window instead of
+// blocking forever on a stale registry.
+export function liveRunAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  parentSessionId: string | null,
+): RunAgentEntry | null {
+  const entry = readRunAgentRegistry(cwd, runId)[role];
+  if (!entry || entry.replaced) return null;
+  if (entry.parentSessionId && parentSessionId) {
+    return entry.parentSessionId === parentSessionId ? entry : null;
+  }
+  return isFreshTimestamp(entry.recordedAt, SUBAGENT_STALE_MS) ? entry : null;
+}
+
+// Mark the role's current agent as replaced (exhausted/dead): the next spawn
+// for the role is allowed and the recorder overwrites the entry.
+export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
+  if (isPluginAuthoringRoot(cwd)) return;
+  const agents = readRunAgentRegistry(cwd, runId) as Rec;
+  const entry = obj(agents[role]);
+  if (!entry) return;
+  entry.replaced = true;
+  try {
+    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents });
+  } catch {
+    // best-effort
+  }
+}

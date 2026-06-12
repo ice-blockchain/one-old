@@ -197,3 +197,4 @@ Format spec: `rules/common/agent-handoff-digests.md`. **Cap at ~2 KB hard.** Rev
 - If the plan is missing or empty, your verdict is `CHANGES_REQUESTED — no plan; spawn senior-architect first`.
 - Cycles are capped at 2 by the orchestrator. After two `CHANGES_REQUESTED` rounds, the orchestrator escalates to the user with both diffs.
 - Bash is for `git diff`, `git log`, `cat`, `grep`, `rg`, and running read-only project commands (typecheck, lint with `--no-fix`, `npm audit`). Never run anything that mutates the working tree or remote.
+- You may receive FOLLOW-UP re-review requests in this same agent session after fix cycles. Re-verify ONLY the named findings against the new diff — do not re-audit surfaces you already approved — update your digest, and end with the same verdict tokens.
