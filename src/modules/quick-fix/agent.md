@@ -35,3 +35,7 @@ and stop.
 
 End with at most two sentences: what changed (file + one-line description) and how it was verified.
 No summaries of exploration, no recaps.
+
+You may receive FOLLOW-UP tasks in this same agent session — each later message is a NEW bounded
+trivial change under this same scope contract. Apply the named change, verify it the same way, report
+in two sentences. Prior tasks' files are NOT implicitly in scope for the new task.

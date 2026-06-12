@@ -90,40 +90,39 @@ function git(cwd: string, args: string[], timeout = 60_000, env?: NodeJS.Process
   return { status: typeof r.status === 'number' ? r.status : 1, stdout: r.stdout || '', stderr: (r.stderr || '').trim() };
 }
 
-// Snapshot the CURRENT working tree — including UNTRACKED files — into a
-// throwaway commit, without touching the user's index, HEAD, or stash list.
-// `git stash create` (the previous approach) snapshots only tracked
-// modifications, but a mid-build new project is almost entirely untracked
-// files: every delegation sandboxed from the bare initial commit, the worker
-// saw an empty repo, and the role pass returned "no changes" (or produced a
-// diff that could not apply back to reality). A temp GIT_INDEX_FILE + add -A +
-// write-tree + commit-tree captures everything (still .gitignore-filtered, so
-// node_modules/build output stay out). Returns null on any failure → caller
-// falls back to plain HEAD.
-export function snapshotWorkingTree(cwd: string, headSha: string): string | null {
-  const tmpIndex = path.join(os.tmpdir(), `t1-oc-index-${process.pid}-${Date.now().toString(36)}`);
-  const env = { GIT_INDEX_FILE: tmpIndex };
+// Snapshot the FULL working tree (tracked changes AND untracked files, minus
+// .gitignore'd paths) into a throwaway dangling commit, without touching the
+// user's index, stash list, or tree. `git stash create` is NOT enough here: it
+// snapshots only TRACKED changes, so mid-build (when most new source is not
+// yet committed) the sandbox worktree lacked those files entirely — OpenCode
+// re-created them from scratch, the patch came back as "new file", plain apply
+// collided with the real tree ("already exists in working directory") and the
+// --3way fallback died with "does not exist in index" (untracked files have no
+// index entry). Building the snapshot through a TEMPORARY index also puts the
+// pre-image blobs in the object DB, so --3way has real ancestors when it IS
+// needed. Falls back to plain HEAD on any failure (old behavior, still safe:
+// worst case is the pre-fix sandbox). Exported for the regression test.
+export function snapshotWorkingTree(cwd: string, headSha: string): string {
+  // Clean tree (no staged/unstaged/untracked) → HEAD already IS the snapshot.
+  const status = git(cwd, ['status', '--porcelain']);
+  if (status.status === 0 && !status.stdout.trim()) return headSha;
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-idx-'));
+  const env: NodeJS.ProcessEnv = {
+    GIT_INDEX_FILE: path.join(tmpDir, 'index'),
+    // commit-tree needs an ident; don't depend on user.name/email being set.
+    GIT_AUTHOR_NAME: 'traffic-one', GIT_AUTHOR_EMAIL: 'traffic-one@localhost',
+    GIT_COMMITTER_NAME: 'traffic-one', GIT_COMMITTER_EMAIL: 'traffic-one@localhost',
+  };
   try {
-    // Seed from HEAD so deletions are captured, then layer the working tree.
-    if (git(cwd, ['read-tree', headSha], 60_000, env).status !== 0) return null;
-    if (git(cwd, ['add', '-A'], 120_000, env).status !== 0) return null;
+    if (git(cwd, ['read-tree', headSha], 60_000, env).status !== 0) return headSha;
+    if (git(cwd, ['add', '-A'], 120_000, env).status !== 0) return headSha;
     const tree = git(cwd, ['write-tree'], 60_000, env);
-    const treeSha = tree.stdout.trim();
-    if (tree.status !== 0 || !treeSha) return null;
-    // Tree identical to HEAD → clean checkout; sandbox plain HEAD (no extra commit).
-    const headTree = git(cwd, ['rev-parse', `${headSha}^{tree}`]);
-    if (headTree.status === 0 && headTree.stdout.trim() === treeSha) return headSha;
-    const commit = git(cwd, [
-      '-c', 'user.name=Traffic One',
-      '-c', 'user.email=noreply@traffic.io',
-      'commit-tree', treeSha, '-p', headSha, '-m', 'traffic-one delegation snapshot',
-    ]);
-    const sha = commit.stdout.trim();
-    return commit.status === 0 && sha ? sha : null;
-  } catch {
-    return null;
+    if (tree.status !== 0 || !tree.stdout.trim()) return headSha;
+    const commit = git(cwd, ['commit-tree', tree.stdout.trim(), '-p', headSha, '-m', 'traffic-one opencode delegation snapshot'], 60_000, env);
+    if (commit.status !== 0 || !commit.stdout.trim()) return headSha;
+    return commit.stdout.trim();
   } finally {
-    try { fs.rmSync(tmpIndex, { force: true }); } catch { /* best-effort */ }
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 }
 
@@ -509,12 +508,12 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
     }
   }
-  // Sandbox from the CURRENT WORKING TREE, not just committed HEAD — including
-  // untracked files (see snapshotWorkingTree: a mid-build scaffold is almost
-  // entirely untracked, and the previous `git stash create` approach made every
-  // build-phase delegation run against an effectively empty repo). Falls back to
-  // HEAD only if the snapshot itself fails.
-  const baseSha = snapshotWorkingTree(cwd, head.stdout.trim()) || head.stdout.trim();
+  // Sandbox from the CURRENT WORKING TREE — uncommitted tracked changes AND
+  // untracked files — not just committed HEAD. Without this, sequential
+  // delegations each branch the worktree from a stale base and silently ignore
+  // prior uncommitted edits, and any task touching a not-yet-committed file
+  // fails on apply with "does not exist in index" (see snapshotWorkingTree).
+  const baseSha = snapshotWorkingTree(cwd, head.stdout.trim());
 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';

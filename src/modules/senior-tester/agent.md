@@ -126,3 +126,4 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (TESTS_GREEN 
 - Real-time / WebSocket flows use the in-memory WS fake described in `rules/frontend/realtime.md`.
 - Snapshot tests are allowed only for stable visual primitives in Storybook; never for whole pages.
 - End with the literal `TESTS_GREEN` or `TESTS_FAILING` line so the orchestrator can detect verdict.
+- You may receive FOLLOW-UP tasks in this same agent session (re-test after fixes, extending the suite). Treat each new message as a fresh task under this same role contract — re-run what the message names instead of the full re-exploration, update your digest, end with the same verdict line.

@@ -80,6 +80,12 @@ export const POST_TOOL_USE: HookGroup[] = [
     ],
   },
   {
+    // Record the spawned agent id per role (agents.json) so the reuse gate can
+    // route the role's next task to the SAME agent instead of a fresh spawn.
+    matcher: 'Task|Agent|spawn_agent',
+    entries: [{ subcommand: 'post-agent-spawned' }],
+  },
+  {
     matcher: '.*',
     entries: [{ subcommand: 'post-stack-setup', statusMessage: 'Ensuring project materialization...' }],
   },

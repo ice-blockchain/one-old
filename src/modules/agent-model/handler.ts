@@ -17,7 +17,17 @@ import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '..
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { markOpenCodeGateDenied, openCodeGateDenied, openCodeRoleAttempted, shouldRunRoleOnOpenCode } from '../../shared/opencode-roles';
-import { ensureCurrentRunId, ensureRunAgentClaim, isTeamApproved, readEffectiveState } from '../../shared/state';
+import {
+  ensureCurrentRunId,
+  ensureRunAgentClaim,
+  hookSessionIdentity,
+  isTeamApproved,
+  liveRunAgent,
+  markRunAgentReplaced,
+  readEffectiveState,
+  REPLACE_AGENT_MARKER,
+  subagentContinuationAvailable,
+} from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -62,6 +72,33 @@ export function agentModelGate(ctx: Ctx): HookResult {
     if (runId && !openCodeRoleAttempted(cwd, runId, role) && !openCodeGateDenied(cwd, runId, role)) {
       markOpenCodeGateDenied(cwd, runId, role);
       return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
+    }
+  }
+
+  // Subagent reuse (hosts with agent continuation): when this run already holds
+  // a LIVE agent for the role, a fresh same-role spawn re-loads the entire
+  // rules+skills context and re-explores the codebase — measured at 7 frontend
+  // spawns in one build where 1 should have served. Deny the duplicate spawn and
+  // point the orchestrator at the recorded agent id to continue via SendMessage.
+  // Escape hatch: a spawn prompt carrying REPLACE_AGENT_MARKER retires the
+  // recorded agent (context exhausted / SendMessage errored) and passes through,
+  // so the recorder can capture the replacement. Entries from another parent
+  // session never match (liveRunAgent) — in-process agents die with their
+  // session, so a resumed orchestrator spawns fresh without friction.
+  if (subagentContinuationAvailable()) {
+    const runId = typeof state.currentRunId === 'string' && state.currentRunId.trim() ? state.currentRunId.trim() : null;
+    if (runId) {
+      const promptText = [toolInput.prompt, toolInput.message, toolInput.task, toolInput.description]
+        .filter((v): v is string => typeof v === 'string')
+        .join('\n');
+      if (promptText.includes(REPLACE_AGENT_MARKER)) {
+        markRunAgentReplaced(cwd, runId, role);
+      } else {
+        const live = liveRunAgent(cwd, runId, role, hookSessionIdentity(raw).sessionId);
+        if (live) {
+          return deny(block('agent-reuse-continue', { ROLE: role, RUN_ID: runId, AGENT_ID: live.agentId, MARKER: REPLACE_AGENT_MARKER }));
+        }
+      }
     }
   }
 

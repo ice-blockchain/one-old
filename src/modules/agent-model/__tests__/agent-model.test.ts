@@ -5,11 +5,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { agentModelGate } from '../handler';
+import { extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { readEffectiveState, resolveRunAgentContext } from '../../../shared/state';
+import { readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', () => {
@@ -402,5 +403,143 @@ test('codex end-to-end: SubagentStart infers role from the child rollout, claims
     // The orchestrator (its own transcript, no claim) resolves no role → main-agent writes stay blocked.
     const mainTranscript = path.join(cwd, 'rollout-2026-05-29T14-00-00-019e7389-8edd-7e50-b566-2e9a0d52b9d9.jsonl');
     assert.equal(resolveRunAgentContext(cwd, state, { session_id: 'orchestrator-parent', transcript_path: mainTranscript }, { claimPending: false }), null);
+  });
+});
+
+// ── Subagent reuse: recorder + duplicate-spawn deny ──────────────────────────
+
+function withTeamsEnv(fn: () => void): void {
+  const prev = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+  process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = '1';
+  try {
+    fn();
+  } finally {
+    if (prev === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prev;
+  }
+}
+
+function setCurrentRunId(cwd: string, runId: string): void {
+  const file = path.join(cwd, '.traffic-one', '.one.json');
+  const state = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+  state.currentRunId = runId;
+  fs.writeFileSync(file, JSON.stringify(state), 'utf8');
+}
+
+function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string): Ctx {
+  const input: HookInput = {
+    event: 'PreToolUse', host: 'claude', cwd,
+    raw: { tool_name: 'Task', tool_input: toolInput, session_id: sessionId },
+    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+  };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function postSpawnCtx(cwd: string, toolInput: Record<string, unknown>, toolResponse: unknown, sessionId: string): Ctx {
+  const input: HookInput = {
+    event: 'PostToolUse', host: 'claude', cwd,
+    raw: { tool_name: 'Task', tool_input: toolInput, tool_response: toolResponse, session_id: sessionId },
+    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+  };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+test('extractSpawnedAgentId reads the Agent result footer in string and structured payloads', () => {
+  assert.equal(
+    extractSpawnedAgentId("READY\nagentId: add5367d74354d9b3 (use SendMessage with to: 'add5367d74354d9b3' to continue this agent)"),
+    'add5367d74354d9b3',
+  );
+  assert.equal(
+    extractSpawnedAgentId({ content: [{ type: 'text', text: 'done. agentId: a99c9f8a723f92f77 (use SendMessage…)' }] }),
+    'a99c9f8a723f92f77',
+  );
+  // Structured spelling: a payload carrying the id as a JSON field is scanned
+  // as serialized JSON ("agentId":"…") and must match too.
+  assert.equal(extractSpawnedAgentId({ agentId: 'deadbeef12345678', content: [] }), 'deadbeef12345678');
+  // No labelled id → null (a bare sha in the reply must NOT be captured).
+  assert.equal(extractSpawnedAgentId('committed 4e66b2882da9afb9747468b08a253ca2f09c85f3'), null);
+  assert.equal(extractSpawnedAgentId(undefined), null);
+});
+
+test('reuse: recorder persists the agent id, duplicate same-role spawn is denied with SendMessage prose', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-1');
+      // First spawn returns an agentId → PostToolUse records it.
+      const rec = recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'build the UI' },
+        "READY agentId: abc123def456789 (use SendMessage with to: 'abc123def456789' to continue this agent)",
+        'parent-1',
+      ));
+      assert.equal(rec.kind, 'noop');
+      const registry = readRunAgentRegistry(cwd, 'run-reuse-1');
+      assert.equal(registry['senior-frontend']?.agentId, 'abc123def456789');
+
+      // Second senior-frontend spawn from the SAME parent session → deny, naming the id.
+      const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'opus', prompt: 'part 2: admin area' }, 'parent-1'));
+      assert.equal(dup.kind, 'deny');
+      if (dup.kind === 'deny') {
+        assert.ok(dup.reason.includes('abc123def456789'), 'deny prose names the live agent id');
+        assert.ok(dup.reason.includes('SendMessage'), 'deny prose teaches the continuation tool');
+        assert.ok(dup.reason.includes('[t1-replace-agent]'), 'deny prose teaches the escape hatch');
+      }
+
+      // A DIFFERENT role is unaffected (backend spawns fresh).
+      const other = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-backend', model: 'opus', prompt: 'build the API' }, 'parent-1'));
+      assert.equal(other.kind, 'noop');
+
+      // A different PARENT session never blocks: in-process agents died with their session.
+      const otherSession = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'opus', prompt: 'resume after restart' }, 'parent-2'));
+      assert.equal(otherSession.kind, 'noop');
+    });
+  });
+});
+
+test('reuse: the replace marker retires the recorded agent and lets ONE replacement spawn through', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-2');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-tester', model: 'haiku', prompt: 'write tests' },
+        'agentId: tester11aa22bb33',
+        'parent-1',
+      ));
+      // Marker spawn passes the reuse gate (and marks the old entry replaced)…
+      const replaced = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-tester', model: 'haiku', prompt: 'context exhausted, fresh start [t1-replace-agent] — rerun the suite' },
+        'parent-1',
+      ));
+      assert.equal(replaced.kind, 'noop');
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-2')['senior-tester']?.replaced, true);
+      // …and a later duplicate (no marker, nothing re-recorded yet) is NOT blocked by the retired entry.
+      const after = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-tester', model: 'haiku', prompt: 'rerun' }, 'parent-1'));
+      assert.equal(after.kind, 'noop');
+    });
+  });
+});
+
+test('reuse: without the teams env flag the gate and recorder are inert (non-teams hosts unchanged)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prev = process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+    try {
+      setCurrentRunId(cwd, 'run-reuse-3');
+      const rec = recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'build' },
+        'agentId: noflag111222333',
+        'parent-1',
+      ));
+      assert.equal(rec.kind, 'noop');
+      assert.equal(Object.keys(readRunAgentRegistry(cwd, 'run-reuse-3')).length, 0, 'no registry write without the flag');
+      const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'opus', prompt: 'again' }, 'parent-1'));
+      assert.equal(dup.kind, 'noop');
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS;
+      else process.env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS = prev;
+    }
   });
 });

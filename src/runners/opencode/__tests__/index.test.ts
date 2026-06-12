@@ -320,6 +320,56 @@ test('delegate sandboxes from the live WORKING TREE, not stale HEAD — an uncom
   });
 });
 
+test('delegate sandboxes UNTRACKED files — editing a never-committed file applies back (no "does not exist in index")', () => {
+  // Regression: mid-build, most new source exists ONLY in the working tree
+  // (never committed or staged). `git stash create` omits untracked files, so
+  // the sandbox lacked them; OpenCode re-created the file from scratch, the
+  // patch came back as "new file", and apply failed — plain apply with
+  // "already exists in working directory", --3way with "does not exist in
+  // index". Whole delegations fell back to paid subagents because of this.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('append');
+    // foo.txt exists ONLY in the working tree: never committed, never staged.
+    fs.writeFileSync(path.join(dir, 'foo.txt'), 'UNTRACKED\n');
+    const r = delegate(dir, { role: 'quick-fix', task: 'edit foo', runId: 'untracked-1' });
+    assert.equal(r.action, 'delegated', `sandbox must include untracked files (got ${r.action}: ${r.error})`);
+    // The stub saw the real untracked content and appended to it; the patch
+    // applied back onto the same untracked file in the real tree.
+    assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8').trim(), 'UNTRACKED-EDITED');
+    // The snapshot must not touch the user's git state: still untracked, no
+    // stash entries, nothing staged.
+    const status = spawnSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' }).stdout;
+    assert.match(status, /^\?\? foo\.txt$/m, 'foo.txt stays untracked after delegation');
+    assert.equal(spawnSync('git', ['-C', dir, 'stash', 'list'], { encoding: 'utf8' }).stdout.trim(), '');
+  });
+});
+
+test('delegate sandboxes UNTRACKED files in gitignore-respecting fashion — ignored files stay out of the sandbox snapshot', () => {
+  // node_modules-class safety: the untracked snapshot must respect .gitignore,
+  // or every delegation would copy build output into the sandbox worktree.
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'ignored-dir/\n');
+    fs.mkdirSync(path.join(dir, 'ignored-dir'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'ignored-dir', 'blob.txt'), 'never snapshot me\n');
+    fs.writeFileSync(path.join(dir, 'foo.txt'), 'UNTRACKED\n');
+    stubOpencode('append');
+    const r = delegate(dir, { role: 'quick-fix', task: 'edit foo', runId: 'untracked-2' });
+    assert.equal(r.action, 'delegated', `expected delegated, got ${r.action}: ${r.error}`);
+    assert.equal(fs.readFileSync(path.join(dir, 'foo.txt'), 'utf8').trim(), 'UNTRACKED-EDITED');
+    // The ignored file was not committed into the snapshot. The snapshot is a
+    // DANGLING commit (unreachable from any ref), so find it via fsck and
+    // assert its tree omits ignored-dir. Require at least one dangling commit
+    // so the loop can't pass vacuously.
+    const fsck = spawnSync('git', ['-C', dir, 'fsck', '--dangling'], { encoding: 'utf8' }).stdout;
+    const dangling = [...fsck.matchAll(/dangling commit ([0-9a-f]+)/g)].map((m) => m[1] as string);
+    assert.ok(dangling.length >= 1, 'the working-tree snapshot exists as a dangling commit');
+    for (const sha of dangling) {
+      const names = spawnSync('git', ['-C', dir, 'ls-tree', '-r', '--name-only', sha], { encoding: 'utf8' }).stdout;
+      assert.doesNotMatch(names, /ignored-dir/, 'gitignored paths never enter a snapshot tree');
+    }
+  });
+});
+
 test('delegate self-heals a missing HEAD on a fresh scaffold (git repo, no commits) → delegates instead of skipping', () => {
   // The new-project case: OpenCode runs DURING the build, before the build-completion
   // commit lands, so the repo has no HEAD to sandbox. Old behavior: skip with "No git

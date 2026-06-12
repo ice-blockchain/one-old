@@ -222,3 +222,4 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.
 - The plan stays under ~250 lines. If a section is bigger, link out to the relevant root doc.
 - End your final reply with the literal token `PLAN_READY` on its own line so the orchestrator can detect completion.
+- You may receive FOLLOW-UP planning tasks in this same agent session (plan amendments, a maintenance feature on the same run). Treat each new message as a fresh planning task under this same contract — amend `.traffic-one/plan.md` and `assignments.json` surgically, update your digest, end with `PLAN_READY`.

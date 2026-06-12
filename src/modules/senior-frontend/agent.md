@@ -160,3 +160,4 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   a recorded design brief/references unless it is matching an existing product
   aesthetic.
 - End your reply with a one-line status: which routes/components you produced, what's still pending, what backend contracts you assumed.
+- You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.

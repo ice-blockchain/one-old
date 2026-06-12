@@ -154,3 +154,4 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - Validate at the boundary. Parameterised queries. Auth check on every protected route. No secrets in logs.
 - For Supabase: lazy client + null-safe RTK Query baseQuery already exist in the frontend; your job is to make sure the schema is actually applied so the queries return real data.
 - End your reply with a one-line status: which endpoints/migrations you produced, the auth strategy, and what frontend contracts you fulfilled.
+- You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.
