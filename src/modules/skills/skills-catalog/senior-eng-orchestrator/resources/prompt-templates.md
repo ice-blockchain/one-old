@@ -1,5 +1,11 @@
 # Synthetic-prompt templates for senior-eng-orchestrator
 
+> **Marker contract:** every spawn/continuation prompt built from these
+> templates MUST begin with `[t1-role: senior-<role>]` as its own first line
+> (e.g. `[t1-role: senior-frontend]`). Traffic One's gates and the agent
+> registry parse this marker; do not omit or paraphrase it.
+
+
 These are the canonical templates the orchestrator uses when spawning each
 subagent via `Task`. Substituting placeholders (`<run-id>`, `<user-request>`,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's

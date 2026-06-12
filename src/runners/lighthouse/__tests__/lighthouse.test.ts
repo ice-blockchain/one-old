@@ -129,3 +129,43 @@ test('parseSummary computes score, threshold failures, and top opportunities', (
   assert.equal(summary.topOpportunities[0]?.title, 'Reduce unused JS'); // sorted by savings desc
   assert.equal(summary.topOpportunities[0]?.savingsMs, 800);
 });
+
+// Tolerance band + free category extraction (items measured live in the 1g run:
+// three fix cycles chased a stable 5–6ms FCP residue; a11y data was discarded).
+test('parseSummary: a metric within the tolerance band warns instead of failing', () => {
+  const report = {
+    categories: { performance: { score: 0.98 }, accessibility: { score: 0.95 } },
+    audits: {
+      'first-contentful-paint': { id: 'first-contentful-paint', numericValue: 1530, displayValue: '1.5 s' },
+      'largest-contentful-paint': { id: 'largest-contentful-paint', numericValue: 2000, displayValue: '2.0 s' },
+      'total-blocking-time': { id: 'total-blocking-time', numericValue: 0, displayValue: '0 ms' },
+      'cumulative-layout-shift': { id: 'cumulative-layout-shift', numericValue: 0, displayValue: '0' },
+    },
+  } as never;
+  const s = parseSummary(report, { performanceMin: 90, fcpMax: 1500, lcpMax: 2500, tbtMax: 200, clsMax: 0.1 });
+  assert.equal(s.failures.length, 0, 'FCP 1530 vs 1500 is inside the 3% band');
+  assert.equal(s.withinTolerance.length, 1);
+  assert.match(s.withinTolerance[0] as string, /FCP 1530ms > 1500ms/);
+  assert.equal(s.metrics.accessibility, 95);
+});
+
+test('parseSummary: beyond the tolerance band still fails; low a11y warns with worst audits', () => {
+  const report = {
+    categories: { performance: { score: 0.98 }, accessibility: { score: 0.72 }, 'best-practices': { score: 1 }, seo: { score: 0.9 } },
+    audits: {
+      'first-contentful-paint': { id: 'first-contentful-paint', numericValue: 1800, displayValue: '1.8 s' },
+      'largest-contentful-paint': { id: 'largest-contentful-paint', numericValue: 2000, displayValue: '2.0 s' },
+      'total-blocking-time': { id: 'total-blocking-time', numericValue: 0, displayValue: '0 ms' },
+      'cumulative-layout-shift': { id: 'cumulative-layout-shift', numericValue: 0, displayValue: '0' },
+      'color-contrast': { id: 'color-contrast', score: 0, title: 'Background and foreground colors do not have a sufficient contrast ratio.' },
+    },
+  } as never;
+  const s = parseSummary(report, { performanceMin: 90, fcpMax: 1500, lcpMax: 2500, tbtMax: 200, clsMax: 0.1 });
+  assert.equal(s.failures.length, 1);
+  assert.match(s.failures[0] as string, /FCP 1800ms > 1500ms/);
+  assert.equal(s.warnings.length, 1);
+  assert.match(s.warnings[0] as string, /Accessibility 72 < 90/);
+  assert.match(s.warnings[0] as string, /contrast/i);
+  assert.equal(s.metrics.bestPractices, 100);
+  assert.equal(s.metrics.seo, 90);
+});

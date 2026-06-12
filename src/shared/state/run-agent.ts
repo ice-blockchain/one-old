@@ -110,6 +110,9 @@ export function transcriptThreadId(transcriptPath: unknown): string | null {
 // unreadable or the assignment isn't present yet (SubagentStart can fire before
 // the rollout is flushed; the child's first write re-attempts when it is).
 const SPAWN_ROLE_RES = [
+  // Structured marker first — the contract every template-driven prompt carries
+  // (`[t1-role: senior-x]`); phrasing heuristics below are the fallback.
+  /\[t1-role:\s*(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\s*\]/i,
   /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
   /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
 ] as const;

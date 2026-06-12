@@ -337,8 +337,20 @@ the dev server and check the key routes at desktop AND a mobile width
   the bundled `control-in-app-browser` skill (~8k tokens; the recipe is
   complete).
 - **Cursor**: the built-in Simple Browser, or the browser automation MCP.
-A one-element CSS finding here goes back through the fix-cycle
-continuation, not a fresh spawn. Leave the dev server running for the user.
+**The mechanical half of this pass belongs to `senior-tester`, not to you.**
+The tester role owns the visual regression sweep (key routes render, console
+errors, horizontal overflow at desktop + ~390px, screenshots saved under
+`.traffic-one/reports/qa/<runId>/`) — it runs on the cheapest tier, it is a
+delegateRole (the scripted sweep can ride OpenCode for free), and as a live
+agent it re-runs the sweep after fix cycles via one continuation message. If
+its Phase-3 pass ran before the final fixes, send the live tester a "re-run the
+visual sweep" continuation now instead of doing the sweep yourself. Reserve
+YOUR (parent) context for the judgment half only: read the tester's QA report
+and view the 2–3 screenshots that need actual visual assessment — never stream
+every screenshot into the orchestrator context. A one-element CSS finding goes
+back through the fix-cycle continuation, not a fresh spawn. Your own in-app
+browser spot-check (per host above) is optional polish on top, not the
+mechanism of record. Leave the dev server running for the user.
 
 ### Phase 4 — Ship (only on explicit intent)
 

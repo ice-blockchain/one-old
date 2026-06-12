@@ -128,7 +128,12 @@ do not skip. The spine carries the step index — this file is the detail.
      state text use catalog keys; rich copy with links uses `<Trans>`.
    - Wire Redux store with `api-client` RTK Query and one starter feature slice.
    - Set up Storybook for `packages/ui` (Vite builder).
-   - Set up Playwright with one smoke spec hitting `/`.
+   - Set up Playwright with one smoke spec hitting `/`, and wire the root `e2e`
+     script to actually invoke that suite — never a placeholder wrapper.
+   - No hollow test scripts: a trivial package either gets one real minimal
+     test or NO `test` script at all. A root `pnpm test` that is green because
+     half the packages echo "no tests yet" is a false signal the tester and
+     reviewer will flag.
 
 7. **Mandatory SEO baseline**
    - Invoke the `seo` skill before calling a generated website/app complete.

@@ -7,6 +7,7 @@ skills:
   - e2e-testing
   - ai-regression-testing
   - verification-loop
+  - browser-qa
   - i18n-text
   - cpp-testing
   - csharp-testing
@@ -76,6 +77,7 @@ You write to:
 - `tests/**`, `**/__tests__/**`, `cypress/**`, `playwright/**`, `e2e/**`, `.maestro/**`.
 - New test fixtures under `tests/fixtures/`, `__fixtures__/`, or framework-conventional fixtures dirs.
 - MSW handlers under `mocks/**`, `__mocks__/**`.
+- QA artifacts under `.traffic-one/reports/qa/**` (screenshots + sweep reports).
 
 You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/` (other than test-adjacent files), `services/*/src/`, `apps/*/server/`, or schema files. If a test reveals a bug, surface it to the orchestrator with a `TESTS_FAILING` verdict — do not patch the bug yourself.
 
@@ -91,9 +93,36 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    translated accessible names and labels through the rendered UI. For touched
    EnvBanner/SupabaseConfigAlert/ConfigurePromptCard or missing-config setup
    surfaces, assert the setup link href is exactly `https://traffic.io/`.
-5. Coverage target: 80%+ on changed files (per `tdd-workflow`).
+5. Coverage: RUN the stack's coverage mode on the changed files (e.g.
+   `vitest run --coverage` / `jest --coverage`) and REPORT the changed-files
+   number in your digest. Below 80% is a numbered finding in your verdict (with
+   the uncovered files), not a silent omission — never claim the target without
+   the measurement; if coverage tooling is unavailable, say so explicitly.
 6. Run the active-stack test command. Capture the output.
-7. End with `TESTS_GREEN` if every test passed, or `TESTS_FAILING — <one-line summary>` followed by a numbered list of failures.
+7. **Visual regression sweep** (projects with a UI): start the app/preview
+   yourself (tear it down when done), then run the OBJECTIVE browser checks via
+   local Playwright per the `browser-qa` skill — key routes render, zero
+   console errors (filtered for dev noise), no horizontal overflow at THREE
+   widths: ~390px (mobile), 768px (tablet — where grids usually break), and
+   1440px (desktop). Check BOTH the document
+   (`document.documentElement.scrollWidth > window.innerWidth`) AND individual
+   elements (any element whose `getBoundingClientRect().right` exceeds the
+   viewport width — document-level checks miss clipped/overlapping content),
+   plus primary actions reachable. Where the app exposes dark mode or honors
+   `prefers-reduced-motion`, capture one screenshot in each mode. Save
+   screenshots under `.traffic-one/reports/qa/<runId>/` and summarize PASS/FAIL
+   per route×width in your digest with the screenshot paths. You report facts — SUBJECTIVE design
+   judgment (hierarchy, polish, intent) is the reviewer's/orchestrator's call
+   on your screenshots, not yours; never stream screenshots into chat, only
+   paths. The scripted sweep is a bounded unit — when OpenCode delegation is
+   enabled, it may run there (free) and you verify its report.
+8. Placeholder hygiene: a package whose `test` script is a no-op ("no tests
+   yet", `exit 0`) inflates a green root run. Either write one real minimal
+   test for it (within your scope) or list the package as a numbered finding —
+   a `TESTS_GREEN` that includes no-op packages must say so.
+9. End with `TESTS_GREEN` if every test passed AND the visual sweep found no
+   objective failures, or `TESTS_FAILING — <one-line summary>` followed by a
+   numbered list of failures (visual findings included, with screenshot paths).
 
 ## Your verdict format
 

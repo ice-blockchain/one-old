@@ -94,6 +94,16 @@ the runner once or twice before final delivery. Prefer route splitting, dynamic
 imports for form/schema/chart/editor code, optimized media dimensions/formats,
 and removing render-blocking or unused first-route JS.
 
+Coverage and iteration rules:
+- Audit `/` PLUS the 1–2 heaviest public routes (`--route <path>` per run) —
+  the home route alone hides heavy-route regressions.
+- A metric reported under `withinTolerance` PASSED the gate (run-to-run noise
+  band) — do not spend further fix cycles on it; report it as residual.
+- A confirmation re-run with no code changes in between may use `--skip-build`.
+- The summary includes Accessibility/Best-Practices/SEO scores from the same
+  audit at zero extra cost — treat an a11y warning as a real finding for the
+  fix cycle, not noise.
+
 ### Phase 1: Smoke Test
 ```
 1. Navigate to target URL

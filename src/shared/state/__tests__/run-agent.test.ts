@@ -202,3 +202,11 @@ test('pending-claim matching is role-aware and keys the claim by thread id', () 
     assert.equal(ctx!.sessionId, FRONTEND_THREAD);
   });
 });
+
+test('inferRoleFromTranscript honors the [t1-role:] marker contract', () => {
+  withPrefs((dir) => {
+    const file = writeChildTranscript(dir, FRONTEND_THREAD,
+      '[t1-role: senior-reviewer]\nRead-only review for run R. senior-frontend and senior-backend own the implementation.');
+    assert.equal(inferRoleFromTranscript(file), 'senior-reviewer');
+  });
+});
