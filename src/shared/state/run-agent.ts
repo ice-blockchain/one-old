@@ -669,12 +669,17 @@ export function tryFallbackClaim(
 
 export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 
-// Continuation needs the host's send-to-agent tool. On Claude that is
+// Continuation needs the host's send-to-agent tool. On Codex that is
+// send_input — native to the multi_agent toolset, always present, no flag (so
+// the one-live-agent registry/dedup must be ON there by default; keying only on
+// the Claude flag silently disabled the whole regime on Codex). On Claude it is
 // SendMessage, which only registers when the agent-teams feature flag was set
-// at session start; respect explicit falsy values so users can switch it off.
+// at session start. An explicit falsy flag still switches it off everywhere.
 export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
-  return flag !== '' && flag !== '0' && flag !== 'false' && flag !== 'off';
+  if (flag === '0' || flag === 'false' || flag === 'off') return false;
+  if (env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  return flag !== '';
 }
 
 function agentRegistryFile(cwd: string, runId: string): string {

@@ -24,7 +24,10 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 // matching the structured-JSON spelling (`"agentId":"<id>"`) since the payload
 // is scanned as serialized JSON. Anchored on the labelled form only — a bare
 // hex scan would false-positive on shas in the agent's reply.
-const AGENT_ID_RE = /agentId['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/;
+// `agent_?id` covers Codex's snake_case spawn result (`{"agent_id":"…"}`) —
+// camelCase-only matching left the registry empty on Codex, disabling the
+// duplicate-spawn gate exactly where send_input continuation is native.
+const AGENT_ID_RE = /agent_?id['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/i;
 
 export function extractSpawnedAgentId(response: unknown): string | null {
   // Claude's PostToolUse payload carries the id as a STRUCTURED field:
@@ -34,6 +37,10 @@ export function extractSpawnedAgentId(response: unknown): string | null {
   const direct = obj(response);
   if (direct && typeof direct.agentId === 'string' && direct.agentId.trim()) {
     return direct.agentId.trim();
+  }
+  // Codex spawn_agent returns snake_case: { agent_id, nickname }.
+  if (direct && typeof direct.agent_id === 'string' && direct.agent_id.trim()) {
+    return direct.agent_id.trim();
   }
   let text = '';
   if (typeof response === 'string') {

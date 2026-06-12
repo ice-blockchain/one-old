@@ -543,3 +543,21 @@ test('reuse: without the teams env flag the gate and recorder are inert (non-tea
     }
   });
 });
+
+// Codex shapes: spawn_agent returns snake_case `agent_id`, and continuation
+// (send_input) is native — no Claude feature flag involved. Both were misses
+// that left the registry empty / the regime disabled on Codex.
+test('extractSpawnedAgentId reads Codex snake_case agent_id (structured and serialized)', () => {
+  const { extractSpawnedAgentId } = require('../record-agent') as typeof import('../record-agent');
+  assert.equal(extractSpawnedAgentId({ agent_id: '019ebb7f-0691-7281-b686-27e7fe6b393f', nickname: 'Volta' }), '019ebb7f-0691-7281-b686-27e7fe6b393f');
+  assert.equal(extractSpawnedAgentId('{"agent_id":"019ebb7f-0842-7a93-8a9f-674d63b8c556","nickname":"Arendt"}'), '019ebb7f-0842-7a93-8a9f-674d63b8c556');
+});
+
+test('subagentContinuationAvailable is true on Codex without the Claude flag, and the flag still force-disables', async () => {
+  const { subagentContinuationAvailable } = await import('../../../shared/state/run-agent');
+  assert.equal(subagentContinuationAvailable({ CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'codex-desktop' } as NodeJS.ProcessEnv), true);
+  assert.equal(subagentContinuationAvailable({ CODEX_PLUGIN_ROOT: '/x' } as NodeJS.ProcessEnv), true);
+  assert.equal(subagentContinuationAvailable({ CODEX_PLUGIN_ROOT: '/x', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0' } as NodeJS.ProcessEnv), false);
+  assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv), false);
+  assert.equal(subagentContinuationAvailable({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } as NodeJS.ProcessEnv), true);
+});
