@@ -79,7 +79,10 @@ Use AI design work as a loop, not a vague "make it prettier" pass:
    preserve product logic and data flow.
 4. **Verify**: capture screenshots at representative breakpoints or Storybook
    states, then check hierarchy, spacing, text fit, overflow, focus, contrast,
-   loading/empty/error states, and reduced motion.
+   loading/empty/error states, and reduced motion. On Codex, drive the in-app
+   browser with the recipe in the `browser-qa` skill
+   (`.traffic-one/skills/browser-qa/SKILL.md`) — never tool-search for or read
+   the bundled `control-in-app-browser` skill.
 5. **Refine**: fix the top remaining visual regressions before delivery.
 
 Never treat "modern" or "clean" as an instruction to add decoration. It means

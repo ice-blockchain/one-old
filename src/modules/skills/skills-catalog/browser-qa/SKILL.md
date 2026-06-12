@@ -46,7 +46,10 @@ bundled `control-in-app-browser` SKILL.md wastes ~8k tokens:
     await qaTab.goto("http://127.0.0.1:5173/");
     nodeRepl.write("qa tab open");
 
-Then per check (each its own `js` call): `await qaTab.goto(url)` to navigate;
+Then per check (each its own `js` call): `await qaTab.goto(url)` to navigate
+(`networkidle` is NOT supported by this browser API — use
+`await qaTab.playwright.waitForLoadState({ state: "domcontentloaded" })`, then a
+short fixed wait before reading the DOM so SPA hydration finishes);
 `await qaTab.screenshot()` for visual evidence; resize for responsive passes via
 `await (await browser.capabilities.get("viewport")).set({ width: 390, height: 844 })`
 (mobile) and back to `{ width: 1280, height: 800 }` (desktop); read the DOM with

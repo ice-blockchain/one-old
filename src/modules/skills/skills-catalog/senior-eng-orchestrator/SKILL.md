@@ -322,6 +322,19 @@ Send the failing-test list to the relevant implementer (continuation-first, as a
 
 After 2 cycles, escalate to the user.
 
+### Phase 3c — Parent integration pass (visual builds)
+
+After reviewer `APPROVED` and tests are green, run the root verification
+commands yourself (install/lint/typecheck/test/build), then — for any build
+with a UI — verify the RUNNING app visually before declaring completion: start
+the dev server and check the key routes at desktop AND a mobile width
+(overflow, console errors, primary actions reachable). **On Codex, use the
+in-app-browser recipe in the `browser-qa` skill
+(`.traffic-one/skills/browser-qa/SKILL.md`) — do NOT tool-search for or read
+the bundled `control-in-app-browser` skill (~8k tokens; the recipe is
+complete).** A one-element CSS finding here goes back through the fix-cycle
+continuation, not a fresh spawn. Leave the dev server running for the user.
+
 ### Phase 4 — Ship (only on explicit intent)
 
 Spawn `senior-shipper` ONLY if the user prompt matches `/\b(ship|deploy|release|publish|to prod|to production|to staging|app store|play store)\b/i`.
@@ -361,6 +374,14 @@ This catches the most common regression: a subagent emits its verdict (e.g.
 `TESTS_GREEN`) but forgets to write `tester.md`, so the next run's reviewer /
 shipper can't read the predecessor digest and falls back to re-reading the
 diff.
+
+**Delegated digests:** a digest produced by an OpenCode delegation carries
+`verdict: DELEGATED_OK` with a `normalize_to:` hint — the runner applied a diff
+but verified nothing, so it never claims the canonical token. After YOUR root
+verification passes (typecheck/test/build green), normalize the verdict line to
+the hinted token yourself with a one-line edit to the digest file (digests are
+run bookkeeping under `.traffic-one/`, not feature source — the write gate
+allows it). Do NOT spawn an agent just to rewrite a verdict line.
 
 **Then stamp the maintenance phase.** A completed orchestrator run means the
 project's main build is done — flip `lifecycle.phase` to `maintenance` so the

@@ -215,10 +215,18 @@ function writeDigest(cwd: string, runId: string, role: string, model: string, to
   fs.mkdirSync(dir, { recursive: true });
   const touchedLines = touched.slice(0, 20).map((f) => `- ${f}        # delegated edit`).join('\n')
     + (touched.length > 20 ? `\n- … +${touched.length - 20} more` : '');
+  // The runner cannot honestly claim a role's canonical verdict (TESTS_GREEN /
+  // IMPLEMENTED) — it applied a diff, it did not verify anything. Delegated
+  // digests therefore carry DELEGATED_OK plus an explicit normalization hint,
+  // so the orchestrator does the one-line verdict edit itself after ITS
+  // verification passes (observed live: without the hint it spawned a whole
+  // paid agent just to rewrite this line).
+  const canonical = roleDigestName(role) === 'tester' ? 'TESTS_GREEN' : 'IMPLEMENTED';
   const body = [
     `# ${role} digest — run ${runId}`,
     '',
     'verdict: DELEGATED_OK',
+    `normalize_to: ${canonical} — once the orchestrator's own verification passes, edit the verdict line above to this canonical token (one-line edit; do NOT spawn an agent for it)`,
     `finished_at: ${nowIso()}`,
     `delegated_to: opencode (${model})`,
     '',
