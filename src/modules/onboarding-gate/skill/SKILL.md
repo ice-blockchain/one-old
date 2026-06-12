@@ -1,6 +1,6 @@
 ---
 name: traffic-one-onboarding-gate
-description: Wording source for the Traffic One setup gate. The onboarding questions now live in the local wizard server (shared/onboarding-server), so this only holds the gate's agent-facing prose — the wizard-URL deny, the short "setup pending" note, the team-mode write guards, and the post-materialization re-run note. Read at runtime via skillBlock(); the routing + deny LOGIC lives in TS.
+description: Wording source for the Traffic One setup gate. The onboarding questions now live in the local wizard server (shared/onboarding-server), so this only holds the gate's agent-facing prose — the wizard-URL deny, the short "setup pending" note, the team-mode write guards, the post-materialization re-run note, and the post-build maintenance-triage directives. Read at runtime via skillBlock(); the routing + deny LOGIC lives in TS.
 ---
 
 # Traffic One Onboarding Gate
@@ -22,7 +22,22 @@ file yourself:
   "traffic-one-setup" — it is already registered in .claude/launch.json and points at
   the running wizard, so it opens in the in-app preview pane.
 - Cursor: open the link below in the built-in Simple Browser.
-- Codex / other host: open the link below in your in-app web view if you have one.
+- Codex Desktop: do NOT tool-search for or read any browser skill — this is the
+  complete recipe. Open the wizard with the node_repl `js` tool running exactly:
+
+      const fs = await import("fs");
+      const base = `${nodeRepl.homeDir}/.codex/plugins/cache/openai-bundled/browser`;
+      const ver = fs.readdirSync(base).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
+      const { setupBrowserRuntime } = await import(`${base}/${ver}/scripts/browser-client.mjs`);
+      await setupBrowserRuntime({ globals: globalThis });
+      globalThis.browser = await agent.browsers.get("iab");
+      await browser.nameSession("traffic-one-setup");
+      await (await browser.capabilities.get("visibility")).set(true);
+      globalThis.trafficOneSetupTab = await browser.tabs.new();
+      await trafficOneSetupTab.goto("{{URL}}");
+      nodeRepl.write("traffic-one setup opened");
+
+- Other hosts: open the link below in your in-app web view if you have one.
 
 If you have no in-app preview at all, give the user this clickable link to open:
 {{URL}}
@@ -33,7 +48,11 @@ finishes setup (run it with a long timeout, ~9 minutes / 540000 ms):
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, IMMEDIATELY continue the user's original
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, first CLOSE the wizard view you opened
+(the page also closes itself where the host allows it): Claude Code → `preview_stop`
+for "traffic-one-setup"; Codex → node_repl `await trafficOneSetupTab.close()`;
+Cursor → close the in-app browser tab you opened.
+Then IMMEDIATELY continue the user's original
 request and build it end to end — do not stop to ask "what next?". If it prints
 `TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup finished), run the exact same
 command again; after a couple of pending rounds with no progress, tell the user to
@@ -50,6 +69,18 @@ the questions and Traffic One owns the preview config.
 If the user would rather not use Traffic One, they can choose "Continue without
 Traffic One" from the Traffic One auth prompt.
 <!-- T1BLOCK:END server-deny-reason -->
+
+<!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
+Traffic One setup is still pending — building stays blocked until the wizard finishes.
+Wizard (open in the in-app preview pane, not an external browser): {{URL}}
+Keep your turn open by running the wait command again (long timeout, ~9 minutes):
+
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, close the wizard view and IMMEDIATELY
+continue the user's original request. Full instructions were given on the first
+denial this session.
+<!-- T1BLOCK:END server-deny-reason-repeat -->
 
 <!-- T1BLOCK:BEGIN setup-pending -->
 Traffic One needs a quick setup before it can build in this project. When you start
@@ -82,3 +113,19 @@ Traffic One team mode guard: local Traffic One preferences currently record `tea
 <!-- T1BLOCK:BEGIN team-mode-switch-authorized -->
 The latest user prompt explicitly requested switching away from subagents to Low/main-agent mode. The next local Traffic One preference write may change `performance.level` to "low" and `team.mode` to "main-agent"; this authorization is single-use and expires in 10 minutes.
 <!-- T1BLOCK:END team-mode-switch-authorized -->
+
+<!-- T1BLOCK:BEGIN maintenance-triage-subagents -->
+[MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. Pick the tier, then ROUTE it — in this (subagents) mode do NOT implement trivial or small work yourself in this thread; handing it to a cheaper worker is the whole point of post-build triage. You judge the TIER (the keyword hint is a prior, not a verdict); the routing for the chosen tier is required, not optional. State your routing in one sentence and proceed — do not ask the user which tier, worker, or model to use.
+- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}". Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual).
+- small — one component, one small endpoint, or a scoped bug fix: spawn exactly ONE role subagent (senior-frontend OR senior-backend) at its normal tier.{{SMALL_OPENCODE_CLAUSE}} No architect unless it turns cross-cutting.
+- complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW, before any edit, as a SINGLE-FEATURE run — the architect plans just this feature, decides frontend/backend/both and the per-role model tiers, then implement → review → test.
+Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
+<!-- T1BLOCK:END maintenance-triage-subagents -->
+
+<!-- T1BLOCK:BEGIN maintenance-triage-main-agent -->
+[MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. This project runs in main-agent mode (no subagents). Pick the tier and scale your effort to it — you judge the TIER (the keyword hint is a prior, not a verdict). Route it yourself in one sentence and proceed; do not ask the user which tier or approach to use.
+- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: make the edit directly, no planning ceremony.{{OPENCODE_CLAUSE}} Verify visually if the change is visual.
+- small — one component, one small endpoint, or a scoped bug fix: implement it directly after a brief plan.
+- complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW and run its phases INLINE via the roadmap checklist — plan the feature, decide the surface, implement, then self-review and test. Do not spawn subagents.
+Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
+<!-- T1BLOCK:END maintenance-triage-main-agent -->

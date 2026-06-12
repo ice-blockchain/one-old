@@ -469,8 +469,13 @@
         el("div", { className: "check" }, ["✓"]),
         el("div", { className: "step-title" }, ["Setup complete"]),
         el("p", { className: "step-desc" }, ["Traffic One is configured. Return to your editor — the build will continue."]),
+        el("p", { className: "hint" }, ["This tab closes by itself; if it stays open, you can close it."]),
       ]));
       api("/complete", { method: "POST", body: "{}" }).catch(() => {});
+      // Auto-close the wizard tab. window.close() only works where the tab is
+      // script-controlled (in-app preview panes, agent-opened tabs) — a tab the
+      // user opened manually ignores it, which the hint line above covers.
+      setTimeout(() => { try { window.close(); } catch (_) { /* blocked by browser */ } }, 1500);
     }
 
     function render(v) {

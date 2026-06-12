@@ -1,4 +1,5 @@
 ---
+description: "Apply when reading or writing .traffic-one project memory: product/stack/coding/security notes, known issues, and the agent log."
 # Persistent project memory for cross-session, cross-agent work.
 ---
 
@@ -148,7 +149,7 @@ Keep persistent memory useful, not encyclopedic:
 ## Write Rules
 
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
-  `graphify-out/`, and `.gitnexus/` local/ephemeral unless the user explicitly
+  `.traffic-one/graphify-out/`, and `.traffic-one/.gitnexus/` local/ephemeral unless the user explicitly
   asks to preserve a report. The codebase-graph artefact location depends on
   the machine-wide `codeGraphProvider` setting.
 - Do not place secrets, service-role keys, database passwords, raw customer data,

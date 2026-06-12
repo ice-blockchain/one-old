@@ -1,4 +1,5 @@
 ---
+description: "Apply before broad code exploration (Grep/Glob/multi-file reads): consult the .traffic-one code-graph report first when one exists."
 # Always loaded. Tells every agent / skill / subagent to consult the
 # active codebase-graph provider's report before falling back to broad
 # Glob/Grep. The provider is chosen at onboarding and recorded as the
@@ -25,11 +26,12 @@ protocol below covers each.
 ### When `codeGraphProvider: "gitnexus"`
 
 GitNexus is Node-based (npm-installed) and writes a knowledge-graph index
-plus auto-generated context files under `.gitnexus/`. License: **PolyForm
+that Traffic One keeps under `.traffic-one/.gitnexus/` (relocated there after
+each scan — the project root is never polluted). License: **PolyForm
 Noncommercial** — only usable on non-commercial projects.
 
-1. **`.gitnexus/`** — the GitNexus index directory. Read its top-level
-   contents first (graph snapshot, module/symbol maps, auto-generated
+1. **`.traffic-one/.gitnexus/`** — the GitNexus index directory. Read its
+   top-level contents first (graph snapshot, module/symbol maps, auto-generated
    context). Single directory walk replaces broad search.
 2. **GitNexus MCP server** (`gitnexus mcp`) — power-user only; not auto-wired
    by this plugin. If the user has it running, prefer it for "shortest path
@@ -37,35 +39,39 @@ Noncommercial** — only usable on non-commercial projects.
 3. **`Glob`/`Grep`/raw `Read`** — last resort, scoped to the area the graph
    pointed at.
 
-If `.gitnexus/` is missing or older than ~7 days, the post-build hook in
-`scripts/hook-runtime/handlers.cjs` will rebuild it. Manual rebuild:
+If `.traffic-one/.gitnexus/` is missing or older than ~7 days, the next build
+or session rebuilds it automatically. To force a rebuild now, run the Traffic
+One runner (it relocates the output under `.traffic-one/`; do NOT run raw
+`gitnexus analyze .`, which would write to the project root):
 
 ```bash
-npm install -g gitnexus   # one-time install (Node CLI; npx works too)
-gitnexus analyze .
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"
 ```
 
 ### When `codeGraphProvider: "graphify"`
 
-graphify is Python-based (pipx-installed) and writes a Markdown report plus
-a structured JSON graph under `graphify-out/`. License: **MIT**.
+graphify is Python-based (pipx-installed) and writes a Markdown report plus a
+structured JSON graph that Traffic One keeps under `.traffic-one/graphify-out/`
+(relocated there after each scan — the project root is never polluted).
+License: **MIT**.
 
-1. **`graphify-out/GRAPH_REPORT.md`** — module map, file inventory,
+1. **`.traffic-one/graphify-out/GRAPH_REPORT.md`** — module map, file inventory,
    dependency summary, public-API surface per package. A few-thousand-token
    single Read on a small repo, but it scales with the codebase (tens of
    thousands of tokens on a large one) — read it selectively (see "Read large
    graphs selectively" below).
-2. **`graphify-out/graph.json`** — full structured graph. Reach for this only
-   when the report doesn't have the answer (e.g. "what calls function X").
+2. **`.traffic-one/graphify-out/graph.json`** — full structured graph. Reach for
+   this only when the report doesn't have the answer (e.g. "what calls function X").
 3. **`Glob`/`Grep`/raw `Read`** — last resort, scoped to the area the graph
    pointed at.
 
-If the report is missing or older than ~7 days, manual rebuild:
+If the report is missing or older than ~7 days, the next build or session
+rebuilds it automatically. To force a rebuild now, run the Traffic One runner
+(it relocates the output under `.traffic-one/`; do NOT run raw `graphify
+update .`, which would write to the project root):
 
 ```bash
-pipx install graphifyy   # one-time install (Python tool)
-graphify update .
-graphify hook install    # optional: regenerate on every git commit
+node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/graphify-runner.cjs"
 ```
 
 The post-build hook emits a one-time hint after the first successful build

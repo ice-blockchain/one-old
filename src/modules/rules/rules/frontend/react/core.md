@@ -15,8 +15,9 @@ delivering mobile with Ionic/Capacitor.
 ## Forced library stack — no exceptions
 
 ### Runtime
-- **UI:** react ^18 (.tsx/.ts only)
-- **Routing:** react-router-dom v6
+- **UI:** react ^19 (.tsx/.ts only)
+- **Routing:** react-router-dom ^7 (library mode — `BrowserRouter`/`Routes`,
+  the drop-in v6 API; do not adopt framework mode)
 - **Global state:** Redux Toolkit (slices + RTK Query)
 - **Lightweight UI state:** zustand — ephemeral only, never server data
 - **Real-time:** native `WebSocket` / `socket.io-client` behind a service singleton
@@ -32,16 +33,20 @@ delivering mobile with Ionic/Capacitor.
 - Vite per-app; Turborepo orchestrates the workspace.
 
 ### Styling
-- **Tailwind CSS v3.4** (pin `^3.4`; v4 is still settling) + **shadcn/ui**.
+- **Tailwind CSS v4** (CSS-first config) + **shadcn/ui**. Wire it with the
+  `@tailwindcss/vite` plugin — no `tailwind.config.*`, no PostCSS/autoprefixer
+  setup. (Ionic and React Native stacks stay on `^3.4` — see their core rules.)
 - shadcn primitives live in `packages/ui/src/components/ui/` (monorepo) or
   `src/components/ui/` (single-app). Add via `npx shadcn@latest add <name>`;
   never hand-roll a button, dialog, dropdown, input, etc.
 - Variants via `class-variance-authority` (cva). Merge classes with
   `cn()` (= `clsx` + `tailwind-merge`).
-- Theme: HSL CSS variables (`--background`, `--foreground`, `--primary`, …)
-  defined in `src/styles/globals.css`; the Tailwind preset in
-  `packages/tailwind-config` references them via `theme.extend.colors`.
-- Animation utilities: `tailwindcss-animate`. Icons: `lucide-react`.
+- Theme: design tokens as CSS variables (`--background`, `--foreground`,
+  `--primary`, …) declared in the shared stylesheet's `@theme` block
+  (`packages/tailwind-config/globals.css` in the monorepo, `src/styles/globals.css`
+  single-app); apps import that stylesheet, not a JS preset.
+- Animation utilities: `tw-animate-css` (the v4-native successor to
+  `tailwindcss-animate`). Icons: `lucide-react`.
 - No `.css.ts`, no vanilla-extract, no styled-components, no `@emotion`,
   no CSS modules. Inline `style={{}}` is reserved for dynamic/derived values
   (animation, computed positioning) — never for static styling.

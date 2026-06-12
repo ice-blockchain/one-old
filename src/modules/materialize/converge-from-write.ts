@@ -7,7 +7,7 @@
 
 import { STACK_IDS } from '../../config/stacks';
 import { detectMode } from '../../shared/detection';
-import { findProjectRootForHookFile, projectRelativeHookPath } from '../../shared/hook-paths';
+import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   type MaterializeOutcome,
@@ -53,7 +53,7 @@ export function materializeFromProjectMemoryWrite(
   opts: { reportOneMcp?: ReportOneMcp } = {},
 ): MaterializeOutcome | null {
   const reportOneMcp = opts.reportOneMcp || noopReporter;
-  const projectRoot = findProjectRootForHookFile(cwd, filePath);
+  const projectRoot = resolveProjectRoot(cwd, filePath);
   if (isPluginAuthoringRoot(projectRoot)) return null;
 
   const relativePath = projectRelativeHookPath(cwd, projectRoot, filePath);

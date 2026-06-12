@@ -1,4 +1,5 @@
 ---
+description: "Apply when choosing a stack, framework, or provider for a new project or a major new surface."
 # Always loaded
 ---
 
@@ -10,6 +11,18 @@ official provider/framework feature, and the dependency quality gate fail.
 
 These defaults are informed by the Amplifying Claude Code Picks report, while
 Traffic One's active stack core remains authoritative.
+
+## Versions come from the stack contract — never from the registry
+
+- Never probe the npm registry to pick scaffold or dependency versions: no
+  `npm view`, `npm outdated`, `npm show`, or registry curls during project
+  setup. The active stack rules pin every major; install with those ranges
+  (`pnpm add <pkg>` resolves the latest matching minor/patch automatically).
+- A request for "latest tech" / "modern stack" means the latest versions WITHIN
+  this stack contract — it is not an instruction to research or exceed the pins.
+- Only when the user explicitly names a newer major ("use React 20", "Tailwind
+  v5") does the request override a pin: honor it, and record the deviation and
+  its compatibility impact in `.traffic-one/decisions/`.
 
 ## Universal Defaults
 
@@ -200,7 +213,7 @@ and CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
 - React + Supabase: this is the default recommendation for new React projects
   that need a backend. Use Supabase Auth for auth, Supabase Storage for app
   files, Supabase Realtime when real-time is needed, and RLS-backed
-  authorization. Keep Traffic One's RTK Query/Redux, **Tailwind v3.4 + shadcn/ui**
+  authorization. Keep Traffic One's RTK Query/Redux, **Tailwind v4 + shadcn/ui**
   (Radix + CVA + tailwind-merge + lucide-react), Jest, and React Hook Form + Zod
   rules unless the user explicitly chooses another stack. Add new UI primitives
   via `npx shadcn@latest add <name>` — never hand-roll a button/dialog/input.

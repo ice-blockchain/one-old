@@ -1,4 +1,5 @@
 ---
+description: "Apply when working in an existing codebase Traffic One did not scaffold: surgical changes only, local conventions win."
 # Loaded when mode = existing-codebase (>5 source files, no Supabase)
 ---
 

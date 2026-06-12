@@ -1,0 +1,55 @@
+# Traffic One Codex Instructions
+
+Traffic One plugin behavior is provided by the installed skills, hooks, background integrations, and the active rule index below. These instructions describe how Traffic One operates in END-USER projects; the plugin's install directory and its source repository are never Traffic One projects — never onboard, materialize, or report against them.
+
+## Traffic One Setup Gates
+
+- Hooks enforce the shared setup gate in `.traffic-one/rules/common/setup-gate.md`; do not duplicate or bypass that field/order logic in skills.
+- Resolve Traffic One state by the actual target project root, not the wrapper cwd.
+- Before the setup gate is clear, mention only project detection/onboarding. Do not read, invoke, announce, or activate implementation skills such as create-feature, create-page, frontend-design, or tdd-workflow yet.
+- Use host popup input for setup prompts when available. If popup input is unavailable, ask the same next unresolved question in chat and stop for the user's typed answer.
+- Treat explicit user requests as implementation intent, not onboarding answers.
+- Local `team.mode="subagents"` remains the source of truth for subagent-enabled runs; never satisfy it with generic helper agents instead of the named senior-role workflow.
+
+## Active Rules
+
+- .traffic-one/rules/common/auth-gate.md
+- .traffic-one/rules/common/setup-gate.md
+- .traffic-one/rules/common/project-routing.md
+- .traffic-one/rules/common/onboarding.md
+- .traffic-one/rules/common/skill-precedence.md
+- .traffic-one/rules/common/senior-engineer-team.md
+- .traffic-one/rules/common/project-memory.md
+- .traffic-one/rules/common/documentation.md
+- .traffic-one/rules/common/seo.md
+- .traffic-one/rules/common/stack-recommendations.md
+- .traffic-one/rules/frontend/i18n.md
+- .traffic-one/rules/frontend/ui-quality.md
+- .traffic-one/rules/frontend/typography.md
+- .traffic-one/rules/frontend/react/design-quality.md
+- .traffic-one/rules/modes/new-project.md
+- .traffic-one/rules/modes/existing-codebase.md
+
+## Active Skills
+
+- .traffic-one/skills/project-memory/SKILL.md
+- .traffic-one/skills/auto-documentation-generator/SKILL.md
+- .traffic-one/skills/verification-loop/SKILL.md
+- .traffic-one/skills/observability/SKILL.md
+- .traffic-one/skills/app-launch-checklist/SKILL.md
+
+## Baseline Requirements
+
+- Traffic One auth is verified by hooks and the local auth client before Traffic One work. Until auth succeeds, hooks surface the auth instruction, keep Traffic One inactive, prevent Traffic One prompt continuation, and let ordinary work proceed without Traffic One features.
+- Do not call the exposed `mcp-auth` MCP tools (`mcp__mcp_auth__auth_status`, `mcp__mcp_auth__refresh`, `mcp__mcp_auth__authenticate`, or `mcp__mcp_auth__logout`) for routine Traffic One auth checks. `auth_status` and `refresh` must happen through the hook/auth client path so they remain silent.
+- If a stored auth session expires, the auth client may call `refresh` internally with the OS credential manager key. If refresh fails or no credential is available, keep Traffic One gated and ask the user to authenticate again.
+- If Traffic One skills are visible but hooks or these root instructions were not injected, do not infer "Traffic One inactive" and continue. Treat Traffic One as unverified: ask the auth choice, run or recommend `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/doctor.cjs"` (append `--session <id>` for incident debugging), and stop before scaffolding, installs, source edits, Traffic One agents, or implementation skills. Continue ordinary work without Traffic One only after the user explicitly chooses "Continue without Traffic One".
+- Run `project-memory` and `auto-documentation-generator` as mandatory baselines for generated projects and reconcile them for existing codebases.
+- Keep `.traffic-one/rules/common/documentation.md` and `.traffic-one/rules/common/seo.md` in the mandatory rule set for web work.
+- Apply `rules/frontend/i18n.md` automatically for UI work, even when the user does not mention translations.
+- Run the app-launch-checklist before launch, store submission, or production promotion work.
+- Preserve setup CTA href regression coverage and the compact Active Rules index in root agent context.
+
+## one-mcp Background Report
+
+Traffic One hooks handle the one-mcp first-look report in the background; it is fire-and-forget, stays silent on success or failure, and never blocks onboarding, materialization, tool use, or development. As the assistant: never call `one-mcp.report_codebase_metadata`, never create the legacy `.one-mcp-id` marker, and never write `one-uid` by hand — the hook mints it into `.traffic-one/.one.json` and reports at most once per project. The payload is limited to `report_id`, `technologies`, `file_extensions`, `architecture_components`, and `infrastructure_vendor`; it must never include source code, file contents, file paths, repository URLs, organization names, emails, secrets, API keys, user data, or any PII.

@@ -29,6 +29,35 @@ metadata:
 
 Uses the browser automation MCP (claude-in-chrome, Playwright, or Puppeteer) to interact with live pages like a real user.
 
+### Codex Desktop in-app browser — complete recipe (do NOT read the bundled browser skill)
+
+On Codex Desktop, drive the in-app browser via the node_repl `js` tool with
+exactly this setup — it is the whole recipe; tool-searching for or reading the
+bundled `control-in-app-browser` SKILL.md wastes ~8k tokens:
+
+    const fs = await import("fs");
+    const base = `${nodeRepl.homeDir}/.codex/plugins/cache/openai-bundled/browser`;
+    const ver = fs.readdirSync(base).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
+    const { setupBrowserRuntime } = await import(`${base}/${ver}/scripts/browser-client.mjs`);
+    await setupBrowserRuntime({ globals: globalThis });
+    globalThis.browser = await agent.browsers.get("iab");
+    await (await browser.capabilities.get("visibility")).set(true);
+    globalThis.qaTab = await browser.tabs.new();
+    await qaTab.goto("http://127.0.0.1:5173/");
+    nodeRepl.write("qa tab open");
+
+Then per check (each its own `js` call): `await qaTab.goto(url)` to navigate
+(`networkidle` is NOT supported by this browser API — use
+`await qaTab.playwright.waitForLoadState({ state: "domcontentloaded" })`, then a
+short fixed wait before reading the DOM so SPA hydration finishes);
+`await qaTab.screenshot()` for visual evidence; resize for responsive passes via
+`await (await browser.capabilities.get("viewport")).set({ width: 390, height: 844 })`
+(mobile) and back to `{ width: 1280, height: 800 }` (desktop); read the DOM with
+`await qaTab.playwright.evaluate(...)` (e.g. `document.documentElement.scrollWidth >
+window.innerWidth` to detect horizontal overflow). Close with `await qaTab.close()`
+when QA is done. If node_repl or the in-app browser is unavailable, fall back to
+the browser automation MCP listed above.
+
 Before running visual QA, identify the design brief or acceptance criteria:
 primary action, intended hierarchy, responsive behavior, state coverage, and
 screenshots required. If no brief exists, infer it from the user request and

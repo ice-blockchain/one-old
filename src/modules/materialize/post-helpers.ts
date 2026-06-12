@@ -8,6 +8,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { hasPluginAuthoringMarkers } from '../../shared/authoring-root';
+import { isOnboardedProjectRoot } from '../../shared/hook-paths';
 import { hasStateFile } from '../../shared/tool-classify';
 
 type Rec = Record<string, unknown>;
@@ -36,13 +38,21 @@ export function projectRootForPathHint(cwd: string, hintPath: unknown): string |
   if (!fs.existsSync(current) || !fs.lstatSync(current).isDirectory()) {
     current = path.dirname(current);
   }
+  // Prefer the nearest REAL (mode-bearing) root so a stray shallow state file in a
+  // monorepo sub-package doesn't get materialized as its own project. Remember the
+  // nearest any-state dir only as a fallback when no onboarded root encloses it.
+  let firstAnyState: string | null = null;
   for (;;) {
-    if (hasStateFile(current)) return current;
+    // Stray state files inside the plugin authoring repo are never a project.
+    if (hasStateFile(current) && !hasPluginAuthoringMarkers(current)) {
+      if (isOnboardedProjectRoot(current)) return current;
+      if (firstAnyState === null) firstAnyState = current;
+    }
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
   }
-  return null;
+  return firstAnyState;
 }
 
 // All distinct project roots referenced by a tool input's path/command hints.

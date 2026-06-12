@@ -154,5 +154,17 @@ export function modeRulesForState(root: string, state: Rec): string[] {
   if (!mode) return [];
   const relPath = `rules/modes/${mode}.md`;
   if (!fs.existsSync(path.join(root, templatePath(relPath)))) return [];
-  return [relPath];
+  // Large mode rules are split into on-demand slices named `<mode>-<topic>.md`
+  // next to the spine; materialize whatever slices exist so the spine's
+  // pointers resolve inside the project.
+  const slices: string[] = [];
+  try {
+    const modesDir = path.dirname(path.join(root, templatePath(relPath)));
+    for (const name of fs.readdirSync(modesDir).sort()) {
+      if (name.startsWith(`${mode}-`) && name.endsWith('.md')) slices.push(`rules/modes/${name}`);
+    }
+  } catch {
+    // best effort — the spine alone still materializes
+  }
+  return [relPath, ...slices];
 }

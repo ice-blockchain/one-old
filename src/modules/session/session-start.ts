@@ -22,13 +22,14 @@ import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predic
 import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
-import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
+import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   hasRunAgentState,
   hookSessionIdentity,
   legacyRunAgentContext,
+  maintenanceLifecycle,
   normalizeState,
   readEffectiveState,
   resolveRunAgentContext,
@@ -41,7 +42,7 @@ import { initializeToolchainState } from '../../shared/state/toolchain';
 import { nowIsoNoMs } from '../../shared/text';
 import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
-import { ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
+import { ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -66,7 +67,12 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
   const ruleSet = role ? roleScopedRules(role, state) : null;
   const rules = ruleSet || stackSpecForState(state).mandatory;
   copyActiveSkills(state);
-  const skillDirective = pruneSkillsDirective(state, listAllSkills());
+  // Role-scoped skills (from the role's agent-doc frontmatter) when the role is
+  // known — a senior-frontend spawn lists only frontend skills, not the whole
+  // stack catalog plus a 30-name wrong-stack dump.
+  const skillDirective = role
+    ? roleSkillsDirective(state, role, listAllSkills())
+    : pruneSkillsDirective(state, listAllSkills());
   const { body } = packRuleIndex(root, rules);
   const graphPreview = readGraphPreview(cwd);
   const roleLabel = role || 'subagent';
@@ -186,15 +192,23 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const spec = stackSpecForState(state);
     const modeRulePath = `rules/modes/${mode}.md`;
     const modeMandatory = fs.existsSync(path.join(root, modeRulePath)) ? [...spec.mandatory, modeRulePath] : spec.mandatory;
-    const { body } = packBundle(root, modeMandatory, spec.optional);
 
     const copied = copyActiveSkills(state);
     const skillDirective = pruneSkillsDirective(state, listAllSkills());
     stampMaterialization(cwd, state);
+    // The materialized project AGENTS.md/CLAUDE.md (just re-stamped) carries the
+    // same Active Rule Index and is auto-loaded by every host — re-listing the
+    // paths here duplicates ~400-500 tokens per session. Emit the full bundle
+    // only when the mirror is missing.
+    const body = hasMaterializedProjectAssets(cwd, state)
+      ? 'Active rules are indexed in the project AGENTS.md / CLAUDE.md (read rule bodies on demand from `.traffic-one/rules/**`).\n'
+      : packBundle(root, modeMandatory, spec.optional).body;
+    ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the code graph if an existing project is missing it
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
+    header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     writeState(cwd, state);
@@ -222,6 +236,9 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
       confirmedAt: nowIsoNoMs(),
       autoDetected: true,
       evidence: detected.evidence,
+      // An existing codebase is already built → maintenance phase from first
+      // detection, so post-build triage applies to the user's first prompt.
+      lifecycle: maintenanceLifecycle('existing-detected'),
     });
     normalizeState(state, mode);
 
@@ -233,6 +250,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const copied = copyActiveSkills(state);
     const allSkills = listAllSkills();
     stampMaterialization(cwd, state);
+    ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the graph for a freshly auto-detected existing project
     writeState(cwd, state);
     const skillDirective = pruneSkillsDirective(state, allSkills);
 
@@ -240,6 +258,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
+    header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     if (nextLocalPreferenceStep(state)) {

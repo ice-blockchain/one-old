@@ -98,14 +98,21 @@ function withDoneProject(extraOne: Record<string, unknown>, fn: (dir: string) =>
   }
 }
 
-test('single gate: onboarding finalized + one-uid missing → fires the one-mcp report (onboarding-complete), even unauthenticated', () => {
+test('single gate: onboarding finalized + one-uid missing → fires the one-mcp report (onboarding-complete), even unauthenticated + enforced', () => {
   withDoneProject({}, (dir) => {
-    const calls: string[] = [];
-    const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
-      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
-    });
-    assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate, no auth required
-    assert.equal(r.kind, 'noop'); // unauthenticated → rest gated; the report already fired
+    const savedAuth = process.env.TRAFFIC_ONE_AUTH;
+    process.env.TRAFFIC_ONE_AUTH = '1'; // enforce so the post-report sections stay gated
+    try {
+      const calls: string[] = [];
+      const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+        reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+      });
+      assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate, no auth required
+      assert.equal(r.kind, 'noop'); // unauthenticated + enforced → rest gated; the report already fired
+    } finally {
+      if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+      else process.env.TRAFFIC_ONE_AUTH = savedAuth;
+    }
   });
 });
 
@@ -183,5 +190,29 @@ test('generic write in an already-materialized project → noop (nothing to conv
   withAuthedProject(true, (cwd) => {
     const r = runPostStackSetup(ctx(cwd, { file_path: path.join(cwd, 'apps', 'web', 'feature.ts') }));
     assert.equal(r.kind, 'noop');
+  });
+});
+
+// ── Incident regression: a write from a parent workspace LANDING inside a nested
+// plugin-authoring repo must not report/flip/converge against that repo. ──
+test('write into a nested authoring repo from a parent-workspace cwd stands down completely', () => {
+  withAuthedProject(true, (parent) => {
+    const repo = path.join(parent, 'one');
+    fs.mkdirSync(path.join(repo, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'gen', 'index.ts'), '// gen', 'utf8');
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    // The incident's self-perpetuating stray state file inside the repo:
+    fs.mkdirSync(path.join(repo, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal', onboardingComplete: true }), 'utf8');
+
+    const calls: string[] = [];
+    const result = runPostStackSetup(
+      ctx(parent, { file_path: path.join(repo, 'src', 'shared', 'x.ts') }),
+      { reportOneMcp: (root) => { calls.push(String(root)); } },
+    );
+    assert.equal(result.kind, 'noop');
+    assert.deepEqual(calls, [], 'one-mcp reporter must never fire for the authoring repo');
+    assert.equal(fs.existsSync(path.join(repo, '.traffic-one', 'one-mcp-report.json')), false);
+    assert.equal(fs.existsSync(path.join(repo, '.traffic-one', 'manifest.json')), false);
   });
 });

@@ -5,6 +5,7 @@
   "skills": [{ "id": "agent-model-gate", "path": "skill/SKILL.md", "shipped": false }],
   "subscriptions": [
     { "event": "PreToolUse", "subcommand": "check-agent-model", "tools": ["spawn-agent"] },
+    { "event": "PostToolUse", "subcommand": "post-agent-spawned", "tools": ["spawn-agent"] },
     { "event": "SubagentStart", "subcommand": "subagent-start" }
   ],
   "gates": [

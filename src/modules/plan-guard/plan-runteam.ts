@@ -11,6 +11,7 @@ import {
   activeAgentRole,
   assignmentForContext,
   hasRunAgentState,
+  isMaintenancePhase,
   isSubagentSession,
   legacyRunAgentContext,
   readRunAssignments,
@@ -57,8 +58,18 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
 
   if (!inSubagent) {
+    // Maintenance fail-open. Run-team coordinates PARALLEL BUILD implementers via
+    // the architect's per-run assignments manifest; in maintenance the build is
+    // done and edits come from a single bounded quick-fix worker. On hosts where
+    // run-claim activation is unreliable (claims stay `pending`, so the worker's
+    // write resolves to no context and lands here), failing closed would deadlock
+    // every legitimate maintenance edit. So in maintenance, allow an unattributed
+    // write rather than block it — delegation is guided by the post-build triage
+    // directive, not this build-time gate. (When a claim DOES resolve, the scope
+    // checks below still run, so a real feature run stays coordinated.)
+    if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
     return deny(block('run-team-not-subagent',
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. Spawn the appropriate role first; senior-frontend and senior-backend ownership is enforced by \`roleCanWriteFeatureSource\`.`,
+      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit feature source yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role }));
   }
 

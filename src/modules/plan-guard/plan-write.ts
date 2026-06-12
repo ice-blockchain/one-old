@@ -17,13 +17,14 @@ import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import {
   applyPatchTargetPaths,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
 } from '../../shared/feature-source';
-import { findProjectRootForHookFile, projectRelativeHookPath } from '../../shared/hook-paths';
+import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
@@ -47,9 +48,15 @@ export function planWriteGate(ctx: Ctx): HookResult {
     : [];
 
   const cwd = ctx.cwd;
+  // Never gate the plugin's own authoring repo — the gate/materialiser must never
+  // act on it (mirrors the onboarding gate). Without this, a stale or missing
+  // .traffic-one here makes the plan gate fire on plugin development.
+  if (isPluginAuthoringRoot(cwd)) return noop();
   if (authChoiceAllowsContinue(cwd)) return noop();
 
-  const projectRoot = findProjectRootForHookFile(cwd, rawFilePath || patchTargetPaths[0] || '');
+  const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '');
+  // The resolver's fallback can still hand back a dir inside the plugin repo.
+  if (isPluginAuthoringRoot(projectRoot)) return noop();
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
 
   // Preflight convergence: ensure .traffic-one/** is current for this project

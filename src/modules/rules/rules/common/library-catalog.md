@@ -1,4 +1,5 @@
 ---
+description: "Apply when adding or choosing a dependency or library: pick from the curated catalog before reaching for npm."
 # Always loaded
 ---
 
@@ -42,11 +43,13 @@ still decide whether a package can be added.
 
 ## React, Supabase, and Next.js
 
-- React/Vite: keep Traffic One defaults: RTK Query/Redux, **Tailwind v3.4 +
+- React/Vite: keep Traffic One defaults: RTK Query/Redux, **Tailwind v4 +
   shadcn/ui** (Radix primitives, `class-variance-authority`, `clsx`,
-  `tailwind-merge`, `tailwindcss-animate`), `lucide-react`, React Hook Form
+  `tailwind-merge`, `tw-animate-css`), `lucide-react`, React Hook Form
   + Zod, Jest, Playwright, MSW. Add new UI primitives via
   `npx shadcn@latest add <name>`; do not hand-roll buttons / dialogs / etc.
+  Versions come from the stack rules — never probe the npm registry to pick
+  them; "latest tech" means latest within this contract.
 - Supabase: Supabase Auth, Storage, Realtime, RLS policies, and
   `@supabase/supabase-js`. Use Supabase Dashboard Logs Explorer for platform
   logs and `pg_stat_statements` for slow-query detection before custom database
@@ -60,9 +63,10 @@ still decide whether a package can be added.
   **Styling: NativeWind v4 + React Native Reusables** (`rn-primitives` +
   `lucide-react-native`). Add new RN UI primitives via
   `npx @react-native-reusables/cli@latest add <name>`.
-- Ionic (hybrid mobile shell on top of React/Vite): same Tailwind + shadcn
-  layer as the web stack, plus a small in-repo CSS bridge file mapping shadcn
-  HSL tokens to Ionic `--ion-color-*` variables. Tailwind config sets
+- Ionic (hybrid mobile shell on top of React/Vite): same shadcn UI layer as the
+  web stack but pinned to **Tailwind `^3.4`** (the Ionic preflight bridge is
+  validated on v3), plus a small in-repo CSS bridge file mapping shadcn HSL
+  tokens to Ionic `--ion-color-*` variables. Tailwind config sets
   `corePlugins.preflight: false` to avoid colliding with Ionic's reset.
 
 ## Python

@@ -49,7 +49,7 @@ The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priorit
 1. `.traffic-one/digests/<run-id>/architect.md` — the predecessor digest (~2 KB).
 2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/security.md`, `.traffic-one/known-issues.md`, `.traffic-one/schema.sql` if present.
 3. `.traffic-one/plan.md` § Backend + § Public contracts (only your scope; ~1 KB).
-4. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.gitnexus/` for gitnexus, `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`, `packages/api*`, `services/*`, `supabase/` nodes.
+4. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.traffic-one/.gitnexus/` for gitnexus, `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/server/`, `packages/api*`, `services/*`, `supabase/` nodes.
 5. Specific schema / migration / handler files only when 1–4 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
 
 Token budget: ~12k total. The `senior-frontend` is running in parallel and will write its own digest; do not block on it.
@@ -154,3 +154,4 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
 - Validate at the boundary. Parameterised queries. Auth check on every protected route. No secrets in logs.
 - For Supabase: lazy client + null-safe RTK Query baseQuery already exist in the frontend; your job is to make sure the schema is actually applied so the queries return real data.
 - End your reply with a one-line status: which endpoints/migrations you produced, the auth strategy, and what frontend contracts you fulfilled.
+- You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.

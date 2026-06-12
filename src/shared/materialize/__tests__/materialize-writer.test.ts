@@ -105,3 +105,23 @@ test('cleanupPrevious compacts duplicate root security docs into .traffic-one/se
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('provider-adopted skills are indexed in AGENTS.md but stay out of the manifest', () => {
+  withPluginAndProject((project) => {
+    // A provider skill relocated into .traffic-one/skills (not manifest-tracked).
+    fs.mkdirSync(path.join(project, '.traffic-one', 'skills', 'gitnexus-guide'), { recursive: true });
+    fs.writeFileSync(path.join(project, '.traffic-one', 'skills', 'gitnexus-guide', 'SKILL.md'), '# guide\n', 'utf8');
+
+    const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true, mode: 'new-project' };
+    materializeProjectAssets(project, state);
+
+    const agents = fs.readFileSync(path.join(project, 'AGENTS.md'), 'utf8');
+    assert.ok(agents.includes('gitnexus-guide'), 'adopted skill listed in the Active Skills index');
+    const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
+    assert.ok(!manifest.skills.includes('gitnexus-guide'), 'manifest tracks only materialized skills');
+
+    // Re-materialization must never sweep the adopted skill.
+    materializeProjectAssets(project, state);
+    assert.ok(fs.existsSync(path.join(project, '.traffic-one', 'skills', 'gitnexus-guide', 'SKILL.md')));
+  });
+});

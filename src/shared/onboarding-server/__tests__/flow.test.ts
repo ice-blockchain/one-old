@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { mergeProjectPrefs, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeState } from '../../state';
+import { mergeProjectPrefs, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
   'CURSOR_PLUGIN_ROOT',
@@ -316,7 +316,105 @@ test('plan-aware performance step: OpenCode bumps the recommendation only once i
     // Once OpenCode is actually installed (stamped), the recommendation bumps.
     mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
     const view = computeOnboarding(cwd);
-    assert.equal(view.meta.recommendedLevel, 'balanced'); // free + active OpenCode = one step up
+    assert.equal(view.meta.recommendedLevel, 'balanced'); // host-eligible OpenCode = one step up
     assert.equal(view.meta.options?.[0]?.id, 'balanced');
+  });
+});
+
+test('plan-aware performance step: Codex bumps the OpenCode recommendation like every host (host-agnostic)', () => {
+  withProject(null, (cwd) => {
+    process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    applyAnswer(cwd, 'open-code', 'enable');
+    mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
+
+    // Installed OpenCode bumps the recommendation on Codex exactly as elsewhere —
+    // no per-host / per-model gate.
+    const view = computeOnboarding(cwd);
+    assert.equal(view.meta.host, 'codex');
+    assert.equal(view.meta.recommendedLevel, 'balanced');
+    assert.equal(view.meta.options?.[0]?.id, 'balanced');
+  });
+});
+
+test('open-code answer records the delegation authorization in committed .one.json (not just prefs)', () => {
+  withProject({ mode: 'existing-codebase' }, (cwd) => {
+    assert.ok(applyAnswer(cwd, 'open-code', 'enable').ok);
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, true);
+    assert.equal(one.openCodeDelegation?.source, 'onboarding');
+    assert.ok(one.openCodeDelegation?.decidedAt);
+    // prefs still carry the per-user toggle
+    const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'));
+    assert.equal(prefs.openCode?.enabled, true);
+  });
+});
+
+test('open-code "not now" records approved:false (an explicit decision, not an omission)', () => {
+  withProject({ mode: 'existing-codebase' }, (cwd) => {
+    assert.ok(applyAnswer(cwd, 'open-code', 'not_now').ok);
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(one.openCodeDelegation?.approved, false);
+  });
+});
+
+// ── Skipped code-graph step must still run the install task ──────────────────────
+// On any machine after its first project, codeGraphProvider is already set
+// machine-wide, the code-graph step never surfaces, and the install task used to
+// never fire — leaving OpenCode unstamped in the new project's prefs and
+// delegation silently inactive for the whole first build (observed 2026-06-12 on
+// Codex). The flow's terminal answer now fires the task whenever an opted-in
+// tool is unstamped.
+
+test('new-project: skipped code-graph step fires the install task at finalize', () => {
+  withProject(null, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus'); // a previous project chose it
+    applyAnswer(cwd, 'open-code', 'enable');
+    applyAnswer(cwd, 'performance', 'balanced');
+    applyAnswer(cwd, 'team-confirmation', { action: 'approve' });
+    applyAnswer(cwd, 'project-context', { answers: {}, summary: 'a web app' });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    // code-graph is pre-resolved: the wizard goes straight to finalize…
+    assert.equal(computeOnboarding(cwd).step, 'finalize');
+    // …and finalize must kick the consolidated install (OpenCode enabled, unstamped).
+    const fin = applyAnswer(cwd, 'finalize', null);
+    assert.ok(fin.ok);
+    assert.deepEqual(fin.task, { kind: 'onboarding-toolchain' });
+  });
+});
+
+test('new-project: finalize fires no task when the opted-in toolchain is already stamped', () => {
+  withProject(null, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    mergeProjectPrefs(cwd, { toolchain: { gitnexus: { installedVersion: '1.6.4' } } });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { answers: {}, summary: 'x' });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    const fin = applyAnswer(cwd, 'finalize', null);
+    assert.ok(fin.ok);
+    assert.equal(fin.task, undefined);
+  });
+});
+
+test('new-project: mid-wizard answers never fire the install task (no stack committed yet)', () => {
+  withProject(null, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    const first = applyAnswer(cwd, 'open-code', 'enable');
+    assert.ok(first.ok);
+    // Firing here would block the wizard's next question on a minutes-long install.
+    assert.equal(first.task, undefined);
+  });
+});
+
+test('existing project: skipped code-graph fires the install task on the last preference answer', () => {
+  withProject({ mode: 'existing-codebase', stack: 'minimal', frontend: 'none', backend: 'other', onboardingComplete: true }, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    mergeProjectPrefs(cwd, { toolchain: { gitnexus: { installedVersion: '1.6.4' } } });
+    applyAnswer(cwd, 'open-code', 'enable');
+    const last = applyAnswer(cwd, 'performance', 'low');
+    assert.ok(last.ok);
+    assert.deepEqual(last.task, { kind: 'onboarding-toolchain' });
+    assert.equal(computeOnboarding(cwd).done, true);
   });
 });

@@ -20,14 +20,17 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isAuthenticatedLocal } from '../../shared/auth';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { authSatisfied } from '../../shared/auth';
+import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isStateFilePath } from '../../shared/tool-classify';
-import { readEffectiveState } from '../../shared/state';
+import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
+import { maybeFlipToMaintenance } from './build-complete';
 import { ONE_UID_FIELD } from '../../config/reporting';
 import {
   type MaterializeOutcome,
@@ -81,11 +84,19 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const targetPath = filePath ? (path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(pathBase, filePath)) : '';
   const targetInsideCwd = Boolean(targetPath && (targetPath === cwdAbs || targetPath.startsWith(`${cwdAbs}${path.sep}`)));
   if (isPluginAuthoringRoot(cwd) && (!targetPath || targetInsideCwd)) return noop();
+  // A write LANDING inside the plugin's own repo must stand down even when the
+  // session cwd is a parent workspace (the cwd-only check above can't see it).
+  if (targetPath && isInsidePluginAuthoringRoot(targetPath)) return noop();
 
   const fp = filePath.replace(/\\/g, '/');
   const reportOneMcp = deps.reportOneMcp;
   const digestRoot = architectDigestProjectRoot(targetPath || filePath);
-  const reportRoot = digestRoot || cwd;
+  // Resolve UP to the workspace root so the one-mcp report + maintenance flip + state
+  // read target the real project, not a monorepo sub-package whose stray shallow
+  // .one.json would otherwise mint a one-uid / hide maintenance phase there.
+  const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath);
+  // digestRoot bypasses resolveProjectRoot's authoring filter — re-check the result.
+  if (isPluginAuthoringRoot(reportRoot)) return noop();
   const state = readEffectiveState(reportRoot);
   const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
 
@@ -99,7 +110,32 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     reportOneMcp(reportRoot, state, 'onboarding-complete');
   }
 
-  if (!isAuthenticatedLocal()) return noop();
+  // Build-completion fallback: flip a finished new-project build to maintenance
+  // phase (the primary signal is the orchestrator's explicit Phase-5 write). Cheap
+  // guards first so computeOnboarding + the disk scans inside maybeFlipToMaintenance
+  // only run for a new-project still in the building window — once flipped,
+  // isMaintenancePhase short-circuits. Independent of one-mcp; runs before the auth
+  // gate so it also works in AUTH_ENABLED=false dev/test.
+  if (!isSpawnAgentLifecycleTool
+    && state.mode === 'new-project'
+    && !isMaintenancePhase(state, 'new-project')
+    && computeOnboarding(reportRoot).done) {
+    maybeFlipToMaintenance(reportRoot, state);
+  }
+
+  // In-session OpenCode heal: if the user opted in but the per-project stamp is
+  // missing (wizard install task skipped/killed — see flow.ts
+  // attachPendingInstallTask), heal NOW so the build session that follows
+  // onboarding can actually delegate, instead of waiting for the next
+  // SessionStart. The enabled+stamp guard is in-memory on the state already
+  // read; the heal itself is disk-lock cooldown-guarded and detached.
+  const ocEnabled = obj(state.openCode)?.enabled === true;
+  const ocVersion = obj(obj(state.toolchain)?.opencode)?.installedVersion;
+  if (ocEnabled && !(typeof ocVersion === 'string' && ocVersion.length > 0)) {
+    ensureOpenCodeDelegationReady(reportRoot, state);
+  }
+
+  if (!authSatisfied()) return noop();
 
   // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
   // logger by default; tests inject a spy/no-op via deps.
@@ -133,7 +169,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     const hintInput = targetPath ? { ...toolInput, file_path: targetPath } : toolInput;
     const hint = materializeFromToolInputHints(cwd, hintInput);
     if (hint) return outcomeToResult(hint);
-    return outcomeToResult(materializeProjectIfNeeded(cwd, { trigger: 'generic post-tool convergence' }));
+    return outcomeToResult(materializeProjectIfNeeded(reportRoot, { trigger: 'generic post-tool convergence' }));
   }
 
   // 4. State-file write → validate + materialize (writeState strips local prefs).

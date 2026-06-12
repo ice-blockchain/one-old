@@ -32,6 +32,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',
   'opencode-runner.cjs': './runners/opencode/index.js',
+  'opencode-mcp.cjs': './runners/opencode-mcp/index.js',
   'onboarding-toolchain-runner.cjs': './runners/onboarding-toolchain/index.js',
   'onboarding-server.cjs': './runners/onboarding-server/index.js',
   'onboarding-wait.cjs': './runners/onboarding-wait/index.js',

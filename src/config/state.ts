@@ -47,6 +47,13 @@ export const PERFORMANCE_SOURCE_IDS = new Set(['prompted', 'explicit']);
 // OpenCode "token economy" opt-in. Same source vocabulary as team/performance.
 export const OPEN_CODE_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailable']);
 
+// Project lifecycle phase. `building` = initial scaffold in progress; `maintenance`
+// = main build complete and the user is iterating (post-build triage applies).
+// Existing codebases are `maintenance` from first detection; new projects flip
+// once the initial build finishes. Absence of `lifecycle` is valid → inferred from mode.
+export const LIFECYCLE_PHASE_IDS = new Set(['building', 'maintenance']);
+export const LIFECYCLE_SOURCE_IDS = new Set(['existing-detected', 'orchestrator', 'heuristic', 'manual']);
+
 export const TEAM_MODE_ALIASES = new Map<string, string>([
   ['enabled', 'subagents'],
   ['true', 'subagents'],
@@ -97,4 +104,10 @@ export const VALID_AGENT_ROLES = new Set([
   'senior-reviewer',
   'senior-tester',
   'senior-shipper',
+  // Post-build maintenance worker for trivial tasks (css/copy/rename/config). Not
+  // part of the senior roster (AGENT_ROLES); it is recognized here so the spawn
+  // gate enforces the cheapest model for it in EVERY mode (not just new-project)
+  // and the OpenCode delegation gate can route it free first. Mapped to the
+  // `cheapest` tier in config/performance.ts; team.overrides cannot lift the pin.
+  'quick-fix',
 ]);

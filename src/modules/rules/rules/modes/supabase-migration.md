@@ -1,4 +1,5 @@
 ---
+description: "Apply when adding or editing Supabase migrations, schema, RLS, or storage policies."
 # Loaded when mode = existing-with-supabase
 ---
 

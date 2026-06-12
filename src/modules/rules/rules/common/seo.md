@@ -1,4 +1,5 @@
 ---
+description: "Apply when creating or editing public web routes, meta tags, sitemaps, or anything search-indexable."
 # Always loaded for projects that may expose a web surface
 ---
 

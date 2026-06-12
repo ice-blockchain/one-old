@@ -46,7 +46,10 @@ test('totalTokens / cacheHitRate compute from stats', () => {
 });
 
 test('priceFor matches longest model prefix, falls back to _default', () => {
-  assert.equal(priceFor('claude-opus-4-7').output, 75);
+  assert.equal(priceFor('claude-opus-4-7').output, 25);
+  assert.equal(priceFor('claude-opus-4-8').output, 25);
+  assert.equal(priceFor('claude-fable-5').output, 50);
+  assert.equal(priceFor('claude-opus-4-9').output, 25); // family-prefix match for future point releases
   assert.equal(priceFor('claude-sonnet-4-6-20260101').output, 15); // prefix match
   assert.equal(priceFor('gpt-5').output, 15); // _default (sonnet-class)
   assert.equal(priceFor(null).output, 15);
@@ -55,8 +58,8 @@ test('priceFor matches longest model prefix, falls back to _default', () => {
 test('estimateCost sums per-model USD', () => {
   const stats = emptyStats();
   stats.byModel['claude-opus-4-7'] = { messages: 1, inputTokens: 1_000_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, outputTokens: 1_000_000 };
-  // 1M input * $15 + 1M output * $75 = $90
-  assert.equal(estimateCost(stats), 90);
+  // 1M input * $5 + 1M output * $25 = $30
+  assert.equal(estimateCost(stats), 30);
 });
 
 test('parseOriginalTokenCount + projectSlugFromCwd', () => {

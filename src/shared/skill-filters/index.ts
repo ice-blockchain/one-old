@@ -97,6 +97,59 @@ export function pruneSkillsDirective(stackOrState: unknown, allSkills: Iterable<
   return directive;
 }
 
+// Skills a role's agent doc declares in its `skills:` frontmatter. The agent doc
+// is the single source of truth for a role's skill set — parsing it here (instead
+// of mirroring a TS map) means the subagent directive can never drift from what
+// the role document ships. Returns null when the doc/frontmatter is missing so
+// callers can fall back to the stack-wide directive.
+export function roleDeclaredSkills(role: string): Set<string> | null {
+  if (!/^[a-z0-9-]+$/.test(role)) return null;
+  const root = pluginRoot();
+  const candidates = [
+    path.join(root, 'agents', `${role}.md`),
+    path.join(root, 'dist', 'agents', `${role}.md`),
+    path.join(root, 'src', 'modules', role, 'agent.md'),
+  ];
+  for (const candidate of candidates) {
+    let text = '';
+    try {
+      text = fs.readFileSync(candidate, 'utf8');
+    } catch {
+      continue;
+    }
+    const fm = text.match(/^---\n([\s\S]*?)\n---/);
+    const fmBody = fm?.[1];
+    if (!fmBody) continue;
+    const lines = fmBody.split('\n');
+    const out = new Set<string>();
+    let inSkills = false;
+    for (const line of lines) {
+      if (/^skills:\s*$/.test(line)) { inSkills = true; continue; }
+      if (inSkills) {
+        const item = line.match(/^\s+-\s+([A-Za-z0-9_-]+)\s*$/);
+        if (item?.[1]) { out.add(item[1]); continue; }
+        if (/^\S/.test(line)) inSkills = false; // next top-level key ends the list
+      }
+    }
+    if (out.size > 0) return out;
+  }
+  return null;
+}
+
+// Role-scoped variant of pruneSkillsDirective: only the intersection of the
+// stack-active skills and the role's declared skills is listed, and the long
+// [DO NOT INVOKE] name dump is replaced by one sentence — a subagent's spawn
+// context should not pay ~30 wrong-stack skill names every time.
+export function roleSkillsDirective(stackOrState: unknown, role: string, allSkills: Iterable<string>): string {
+  const declared = roleDeclaredSkills(role);
+  if (!declared) return pruneSkillsDirective(stackOrState, allSkills);
+  const active = activeSkillsFor(stackOrState);
+  const roleActive = [...active].filter((name) => declared.has(name)).sort();
+  if (roleActive.length === 0) return pruneSkillsDirective(stackOrState, allSkills);
+  return `[ACTIVE SKILLS for ${role} on stack=${normalizedSkillState(stackOrState).stack}]: ${roleActive.join(', ')}\n`
+    + '[SKILL SCOPE]: other materialized skills are out of scope for this role — do not invoke them.\n';
+}
+
 export function listAllSkills(): Set<string> {
   const skillsDir = path.join(pluginRoot(), SKILLS_ACTIVE_DIR);
   const out = new Set<string>();

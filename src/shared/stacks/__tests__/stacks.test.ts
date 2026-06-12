@@ -69,3 +69,21 @@ test('roleScopedRules scopes per role and returns null for unknown roles', () =>
   assert.ok(be && be.includes('rules/backend/postgres.md'));
   assert.equal(roleScopedRules('bogus', state), null);
 });
+
+test('onboarding-only rules drop out of maintenance-phase manifests', () => {
+  // Building (new project, pre-build): onboarding protocol + stack pitches present.
+  const building = composeRuleManifest({ stack: 'default', mode: 'new-project' });
+  assert.ok(building.mandatory.includes('rules/common/onboarding.md'));
+  assert.ok(building.optional.includes('rules/common/stack-recommendations.md'));
+
+  // Maintenance (build complete): both are setup-era content and disappear.
+  const maintained = composeRuleManifest({ stack: 'default', mode: 'new-project', lifecycle: { phase: 'maintenance' } });
+  assert.ok(!maintained.mandatory.includes('rules/common/onboarding.md'));
+  assert.ok(!maintained.optional.includes('rules/common/stack-recommendations.md'));
+
+  // Existing codebases are maintenance from first detection — never materialized.
+  const existing = composeRuleManifest({ stack: 'minimal', mode: 'existing-codebase' });
+  assert.ok(!existing.mandatory.includes('rules/common/onboarding.md'));
+  assert.ok(!existing.mandatory.includes('rules/common/stack-recommendations.md'));
+  assert.ok(existing.mandatory.includes('rules/common/library-catalog.md'), 'library-catalog stays useful post-setup');
+});

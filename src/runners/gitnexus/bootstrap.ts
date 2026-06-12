@@ -29,6 +29,7 @@ import {
   toolStatus,
 } from '../toolchain';
 import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
+import { GITNEXUS_ROOT_DIRNAME, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import {
   currentNodeMajor,
   findNvmNode22,
@@ -283,7 +284,13 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
   // installed) → absolute nvm-v22 gitnexus (PATH-independent) → npx fallback →
   // bare `gitnexus` from PATH.
   let cmd: string;
-  let baseArgs = ['analyze', '.'];
+  // --skip-agents-md: gitnexus would otherwise inject its "Code Intelligence"
+  // block into root AGENTS.md/CLAUDE.md (creating them on a fresh project),
+  // which Traffic One's materializer then preserves into .local notes — ~5 KB
+  // of duplicated boilerplate in every generated AGENTS.md. Traffic One's own
+  // kernel, codebase-graph rule, and session graph preview already carry that
+  // guidance.
+  let baseArgs = ['analyze', '.', '--skip-agents-md'];
   const nvm22 = findNvmNode22();
   let nodeUsed: string | null | undefined;
   if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin) && opts.nodeBin && fs.existsSync(opts.nodeBin)) {
@@ -312,8 +319,12 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 5 * 60 * 1000,
   });
+  const status = typeof result.status === 'number' ? result.status : 1;
+  // GitNexus writes ./.gitnexus in the project root (no output-dir flag).
+  // Relocate it under .traffic-one/ so the graph never pollutes the root.
+  if (status === 0) relocateUnderTrafficOne(cwd, GITNEXUS_ROOT_DIRNAME, GITNEXUS_DIR);
   return {
-    status: typeof result.status === 'number' ? result.status : 1,
+    status,
     stderr: (result.stderr || '').trim(),
     stdout: (result.stdout || '').trim(),
     skippedGit: !hasGit,
@@ -435,6 +446,11 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
     writeStateMerge(cwd, { gitnexusLastErrorAt: nowIso(), gitnexusLastError: detail });
     return { ok: false, action, report: null, error: detail, durationMs: Date.now() - startedAt, license: 'PolyForm Noncommercial', backupRoot: backups.backupRoot };
   }
+
+  // Adopt the skills GitNexus generated under .claude/skills/ into Traffic One's
+  // per-project skills (.traffic-one/skills/<name>/) BEFORE the restore below —
+  // restore then cleanly reinstates whatever .claude/skills the project had.
+  relocateProviderSkills(cwd);
 
   // Restore traffic-one's versions of AGENTS.md / CLAUDE.md / .claude/skills
   // if GitNexus's run changed them.

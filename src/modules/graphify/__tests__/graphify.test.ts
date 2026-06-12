@@ -29,10 +29,10 @@ function withGraphProject(opts: { provider?: string; makeArtefact?: boolean; aut
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ stack: 'default' }), 'utf8');
   if (opts.makeArtefact) {
     if (provider === 'gitnexus') {
-      fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
+      fs.mkdirSync(path.join(dir, '.traffic-one', '.gitnexus'), { recursive: true });
     } else {
-      fs.mkdirSync(path.join(dir, 'graphify-out'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'graphify-out', 'GRAPH_REPORT.md'), '# graph\n', 'utf8');
+      fs.mkdirSync(path.join(dir, '.traffic-one', 'graphify-out'), { recursive: true });
+      fs.writeFileSync(path.join(dir, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '# graph\n', 'utf8');
     }
   }
   resetGraphifyHintThrottle();
@@ -65,10 +65,17 @@ test('graphify hint is silent when the artefact is missing', () => {
   });
 });
 
-test('graphify hint is silent when unauthenticated', () => {
+test('graphify hint is silent when unauthenticated AND auth is enforced', () => {
+  const savedAuth = process.env.TRAFFIC_ONE_AUTH;
+  process.env.TRAFFIC_ONE_AUTH = '1';
+  try {
   withGraphProject({ provider: 'gitnexus', makeArtefact: true, authed: false }, (cwd) => {
     assert.equal(preGraphifyHint(ctxFor(cwd)).kind, 'noop');
   });
+  } finally {
+    if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+    else process.env.TRAFFIC_ONE_AUTH = savedAuth;
+  }
 });
 
 test('graphify hint throttles to once per cwd per process', () => {

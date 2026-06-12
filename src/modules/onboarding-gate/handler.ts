@@ -16,14 +16,16 @@ import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
+import { firstEmitThisSession } from '../../shared/once';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { normalizeState, readEffectiveState } from '../../shared/state';
+import { hookSessionIdentity, normalizeState, readEffectiveState } from '../../shared/state';
 import { isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
@@ -38,39 +40,54 @@ export function onboardingGate(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
 
   if (isPluginAuthoringRoot(cwd)) return noop();
-  if (authChoiceAllowsContinue(cwd)) return noop();
-  // Auth is enforced by the priority-0 session gate before this gate runs.
 
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
-  const state = readEffectiveState(cwd);
-  const mode = (state.mode as string) || detectMode(cwd);
+  // Monorepo safety: a scaffolder may run from a sub-package cwd or target a
+  // sub-package file. Resolve UP to the workspace root that holds onboarding state,
+  // so a stray per-package state file can't trip a bogus per-package wizard or hide
+  // that the root is already onboarded. Falls back to cwd for a standalone project.
+  const root = resolveProjectRoot(cwd, filePath);
+  // The resolver skips authoring roots, but its fallback can still return cwd /
+  // a hint dir inside the plugin repo — never gate or materialize there.
+  if (isPluginAuthoringRoot(root)) return noop();
+
+  if (authChoiceAllowsContinue(root)) return noop();
+  // Auth is enforced by the priority-0 session gate before this gate runs.
+
+  const state = readEffectiveState(root);
+  const mode = (state.mode as string) || detectMode(root);
   const effectiveState: Rec = { ...state, mode };
   normalizeState(effectiveState, mode);
 
   // Team-mode write guards stay active — these are post-onboarding runtime
   // guardrails, not onboarding questions.
-  if (teamModeMarkerWriteViolation(cwd, toolName, toolInput)) {
+  if (teamModeMarkerWriteViolation(root, toolName, toolInput)) {
     return deny(block('team-mode-marker-guard'));
   }
-  if (teamModeDowngradeViolation(cwd, toolName, toolInput, effectiveState)) {
+  if (teamModeDowngradeViolation(root, toolName, toolInput, effectiveState)) {
     return deny(block('team-mode-downgrade-guard'));
   }
 
   // The model is allowed to write the canonical state file itself.
   if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) return noop();
 
-  if (!computeOnboarding(cwd).done) {
+  if (!computeOnboarding(root).done) {
     // Read-only orientation (pwd, ls, Read, Glob, Grep) is allowed so the agent
     // can find its bearings while the user completes the wizard.
     if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
     // The blocking "wait for setup" command is allowed so the agent can keep its
     // turn open until the wizard finishes, then continue the build automatically.
     if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
-    const server = ensureOnboardingServer(cwd);
-    return deny(block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) }));
+    const server = ensureOnboardingServer(root);
+    // The full preview-pane walkthrough (~2.3 KB) injects once per session; every
+    // further denied attempt repeats only the URL + wait-command essentials.
+    const denyBlock = firstEmitThisSession(root, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
+      ? 'server-deny-reason'
+      : 'server-deny-reason-repeat';
+    return deny(block(denyBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(root) }));
   }
 
-  const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic pre-tool convergence' });
+  const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });
   if (materialized) {
     if (isMutatingPreToolUse(toolName, toolInput)) return deny(block('repaired-materialization'));
     return context(materialized.context, { systemMessage: materialized.systemMessage });

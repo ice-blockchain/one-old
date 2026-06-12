@@ -21,6 +21,36 @@ const SKILL_TREES = ['skills', 'skills-catalog'] as const;
 
 export interface SkillDoc { relPath: string; content: string; }
 
+// Upstream-provenance frontmatter keys. The block is maintainer bookkeeping
+// (kept in src); shipped, it rides into every materialized project and is
+// re-read on every skill invocation by all three hosts — dead context bytes.
+const PROVENANCE_KEYS = new Set(['source', 'source_path', 'source_commit', 'adapted_for', 'merged_source_paths']);
+
+export function stripProvenanceMetadata(content: string): string {
+  const lines = content.split('\n');
+  if ((lines[0] ?? '').trim() !== '---') return content;
+  let fenceEnd = -1;
+  for (let i = 1; i < lines.length; i += 1) {
+    if ((lines[i] ?? '').trim() === '---') { fenceEnd = i; break; }
+  }
+  if (fenceEnd === -1) return content;
+  for (let i = 1; i < fenceEnd; i += 1) {
+    if (!/^metadata:\s*$/.test(lines[i] ?? '')) continue;
+    let stop = i + 1;
+    while (stop < fenceEnd) {
+      const line = lines[stop] ?? '';
+      if (/^\s+-\s/.test(line)) { stop += 1; continue; } // list item under a provenance key
+      const key = /^\s+([A-Za-z_][\w-]*):/.exec(line);
+      if (!key) break;
+      if (!PROVENANCE_KEYS.has(key[1] ?? '')) return content; // carries real data — keep
+      stop += 1;
+    }
+    if (stop === i + 1) return content; // empty mapping — leave as-is
+    return [...lines.slice(0, i), ...lines.slice(stop)].join('\n');
+  }
+  return content;
+}
+
 export function generatedSkillDocs(repoRoot: string): SkillDoc[] {
   const modulesDir = path.join(repoRoot, 'src', 'modules');
   const docs: SkillDoc[] = [];
@@ -29,7 +59,9 @@ export function generatedSkillDocs(repoRoot: string): SkillDoc[] {
       const base = path.join(dir, tree);
       if (!fs.existsSync(base)) continue;
       for (const f of collectFiles(base)) {
-        docs.push({ relPath: path.join(tree, f.rel), content: fs.readFileSync(f.abs, 'utf8') });
+        const raw = fs.readFileSync(f.abs, 'utf8');
+        const content = path.basename(f.rel) === 'SKILL.md' ? stripProvenanceMetadata(raw) : raw;
+        docs.push({ relPath: path.join(tree, f.rel), content });
       }
     }
   }

@@ -204,7 +204,7 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
       findings.push({
         severity: 'info',
         code: 'GITNEXUS_STALE',
-        message: `\`.gitnexus/\` is ${Math.round(ageDays)} days old. The next build will refresh it; or manually run \`gitnexus analyze .\` to update now.`,
+        message: `\`.traffic-one/.gitnexus/\` is ${Math.round(ageDays)} days old. The next build or session refreshes it automatically (the gitnexus runner rebuilds and relocates it under .traffic-one/).`,
       });
     }
   }
@@ -217,12 +217,50 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     });
   }
 
+  if (state && typeof state.graphifyLastError === 'string') {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'LAST_RUN_FAILED',
+      message: `Most recent graphify runner failed: ${state.graphifyLastError.split('\n')[0]}`,
+    });
+  }
+
   if (rawState && !provider) {
     findings.push({
       severity: 'fix-needed',
       code: 'MISSING_CODE_GRAPH_PROVIDER',
       message: `No local code graph provider is configured for this user/project. Choose GitNexus or graphify and save it to local preferences${project.localPreferencesPath ? ` (${project.localPreferencesPath})` : ''}; do not commit this choice to \`.traffic-one/.one.json\`.`,
     });
+  }
+
+  // OpenCode delegation readiness. Only meaningful when the user enabled it in
+  // the wizard; every finding here is self-healing (SessionStart re-registers
+  // the Codex MCP server and re-attempts the managed install), so the messages
+  // say what will happen automatically and what one-time action remains.
+  const openCode = state && state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
+  if (openCode?.enabled === true) {
+    if (project.openCodeCli === 'missing') {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'OPENCODE_CLI_MISSING',
+        tool: 'opencode',
+        message: 'OpenCode delegation is enabled but the OpenCode CLI is not installed (managed install absent, nothing on PATH). The next session start auto-installs it in the background — make sure `npm` is on PATH. Until then every delegation falls back to a paid subagent.',
+      });
+    } else if (project.openCodeCli === 'path') {
+      findings.push({
+        severity: 'info',
+        code: 'OPENCODE_CLI_UNMANAGED',
+        tool: 'opencode',
+        message: 'OpenCode delegation resolves a PATH-installed `opencode` (no Traffic One managed install), so its version is not pinned by the plugin. Works, but behavior may drift from the tested pinned version.',
+      });
+    }
+    if (codexHooks && codexHooks.configExists && codexHooks.opencodeMcpRegistered === false) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CODEX_OPENCODE_MCP_NOT_REGISTERED',
+        message: 'The opencode-worker MCP server is not registered in ~/.codex/config.toml, so the opencode_delegate tool is unavailable in Codex. The next session start registers it automatically; restart Codex once afterwards to load it.',
+      });
+    }
   }
 
   // Toolchain version drift. Walk `state.toolchain.*` against the toolchain

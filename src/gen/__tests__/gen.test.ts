@@ -16,13 +16,46 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     assert.ok(write.written.length > 250, `expected generated plugin files, got ${write.written.length}`);
     assert.ok(fs.existsSync(path.join(dir, '.codex-plugin', 'plugin.json')));
-    assert.ok(fs.existsSync(path.join(dir, '.cursor', 'rules', '00-auth-required.mdc')));
+    // The auth gate ships as the generated kernel rule; no static 00- seed copy.
+    assert.ok(!fs.existsSync(path.join(dir, '.cursor', 'rules', '00-auth-required.mdc')));
+    assert.ok(fs.existsSync(path.join(dir, '.cursor', 'rules', 'auth-required.mdc')));
     assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')));
     assert.ok(fs.existsSync(path.join(dir, 'package.json')));
     assert.ok(!fs.existsSync(path.join(dir, 'src')));
 
     const check = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
     assert.deepEqual(check.drift, [], `generated plugin drifted: ${check.drift.join(', ')}`);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('gen sweeps orphaned files in managed output dirs (deleted source content)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-orphan-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const orphanRule = path.join(dir, 'rules', 'common', 'retired-rule.md');
+    const orphanMdc = path.join(dir, '.cursor', 'rules', 'retired-rule.mdc');
+    fs.writeFileSync(orphanRule, '# Retired\n', 'utf8');
+    fs.writeFileSync(orphanMdc, '---\nalwaysApply: false\n---\n', 'utf8');
+
+    // check mode reports orphans as drift without touching them.
+    const check = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
+    assert.deepEqual(check.drift.sort(), [
+      '.cursor/rules/retired-rule.mdc (orphan: no longer generated)',
+      'rules/common/retired-rule.md (orphan: no longer generated)',
+    ]);
+    assert.ok(fs.existsSync(orphanRule));
+
+    // write mode prunes them.
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    assert.deepEqual(write.pruned.sort(), ['.cursor/rules/retired-rule.mdc', 'rules/common/retired-rule.md']);
+    assert.ok(!fs.existsSync(orphanRule));
+    assert.ok(!fs.existsSync(orphanMdc));
+
+    // and the tree round-trips clean again.
+    const recheck = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
+    assert.deepEqual(recheck.drift, []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -67,6 +100,20 @@ test('GenRun.json writes canonical 2-space JSON with a trailing newline; --check
     const check2 = new GenRun({ check: true, root: dir });
     check2.json('nested/x.json', { b: 2 });
     assert.deepEqual(check2.drift, ['nested/x.json']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('dist AGENTS.md/CLAUDE.md ship the end-user plugin instructions, not the maintainer guide', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-agents-'));
+  try {
+    runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'gen', 'static', 'plugin-instructions.md'), 'utf8');
+    assert.equal(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), source);
+    assert.equal(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8'), source);
+    // The maintainer guide (repo root AGENTS.md) must never ship.
+    assert.ok(!fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8').includes('Stand Down'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -7,7 +7,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
+import { OPENCODE_MCP_SERVER_KEY } from '../../config/opencode-mcp';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
+import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
   GITNEXUS_MIN_NODE_MAJOR,
   currentNodeMajor,
@@ -103,6 +106,9 @@ export interface ProjectProbe {
   nvmrc: string | null;
   hasGit: boolean;
   artefacts: { gitnexus: { mtimeMs: number } | null; graphify: { mtimeMs: number } | null };
+  // How a delegation run would resolve the OpenCode CLI right now: the managed
+  // install, a PATH binary (unpinned version), or nothing.
+  openCodeCli: 'managed' | 'path' | 'missing';
 }
 export function probeProject(cwd: string): ProjectProbe {
   const trafficOne = safeRead(path.join(cwd, '.traffic-one', '.one.json'));
@@ -121,8 +127,8 @@ export function probeProject(cwd: string): ProjectProbe {
   }
   const nvmrcRaw = safeRead(path.join(cwd, '.nvmrc'));
   const gitDir = safeStat(path.join(cwd, '.git'));
-  const gitnexusOut = safeStat(path.join(cwd, '.gitnexus'));
-  const graphifyOut = safeStat(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'));
+  const gitnexusOut = safeStat(path.join(cwd, GITNEXUS_REL));
+  const graphifyOut = safeStat(path.join(cwd, GRAPHIFY_REPORT_REL));
   return {
     cwd,
     hasState: !!state,
@@ -137,6 +143,9 @@ export function probeProject(cwd: string): ProjectProbe {
       gitnexus: gitnexusOut ? { mtimeMs: gitnexusOut.mtimeMs } : null,
       graphify: graphifyOut ? { mtimeMs: graphifyOut.mtimeMs } : null,
     },
+    openCodeCli: fs.existsSync(managedNpmBin('opencode', 'opencode'))
+      ? 'managed'
+      : (which('opencode') ? 'path' : 'missing'),
   };
 }
 
@@ -153,6 +162,10 @@ export interface CodexHooksProbe {
   missingHookEvents?: string[];
   trustCovered?: boolean;
   trustedProject?: string | null;
+  // Whether [mcp_servers.opencode-worker] is present in config.toml — Codex
+  // only launches MCP servers from there, so without it the delegation tool
+  // never appears (a Codex restart is needed after it is written).
+  opencodeMcpRegistered?: boolean;
 }
 export function probeCodexHooks(cwd: string, env: NodeJS.ProcessEnv = process.env): CodexHooksProbe {
   const configPath = codexConfigPath(env);
@@ -193,6 +206,7 @@ export function probeCodexHooks(cwd: string, env: NodeJS.ProcessEnv = process.en
     missingHookEvents,
     trustCovered: Boolean(trustedProject),
     trustedProject,
+    opencodeMcpRegistered: Object.prototype.hasOwnProperty.call(sections, `mcp_servers.${OPENCODE_MCP_SERVER_KEY}`),
   };
 }
 

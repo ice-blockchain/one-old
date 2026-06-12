@@ -34,8 +34,8 @@ test('graphify bootstrap honours the graphifyAutoRun:false opt-out', () => {
 
 test('graphify bootstrap short-circuits on a fresh GRAPH_REPORT.md', () => {
   withProject((cwd) => {
-    fs.mkdirSync(path.join(cwd, 'graphify-out'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, 'graphify-out', 'GRAPH_REPORT.md'), '# graph\n', 'utf8');
+    fs.mkdirSync(path.join(cwd, '.traffic-one', 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '# graph\n', 'utf8');
     const r = bootstrap(cwd);
     assert.equal(r.ok, true);
     assert.equal(r.action, 'fresh');

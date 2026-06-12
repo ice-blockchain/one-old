@@ -84,18 +84,11 @@ Use this skill when:
 
 ### Traffic One generated-web baseline
 
-- React/Vite or Ionic SPA output adds a route-aware `Seo.tsx` component and
-  `src/lib/seo.ts` helpers. Frameworks with native metadata APIs use those APIs
-  instead while satisfying the same fields.
-- App shell HTML includes fallback title, description, canonical, Open Graph,
-  Twitter Card, favicon links, and manifest link.
-- Public assets include `robots.txt`, `sitemap.xml`, `manifest.webmanifest`,
-  `favicon.ico`, `apple-touch-icon`, app icons, and a default 1200x630 OG image.
-- `.env.example` documents `VITE_SITE_URL` or the framework's public site URL
-  equivalent. Unknown production domains are `Unverified`, not invented.
-- Tests assert title, description, canonical, OG image, JSON-LD, sitemap
-  inclusion, and private/admin noindex for every created or changed public
-  route.
+The mandatory baseline for generated/reconciled web surfaces (route-aware SEO
+layer, app-shell fallbacks, crawl/share assets, the site-URL env var, and the
+per-route regression coverage) is defined in `rules/common/seo.md` — that rule
+is the source of truth; read it when generating or reconciling a web surface
+instead of restating it here.
 
 ### On-page rules
 

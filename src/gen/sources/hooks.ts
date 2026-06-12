@@ -10,8 +10,10 @@
 // parameter.
 
 // The literal plugin-root shell expansion (NOT a JS template — single-quoted so
-// the ${...} stays verbatim in the emitted command).
-const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}';
+// the ${...} stays verbatim in the emitted command). Exported so the .mcp.json
+// generator launches the bundled MCP server through the SAME chain (one shared
+// .mcp.json must resolve on Claude/Codex/Cursor alike).
+export const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}';
 
 export function claudeCommand(subcommand: string): string {
   return `node "${PLUGIN_ROOT_EXPR}/scripts/hook-runtime.cjs" ${subcommand}`;
@@ -76,6 +78,12 @@ export const POST_TOOL_USE: HookGroup[] = [
       { subcommand: 'post-build-page-speed', statusMessage: 'Checking page-speed gate...' },
       { subcommand: 'post-build-graphify' },
     ],
+  },
+  {
+    // Record the spawned agent id per role (agents.json) so the reuse gate can
+    // route the role's next task to the SAME agent instead of a fresh spawn.
+    matcher: 'Task|Agent|spawn_agent',
+    entries: [{ subcommand: 'post-agent-spawned' }],
   },
   {
     matcher: '.*',

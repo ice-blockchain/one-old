@@ -16,14 +16,32 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
   const savedRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
   const savedPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const savedState = env.TRAFFIC_ONE_STATE_PATH;
+  const savedCodexHome = env.CODEX_HOME;
+  const savedCodexPluginRoot = env.CODEX_PLUGIN_ROOT;
+  const savedTrafficOnePluginRoot = env.TRAFFIC_ONE_PLUGIN_ROOT;
+  const savedCodexOriginator = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  const savedCodexThreadId = env.CODEX_THREAD_ID;
+  const savedCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
   const prefsPath = path.join(dir, 'prefs.json');
   const onePath = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefsPath;
   env.TRAFFIC_ONE_STATE_PATH = onePath;
-  const { codeGraphProvider, ...projectPrefs } = prefs;
+  env.CODEX_HOME = path.join(dir, 'codex-home');
+  delete env.CODEX_PLUGIN_ROOT;
+  delete env.TRAFFIC_ONE_PLUGIN_ROOT;
+  delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  delete env.CODEX_THREAD_ID;
+  delete env.CURSOR_PLUGIN_ROOT;
+  const { codeGraphProvider, mode, ...projectPrefs } = prefs;
   fs.writeFileSync(prefsPath, JSON.stringify(projectPrefs), 'utf8');
+  // codeGraphProvider is machine-wide → one.json (TRAFFIC_ONE_STATE_PATH).
   if (codeGraphProvider) fs.writeFileSync(onePath, JSON.stringify({ version: 1, codeGraphProvider }), 'utf8');
+  // mode is a per-PROJECT state field → cwd/.traffic-one/.one.json.
+  if (mode) {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({ mode }), 'utf8');
+  }
   try {
     fn(dir);
   } finally {
@@ -31,6 +49,12 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
     if (savedRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = savedRoot;
     if (savedPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = savedPrefs;
     if (savedState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = savedState;
+    if (savedCodexHome === undefined) delete env.CODEX_HOME; else env.CODEX_HOME = savedCodexHome;
+    if (savedCodexPluginRoot === undefined) delete env.CODEX_PLUGIN_ROOT; else env.CODEX_PLUGIN_ROOT = savedCodexPluginRoot;
+    if (savedTrafficOnePluginRoot === undefined) delete env.TRAFFIC_ONE_PLUGIN_ROOT; else env.TRAFFIC_ONE_PLUGIN_ROOT = savedTrafficOnePluginRoot;
+    if (savedCodexOriginator === undefined) delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = savedCodexOriginator;
+    if (savedCodexThreadId === undefined) delete env.CODEX_THREAD_ID; else env.CODEX_THREAD_ID = savedCodexThreadId;
+    if (savedCursorPluginRoot === undefined) delete env.CURSOR_PLUGIN_ROOT; else env.CURSOR_PLUGIN_ROOT = savedCursorPluginRoot;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -116,6 +140,42 @@ test('graph provider installs but the first scan finds no code → ok=true (scan
   });
 });
 
+test('existing-codebase: a failed first scan GATES completion (graph required, no later trigger)', () => {
+  withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
+    const bin = path.join(cwd, 'bin');
+    writeGraphifyStubPythonScanFails(bin);
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = ensureOnboardingToolchain(cwd);
+      // Existing repo has code now → the graph MUST build; a failed scan blocks.
+      assert.equal(r.ok, false);
+      const gf = r.results.find((x) => x.tool === 'graphify');
+      assert.equal(gf?.ok, false);
+      assert.match(gf?.action || '', /scan failed/);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('existing-codebase: a successful first scan completes onboarding + builds the graph', () => {
+  withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
+    const bin = path.join(cwd, 'bin');
+    writeGraphifyStubPython(bin);
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = ensureOnboardingToolchain(cwd);
+      assert.equal(r.ok, true);
+      assert.equal(r.results.find((x) => x.tool === 'graphify')?.ok, true);
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md')), true);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
 test('graph provider succeeds + OpenCode fails → ok=true (warn-and-proceed)', () => {
   withTemp({ codeGraphProvider: 'graphify', openCode: { enabled: true } }, (cwd) => {
     const bin = path.join(cwd, 'bin');
@@ -134,6 +194,36 @@ test('graph provider succeeds + OpenCode fails → ok=true (warn-and-proceed)', 
       assert.equal(r.results.find((x) => x.tool === 'opencode')?.ok, false);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('Codex Desktop onboarding registers opencode-worker without plugin-root env', () => {
+  withTemp({ codeGraphProvider: 'graphify', openCode: { enabled: true } }, (cwd) => {
+    const env = process.env;
+    assert.ok(env.CODEX_HOME, 'test CODEX_HOME is sandboxed');
+    const pluginRoot = path.join(env.CODEX_HOME, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, 'scripts', 'opencode-mcp.cjs'), '#!/usr/bin/env node\n', 'utf8');
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+
+    const bin = path.join(cwd, 'bin');
+    writeGraphifyStubPython(bin);
+    const savedPath = env.PATH;
+    env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter); // graphify works; npm absent → OpenCode install warns only
+    try {
+      const r = ensureOnboardingToolchain(cwd);
+      assert.equal(r.ok, true);
+      const mcp = r.results.find((x) => x.tool === 'opencode-mcp');
+      assert.equal(mcp?.ok, true);
+      assert.equal(mcp?.action, 'codex-register:registered');
+      const cfg = fs.readFileSync(path.join(env.CODEX_HOME, 'config.toml'), 'utf8');
+      assert.ok(cfg.includes('[mcp_servers.opencode-worker]'));
+      assert.ok(cfg.includes('local-marketplaces/traffic-one-local/plugins/traffic-one/scripts/opencode-mcp.cjs'));
+      assert.equal(r.results.find((x) => x.tool === 'graphify')?.ok, true);
+      assert.equal(r.results.find((x) => x.tool === 'opencode')?.ok, false);
+    } finally {
+      if (savedPath === undefined) delete env.PATH; else env.PATH = savedPath;
     }
   });
 });

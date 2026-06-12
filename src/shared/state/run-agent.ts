@@ -7,6 +7,7 @@ import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isPluginAuthoringRoot } from '../authoring-root';
 import { parseJson, readJson, writeJson } from '../fsjson';
 import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
@@ -21,6 +22,25 @@ import { writeState } from './normalize';
 
 export function runIdNow(): string {
   return Date.now().toString();
+}
+
+// Ensure the project has a currentRunId, WITHOUT the full run-claim ceremony.
+// The OpenCode delegation gate runs in all modes and scopes its per-role attempt
+// marker by currentRunId, but ensureRunAgentClaim (which mints one) is reached
+// only on the new-project path — so on existing-codebase projects a configured
+// delegate role would slip past the gate whenever the orchestrator hasn't already
+// persisted a run id (e.g. a fresh materialization, or an interrupted/resumed
+// session that skipped Phase 0). Mirrors ensureRunAgentClaim's persist pattern;
+// writeState splits local prefs back out, so .one.json stays canonical. Returns
+// the existing or newly minted run id.
+export function ensureCurrentRunId(cwd: string, state: unknown): string {
+  const source: Rec = obj(state) ? { ...(state as Rec) } : {};
+  const existing = typeof source.currentRunId === 'string' ? source.currentRunId.trim() : '';
+  if (existing) return existing;
+  const runId = runIdNow();
+  source.currentRunId = runId;
+  writeState(cwd, source);
+  return runId;
 }
 
 function safePathSegment(value: unknown): string {
@@ -78,13 +98,21 @@ export function transcriptThreadId(transcriptPath: unknown): string | null {
 }
 
 // Infer the Traffic One role assigned to a subagent by reading its rollout
-// (transcript_path) and matching the spawn assignment "You are … senior-X". Anchored
-// on "You are" (within one clause) so a prompt that ALSO names other roles — e.g.
-// "you are senior-frontend … avoid backend-owned paths … senior-backend owns the API"
-// — still resolves the assigned role, not a cross-referenced one. Best-effort: returns
-// null if the file is unreadable or the assignment isn't present yet (SubagentStart can
-// fire before the rollout is flushed; the child's first write re-attempts when it is).
-const SPAWN_ROLE_RE = /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i;
+// (transcript_path) and matching the spawn assignment. Two anchored shapes cover
+// the prompts orchestrators actually write (observed live on Codex):
+//   - "You are … senior-X" (within one clause), and
+//   - "Traffic One senior-X role / fix-cycle / second pass / fallback …" — the
+//     dominant real-world phrasing; without it every Codex worker failed the
+//     per-thread self-heal and fell through to racy pending-claim matching.
+// Both are clause-anchored so a prompt that ALSO names other roles (e.g. "you are
+// senior-frontend … senior-backend owns the API") still resolves the assigned
+// role, not a cross-referenced one. Best-effort: returns null if the file is
+// unreadable or the assignment isn't present yet (SubagentStart can fire before
+// the rollout is flushed; the child's first write re-attempts when it is).
+const SPAWN_ROLE_RES = [
+  /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+  /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+] as const;
 export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
   let raw: string;
@@ -114,9 +142,11 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
     if (text) userTexts.push(text);
   }
   for (let i = userTexts.length - 1; i >= 0; i -= 1) {
-    const match = (userTexts[i] || '').match(SPAWN_ROLE_RE);
-    const role = match ? (match[1] as string).toLowerCase() : null;
-    if (role && VALID_AGENT_ROLES.has(role)) return role;
+    for (const re of SPAWN_ROLE_RES) {
+      const match = (userTexts[i] || '').match(re);
+      const role = match ? (match[1] as string).toLowerCase() : null;
+      if (role && VALID_AGENT_ROLES.has(role)) return role;
+    }
   }
   return null;
 }
@@ -278,6 +308,7 @@ export function ensureRunAgentClaim(
   metadata: { toolName?: string; agentType?: string; model?: string } = {},
 ): Rec | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
+  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
   const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
@@ -358,23 +389,36 @@ export function resolveRunAgentContext(
   // Codex reports) with no claim yet — infer its role from its own transcript and
   // stake the claim now. This runs at the child's first gated write, by which point
   // the rollout carries the spawn assignment (SubagentStart can fire before it does).
+  const inferredRole = shouldClaimPending && identity.transcriptPath
+    ? inferRoleFromTranscript(identity.transcriptPath)
+    : null;
   if (shouldClaimPending && identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId) {
-    const role = inferRoleFromTranscript(identity.transcriptPath);
-    if (role) {
-      const ctx = claimThreadRole(cwd, state, identity.threadId, role, { parentSessionId: identity.sessionId });
+    if (inferredRole) {
+      const ctx = claimThreadRole(cwd, state, identity.threadId, inferredRole, { parentSessionId: identity.sessionId });
       if (ctx) return ctx;
     }
   }
 
   if (shouldClaimPending && identity.isSubagent) {
     for (const runId of runIds) {
-      const pending = listPendingClaims(cwd, runId).filter(({ claim }) => claimAllowsState(state, claim));
+      // When the thread's transcript reveals its role, never claim a different
+      // role's pending file: parallel fix-cycle workers spawn near-simultaneously
+      // and FIFO matching hands the frontend worker the backend claim (observed
+      // live — the misclaimed worker then fails every scope check and the run
+      // deadlocks until the orchestrator improvises).
+      const pending = listPendingClaims(cwd, runId)
+        .filter(({ claim }) => claimAllowsState(state, claim))
+        .filter(({ claim }) => !inferredRole || claim.role === inferredRole);
       const matched = pending.find(({ claim }) => (
         identity.parentSessionId && claim.parentSessionId && claim.parentSessionId === identity.parentSessionId
       )) || pending[0];
       if (!matched) continue;
 
-      const sessionId = identity.sessionId || (matched.claim.sessionId as string) || (matched.claim.claimId as string);
+      // Key the claimed file by the PER-THREAD id when we have one. On Codex,
+      // identity.sessionId is the parent's session for every worker thread — using
+      // it as the key made all parallel workers collide on one claim file (each
+      // overwrite re-pointed every worker's resolution at the last-claimed role).
+      const sessionId = identity.threadId || identity.sessionId || (matched.claim.sessionId as string) || (matched.claim.claimId as string);
       const claimed: Rec = {
         ...matched.claim,
         status: 'claimed',
@@ -412,6 +456,7 @@ export function claimThreadRole(
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
+  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const id = threadId.trim();
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
@@ -452,6 +497,28 @@ export function hasRunAgentState(cwd: string, state: unknown): boolean {
   const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId : null;
   if (!runId) return false;
   return fs.existsSync(runDir(cwd, runId));
+}
+
+// True when any subagent is currently in flight across all runs: a fresh pending
+// claim (within PENDING_AGENT_CLAIM_STALE_MS) or a fresh claimed agent (within
+// SUBAGENT_STALE_MS). Used by the build-completion heuristic to never flip a
+// project to maintenance phase while an orchestration run is still active.
+// `options.since` is the lifecycle completion watermark: claims created at or
+// before it belong to a FINISHED run and do not count — without it, a completed
+// build's claims would look "active" for up to 30 minutes and suppress the
+// post-build triage directive at exactly the moment the user starts iterating.
+export function hasActiveRunClaims(cwd: string, state: unknown, options: { since?: string | null } = {}): boolean {
+  const sinceTs = typeof options.since === 'string' && options.since.trim() ? Date.parse(options.since) : NaN;
+  const afterWatermark = (claim: Rec): boolean => {
+    if (!Number.isFinite(sinceTs)) return true;
+    const created = typeof claim.createdAt === 'string' ? Date.parse(claim.createdAt) : NaN;
+    return !Number.isFinite(created) || created > sinceTs;
+  };
+  for (const runId of runIdsForLookup(cwd, state)) {
+    if (listPendingClaims(cwd, runId).some(({ claim }) => afterWatermark(claim))) return true;
+    if (listClaimedAgents(cwd, runId).some((claim) => isFreshTimestamp(claim.createdAt, SUBAGENT_STALE_MS) && afterWatermark(claim))) return true;
+  }
+  return false;
 }
 
 export function legacyRunAgentContext(state: unknown): RunAgentContext | null {
@@ -563,6 +630,7 @@ export function tryFallbackClaim(
 ): { blocked: boolean; holder?: string } {
   const runId = ctx && ctx.runId != null ? String(ctx.runId) : '';
   if (!runId) return { blocked: false };
+  if (isPluginAuthoringRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
   const myKey = String(ctx.sessionId || ctx.claimId || ctx.role || '');
   const file = fallbackClaimFile(cwd, runId, normalizeRelPath(target));
   const existing = obj(readJson(file, null));
@@ -588,4 +656,126 @@ export function tryFallbackClaim(
     // best-effort lock; never block the writer on a lock-write failure
   }
   return { blocked: false };
+}
+
+// ── Per-run live-agent registry (subagent reuse) ──────────────────────────────
+// .traffic-one/runs/<runId>/agents.json maps role → the LIVE agent id returned
+// by the host's spawn tool. The PostToolUse recorder writes it; the PreToolUse
+// reuse gate denies a SECOND same-role spawn and points the orchestrator at the
+// recorded id, so the role's later tasks continue ONE agent (SendMessage) and
+// the rules+skills context loads once per role instead of once per task.
+// Entries are parent-session-bound: an in-process agent dies with its parent
+// session, so an id recorded by ANOTHER session never blocks a spawn.
+
+export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
+
+// Continuation needs the host's send-to-agent tool. On Codex that is
+// send_input — native to the multi_agent toolset, always present, no flag (so
+// the one-live-agent registry/dedup must be ON there by default; keying only on
+// the Claude flag silently disabled the whole regime on Codex). On Claude it is
+// SendMessage, which only registers when the agent-teams feature flag was set
+// at session start. An explicit falsy flag still switches it off everywhere.
+export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+  const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
+  if (flag === '0' || flag === 'false' || flag === 'off') return false;
+  if (env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  return flag !== '';
+}
+
+function agentRegistryFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'agents.json');
+}
+
+export interface RunAgentEntry {
+  agentId: string;
+  role: string;
+  model: string | null;
+  agentType: string | null;
+  parentSessionId: string | null;
+  recordedAt: string;
+  tasks: number;
+  replaced: boolean;
+}
+
+export function readRunAgentRegistry(cwd: string, runId: string): Record<string, RunAgentEntry> {
+  const raw = obj(readJson(agentRegistryFile(cwd, runId), null));
+  const agents = raw ? obj(raw.agents) : null;
+  if (!agents) return {};
+  const out: Record<string, RunAgentEntry> = {};
+  for (const [role, value] of Object.entries(agents)) {
+    const entry = obj(value);
+    if (!entry || typeof entry.agentId !== 'string' || !entry.agentId) continue;
+    out[role] = {
+      agentId: entry.agentId,
+      role,
+      model: typeof entry.model === 'string' ? entry.model : null,
+      agentType: typeof entry.agentType === 'string' ? entry.agentType : null,
+      parentSessionId: typeof entry.parentSessionId === 'string' ? entry.parentSessionId : null,
+      recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : '',
+      tasks: typeof entry.tasks === 'number' && Number.isInteger(entry.tasks) && entry.tasks > 0 ? entry.tasks : 1,
+      replaced: entry.replaced === true,
+    };
+  }
+  return out;
+}
+
+export function recordRunAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  entry: { agentId: string; model?: string | null; agentType?: string | null; parentSessionId?: string | null },
+): void {
+  if (!VALID_AGENT_ROLES.has(role)) return;
+  if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
+  const agents = readRunAgentRegistry(cwd, runId) as Rec;
+  const prior = obj(agents[role]);
+  agents[role] = {
+    agentId: entry.agentId,
+    model: entry.model || null,
+    agentType: entry.agentType || null,
+    parentSessionId: entry.parentSessionId || null,
+    recordedAt: stateTimestamp(),
+    tasks: prior && prior.agentId === entry.agentId && typeof prior.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
+    replaced: false,
+  };
+  try {
+    fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents });
+  } catch {
+    // best-effort registry; reuse falls back to fresh spawns when unwritable
+  }
+}
+
+// The live (reusable) agent for a role, or null. parentSessionId binding: when
+// BOTH sides are known they must match — an agent spawned by a different parent
+// session no longer exists in-process. When either side is unknown (host did
+// not surface a session id), fall back to a freshness window instead of
+// blocking forever on a stale registry.
+export function liveRunAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  parentSessionId: string | null,
+): RunAgentEntry | null {
+  const entry = readRunAgentRegistry(cwd, runId)[role];
+  if (!entry || entry.replaced) return null;
+  if (entry.parentSessionId && parentSessionId) {
+    return entry.parentSessionId === parentSessionId ? entry : null;
+  }
+  return isFreshTimestamp(entry.recordedAt, SUBAGENT_STALE_MS) ? entry : null;
+}
+
+// Mark the role's current agent as replaced (exhausted/dead): the next spawn
+// for the role is allowed and the recorder overwrites the entry.
+export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
+  if (isPluginAuthoringRoot(cwd)) return;
+  const agents = readRunAgentRegistry(cwd, runId) as Rec;
+  const entry = obj(agents[role]);
+  if (!entry) return;
+  entry.replaced = true;
+  try {
+    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents });
+  } catch {
+    // best-effort
+  }
 }

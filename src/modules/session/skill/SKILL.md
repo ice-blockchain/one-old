@@ -60,6 +60,10 @@ If Continue without Traffic One is chosen, remember the choice for this project 
 Do not inspect, scaffold, install, edit, or build before the user answers this auth choice.
 <!-- T1BLOCK:END pre-tool-deny -->
 
+<!-- T1BLOCK:BEGIN authoring-write-guard -->
+traffic-one — write blocked: "{{PATH}}" is inside the Traffic One plugin source repository ({{ROOT}}). This repo is the plugin's own codebase, never a Traffic One project: do not create `.traffic-one/**` here (no .one.json, manifest.json, one-mcp-report.json, runs/, rules/skills copies) and do not write generated AGENTS.md/CLAUDE.md project context into it. Traffic One conventions inherited from a parent directory's AGENTS.md do not apply inside this repo. Continue the user's task with plain source edits.
+<!-- T1BLOCK:END authoring-write-guard -->
+
 <!-- T1BLOCK:BEGIN session-expired -->
 Your Traffic One session expired and the silent background refresh from your keychain key did not recover after several retries, so a fresh key is needed. Do not continue implementation yet.
 This is a re-authentication, not first-time setup — the user already opted in, so "Continue without Traffic One" is intentionally NOT offered here (it is not a contradiction; it is the next step of the flow the user already chose).

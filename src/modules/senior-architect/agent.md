@@ -31,7 +31,7 @@ You're the *first* subagent in the run, so the read order is the simplest:
 
 1. `.traffic-one/.one.json` — required.
 2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/known-issues.md`, `.traffic-one/rules/*.md` if present — persistent project memory.
-3. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.gitnexus/` when `codeGraphProvider: "gitnexus"`, `graphify-out/GRAPH_REPORT.md` when `codeGraphProvider: "graphify"`. Read it if it exists (existing-codebase mode where the user pre-built the graph). Skip silently if missing.
+3. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.traffic-one/.gitnexus/` when `codeGraphProvider: "gitnexus"`, `.traffic-one/graphify-out/GRAPH_REPORT.md` when `codeGraphProvider: "graphify"`. Read it if it exists (existing-codebase mode where the user pre-built the graph). Skip silently if missing.
 4. The user's last 1–3 messages — extract verb, audience, primary action.
 5. `.traffic-one/plan.md` if it exists — you are extending, not replacing.
 
@@ -142,6 +142,13 @@ The 3 things most likely to derail the build. One mitigation each.
 
 ## Cut-list
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
+
+## OpenCode delegation queue
+Bounded, low-risk units the orchestrator delegates to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's token budget. Queue ONLY: boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding, mechanical refactors/renames, formatting/codemods. NEVER queue architecture, public contracts, security/auth, data-model, migrations, or cross-file-invariant work — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Leave the block empty (or omit it) when `openCode.enabled` is false or there are no bounded units.
+
+<!-- opencode-delegate:start -->
+- role: <frontend|backend|tester> | files: <exact path(s)> | task: <self-contained task: acceptance criteria + exact files/area, no external context>
+<!-- opencode-delegate:end -->
 ```
 
 After the plan, write any ADRs to `.traffic-one/decisions/NNNN-<slug>.md`. For new projects,
@@ -187,6 +194,12 @@ Guarantees you must uphold (the gate trusts the manifest):
 - **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).
 - **Covers the work surface** — every module an implementer will build falls in exactly one role's scope. Anything left uncovered is governed by a first-writer fallback lock — a safety net, not the plan.
 - **Real paths only** — every `include`/`exclude` is a directory that exists or that this run creates.
+- **Lockfiles are side-effects, not owned source** — `pnpm-lock.yaml` /
+  `package-lock.json` / `yarn.lock` / `bun.lock*` are written by installs, not
+  authored. Include them in EVERY implementer's scope (or state in each spawn
+  prompt that lockfile updates from installs are always in scope). A role must
+  never delete or revert a lockfile to satisfy its scope — that leaves the
+  workspace without install determinism and burns a reviewer finding.
 
 If you cannot partition the surface disjointly, report the blocker instead of emitting `PLAN_READY`.
 
@@ -209,3 +222,4 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.
 - The plan stays under ~250 lines. If a section is bigger, link out to the relevant root doc.
 - End your final reply with the literal token `PLAN_READY` on its own line so the orchestrator can detect completion.
+- You may receive FOLLOW-UP planning tasks in this same agent session (plan amendments, a maintenance feature on the same run). Treat each new message as a fresh planning task under this same contract — amend `.traffic-one/plan.md` and `assignments.json` surgically, update your digest, end with `PLAN_READY`.

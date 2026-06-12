@@ -33,7 +33,10 @@ function entryFilename(): string {
 export function isLoopbackHostname(hostname: string): boolean {
   const host = String(hostname || '').toLowerCase().replace(/^\[|\]$/g, '');
   const ipVersion = net.isIP(host);
-  if (ipVersion === 4) return host === '0.0.0.0' || host.startsWith('127.');
+  // 0.0.0.0 is the wildcard address, not loopback — it has no legitimate
+  // client-connect use that 127.0.0.1 doesn't cover, so keep the plaintext-HTTP
+  // exception to genuine loopback only.
+  if (ipVersion === 4) return host.startsWith('127.');
   if (ipVersion === 6) return host === '::1' || host === '0:0:0:0:0:0:0:1';
   return host === 'localhost' || host === 'localhost.';
 }
@@ -104,6 +107,16 @@ export function authEnforced(env: NodeJS.ProcessEnv = process.env): boolean {
   if (o === '1' || o === 'true' || o === 'on' || o === 'yes') return true;
   if (o === '0' || o === 'false' || o === 'off' || o === 'no') return false;
   return AUTH_ENABLED;
+}
+
+// The auth predicate HOOK HANDLERS must use: authenticated, OR auth enforcement
+// is off. Raw isAuthenticatedLocal() checks token freshness unconditionally —
+// with AUTH_ENABLED=false (no tokens minted anywhere) it is false on every
+// install, which silently dead-coded every handler gated on it (observed live:
+// the post-build graph rescan, the page-speed gate, the token log, and
+// post-stack-setup's write-convergence never ran in a full Codex build).
+export function authSatisfied(env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): boolean {
+  return !authEnforced(env) || isAuthenticatedLocal(env, nowMs);
 }
 
 export function authRemoteCheckDue(state: AuthState | null = readAuthState(), env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): boolean {

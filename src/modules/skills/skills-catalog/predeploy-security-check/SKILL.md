@@ -65,11 +65,6 @@ then install the scanners:
 brew install gitleaks trufflehog
 ```
 
-For the skill validator only, if `quick_validate.py` fails with
-`No module named 'yaml'`, ask before creating a tool venv and installing
-`PyYAML`. Benefit: it validates skill frontmatter and prevents malformed skill
-metadata from shipping.
-
 ## What Blocks Deployment
 
 - Gitleaks or TruffleHog findings in git history, working tree, or verified/unknown secret scans.

@@ -38,7 +38,7 @@ The orchestrator passes you `<run-id>` in your synthetic prompt. Read in priorit
 1. `.traffic-one/digests/<run-id>/architect.md` — the predecessor digest (~2 KB). What the architect produced + which plan sections you should focus on.
 2. `.traffic-one/product.md`, `.traffic-one/stack.md`, `.traffic-one/coding.md`, `.traffic-one/known-issues.md` if present.
 3. `.traffic-one/plan.md` § Frontend + § Module map (only your scope; ~1 KB).
-4. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.gitnexus/` for gitnexus, `graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`, `packages/ui*` nodes specifically.
+4. The codebase-graph artefact at the active provider's location (per `rules/common/codebase-graph.md`): `.traffic-one/.gitnexus/` for gitnexus, `.traffic-one/graphify-out/GRAPH_REPORT.md` for graphify. Scope to `apps/*/src/`, `packages/ui*` nodes specifically.
 5. Specific source files only when 1–4 don't answer the question. Cap raw `Read` to ~3 files outside the plan/graph scope.
 
 Token budget: ~12k total. Don't `Glob` the repo; the digest's "Next-phase reading hints" tell you what to look at.
@@ -160,3 +160,4 @@ Format: `rules/common/agent-handoff-digests.md`. Sections: verdict, finished_at,
   a recorded design brief/references unless it is matching an existing product
   aesthetic.
 - End your reply with a one-line status: which routes/components you produced, what's still pending, what backend contracts you assumed.
+- You may receive FOLLOW-UP tasks in this same agent session (the next planned part, reviewer/tester fix cycles). Treat each new message as a fresh task under this same role contract — same owned scope, update your digest under `.traffic-one/digests/<runId>/`, end with the same status format. Build on what you already read instead of re-exploring it.

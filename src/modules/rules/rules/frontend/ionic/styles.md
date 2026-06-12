@@ -17,7 +17,9 @@ small in-repo bridge that maps shadcn HSL CSS variables to Ionic's
 
 ## Tailwind config
 
-- `tailwindcss@^3.4` (NOT v4). Pair with `postcss` and `autoprefixer`.
+- `tailwindcss@^3.4` (NOT v4 — the preflight-off Ionic bridge below is
+  validated on v3's JS config; this pin is deliberate, do not "upgrade" it to
+  match the web stack). Pair with `postcss` and `autoprefixer`.
 - `corePlugins.preflight: false` — Tailwind's reset stomps the styling Ionic
   components rely on. Ship your own minimal reset only if needed.
 - `content` covers `index.html`, `src/**/*.{ts,tsx}`, and `packages/ui/**`.

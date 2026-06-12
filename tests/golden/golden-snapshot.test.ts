@@ -6,6 +6,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import { runGen } from '../../src/gen';
+import { GOLDEN_EXCLUDED } from '../../src/build/golden-update';
 
 // Golden snapshot of every artifact the generator must reproduce byte-for-byte:
 // the 4 host configs, 5 manifests, AGENTS.md, and the content trees (skills,
@@ -57,6 +58,22 @@ test('every generated artifact matches its golden hash (byte-identical)', () => 
     }
     assert.deepEqual(missing, [], `generated artifacts missing from the scratch plugin:\n${missing.join('\n')}`);
     assert.deepEqual(drifted, [], `generated artifacts drifted from the golden snapshot:\n${drifted.join('\n')}`);
+
+    // Reverse sweep — additions-aware: every generated file must be hashed in
+    // the manifest (or deliberately excluded), so a new emitter can't ship
+    // unsnapshotted bytes. Refresh with `npm run golden:update`.
+    const inManifest = new Set(entries.map((e) => e.rel));
+    const unhashed: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) { walk(abs); continue; }
+        const rel = path.relative(scratch, abs).split(path.sep).join('/');
+        if (!inManifest.has(rel) && !GOLDEN_EXCLUDED.has(rel)) unhashed.push(rel);
+      }
+    };
+    walk(scratch);
+    assert.deepEqual(unhashed.sort(), [], `generated artifacts not covered by the golden manifest (run \`npm run golden:update\`):\n${unhashed.join('\n')}`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
   }

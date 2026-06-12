@@ -29,9 +29,21 @@ export function readJson<T = unknown>(filePath: string, fallback: T): T {
   return text == null ? fallback : parseJson<T>(text, fallback);
 }
 
+// Atomic write (temp + rename): parallel hook processes read/write the same
+// state files (.one.json, manifests), so a plain writeFileSync can be torn —
+// a concurrent reader then sees invalid JSON, falls back to {}, and may
+// rewrite freshly-detected state over the real one.
 export function writeJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
+  const payload = `${JSON.stringify(value, null, 2)}\n`;
+  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmpPath, payload, 'utf8');
+    fs.renameSync(tmpPath, filePath);
+  } catch {
+    try { fs.unlinkSync(tmpPath); } catch { /* best effort */ }
+    fs.writeFileSync(filePath, payload, 'utf8');
+  }
 }
 
 export const fsjson: FsJson = { readText, readJson, writeJson };

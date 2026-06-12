@@ -6,13 +6,31 @@ import * as path from 'path';
 
 import { makeClaudeAdapter } from '../../../adapters/claude';
 import { dispatch } from '../../../core/dispatch';
+import { agentModelGate } from '../../agent-model/handler';
 import { runUserPromptSubmit } from '../prompt-submit';
-import type { Ctx, Handler, HookInput, HookResult } from '../../../core/types';
+import type { Ctx, Handler, HookInput, HookResult, ToolClass } from '../../../core/types';
+import { markOpenCodeGateDenied, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function ctxHost(cwd: string, prompt: string, host: HookInput['host']): Ctx {
+  const input: HookInput = { event: 'UserPromptSubmit', host, cwd, prompt, raw: { prompt } };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
+  const input: HookInput = {
+    event: 'PreToolUse',
+    host: 'claude',
+    cwd,
+    raw: { tool_name: 'Task', tool_input: toolInput },
+    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+  };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
@@ -35,10 +53,24 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  const prevToolchainRoot = env.TRAFFIC_ONE_TOOLCHAIN_ROOT;
+  const prevCodexHome = env.CODEX_HOME;
+  const prevCodexPluginRoot = env.CODEX_PLUGIN_ROOT;
+  const prevTrafficOnePluginRoot = env.TRAFFIC_ONE_PLUGIN_ROOT;
+  const prevCodexOriginator = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  const prevCodexThreadId = env.CODEX_THREAD_ID;
+  const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
+  env.CODEX_HOME = path.join(dir, 'codex-home');
+  delete env.CODEX_PLUGIN_ROOT;
+  delete env.TRAFFIC_ONE_PLUGIN_ROOT;
+  delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
+  delete env.CODEX_THREAD_ID;
+  delete env.CURSOR_PLUGIN_ROOT;
   fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
     version: 1,
     auth: {
@@ -55,6 +87,13 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
+    if (prevToolchainRoot === undefined) delete env.TRAFFIC_ONE_TOOLCHAIN_ROOT; else env.TRAFFIC_ONE_TOOLCHAIN_ROOT = prevToolchainRoot;
+    if (prevCodexHome === undefined) delete env.CODEX_HOME; else env.CODEX_HOME = prevCodexHome;
+    if (prevCodexPluginRoot === undefined) delete env.CODEX_PLUGIN_ROOT; else env.CODEX_PLUGIN_ROOT = prevCodexPluginRoot;
+    if (prevTrafficOnePluginRoot === undefined) delete env.TRAFFIC_ONE_PLUGIN_ROOT; else env.TRAFFIC_ONE_PLUGIN_ROOT = prevTrafficOnePluginRoot;
+    if (prevCodexOriginator === undefined) delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = prevCodexOriginator;
+    if (prevCodexThreadId === undefined) delete env.CODEX_THREAD_ID; else env.CODEX_THREAD_ID = prevCodexThreadId;
+    if (prevCursorPluginRoot === undefined) delete env.CURSOR_PLUGIN_ROOT; else env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -223,22 +262,256 @@ test('authed + complete existing project but missing local prefs → setup requi
   });
 });
 
+function writeMaterialized(cwd: string, stackId: string): void {
+  const t1 = path.join(cwd, '.traffic-one');
+  fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
+  fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
+  fs.writeFileSync(path.join(t1, 'rules', 'common', 'auth-gate.md'), 'r', 'utf8');
+  fs.writeFileSync(path.join(t1, 'skills', 'project-memory', 'SKILL.md'), 's', 'utf8');
+  fs.writeFileSync(path.join(t1, 'manifest.json'), JSON.stringify({ generatedBy: 'traffic-one', stack: stackId, rules: ['rules/common/auth-gate.md'], skills: ['project-memory'] }), 'utf8');
+  fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'x\n<!-- GENERATED BY traffic-one: project-local active rules -->\n', 'utf8');
+  fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'see agents', 'utf8');
+}
+
 test('authed + complete, materialized project, local prefs resolved → plain active-stack context', () => {
   withAuthedProject(completeSharedState(), (cwd) => {
     writeLocalPrefs();
-    const t1 = path.join(cwd, '.traffic-one');
-    fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
-    fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
-    fs.writeFileSync(path.join(t1, 'rules', 'common', 'auth-gate.md'), 'r', 'utf8');
-    fs.writeFileSync(path.join(t1, 'skills', 'project-memory', 'SKILL.md'), 's', 'utf8');
-    fs.writeFileSync(path.join(t1, 'manifest.json'), JSON.stringify({ generatedBy: 'traffic-one', stack: 'default', rules: ['rules/common/auth-gate.md'], skills: ['project-memory'] }), 'utf8');
-    fs.writeFileSync(path.join(cwd, 'AGENTS.md'), 'x\n<!-- GENERATED BY traffic-one: project-local active rules -->\n', 'utf8');
-    fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'see agents', 'utf8');
+    writeMaterialized(cwd, 'default');
     const r = runUserPromptSubmit(ctx(cwd, 'add a button'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.equal(r.systemMessage, 'traffic-one [default]');
       assert.ok(r.context.includes('[ACTIVE STACK: default]'));
+    }
+  });
+});
+
+// ── Post-build maintenance triage ──
+
+test('maintenance (existing-codebase) + trivial coding prompt → subagents triage, trivial hint', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color to blue'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
+      assert.ok(r.context.includes('Keyword hint: trivial'), 'trivial hint');
+      assert.ok(r.context.includes('quick-fix'), 'subagents variant routes to quick-fix');
+      // Prescriptive: force delegation + name the concrete cheapest model (host=claude → haiku).
+      assert.ok(r.context.includes('Do NOT make the edit yourself'), 'directive forbids inline work in subagents mode');
+      assert.ok(r.context.includes('model "haiku"'), 'names the concrete cheapest model');
+    }
+  });
+});
+
+test('maintenance triage: full rubric once per session, then a one-line reminder with fresh hint', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const first = runUserPromptSubmit(ctx(cwd, 'change the button color to blue'));
+    assert.equal(first.kind, 'context');
+    if (first.kind === 'context') assert.ok(first.context.includes('MAINTENANCE PHASE — post-build triage'), 'first prompt gets the full rubric');
+    const second = runUserPromptSubmit(ctx(cwd, 'now fix the headline copy'));
+    assert.equal(second.kind, 'context');
+    if (second.kind === 'context') {
+      assert.ok(second.context.includes('triage reminder'), 'second prompt gets the one-liner');
+      assert.ok(!second.context.includes('post-build triage] The main build is complete'), 'rubric body not repeated');
+      assert.ok(second.context.includes('hint: trivial'), 'reminder still carries the per-prompt hint');
+    }
+  });
+});
+
+test('maintenance + OpenCode ACTIVE → triage routes to opencode_delegate FIRST (paid worker only as fallback)', () => {
+  // The reported gap: quick-fix went straight to the paid model because the project's
+  // opencode (enabled + present) was never stamped, so openCodeDelegationActive() was
+  // false and the directive dropped its OpenCode clause. With opencode enabled AND
+  // stamped, the directive must push the delegate tool first.
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color to blue'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
+      assert.ok(r.context.includes('opencode_delegate'), 'routes to the OpenCode delegate tool');
+      assert.ok(r.context.includes('FIRST'), 'OpenCode is the FIRST attempt; the paid worker is the fallback');
+    }
+  });
+});
+
+test('maintenance + OpenCode ACTIVE on Codex → routes to opencode_delegate FIRST (host-agnostic) + self-registers the MCP server', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    const env = process.env;
+    assert.ok(env.CODEX_HOME, 'test CODEX_HOME is sandboxed');
+    const pluginRoot = path.join(env.CODEX_HOME, 'local-marketplaces', 'traffic-one-local', 'plugins', 'traffic-one');
+    fs.mkdirSync(path.join(pluginRoot, 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, 'scripts', 'opencode-mcp.cjs'), '#!/usr/bin/env node\n', 'utf8');
+    env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
+
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'minimal');
+
+    const r = runUserPromptSubmit(ctxHost(cwd, 'create new page called news and add some dummy data', 'codex'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      // Codex behaves like every other host now: delegate FIRST, no host-blocked clause.
+      assert.ok(r.context.includes('opencode_delegate'), 'Codex routes to the OpenCode delegate tool');
+      assert.ok(r.context.includes('FIRST'), 'OpenCode is the FIRST attempt; the paid worker is the fallback');
+      assert.ok(!r.context.includes('Codex blocks'), 'no host-blocked clause');
+      assert.ok(!r.context.includes('Do NOT call `opencode_delegate`'), 'Codex is not steered away from the tool');
+    }
+    // Still self-registers the MCP server in config.toml when session-start missed it.
+    const cfg = fs.readFileSync(path.join(env.CODEX_HOME, 'config.toml'), 'utf8');
+    assert.ok(cfg.includes('[mcp_servers.opencode-worker]'));
+    assert.ok(cfg.includes('local-marketplaces/traffic-one-local/plugins/traffic-one/scripts/opencode-mcp.cjs'));
+  });
+});
+
+test('maintenance triage mints a fresh run id so stale OpenCode role attempts do not bypass the next request', () => {
+  withAuthedProject(existingSharedState({
+    materializedStack: 'minimal|none|other|none',
+    currentRunId: 'old-maintenance-run',
+    spawnIndex: { 'senior-frontend': 1 },
+  }), (cwd) => {
+    writeLocalPrefs({
+      openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      toolchain: { ...TOOLCHAIN, opencode: { installedVersion: '1.15.13', installedAt: 'now' } },
+    });
+    writeMaterialized(cwd, 'minimal');
+    markOpenCodeGateDenied(cwd, 'old-maintenance-run', 'senior-frontend');
+    markOpenCodeRoleAttempted(cwd, 'old-maintenance-run', 'senior-frontend');
+
+    const triage = runUserPromptSubmit(ctx(cwd, 'create new page called news and add some dummy data'));
+    assert.equal(triage.kind, 'context');
+    if (triage.kind === 'context') {
+      assert.ok(triage.context.includes('MAINTENANCE PHASE'), 'triage directive present');
+      assert.ok(triage.context.includes('role "senior-frontend"'), 'small single-role work is explicitly OpenCode-delegated first');
+    }
+
+    const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.notEqual(one.currentRunId, 'old-maintenance-run', 'new maintenance request gets a fresh run id');
+    assert.deepEqual(one.spawnIndex || {}, {}, 'fresh maintenance run starts with a clean spawn index');
+
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
+  });
+});
+
+test('maintenance + a copy/headline tweak (missed by the coding-intent heuristic) still triages', () => {
+  // Regression: "Change the hero headline ..." has no coding verb/noun, so the
+  // narrow isLikelyCodingPrompt suppressed the directive and the main agent edited
+  // inline instead of routing to quick-fix. isLikelyEditRequest now fires it.
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'Change the hero headline to Master Software without Development'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('MAINTENANCE PHASE'), 'triage fires for a copy/headline tweak');
+      assert.ok(r.context.includes('quick-fix'), 'routes to the quick-fix worker');
+    }
+  });
+});
+
+test('maintenance + complex coding prompt → complex hint, orchestrator route', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'add Stripe checkout and subscription billing'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('Keyword hint: complex'), 'complex hint');
+      assert.ok(r.context.includes('senior-eng-orchestrator'), 'routes to the orchestrator');
+    }
+  });
+});
+
+test('building new project → NO triage directive', () => {
+  withAuthedProject(completeSharedState(), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(!r.context.includes('MAINTENANCE PHASE'), 'no triage while still building');
+  });
+});
+
+test('new project flipped to maintenance → triage directive appears', () => {
+  withAuthedProject(completeSharedState({ lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-02-01T00:00:00Z' } }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const r = runUserPromptSubmit(ctx(cwd, 'add a new feature for exporting data'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(r.context.includes('MAINTENANCE PHASE'), 'triage after the build flips');
+  });
+});
+
+test('maintenance + non-coding prompt → NO triage directive', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'how are you today?'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(!r.context.includes('MAINTENANCE PHASE'), 'no triage for non-coding chat');
+  });
+});
+
+test('claims from a run finished before the lifecycle stamp do NOT suppress triage', () => {
+  // Regression: after a build completes, its claims stay "fresh" for up to 30
+  // minutes — the watermark (lifecycle.completedAt) must lift the suppression on
+  // the user's immediate next prompt.
+  const completedAt = new Date(Date.now() - 60_000).toISOString();
+  const claimCreatedAt = new Date(Date.now() - 10 * 60_000).toISOString(); // fresh, but pre-watermark
+  withAuthedProject(existingSharedState({
+    materializedStack: 'minimal|none|other|none',
+    lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt },
+  }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'run-done');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'sess.json'), JSON.stringify({ role: 'senior-frontend', runId: 'run-done', createdAt: claimCreatedAt }), 'utf8');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present right after the build');
+  });
+});
+
+test('claims newer than the lifecycle stamp DO suppress triage (mid-run guard intact)', () => {
+  const completedAt = new Date(Date.now() - 10 * 60_000).toISOString();
+  const claimCreatedAt = new Date(Date.now() - 30_000).toISOString(); // a run started AFTER the stamp
+  withAuthedProject(existingSharedState({
+    materializedStack: 'minimal|none|other|none',
+    lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt },
+  }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'minimal');
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'run-live');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'sess.json'), JSON.stringify({ role: 'senior-frontend', runId: 'run-live', createdAt: claimCreatedAt }), 'utf8');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(!r.context.includes('MAINTENANCE PHASE'), 'no re-triage mid-run');
+  });
+});
+
+test('maintenance + main-agent mode → main-agent triage variant', () => {
+  withAuthedProject(existingSharedState({ materializedStack: 'minimal|none|other|none' }), (cwd) => {
+    writeLocalPrefs({ performance: { level: 'low', source: 'prompted' }, team: { mode: 'main-agent', source: 'prompted' } });
+    writeMaterialized(cwd, 'minimal');
+    const r = runUserPromptSubmit(ctx(cwd, 'change the button color'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
+      assert.ok(r.context.includes('main-agent mode'), 'main-agent variant');
     }
   });
 });

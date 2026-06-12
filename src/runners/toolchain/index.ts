@@ -8,10 +8,10 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { nowIsoNoMs } from '../../shared/text';
+import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 
 export const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
 
@@ -52,38 +52,19 @@ export function getToolSpec(toolName: string): ToolSpec | null {
   return Object.prototype.hasOwnProperty.call(spec, toolName) ? (spec[toolName] as ToolSpec) : null;
 }
 
-export function toolchainRoot(): string {
-  if (process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT) return path.resolve(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT);
-  const stateHome = process.env.XDG_STATE_HOME
-    ? path.join(process.env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(process.env.HOME || os.homedir(), '.traffic-one');
-  return path.join(stateHome, 'toolchains');
-}
+// Managed-toolchain path helpers live in shared/ (pure path/env logic) so hook
+// modules can use them without importing a runner; re-exported here for the
+// runners' existing import sites.
+import { managedNpmBin } from '../../shared/toolchain-paths';
 
-export function managedToolDir(toolName: string): string {
-  return path.join(toolchainRoot(), toolName);
-}
-
-export function managedVenvBin(toolName: string, binName: string = toolName): string {
-  const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  return path.join(managedToolDir(toolName), 'venv', binDir, `${binName}${ext}`);
-}
-
-export function managedVenvPython(toolName: string): string {
-  const binDir = process.platform === 'win32' ? 'Scripts' : 'bin';
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  return path.join(managedToolDir(toolName), 'venv', binDir, `python${ext}`);
-}
-
-export function managedNpmPrefix(toolName: string): string {
-  return path.join(managedToolDir(toolName), 'npm-prefix');
-}
-
-export function managedNpmBin(toolName: string, binName: string = toolName): string {
-  const ext = process.platform === 'win32' ? '.cmd' : '';
-  return path.join(managedNpmPrefix(toolName), 'bin', `${binName}${ext}`);
-}
+export {
+  managedNpmBin,
+  managedNpmPrefix,
+  managedToolDir,
+  managedVenvBin,
+  managedVenvPython,
+  toolchainRoot,
+} from '../../shared/toolchain-paths';
 
 // Compare two semver strings (no dep). -1 / 0 / 1, or null for non-semver.
 export function compareSemver(a: unknown, b: unknown): number | null {
@@ -162,6 +143,35 @@ export function probeTool(toolName: string, binPath: string | null): ToolProbe {
 
 export function isToolUsable(status: ToolStatusKind): boolean {
   return status === 'current' || status === 'outdated';
+}
+
+// Reconcile state→disk: when a MANAGED tool binary is present but state carries
+// no installedVersion (installed out-of-band, or a re-materialization reset the
+// toolchain record), backfill the stamp so the orchestrator and downstream gates
+// (e.g. openCodeDelegationActive) stop treating the tool as absent. The managed
+// install is pinned to the spec's `recommended` version, so we record that
+// WITHOUT spawning the binary — a `--version` probe on the hot delegation path
+// would add a process per call and, with a side-effecting CLI, risk touching the
+// repo. Does NOT install. Best-effort and never throws — a stamp failure must
+// never block the caller. Returns the stamped version, or null when nothing
+// changed (already stamped / nothing present / no recommended version).
+export function reconcileManagedToolStamp(cwd: string, toolName: string, binName: string = toolName): string | null {
+  try {
+    const state = readEffectiveState(cwd);
+    const tc = state.toolchain && typeof state.toolchain === 'object' ? (state.toolchain as Rec) : {};
+    const entry = tc[toolName] && typeof tc[toolName] === 'object' ? (tc[toolName] as Rec) : null;
+    if (entry && typeof entry.installedVersion === 'string' && entry.installedVersion) return null;
+    const managedBin = managedNpmBin(toolName, binName);
+    if (!fs.existsSync(managedBin)) return null;
+    const spec = getToolSpec(toolName);
+    const version = typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
+    if (!version) return null;
+    const updated = mergeToolchainStamp(state, toolName, { version, binPath: managedBin, at: nowIsoNoMs() });
+    mergeProjectPrefs(cwd, { toolchain: updated.toolchain });
+    return version;
+  } catch {
+    return null;
+  }
 }
 
 // Merge a toolchain stamp into the in-memory state object (caller persists).

@@ -206,7 +206,7 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
   return {
     cwd: '/repo', hasState: false, state: null, localPreferences: {}, localPreferencesPath: null,
     hasLocalPreferences: false, normalizedState: null, nvmrc: null, hasGit: true,
-    artefacts: { gitnexus: null, graphify: null }, ...over,
+    artefacts: { gitnexus: null, graphify: null }, openCodeCli: 'managed', ...over,
   };
 }
 const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, ...over });
@@ -238,4 +238,45 @@ test('buildFindings: gitnexus crash-risk + node-too-old-no-nvm', () => {
   });
   assert.ok(f.some((x) => x.code === 'GITNEXUS_IN_OLD_NVM_NODE'));
   assert.ok(f.some((x) => x.code === 'NO_NVM_NO_V22'));
+});
+
+test('buildFindings: opencode enabled + CLI missing → fix-needed (self-heal messaging)', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ normalizedState: { openCode: { enabled: true } }, openCodeCli: 'missing' }),
+  });
+  const hit = f.find((x) => x.code === 'OPENCODE_CLI_MISSING');
+  assert.ok(hit);
+  assert.equal(hit?.severity, 'fix-needed');
+});
+
+test('buildFindings: opencode enabled + PATH-resolved CLI → info (unpinned version)', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ normalizedState: { openCode: { enabled: true } }, openCodeCli: 'path' }),
+  });
+  const hit = f.find((x) => x.code === 'OPENCODE_CLI_UNMANAGED');
+  assert.ok(hit);
+  assert.equal(hit?.severity, 'info');
+  assert.ok(!f.some((x) => x.code === 'OPENCODE_CLI_MISSING'));
+});
+
+test('buildFindings: opencode enabled on codex without [mcp_servers.opencode-worker] → fix-needed; registered → silent', () => {
+  const base = {
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ normalizedState: { openCode: { enabled: true } } }),
+  };
+  const missing = buildFindings({ ...base, codexHooks: { host: 'codex' as const, configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false } });
+  assert.ok(missing.some((x) => x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED'));
+  const registered = buildFindings({ ...base, codexHooks: { host: 'codex' as const, configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: true } });
+  assert.ok(!registered.some((x) => x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED'));
+});
+
+test('buildFindings: opencode findings are silent when delegation is not enabled', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ openCodeCli: 'missing' }),
+    codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false },
+  });
+  assert.ok(!f.some((x) => x.code === 'OPENCODE_CLI_MISSING' || x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED' || x.code === 'OPENCODE_CLI_UNMANAGED'));
 });

@@ -13,14 +13,14 @@ function tmp(): string {
 test('generateGraphPreview (graphify) lists section headings', () => {
   const dir = tmp();
   try {
-    fs.mkdirSync(path.join(dir, 'graphify-out'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'graphify-out', 'GRAPH_REPORT.md'), '# Title\n\n## auth\nx\n\n## billing\ny\n', 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '# Title\n\n## auth\nx\n\n## billing\ny\n', 'utf8');
     const body = generateGraphPreview(dir, 'graphify');
     assert.ok(body);
     assert.ok(body?.includes('Provider: graphify · 2 top-level section(s):'));
     assert.ok(body?.includes('- auth'));
     assert.ok(body?.includes('- billing'));
-    assert.ok(body?.includes('Read `graphify-out/GRAPH_REPORT.md`'));
+    assert.ok(body?.includes('Read `.traffic-one/graphify-out/GRAPH_REPORT.md`'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -29,8 +29,8 @@ test('generateGraphPreview (graphify) lists section headings', () => {
 test('generateGraphPreview (gitnexus) reads index.json modules', () => {
   const dir = tmp();
   try {
-    fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
-    fs.writeFileSync(path.join(dir, '.gitnexus', 'index.json'), JSON.stringify({ modules: [{ name: 'core' }, { path: 'pkg/ui' }] }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one', '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.gitnexus', 'index.json'), JSON.stringify({ modules: [{ name: 'core' }, { path: 'pkg/ui' }] }), 'utf8');
     const body = generateGraphPreview(dir, 'gitnexus');
     assert.ok(body?.includes('Provider: gitnexus · 2 top-level module(s):'));
     assert.ok(body?.includes('- core'));
@@ -43,9 +43,9 @@ test('generateGraphPreview (gitnexus) reads index.json modules', () => {
 test('generateGraphPreview (gitnexus) falls back when index.json is absent', () => {
   const dir = tmp();
   try {
-    fs.mkdirSync(path.join(dir, '.gitnexus'), { recursive: true });
+    fs.mkdirSync(path.join(dir, '.traffic-one', '.gitnexus'), { recursive: true });
     const body = generateGraphPreview(dir, 'gitnexus');
-    assert.ok(body?.includes('graph available at `.gitnexus/`'));
+    assert.ok(body?.includes('graph available at `.traffic-one/.gitnexus/`'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -66,11 +66,33 @@ test('writeGraphPreview writes .traffic-one/graph-preview.md (and is a no-op wit
   const dir = tmp();
   try {
     assert.equal(writeGraphPreview(dir, 'graphify'), false);
-    fs.mkdirSync(path.join(dir, 'graphify-out'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'graphify-out', 'GRAPH_REPORT.md'), '## a\n', 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'graphify-out'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md'), '## a\n', 'utf8');
     assert.equal(writeGraphPreview(dir, 'graphify'), true);
     const written = fs.readFileSync(path.join(dir, '.traffic-one', 'graph-preview.md'), 'utf8');
     assert.ok(written.includes('Provider: graphify'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('gitnexus preview reports an EMPTY index honestly (0-file onboarding scan)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gp-empty-'));
+  try {
+    const gn = path.join(dir, '.traffic-one', '.gitnexus');
+    fs.mkdirSync(gn, { recursive: true });
+    fs.writeFileSync(path.join(gn, 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
+    const body = generateGraphPreview(dir, 'gitnexus');
+    assert.ok(body);
+    assert.ok(body!.includes('index is EMPTY'));
+    assert.ok(body!.includes('Do NOT read'));
+    assert.ok(!body!.includes('artefacts for module-specific scoping'));
+
+    // A populated index keeps the normal pointer + stats suffix.
+    fs.writeFileSync(path.join(gn, 'meta.json'), JSON.stringify({ stats: { files: 42, nodes: 310 }, indexedAt: '2026-06-12T10:00:00Z' }), 'utf8');
+    const full = generateGraphPreview(dir, 'gitnexus');
+    assert.ok(full!.includes('42 files'));
+    assert.ok(full!.includes('310 nodes'));
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

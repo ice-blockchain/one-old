@@ -201,7 +201,25 @@ function mergeProjectPrefsObject(current: Rec, patch: unknown): Rec {
       const currentToolchain = obj(current.toolchain) || {};
       const merged: Rec = { ...currentToolchain };
       for (const [name, stamp] of Object.entries(patchToolchain)) {
-        merged[name] = mergePlainObject(currentToolchain[name], stamp);
+        const combined = mergePlainObject(currentToolchain[name], stamp);
+        // A null/empty installedVersion in the patch must never erase a real
+        // stamp: normalize embeds the initialized-null toolchain skeleton in
+        // shared state, so every writeState(readState(...)) round-trip carries
+        // nulls here — letting them win would wipe a fresh install stamp (e.g.
+        // the wizard's install task stamps OpenCode, then finalize's writeState
+        // immediately un-stamps it and delegation silently never activates).
+        const cur = obj(currentToolchain[name]);
+        const out = obj(combined);
+        const curVersion = cur && typeof cur.installedVersion === 'string' && cur.installedVersion ? cur.installedVersion : null;
+        const outVersion = out && typeof out.installedVersion === 'string' && out.installedVersion ? out.installedVersion : null;
+        merged[name] = curVersion && !outVersion && out
+          ? {
+            ...out,
+            installedVersion: curVersion,
+            installedAt: typeof cur?.installedAt === 'string' && cur.installedAt ? cur.installedAt : out.installedAt ?? null,
+            ...(typeof cur?.binPath === 'string' && cur.binPath ? { binPath: cur.binPath } : {}),
+          }
+          : combined;
       }
       next.toolchain = merged;
     }

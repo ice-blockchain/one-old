@@ -21,7 +21,10 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { hookSessionIdentity, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { obj } from '../../shared/obj';
+import { firstEmitThisSession } from '../../shared/once';
+import { maintenanceTriageDirective } from './triage-directive';
 import {
   authApiKeyPromptHookResult,
   authChoiceHookResult,
@@ -35,6 +38,7 @@ import {
 } from './auth-gate';
 import { authChoiceAllowsContinue, authChoiceStatus, tryWriteAuthChoice } from './auth-choice';
 import { runSessionStartAuthed } from './session-start';
+import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
 
 type Rec = Record<string, unknown>;
@@ -52,7 +56,11 @@ function seedOriginalPrompt(cwd: string, prompt: string): void {
   const text = (prompt || '').trim();
   if (!text) return;
   const state = readState(cwd);
-  if (state.mode !== 'new-project') return;
+  // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
+  // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing
+  // for the continued request — existing codebases are exactly where that
+  // continuation lands in maintenance phase. Never overwrite an existing seed.
+  if (typeof state.originalPrompt === 'string' && state.originalPrompt.trim()) return;
   if (projectContextOriginalPrompt(state)) return;
   try {
     writeState(cwd, { ...state, originalPrompt: text });
@@ -70,6 +78,10 @@ function prependContext(prefix: string, result: HookResult): HookResult {
     ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
   });
 }
+
+// Post-build maintenance triage lives in ./triage-directive (shared with the
+// onboarding-wait runner, which emits it for the SETUP-COMPLETE continuation —
+// that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
@@ -147,16 +159,30 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   if (!computeOnboarding(cwd).done) {
     seedOriginalPrompt(cwd, promptText);
     const server = ensureOnboardingServer(cwd);
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
+    // Full walkthrough once per session (shared marker with the PreToolUse gate);
+    // repeat prompts get the short URL + wait-command essentials.
+    const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
+      ? 'server-deny-reason'
+      : 'server-deny-reason-repeat';
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
       systemMessage: 'traffic-one [setup required]',
     });
   }
 
+  // ── Post-build maintenance triage (appended to whatever context we return) ──
+  const openCodeReadiness = ensureOpenCodeDelegationReady(cwd, normalizedState);
+  const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
+
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });
   if (materialized) {
-    return context(materialized.context, { systemMessage: materialized.systemMessage });
+    const readiness = openCodeReadiness ? `${openCodeReadiness}\n` : '';
+    const body = triage ? `${readiness}${materialized.context}\n\n${triage}` : `${readiness}${materialized.context}`;
+    return context(body, { systemMessage: materialized.systemMessage });
   }
 
-  return context(`[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
+  if (triage) {
+    return context(`${openCodeReadiness}[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
+  }
+  return context(`${openCodeReadiness}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

@@ -16,8 +16,15 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(out.includes(GENERATED_MARKER));
   assert.ok(out.includes('- Stack: default'));
   assert.ok(out.includes('- .traffic-one/rules/common/auth-gate.md'));
-  assert.ok(out.includes('- .traffic-one/skills/project-memory/SKILL.md'));
+  // Skills are a compact name list with a single read-pattern line, not one
+  // path per line — the list rides in every session's context.
+  assert.ok(out.includes('Read `.traffic-one/skills/<name>/SKILL.md` when a task matches that skill.'));
+  assert.ok(out.includes('project-memory'));
+  assert.ok(!out.includes('- .traffic-one/skills/project-memory/SKILL.md'));
   assert.ok(out.includes('## Active Rule Kernel'));
+  assert.ok(out.includes('never re-read root `AGENTS.md`'));
+  assert.ok(out.includes('AUTO-RUN the senior role team'));
+  assert.ok(out.includes('never probe package registries'));
   assert.ok(out.includes('per-user local preferences'));
   assert.ok(out.includes('Existing projects skip new-project MVP/mobile prompts'));
   assert.ok(out.includes('## Read Rules When'));
@@ -57,4 +64,70 @@ test('writeRootAgents writes a generated AGENTS.md; writeRootClaude creates CLAU
   } finally {
     fs.rmSync(dir2, { recursive: true, force: true });
   }
+});
+
+test('preserveManualRootContext strips tool-managed gitnexus blocks; pure-boilerplate files preserve nothing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-preserve-'));
+  try {
+    const gitnexusBlock = '<!-- gitnexus:start -->\n# GitNexus — Code Intelligence\nboilerplate\n<!-- gitnexus:end -->\n';
+    fs.writeFileSync(path.join(dir, 'AGENTS.md'), gitnexusBlock, 'utf8');
+    const { preserveManualRootContext } = require('../render-agents') as typeof import('../render-agents');
+    assert.equal(preserveManualRootContext(dir, 'AGENTS.md', { mode: 'new-project' }), true);
+    // The root file is cleared for generation, but NO .local note is written —
+    // the gitnexus block is regenerable boilerplate, not user content.
+    assert.equal(fs.existsSync(path.join(dir, 'AGENTS.md')), false);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'AGENTS.local.md')), false);
+
+    // User-authored content AROUND a tool block is still preserved (block stripped).
+    fs.writeFileSync(path.join(dir, 'CLAUDE.md'), `My real notes.\n${gitnexusBlock}`, 'utf8');
+    assert.equal(preserveManualRootContext(dir, 'CLAUDE.md', { mode: 'new-project' }), true);
+    const preserved = fs.readFileSync(path.join(dir, '.traffic-one', 'CLAUDE.local.md'), 'utf8');
+    assert.ok(preserved.includes('My real notes.'));
+    assert.ok(!preserved.includes('gitnexus:start'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('renderAgentsWithLocalContext renders identical AGENTS/CLAUDE local bodies only once', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-localdup-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    const body = 'Shared local notes body.';
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'AGENTS.local.md'), `# Preserved AGENTS.md\n\nintro\n\n---\n\n${body}\n`, 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'CLAUDE.local.md'), `# Preserved CLAUDE.md\n\nintro\n\n---\n\n${body}\n`, 'utf8');
+    const out = renderAgentsWithLocalContext(dir, STATE, ['rules/common/auth-gate.md'], ['project-memory'], { mandatoryRules: ['rules/common/auth-gate.md'] });
+    assert.equal(out.split(body).length - 1, 1, 'identical preserved body must render once');
+    assert.ok(out.includes('AGENTS.local.md'));
+    assert.ok(!out.includes('### .traffic-one/CLAUDE.local.md'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Active State carries team mode, OpenCode flag, and the role→model line-up', () => {
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  try {
+    const state = {
+      ...STATE,
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'balanced' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.15.13' } },
+    };
+    const out = renderAgents(state, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
+    assert.ok(out.includes('- Team: subagents (balanced, approved)'));
+    assert.ok(out.includes('- OpenCode delegation: enabled'));
+    assert.ok(out.includes('Role models (pass as `model` when spawning): architect='));
+  } finally {
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+  }
+});
+
+test('Active State omits team lines when no local prefs are present', () => {
+  const out = renderAgents(STATE, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
+  assert.ok(!out.includes('- Team:'));
+  assert.ok(!out.includes('Role models'));
 });

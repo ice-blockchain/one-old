@@ -8,7 +8,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
 test('generatedRuleTemplates re-gathers the full nested rules tree', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
-  assert.equal(docs.length, 76);
+  assert.equal(docs.length, 79); // 76 + 3 on-demand slices (new-project x2, ui-quality-reference)
   const paths = new Set(docs.map((d) => d.relPath));
   // Root, common, and deeply-nested rule paths are all preserved exactly.
   assert.ok(paths.has(path.join('rules', 'core.md')));

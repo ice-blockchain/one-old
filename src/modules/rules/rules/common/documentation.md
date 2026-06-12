@@ -1,4 +1,5 @@
 ---
+description: "Apply when creating or updating project documentation or READMEs, or after adding features/services that change public behavior."
 # Human and agent documentation defaults
 ---
 
@@ -24,40 +25,12 @@ to the canonical path when that can be done without dropping newer content.
 
 ## Canonical docs
 
-- `README.md`: human-first overview, audience, one-command local setup, live
-  deploy link or "not configured", and links to deeper docs.
-- `AGENTS.md`: root agent guide with build/test commands, code-style rules,
-  repo map, gotchas, security constraints, and deploy warnings. Nested
-  `AGENTS.md` files are for large subprojects with different rules.
-- `CLAUDE.md`: symlink to `AGENTS.md` when possible, otherwise under ~300 lines
-  and focused on what the agent would get wrong without it. Do not duplicate the
-  linter or full style guide.
-- `.cursor/rules/*.mdc`: Cursor-specific project rules; keep each rule short,
-  scoped, and version-controlled with `description`, `globs`, and `alwaysApply`.
-- `.traffic-one/plan.md`: Traffic One plan containing the current goal, module
-  map, public contracts, risks, and cut-list. Legacy `architecture.md` files are
-  migration-only.
-- `.traffic-one/decisions/`: one short Nygard-style ADR per significant
-  decision. Use Context, Decision, Status, and Consequences.
-- `.traffic-one/api.md`: generated from OpenAPI or source routes/Edge Functions; include
-  auth, request/response schemas, errors, and examples.
-- `.traffic-one/database.md`: generated from migrations or `pg_dump --schema-only
-  --no-owner --no-privileges`; include RLS policies next to each table and
-  never include data or connection strings.
-- `.traffic-one/deployment.md`: preview/staging/prod URLs, deploy commands, env var names
-  without values, rollback, and "build failing" / "DB down" runbooks.
-- `.traffic-one/security.md`: compact security memory plus the operating doc:
-  threat model summary, vulnerability reporting, dependency update cadence, RLS
-  testing approach, secret rotation, and scanner command. Do not create a
-  separate root `security.md`; merge legacy root content here.
-- `CHANGELOG.md`: Keep a Changelog format, populated from Conventional Commits
-  and edited for humans.
-- `.traffic-one/environment-setup.md`: exact runtime/package-manager/Supabase CLI versions,
-  env setup, DB seed/reset commands, and local workflow.
-- `CONTRIBUTING.md`: branch naming, PR checklist, commit conventions, review
-  checklist, and test expectations.
-- `public/llms.txt` or root `llms.txt`: concise Markdown index pointing
-  LLMs and AI crawlers to canonical docs.
+The canonical documentation set — which files exist (`README.md`, `AGENTS.md`,
+`CLAUDE.md`, `.cursor/rules/*.mdc`, `.traffic-one/plan.md`, ADRs, api/database/
+deployment/security/environment-setup docs, `CHANGELOG.md`, `CONTRIBUTING.md`,
+`llms.txt`), what each is for, and its required content — is defined in the
+`auto-documentation-generator` skill's Documentation Set table. That table is
+the source of truth; consult it instead of a forked list here.
 
 ## Guardrails
 

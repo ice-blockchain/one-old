@@ -2,15 +2,26 @@
 // A BLOCKING wait the agent runs right after opening the setup wizard, so the build
 // resumes automatically when setup finishes — with no extra message from the user.
 // It polls the SAME completeness predicate the gate uses (computeOnboarding(cwd).done),
-// sleeping between checks, and is read-only (no writes, no child processes). Compiles
-// to dist/scripts/onboarding-wait.cjs via the build SHIM.
+// sleeping between checks (the only child process is the degraded-path /bin/sleep
+// fallback). On completion it ALSO emits the maintenance-triage routing for the
+// user's seeded original request: the agent continues that request inside the
+// SAME turn, so no UserPromptSubmit hook ever fires for it — without this, the
+// quick-fix/role/orchestrator + OpenCode-first rubric is never injected and the
+// agent implements inline (which may write a fresh runId + once-marker).
+// Compiles to dist/scripts/onboarding-wait.cjs via the build SHIM.
 //
 //   node onboarding-wait.cjs <cwd> [--timeout-ms <n>] [--interval-ms <n>]
 //
 // stdout TRAFFIC_ONE_SETUP_COMPLETE, exit 0 → setup finished; continue the build now.
 // stdout TRAFFIC_ONE_SETUP_PENDING,  exit 2 → still pending after the timeout; re-run.
 
+import { execFileSync } from 'child_process';
+
+import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
+import { detectMode } from '../../shared/detection';
+import { detectHost } from '../../shared/host';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { normalizeState, readEffectiveState } from '../../shared/state';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
@@ -27,12 +38,17 @@ function positiveIntFlag(args: readonly string[], flag: string): number | null {
 }
 
 // Block the thread for `ms` without busy-spinning the CPU (no event-loop work runs
-// between polls). Mirrors the sleepSync in shared/onboarding-server/ensure.ts.
+// between polls). Falls back to /bin/sleep when SharedArrayBuffer is disabled —
+// re-polling immediately here would spin a core for the whole (up to 8-minute) wait.
 function sleepSync(ms: number): void {
   try {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.max(0, ms));
   } catch {
-    // SharedArrayBuffer disabled — re-poll immediately rather than throw.
+    try {
+      execFileSync('/bin/sleep', [String(Math.max(0, ms) / 1000)], { stdio: 'ignore' });
+    } catch {
+      // No sleep available either — re-poll immediately rather than throw.
+    }
   }
 }
 
@@ -67,6 +83,22 @@ export function waitForOnboarding(cwd: string, options: WaitOptions = {}): WaitO
   }
 }
 
+// The post-setup routing for the request the agent is about to continue. The
+// prompt was seeded into state.originalPrompt by the setup-required branch of
+// UserPromptSubmit; non-maintenance projects (fresh new-project builds) and
+// non-edit prompts return '' — the orchestrator flow owns those.
+export function postSetupTriage(cwd: string): string {
+  try {
+    const state = JSON.parse(JSON.stringify(readEffectiveState(cwd))) as Record<string, unknown>;
+    const prompt = typeof state.originalPrompt === 'string' ? state.originalPrompt.trim() : '';
+    if (!prompt) return '';
+    normalizeState(state, (state.mode as string) || detectMode(cwd));
+    return maintenanceTriageDirective(cwd, state, prompt, {}, detectHost());
+  } catch {
+    return '';
+  }
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const outcome = waitForOnboarding(cwd, {
@@ -75,6 +107,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   });
   if (outcome === 'complete') {
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
+    const triage = postSetupTriage(cwd);
+    if (triage) {
+      process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);
+    }
     process.exit(0);
   }
   process.stdout.write('TRAFFIC_ONE_SETUP_PENDING\n');

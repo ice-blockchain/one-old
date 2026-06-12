@@ -6,10 +6,17 @@ import * as path from 'path';
 
 import {
   findProjectRootForHookFile,
+  isOnboardedProjectRoot,
   packageJsonDeclaresWorkspace,
   projectRelativeHookPath,
+  resolveProjectRoot,
   stateRequiresNewProjectMonorepo,
 } from '../hook-paths';
+
+function writeState(dir: string, json: Record<string, unknown>): void {
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(json), 'utf8');
+}
 
 test('stateRequiresNewProjectMonorepo: default/realtime stacks and react+backend require monorepo', () => {
   assert.equal(stateRequiresNewProjectMonorepo({ mode: 'new-project', stack: 'default' }), true);
@@ -95,5 +102,100 @@ test('findProjectRootForHookFile + projectRelativeHookPath resolve nested .traff
     assert.equal(projectRelativeHookPath(root, root, ''), '');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('isOnboardedProjectRoot: only a mode-bearing .one.json counts', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onboarded-')));
+  try {
+    assert.equal(isOnboardedProjectRoot(dir), false);          // no state file
+    writeState(dir, { 'one-uid': 'x' });
+    assert.equal(isOnboardedProjectRoot(dir), false);          // shallow stray (no mode)
+    writeState(dir, { mode: 'new-project' });
+    assert.equal(isOnboardedProjectRoot(dir), true);           // real root
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: a stray shallow sub-package state never shadows the real monorepo root', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-resolveroot-')));
+  try {
+    // Onboarded monorepo root + a sub-package that accrued a stray shallow state.
+    writeState(root, { mode: 'new-project', onboardingComplete: true });
+    const appRoot = path.join(root, 'apps', 'web');
+    writeState(appRoot, { 'one-uid': 'stray' });               // no mode — not a real root
+    const target = path.join(appRoot, 'src', 'main.ts');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'x', 'utf8');
+
+    // Resolves to the workspace root whether cwd is the root OR the sub-package.
+    assert.equal(resolveProjectRoot(root, target), root);
+    assert.equal(resolveProjectRoot(appRoot, target), root);
+    assert.equal(resolveProjectRoot(appRoot, ''), root);        // bash-style: no file, sub-package cwd
+
+    // A genuinely nested project (its own mode-bearing state) resolves to itself.
+    const nested = path.join(root, 'packages', 'standalone');
+    writeState(nested, { mode: 'new-project' });
+    const nestedFile = path.join(nested, 'src', 'x.ts');
+    fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+    fs.writeFileSync(nestedFile, 'x', 'utf8');
+    assert.equal(resolveProjectRoot(root, nestedFile), nested);
+
+    // No onboarded ancestor anywhere → falls back to cwd (gating of a fresh
+    // project is unchanged).
+    const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-fresh-')));
+    try {
+      assert.equal(resolveProjectRoot(fresh, path.join(fresh, 'a.ts')), fresh);
+    } finally {
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot never escapes into the home directory (stray ~/.traffic-one)', () => {
+  const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-home-')));
+  const prevHome = process.env.HOME;
+  process.env.HOME = fakeHome;
+  try {
+    // This test relies on os.homedir() honoring $HOME (POSIX); assert it up front so
+    // a platform that ignores it fails loudly rather than silently passing.
+    assert.equal(require('os').homedir(), fakeHome, 'os.homedir() must honor $HOME for this test');
+    // A stray mode-bearing state in the home dir — e.g. from running the plugin in ~ once.
+    writeState(fakeHome, { mode: 'new-project', onboardingComplete: true });
+    // A project under home that has NO state file of its own.
+    const proj = path.join(fakeHome, 'work', 'myapp');
+    const file = path.join(proj, 'src', 'a.ts');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'x', 'utf8');
+    // Must fall back to the project dir — never adopt the home-dir state.
+    assert.equal(resolveProjectRoot(proj, file), proj);
+    assert.equal(resolveProjectRoot(proj, ''), proj);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    fs.rmSync(fakeHome, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot skips an authoring repo with a stray onboarded state file and resolves the parent workspace', () => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-hookpaths-parent-'));
+  try {
+    // Parent = a real onboarded workspace.
+    fs.mkdirSync(path.join(parent, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(parent, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal' }), 'utf8');
+    // Nested plugin authoring repo carrying a STRAY onboarded state file (the incident).
+    const repo = path.join(parent, 'one');
+    fs.mkdirSync(path.join(repo, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(repo, 'src', 'gen', 'index.ts'), '// gen', 'utf8');
+    fs.writeFileSync(path.join(repo, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    fs.mkdirSync(path.join(repo, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(repo, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase', stack: 'minimal' }), 'utf8');
+
+    const resolved = resolveProjectRoot(parent, path.join(repo, 'src', 'shared', 'x.ts'));
+    assert.equal(fs.realpathSync(resolved), fs.realpathSync(parent), 'must skip the authoring repo and adopt the parent workspace');
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
   }
 });

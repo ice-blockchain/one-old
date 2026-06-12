@@ -9,6 +9,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 
 import { authEnforced, isAuthenticatedLocal } from '../../shared/auth';
+import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { hasRealCodebase } from './hasRealCodebase';
 import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
@@ -43,6 +44,9 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
   // first-look report fires in dev/test runs without a real token.
   if (!options.allowUnauthenticated && !isAuthenticatedLocal() && authEnforced()) return { started: false, reason: 'auth-required' };
   const root = path.resolve(cwd);
+  // The plugin's own repo/install is never reported on — this writer is reachable
+  // outside the (guarded) post-stack-setup dispatcher, so it must refuse itself.
+  if (isPluginAuthoringRoot(root)) return { started: false, reason: 'plugin-authoring-root' };
   if (!hasRealCodebase(root)) return { started: false, reason: 'no-codebase' };
 
   const existingIdState = readReportIdState(root);

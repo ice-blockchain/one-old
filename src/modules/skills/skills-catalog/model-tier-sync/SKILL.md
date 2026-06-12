@@ -2,7 +2,7 @@
 name: model-tier-sync
 description: >
   Keep the Traffic One model-tier table current as providers launch new models.
-  Updates the HOST_MODELS table in scripts/hook-runtime/model-tiers.cjs so the
+  Updates the plugin's HOST_MODELS model-tier table (scripts/config/model-tiers.js in an installed plugin; src/config/model-tiers.ts in the plugin authoring repo) so the
   performance system (highest/balanced/cheapest tiers → per-host model ids) always
   points at the newest Claude, OpenAI/Codex, and Cursor models. TRIGGER when the
   user says "update the models", "sync model tiers", "refresh model list", "use the
@@ -17,7 +17,7 @@ metadata:
 
 # Model Tier Sync
 
-Keeps `scripts/hook-runtime/model-tiers.cjs` → `HOST_MODELS` pointed at the newest
+Keeps the plugin's model-tier table (`HOST_MODELS`) pointed at the newest
 available model for each capability tier on each host. This is the single source
 of truth the performance levels (Balanced / High) resolve against, so updating it
 here updates every spawn across Claude Code, Codex, and Cursor.
@@ -33,7 +33,7 @@ here updates every spawn across Claude Code, Codex, and Cursor.
 ## Skip when
 
 - You are inside a generated user project rather than the Traffic One plugin
-  repo. `model-tiers.cjs` is plugin source; editing the cached copy in a user's
+  repo, where the table lives at `src/config/model-tiers.ts` (run `npm run plugin:build` after edits). In an installed plugin the compiled copy at `scripts/config/model-tiers.js` is refreshed by plugin updates; editing the cached copy in a user's
   plugin install would be overwritten on the next plugin update. If asked there,
   say so and point the user at the plugin repo.
 
