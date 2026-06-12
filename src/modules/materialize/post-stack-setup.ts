@@ -29,6 +29,7 @@ import { isStateFilePath } from '../../shared/tool-classify';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
 import { maybeFlipToMaintenance } from './build-complete';
 import { ONE_UID_FIELD } from '../../config/reporting';
 import {
@@ -120,6 +121,18 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     && !isMaintenancePhase(state, 'new-project')
     && computeOnboarding(reportRoot).done) {
     maybeFlipToMaintenance(reportRoot, state);
+  }
+
+  // In-session OpenCode heal: if the user opted in but the per-project stamp is
+  // missing (wizard install task skipped/killed — see flow.ts
+  // attachPendingInstallTask), heal NOW so the build session that follows
+  // onboarding can actually delegate, instead of waiting for the next
+  // SessionStart. The enabled+stamp guard is in-memory on the state already
+  // read; the heal itself is disk-lock cooldown-guarded and detached.
+  const ocEnabled = obj(state.openCode)?.enabled === true;
+  const ocVersion = obj(obj(state.toolchain)?.opencode)?.installedVersion;
+  if (ocEnabled && !(typeof ocVersion === 'string' && ocVersion.length > 0)) {
+    ensureOpenCodeDelegationReady(reportRoot, state);
   }
 
   if (!isAuthenticatedLocal()) return noop();

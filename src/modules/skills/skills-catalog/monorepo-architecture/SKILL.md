@@ -61,14 +61,15 @@ packages:
   - "packages/*"
 ```
 
-Pin the package manager in the root `package.json`:
+Pin the package manager in the root `package.json` (use the locally installed
+pnpm version — `pnpm@$(pnpm --version)` — never probe the registry for it):
 
 ```json
 {
   "name": "monorepo-root",
   "private": true,
-  "packageManager": "pnpm@9.12.0",
-  "engines": { "node": ">=20.11" }
+  "packageManager": "pnpm@10.12.1",
+  "engines": { "node": ">=22" }
 }
 ```
 

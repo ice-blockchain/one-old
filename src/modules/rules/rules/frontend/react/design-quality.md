@@ -78,7 +78,7 @@ Before delivery, remove generic defaults that make the UI feel machine-spun:
 - Do not ship generic AI-generated website tells: centered stock-gradient heroes,
   decorative card piles, purple-blue defaults, timid type, or static mockup-like
   screens without interaction.
-- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the HSL CSS variables in `globals.css`. Extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens.
+- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the CSS variables in `globals.css`. Extend the `@theme` tokens in `packages/tailwind-config/globals.css` before introducing new tokens.
 - Do not put page sections inside floating cards. Use cards for repeated items, modals, and genuinely framed tools.
 - Do not rely on color alone for state; pair it with text, iconography, or shape.
 - Do not introduce visual flourishes that make text harder to scan, overlap content, or hide real product state.

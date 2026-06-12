@@ -66,10 +66,10 @@ tree and package boundaries the setup checklist scaffolds.
 │       │   │   ├── seo.ts         route metadata + JSON-LD helpers
 │       │   │   └── utils.ts        cn() helper (= clsx + tailwind-merge)
 │       │   └── styles/
-│       │       └── globals.css     Tailwind directives + shadcn HSL theme block
+│       │       └── globals.css     imports @app/tailwind-config/globals.css
 │       ├── public/                robots, sitemap, manifest, favicon, icons, OG image
-│       ├── tailwind.config.ts      extends @app/tailwind-config preset
-│       ├── postcss.config.cjs
+│       ├── vite.config.ts          includes the @tailwindcss/vite plugin (v4 —
+│       │                           no tailwind.config.*, no postcss.config)
 │       ├── components.json         shadcn/ui CLI config
 │       └── e2e/                    Playwright specs
 │
@@ -88,12 +88,11 @@ tree and package boundaries the setup checklist scaffolds.
     │   ├── components.json         shadcn config (root for monorepo init)
     │   └── tsconfig.json
     │
-    ├── tailwind-config/            shared Tailwind preset + globals.css
+    ├── tailwind-config/            shared Tailwind v4 stylesheet (CSS-first; no JS preset)
     │   ├── package.json
     │   └── src/
-    │       ├── preset.ts           tailwind preset (theme.extend.colors via HSL vars,
-    │       │                       borderRadius, animation, plugins)
-    │       └── globals.css         shadcn HSL theme block (light + .dark)
+    │       └── globals.css         @import "tailwindcss" + design tokens in
+    │                               @theme/:root blocks (light + .dark)
     │
     ├── i18n/                      shared typed i18next resources and locale config
     │   ├── package.json

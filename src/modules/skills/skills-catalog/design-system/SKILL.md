@@ -35,9 +35,9 @@ Analyzes your codebase and generates a cohesive design system:
 5. Define the motion and interactivity model: transitions, hover/focus states,
    menu/dialog behavior, loading shifts, optimistic feedback, and reduced-motion
    behavior
-6. Propose Traffic One token updates for the shadcn HSL theme block in
-   `packages/tailwind-config/src/globals.css` and the Tailwind preset in
-   `packages/tailwind-config/src/preset.ts`
+6. Propose Traffic One token updates for the shadcn theme block in
+   `packages/tailwind-config/src/globals.css` (`@theme`/`:root` blocks — Tailwind
+   v4 has no JS preset; Ionic keeps its v3 `preset.ts`)
 7. Generate a design brief with rationale for each decision
 8. Create or update Storybook/preview states when the repo supports them
 ```
@@ -89,9 +89,9 @@ Identifies generic AI-generated design patterns:
 
 ## Traffic One Requirements
 
-- Web/Ionic tokens live as shadcn HSL CSS variables in
-  `packages/tailwind-config/src/globals.css` and as Tailwind preset extensions
-  in `packages/tailwind-config/src/preset.ts`. Styles use Tailwind utility
+- Web tokens live as shadcn CSS variables in
+  `packages/tailwind-config/src/globals.css` (`@theme` blocks; Ionic keeps v3
+  preset extensions in `preset.ts`). Styles use Tailwind utility
   classes + shadcn primitives in `packages/ui/src/components/ui/`.
 - React Native tokens live as shadcn HSL CSS variables in `global.css` and are
   consumed via NativeWind `className`; UI primitives come from React Native

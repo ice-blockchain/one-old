@@ -141,9 +141,12 @@ export interface OnboardingView {
 export interface AnswerOutcome {
   ok: boolean;
   error?: string;
-  // The code-graph answer is the last question in BOTH the new-project and the
-  // existing-project flows. Answering it kicks the consolidated install task
-  // (graph provider + OpenCode) so the wizard can gate "Setup complete" on it.
+  // The code-graph answer kicks the consolidated install task (graph provider +
+  // OpenCode) so the wizard can gate "Setup complete" on it. When that step is
+  // SKIPPED (codeGraphProvider already set machine-wide by an earlier project),
+  // the flow's terminal answer fires the same task instead — otherwise OpenCode
+  // stays unstamped in this project's prefs and delegation silently never
+  // activates for the whole first build (observed 2026-06-12 on Codex).
   task?: { kind: 'onboarding-toolchain' };
 }
 
@@ -331,7 +334,49 @@ function deriveStack(originalPrompt: string, mobileFramework: string): { stack: 
   return { stack, frontend, backend };
 }
 
+// True when a tool the user opted into still has no per-project toolchain stamp:
+// OpenCode enabled but unstamped, or a chosen graph provider unstamped. Drives
+// the terminal-answer install-task fallback below — the stamp lives in this
+// project's prefs, so a machine-wide provider choice from an earlier project
+// does NOT mean this project's toolchain is ready.
+function toolchainInstallPending(state: Rec): boolean {
+  const tc = obj(state.toolchain);
+  const stamped = (tool: string): boolean => {
+    const entry = tc ? obj(tc[tool]) : null;
+    return typeof entry?.installedVersion === 'string' && entry.installedVersion.length > 0;
+  };
+  if (obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
+  const provider = state.codeGraphProvider;
+  if ((provider === 'gitnexus' || provider === 'graphify') && !stamped(provider)) return true;
+  return false;
+}
+
+// The install task normally fires from the code-graph answer. On a machine where
+// codeGraphProvider is already set (any project after the first), that step is
+// skipped entirely, so the task must fire from the flow's terminal answer:
+// 'finalize' for new projects, the last unresolved local-preference answer for
+// existing ones. Idempotent — the runner stamps present bins and exits fast when
+// everything is already installed, and a fresh-machine flow that already ran the
+// task from code-graph is stamped by the time finalize lands here.
+function attachPendingInstallTask(cwd: string, step: string, outcome: AnswerOutcome): AnswerOutcome {
+  if (!outcome.ok || outcome.task) return outcome;
+  const state = readEffectiveState(cwd);
+  // Terminal = 'finalize' (new project; it just committed the stack) or, for an
+  // already-onboarded project (stack present), the answer that resolved the last
+  // local preference. Mid-wizard answers in a NEW project have no stack yet and
+  // must never fire the install — it would block the wizard's next question on a
+  // potentially minutes-long managed install.
+  const hasStack = typeof state.stack === 'string' && state.stack.trim() !== '';
+  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(state) == null);
+  if (!terminal || !toolchainInstallPending(state)) return outcome;
+  return { ...outcome, task: { kind: 'onboarding-toolchain' } };
+}
+
 export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOutcome {
+  return attachPendingInstallTask(cwd, step, applyAnswerStep(cwd, step, value));
+}
+
+function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutcome {
   switch (step) {
     case 'open-code': {
       const enabled = value === true || value === 'enable' || value === 'enabled';

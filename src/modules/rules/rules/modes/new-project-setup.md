@@ -8,7 +8,10 @@ Read-on-demand slice of `rules/modes/new-project.md`. Do the steps in order;
 do not skip. The spine carries the step index — this file is the detail.
 
 1. **Workspace skeleton**
-   - `package.json` with `"private": true`, `"packageManager": "pnpm@<latest>"`.
+   - `package.json` with `"private": true` and `"packageManager"` pinned to the
+     locally installed pnpm (`pnpm@$(pnpm --version)`). Never probe the npm
+     registry (`npm view`, `npm outdated`, …) for this or any scaffold version —
+     the stack rules pin every choice; install with their ranges and move on.
    - `pnpm-workspace.yaml` listing `apps/*` and `packages/*`.
    - `turbo.json` with the pipeline shown above.
    - `tsconfig.base.json` with strict settings.
@@ -57,9 +60,10 @@ do not skip. The spine carries the step index — this file is the detail.
 
 3. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
-   - `packages/tailwind-config` — shared Tailwind preset + `globals.css`
-     containing the shadcn HSL theme block (light + `.dark`). This is the only
-     home for design tokens; do **not** create a `packages/design-tokens`.
+   - `packages/tailwind-config` — a shared `globals.css` only (Tailwind v4 is
+     CSS-first; there is no JS preset): `@import "tailwindcss"` plus the shadcn
+     theme tokens (light + `.dark`) declared in `@theme`/`:root` blocks. This is
+     the only home for design tokens; do **not** create a `packages/design-tokens`.
    - `packages/i18n` — typed i18next/react-i18next resources, provider,
      namespace helpers, and source-language catalogs. It is required for new
      frontend stacks before generated page/component copy is written.
@@ -112,9 +116,10 @@ do not skip. The spine carries the step index — this file is the detail.
 
 6. **App scaffold (`apps/web`)**
    - Vite + React + TS template.
-   - Tailwind v3.4 + PostCSS: `tailwind.config.ts` extends
-     `@app/tailwind-config/preset`; `postcss.config.cjs` wires `tailwindcss`
-     and `autoprefixer`; `src/main.tsx` imports `@app/tailwind-config/globals.css`.
+   - Tailwind v4: add the `@tailwindcss/vite` plugin to `vite.config.ts` and
+     import `@app/tailwind-config/globals.css` from `src/main.tsx`. No
+     `tailwind.config.*`, no PostCSS config, no autoprefixer — v4 handles
+     prefixing and content scanning itself.
    - `components.json` (shadcn CLI config) points the alias `ui` at
      `@app/ui/components/ui` so future `npx shadcn add` calls in the app land
      in the shared package.
@@ -137,6 +142,10 @@ do not skip. The spine carries the step index — this file is the detail.
    - Add public crawl/share assets: `robots.txt`, `sitemap.xml`,
      `manifest.webmanifest`, `favicon.ico`, `apple-touch-icon`, `icon-192.png`,
      `icon-512.png`, and a default `1200x630` `og-default.png` or JPG.
+   - Asset sequencing: ship cheap placeholders for those images first (solid
+     color, text-on-gradient, or SVG). Generate polished raster art (AI image
+     generation, brand/cover art) only after the scaffold typechecks, builds,
+     and serves — never as a pre-build step.
    - Add `VITE_SITE_URL` (or the framework's public site-url env var) to
      `.env.example`. Mark the production domain `Unverified` until the user or
      host provides it; do not invent deploy URLs.

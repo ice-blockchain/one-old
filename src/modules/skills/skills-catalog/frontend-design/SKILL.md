@@ -108,8 +108,9 @@ Define:
 - state treatment for loading, empty, error, disabled, selected, stale, and offline states
 
 Use the project's token system so the interface stays coherent as it grows.
-Traffic One web (and Ionic) uses **Tailwind v3.4 + shadcn/ui** with HSL CSS
-variables in `globals.css` (themed via the preset in `packages/tailwind-config`);
+Traffic One web uses **Tailwind v4 + shadcn/ui** with design-token CSS
+variables in `packages/tailwind-config/globals.css` (`@theme` blocks; Ionic
+stays on Tailwind v3.4 with its JS preset);
 React Native uses **NativeWind v4 + React Native Reusables** with the same HSL
 CSS-variable theme block in `global.css`. Reference values via Tailwind tokens
 (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …); never hardcode.
@@ -137,7 +138,7 @@ items, modals, and genuinely framed tools.
 
 UI without motion feels static and AI-generated. Default motion library:
 `framer-motion` on web/Ionic and `react-native-reanimated` on Expo;
-`tailwindcss-animate` already covers shadcn primitive transitions.
+`tw-animate-css` (web v4) / `tailwindcss-animate` (Ionic v3) already covers shadcn primitive transitions.
 
 Every design-led surface needs an interactivity and motion plan. At minimum,
 menus, dialogs, tabs, route transitions, list/filter changes, loading shifts,

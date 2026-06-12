@@ -46,3 +46,34 @@ test('cache surgery is a no-op outside the plugin cache path', () => {
   assert.equal(cleanActiveSkills(), 0);
   assert.equal(copyActiveSkills('default'), 0);
 });
+
+// ── Role-scoped skill directives ──────────────────────────────────────────────────
+
+test('roleDeclaredSkills parses the role agent-doc frontmatter (authoring repo path)', async () => {
+  const { roleDeclaredSkills } = await import('../index');
+  const skills = roleDeclaredSkills('senior-frontend');
+  assert.ok(skills, 'senior-frontend agent doc resolves in the authoring repo');
+  assert.ok(skills!.has('create-page'));
+  assert.ok(skills!.has('frontend-design'));
+  assert.ok(!skills!.has('postgres-patterns'));
+});
+
+test('roleSkillsDirective lists only the role∩stack skills, no wrong-stack dump', async () => {
+  const { roleSkillsDirective } = await import('../index');
+  const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true };
+  const directive = roleSkillsDirective(state, 'senior-frontend', []);
+  assert.ok(directive.includes('[ACTIVE SKILLS for senior-frontend on stack=default]'));
+  assert.ok(directive.includes('create-page'));
+  // Backend skills active on the stack must not leak into the frontend role list.
+  assert.ok(!directive.includes('postgres-patterns'));
+  // The long [DO NOT INVOKE] name dump is replaced by a single scope sentence.
+  assert.ok(!directive.includes('[DO NOT INVOKE'));
+  assert.ok(directive.includes('[SKILL SCOPE]'));
+});
+
+test('roleSkillsDirective falls back to the stack directive for unknown roles', async () => {
+  const { roleSkillsDirective } = await import('../index');
+  const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true };
+  const fallback = roleSkillsDirective(state, 'not-a-real-role', []);
+  assert.ok(fallback.includes('[ACTIVE SKILLS for stack=default]'));
+});

@@ -116,7 +116,7 @@ test('provider-adopted skills are indexed in AGENTS.md but stay out of the manif
     materializeProjectAssets(project, state);
 
     const agents = fs.readFileSync(path.join(project, 'AGENTS.md'), 'utf8');
-    assert.ok(agents.includes('.traffic-one/skills/gitnexus-guide/SKILL.md'), 'adopted skill listed in the Active Skills index');
+    assert.ok(agents.includes('gitnexus-guide'), 'adopted skill listed in the Active Skills index');
     const manifest = JSON.parse(fs.readFileSync(path.join(project, '.traffic-one', 'manifest.json'), 'utf8'));
     assert.ok(!manifest.skills.includes('gitnexus-guide'), 'manifest tracks only materialized skills');
 

@@ -18,7 +18,9 @@ Reusables (RNR)** primitives + `rn-primitives` for accessible behaviour.
 
 The scaffold puts these in place; rules just enforce that they stay there.
 
-- `tailwindcss@^3.4` and `nativewind@^4` in `package.json`.
+- `tailwindcss@^3.4` and `nativewind@^4` in `package.json` (NativeWind v4
+  requires Tailwind v3 — this pin is deliberate; do not "upgrade" it to match
+  the web stack's v4).
 - `tailwind.config.js` extends `nativewind/preset` and points `content` at
   `app/`, `src/`, and `packages/ui-native/`.
 - `babel.config.js` includes the `babel-preset-expo` `jsxImportSource: "nativewind"`

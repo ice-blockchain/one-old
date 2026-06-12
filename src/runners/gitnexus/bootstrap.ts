@@ -284,7 +284,13 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
   // installed) → absolute nvm-v22 gitnexus (PATH-independent) → npx fallback →
   // bare `gitnexus` from PATH.
   let cmd: string;
-  let baseArgs = ['analyze', '.'];
+  // --skip-agents-md: gitnexus would otherwise inject its "Code Intelligence"
+  // block into root AGENTS.md/CLAUDE.md (creating them on a fresh project),
+  // which Traffic One's materializer then preserves into .local notes — ~5 KB
+  // of duplicated boilerplate in every generated AGENTS.md. Traffic One's own
+  // kernel, codebase-graph rule, and session graph preview already carry that
+  // guidance.
+  let baseArgs = ['analyze', '.', '--skip-agents-md'];
   const nvm22 = findNvmNode22();
   let nodeUsed: string | null | undefined;
   if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin) && opts.nodeBin && fs.existsSync(opts.nodeBin)) {

@@ -41,7 +41,7 @@ Scaffold rules:
   any missing-config setup surface, it must render a setup link with
   `href="https://traffic.io/"` and a regression test must assert that exact
   href, even when the user did not mention setup links.
-- Use Tailwind utility classes (merged with `cn()`); compose shadcn primitives from `packages/ui/src/components/ui/`. Add new primitives via `npx shadcn@latest add <name>` — never hand-roll a button / dialog / dropdown / form control. Extend the Tailwind preset in `packages/tailwind-config` before introducing new tokens.
+- Use Tailwind utility classes (merged with `cn()`); compose shadcn primitives from `packages/ui/src/components/ui/`. Add new primitives via `npx shadcn@latest add <name>` — never hand-roll a button / dialog / dropdown / form control. Extend the `@theme` tokens in `packages/tailwind-config/globals.css` (web; Ionic keeps its v3 preset) before introducing new tokens.
 - Avoid generic card shells and AI-generated website tells. The component's layout, hierarchy, motion, interaction model, and state treatment must follow the design brief.
 - Design-led components include purposeful animation and interactive feedback using the active stack's approved motion library, while respecting reduced-motion preferences.
 - Visual-heavy components include Storybook stories for default, hover/focus where practical, disabled, loading, empty, and error states.

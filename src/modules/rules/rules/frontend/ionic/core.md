@@ -20,9 +20,11 @@ Expo, RN, or a fully React Native implementation.
 - **Hybrid runtime:** Ionic Framework + Capacitor.
 - **Recommended packaging:** `@capacitor/core`, `@capacitor/cli`, plus
   `@capacitor/ios` and/or `@capacitor/android` for requested targets.
-- **React source app:** React ^18, Vite, react-router-dom v6, Redux Toolkit,
-  RTK Query, zustand, **Tailwind v3.4 + shadcn/ui** (Radix + cva + tailwind-merge
-  + tailwindcss-animate + lucide-react), i18next, and the React rules remain
+- **React source app:** React ^18 (Ionic React's validated peer range — this
+  pin is deliberate), Vite, react-router-dom v6 (`@ionic/react-router` peer),
+  Redux Toolkit, RTK Query, zustand, **Tailwind v3.4 + shadcn/ui** (Radix + cva
+  + tailwind-merge + tailwindcss-animate + lucide-react; v3 is deliberate — see
+  `rules/frontend/ionic/styles.md`), i18next, and the React rules remain
   the source of truth.
 - **Ionic ↔ shadcn theme bridge:** a small in-repo CSS file
   (`src/styles/ionic-theme-bridge.css`) maps the shadcn HSL CSS variables onto

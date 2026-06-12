@@ -22,7 +22,22 @@ file yourself:
   "traffic-one-setup" — it is already registered in .claude/launch.json and points at
   the running wizard, so it opens in the in-app preview pane.
 - Cursor: open the link below in the built-in Simple Browser.
-- Codex / other host: open the link below in your in-app web view if you have one.
+- Codex Desktop: do NOT tool-search for or read any browser skill — this is the
+  complete recipe. Open the wizard with the node_repl `js` tool running exactly:
+
+      const fs = await import("fs");
+      const base = `${nodeRepl.homeDir}/.codex/plugins/cache/openai-bundled/browser`;
+      const ver = fs.readdirSync(base).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
+      const { setupBrowserRuntime } = await import(`${base}/${ver}/scripts/browser-client.mjs`);
+      await setupBrowserRuntime({ globals: globalThis });
+      globalThis.browser = await agent.browsers.get("iab");
+      await browser.nameSession("traffic-one-setup");
+      await (await browser.capabilities.get("visibility")).set(true);
+      globalThis.trafficOneSetupTab = await browser.tabs.new();
+      await trafficOneSetupTab.goto("{{URL}}");
+      nodeRepl.write("traffic-one setup opened");
+
+- Other hosts: open the link below in your in-app web view if you have one.
 
 If you have no in-app preview at all, give the user this clickable link to open:
 {{URL}}
@@ -35,7 +50,8 @@ finishes setup (run it with a long timeout, ~9 minutes / 540000 ms):
 
 When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, first CLOSE the wizard view you opened
 (the page also closes itself where the host allows it): Claude Code → `preview_stop`
-for "traffic-one-setup"; Codex/Cursor → close the in-app browser tab you opened.
+for "traffic-one-setup"; Codex → node_repl `await trafficOneSetupTab.close()`;
+Cursor → close the in-app browser tab you opened.
 Then IMMEDIATELY continue the user's original
 request and build it end to end — do not stop to ask "what next?". If it prints
 `TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup finished), run the exact same

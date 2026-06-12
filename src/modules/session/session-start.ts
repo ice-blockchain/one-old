@@ -22,7 +22,7 @@ import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predic
 import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
-import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective } from '../../shared/skill-filters';
+import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
@@ -67,7 +67,12 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
   const ruleSet = role ? roleScopedRules(role, state) : null;
   const rules = ruleSet || stackSpecForState(state).mandatory;
   copyActiveSkills(state);
-  const skillDirective = pruneSkillsDirective(state, listAllSkills());
+  // Role-scoped skills (from the role's agent-doc frontmatter) when the role is
+  // known — a senior-frontend spawn lists only frontend skills, not the whole
+  // stack catalog plus a 30-name wrong-stack dump.
+  const skillDirective = role
+    ? roleSkillsDirective(state, role, listAllSkills())
+    : pruneSkillsDirective(state, listAllSkills());
   const { body } = packRuleIndex(root, rules);
   const graphPreview = readGraphPreview(cwd);
   const roleLabel = role || 'subagent';
