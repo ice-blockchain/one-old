@@ -293,10 +293,13 @@ Wait for both to return before Phase 3.
 
 **Pre-step — refresh the codebase graph** (cheap, parent-side, do not skip): the
 implementers just wrote the real code, but the graph index still holds the empty
-onboarding scan, so reviewer/tester would navigate a 0-node graph. From the
-project root run the provider runner per `codeGraphProvider`:
-`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"`
-(or `graphify-runner.cjs`). Worker threads cannot trigger the post-build rescan
+onboarding scan, so reviewer/tester would navigate a stale near-empty graph.
+From the project root run the provider runner per `codeGraphProvider` — WITH
+`--force`, because the runner's mtime freshness check cannot tell that a recent
+index predates the new code (observed live: "fresh" answered for 2 indexed
+files vs ~60 on disk):
+`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs" --force`
+(or `graphify-runner.cjs --force`). Worker threads cannot trigger the post-build rescan
 hook on every host, so this parent-side refresh is the deterministic path.
 
 Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls before any `wait_agent`, then `wait_agent` on each). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.

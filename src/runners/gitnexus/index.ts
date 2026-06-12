@@ -24,7 +24,12 @@ export const which = exec.which;
 export { nowIso };
 
 export function main(): void {
-  const result = bootstrap(process.cwd());
+  // --force: bypass the fresh-cache short-circuit. The orchestrator's phase-3
+  // pre-step rebuilds the graph right after implementers land code — at that
+  // moment the index is recent AND non-empty (the onboarding scan saw a couple
+  // of files) yet covers none of the new code, so the mtime freshness check
+  // wrongly answers "fresh" (observed live: 2 files indexed vs ~60 on disk).
+  const result = bootstrap(process.cwd(), { force: process.argv.includes('--force') });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = 0;
 }

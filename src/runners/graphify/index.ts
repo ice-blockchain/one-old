@@ -360,7 +360,9 @@ export { which };
 // Exit code is 0 on success AND on graceful skip — the caller is the post-build
 // hint, which should never block the user's flow on a non-zero exit.
 export function main(): void {
-  const result = bootstrap(process.cwd());
+  // --force mirrors the gitnexus runner: the phase-3 pre-step rebuilds right
+  // after implementers land code, when an mtime-fresh index still predates it.
+  const result = bootstrap(process.cwd(), { force: process.argv.includes('--force') });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = 0;
 }
