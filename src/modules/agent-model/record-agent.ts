@@ -66,7 +66,12 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   const role = inferTrafficOneSpawnRole(toolInput);
   if (!role) return noop();
 
-  const agentId = extractSpawnedAgentId(raw.tool_response ?? raw.toolResponse ?? raw.tool_result ?? raw.toolResult);
+  // Prefer the named response fields; when a host uses a different field name
+  // for the spawn result, fall back to scanning the whole payload — the
+  // extractor's regex is anchored on the labelled `agent[_]id:` form, so input
+  // text cannot false-positive unless it literally quotes a labelled id.
+  const response = raw.tool_response ?? raw.toolResponse ?? raw.tool_result ?? raw.toolResult;
+  const agentId = extractSpawnedAgentId(response) ?? (response === undefined ? extractSpawnedAgentId(raw) : null);
   if (!agentId) return noop();
 
   const state = readEffectiveState(ctx.cwd);

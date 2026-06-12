@@ -56,13 +56,13 @@ sometimes a `recommendedCommand`.
 Run from the project root:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/doctor.cjs"
+node ~/.traffic-one/bin/doctor.cjs
 ```
 
 For a specific Codex incident:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/doctor.cjs" --session <session-id>
+node ~/.traffic-one/bin/doctor.cjs --session <session-id>
 ```
 
 In Codex, prefer `TRAFFIC_ONE_PLUGIN_ROOT` or `CODEX_PLUGIN_ROOT` when the

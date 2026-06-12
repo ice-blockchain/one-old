@@ -22,7 +22,7 @@ const SECURITY_CHECK_WINDOW_MS = 10 * 60 * 1000;
 
 // The literal plugin-root expansion for the remediation command (single-quoted
 // so the ${...} stays verbatim, exactly as the legacy reason text).
-const SECURITY_RUN_CMD = 'node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp';
+const SECURITY_RUN_CMD = 'node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp';
 
 interface StampCheck { ok: boolean; reason?: string; }
 

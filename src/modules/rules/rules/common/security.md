@@ -59,7 +59,7 @@ Before deploy, release, publish, production promotion, app-store submission,
 `supabase db push --linked`, or Edge Function deploy, run:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp
+node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp
 ```
 
 CI uses `--strict --no-stamp` with pinned `gitleaks@v8.30.1` and

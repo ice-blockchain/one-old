@@ -76,14 +76,26 @@ How it works:
    <!-- opencode-delegate:end -->
    ```
 
-   ONLY queue boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding, mechanical refactors/renames, formatting/codemods. NEVER queue architecture, public contracts, security/auth, data-model, migrations, or cross-file-invariant work — those stay on the named senior subagents.
+   The canonical catalog of queueable unit kinds lives in the plugin config
+   (`config/opencode.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`); when this prose and
+   the config disagree, the config wins. In short: fixtures/seed data, pure
+   helpers, i18n source catalogs + DRAFT translations, test scaffolding,
+   QA-report sweeps, reviewer-input audit sweeps (npm audit / unused-deps /
+   TODO inventory / i18n key-completeness / SEO meta presence — reports the
+   paid reviewer consumes), docs drafts (incl. secret-free deploy manifests),
+   Storybook story stubs, and mechanical refactors/codemods. A productive
+   greenfield queue has 3–6 units — an EMPTY queue wastes the free tier
+   (measured: a populated queue delivered 2–6 units/run at ~2 min each). NEVER
+   queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts,
+   security/auth/RLS, data-model/migrations, cross-file invariants, deploys or
+   credentials — those stay on the named senior subagents.
 
 2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }`.
 
    Fallback if the `opencode-worker` tool is unavailable: on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner:
 
    ```bash
-   node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" \
+   node ~/.traffic-one/bin/opencode-runner.cjs \
      --run-id "$RUN_ID" --from-plan
    ```
 
@@ -95,7 +107,7 @@ How it works:
 
 (A single ad-hoc unit can be delegated with the `opencode_delegate` tool — `{ role, task, runId, projectRoot }` — or the runner's `--role <r> --task-file <path>` mode.) OpenCode picks its own free model by default; only non-sensitive bounded units are queued. Pin a specific model per project via `openCode.model` if needed.
 
-**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-shipper`, `senior-tester`, `senior-frontend`, `quick-fix`) MUST run on OpenCode when `openCode.enabled`, on every host. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run — call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, task }` (no `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — you write it in Phase 0.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
+**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled`, on every host. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, task }` where `task` is ONE bounded unit (1–2 named files + acceptance criteria) — NEVER the entire role implementation: free models deliver bounded units in ~2 minutes but produce nothing useful from a whole-role dump (measured live: minutes of serialized waiting for zero output). While a delegation runs, your re-polls are its keep-alive — stop polling for ~6 minutes and it is cancelled cleanly (killed before any diff applies), so falling back to a paid worker is always safe. (No `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — you write it in Phase 0.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
 
 ## When you fire
 
@@ -225,7 +237,7 @@ Mechanics on hosts with agent continuation (Claude with the agent-teams flag —
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
 
-**Continuation-first:** with a live role agent (see "Agent reuse" above), a fix cycle is ONE SendMessage to that agent — the reviewer findings verbatim (`file:line` + concrete change per item) plus "apply ONLY these fixes, update your digest, end with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>`)" — plus one caution: "re-read any files OTHER roles changed since your last turn" (the live agent's memory of shared files may be stale). Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued:
+**Continuation-first:** with a live role agent (see "Agent reuse" above), a fix cycle is ONE continuation message to that agent — `SendMessage` on Claude, `send_input` on Codex; on hosts with no persistent subagents (Cursor), use the re-spawn protocol below — — the reviewer findings verbatim (`file:line` + concrete change per item) plus "apply ONLY these fixes, update your digest, end with `FIXES_APPLIED` (or `FIXES_FAILING <numbered list>`)" — plus one caution: "re-read any files OTHER roles changed since your last turn" (the live agent's memory of shared files may be stale). Still write the fix-cycle context file (step 1 below) for the audit trail. Steps 2–3 (spawnIndex bump + re-spawn) apply ONLY when no live agent can be continued:
 
 1. **Write the fix-cycle context file** with exact reviewer findings. Use the reviewer's `CHANGES_REQUESTED <numbered list>` verbatim — paste `file:line` references and concrete suggested changes; do not paraphrase. Save to:
 
@@ -258,14 +270,15 @@ The 2-cycle reviewer cap (architect / orchestrator level) still applies — if t
 
 Spawn `senior-architect` via your host's subagent tool with the `model` param set. Architect tier = `balanced` for Balanced, `highest` for High — resolve to your host's model. After any required confirmation step, give the subagent the senior-architect role instructions and owned write scope `.traffic-one/plan.md` plus ADR/docs and the per-run `assignments.json` manifest. Block on its return.
 
-On Codex, spawn the architect with **`fork_context: true`**: the architect benefits
-from everything you already read (rules, memory, project shape), and a forked
-context skips its ~35-file cold re-read (~300k tokens, measured live). If the
-spawn call fails to PARSE (e.g. a duplicated field in your tool-call JSON),
-re-issue it WITH `fork_context: true` again — do not silently drop the flag, that
-is the whole saving. Implementers/reviewer/tester spawn COLD (no fork): they need
-only the plan + their scoped rules, and forking your full context into four
-workers would multiply it instead.
+Spawn the architect COLD with the `model` param — do NOT use `fork_context`.
+Two measured reasons: (1) Codex rejects a full-history fork combined with
+`model`/`agent_type`/`reasoning_effort` overrides ("forked agents inherit the
+parent model"), so a forked architect cannot be tier-pinned and every attempt
+costs a rejected-spawn round-trip; (2) fork economics are negative — a forked
+architect re-bills the parent's whole context every turn and measured ~2× the
+cumulative tokens of a cold spawn that reads its ~10 role files once.
+Implementers/reviewer/tester also spawn COLD: they need only the plan + their
+scoped rules.
 
 Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one/.one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, write `.traffic-one/runs/<run-id>/assignments.json` (the machine-readable Module map: one disjoint owned-path scope per implementer role), and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`. The `assignments.json` partition is what lets Phase 2 run conflict-free on any stack.
 
@@ -276,7 +289,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 **Step 0 — OpenCode delegation batch (when `openCode.enabled`).** BEFORE spawning any implementer, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal. This is the token-saver the user enabled, and it runs identically on every host. Fallback if the tool is unavailable (on Codex, a one-time restart loads the auto-registered server): run the same engine via the shell runner.
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" --run-id "$RUN_ID" --from-plan
+node ~/.traffic-one/bin/opencode-runner.cjs --run-id "$RUN_ID" --from-plan
 ```
 
 If that shell runner cannot run (e.g. `.git` is read-only or worktree metadata cannot be written), continue with the senior subagents for those units.
@@ -298,7 +311,7 @@ From the project root run the provider runner per `codeGraphProvider` — WITH
 `--force`, because the runner's mtime freshness check cannot tell that a recent
 index predates the new code (observed live: "fresh" answered for 2 indexed
 files vs ~60 on disk):
-`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs" --force`
+`node ~/.traffic-one/bin/gitnexus-runner.cjs --force`
 (or `graphify-runner.cjs --force`). Worker threads cannot trigger the post-build rescan
 hook on every host, so this parent-side refresh is the deterministic path.
 
@@ -325,15 +338,35 @@ After 2 cycles, escalate to the user.
 ### Phase 3c — Parent integration pass (visual builds)
 
 After reviewer `APPROVED` and tests are green, run the root verification
-commands yourself (install/lint/typecheck/test/build), then — for any build
+commands yourself (install/lint/typecheck/test/build). Re-use fresh evidence:
+a Lighthouse report under `.traffic-one/reports/lighthouse/` or a QA sweep
+under `.traffic-one/reports/qa/<runId>/` that is NEWER than the last code
+change answers the gate by READING it — do not re-run audits the team just
+ran. Then — for any build
 with a UI — verify the RUNNING app visually before declaring completion: start
 the dev server and check the key routes at desktop AND a mobile width
-(overflow, console errors, primary actions reachable). **On Codex, use the
-in-app-browser recipe in the `browser-qa` skill
-(`.traffic-one/skills/browser-qa/SKILL.md`) — do NOT tool-search for or read
-the bundled `control-in-app-browser` skill (~8k tokens; the recipe is
-complete).** A one-element CSS finding here goes back through the fix-cycle
-continuation, not a fresh spawn. Leave the dev server running for the user.
+(overflow, console errors, primary actions reachable). Per host:
+- **Claude Code**: `preview_start` (in-app preview) or the claude-in-chrome
+  browser MCP; `preview_stop` when done.
+- **Codex**: the in-app-browser recipe in the `browser-qa` skill
+  (`.traffic-one/skills/browser-qa/SKILL.md`) — do NOT tool-search for or read
+  the bundled `control-in-app-browser` skill (~8k tokens; the recipe is
+  complete).
+- **Cursor**: the built-in Simple Browser, or the browser automation MCP.
+**The mechanical half of this pass belongs to `senior-tester`, not to you.**
+The tester role owns the visual regression sweep (key routes render, console
+errors, horizontal overflow at desktop + ~390px, screenshots saved under
+`.traffic-one/reports/qa/<runId>/`) — it runs on the cheapest tier, it is a
+delegateRole (the scripted sweep can ride OpenCode for free), and as a live
+agent it re-runs the sweep after fix cycles via one continuation message. If
+its Phase-3 pass ran before the final fixes, send the live tester a "re-run the
+visual sweep" continuation now instead of doing the sweep yourself. Reserve
+YOUR (parent) context for the judgment half only: read the tester's QA report
+and view the 2–3 screenshots that need actual visual assessment — never stream
+every screenshot into the orchestrator context. A one-element CSS finding goes
+back through the fix-cycle continuation, not a fresh spawn. Your own in-app
+browser spot-check (per host above) is optional polish on top, not the
+mechanism of record. Leave the dev server running for the user.
 
 ### Phase 4 — Ship (only on explicit intent)
 
@@ -406,10 +439,10 @@ Dispatch on `codeGraphProvider` from the effective Traffic One state, which merg
 PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
-    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"
+    node ~/.traffic-one/bin/gitnexus-runner.cjs
     ;;
   graphify)
-    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/graphify-runner.cjs"
+    node ~/.traffic-one/bin/graphify-runner.cjs
     ;;
   *)
     # Provider missing/unknown — the postWriteIncompleteWarning hook will

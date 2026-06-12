@@ -43,6 +43,7 @@ import { nowIsoNoMs } from '../../shared/text';
 import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
 import { ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
+import { ensureRunnerShims } from '../../shared/runner-shims';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -209,6 +210,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
+    ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     writeState(cwd, state);
@@ -259,6 +261,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
+    ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     if (nextLocalPreferenceStep(state)) {

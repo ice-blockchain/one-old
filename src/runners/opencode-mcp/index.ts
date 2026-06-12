@@ -11,6 +11,7 @@ import { attach } from './server';
 export { attach, dispatch } from './server';
 export {
   delegateFromPlanResumable,
+  planQueueRoles,
   delegateResumable,
   delegateStatus,
   parseRunnerResult,

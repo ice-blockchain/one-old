@@ -561,3 +561,31 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } as NodeJS.ProcessEnv), true);
 });
+
+test('inferTrafficOneSpawnRole reads the clause-anchored "Traffic One senior-X" declaration despite sibling mentions', () => {
+  const { inferTrafficOneSpawnRole } = require('../role-infer') as typeof import('../role-infer');
+  assert.equal(inferTrafficOneSpawnRole({
+    agent_type: 'worker',
+    message: 'You are the Traffic One senior-architect for run 1781266789389 in /x.\n\nWrite assignments for senior-frontend and senior-backend with disjoint scopes.',
+  }), 'senior-architect');
+  assert.equal(inferTrafficOneSpawnRole({
+    agent_type: 'worker',
+    message: 'You are Traffic One `senior-frontend` for project root /x. senior-backend owns the API.',
+  }), 'senior-frontend');
+});
+
+test('inferTrafficOneSpawnRole handles the role-before-"Traffic One" prompt shape', () => {
+  const { inferTrafficOneSpawnRole } = require('../role-infer') as typeof import('../role-infer');
+  assert.equal(inferTrafficOneSpawnRole({
+    agent_type: 'worker',
+    message: 'You are `senior-architect` for a Traffic One run in `/x`.\n\nProduce assignments for senior-frontend and senior-backend.',
+  }), 'senior-architect');
+});
+
+test('inferTrafficOneSpawnRole honors the [t1-role:] marker contract over any phrasing', () => {
+  const { inferTrafficOneSpawnRole } = require('../role-infer') as typeof import('../role-infer');
+  assert.equal(inferTrafficOneSpawnRole({
+    agent_type: 'worker',
+    message: '[t1-role: senior-backend]\nDo whatever phrasing follows; senior-frontend and senior-tester are also mentioned here.',
+  }), 'senior-backend');
+});

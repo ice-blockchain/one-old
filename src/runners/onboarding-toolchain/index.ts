@@ -17,6 +17,7 @@ import { readEffectiveState } from '../../shared/state';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { reconcileManagedToolStamp } from '../toolchain';
 import { ensureOpenCodeTool } from '../toolchain/onboarding';
+import { ensureRunnerShims } from '../../shared/runner-shims';
 
 type Rec = Record<string, unknown>;
 
@@ -166,6 +167,7 @@ export function ensureOpenCodeOnly(cwd: string = process.cwd()): OnboardingToolc
 // map non-zero → task `error` → blocked "Setup complete" screen). The failing
 // provider's detail is echoed to stderr so the task surfaces it to the user.
 export function main(): number {
+  ensureRunnerShims(); // stable ~/.traffic-one/bin paths — written whenever the toolchain runs
   if (process.argv.includes('--opencode-only')) {
     const result = ensureOpenCodeOnly(process.cwd());
     process.stdout.write(`${JSON.stringify(result)}\n`);

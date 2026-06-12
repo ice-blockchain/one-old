@@ -30,25 +30,25 @@ Trigger on phrases like:
 
 ```bash
 # Latest session for the current project (auto-detects from cwd)
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs"
+node ~/.traffic-one/bin/token-report.cjs
 
 # Force Codex Desktop transcript parsing
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --codex
+node ~/.traffic-one/bin/token-report.cjs --codex
 
 # Force Claude Code transcript parsing
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --claude
+node ~/.traffic-one/bin/token-report.cjs --claude
 
 # Specific session
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --session <session-id>
+node ~/.traffic-one/bin/token-report.cjs --session <session-id>
 
 # All sessions for the project
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --all
+node ~/.traffic-one/bin/token-report.cjs --all
 
 # JSON output (machine-readable)
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --json
+node ~/.traffic-one/bin/token-report.cjs --json
 
 # Save to file
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/token-report.cjs" --out .traffic-one/reports/tokens.md
+node ~/.traffic-one/bin/token-report.cjs --out .traffic-one/reports/tokens.md
 ```
 
 When no plugin-root env var is set, use the absolute path that

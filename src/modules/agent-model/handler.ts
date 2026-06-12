@@ -28,6 +28,7 @@ import {
   REPLACE_AGENT_MARKER,
   subagentContinuationAvailable,
 } from '../../shared/state';
+import { ensureRunnerShims } from '../../shared/runner-shims';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -51,6 +52,12 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return noop();
+
+  // A role spawn is imminent → make sure the version-stable runner shims exist
+  // BEFORE any subagent runs prose that references ~/.traffic-one/bin. This is
+  // the reliable cross-host site: Codex executes PreToolUse but not the
+  // SessionStart injection path. Idempotent, ~1ms when already current.
+  ensureRunnerShims();
 
   // OpenCode role delegation (all modes, all hosts): a configured role MUST run
   // on OpenCode first when delegation is enabled. Deny its paid spawn until

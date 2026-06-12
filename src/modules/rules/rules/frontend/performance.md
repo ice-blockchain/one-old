@@ -15,7 +15,7 @@ live in `frontend/react/performance.md`.
 - Default launch standard: Lighthouse Performance >= 90 on mobile against a
   built production preview, with 100 as the ideal.
 - Use the Traffic One runner by default for React/Vite and Ionic web routes:
-  `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /`.
+  `node ~/.traffic-one/bin/lighthouse-runner.cjs --route /`.
   The runner builds the app, starts production preview, runs Lighthouse mobile,
   writes JSON/HTML reports under `.traffic-one/reports/lighthouse/`, and exits
   non-zero below the default thresholds.

@@ -29,6 +29,7 @@ description: "Apply when orchestrating the senior role team (architect/frontend/
   - `senior-shipper` — deploy/release only after the shipper gate is satisfied.
 - Where the host exposes background-agent/task facilities, use them to run the same roles. If the host exposes no callable agent facility, keep the same phase order manually with the mirrored `00-agent-senior-*` role contexts and state that the Traffic One team is being simulated by the main agent because the runtime has no subagent adapter.
 - Include the relevant Traffic One role instructions from `agents/senior-*.md` or a concise equivalent in every subagent prompt.
+- Every role spawn AND continuation prompt MUST begin with the structured marker `[t1-role: senior-<role>]` on its own first line. The write gates, spawn recorder, and claim self-heal parse this marker by contract — free-text phrasing alone is fragile and has silently disabled role attribution before.
 - Every frontend role prompt must include the automatic baselines even when the
   user did not mention them: i18n integration with existing/new catalogs and
   `<Trans>` for rich copy, SEO metadata/tests for every created or changed

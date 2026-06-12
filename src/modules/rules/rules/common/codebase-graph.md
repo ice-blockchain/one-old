@@ -45,7 +45,7 @@ One runner (it relocates the output under `.traffic-one/`; do NOT run raw
 `gitnexus analyze .`, which would write to the project root):
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"
+node ~/.traffic-one/bin/gitnexus-runner.cjs
 ```
 
 ### When `codeGraphProvider: "graphify"`
@@ -71,7 +71,7 @@ rebuilds it automatically. To force a rebuild now, run the Traffic One runner
 update .`, which would write to the project root):
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/graphify-runner.cjs"
+node ~/.traffic-one/bin/graphify-runner.cjs
 ```
 
 The post-build hook emits a one-time hint after the first successful build

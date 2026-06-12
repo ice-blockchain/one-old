@@ -35,7 +35,12 @@ import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 type Rec = Record<string, unknown>;
 const which = exec.which;
 
-const RUN_TIMEOUT_MS = 8 * 60 * 1000;
+// Absolute backstop only — NOT the routine bound. Bounded units finish in
+// ~2 min; long-but-alive runs keep going while the orchestrator keeps polling,
+// and the MCP server's poll-liveness watchdog cancels abandoned runs (parent
+// stopped polling) long before this. This ceiling exists for the non-MCP shell
+// path and as machine hygiene against a truly hung CLI.
+const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DIGEST_HARD_BYTES = 3072;
 // The free gateway models are non-deterministic and sometimes "chat" without
 // editing. Allow ONE bounded retry (still free) on a clean no-op before falling
@@ -124,6 +129,65 @@ export function snapshotWorkingTree(cwd: string, headSha: string): string {
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
+}
+
+
+// Pathspecs for staging the worktree diff: install artifacts must never ride a
+// delegated diff (observed live: a free-model unit ran `npm install` in the
+// sandbox and its diff carried a package-local node_modules/ plus a
+// package-lock.json into a pnpm workspace). node_modules is always excluded;
+// lockfiles of the WRONG package manager are excluded based on the snapshot's
+// root packageManager (the project's own lockfile remains a legitimate
+// install side-effect). Exported for tests.
+export function stageExcludePathspecs(wt: string): string[] {
+  const excludes = [':(exclude,glob)**/node_modules/**', ':(exclude)node_modules'];
+  let pm = '';
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(wt, 'package.json'), 'utf8')) as Rec;
+    pm = typeof pkg.packageManager === 'string' ? pkg.packageManager.split('@')[0] as string : '';
+  } catch { /* no root package.json → keep lockfiles untouched */ }
+  const lockByPm: Record<string, string[]> = {
+    pnpm: ['package-lock.json', 'yarn.lock', 'bun.lockb', 'bun.lock'],
+    npm: ['pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'bun.lock'],
+    yarn: ['package-lock.json', 'pnpm-lock.yaml', 'bun.lockb', 'bun.lock'],
+    bun: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'],
+  };
+  for (const lock of lockByPm[pm] || []) excludes.push(`:(exclude,glob)**/${lock}`, `:(exclude)${lock}`);
+  return excludes;
+}
+
+// Best-effort post-apply verification: a delegated diff that APPLIED but broke
+// the build is worse than a declined unit (the paid roles inherit silent
+// breakage). When the project has a usable tsc and the unit touched TS files,
+// typecheck the nearest tsconfig package(s); revert on failures that mention a
+// touched file. Pre-existing breakage elsewhere (errors only in untouched
+// files), missing tooling (Step-0 runs before any install), and tsc
+// crashes/timeouts all SKIP verification — absence of verification is the
+// status quo, never a reason to reject good work. Exported for tests.
+export function postApplyTypecheck(cwd: string, touched: string[]): string | null {
+  const tsTouched = touched.filter((f) => /\.(ts|tsx|mts|cts)$/.test(f) && !/\.d\.ts$/.test(f));
+  if (tsTouched.length === 0) return null;
+  const tsc = path.join(cwd, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
+  if (!fs.existsSync(tsc)) return null;
+  const projDirs = new Set<string>();
+  for (const rel of tsTouched) {
+    let dir = path.dirname(path.resolve(cwd, rel));
+    while (dir.startsWith(path.resolve(cwd))) {
+      if (fs.existsSync(path.join(dir, 'tsconfig.json'))) { projDirs.add(dir); break; }
+      if (dir === path.resolve(cwd)) break;
+      dir = path.dirname(dir);
+    }
+  }
+  for (const dir of [...projDirs].slice(0, 3)) {
+    const r = spawnSync(tsc, ['--noEmit', '-p', dir], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+    if (r.error || r.status === null || r.status === 0) continue;
+    const out = `${r.stdout || ''}\n${r.stderr || ''}`;
+    const mentionsTouched = tsTouched.some((f) => out.includes(f.replace(/\\/g, '/')) || out.includes(path.basename(f)));
+    if (!mentionsTouched) continue; // pre-existing breakage elsewhere — not this unit's fault
+    const firstLines = out.trim().split('\n').filter(Boolean).slice(0, 4).join(' | ').slice(0, 400);
+    return `tsc -p ${path.relative(cwd, dir) || '.'}: ${firstLines}`;
+  }
+  return null;
 }
 
 function resolveBin(): string | null {
@@ -431,7 +495,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
       // ⇒ we have work. Diffing against baseSha (not symbolic HEAD) keeps the
       // work visible even when the model `git commit`ed inside the detached
       // worktree (which moves HEAD and would make a HEAD-relative diff empty).
-      git(wt, ['add', '-A']);
+      git(wt, ['add', '-A', '--', '.', ...stageExcludePathspecs(wt)]);
       if (git(wt, ['diff', '--cached', '--quiet', baseSha]).status !== 0) { summary = parsed.summary; break; }
       if (attempt >= MAX_DELEGATE_ATTEMPTS) {
         return { kind: 'no-changes' };
@@ -475,6 +539,12 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
       const rollbackError = restoreApplyTargets(backups);
       const rollbackSuffix = rollbackError ? `; rollback failed: ${rollbackError}` : '';
       return { kind: 'failed', error: `could not apply delegated diff to the working tree: ${applied.stderr || 'apply failed'}${rollbackSuffix}` };
+    }
+    const verifyError = postApplyTypecheck(cwd, touched);
+    if (verifyError) {
+      const rollbackError = restoreApplyTargets(backups);
+      const suffix = rollbackError ? `; rollback failed: ${rollbackError}` : ' — reverted, tree untouched';
+      return { kind: 'failed', error: `delegated diff applied but typecheck failed${suffix}: ${verifyError}` };
     }
     return { kind: 'delegated', touched, summary };
   } finally {
@@ -627,10 +697,22 @@ export function parsePlanDelegationQueue(planText: string): Array<{ role: string
 // after the first unit discovers it. A unit that opencode can't deliver
 // (skipped/failed/no-changes) simply isn't applied — the orchestrator then
 // spawns a normal subagent for it. Never throws.
-export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string } = {}): PlanDelegationResult {
+// Normalize role labels for comparisons ("senior-frontend" ≡ "frontend").
+export function normalizePlanRole(role: string): string {
+  const m = /^senior-(.+)$/.exec(role.trim().toLowerCase());
+  return m && m[1] ? m[1] : role.trim().toLowerCase();
+}
+
+export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string; roles?: readonly string[] } = {}): PlanDelegationResult {
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
-  const queue = parsePlanDelegationQueue(planText);
+  let queue = parsePlanDelegationQueue(planText);
+  // Role shard filter: the MCP layer parallelizes the batch ACROSS roles (units
+  // within one role stay sequential — they share a digest file).
+  if (opts.roles && opts.roles.length > 0) {
+    const allowed = new Set(opts.roles.map((r) => normalizePlanRole(r)));
+    queue = queue.filter((u) => allowed.has(normalizePlanRole(u.role)));
+  }
   const units: PlanDelegationResult['units'] = [];
   let delegated = 0;
   for (const u of queue) {
@@ -654,7 +736,12 @@ export function main(): number {
   };
 
   if (args.includes('--from-plan')) {
-    const summary = delegateFromPlan(process.cwd(), { runId: get('--run-id'), model: get('--model') });
+    const rolesCsv = get('--roles');
+    const summary = delegateFromPlan(process.cwd(), {
+      runId: get('--run-id'),
+      model: get('--model'),
+      ...(rolesCsv ? { roles: rolesCsv.split(',').map((r) => r.trim()).filter(Boolean) } : {}),
+    });
     process.stdout.write(`${JSON.stringify(summary)}\n`);
     return 0; // batch is best-effort: un-delegated units fall back to subagents, never fail the run
   }

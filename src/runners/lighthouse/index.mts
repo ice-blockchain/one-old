@@ -120,7 +120,10 @@ async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lig
   const outputBase = join(outDir, baseName);
   const lighthouseArgs = [
     url,
-    '--only-categories=performance',
+    // All four default categories: the perf trace dominates audit time anyway,
+    // and accessibility/best-practices/seo scores ride the same run for free —
+    // restricting to performance made their summary fields permanently null.
+    '--only-categories=performance,accessibility,best-practices,seo',
     '--chrome-flags=--headless --no-sandbox',
     '--output=json',
     '--output=html',

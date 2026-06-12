@@ -67,7 +67,7 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
 
 1. Run the hard security gate:
    ```bash
-   node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/security-check-runner.cjs" --strict --stamp
+   node ~/.traffic-one/bin/security-check-runner.cjs --strict --stamp
    ```
    This writes `lastSecurityCheckAt`, `lastSecurityCheckStatus`,
    `lastSecurityCheckFingerprint`, and `lastSecurityCheckReport` to
