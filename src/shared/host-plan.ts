@@ -65,9 +65,18 @@ function detectClaudePlan(env: NodeJS.ProcessEnv): string | null {
     const orgType = typeof acct.organizationType === 'string' ? acct.organizationType.toLowerCase() : '';
     if (orgType.includes('enterprise')) return 'enterprise';
     if (orgType.includes('team')) return 'team';
+    // Personal Max/Pro accounts carry the plan in DIFFERENT fields depending on how
+    // the account is provisioned: individual subscribers often have null
+    // `userRateLimitTier`/`seatTier`, with the only signal in `organizationType`
+    // (e.g. "claude_max") or `organizationRateLimitTier` (e.g. "default_claude_max_5x").
+    // Reading only the personal-tier fields mis-detected those as free → the wizard
+    // recommended Low to a Max user. Fall through ALL known plan-bearing fields; the
+    // enterprise/team early-returns above keep org plans taking precedence.
     const fromTier = planFromTierString(acct.userRateLimitTier)
       ?? planFromTierString(acct.subscriptionType)
-      ?? planFromTierString(acct.seatTier);
+      ?? planFromTierString(acct.seatTier)
+      ?? planFromTierString(acct.organizationRateLimitTier)
+      ?? planFromTierString(acct.organizationType);
     if (fromTier) return fromTier;
   }
   // Linux/Windows persist the OAuth blob to a file; macOS uses the Keychain.

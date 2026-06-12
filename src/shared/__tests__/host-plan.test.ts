@@ -65,6 +65,38 @@ test('detectHostPlan claude: reads ~/.claude.json oauthAccount (rate-limit tier 
   assert.equal(detectHostPlan('claude', env({ HOME: h3 })), 'enterprise');
 });
 
+test('detectHostPlan claude: personal Max account — plan only in organizationType/organizationRateLimitTier (null personal tiers)', () => {
+  // Real-world shape of an individual Max subscriber: userRateLimitTier and
+  // seatTier are null, subscriptionType absent; the Max signal lives only in
+  // organizationType ("claude_max") and organizationRateLimitTier
+  // ("default_claude_max_5x"). Before the fix this fell through to free, so the
+  // onboarding wizard recommended Low to a Max user.
+  const hMax = tmpHome();
+  fs.writeFileSync(path.join(hMax, '.claude.json'), JSON.stringify({
+    oauthAccount: {
+      userRateLimitTier: null,
+      seatTier: null,
+      organizationType: 'claude_max',
+      organizationRateLimitTier: 'default_claude_max_5x',
+    },
+  }), 'utf8');
+  assert.equal(detectHostPlan('claude', env({ HOME: hMax })), 'max');
+
+  // organizationRateLimitTier alone (organizationType generic) also resolves.
+  const hMax2 = tmpHome();
+  fs.writeFileSync(path.join(hMax2, '.claude.json'), JSON.stringify({
+    oauthAccount: { userRateLimitTier: null, organizationRateLimitTier: 'default_claude_max_20x' },
+  }), 'utf8');
+  assert.equal(detectHostPlan('claude', env({ HOME: hMax2 })), 'max');
+
+  // A personal Pro account expressed only via organizationType resolves to pro.
+  const hPro = tmpHome();
+  fs.writeFileSync(path.join(hPro, '.claude.json'), JSON.stringify({
+    oauthAccount: { userRateLimitTier: null, organizationType: 'claude_pro' },
+  }), 'utf8');
+  assert.equal(detectHostPlan('claude', env({ HOME: hPro })), 'pro');
+});
+
 test('detectHostPlan claude: missing/garbage file → default (free)', () => {
   assert.equal(detectHostPlan('claude', env({ HOME: tmpHome() })), 'free');
 });
