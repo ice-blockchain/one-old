@@ -109,6 +109,16 @@ export function authEnforced(env: NodeJS.ProcessEnv = process.env): boolean {
   return AUTH_ENABLED;
 }
 
+// The auth predicate HOOK HANDLERS must use: authenticated, OR auth enforcement
+// is off. Raw isAuthenticatedLocal() checks token freshness unconditionally —
+// with AUTH_ENABLED=false (no tokens minted anywhere) it is false on every
+// install, which silently dead-coded every handler gated on it (observed live:
+// the post-build graph rescan, the page-speed gate, the token log, and
+// post-stack-setup's write-convergence never ran in a full Codex build).
+export function authSatisfied(env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): boolean {
+  return !authEnforced(env) || isAuthenticatedLocal(env, nowMs);
+}
+
 export function authRemoteCheckDue(state: AuthState | null = readAuthState(), env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): boolean {
   if (!isAuthStateFresh(state, env, nowMs)) return false;
   const lastChecked = Date.parse((state && typeof state.lastRemoteCheckedAt === 'string' ? state.lastRemoteCheckedAt : '') || '');

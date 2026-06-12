@@ -162,3 +162,43 @@ test('resolveRunAgentContext self-heals: a subagent write with no claim infers r
     assert.equal(main, null);
   });
 });
+
+// The dominant real-world spawn phrasing (observed live on Codex) has no "You are":
+// "Traffic One senior-frontend fix-cycle role for project … Run id: …". Without
+// matching it, every worker failed transcript inference and fell to FIFO pending
+// matching, which misclaims roles under parallel spawns.
+test('inferRoleFromTranscript reads the "Traffic One senior-X …" prompt shape', () => {
+  withPrefs((dir) => {
+    const fix = writeChildTranscript(dir, FRONTEND_THREAD,
+      'Traffic One senior-frontend fix-cycle role for project /x. Run id: 1781253608942.\n\nRead the reviewer digest first. senior-backend owns the API surfaces.');
+    assert.equal(inferRoleFromTranscript(fix), 'senior-frontend');
+
+    const retry = writeChildTranscript(dir, '019e7402-3e75-7ef0-bc01-115940d1a574',
+      'Traffic One senior-tester paid fallback for /x. Run id: 1781253608942. Add tests only.');
+    assert.equal(inferRoleFromTranscript(retry), 'senior-tester');
+  });
+});
+
+test('pending-claim matching is role-aware and keys the claim by thread id', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = (state as Record<string, unknown>).currentRunId as string;
+    // Parent staked two pending claims (fix-cycle frontend + backend).
+    ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: 'orchestrator-parent' }, { toolName: 'spawn_agent' });
+    ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: 'orchestrator-parent' }, { toolName: 'spawn_agent' });
+
+    // The frontend thread's transcript names ONLY its own assignment — it must
+    // claim the senior-frontend pending file even though backend's is older
+    // (FIFO order), and the claimed file must be keyed by the THREAD id, not the
+    // parent session id Codex repeats for every worker.
+    const transcript = writeChildTranscript(dir, FRONTEND_THREAD,
+      'Traffic One senior-frontend fix-cycle role for project /x. Run id: ' + runId + '.');
+    const ctx = resolveRunAgentContext(dir, state, {
+      session_id: 'orchestrator-parent',
+      transcript_path: transcript,
+    }, { claimPending: true });
+    assert.ok(ctx);
+    assert.equal(ctx!.role, 'senior-frontend');
+    assert.equal(ctx!.sessionId, FRONTEND_THREAD);
+  });
+});

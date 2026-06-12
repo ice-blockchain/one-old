@@ -40,6 +40,28 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
   } else if (provider === 'gitnexus') {
     const gnDir = path.join(cwd, GITNEXUS_REL);
     if (!fs.existsSync(gnDir)) return null;
+    // Honest empty-state: an index built before the code existed (the deferred
+    // new-project onboarding scan) has stats.files === 0. Saying "graph
+    // available — read the artefacts" invites every agent to waste reads on
+    // empty files; say it is empty and how it refreshes instead.
+    let meta: Rec | null = null;
+    try {
+      meta = JSON.parse(fs.readFileSync(path.join(gnDir, 'meta.json'), 'utf8')) as Rec;
+    } catch {
+      meta = null;
+    }
+    const stats = meta && meta.stats && typeof meta.stats === 'object' ? (meta.stats as Rec) : null;
+    const statFiles = stats && typeof stats.files === 'number' ? stats.files : null;
+    const statNodes = stats && typeof stats.nodes === 'number' ? stats.nodes : null;
+    if (statFiles === 0) {
+      lines.push('Provider: gitnexus · index is EMPTY (0 files — scanned before the code existed).');
+      lines.push('');
+      lines.push('Do NOT read `.traffic-one/.gitnexus/` artefacts yet. The graph refreshes after the next production build, or run the gitnexus runner from the project root to rebuild it now.');
+      return `${lines.join('\n')}\n`;
+    }
+    const statsSuffix = statFiles != null
+      ? ` (${statFiles} files${statNodes != null ? `, ${statNodes} nodes` : ''}${meta && typeof meta.indexedAt === 'string' ? `, indexed ${meta.indexedAt}` : ''})`
+      : '';
     const indexPath = path.join(gnDir, 'index.json');
     let listed = false;
     if (fs.existsSync(indexPath)) {
@@ -66,7 +88,7 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
       }
     }
     if (!listed) {
-      lines.push('Provider: gitnexus · graph available at `.traffic-one/.gitnexus/`');
+      lines.push(`Provider: gitnexus · graph available at \`.traffic-one/.gitnexus/\`${statsSuffix}`);
     }
     lines.push('');
     lines.push('Read `.traffic-one/.gitnexus/` artefacts for module-specific scoping.');

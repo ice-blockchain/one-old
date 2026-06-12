@@ -70,9 +70,34 @@ test('post-build code-graph hint is silent for non-build commands', () => {
   });
 });
 
-test('post-build code-graph hint is silent when unauthenticated', () => {
+test('post-build code-graph hint is silent when unauthenticated AND auth is enforced', () => {
   withProject({ provider: 'graphify', authed: false }, (cwd) => {
-    assert.equal(postBuildCodeGraphHint(ctxFor(cwd, 'npm run build')).kind, 'noop');
+    const saved = process.env.TRAFFIC_ONE_AUTH;
+    process.env.TRAFFIC_ONE_AUTH = '1';
+    try {
+      assert.equal(postBuildCodeGraphHint(ctxFor(cwd, 'npm run build')).kind, 'noop');
+    } finally {
+      if (saved === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+      else process.env.TRAFFIC_ONE_AUTH = saved;
+    }
+  });
+});
+
+// AUTH_ENABLED=false builds mint no tokens anywhere, so gating on raw token
+// freshness dead-coded this hook on every install (observed live: a full Codex
+// build finished with a 0-node graph because the rescan never fired). With
+// enforcement off, the hook must run without tokens.
+test('post-build code-graph hint RUNS without tokens when auth is not enforced', () => {
+  withProject({ provider: 'graphify', authed: false }, (cwd) => {
+    const saved = process.env.TRAFFIC_ONE_AUTH;
+    process.env.TRAFFIC_ONE_AUTH = '0';
+    try {
+      __setCodeGraphBootstraps({ graphify: () => ({ ok: true, action: 'installed', report: 'r', error: null, durationMs: 100 }) as unknown as CodeGraphResult });
+      assert.equal(postBuildCodeGraphHint(ctxFor(cwd, 'npm run build')).kind, 'context');
+    } finally {
+      if (saved === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+      else process.env.TRAFFIC_ONE_AUTH = saved;
+    }
   });
 });
 

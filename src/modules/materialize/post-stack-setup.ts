@@ -20,7 +20,7 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isAuthenticatedLocal } from '../../shared/auth';
+import { authSatisfied } from '../../shared/auth';
 import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
@@ -135,7 +135,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     ensureOpenCodeDelegationReady(reportRoot, state);
   }
 
-  if (!isAuthenticatedLocal()) return noop();
+  if (!authSatisfied()) return noop();
 
   // Opt-in per-tool token log (no-op unless TRAFFIC_ONE_TOKEN_LOG=1). Real
   // logger by default; tests inject a spy/no-op via deps.

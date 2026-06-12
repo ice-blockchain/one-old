@@ -98,13 +98,21 @@ export function transcriptThreadId(transcriptPath: unknown): string | null {
 }
 
 // Infer the Traffic One role assigned to a subagent by reading its rollout
-// (transcript_path) and matching the spawn assignment "You are … senior-X". Anchored
-// on "You are" (within one clause) so a prompt that ALSO names other roles — e.g.
-// "you are senior-frontend … avoid backend-owned paths … senior-backend owns the API"
-// — still resolves the assigned role, not a cross-referenced one. Best-effort: returns
-// null if the file is unreadable or the assignment isn't present yet (SubagentStart can
-// fire before the rollout is flushed; the child's first write re-attempts when it is).
-const SPAWN_ROLE_RE = /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i;
+// (transcript_path) and matching the spawn assignment. Two anchored shapes cover
+// the prompts orchestrators actually write (observed live on Codex):
+//   - "You are … senior-X" (within one clause), and
+//   - "Traffic One senior-X role / fix-cycle / second pass / fallback …" — the
+//     dominant real-world phrasing; without it every Codex worker failed the
+//     per-thread self-heal and fell through to racy pending-claim matching.
+// Both are clause-anchored so a prompt that ALSO names other roles (e.g. "you are
+// senior-frontend … senior-backend owns the API") still resolves the assigned
+// role, not a cross-referenced one. Best-effort: returns null if the file is
+// unreadable or the assignment isn't present yet (SubagentStart can fire before
+// the rollout is flushed; the child's first write re-attempts when it is).
+const SPAWN_ROLE_RES = [
+  /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+  /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
+] as const;
 export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
   let raw: string;
@@ -134,9 +142,11 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
     if (text) userTexts.push(text);
   }
   for (let i = userTexts.length - 1; i >= 0; i -= 1) {
-    const match = (userTexts[i] || '').match(SPAWN_ROLE_RE);
-    const role = match ? (match[1] as string).toLowerCase() : null;
-    if (role && VALID_AGENT_ROLES.has(role)) return role;
+    for (const re of SPAWN_ROLE_RES) {
+      const match = (userTexts[i] || '').match(re);
+      const role = match ? (match[1] as string).toLowerCase() : null;
+      if (role && VALID_AGENT_ROLES.has(role)) return role;
+    }
   }
   return null;
 }
@@ -379,23 +389,36 @@ export function resolveRunAgentContext(
   // Codex reports) with no claim yet — infer its role from its own transcript and
   // stake the claim now. This runs at the child's first gated write, by which point
   // the rollout carries the spawn assignment (SubagentStart can fire before it does).
+  const inferredRole = shouldClaimPending && identity.transcriptPath
+    ? inferRoleFromTranscript(identity.transcriptPath)
+    : null;
   if (shouldClaimPending && identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId) {
-    const role = inferRoleFromTranscript(identity.transcriptPath);
-    if (role) {
-      const ctx = claimThreadRole(cwd, state, identity.threadId, role, { parentSessionId: identity.sessionId });
+    if (inferredRole) {
+      const ctx = claimThreadRole(cwd, state, identity.threadId, inferredRole, { parentSessionId: identity.sessionId });
       if (ctx) return ctx;
     }
   }
 
   if (shouldClaimPending && identity.isSubagent) {
     for (const runId of runIds) {
-      const pending = listPendingClaims(cwd, runId).filter(({ claim }) => claimAllowsState(state, claim));
+      // When the thread's transcript reveals its role, never claim a different
+      // role's pending file: parallel fix-cycle workers spawn near-simultaneously
+      // and FIFO matching hands the frontend worker the backend claim (observed
+      // live — the misclaimed worker then fails every scope check and the run
+      // deadlocks until the orchestrator improvises).
+      const pending = listPendingClaims(cwd, runId)
+        .filter(({ claim }) => claimAllowsState(state, claim))
+        .filter(({ claim }) => !inferredRole || claim.role === inferredRole);
       const matched = pending.find(({ claim }) => (
         identity.parentSessionId && claim.parentSessionId && claim.parentSessionId === identity.parentSessionId
       )) || pending[0];
       if (!matched) continue;
 
-      const sessionId = identity.sessionId || (matched.claim.sessionId as string) || (matched.claim.claimId as string);
+      // Key the claimed file by the PER-THREAD id when we have one. On Codex,
+      // identity.sessionId is the parent's session for every worker thread — using
+      // it as the key made all parallel workers collide on one claim file (each
+      // overwrite re-pointed every worker's resolution at the last-claimed role).
+      const sessionId = identity.threadId || identity.sessionId || (matched.claim.sessionId as string) || (matched.claim.claimId as string);
       const claimed: Rec = {
         ...matched.claim,
         status: 'claimed',

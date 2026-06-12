@@ -595,3 +595,39 @@ test('delegate captures the diff even when the model git-commits inside the work
     assert.equal(log.length, 1);
   });
 });
+
+test('snapshotWorkingTree captures UNTRACKED files into the sandbox base', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-snap-'));
+  try {
+    const g = (args: string[]): ReturnType<typeof spawnSync> => spawnSync('git', args, { cwd: dir, encoding: 'utf8' });
+    g(['init', '-q']);
+    g(['-c', 'user.name=t', '-c', 'user.email=t@t', 'commit', '--allow-empty', '-q', '-m', 'init']);
+    // A brand-new (untracked) scaffold file + a gitignored one.
+    fs.writeFileSync(path.join(dir, 'app.ts'), 'export const x = 1;\n', 'utf8');
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'node_modules/\n', 'utf8');
+    fs.mkdirSync(path.join(dir, 'node_modules'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'node_modules', 'junk.js'), 'x', 'utf8');
+
+    const head = (g(['rev-parse', 'HEAD']).stdout as string).trim();
+    const { snapshotWorkingTree } = require('../index') as typeof import('../index');
+    const sha = snapshotWorkingTree(dir, head);
+    assert.ok(sha && sha !== head, 'dirty tree must produce a snapshot commit distinct from HEAD');
+
+    const files = (spawnSync('git', ['ls-tree', '-r', '--name-only', sha as string], { cwd: dir, encoding: 'utf8' }).stdout || '').split('\n');
+    assert.ok(files.includes('app.ts'), 'untracked scaffold file is in the snapshot');
+    assert.ok(!files.some((f) => f.startsWith('node_modules/')), 'gitignored content stays out');
+
+    // User-visible git state untouched: index empty, HEAD unchanged, no stash.
+    assert.equal((g(['diff', '--cached', '--name-only']).stdout as string).trim(), '');
+    assert.equal((g(['rev-parse', 'HEAD']).stdout as string).trim(), head);
+    assert.equal((g(['stash', 'list']).stdout as string).trim(), '');
+
+    // Clean tree → plain HEAD (no snapshot commit).
+    fs.rmSync(path.join(dir, 'app.ts'));
+    fs.rmSync(path.join(dir, '.gitignore'));
+    fs.rmSync(path.join(dir, 'node_modules'), { recursive: true, force: true });
+    assert.equal(snapshotWorkingTree(dir, head), head);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

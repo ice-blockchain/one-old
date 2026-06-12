@@ -17,7 +17,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
 import { bootstrap as graphifyBootstrapImpl } from '../../runners/graphify';
-import { isAuthenticatedLocal } from '../../shared/auth';
+import { authSatisfied } from '../../shared/auth';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 
@@ -50,7 +50,7 @@ export function __resetCodeGraphBootstraps(): void {
 }
 
 export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
-  if (!isAuthenticatedLocal()) return noop();
+  if (!authSatisfied()) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!BUILD_COMMAND_RE.test(command)) return noop();

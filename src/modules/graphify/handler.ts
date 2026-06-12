@@ -10,7 +10,7 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isAuthenticatedLocal } from '../../shared/auth';
+import { authSatisfied } from '../../shared/auth';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, readEffectiveState } from '../../shared/state';
@@ -23,7 +23,7 @@ export function resetGraphifyHintThrottle(): void {
 }
 
 export function preGraphifyHint(ctx: Ctx): HookResult {
-  if (!isAuthenticatedLocal()) return noop();
+  if (!authSatisfied()) return noop();
   const cwd = ctx.cwd;
   if (graphifyHintSentForCwd === cwd) return noop();
 

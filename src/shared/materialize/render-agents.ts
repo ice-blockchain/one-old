@@ -8,12 +8,49 @@ import * as path from 'path';
 
 import { readText } from '../fsjson';
 import { writeTextIfChanged } from '../fs-text';
+import { detectHost } from '../host';
+import { detectHostPlan } from '../host-plan';
+import { buildTeamLineup } from '../onboarding-server/flow';
 import { pluginRoot } from '../paths';
+import { openCodeDelegationActive } from '../performance';
 import { templatePath } from '../stacks';
 import { GENERATED_MARKER, isGenerated } from './generated';
 import { isLeanMaterialization } from './has-assets';
 
 type Rec = Record<string, unknown>;
+
+// Team / delegation / role→model lines for the Active State section. Without
+// these the orchestrator hash-hunts ~/.traffic-one/projects/ for its own team
+// mode and guesses spawn models until the performance gate corrects it
+// (observed live: 4 foreign pref files read + 2 gate-deny round-trips in one
+// build). Best-effort: renders nothing it can't resolve.
+function activeTeamLines(state: Rec): string[] {
+  const team = state.team && typeof state.team === 'object' ? (state.team as Rec) : null;
+  const performance = state.performance && typeof state.performance === 'object' ? (state.performance as Rec) : null;
+  const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
+  const lines: string[] = [];
+  const mode = team && typeof team.mode === 'string' ? team.mode : null;
+  const level = performance && typeof performance.level === 'string' ? performance.level : null;
+  if (mode) {
+    const approved = team?.approved === true ? ', approved' : '';
+    lines.push(`- Team: ${mode}${level ? ` (${level}${approved})` : ''}`);
+  }
+  if (openCode) lines.push(`- OpenCode delegation: ${openCode.enabled === true ? 'enabled' : 'off'}`);
+  if (mode === 'subagents' && level) {
+    try {
+      const host = detectHost();
+      const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
+      const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
+      const lineup = buildTeamLineup(level, host, overrides, planCtx);
+      if (lineup.length > 0) {
+        lines.push(`- Role models (pass as \`model\` when spawning): ${lineup.map((m) => `${m.role.replace(/^senior-/, '')}=${m.model}`).join(', ')}`);
+      }
+    } catch {
+      // best-effort; the performance gate still corrects a missing line-up
+    }
+  }
+  return lines;
+}
 
 interface RenderOptions {
   leanMode?: boolean;
@@ -103,6 +140,7 @@ export function renderAgents(state: Rec, rules: string[], skills: string[], opti
     `- Frontend: ${(state.frontend as string) || 'none'}`,
     `- Backend: ${(state.backend as string) || 'none'}`,
     `- Mobile: ${(mobile && (mobile.framework as string)) || 'none'}`,
+    ...activeTeamLines(state),
     '',
     // Lean mode lists the active rules exactly once — in the "Active Rule Index"
     // below (with read-on-demand guidance). Non-lean mode lists them here, where

@@ -65,8 +65,15 @@ test('page-speed is silent for React Native-only stacks', () => {
   });
 });
 
-test('page-speed is silent when unauthenticated', () => {
+test('page-speed is silent when unauthenticated AND auth is enforced', () => {
+  const savedAuth = process.env.TRAFFIC_ONE_AUTH;
+  process.env.TRAFFIC_ONE_AUTH = '1';
+  try {
   withProject({ stack: 'default', frontend: 'react-vite' }, false, (cwd) => {
     assert.equal(postBuildPageSpeed(ctxFor(cwd, 'pnpm build')).kind, 'noop');
   });
+  } finally {
+    if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+    else process.env.TRAFFIC_ONE_AUTH = savedAuth;
+  }
 });

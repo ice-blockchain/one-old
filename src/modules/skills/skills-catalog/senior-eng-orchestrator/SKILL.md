@@ -53,6 +53,10 @@ work already started, pause at the next safe point, resolve it, then continue.
   - `senior-reviewer` — read-only.
   - `senior-tester` — owned write scope test files and test infrastructure only.
   - `senior-shipper` — deploy/release only after the shipper gate is satisfied.
+  - Lockfiles (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock*`)
+    are install side-effects and ALWAYS in scope for whichever role runs the
+    install — say so in every implementer spawn prompt. A role must never
+    delete/revert a lockfile to satisfy its scope.
 - The assignments manifest is stack-agnostic: the architect derives each scope from the project's REAL directories (Next `src/app`, Laravel `app/Http`+`routes`, Django `*/views.py`, Flutter `lib/`, …), not from hardcoded guesses. The format allows N implementer streams with arbitrary role labels (e.g. a future `senior-mobile`); this version spawns only `senior-frontend` and `senior-backend`.
 - Include the relevant `agents/senior-*.md` role text or a concise equivalent in every subagent prompt.
 - If subagents are unavailable or blocked, or the user picks Low: continue manually in the same dependency order and state that the Traffic One team is being simulated by the main agent.
@@ -207,7 +211,22 @@ the hook ignores stale runs after 30 minutes.
 
 When `senior-reviewer` returns `CHANGES_REQUESTED` and you loop back to `senior-frontend` / `senior-backend` to apply fixes, **do not run the full role flow again**. The role already has a prior digest and active rules; running the full flow re-explores the codebase and burns ~30M tokens per fix-cycle (real measured cost).
 
-Instead, follow this protocol for each fix-cycle re-spawn:
+**Reuse the LIVE role agent first (Codex and any host with persistent
+subagents):** if the role's implementation agent is still alive (your
+`wait_agent` returned but the thread was not closed), do NOT spawn a new one —
+`send_input` the fix instructions to the SAME agent and `wait_agent` it again.
+The author agent already holds its rules, the plan, and its own code in context:
+no cold start, no re-reads, and a better fix because it knows why the code is
+shaped that way. Include one caution in the message: "re-read any files OTHER
+roles changed since your last turn". Also: idle finished threads count against
+the host's active-agent cap — close threads you will NOT reuse (reviewer passes,
+one-shot fixes) right after their result, and keep implementer threads alive
+through the verify phase precisely so fix cycles can reuse them. Spawn a FRESH
+agent only when the thread is closed/dead, its context is near saturation, or
+the fix is unrelated to its prior work — in that case follow the re-spawn
+protocol below.
+
+Re-spawn protocol (fresh fix-cycle worker):
 
 1. **Write the fix-cycle context file** with exact reviewer findings. Use the reviewer's `CHANGES_REQUESTED <numbered list>` verbatim — paste `file:line` references and concrete suggested changes; do not paraphrase. Save to:
 
@@ -240,6 +259,15 @@ The 2-cycle reviewer cap (architect / orchestrator level) still applies — if t
 
 Spawn `senior-architect` via your host's subagent tool with the `model` param set. Architect tier = `balanced` for Balanced, `highest` for High — resolve to your host's model. After any required confirmation step, give the subagent the senior-architect role instructions and owned write scope `.traffic-one/plan.md` plus ADR/docs and the per-run `assignments.json` manifest. Block on its return.
 
+On Codex, spawn the architect with **`fork_context: true`**: the architect benefits
+from everything you already read (rules, memory, project shape), and a forked
+context skips its ~35-file cold re-read (~300k tokens, measured live). If the
+spawn call fails to PARSE (e.g. a duplicated field in your tool-call JSON),
+re-issue it WITH `fork_context: true` again — do not silently drop the flag, that
+is the whole saving. Implementers/reviewer/tester spawn COLD (no fork): they need
+only the plan + their scoped rules, and forking your full context into four
+workers would multiply it instead.
+
 Synthetic prompt body — use the **Phase 1 — Architect** template from `resources/prompt-templates.md`. The template tells the architect to read `.traffic-one/.one.json` + project memory + graph if present, produce `.traffic-one/plan.md`, create/update `.traffic-one/` memory, write `.traffic-one/runs/<run-id>/assignments.json` (the machine-readable Module map: one disjoint owned-path scope per implementer role), and write `.traffic-one/digests/<run-id>/architect.md` before emitting `PLAN_READY`. The `assignments.json` partition is what lets Phase 2 run conflict-free on any stack.
 
 Architect must end its reply with the literal token `PLAN_READY`. If it doesn't, surface to the user and do not proceed to Phase 2.
@@ -263,6 +291,14 @@ Implementers handle ONLY the senior units, plus any queued unit OpenCode did not
 Wait for both to return before Phase 3.
 
 ### Phase 3 — Verify (parallel)
+
+**Pre-step — refresh the codebase graph** (cheap, parent-side, do not skip): the
+implementers just wrote the real code, but the graph index still holds the empty
+onboarding scan, so reviewer/tester would navigate a 0-node graph. From the
+project root run the provider runner per `codeGraphProvider`:
+`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"`
+(or `graphify-runner.cjs`). Worker threads cannot trigger the post-build rescan
+hook on every host, so this parent-side refresh is the deterministic path.
 
 Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls before any `wait_agent`, then `wait_agent` on each). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 

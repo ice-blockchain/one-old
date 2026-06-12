@@ -98,14 +98,21 @@ function withDoneProject(extraOne: Record<string, unknown>, fn: (dir: string) =>
   }
 }
 
-test('single gate: onboarding finalized + one-uid missing → fires the one-mcp report (onboarding-complete), even unauthenticated', () => {
+test('single gate: onboarding finalized + one-uid missing → fires the one-mcp report (onboarding-complete), even unauthenticated + enforced', () => {
   withDoneProject({}, (dir) => {
-    const calls: string[] = [];
-    const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
-      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
-    });
-    assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate, no auth required
-    assert.equal(r.kind, 'noop'); // unauthenticated → rest gated; the report already fired
+    const savedAuth = process.env.TRAFFIC_ONE_AUTH;
+    process.env.TRAFFIC_ONE_AUTH = '1'; // enforce so the post-report sections stay gated
+    try {
+      const calls: string[] = [];
+      const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+        reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+      });
+      assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate, no auth required
+      assert.equal(r.kind, 'noop'); // unauthenticated + enforced → rest gated; the report already fired
+    } finally {
+      if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+      else process.env.TRAFFIC_ONE_AUTH = savedAuth;
+    }
   });
 });
 

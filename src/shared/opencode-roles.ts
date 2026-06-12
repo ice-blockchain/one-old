@@ -68,6 +68,38 @@ export function openCodeRoleAttempted(cwd: string, runId: string, role: string):
   }
 }
 
+// Append a JSON line describing how the delegation attempt ended (model, action,
+// error, duration). The 0-byte marker alone made failed delegations
+// undiagnosable after the fact (observed live: an empty
+// `opencode-attempts/senior-frontend` while the role silently fell back to a
+// paid worker). Diagnostics land in a `.log` SIDECAR next to the marker — the
+// marker file itself stays an existence-only flag written exclusively by
+// markOpenCodeRoleAttempted (the spawn gate must not see pre-CLI environment
+// failures as real attempts).
+export function recordOpenCodeAttemptOutcome(
+  cwd: string,
+  runId: string,
+  role: string,
+  outcome: { action: string; model?: string | null; error?: string | null; durationMs?: number; touched?: number },
+): void {
+  if (!runId || !role) return;
+  try {
+    const p = `${attemptMarkerPath(cwd, runId, role)}.log`;
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const line = JSON.stringify({
+      at: new Date().toISOString(),
+      action: outcome.action,
+      model: outcome.model ?? null,
+      error: outcome.error ? String(outcome.error).slice(0, 500) : null,
+      durationMs: typeof outcome.durationMs === 'number' ? Math.round(outcome.durationMs) : undefined,
+      touched: typeof outcome.touched === 'number' ? outcome.touched : undefined,
+    });
+    fs.appendFileSync(p, `${line}\n`, 'utf8');
+  } catch {
+    // best-effort diagnostics; never block the delegation result
+  }
+}
+
 // Per-run marker that the GATE has already denied a paid spawn of this role
 // once. The deny → delegate → re-spawn loop assumes the delegate tool CAN run;
 // on Codex the host's safety reviewer can reject the opencode_delegate call

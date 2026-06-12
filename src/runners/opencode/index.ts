@@ -26,7 +26,7 @@ import * as path from 'path';
 import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
 import { ensureInitialCommit } from '../../shared/git-init';
-import { markOpenCodeRoleAttempted } from '../../shared/opencode-roles';
+import { markOpenCodeRoleAttempted, recordOpenCodeAttemptOutcome } from '../../shared/opencode-roles';
 import { roleDigestName } from '../../shared/packing';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -79,9 +79,52 @@ export interface DelegateResult {
   model?: string;
 }
 
-function git(cwd: string, args: string[], timeout = 60_000): { status: number; stdout: string; stderr: string } {
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout });
+function git(cwd: string, args: string[], timeout = 60_000, env?: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
+  const r = spawnSync('git', args, {
+    cwd,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
   return { status: typeof r.status === 'number' ? r.status : 1, stdout: r.stdout || '', stderr: (r.stderr || '').trim() };
+}
+
+// Snapshot the CURRENT working tree — including UNTRACKED files — into a
+// throwaway commit, without touching the user's index, HEAD, or stash list.
+// `git stash create` (the previous approach) snapshots only tracked
+// modifications, but a mid-build new project is almost entirely untracked
+// files: every delegation sandboxed from the bare initial commit, the worker
+// saw an empty repo, and the role pass returned "no changes" (or produced a
+// diff that could not apply back to reality). A temp GIT_INDEX_FILE + add -A +
+// write-tree + commit-tree captures everything (still .gitignore-filtered, so
+// node_modules/build output stay out). Returns null on any failure → caller
+// falls back to plain HEAD.
+export function snapshotWorkingTree(cwd: string, headSha: string): string | null {
+  const tmpIndex = path.join(os.tmpdir(), `t1-oc-index-${process.pid}-${Date.now().toString(36)}`);
+  const env = { GIT_INDEX_FILE: tmpIndex };
+  try {
+    // Seed from HEAD so deletions are captured, then layer the working tree.
+    if (git(cwd, ['read-tree', headSha], 60_000, env).status !== 0) return null;
+    if (git(cwd, ['add', '-A'], 120_000, env).status !== 0) return null;
+    const tree = git(cwd, ['write-tree'], 60_000, env);
+    const treeSha = tree.stdout.trim();
+    if (tree.status !== 0 || !treeSha) return null;
+    // Tree identical to HEAD → clean checkout; sandbox plain HEAD (no extra commit).
+    const headTree = git(cwd, ['rev-parse', `${headSha}^{tree}`]);
+    if (headTree.status === 0 && headTree.stdout.trim() === treeSha) return headSha;
+    const commit = git(cwd, [
+      '-c', 'user.name=Traffic One',
+      '-c', 'user.email=noreply@traffic.io',
+      'commit-tree', treeSha, '-p', headSha, '-m', 'traffic-one delegation snapshot',
+    ]);
+    const sha = commit.stdout.trim();
+    return commit.status === 0 && sha ? sha : null;
+  } catch {
+    return null;
+  } finally {
+    try { fs.rmSync(tmpIndex, { force: true }); } catch { /* best-effort */ }
+  }
 }
 
 function resolveBin(): string | null {
@@ -466,24 +509,35 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       return { ok: false, action: 'skipped', digest: null, touched: [], error: 'No git HEAD to sandbox the delegation; run a normal subagent' };
     }
   }
-  // Sandbox from the CURRENT WORKING TREE, not just committed HEAD. `git stash
-  // create` snapshots uncommitted (tracked) changes into a throwaway commit without
-  // touching the tree or the stash list; fall back to HEAD when the tree is clean
-  // (it prints nothing). Without this, sequential delegations each branch the
-  // worktree from the same stale HEAD and silently ignore the PREVIOUS delegation's
-  // still-uncommitted edit — the 2nd+ task runs against a "cached" snapshot of the
-  // repo, so its diff is computed off the wrong base and the change fails to land.
-  const snapshot = git(cwd, ['stash', 'create']);
-  const baseSha = (snapshot.status === 0 && snapshot.stdout.trim()) ? snapshot.stdout.trim() : head.stdout.trim();
+  // Sandbox from the CURRENT WORKING TREE, not just committed HEAD — including
+  // untracked files (see snapshotWorkingTree: a mid-build scaffold is almost
+  // entirely untracked, and the previous `git stash create` approach made every
+  // build-phase delegation run against an effectively empty repo). Falls back to
+  // HEAD only if the snapshot itself fails.
+  const baseSha = snapshotWorkingTree(cwd, head.stdout.trim()) || head.stdout.trim();
 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';
   const runId = (opts.runId || '').trim() || runStamp();
+  const startedAt = Date.now();
   let markedAttempt = false;
   const markCliAttempt = (): void => {
     if (markedAttempt || !runId || !role) return;
     markedAttempt = true;
     markOpenCodeRoleAttempted(cwd, runId, role);
+  };
+  // Terminal-outcome diagnostics into the attempt marker (append-only JSON lines;
+  // the spawn gate only checks existence). Failed delegations were undiagnosable
+  // from the 0-byte flag alone.
+  const record = (result: DelegateResult): DelegateResult => {
+    recordOpenCodeAttemptOutcome(cwd, runId, role, {
+      action: result.action,
+      model: result.model ?? null,
+      error: result.error,
+      durationMs: Date.now() - startedAt,
+      touched: result.touched.length,
+    });
+    return result;
   };
 
   // Walk the models: a fresh worktree per model; advance on server/model-side
@@ -499,7 +553,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
         if (idx >= 0) freeChainStart = idx;
       }
       const digest = writeDigest(cwd, runId, role, model, outcome.touched, outcome.summary);
-      return { ok: true, action: 'delegated', digest, touched: outcome.touched, error: null, model };
+      return record({ ok: true, action: 'delegated', digest, touched: outcome.touched, error: null, model });
     }
     if (outcome.kind === 'try-next') {
       modelErrors.push(`${model}: ${outcome.error}`);
@@ -513,18 +567,18 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       continue;
     }
     if (outcome.kind === 'no-changes') {
-      return { ok: false, action: 'no-changes', digest: null, touched: [], error: 'OpenCode produced no file changes', model };
+      return record({ ok: false, action: 'no-changes', digest: null, touched: [], error: 'OpenCode produced no file changes', model });
     }
-    return { ok: false, action: 'failed', digest: null, touched: [], error: outcome.error, model };
+    return record({ ok: false, action: 'failed', digest: null, touched: [], error: outcome.error, model });
   }
-  return {
+  return record({
     ok: false,
     action: 'failed',
     digest: null,
     touched: [],
     error: `no usable OpenCode model — ${modelErrors.join('; ')}`,
     model: lastModel,
-  };
+  });
 }
 
 export interface PlanDelegationResult {

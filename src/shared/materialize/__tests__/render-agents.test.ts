@@ -104,3 +104,30 @@ test('renderAgentsWithLocalContext renders identical AGENTS/CLAUDE local bodies 
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('Active State carries team mode, OpenCode flag, and the role→model line-up', () => {
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  try {
+    const state = {
+      ...STATE,
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'balanced' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.15.13' } },
+    };
+    const out = renderAgents(state, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
+    assert.ok(out.includes('- Team: subagents (balanced, approved)'));
+    assert.ok(out.includes('- OpenCode delegation: enabled'));
+    assert.ok(out.includes('Role models (pass as `model` when spawning): architect='));
+  } finally {
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+  }
+});
+
+test('Active State omits team lines when no local prefs are present', () => {
+  const out = renderAgents(STATE, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
+  assert.ok(!out.includes('- Team:'));
+  assert.ok(!out.includes('Role models'));
+});

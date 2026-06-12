@@ -75,3 +75,25 @@ test('writeGraphPreview writes .traffic-one/graph-preview.md (and is a no-op wit
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('gitnexus preview reports an EMPTY index honestly (0-file onboarding scan)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gp-empty-'));
+  try {
+    const gn = path.join(dir, '.traffic-one', '.gitnexus');
+    fs.mkdirSync(gn, { recursive: true });
+    fs.writeFileSync(path.join(gn, 'meta.json'), JSON.stringify({ stats: { files: 0, nodes: 0 } }), 'utf8');
+    const body = generateGraphPreview(dir, 'gitnexus');
+    assert.ok(body);
+    assert.ok(body!.includes('index is EMPTY'));
+    assert.ok(body!.includes('Do NOT read'));
+    assert.ok(!body!.includes('artefacts for module-specific scoping'));
+
+    // A populated index keeps the normal pointer + stats suffix.
+    fs.writeFileSync(path.join(gn, 'meta.json'), JSON.stringify({ stats: { files: 42, nodes: 310 }, indexedAt: '2026-06-12T10:00:00Z' }), 'utf8');
+    const full = generateGraphPreview(dir, 'gitnexus');
+    assert.ok(full!.includes('42 files'));
+    assert.ok(full!.includes('310 nodes'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

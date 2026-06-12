@@ -194,6 +194,12 @@ Guarantees you must uphold (the gate trusts the manifest):
 - **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).
 - **Covers the work surface** — every module an implementer will build falls in exactly one role's scope. Anything left uncovered is governed by a first-writer fallback lock — a safety net, not the plan.
 - **Real paths only** — every `include`/`exclude` is a directory that exists or that this run creates.
+- **Lockfiles are side-effects, not owned source** — `pnpm-lock.yaml` /
+  `package-lock.json` / `yarn.lock` / `bun.lock*` are written by installs, not
+  authored. Include them in EVERY implementer's scope (or state in each spawn
+  prompt that lockfile updates from installs are always in scope). A role must
+  never delete or revert a lockfile to satisfy its scope — that leaves the
+  workspace without install determinism and burns a reviewer finding.
 
 If you cannot partition the surface disjointly, report the blocker instead of emitting `PLAN_READY`.
 
