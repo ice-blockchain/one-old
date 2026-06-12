@@ -284,3 +284,60 @@ test('tools/call with an unknown tool name → -32602', async () => {
   const resp = (await dispatch({ jsonrpc: '2.0', id: 8, method: 'tools/call', params: { name: 'nope', arguments: {} } })) as Any;
   assert.equal(resp.error.code, -32602);
 });
+
+// Poll-liveness cancellation: the orchestrator's re-polls are the keep-alive.
+// When it stops polling (fell back to a paid worker), the watchdog kills the
+// background runner BEFORE it can apply a stale diff, and the cached result
+// reports the cancellation.
+test('an unpolled background delegation is cancelled by the watchdog (action: abandoned)', async () => {
+  const NEVER_ENDING_STUB = [
+    '// keeps running until killed; would print a result only after 60s',
+    'setTimeout(() => { console.log(JSON.stringify({ ok: true, action: "delegated" })); }, 60000);',
+  ].join('\n');
+  const savedAbandon = process.env.T1_OC_ABANDON_MS;
+  const savedTick = process.env.T1_OC_WATCHDOG_TICK_MS;
+  process.env.T1_OC_ABANDON_MS = '300';
+  process.env.T1_OC_WATCHDOG_TICK_MS = '100';
+  try {
+    await withStubRunner(NEVER_ENDING_STUB, async (projectRoot) => {
+      const args = { role: 'senior-frontend', task: 'will be abandoned', runId: 'aband-1', projectRoot };
+      const first = (await delegateResumable(args, 100)) as Any;
+      assert.equal(first.running, true);
+      // No further polls: the watchdog should cancel after ~300ms + a tick.
+      await new Promise((r) => setTimeout(r, 900));
+      const status = delegateStatus({ projectRoot, runId: 'aband-1', role: 'senior-frontend' }) as Any;
+      assert.equal(status.status, 'done');
+      assert.equal(status.result?.action, 'abandoned');
+      assert.match(status.result?.error || '', /stopped polling/);
+    });
+  } finally {
+    if (savedAbandon === undefined) delete process.env.T1_OC_ABANDON_MS;
+    else process.env.T1_OC_ABANDON_MS = savedAbandon;
+    if (savedTick === undefined) delete process.env.T1_OC_WATCHDOG_TICK_MS;
+    else process.env.T1_OC_WATCHDOG_TICK_MS = savedTick;
+  }
+});
+
+test('active polling keeps a slow delegation alive past the abandon threshold', async () => {
+  const savedAbandon = process.env.T1_OC_ABANDON_MS;
+  const savedTick = process.env.T1_OC_WATCHDOG_TICK_MS;
+  process.env.T1_OC_ABANDON_MS = '400';
+  process.env.T1_OC_WATCHDOG_TICK_MS = '100';
+  try {
+    await withStubRunner(SLOW_STUB, async (projectRoot) => { // stub finishes after 1200ms > abandon 400ms
+      const args = { role: 'senior-backend', task: 'slow but polled', runId: 'alive-1', projectRoot };
+      let res = (await delegateResumable(args, 150)) as Any;
+      // Poll repeatedly (each poll refreshes the keep-alive) until terminal.
+      for (let i = 0; i < 20 && res.running; i++) {
+        res = (await delegateResumable(args, 150)) as Any;
+      }
+      assert.equal(res.ok, true, 'polled run must complete, not be abandoned');
+      assert.equal(res.action, 'delegated');
+    });
+  } finally {
+    if (savedAbandon === undefined) delete process.env.T1_OC_ABANDON_MS;
+    else process.env.T1_OC_ABANDON_MS = savedAbandon;
+    if (savedTick === undefined) delete process.env.T1_OC_WATCHDOG_TICK_MS;
+    else process.env.T1_OC_WATCHDOG_TICK_MS = savedTick;
+  }
+});

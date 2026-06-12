@@ -43,7 +43,24 @@ export function shouldRunRoleOnOpenCode(role: string, state: unknown): boolean {
 // worktree failures and host-policy rejections are not real OpenCode attempts.
 // The spawn gate denies a configured role's paid spawn until this exists, then
 // allows the fallback spawn once OpenCode has tried.
+// Marker names are NORMALIZED (senior- prefix stripped) so the plan batch
+// (queue role labels: "frontend") and the spawn gate (role ids:
+// "senior-frontend") agree — observed live: the batch marked `frontend`, the
+// gate checked `senior-frontend`, missed it, denied the paid spawn, and its
+// deny pushed the orchestrator into a whole-role delegation that timed out.
+function normalizeAttemptRole(role: string): string {
+  const stripped = /^senior-(.+)$/.exec(role);
+  const base = stripped && stripped[1] ? stripped[1] : role;
+  return base.replace(/[^a-zA-Z0-9_-]/g, '_');
+}
+
 function attemptMarkerPath(cwd: string, runId: string, role: string): string {
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-attempts', normalizeAttemptRole(role));
+}
+
+// Legacy (pre-normalization) marker path — read-compat for runs written by
+// older builds that used the raw role string.
+function legacyAttemptMarkerPath(cwd: string, runId: string, role: string): string {
   const safe = role.replace(/[^a-zA-Z0-9_-]/g, '_');
   return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-attempts', safe);
 }
@@ -62,7 +79,8 @@ export function markOpenCodeRoleAttempted(cwd: string, runId: string, role: stri
 export function openCodeRoleAttempted(cwd: string, runId: string, role: string): boolean {
   if (!runId || !role) return false;
   try {
-    return fs.existsSync(attemptMarkerPath(cwd, runId, role));
+    return fs.existsSync(attemptMarkerPath(cwd, runId, role))
+      || fs.existsSync(legacyAttemptMarkerPath(cwd, runId, role));
   } catch {
     return false;
   }

@@ -35,7 +35,12 @@ import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 type Rec = Record<string, unknown>;
 const which = exec.which;
 
-const RUN_TIMEOUT_MS = 8 * 60 * 1000;
+// Absolute backstop only — NOT the routine bound. Bounded units finish in
+// ~2 min; long-but-alive runs keep going while the orchestrator keeps polling,
+// and the MCP server's poll-liveness watchdog cancels abandoned runs (parent
+// stopped polling) long before this. This ceiling exists for the non-MCP shell
+// path and as machine hygiene against a truly hung CLI.
+const RUN_TIMEOUT_MS = 30 * 60 * 1000;
 const DIGEST_HARD_BYTES = 3072;
 // The free gateway models are non-deterministic and sometimes "chat" without
 // editing. Allow ONE bounded retry (still free) on a clean no-op before falling

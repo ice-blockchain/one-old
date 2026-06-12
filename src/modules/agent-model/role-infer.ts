@@ -28,8 +28,18 @@ export function inferTrafficOneSpawnRole(toolInput: Record<string, unknown>): st
   // prompt also names SIBLING roles in scope-coordination notes ("senior-backend
   // owns …"), which would otherwise make the count-the-mentions fallback below
   // ambiguous and silently disable the gate for every parallel role spawn.
-  const declared = /acting as Traffic One[\s`'"*]*([a-z][a-z-]+)/i.exec(message);
+  const declared = /(?:acting as|you are)(?:\s+the)?\s+Traffic One[\s`'"*]*([a-z][a-z-]+)/i.exec(message);
   if (declared && VALID_AGENT_ROLES.has(declared[1] as string)) return declared[1] as string;
+
+  // Clause-anchored declaration ("Traffic One `senior-X` for run … / role …"):
+  // the dominant real prompt shape opens with it, and same-sentence anchoring
+  // picks the DECLARED role even though later sentences name sibling roles
+  // (observed live: "You are the Traffic One senior-architect for run …" plus
+  // scope notes mentioning senior-frontend/senior-backend → the
+  // count-the-mentions fallback below returned null and the spawn recorder
+  // silently skipped every registry write).
+  const clause = /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i.exec(message);
+  if (clause && VALID_AGENT_ROLES.has(clause[1] as string)) return clause[1] as string;
 
   const matches = Array.from(VALID_AGENT_ROLES).filter((role) => new RegExp(`\\b${role}\\b`, 'i').test(message));
   return matches.length === 1 ? (matches[0] as string) : null;

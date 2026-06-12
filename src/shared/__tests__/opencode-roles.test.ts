@@ -56,3 +56,23 @@ test('opencode role attempt marker: write then detect (per run + role)', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The plan batch marks queue labels ("frontend") while the spawn gate checks
+// role ids ("senior-frontend") — markers are normalized so both agree, and
+// legacy raw-named markers from older builds still count.
+test('attempt markers: senior-frontend and frontend resolve to the same marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocroles-'));
+  try {
+    markOpenCodeRoleAttempted(dir, 'r1', 'frontend');
+    assert.equal(openCodeRoleAttempted(dir, 'r1', 'senior-frontend'), true);
+    markOpenCodeRoleAttempted(dir, 'r2', 'senior-tester');
+    assert.equal(openCodeRoleAttempted(dir, 'r2', 'tester'), true);
+    // Legacy raw marker (written by an older build under the unstripped name).
+    const legacy = path.join(dir, '.traffic-one', 'runs', 'r3', 'opencode-attempts');
+    fs.mkdirSync(legacy, { recursive: true });
+    fs.writeFileSync(path.join(legacy, 'senior-frontend'), '', 'utf8');
+    assert.equal(openCodeRoleAttempted(dir, 'r3', 'senior-frontend'), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
