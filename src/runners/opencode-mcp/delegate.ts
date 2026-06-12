@@ -128,15 +128,64 @@ export async function runDelegate(a: DelegateArgs): Promise<RunnerResult> {
   }
 }
 
-// The batch path: opencode-runner.cjs --run-id <id> --from-plan. Reads the
-// architect's queue from <projectRoot>/.traffic-one/plan.md. Best-effort.
+// Distinct normalized roles in the plan's delegation queue, in first-seen
+// order. Empty on any read/parse problem (→ single-runner fallback).
+export function planQueueRoles(projectRoot: string): string[] {
+  let plan = '';
+  try { plan = fs.readFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), 'utf8'); } catch { return []; }
+  const start = plan.indexOf('opencode-delegate:start');
+  const end = plan.indexOf('opencode-delegate:end');
+  if (start < 0 || end < 0 || end < start) return [];
+  const roles: string[] = [];
+  for (const line of plan.slice(start, end).split('\n')) {
+    const m = /^\s*-\s*role:\s*([a-z][a-z-]*)/i.exec(line);
+    if (!m || !m[1]) continue;
+    const role = m[1].toLowerCase().replace(/^senior-/, '');
+    if (!roles.includes(role)) roles.push(role);
+  }
+  return roles;
+}
+
+// Units within one role stay SEQUENTIAL (they share a digest file and often a
+// package); different roles run as concurrent runner shards. Safe because the
+// queue contract gives each unit exact, disjoint files; each shard applies only
+// its own clean diff (`git apply` touches the working tree, never the index, so
+// shards don't contend on .git locks). Capped to keep machine load sane.
+const MAX_PLAN_SHARDS = 3;
+
+function startFromPlan(projectRoot: string, runId: string, model: string | undefined, onChild?: (child: ReturnType<typeof spawn>) => void): Promise<RunnerResult> {
+  const modelArgs = (model || '').trim() ? ['--model', (model as string).trim()] : [];
+  const roles = planQueueRoles(projectRoot);
+  if (roles.length <= 1) {
+    return runRunner(['--run-id', runId, '--from-plan', ...modelArgs], projectRoot, onChild);
+  }
+  const shardCount = Math.min(MAX_PLAN_SHARDS, roles.length);
+  const shards: string[][] = Array.from({ length: shardCount }, () => []);
+  roles.forEach((role, i) => { (shards[i % shardCount] as string[]).push(role); });
+  return Promise.all(shards.map((shardRoles) =>
+    runRunner(['--run-id', runId, '--from-plan', '--roles', shardRoles.join(','), ...modelArgs], projectRoot, onChild),
+  )).then((results) => {
+    const merged: RunnerResult = { total: 0, delegated: 0, units: [] };
+    const errors: string[] = [];
+    for (const r of results) {
+      merged.total = (merged.total || 0) + (typeof r.total === 'number' ? r.total : 0);
+      merged.delegated = (merged.delegated || 0) + (typeof r.delegated === 'number' ? r.delegated : 0);
+      if (Array.isArray(r.units)) (merged.units as NonNullable<RunnerResult['units']>).push(...r.units);
+      if (r.error) errors.push(r.error);
+    }
+    if (errors.length) merged.error = errors.join('; ');
+    return merged;
+  });
+}
+
+// The batch path: opencode-runner.cjs --run-id <id> --from-plan [--roles csv].
+// Reads the architect's queue from <projectRoot>/.traffic-one/plan.md, sharded
+// by role across concurrent runners. Best-effort.
 export async function runDelegateFromPlan(a: FromPlanArgs): Promise<RunnerResult> {
   const projectRoot = (a.projectRoot || '').trim() || process.cwd();
   const runId = (a.runId || '').trim();
   if (!runId) return { ok: false, error: 'runId is required' };
-  const args = ['--run-id', runId, '--from-plan'];
-  if ((a.model || '').trim()) args.push('--model', (a.model as string).trim());
-  return runRunner(args, projectRoot);
+  return startFromPlan(projectRoot, runId, a.model);
 }
 
 // ── Resumable (background) delegation ────────────────────────────────────────
@@ -164,7 +213,7 @@ interface BgRun {
   // it stops polling (gave up → paid fallback) the watchdog kills the runner
   // BEFORE it can apply a now-stale diff over the fallback's work.
   lastPolledAt: number;
-  child?: ReturnType<typeof spawn>;
+  children: Array<ReturnType<typeof spawn>>;
   watchdog?: NodeJS.Timeout;
 }
 
@@ -191,8 +240,8 @@ function runKey(projectRoot: string, runId: string, key: string): string {
 function getOrStart(key: string, start: (onChild: (child: ReturnType<typeof spawn>) => void) => Promise<RunnerResult>): BgRun {
   const existing = runs.get(key);
   if (existing) { existing.lastPolledAt = Date.now(); return existing; }
-  const run: BgRun = { promise: Promise.resolve({} as RunnerResult), status: 'running', lastPolledAt: Date.now() };
-  run.promise = start((child) => { run.child = child; });
+  const run: BgRun = { promise: Promise.resolve({} as RunnerResult), status: 'running', lastPolledAt: Date.now(), children: [] };
+  run.promise = start((child) => { run.children.push(child); });
   const settle = (res: RunnerResult): void => {
     // An abandoned run already carries its verdict — the kill makes the child
     // close with partial output, which must not overwrite it.
@@ -215,8 +264,8 @@ function getOrStart(key: string, start: (onChild: (child: ReturnType<typeof spaw
       error: `delegation cancelled: the orchestrator stopped polling for ${Math.round(abandonAfterMs() / 60000)}+ minutes (it moved on); the worker was killed BEFORE applying any diff`,
     };
     clearInterval(run.watchdog as NodeJS.Timeout);
-    const child = run.child;
-    if (child?.pid) {
+    for (const child of run.children) {
+      if (!child.pid) continue;
       try { process.kill(-child.pid, 'SIGTERM'); } catch { try { child.kill('SIGTERM'); } catch { /* already gone */ } }
     }
   }, watchdogTickMs());
@@ -283,11 +332,7 @@ export async function delegateFromPlanResumable(a: FromPlanArgs, waitMs = RESUME
   const runId = (a.runId || '').trim();
   if (!runId) return { ok: false, error: 'runId is required' };
   const key = runKey(projectRoot, runId, PLAN_KEY);
-  const run = getOrStart(key, (onChild) => {
-    const args = ['--run-id', runId, '--from-plan'];
-    if ((a.model || '').trim()) args.push('--model', (a.model as string).trim());
-    return runRunner(args, projectRoot, onChild);
-  });
+  const run = getOrStart(key, (onChild) => startFromPlan(projectRoot, runId, a.model, onChild));
   const res = await waitBounded(run, waitMs);
   return res ?? stillRunning(runId, PLAN_KEY, 'opencode_delegate_from_plan');
 }

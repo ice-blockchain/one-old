@@ -12,8 +12,9 @@ import {
 } from '../opencode-roles';
 
 test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', () => {
-  assert.deepEqual(openCodeDelegateRoles({}), ['senior-shipper', 'senior-tester', 'senior-frontend', 'quick-fix']);
-  assert.deepEqual(openCodeDelegateRoles({ openCode: {} }), ['senior-shipper', 'senior-tester', 'senior-frontend', 'quick-fix']);
+  // senior-shipper deliberately absent: deploys/credentials never ride the free tier.
+  assert.deepEqual(openCodeDelegateRoles({}), ['senior-tester', 'senior-frontend', 'quick-fix']);
+  assert.deepEqual(openCodeDelegateRoles({ openCode: {} }), ['senior-tester', 'senior-frontend', 'quick-fix']);
   assert.deepEqual(openCodeDelegateRoles({ openCode: { delegateRoles: ['senior-backend'] } }), ['senior-backend']);
   // sanitizes non-strings/blanks
   assert.deepEqual(openCodeDelegateRoles({ openCode: { delegateRoles: ['senior-frontend', '', 3, '  '] } }), ['senior-frontend']);
@@ -75,4 +76,17 @@ test('attempt markers: senior-frontend and frontend resolve to the same marker',
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// The unit-kind catalog is the canonical delegation policy — visible, typed,
+// and asserted so prose drift gets caught here.
+test('OPENCODE_DELEGATE_UNIT_KINDS catalog: bounded kinds present, never-list intact, shipper excluded', async () => {
+  const { OPENCODE_DELEGATE_UNIT_KINDS, OPENCODE_NEVER_DELEGATE, DEFAULT_OPENCODE_DELEGATE_ROLES } = await import('../../config/opencode');
+  const ids = OPENCODE_DELEGATE_UNIT_KINDS.map((k) => k.id);
+  for (const required of ['fixtures-seed-data', 'pure-helpers', 'i18n-catalogs', 'test-scaffolding', 'qa-report-sweep', 'reviewer-input-sweeps', 'docs-draft', 'mechanical-refactor']) {
+    assert.ok(ids.includes(required), `missing unit kind: ${required}`);
+  }
+  assert.ok(OPENCODE_NEVER_DELEGATE.some((s) => /security|RLS/i.test(s)));
+  assert.ok(OPENCODE_NEVER_DELEGATE.some((s) => /credential|deploy/i.test(s)));
+  assert.ok(!DEFAULT_OPENCODE_DELEGATE_ROLES.includes('senior-shipper'), 'shipper must not ride the free tier by default');
 });

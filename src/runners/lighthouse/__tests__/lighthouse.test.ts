@@ -169,3 +169,22 @@ test('parseSummary: beyond the tolerance band still fails; low a11y warns with w
   assert.equal(s.metrics.bestPractices, 100);
   assert.equal(s.metrics.seo, 90);
 });
+
+test('findViteAppDir prefers the apps/* vite config over a hoisted root vite devDependency', () => {
+  const mono = fs.mkdtempSync(path.join(os.tmpdir(), 't1-lh-mono-'));
+  try {
+    // Monorepo shape from a real run: vite hoisted to root devDeps for tooling,
+    // no root vite.config — the buildable app is apps/web with a real config.
+    fs.writeFileSync(path.join(mono, 'package.json'), JSON.stringify({ name: 'root', devDependencies: { vite: '^6' } }), 'utf8');
+    const web = path.join(mono, 'apps', 'web');
+    fs.mkdirSync(web, { recursive: true });
+    fs.writeFileSync(path.join(web, 'package.json'), JSON.stringify({ name: 'web' }), 'utf8');
+    fs.writeFileSync(path.join(web, 'vite.config.ts'), 'export default {};', 'utf8');
+    assert.equal(findViteAppDir(mono), web);
+    // A root config wins outright.
+    fs.writeFileSync(path.join(mono, 'vite.config.ts'), 'export default {};', 'utf8');
+    assert.equal(findViteAppDir(mono), mono);
+  } finally {
+    fs.rmSync(mono, { recursive: true, force: true });
+  }
+});

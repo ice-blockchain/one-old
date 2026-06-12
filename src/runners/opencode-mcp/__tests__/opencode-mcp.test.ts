@@ -5,7 +5,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { attach, delegateResumable, delegateStatus, dispatch, parseRunnerResult, runDelegate, runDelegateFromPlan } from '../index';
+import { attach, delegateResumable, delegateStatus, dispatch, parseRunnerResult, planQueueRoles, runDelegate, runDelegateFromPlan } from '../index';
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../../config/opencode-mcp';
 
 type Any = Record<string, any>;
@@ -132,6 +132,68 @@ test('runDelegateFromPlan passes --from-plan + run-id', async () => {
     const r = (await runDelegateFromPlan({ runId: 'rp1', projectRoot })) as Any;
     assert.equal(r.fromPlan, true);
     assert.equal(r.runId, 'rp1');
+  });
+});
+
+// ── Plan-batch sharding: one runner per role, merged result ──────────────────
+
+const PLAN_TWO_ROLES = [
+  '# Plan', '',
+  '<!-- opencode-delegate:start -->',
+  '- role: senior-frontend | files: a.txt | task: unit A',
+  '- role: frontend | files: a2.txt | task: unit A2',
+  '- role: tester | files: b.txt | task: unit B',
+  '<!-- opencode-delegate:end -->', '',
+].join('\n');
+
+// Echoes the --roles shard it got as a one-unit batch result and counts
+// invocations in a sidecar file next to the runner script.
+const SHARD_STUB = [
+  'const a = process.argv.slice(2);',
+  'const get = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : null; };',
+  'const fs = require("fs"); const path = require("path");',
+  'const marker = path.join(__dirname, "shard-calls");',
+  'fs.appendFileSync(marker, (get("--roles") || "(all)") + "\\n");',
+  'const roles = (get("--roles") || "").split(",").filter(Boolean);',
+  'console.log(JSON.stringify({ total: roles.length || 1, delegated: roles.length || 1, units: roles.map((r) => ({ role: r, task: "t", action: "delegated", touched: [] })) }));',
+].join('\n');
+
+test('planQueueRoles: distinct normalized roles in order; empty without a plan', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmcp-plan-'));
+  try {
+    assert.deepEqual(planQueueRoles(dir), []);
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
+    assert.deepEqual(planQueueRoles(dir), ['frontend', 'tester']); // senior- stripped, deduped
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runDelegateFromPlan shards a multi-role queue across concurrent runners and merges', async () => {
+  await withStubRunner(SHARD_STUB, async (projectRoot) => {
+    fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
+    const r = (await runDelegateFromPlan({ runId: 'rp-shard', projectRoot })) as Any;
+    assert.equal(r.total, 2);
+    assert.equal(r.delegated, 2);
+    assert.deepEqual(r.units.map((u: Any) => u.role).sort(), ['frontend', 'tester']);
+    const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'shard-calls');
+    const calls = fs.readFileSync(marker, 'utf8').trim().split('\n');
+    assert.equal(calls.length, 2, 'one runner per role shard');
+    assert.ok(calls.every((c) => c !== '(all)'), 'shards must carry --roles');
+  });
+});
+
+test('runDelegateFromPlan stays single-runner for a single-role queue', async () => {
+  await withStubRunner(SHARD_STUB, async (projectRoot) => {
+    fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
+    const plan = ['<!-- opencode-delegate:start -->', '- role: frontend | files: a | task: A', '- role: senior-frontend | files: b | task: B', '<!-- opencode-delegate:end -->'].join('\n');
+    fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), plan, 'utf8');
+    await runDelegateFromPlan({ runId: 'rp-single', projectRoot });
+    const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'shard-calls');
+    const calls = fs.readFileSync(marker, 'utf8').trim().split('\n');
+    assert.deepEqual(calls, ['(all)'], 'single role → plain --from-plan, no shard flag');
   });
 });
 

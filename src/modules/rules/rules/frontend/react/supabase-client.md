@@ -52,19 +52,20 @@ visible "configure me" banner.
 
 ```ts
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { Database } from "../types/database";
 
 const url = import.meta.env.VITE_SUPABASE_URL;
 const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export const isSupabaseConfigured = Boolean(url && key);
 
-let cached: SupabaseClient | null = null;
+let cached: SupabaseClient<Database> | null = null;
 
 /** Returns null when env vars are missing — callers must handle null. */
-export function getSupabase(): SupabaseClient | null {
+export function getSupabase(): SupabaseClient<Database> | null {
   if (!isSupabaseConfigured) return null;
   if (!cached) {
-    cached = createClient(url!, key!, {
+    cached = createClient<Database>(url!, key!, {
       auth: { persistSession: true, autoRefreshToken: true },
     });
   }
@@ -86,6 +87,26 @@ export function useSupabaseStatus() {
   };
 }
 ```
+
+## Typed client — avoid the `never` collapse
+
+Recurring review finding: an untyped (or empty-generic) client makes every
+`.from("table")` row collapse to `never`, and the resulting compile errors get
+"fixed" with `as any` casts that hide real schema drift.
+
+- **Always create the client with the `Database` generic** (as in the snippet
+  above). Never `createClient(url, key)` bare, never `Database = {}` as a
+  placeholder.
+- **`src/types/database.ts` is generated from the migrations** —
+  `supabase gen types typescript --local > src/types/database.ts` (or
+  `--project-id` for linked projects) — and committed. No CLI / no local stack?
+  Hand-write the `Database` interface from the migration SQL; a small accurate
+  hand-written type beats an absent one.
+- **Refresh the types in the SAME change as any migration.** A migration PR
+  without the regenerated `database.ts` is incomplete.
+- **`as any` (or `@ts-expect-error`) on a Supabase query result is a blocking
+  review finding** — it means the `Database` type and the schema disagree; fix
+  the type, not the call site.
 
 ## Required `<EnvBanner />` primitive (`packages/ui/src/EnvBanner/`)
 

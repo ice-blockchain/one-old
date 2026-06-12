@@ -169,28 +169,39 @@ export function packageHasDependency(pkg: Rec | null, name: string): boolean {
   return Boolean(deps[name] || devDeps[name]);
 }
 
+const VITE_CONFIG_NAMES = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'] as const;
+
+export function hasViteConfig(dir: string): boolean {
+  return VITE_CONFIG_NAMES.some((name) => existsSync(join(dir, name)));
+}
+
+// The buildable app dir, from the root the runner was invoked in. A real vite
+// config file wins over a dependency declaration: monorepos commonly hoist
+// `vite` into the ROOT devDependencies for tooling, but root has no config and
+// `vite build`/`preview` there just fails — the actual app lives in apps/*.
 export function findViteAppDir(rootDir: string): string {
-  const rootPkg = readJson(join(rootDir, 'package.json'));
-  if (packageHasDependency(rootPkg, 'vite')) {
-    return rootDir;
-  }
+  if (hasViteConfig(rootDir)) return rootDir;
 
   const appsDir = join(rootDir, 'apps');
-  if (!existsSync(appsDir)) {
-    return rootDir;
-  }
-
-  for (const entry of readdirSync(appsDir, { withFileTypes: true })) {
-    if (!entry.isDirectory()) continue;
-    const appDir = join(appsDir, entry.name);
-    const pkg = readJson(join(appDir, 'package.json'));
-    const scripts = pkg && typeof pkg.scripts === 'object' ? pkg.scripts as Rec : {};
-    const preview = typeof scripts.preview === 'string' ? scripts.preview : '';
-    if (packageHasDependency(pkg, 'vite') || preview.includes('vite preview')) {
-      return appDir;
+  if (existsSync(appsDir)) {
+    let depFallback = '';
+    for (const entry of readdirSync(appsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const appDir = join(appsDir, entry.name);
+      if (hasViteConfig(appDir)) return appDir;
+      const pkg = readJson(join(appDir, 'package.json'));
+      const scripts = pkg && typeof pkg.scripts === 'object' ? pkg.scripts as Rec : {};
+      const preview = typeof scripts.preview === 'string' ? scripts.preview : '';
+      if (!depFallback && (packageHasDependency(pkg, 'vite') || preview.includes('vite preview'))) {
+        depFallback = appDir;
+      }
     }
+    if (depFallback) return depFallback;
   }
 
+  // No config anywhere: a root vite dependency is still the best signal left.
+  const rootPkg = readJson(join(rootDir, 'package.json'));
+  if (packageHasDependency(rootPkg, 'vite')) return rootDir;
   return rootDir;
 }
 

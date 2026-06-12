@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { delegate, delegateFromPlan, parsePlanDelegationQueue, resetOpenCodeModelMemo } from '../index';
+import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/opencode';
 import { openCodeRoleAttempted } from '../../../shared/opencode-roles';
 
@@ -53,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'editts';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -72,6 +72,28 @@ const i = process.argv.indexOf('--dir');
 const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created foo.txt' } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'foo.txt'), 'delegated\\n');
+`,
+    // simulates a unit that ran an install in the sandbox: writes a real source
+    // file PLUS node_modules junk and a wrong-package-manager lockfile. The
+    // staging excludes must keep the junk out of the delegated diff.
+    junk: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created helper + ran npm install' } }) + '\\n');
+fs.writeFileSync(path.join(dir, 'helper.txt'), 'real work\\n');
+fs.mkdirSync(path.join(dir, 'pkg', 'node_modules', 'left-pad'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'pkg', 'node_modules', 'left-pad', 'index.js'), 'junk\\n');
+fs.writeFileSync(path.join(dir, 'package-lock.json'), '{}\\n');
+`,
+    // writes a TS source file so the post-apply typecheck path engages.
+    editts: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'created src/foo.ts' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'src', 'foo.ts'), 'export const foo = 1;\\n');
 `,
     // reads the worktree's foo.txt (which reflects the sandbox BASE) and appends a
     // marker. Lets a test assert which base the sandbox branched from: if the runner
@@ -680,4 +702,112 @@ test('snapshotWorkingTree captures UNTRACKED files into the sandbox base', () =>
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// ── install-artifact filtering (#23) ─────────────────────────────────────────
+
+test('delegated diff excludes node_modules and wrong-pm lockfiles (pnpm project)', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', packageManager: 'pnpm@10.0.0' }), 'utf8');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'pm']);
+    stubOpencode('junk');
+    const r = delegate(dir, { role: 'frontend', task: 'add helper', runId: 'r-junk' });
+    assert.equal(r.action, 'delegated');
+    assert.ok(r.touched.includes('helper.txt'));
+    assert.ok(!r.touched.some((f) => f.includes('node_modules')), `node_modules leaked: ${r.touched.join(',')}`);
+    assert.ok(!r.touched.includes('package-lock.json'), 'wrong-pm lockfile leaked');
+    assert.ok(fs.existsSync(path.join(dir, 'helper.txt')));
+    assert.ok(!fs.existsSync(path.join(dir, 'package-lock.json')));
+    assert.ok(!fs.existsSync(path.join(dir, 'pkg', 'node_modules')));
+  });
+});
+
+test('stageExcludePathspecs: pm-aware lockfile excludes, none when pm unknown', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocspec-'));
+  try {
+    // No package.json → only node_modules excluded.
+    assert.ok(stageExcludePathspecs(dir).every((s) => s.includes('node_modules')));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'npm@11.0.0' }), 'utf8');
+    const specs = stageExcludePathspecs(dir);
+    assert.ok(specs.some((s) => s.includes('pnpm-lock.yaml')));
+    assert.ok(specs.some((s) => s.includes('yarn.lock')));
+    assert.ok(!specs.some((s) => s.includes('package-lock.json')), 'own lockfile must stay stageable');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── post-apply typecheck verification ────────────────────────────────────────
+
+function stubTsc(dir: string, script: string): void {
+  const bin = path.join(dir, 'node_modules', '.bin');
+  fs.mkdirSync(bin, { recursive: true });
+  const tsc = path.join(bin, 'tsc');
+  fs.writeFileSync(tsc, script, 'utf8');
+  fs.chmodSync(tsc, 0o755);
+}
+
+test('post-apply typecheck failure naming a touched file reverts the delegated diff', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), '{}', 'utf8');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'ts']);
+    stubTsc(dir, '#!/bin/sh\necho "src/foo.ts(1,1): error TS2304: boom"\nexit 1\n');
+    stubOpencode('editts');
+    const r = delegate(dir, { role: 'frontend', task: 'add foo', runId: 'r-tscfail' });
+    assert.equal(r.action, 'failed');
+    assert.match(r.error || '', /typecheck failed/);
+    assert.ok(!fs.existsSync(path.join(dir, 'src', 'foo.ts')), 'diff must be reverted');
+  });
+});
+
+test('post-apply typecheck pass keeps the delegated diff', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), '{}', 'utf8');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'ts']);
+    stubTsc(dir, '#!/bin/sh\nexit 0\n');
+    stubOpencode('editts');
+    const r = delegate(dir, { role: 'frontend', task: 'add foo', runId: 'r-tscok' });
+    assert.equal(r.action, 'delegated');
+    assert.ok(fs.existsSync(path.join(dir, 'src', 'foo.ts')));
+  });
+});
+
+test('post-apply typecheck skips on pre-existing breakage (errors only in untouched files) and missing tsc', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    fs.writeFileSync(path.join(dir, 'tsconfig.json'), '{}', 'utf8');
+    sh(dir, 'git', ['add', '-A']);
+    sh(dir, 'git', ['commit', '-q', '-m', 'ts']);
+    // Errors mention an UNRELATED file → not this unit's fault → keep the diff.
+    stubTsc(dir, '#!/bin/sh\necho "src/legacy.ts(9,9): error TS2304: old breakage"\nexit 1\n');
+    stubOpencode('editts');
+    const r = delegate(dir, { role: 'frontend', task: 'add foo', runId: 'r-preexist' });
+    assert.equal(r.action, 'delegated');
+    // And the pure helper: no tsc on disk → verification skipped entirely.
+    assert.equal(postApplyTypecheck(fs.mkdtempSync(path.join(os.tmpdir(), 't1-notsc-')), ['src/foo.ts']), null);
+  });
+});
+
+// ── role shard filter (--roles) ──────────────────────────────────────────────
+
+test('delegateFromPlan honors opts.roles with senior- prefix normalization', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const plan = [
+      '# Plan', '',
+      '<!-- opencode-delegate:start -->',
+      '- role: frontend | files: a.txt | task: unit A',
+      '- role: tester | files: b.txt | task: unit B',
+      '<!-- opencode-delegate:end -->', '',
+    ].join('\n');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), plan, 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-shard', roles: ['senior-frontend'] });
+    assert.equal(r.total, 1);
+    assert.equal(r.units[0]?.role, 'frontend');
+    assert.equal(normalizePlanRole('senior-tester'), 'tester');
+    assert.equal(normalizePlanRole('Tester'), 'tester');
+  });
 });
