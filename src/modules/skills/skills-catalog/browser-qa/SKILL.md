@@ -69,13 +69,13 @@ For React/Vite and Ionic web routes, use the Traffic One Lighthouse runner befor
 declaring page-speed work complete:
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /
+node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
 ```
 
 When working from the plugin source checkout, run it from the app/repo root with:
 
 ```bash
-node /path/to/traffic-one/scripts/lighthouse-runner.mjs --route /
+node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
 ```
 
 The runner builds the project, starts a production preview on a free local port,
@@ -110,7 +110,7 @@ Coverage and iteration rules:
 2. Check for console errors (filter noise: analytics, third-party)
 3. Verify no 4xx/5xx in network requests
 4. Screenshot above-the-fold on desktop + mobile viewport
-5. Run `scripts/lighthouse-runner.mjs` against the built production preview with mobile emulation
+5. Run `node ~/.traffic-one/bin/lighthouse-runner.cjs` against the built production preview with mobile emulation
 6. Record Lighthouse Performance and Core Web Vitals: LCP < 2.5s, CLS < 0.1, INP < 200ms where available, TBT < 200ms
 ```
 

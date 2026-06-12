@@ -147,7 +147,7 @@ What we are NOT building in v1. Concrete features the user might assume but won'
 Bounded, low-risk units the orchestrator delegates to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). **When `openCode.enabled` is true, a greenfield plan with an EMPTY queue is almost always a mistake** — every new build has fixtures, source catalogs, helper stubs, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). Leave the block empty only when `openCode.enabled` is false or the work genuinely has no bounded units.
 
 <!-- opencode-delegate:start -->
-- role: <frontend|backend|tester> | files: <exact path(s)> | task: <self-contained task: acceptance criteria + exact files/area, no external context>
+- role: <frontend|backend|tester|docs> | files: <exact path(s)> | task: <self-contained task: acceptance criteria + exact files/area, no external context>
 <!-- opencode-delegate:end -->
 ```
 

@@ -95,7 +95,7 @@ How it works:
    Fallback if the `opencode-worker` tool is unavailable: on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner:
 
    ```bash
-   node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" \
+   node ~/.traffic-one/bin/opencode-runner.cjs \
      --run-id "$RUN_ID" --from-plan
    ```
 
@@ -289,7 +289,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 **Step 0 — OpenCode delegation batch (when `openCode.enabled`).** BEFORE spawning any implementer, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal. This is the token-saver the user enabled, and it runs identically on every host. Fallback if the tool is unavailable (on Codex, a one-time restart loads the auto-registered server): run the same engine via the shell runner.
 
 ```bash
-node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/opencode-runner.cjs" --run-id "$RUN_ID" --from-plan
+node ~/.traffic-one/bin/opencode-runner.cjs --run-id "$RUN_ID" --from-plan
 ```
 
 If that shell runner cannot run (e.g. `.git` is read-only or worktree metadata cannot be written), continue with the senior subagents for those units.
@@ -311,7 +311,7 @@ From the project root run the provider runner per `codeGraphProvider` — WITH
 `--force`, because the runner's mtime freshness check cannot tell that a recent
 index predates the new code (observed live: "fresh" answered for 2 indexed
 files vs ~60 on disk):
-`node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs" --force`
+`node ~/.traffic-one/bin/gitnexus-runner.cjs --force`
 (or `graphify-runner.cjs --force`). Worker threads cannot trigger the post-build rescan
 hook on every host, so this parent-side refresh is the deterministic path.
 
@@ -338,7 +338,11 @@ After 2 cycles, escalate to the user.
 ### Phase 3c — Parent integration pass (visual builds)
 
 After reviewer `APPROVED` and tests are green, run the root verification
-commands yourself (install/lint/typecheck/test/build), then — for any build
+commands yourself (install/lint/typecheck/test/build). Re-use fresh evidence:
+a Lighthouse report under `.traffic-one/reports/lighthouse/` or a QA sweep
+under `.traffic-one/reports/qa/<runId>/` that is NEWER than the last code
+change answers the gate by READING it — do not re-run audits the team just
+ran. Then — for any build
 with a UI — verify the RUNNING app visually before declaring completion: start
 the dev server and check the key routes at desktop AND a mobile width
 (overflow, console errors, primary actions reachable). Per host:
@@ -435,10 +439,10 @@ Dispatch on `codeGraphProvider` from the effective Traffic One state, which merg
 PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
-    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/gitnexus-runner.cjs"
+    node ~/.traffic-one/bin/gitnexus-runner.cjs
     ;;
   graphify)
-    node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/graphify-runner.cjs"
+    node ~/.traffic-one/bin/graphify-runner.cjs
     ;;
   *)
     # Provider missing/unknown — the postWriteIncompleteWarning hook will

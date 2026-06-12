@@ -23,7 +23,7 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
   // advisory injects once per session, later builds get a one-line reminder.
   if (!firstEmitThisSession(ctx.cwd, 'pagespeed-advisory', hookSessionIdentity(ctx.input.raw).sessionId)) {
     return context(
-      '[traffic-one] Lighthouse mobile gate still pending — run: node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route / (the runner ships with the PLUGIN, not the repo).',
+      '[traffic-one] Lighthouse mobile gate still pending — run: node ~/.traffic-one/bin/lighthouse-runner.cjs --route / (the runner ships with the PLUGIN, not the repo).',
       { systemMessage: 'traffic-one page-speed gate pending after build' },
     );
   }
@@ -32,7 +32,7 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
       '[traffic-one] A production build just ran for a web stack.',
       'Before final delivery for generated/changed React or Ionic routes, run the Lighthouse mobile gate:',
       '',
-      '  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/lighthouse-runner.mjs" --route /',
+      '  node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
       '',
       'Audit `/` plus the 1-2 heaviest public routes (catalog/listing pages — rerun with `--route <path>`); the home route alone hides heavy-route regressions. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. A confirmation re-run with no code changes in between may add `--skip-build`. The summary also carries Accessibility/Best-Practices/SEO scores from the same audit — surface a11y warnings to the team.',
       '',
