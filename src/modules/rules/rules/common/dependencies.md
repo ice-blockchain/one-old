@@ -9,9 +9,9 @@ paths:
 
 When you need a capability not covered by the active stack core:
 
-0. **Search locally first**: use `rg` to find existing helpers, packages,
-   services, hooks, schemas, and tests that already solve part of the need.
-   Reuse or extend local code before adding a dependency.
+0. **Search locally first**: the search-repo-before-adding-code rule is owned by
+   `rules/common/execution-discipline.md` — reuse or extend existing helpers,
+   services, hooks, schemas, and tests before adding any dependency.
 1. **Check defaults first**: use `rules/common/stack-recommendations.md`,
    `rules/common/library-catalog.md`, and the active stack core before
    searching. Do not build auth, validation, date formatting, email, storage,

@@ -12,7 +12,7 @@ metadata:
 
 > Every ecosystem has its own dependency manager, but no tool looks across C++, Android, iOS, and Web to tell you: how much code is actually yours, what's third-party, and what's dead weight.
 
-## When to Use
+## When to Activate
 
 - Taking over a large legacy codebase and need a structural overview
 - Before major refactoring — identify what's core, what's duplicate, what's dead

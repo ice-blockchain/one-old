@@ -25,13 +25,9 @@ Backend-focused rules for python projects.
 - Keep web handlers thin and move business rules into service functions/classes.
 
 ## Security
-- Load secrets from environment variables or a secret manager and fail fast when missing.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
 - Use Bandit for static security analysis.
-- Validate request, file, and external API input at the boundary.
-- Use parameterized queries through the active DB library or ORM.
-- Prefer framework/provider auth integrations over custom password, session, or
-  JWT implementations; do not default FastAPI apps to hand-rolled JWT auth.
-- Do not expose stack traces, filesystem paths, SQL text, or internal exception messages to clients.
+- Prefer framework/provider auth integrations over hand-rolled auth; do not default FastAPI apps to hand-rolled JWT auth.
 
 ## Testing
 - Use pytest.

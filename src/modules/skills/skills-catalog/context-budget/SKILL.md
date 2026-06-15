@@ -1,6 +1,6 @@
 ---
 name: context-budget
-description: PROACTIVELY audit the session's token consumption across rules, skills, hooks, and MCP servers when context feels bloated, responses feel slow, or the user asks about token usage, context window, or what can be trimmed. Identifies redundant components and produces a prioritized token-savings plan.
+description: PROACTIVELY audit session token consumption across rules, skills, hooks, and MCP servers when context feels bloated, responses feel slow, or the user asks about token usage, context window, or what can be trimmed. Produces a savings plan.
 ---
 
 # Context Budget Audit

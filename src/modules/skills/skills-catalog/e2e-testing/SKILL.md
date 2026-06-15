@@ -12,6 +12,10 @@ metadata:
 
 Comprehensive Playwright patterns for building stable, fast, and maintainable E2E test suites.
 
+For the RED-GREEN-REFACTOR cycle, coverage tiers, and AAA test structure, use
+the `tdd-workflow` skill. This skill covers the Playwright-specific layer:
+Page Object Model, config, flakiness control, artifacts, and CI integration.
+
 ## Test File Organization
 
 ```

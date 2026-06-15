@@ -9,27 +9,17 @@ paths:
 
 # Ionic Real-time Rules
 
-Shared WebSocket rules still apply. Ionic delivery adds app lifecycle and
-WebView-network behavior.
+The shared WebSocket contract — connection ownership in service singletons,
+`wss://` in production, zod frame validation, `requestAnimationFrame` batching
+with a 30 fps non-game cap, connection-state labels (idle/connecting/live/
+reconnecting/offline/degraded), and PII-stripped frame logs — lives in
+`rules/frontend/realtime.md` and applies in full. Ionic adds the Capacitor app
+lifecycle delta below.
 
-## Connection ownership
+## Capacitor lifecycle delta
 
-- WebSocket connections live in service singletons or `packages/ws-client`.
-- Components subscribe via hooks; no component opens sockets or talks directly
-  to Capacitor network plugins.
-- Production connections use `wss://`.
-
-## App lifecycle
-
+- No component talks directly to Capacitor network plugins; the real-time
+  service owns network awareness.
 - Pause, resume, background, and foreground transitions are handled by the
   real-time service.
-- On resume, reconnect or resync stale channels explicitly.
-- Show `idle`, `connecting`, `live`, `reconnecting`, `offline`, and `degraded`
-  states when the feature depends on live data.
-
-## Mobile network behavior
-
-- Validate inbound frames with zod and drop malformed frames.
-- Batch high-rate streams through `requestAnimationFrame` and cap non-game UI
-  render rates at 30 fps.
-- Strip PII from frame logs and disable noisy client logs in production.
+- On resume from background, reconnect or resync stale channels explicitly.

@@ -1,6 +1,6 @@
 ---
 name: traffic-one-doctor
-description: PROACTIVELY diagnose traffic-one setup issues — Node version, nvm install state, gitnexus binary location + crash risk, `.nvmrc` mismatches, `.git/` status, stale `.traffic-one/.gitnexus/` / `graphify-out/` artefacts, `.traffic-one/.one.json` integrity, mcp-auth configuration, Codex hook trust, and specific Codex session ids where hooks may not have run. TRIGGER when the user says "diagnose traffic-one", "traffic one doctor", "the graph isn't working", "gitnexus isn't running", "why doesn't the graph generate", "check my setup", "/doctor", "what's wrong with my graph", "check my traffic-one install", "audit my setup", or gives a Codex session id to debug. Read-only — never installs anything, never modifies the project. Produces a structured report with severity-tagged findings + exact remediation commands.
+description: PROACTIVELY diagnose traffic-one setup. TRIGGER on "/traffic-one-doctor", "/doctor", "diagnose traffic-one", "check my setup", "the graph isn't working", "why isn't X working", or a Codex session id. Read-only health check emitting severity-tagged finding codes + fix commands; never installs or modifies.
 ---
 
 # traffic-one Doctor
@@ -80,25 +80,10 @@ fixes that aren't needed.
 
 ## Known finding codes
 
-| Code | Meaning | Auto-fix? |
-| --- | --- | --- |
-| `NODE_LT22_BUT_V22_AVAILABLE` | Active Node is <22 but nvm v22 is installed. Runner uses absolute v22 path, no action needed. | n/a (info) |
-| `NVM_INSTALLED_NO_V22` | nvm present but no Node 22. `recommendedCommand` is the single-line install. | Yes, via Bash tool |
-| `NO_NVM_NO_V22` | No nvm at all. User installs nvm manually, or switches to `graphify`. | No (user installs nvm) |
-| `GITNEXUS_IN_OLD_NVM_NODE` | gitnexus on PATH lives in old nvm Node folder → will crash. Reinstall against Node 22. | Yes, via Bash tool |
-| `NVMRC_PINNED_TO_OLD_NODE` | Project `.nvmrc` < 22 while provider is gitnexus → overwrite `.nvmrc` with `22`. | Yes, via Write tool |
-| `NO_GIT_DIR` | No `.git/` at project root. Runner handles via `--skip-git`; informational. | n/a (info) |
-| `GITNEXUS_STALE` | `.traffic-one/.gitnexus/` older than 7 days. Next build refreshes it. | Optional |
-| `LAST_RUN_FAILED` | Most recent runner stamp shows an error. Surface the message and pair with other findings. | Depends |
-| `MISSING_CODE_GRAPH_PROVIDER` | `.traffic-one/.one.json` missing the field. Re-run onboarding. | Via onboarding (`rules/common/onboarding.md`) |
-| `CODEX_TRAFFIC_ONE_PLUGIN_DISABLED` | Codex config does not enable the Traffic One plugin, so hooks will not run. | No (user enables plugin) |
-| `CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED` | Codex hook trust records are missing, disabled, or missing trusted hashes. | No (user re-trusts hooks) |
-| `CODEX_WORKSPACE_UNTRUSTED` | Current workspace is outside trusted Codex project roots, so hooks may be skipped. | No (user trusts workspace/parent) |
-| `CODEX_SESSION_NOT_FOUND` | `--session` id was not found in `~/.codex/sessions`. | No |
-| `CODEX_HOOKS_NOT_INVOKED_FOR_SESSION` | The transcript has no hook payloads or prompt requests. Hooks likely did not run in that session. | No (restart/trust workspace) |
-| `TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED` | The transcript's session-start instructions did not include Traffic One root instructions. | No (plugin/host activation) |
-| `TRAFFIC_ONE_AUTH_EXPIRED_AT_SESSION_START` | Local auth state was expired before the debugged session started. A working hook should have prompted. | Via auth flow |
-| `SESSION_MUTATED_BEFORE_TRAFFIC_ONE_AUTH_GATE` | A mutating tool was used before any Traffic One auth gate appeared. Treat artifacts from that session as non-Traffic-One output. | Review manually |
+The runner emits each finding's `code`, `severity`, `message`, and any
+`recommendedCommand` at runtime — read them from the JSON output rather than
+from a copy here (the canonical list lives in `scripts/doctor.cjs`). Auto-fixable
+codes carry a `recommendedCommand`; relay info-only findings verbatim.
 
 ## Reply shape
 

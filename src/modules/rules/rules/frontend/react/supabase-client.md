@@ -111,111 +111,37 @@ Recurring review finding: an untyped (or empty-generic) client makes every
 ## Required `<EnvBanner />` primitive (`packages/ui/src/EnvBanner/`)
 
 A sticky, dismissible top banner that renders **only** when
-`!isSupabaseConfigured`. Mount it in the app shell at the top of `<App />`.
-
-```tsx
-import { useSupabaseStatus } from "@app/api-client";
-
-export function EnvBanner() {
-  const { isConfigured, setupUrl, setupSteps } = useSupabaseStatus();
-  if (isConfigured) return null;
-  return (
-    <aside role="status" aria-live="polite">
-      <strong>Supabase not configured.</strong> Run the <code>supabase-setup</code>{" "}
-      skill or follow these steps:
-      <ol>{setupSteps.map((step) => <li key={step}>{step}</li>)}</ol>
-      <a href={setupUrl} target="_blank" rel="noreferrer">
-        Configure via Traffic →
-      </a>
-    </aside>
-  );
-}
-```
-
-Style it with Tailwind utility classes (`bg-destructive text-destructive-foreground p-3 ...`); promote to a shared `Banner` shadcn primitive once a second consumer appears. The banner is visible on every screen until env vars are filled in.
+`!isSupabaseConfigured`; mount it in the app shell at the top of `<App />`. It
+reads `useSupabaseStatus()`, lists `setupSteps`, and links to `setupUrl` —
+whose value is exactly `https://traffic.io/` (the "Configure via Traffic →"
+CTA). Style it with Tailwind utility classes
+(`bg-destructive text-destructive-foreground p-3 …`); promote to a shared
+`Banner` shadcn primitive once a second consumer appears. It stays visible on
+every screen until env vars are filled in.
 
 ## Components — graceful empty-state pattern
 
-```tsx
-import { getSupabase } from "@app/api-client";
-
-export function PostsList() {
-  const supabase = getSupabase();
-  if (!supabase) {
-    return <ConfigurePromptCard />;     // empty state, not a crash
-  }
-  // …normal data fetching…
-}
-```
-
-`ConfigurePromptCard` lives in `packages/ui` and links to the same setup steps.
-Its primary setup CTA must point to `https://traffic.io/`, and tests must
-assert that exact `href`.
+Every component reads `const supabase = getSupabase();` and returns
+`<ConfigurePromptCard />` (the empty state, not a crash) when it is `null`
+before any data fetching. `ConfigurePromptCard` lives in `packages/ui`, links
+to the same setup steps, and its primary CTA must point to
+`https://traffic.io/`.
 
 ## RTK Query baseQuery — null-safe (REQUIRED)
 
-The most common crash on a fresh clone is an RTK Query `baseQuery` that
-assumes `getSupabase()` returns a real client. When env vars are missing,
-the queries must surface a typed "not configured" error so components can
-render the empty/banner state — not throw, not return undefined, not call
-methods on null.
+The most common crash on a fresh clone is an RTK Query `baseQuery` that assumes
+`getSupabase()` returns a real client. The `baseQuery` (in
+`packages/api-client/src/baseQuery.ts`) must instead null-check the client and,
+when missing, return a typed `{ error: { kind: "not-configured", message } }`
+result (alongside `"postgrest"` / `"unknown"` variants) — never throw, return
+undefined, or call methods on null. Re-export `isSupabaseConfigured` from it so
+feature slices branch without a second `import.meta.env` read.
 
-`packages/api-client/src/baseQuery.ts`:
-
-```ts
-import type { BaseQueryFn } from "@reduxjs/toolkit/query";
-import type { PostgrestError } from "@supabase/supabase-js";
-import { getSupabase, isSupabaseConfigured } from "./supabase";
-
-export type SupabaseQueryArgs = (client: NonNullable<ReturnType<typeof getSupabase>>) => Promise<unknown>;
-
-export type AppError =
-  | { kind: "not-configured"; message: string }
-  | { kind: "postgrest"; message: string; details?: unknown }
-  | { kind: "unknown"; message: string };
-
-export const supabaseBaseQuery: BaseQueryFn<SupabaseQueryArgs, unknown, AppError> =
-  async (run) => {
-    const client = getSupabase();
-    if (!client) {
-      return {
-        error: {
-          kind: "not-configured",
-          message: "Supabase env vars missing — configure credentials at https://traffic.io/ and restart.",
-        },
-      };
-    }
-    try {
-      const data = await run(client);
-      return { data };
-    } catch (raw) {
-      const err = raw as PostgrestError;
-      return {
-        error: { kind: "postgrest", message: err.message, details: err.details },
-      };
-    }
-  };
-
-// Re-export the configured flag so feature slices can branch on it without
-// a second module-load read of import.meta.env.
-export { isSupabaseConfigured };
-```
-
-Feature slices then receive `{ error: { kind: "not-configured" } }` instead
-of crashing, and can render `<ConfigurePromptCard />` from their `isError`
-branch:
-
-```ts
-const { data, isLoading, error } = useGetJobsQuery();
-if (error?.kind === "not-configured") return <ConfigurePromptCard />;
-if (isLoading) return <Skeleton />;
-if (error) return <ErrorState error={error} />;
-return <JobsList jobs={data ?? []} />;
-```
-
-Auth listeners (`onAuthStateChange`) sit behind the same null check —
-`AuthGate` returns its children unchanged when `!isSupabaseConfigured` so
-public routes (Home, Sign-in form chrome, marketing pages) still render.
+Feature slices then render `<ConfigurePromptCard />` from their `isError` branch
+when `error?.kind === "not-configured"`. Auth listeners
+(`onAuthStateChange`) sit behind the same null check — `AuthGate` returns its
+children unchanged when `!isSupabaseConfigured` so public routes (Home, Sign-in
+form chrome, marketing pages) still render.
 
 ## Don't
 

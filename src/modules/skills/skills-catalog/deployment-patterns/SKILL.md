@@ -52,13 +52,8 @@ Generate deployment artifacts in this order:
 6. **Health/status.** For static SPAs, add a `/health` route through a Supabase
    Edge Function, static-host function, or hosted heartbeat endpoint for uptime
    monitors. Capacitor apps also need a simple force-update/version check.
-7. **Post-deploy observability.** Add the smallest founder-actionable
-   observability set before calling production complete: Supabase Logs Explorer
-   visibility for Supabase services, Sentry release tags tied to the git SHA,
-   source-map uploads in CI/build, PostHog or explicitly chosen LogRocket replay
-   with privacy masking, synthetic checks for `/` and `/health`, email plus one
-   chat alert route, SLO burn-rate alerts, and a failed-deploy log analysis
-   path.
+7. **Post-deploy observability (logging, error tracking, replay privacy, SLOs,
+   AI-fix approval): see the `observability` skill.**
 8. **Launch readiness.** For public launches, invoke `app-launch-checklist` and
    verify SEO metadata/assets, cookie consent, privacy/terms, account deletion,
    data export/right-to-access, WCAG 2.2 AA critical flows, support routing,
@@ -70,43 +65,6 @@ Generate deployment artifacts in this order:
    `pg_restore` and not editing an already-applied migration.
 10. **Domain hardening.** Configure the custom domain, automatic TLS, security
    headers, and an HSTS preload readiness check before calling production done.
-
-### Post-Deploy Observability Baseline
-
-Generate guidance or artifacts only for the app being deployed; do not build a
-custom observability platform inside the plugin.
-
-- **Centralized logs:** Supabase projects use the Dashboard Logs Explorer for
-  API/PostgREST, Auth, Edge Functions, Postgres, Storage, and Realtime logs.
-  App runtime logs write to stdout/stderr for the host to collect; no app-managed
-  log files.
-- **Client errors:** React/Ionic apps initialize Sentry before application
-  imports, set `release` to the commit SHA, upload source maps every production
-  build, and remove or block public `.map` files after upload.
-- **Edge Function errors:** Supabase Edge Functions use the Sentry Deno SDK with
-  per-request `withScope` or direct capture context. Do not store user/tenant
-  request data in global Sentry scope because the runtime may be reused.
-- **Replay and analytics:** PostHog is the default for replay, funnels, product
-  analytics, and feature flags. LogRocket is acceptable when explicit/existing.
-  Replay is blocked until inputs, text, query strings, request/response bodies,
-  payment/auth/account/admin surfaces, and sensitive DOM regions are masked.
-- **Uptime:** Configure synthetic checks for `/` and `/health` every 1-5 minutes
-  with email plus one chat destination. Mention the exact monitor provider as
-  selected by the project or mark it `Unverified`.
-- **SLOs:** Start with simple SLIs such as auth request success rate, API non-2xx
-  rate, and uptime. Alert on multi-window burn rate instead of raw error count.
-- **API failures:** Track non-2xx rate by endpoint, status family, user/tenant
-  hash, and role where available without PII.
-- **Slow queries:** For Supabase/Postgres, enable `pg_stat_statements` and
-  report normalized query, p95/mean execution time, calls, rows read when
-  available, and one suggested index or an `EXPLAIN ANALYZE` follow-up.
-- **Failed deploys:** On deploy failure, pull provider build logs, identify the
-  failing step, and map common causes to canned fixes: lockfile mismatch,
-  missing env var, source-map upload/auth failure, migration conflict, failing
-  typecheck/test/build, or missing Supabase link/project secret.
-- **AI fix suggestions:** For each error class, propose one patch and a short
-  explanation. Require explicit user approval before opening a PR, pushing a
-  branch, changing provider settings, running migrations, or redeploying.
 
 ### Static Host SPA Manifests
 
@@ -346,53 +304,14 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 CMD ["node", "dist/server.js"]
 ```
 
-### Multi-Stage Dockerfile (Go)
+The same multi-stage shape ports to other runtimes:
 
-```dockerfile
-FROM golang:1.22-alpine AS builder
-WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server ./cmd/server
-
-FROM alpine:3.19 AS runner
-RUN apk --no-cache add ca-certificates
-RUN adduser -D -u 1001 appuser
-USER appuser
-
-COPY --from=builder /server /server
-
-EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://localhost:8080/health || exit 1
-CMD ["/server"]
-```
-
-### Multi-Stage Dockerfile (Python/Django)
-
-```dockerfile
-FROM python:3.12-slim AS builder
-WORKDIR /app
-RUN pip install --no-cache-dir uv
-COPY requirements.txt .
-RUN uv pip install --system --no-cache -r requirements.txt
-
-FROM python:3.12-slim AS runner
-WORKDIR /app
-
-RUN useradd -r -u 1001 appuser
-USER appuser
-
-COPY --from=builder /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-COPY . .
-
-ENV PYTHONUNBUFFERED=1
-EXPOSE 8000
-
-HEALTHCHECK --interval=30s --timeout=3s CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/')" || exit 1
-CMD ["gunicorn", "config.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "4"]
-```
+- **Go:** `golang:1.22-alpine` builder with `CGO_ENABLED=0 GOOS=linux go build
+  -ldflags="-s -w"`, copy the single static binary into `alpine:3.19` (add
+  `ca-certificates`), non-root user, `HEALTHCHECK` against `/health`.
+- **Python/Django:** `python:3.12-slim` builder installing deps with `uv pip
+  install --system`, copy `site-packages` + `/usr/local/bin` into a slim runner,
+  non-root user, `ENV PYTHONUNBUFFERED=1`, run via `gunicorn config.wsgi`.
 
 ### Docker Best Practices
 
@@ -640,14 +559,8 @@ Before any production deployment:
 - [ ] SSL/TLS enabled on all endpoints
 
 ### Monitoring
-- [ ] Application metrics exported (request rate, latency, errors)
-- [ ] Sentry release is tied to git SHA and source maps upload on every build
-- [ ] Supabase Logs Explorer covers API/Auth/Edge/Postgres logs where Supabase is used
-- [ ] Alerts use SLO burn-rate thresholds, not only raw error counts
-- [ ] Log aggregation set up (stdout/stderr, structured, searchable, PII scrubbed)
-- [ ] Uptime monitoring on `/` and `/health` at 1-5 minute interval
-- [ ] Email plus one chat route exists, with known-flaky third parties suppressed
-- [ ] PostHog/LogRocket replay has documented masking/consent before enablement
+- Post-deploy observability (logging, error tracking, replay privacy, SLOs,
+  AI-fix approval): see the `observability` skill.
 
 ### Security
 - [ ] Dependencies scanned for CVEs

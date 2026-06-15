@@ -14,7 +14,7 @@
 // 0/false/off → bypass) for ops + tests (see authEnforced in session/auth-gate).
 export const AUTH_ENABLED = false;
 
-export const DEFAULT_ENDPOINT = 'http://127.0.0.1:8787/mcp';
+export const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp';
 export const AUTH_STATE_VERSION = 1;
 export const EXPIRY_SKEW_MS = 30 * 1000;
 export const REMOTE_AUTH_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;

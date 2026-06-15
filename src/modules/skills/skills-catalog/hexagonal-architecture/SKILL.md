@@ -12,7 +12,7 @@ metadata:
 
 Hexagonal architecture (Ports and Adapters) keeps business logic independent from frameworks, transport, and persistence details. The core app depends on abstract ports, and adapters implement those ports at the edges.
 
-## When to Use
+## When to Activate
 
 - Building new features where long-term maintainability and testability matter.
 - Refactoring layered or framework-heavy code where domain logic is mixed with I/O concerns.

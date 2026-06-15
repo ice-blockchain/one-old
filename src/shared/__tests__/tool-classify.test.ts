@@ -37,6 +37,27 @@ test('isMutatingPreToolUse flags writes/edits/mutating shell, allows read-only',
   assert.equal(isMutatingPreToolUse('Bash', { command: 'echo hi > f' }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'ls -la' }), false);
   assert.equal(isMutatingPreToolUse('Read', { file_path: 'x' }), false);
+
+  // Hardened write vectors that previously slipped through the read-only allowance.
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'dd if=/dev/zero of=out.bin' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'ln -s a b' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'chmod +x build.sh' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'truncate -s 0 log' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'git checkout -- src/app.ts' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'git restore .' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'pip install requests' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'cargo add serde' }), true);
+  // Inline interpreter eval (the named bypass): writes without a visible redirect.
+  assert.equal(isMutatingPreToolUse('Bash', { command: `python -c "open('x','w').write('y')"` }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: `node -e "require('fs').writeFileSync('x','y')"` }), true);
+
+  // Read-only diagnostics MUST still pass (the WebStorm-style investigation case).
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'cat /var/log/app.log' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'grep -r error src' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'ps aux | grep webstorm' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'git status' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'node --version' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'python analyze.py' }), false);
 });
 
 test('isReadOnlyOrientationToolUse allows orientation, not mutation/spawns', () => {

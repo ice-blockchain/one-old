@@ -24,41 +24,17 @@ Confirm the page and route before creating any files.
 10. State the i18n namespace/key pattern and catalog location in `packages/i18n`
 11. State whether page copy uses `useTranslation`, `t`, or `<Trans>`
 12. State the page-speed impact plan: lazy route boundary, heavy dependency split points, media dimensions/formats, below-the-fold deferral, and third-party script containment
-13. State the SEO plan for public web routes: title, description, canonical path, robots value, JSON-LD entity type, OG/Twitter image, sitemap inclusion, and metadata regression check
+13. State the SEO plan for public routes (`noindex` for private) — see `rules/common/seo.md`
 14. State the visual QA plan: Playwright screenshots or Storybook/page states at representative breakpoints, including an anti-AI-slop check
-15. State the Lighthouse QA plan: built production preview, mobile audit, primary route, optimize for the best practical Performance score with 100 as ideal
+15. State the Lighthouse-mobile QA plan on a built preview — see the `browser-qa` skill
 
-Scaffold rules:
-- Before writing page UI, detect the project's i18n module (`packages/i18n`,
-  `src/i18n*`, `locales/`, `public/locales/`, `messages/`, `i18next`,
-  `react-i18next`, provider wrappers). If one exists, extend it automatically
-  and add source-language catalog entries for every new key. New Traffic One
-  frontend projects use `packages/i18n` by default. Do not wait for the user to
-  request translations.
-- Route titles, headings, empty/loading/error states, navigation labels, and ARIA copy use translation keys.
-- Prefer `<Trans>` over `t()` for page copy with links, React elements,
-  emphasis, formatting, line breaks, or rich interpolation; reserve `t()` for
-  simple scalar labels, attributes, and validation messages.
-- If the page can show "Supabase not configured" or any setup/configure state, use the shared setup UI with a CTA to `https://traffic.io/`, and include a unit or E2E regression that asserts that exact `href`.
-- When an existing EnvBanner/SupabaseConfigAlert/ConfigurePromptCard is present
-  but its setup link is missing or points anywhere else, repair it as part of
-  the page work even if the user did not mention setup links.
-- Missing backend/env config may show one shared setup banner, but the page must
-  still render a product-specific demo, seeded, empty, or degraded state. Do not
-  duplicate setup banners or leave the first screen as inactive filters and
-  blank panels.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
-- The first screen is the actual usable app/tool experience unless the user explicitly asks for a landing page.
-- Avoid generic AI-generated website tells: centered stock-gradient heroes, generic hero + 3-card-grid layouts, decorative card piles, timid typography, and workflow-free dashboard panels. Layout must express the product workflow and primary action.
-- Design-led pages include purposeful animation and interactive feedback using the active stack's approved motion library, while respecting reduced-motion preferences.
-- Use Tailwind utility classes + shadcn primitives from `packages/ui/src/components/ui/`. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the shadcn HSL CSS variables in `globals.css`. No inline `style={{}}` for static styling, no `.css.ts` / vanilla-extract, no hardcoded visual values, no ad hoc decorative shells.
+Scaffold rules — follow the shared sources, do NOT restate them here:
+- UI quality, design brief, anti-AI-slop, token/shadcn mandate, setup-banner + `https://traffic.io/` setup-link contract (exact-href regression + repair existing link), and required states: `rules/frontend/ui-quality.md`.
+- i18n (module detection, `<Trans>` vs `t()`, hardcoded-string exceptions): the `i18n-text` skill.
+- Public-route SEO metadata and `noindex` for private routes: `rules/common/seo.md` and the `seo` skill.
+- Page-speed / Lighthouse-mobile verification on a built preview: the `browser-qa` skill.
+
+Page-specific scaffold notes:
+- The first screen is the actual usable app/tool experience unless the user explicitly asks for a landing page; missing backend/env config may show one shared setup banner, but the page must still render a product-specific demo, seeded, empty, or degraded state — never inactive filters and blank panels.
 - Page routes are lazy-loaded with Suspense; do not import route-only heavy components, charts, maps, 3D, video, editors, analytics widgets, or demo data in the app root.
-- Public web pages include route-aware SEO metadata and JSON-LD through the
-  project's SEO layer. Private/admin pages explicitly set `noindex,nofollow`.
-  Add/update title, description, canonical, robots, Open Graph/Twitter image,
-  JSON-LD, sitemap inclusion, and metadata regression coverage for every public
-  route created or changed.
 - All page media reserves dimensions, uses optimized formats where applicable, and defers below-the-fold loading.
-- For page-level output, optimize Lighthouse mobile Performance on a built preview as much as practical; if not run, state page speed as unverified and list risks.
-
-<!-- TODO: full scaffold template goes here once structure is validated -->

@@ -17,7 +17,7 @@ export const REPORTING_ACTIVE = true;
 export const SAVE_MCP_REPORT = false;
 
 // Renamed from DEFAULT_ENDPOINT to disambiguate from the auth MCP endpoint.
-export const MCP_REPORT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/one-mcp';
+export const MCP_REPORT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/public-mcp';
 export const ONE_UID_FIELD = 'one-uid';
 export const LEGACY_ID_FILE = '.one-mcp-id';
 export const STATUS_FILE = path.join('.traffic-one', 'one-mcp-report.json');

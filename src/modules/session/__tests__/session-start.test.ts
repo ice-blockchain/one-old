@@ -103,6 +103,25 @@ test('runSessionStart is a noop in the plugin authoring root (before any auth pr
   assert.equal(runSessionStart(ctx(process.cwd())).kind, 'noop');
 });
 
+test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-coding prompt stays dormant', () => {
+  withProject(null, (cwd) => {
+    // SessionStart fires before any prompt; on a fresh dir it must NOT activate
+    // Traffic One. Codex opens a scratch dir per task, so every session would
+    // otherwise look like a new project and trip the onboarding gate even for a
+    // non-coding question. It stays silent and writes nothing — so the
+    // UserPromptSubmit coding-intent guard still sees a pristine project and can
+    // skip a non-coding prompt.
+    const r = runSessionStart(ctx(cwd));
+    assert.equal(r.kind, 'noop');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), false, 'no state written at SessionStart');
+    // The authed body (what UserPromptSubmit re-runs for a CODING prompt) still
+    // activates and writes state — the deferral is SessionStart-only, not a
+    // global disable.
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), true, 'authed body activates + writes state');
+  });
+});
+
 test('Flow 3: a new project with no Traffic One state points at the setup wizard + baseline rules', () => {
   withProject(null, (cwd) => {
     const r = runSessionStartAuthed(ctx(cwd));

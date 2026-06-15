@@ -1,6 +1,6 @@
 ---
 name: design-system
-description: Use this skill to generate or audit design systems, check visual consistency, and review PRs that touch styling.
+description: Use this skill to generate or maintain a design-token system, check visual consistency, and review PRs that touch styling. (Audit existing UI → design-audit.)
 metadata:
   source: everything-claude-code
   source_path: skills/design-system/SKILL.md
@@ -10,7 +10,7 @@ metadata:
 
 # Design System — Generate & Audit Visual Systems
 
-## When to Use
+## When to Activate
 
 - Starting a new project that needs a design system
 - Auditing an existing codebase for visual consistency
@@ -20,6 +20,8 @@ metadata:
 
 ## How It Works
 
+The design brief, competitor-reference step, anti-AI-slop list, Tailwind/shadcn token mandate, the setup-banner + `https://traffic.io/` setup-link contract (exact-href regression + repair-existing-link rule), and required UI states are owned by `rules/frontend/ui-quality.md` — follow it, do not restate.
+
 ### Mode 1: Generate Design System
 
 Analyzes your codebase and generates a cohesive design system:
@@ -28,10 +30,7 @@ Analyzes your codebase and generates a cohesive design system:
 1. Scan existing styling, tokens, component primitives, and screenshots for patterns
 2. Extract: colors, typography, spacing, border-radius, shadows, breakpoints
 3. Identify product audience, primary workflows, tone, and visual direction
-4. If the user has not named competitor sites or design references, ask what
-   they like and offer to analyze 2–3 competitors yourself; use either the
-   user-provided references or the self-analyzed competitors to anchor the
-   system
+4. Anchor the system on the references gathered per ui-quality.md
 5. Define the motion and interactivity model: transitions, hover/focus states,
    menu/dialog behavior, loading shifts, optimistic feedback, and reduced-motion
    behavior
@@ -43,9 +42,7 @@ Analyzes your codebase and generates a cohesive design system:
 ```
 
 Output should fit the repo: shadcn HSL CSS variable updates, Tailwind preset
-extensions, a concise design brief, and component previews/stories. Do not
-introduce vanilla-extract, styled-components, Emotion, CSS modules, or inline
-`style={{}}` for static styling.
+extensions, a concise design brief, and component previews/stories.
 
 ### Mode 2: Visual Audit
 
@@ -64,7 +61,7 @@ Scores your UI across 13 dimensions (0-10 each):
 10. Accessibility — contrast ratios, focus states, touch targets
 11. Information density — cluttered or clean?
 12. Polish — hover states, transitions, loading states, empty states
-13. AI-slop resistance — avoids generic AI-generated website patterns and feels anchored in real competitors
+13. AI-slop resistance — avoids the generic AI-generated patterns enumerated in `rules/frontend/ui-quality.md` and feels anchored in real competitors
 ```
 
 Each dimension gets a score, specific examples, and a fix with exact file:line.
@@ -72,20 +69,8 @@ Rank recommended fixes by user impact, not taste.
 
 ### Mode 3: AI Slop Detection
 
-Identifies generic AI-generated design patterns:
-
-```
-- Gratuitous gradients on everything
-- Purple-to-blue defaults
-- "Glass morphism" cards with no purpose
-- Rounded corners on things that shouldn't be rounded
-- Excessive animations on scroll
-- Generic hero with centered text over stock gradient
-- Sans-serif font stack with no personality
-- Decorative card grids with no workflow point of view
-- Dashboard panels that do not answer an operator question
-- Mobile layouts copied directly from desktop
-```
+Scores the UI against the canonical AI-slop tell list in
+`rules/frontend/ui-quality.md` and flags every match with its exact file:line.
 
 ## Traffic One Requirements
 
@@ -101,9 +86,6 @@ Identifies generic AI-generated design patterns:
   mobile, tablet, desktop, and important UI states.
 - Design systems must include purposeful animation and interactive feedback
   rules, plus reduced-motion behavior.
-- The design brief must state whether references came from the user or from your
-  competitor analysis, and why the result will not read like an AI-generated
-  website.
 
 ## Examples
 

@@ -53,7 +53,9 @@ Three test layers, each with a distinct job. Framework-specific testing helpers
 
 - WebSocket fake in `packages/test-utils/ws-fake.ts` — see `frontend/realtime.md` for the contract.
 - Drive the WS service with the in-memory fake; assert that the UI re-renders when frames are pushed.
-- Cover: connect → first message, disconnect → degraded UI, backlog drain after reconnect, malformed frame rejected, buffer overflow.
+- The frame-by-frame coverage matrix (open, first message, malformed frame,
+  disconnect, reconnect-with-replay, buffer overflow) is owned by
+  `frontend/realtime.md`.
 
 ## Playwright
 

@@ -18,7 +18,10 @@ CSS variables (`--background`, `--foreground`, `--primary`, `--muted`,
 
 ## Product-specific UI
 
-- Do not ship generic template-looking UI. The interface should feel specific to the product, workflow, and audience.
+The anti-AI-slop / anti-template checklist (generic heroes, decorative card piles,
+purple-blue defaults, timid type, unmodified component states, decorative-only
+motion) is canonical in `rules/frontend/ui-quality.md`. React-web specifics:
+
 - Build the actual usable experience as the first screen for apps, tools, and games; do not default to a marketing landing page.
 - Missing Supabase or other environment configuration may show one shared
   setup banner, but it must not dominate or replace the product experience.
@@ -56,32 +59,13 @@ Meaningful frontend surfaces should show several of these, chosen for the produc
 - Use lucide icons or the project icon set for recognizable actions instead of text-only tool buttons when an icon is clearer.
 - Use cards only for repeated items, modals, and framed tools. Page sections should be full-width bands or unframed layouts.
 
-## Anti-template checklist
+## Must not do (React-web specifics)
 
-Before delivery, remove generic defaults that make the UI feel machine-spun:
+The general anti-template tells are in `rules/frontend/ui-quality.md`. On top of those:
 
-- A centered hero plus identical feature cards with no product-specific first
-  workflow.
-- Stock-looking placeholder media, dark blurred atmospherics, or imagery that
-  hides the actual product/place/object the user needs to inspect.
-- Unmodified shadcn/default component states, default gray/white with one accent,
-  timid headings, or browser/system font stacks on a design-led page without a
-  deliberate reason.
-- Decorative metrics, charts, or dashboard panels that do not answer an
-  operator, buyer, or user question.
-- Motion that is only decorative. Keep motion tied to navigation, continuity,
-  feedback, optimistic state, filtering, loading, or hierarchy.
-
-## Must not do
-
-- Do not create decorative card grids, generic hero sections, or dashboard layouts with no workflow point of view.
-- Do not ship generic AI-generated website tells: centered stock-gradient heroes,
-  decorative card piles, purple-blue defaults, timid type, or static mockup-like
-  screens without interaction.
 - Do not use hardcoded colors, spacing, font sizes, radii, or shadows; use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the CSS variables in `globals.css`. Extend the `@theme` tokens in `packages/tailwind-config/globals.css` before introducing new tokens.
 - Do not put page sections inside floating cards. Use cards for repeated items, modals, and genuinely framed tools.
 - Do not rely on color alone for state; pair it with text, iconography, or shape.
-- Do not introduce visual flourishes that make text harder to scan, overlap content, or hide real product state.
 - Do not copy desktop layouts directly onto mobile. Reorder content, simplify controls, and keep primary actions thumb-accessible.
 
 ## Verification

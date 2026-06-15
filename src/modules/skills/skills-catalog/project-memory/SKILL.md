@@ -24,7 +24,7 @@ Use this skill to create or reconcile the `.traffic-one/` project-memory folder.
 The goal is persistent, compact context for humans and AI coding agents, not
 another long docs tree.
 
-## When to Use
+## When to Activate
 
 - The user asks for project memory, persistent context, or `.traffic-one/`.
 - Starting a new Traffic One project.

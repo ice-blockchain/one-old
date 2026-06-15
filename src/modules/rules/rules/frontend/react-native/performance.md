@@ -33,6 +33,4 @@ paths:
 - Avoid large all-platform imports in shared packages; isolate platform-specific code behind `.ios.ts`, `.android.ts`, or `.native.ts`.
 
 ## Real-time
-- Batch high-rate updates in the service/bridge before they hit React.
-- Cap non-game real-time UI at 30 fps.
-- Under degraded network, show stale state and reconnect status instead of spinning forever.
+- The real-time render budget (batch high-rate updates before they hit React, ~30 fps non-game cap, stale-state-under-degraded-network) is framework-agnostic — see `rules/frontend/performance.md`.

@@ -1,6 +1,6 @@
 ---
 name: seo
-description: Audit, plan, and implement SEO improvements across technical SEO, on-page optimization, structured data, Core Web Vitals, and content strategy. Use when the user wants better search visibility, SEO remediation, schema markup, sitemap/robots work, or keyword mapping.
+description: Audit, plan, and implement SEO across technical SEO, on-page optimization, structured data, Core Web Vitals, and content. Use for better search visibility, SEO remediation, schema markup, sitemap/robots work, or keyword mapping.
 metadata:
   source: everything-claude-code
   source_path: skills/seo/SKILL.md
@@ -16,7 +16,7 @@ Traffic One generation rule: this skill is mandatory for generated websites,
 public web routes, and existing web-surface reconciliations. Do not wait until
 deploy/launch to add the baseline.
 
-## When to Use
+## When to Activate
 
 Use this skill when:
 - auditing crawlability, indexability, canonicals, or redirects
@@ -178,7 +178,4 @@ Fix: Generate a unique title per product using the product name and primary cate
 
 ## Related Skills
 
-- `seo-specialist`
 - `frontend-patterns`
-- `brand-voice`
-- `market-research`

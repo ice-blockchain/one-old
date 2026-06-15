@@ -19,7 +19,7 @@ The goal is not "show every metric." The goal is to answer:
 - what changed?
 - what action should someone take?
 
-## When to Use
+## When to Activate
 
 - "Build a Kafka monitoring dashboard"
 - "Create a Grafana dashboard for Elasticsearch"
@@ -106,6 +106,4 @@ Every panel should answer a real question. If it does not, remove it.
 
 ## Related Skills
 
-- `research-ops`
 - `backend-patterns`
-- `terminal-ops`

@@ -21,12 +21,12 @@ Before creating files, state:
 3. Whether a React Native Reusables (RNR) primitive already covers the need. If yes, install with `npx @react-native-reusables/cli@latest add <name>` (lands in `packages/ui-native/src/components/ui/`) and compose it; do NOT hand-roll a button / dialog / dropdown / form control.
 4. Styling approach: NativeWind utility classes via `className`, merged with `cn()` (= `clsx` + `tailwind-merge`). Variants via `class-variance-authority` (`cva`) for shared primitives.
 5. State/data boundary: presentational only, local state, or hook-backed.
-6. Native design brief: user goal, primary action, visual direction, density, touch target needs, and required states.
+6. Design brief and required states: see `rules/frontend/ui-quality.md` (design brief/states).
 7. Token plan: spacing, typography, color, radius, borders, motion, and safe-area/dynamic-type behavior — pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the HSL CSS variables in `global.css`.
 8. Tests: colocated RNTL test when the component has interaction or state.
-9. i18n namespace/key pattern and catalog location in `packages/i18n`.
-10. Translation consumption: `useTranslation`, `t`, or `<Trans>`.
-11. Visual QA plan: small phone and larger device screenshots or Storybook/native preview states when available.
+9. Visual QA plan: small phone and larger device screenshots or Storybook/native preview states when available.
+
+i18n module detection, `<Trans>` vs `t()` preference, and the hardcoded-strings exception are owned by the `i18n-text` skill (auto-applied to generated/changed UI). Follow it for copy — do not restate the rules here.
 
 Scaffold rules:
 - Named export only.
@@ -37,7 +37,5 @@ Scaffold rules:
 - No vanilla-extract / `.css.ts` / styled-components / `@emotion`.
 - No axios calls inside components.
 - Loading/error/empty states are explicit when rendering async data.
-- Visible copy, placeholders, accessibility labels/hints, image accessibility copy, and loading/error/empty states use translation keys.
 - Accessibility labels/roles are part of the component contract for interactive UI.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - Do not translate web card grids into native wrappers. Native components must be thumb-friendly, dynamic-type-safe, and visually quiet unless the brief calls for expressiveness.

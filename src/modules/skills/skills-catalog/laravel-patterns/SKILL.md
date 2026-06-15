@@ -12,7 +12,7 @@ metadata:
 
 Production-grade Laravel architecture patterns for scalable, maintainable applications.
 
-## When to Use
+## When to Activate
 
 - Building Laravel web applications or APIs
 - Structuring controllers, services, and domain logic

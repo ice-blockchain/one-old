@@ -1,6 +1,6 @@
 ---
 name: perl-patterns
-description: Modern Perl 5.36+ idioms, best practices, and conventions for building robust, maintainable Perl applications.
+description: Modern Perl 5.36+ idioms — use v5.36 pragma, subroutine signatures, postfix dereferencing, isa operator, Try::Tiny/native try-catch, Moo classes, perltidy/perlcritic/carton. Language layer over the clean-code floor.
 metadata:
   source: everything-claude-code
   source_path: skills/perl-patterns/SKILL.md
@@ -10,23 +10,13 @@ metadata:
 
 # Modern Perl Development Patterns
 
-Idiomatic Perl 5.36+ patterns and best practices for building robust, maintainable applications.
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the Perl-specific idioms below.
 
-## When to Activate
+Apply these patterns as a bias toward modern Perl 5.36+ defaults — signatures, explicit modules, focused error handling, testable boundaries — when writing, reviewing, refactoring, or migrating pre-5.36 Perl. Examples are starting points; tighten them for the actual app and dependency stack.
 
-- Writing new Perl code or modules
-- Reviewing Perl code for idiom compliance
-- Refactoring legacy Perl to modern standards
-- Designing Perl module architecture
-- Migrating pre-5.36 code to modern Perl
+## Core Idioms
 
-## How It Works
-
-Apply these patterns as a bias toward modern Perl 5.36+ defaults: signatures, explicit modules, focused error handling, and testable boundaries. The examples below are meant to be copied as starting points, then tightened for the actual app, dependency stack, and deployment model in front of you.
-
-## Core Principles
-
-### 1. Use `v5.36` Pragma
+### Use `v5.36` Pragma
 
 A single `use v5.36` replaces the old boilerplate and enables strict, warnings, and subroutine signatures.
 
@@ -50,7 +40,7 @@ sub greet {
 }
 ```
 
-### 2. Subroutine Signatures
+### Subroutine Signatures
 
 Use signatures for clarity and automatic arity checking.
 
@@ -80,7 +70,7 @@ sub connect_db {
 }
 ```
 
-### 3. Context Sensitivity
+### Context Sensitivity
 
 Understand scalar vs list context — a core Perl concept.
 
@@ -94,7 +84,7 @@ my $count = @items;            # Scalar context: count (5)
 say "Items: " . scalar @items; # Force scalar context
 ```
 
-### 4. Postfix Dereferencing
+### Postfix Dereferencing
 
 Use postfix dereference syntax for readability with nested structures.
 
@@ -118,7 +108,7 @@ my @users = @{ $data->{users} };
 my @roles = @{ $data->{users}[0]{roles} };
 ```
 
-### 5. The `isa` Operator (5.32+)
+### The `isa` Operator (5.32+)
 
 Infix type-check — replaces `blessed($o) && $o->isa('X')`.
 

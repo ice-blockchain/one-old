@@ -1,6 +1,6 @@
 ---
 name: python-testing
-description: Python testing strategies using pytest, TDD methodology, fixtures, mocking, parametrization, and coverage requirements.
+description: Python testing strategies using pytest, fixtures, mocking, parametrization, markers, async tests, and coverage. Use for pytest-specific runner commands and idioms.
 metadata:
   source: everything-claude-code
   source_path: skills/python-testing/SKILL.md
@@ -10,43 +10,19 @@ metadata:
 
 # Python Testing Patterns
 
-Comprehensive testing strategies for Python applications using pytest, TDD methodology, and best practices.
+Comprehensive testing strategies for Python applications using pytest.
+
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
 
 ## When to Activate
 
-- Writing new Python code (follow TDD: red, green, refactor)
-- Designing test suites for Python projects
+- Writing or designing pytest test suites for Python projects
 - Reviewing Python test coverage
 - Setting up testing infrastructure
 
-## Core Testing Philosophy
+## Coverage
 
-### Test-Driven Development (TDD)
-
-Always follow the TDD cycle:
-
-1. **RED**: Write a failing test for the desired behavior
-2. **GREEN**: Write minimal code to make the test pass
-3. **REFACTOR**: Improve code while keeping tests green
-
-```python
-# Step 1: Write failing test (RED)
-def test_add_numbers():
-    result = add(2, 3)
-    assert result == 5
-
-# Step 2: Write minimal implementation (GREEN)
-def add(a, b):
-    return a + b
-
-# Step 3: Refactor if needed (REFACTOR)
-```
-
-### Coverage Requirements
-
-- **Target**: 80%+ code coverage
-- **Critical paths**: 100% coverage required
-- Use `pytest --cov` to measure coverage
+Measure with `pytest --cov`:
 
 ```bash
 pytest --cov=mypackage --cov-report=term-missing --cov-report=html
@@ -119,136 +95,27 @@ assert str(exc_info.value) == "error message"
 
 ## Fixtures
 
-### Basic Fixture Usage
+Setup/teardown with `yield`, plus `scope=` (function/module/session), `params=` for parameterized fixtures, `autouse=True` to run automatically, and `request.param` to read the active parameter. Put shared fixtures in `tests/conftest.py` so all tests can request them by name.
 
 ```python
-import pytest
-
-@pytest.fixture
-def sample_data():
-    """Fixture providing sample data."""
-    return {"name": "Alice", "age": 30}
-
-def test_sample_data(sample_data):
-    """Test using the fixture."""
-    assert sample_data["name"] == "Alice"
-    assert sample_data["age"] == 30
-```
-
-### Fixture with Setup/Teardown
-
-```python
-@pytest.fixture
+@pytest.fixture(scope="module")  # function (default) | module | session
 def database():
-    """Fixture with setup and teardown."""
-    # Setup
     db = Database(":memory:")
     db.create_tables()
-    db.insert_test_data()
-
-    yield db  # Provide to test
-
-    # Teardown
+    yield db          # setup before, teardown after the yield
     db.close()
 
-def test_database_query(database):
-    """Test database operations."""
-    result = database.query("SELECT * FROM users")
-    assert len(result) > 0
-```
+@pytest.fixture(params=["sqlite", "postgresql"])
+def backend(request):
+    return Database(request.param)  # test runs once per param
 
-### Fixture Scopes
-
-```python
-# Function scope (default) - runs for each test
-@pytest.fixture
-def temp_file():
-    with open("temp.txt", "w") as f:
-        yield f
-    os.remove("temp.txt")
-
-# Module scope - runs once per module
-@pytest.fixture(scope="module")
-def module_db():
-    db = Database(":memory:")
-    db.create_tables()
-    yield db
-    db.close()
-
-# Session scope - runs once per test session
-@pytest.fixture(scope="session")
-def shared_resource():
-    resource = ExpensiveResource()
-    yield resource
-    resource.cleanup()
-```
-
-### Fixture with Parameters
-
-```python
-@pytest.fixture(params=[1, 2, 3])
-def number(request):
-    """Parameterized fixture."""
-    return request.param
-
-def test_numbers(number):
-    """Test runs 3 times, once for each parameter."""
-    assert number > 0
-```
-
-### Using Multiple Fixtures
-
-```python
-@pytest.fixture
-def user():
-    return User(id=1, name="Alice")
-
-@pytest.fixture
-def admin():
-    return User(id=2, name="Admin", role="admin")
-
-def test_user_admin_interaction(user, admin):
-    """Test using multiple fixtures."""
-    assert admin.can_manage(user)
-```
-
-### Autouse Fixtures
-
-```python
 @pytest.fixture(autouse=True)
 def reset_config():
-    """Automatically runs before every test."""
     Config.reset()
     yield
-    Config.cleanup()
 
-def test_without_fixture_call():
-    # reset_config runs automatically
-    assert Config.get_setting("debug") is False
-```
-
-### Conftest.py for Shared Fixtures
-
-```python
-# tests/conftest.py
-import pytest
-
-@pytest.fixture
-def client():
-    """Shared fixture for all tests."""
-    app = create_app(testing=True)
-    with app.test_client() as client:
-        yield client
-
-@pytest.fixture
-def auth_headers(client):
-    """Generate auth headers for API testing."""
-    response = client.post("/api/login", json={
-        "username": "test",
-        "password": "test"
-    })
-    token = response.json["token"]
-    return {"Authorization": f"Bearer {token}"}
+def test_database_query(database):  # request a fixture by parameter name
+    assert len(database.query("SELECT * FROM users")) > 0
 ```
 
 ## Parametrization
@@ -363,108 +230,24 @@ markers =
 
 ## Mocking and Patching
 
-### Mocking Functions
+`@patch("dotted.path")` replaces a target for the test duration. Set `.return_value` for a value, `.side_effect` for an exception or sequence, and assert with `assert_called_once`/`assert_called_once_with`. Pass `autospec=True` to make the mock reject calls that don't match the real signature. Use `mock_open` for `open()`.
 
 ```python
-from unittest.mock import patch, Mock
+from unittest.mock import patch, mock_open
 
-@patch("mypackage.external_api_call")
-def test_with_mock(api_call_mock):
-    """Test with mocked external API."""
-    api_call_mock.return_value = {"status": "success"}
-
-    result = my_function()
-
-    api_call_mock.assert_called_once()
-    assert result["status"] == "success"
-```
-
-### Mocking Return Values
-
-```python
-@patch("mypackage.Database.connect")
-def test_database_connection(connect_mock):
-    """Test with mocked database connection."""
-    connect_mock.return_value = MockConnection()
-
-    db = Database()
-    db.connect()
-
-    connect_mock.assert_called_once_with("localhost")
-```
-
-### Mocking Exceptions
-
-```python
-@patch("mypackage.api_call")
-def test_api_error_handling(api_call_mock):
-    """Test error handling with mocked exception."""
-    api_call_mock.side_effect = ConnectionError("Network error")
+@patch("mypackage.api_call", autospec=True)
+def test_error_handling(api_call_mock):
+    api_call_mock.return_value = {"status": "ok"}     # value
+    api_call_mock.side_effect = ConnectionError("net")  # or raise on call
 
     with pytest.raises(ConnectionError):
-        api_call()
-
+        my_function()
     api_call_mock.assert_called_once()
-```
 
-### Mocking Context Managers
-
-```python
-@patch("builtins.open", new_callable=mock_open)
+@patch("builtins.open", new_callable=mock_open, read_data="file content")
 def test_file_reading(mock_file):
-    """Test file reading with mocked open."""
-    mock_file.return_value.read.return_value = "file content"
-
-    result = read_file("test.txt")
-
+    assert read_file("test.txt") == "file content"
     mock_file.assert_called_once_with("test.txt", "r")
-    assert result == "file content"
-```
-
-### Using Autospec
-
-```python
-@patch("mypackage.DBConnection", autospec=True)
-def test_autospec(db_mock):
-    """Test with autospec to catch API misuse."""
-    db = db_mock.return_value
-    db.query("SELECT * FROM users")
-
-    # This would fail if DBConnection doesn't have query method
-    db_mock.assert_called_once()
-```
-
-### Mock Class Instances
-
-```python
-class TestUserService:
-    @patch("mypackage.UserRepository")
-    def test_create_user(self, repo_mock):
-        """Test user creation with mocked repository."""
-        repo_mock.return_value.save.return_value = User(id=1, name="Alice")
-
-        service = UserService(repo_mock.return_value)
-        user = service.create_user(name="Alice")
-
-        assert user.name == "Alice"
-        repo_mock.return_value.save.assert_called_once()
-```
-
-### Mock Property
-
-```python
-@pytest.fixture
-def mock_config():
-    """Create a mock with a property."""
-    config = Mock()
-    type(config).debug = PropertyMock(return_value=True)
-    type(config).api_key = PropertyMock(return_value="test-key")
-    return config
-
-def test_with_mock_config(mock_config):
-    """Test with mocked config properties."""
-    assert mock_config.debug is True
-    assert mock_config.api_key == "test-key"
 ```
 
 ## Testing Async Code
@@ -551,46 +334,14 @@ def test_exception_with_details():
 
 ### Testing File Operations
 
-```python
-import tempfile
-import os
-
-def test_file_processing():
-    """Test file processing with temp file."""
-    with tempfile.NamedTemporaryFile(mode='w', delete=False, suffix='.txt') as f:
-        f.write("test content")
-        temp_path = f.name
-
-    try:
-        result = process_file(temp_path)
-        assert result == "processed: test content"
-    finally:
-        os.unlink(temp_path)
-```
-
-### Testing with pytest's tmp_path Fixture
+Prefer the built-in `tmp_path` fixture (a `pathlib.Path`, auto-cleaned). Reach for `tempfile` only when you need a path outside pytest's fixture lifecycle.
 
 ```python
 def test_with_tmp_path(tmp_path):
-    """Test using pytest's built-in temp path fixture."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello world")
-
-    result = process_file(str(test_file))
-    assert result == "hello world"
+    assert process_file(str(test_file)) == "hello world"
     # tmp_path automatically cleaned up
-```
-
-### Testing with tmpdir Fixture
-
-```python
-def test_with_tmpdir(tmpdir):
-    """Test using pytest's tmpdir fixture."""
-    test_file = tmpdir.join("test.txt")
-    test_file.write("data")
-
-    result = process_file(str(test_file))
-    assert result == "data"
 ```
 
 ## Test Organization
@@ -637,30 +388,6 @@ class TestUserService:
         self.service.delete_user(user)
         assert not self.service.user_exists(1)
 ```
-
-## Best Practices
-
-### DO
-
-- **Follow TDD**: Write tests before code (red-green-refactor)
-- **Test one thing**: Each test should verify a single behavior
-- **Use descriptive names**: `test_user_login_with_invalid_credentials_fails`
-- **Use fixtures**: Eliminate duplication with fixtures
-- **Mock external dependencies**: Don't depend on external services
-- **Test edge cases**: Empty inputs, None values, boundary conditions
-- **Aim for 80%+ coverage**: Focus on critical paths
-- **Keep tests fast**: Use marks to separate slow tests
-
-### DON'T
-
-- **Don't test implementation**: Test behavior, not internals
-- **Don't use complex conditionals in tests**: Keep tests simple
-- **Don't ignore test failures**: All tests must pass
-- **Don't test third-party code**: Trust libraries to work
-- **Don't share state between tests**: Tests should be independent
-- **Don't catch exceptions in tests**: Use `pytest.raises`
-- **Don't use print statements**: Use assertions and pytest output
-- **Don't write tests that are too brittle**: Avoid over-specific mocks
 
 ## Common Patterns
 
@@ -816,5 +543,3 @@ pytest --pdb
 | `tmp_path` fixture | Automatic temp directory |
 | `pytest --cov` | Generate coverage report |
 | `assert` | Simple and readable assertions |
-
-**Remember**: Tests are code too. Keep them clean, readable, and maintainable. Good tests catch bugs; great tests prevent them.

@@ -75,6 +75,18 @@ export function isStateFileOnlyPatch(toolName: unknown, toolInput: unknown): boo
   return files.length > 0 && files.every((f) => isStateFilePath(f));
 }
 
+// Mutating-command vocabulary for shell tool calls. Anchored to a line start or a
+// shell separator (;, &, |) so it reads as a command, not a substring. Biased
+// toward flagging: a denied read-only command during the brief onboarding-
+// incomplete window is harmless, a MISSED write is the bypass this guards against.
+// Covers file ops, dependency/package installs, build-installs, and working-tree-
+// mutating git subcommands.
+const MUTATING_SHELL_COMMAND = /(^|[\s;&|])(mkdir|rmdir|touch|rm|mv|cp|ln|dd|tee|truncate|chmod|chown|chgrp|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|pip3?\s+install|cargo\s+(install|add)|go\s+install|gem\s+install|composer\s+(require|install)|make\s+install|git\s+(init|add|commit|rm|mv|checkout|restore|reset|clean|stash|apply|push|merge|rebase)|(sed|perl)\s+-i)\b/;
+// Inline interpreter eval can write files with no visible redirection — e.g.
+// `python -c "open('x','w')"`, `node -e "fs.writeFileSync(...)"`. Anchored to the
+// eval flag so running a script file (`python build.py`) is not flagged here.
+const INTERPRETER_EVAL = /(^|[\s;&|])(python3?|node|nodejs|perl|ruby|php)\s+(-c|-e|-r|--eval|--exec)\b/;
+
 export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');
@@ -82,8 +94,9 @@ export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boo
   if (ti && ('content' in ti || 'new_string' in ti || 'old_string' in ti || 'edits' in ti)) return true;
   if (!isShellToolName(name)) return false;
   const command = commandFromToolInput(toolInput);
-  return /(^|[\s;&|])(mkdir|touch|rm|mv|cp|tee|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|git\s+(init|add|commit)|sed\s+-i)\b/.test(command)
-    || />{1,2}/.test(command);
+  // Output redirection (truncate `>` or append `>>`) is an unconditional write.
+  if (/>{1,2}/.test(command)) return true;
+  return MUTATING_SHELL_COMMAND.test(command) || INTERPRETER_EVAL.test(command);
 }
 
 // The blocking "wait for setup" command (node …/onboarding-wait.cjs <cwd>) the agent

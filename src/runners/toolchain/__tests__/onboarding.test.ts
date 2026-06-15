@@ -5,7 +5,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ensureOpenCodeTool } from '../onboarding';
-import { reconcileManagedToolStamp } from '../index';
+import { reconcileManagedToolStamp, toolInstallSpec } from '../index';
+
+test('opencode install spec is latest-by-default (no pinned recommended)', () => {
+  assert.equal(toolInstallSpec('opencode'), 'opencode-ai@latest');
+});
 
 function withTemp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-opencode-'));
@@ -61,7 +65,8 @@ exit 0
     assert.ok(r.binPath?.includes(path.join('opencode', 'npm-prefix', 'bin', 'opencode')));
     const args = fs.readFileSync(log, 'utf8');
     assert.ok(args.includes('--prefix'));
-    assert.ok(args.includes('opencode-ai@1.15.13'));
+    // LATEST-by-default install spec (no pinned recommended); see toolInstallSpec.
+    assert.ok(args.includes('opencode-ai@latest'));
     const prefs = JSON.parse(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || '', 'utf8'));
     assert.equal(prefs.toolchain?.opencode?.installedVersion, '1.15.13');
   });
@@ -99,10 +104,21 @@ test('reconcileManagedToolStamp is a no-op when nothing is installed', () => {
 test('ensureOpenCodeTool reports install-skipped when npm is not on PATH', () => {
   withTemp((cwd) => {
     process.env.PATH = path.join(cwd, 'empty-bin');
-    const r = ensureOpenCodeTool(cwd);
-    assert.equal(r.ok, false);
-    assert.equal(r.action, 'install-skipped');
-    assert.match(r.error || '', /npm/);
+    // Disable the runtime resolver too, so the no-npm branch is genuinely
+    // exercised on machines that DO have Homebrew/nvm Node (otherwise
+    // resolveNode would find one and the test would attempt a real network
+    // install of opencode-ai@latest). The fallback itself is covered separately.
+    const prevProbe = process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF;
+    process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF = '1';
+    try {
+      const r = ensureOpenCodeTool(cwd);
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'install-skipped');
+      assert.match(r.error || '', /npm/);
+    } finally {
+      if (prevProbe === undefined) delete process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF;
+      else process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF = prevProbe;
+    }
   });
 });
 

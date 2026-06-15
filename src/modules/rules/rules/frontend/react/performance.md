@@ -23,12 +23,6 @@ batching) live in `frontend/performance.md`. This file covers React-specific pat
 - Do not import route-only components, charting, maps, editors, 3D, video, analytics widgets, or demo data in `main.tsx`, `App.tsx`, store setup, or shared layout shells.
 - Keep above-the-fold route data and media lean enough to maximize mobile Lighthouse Performance on a built preview.
 
-## Lighthouse verification (React)
-
-- Run Lighthouse against the built production preview for the primary generated route, using mobile emulation.
-- Use Lighthouse findings to improve the score as much as practical; 100 is the ideal.
-- When a React page cannot be audited, report "Lighthouse mobile performance: unverified" and list the route-level page-speed risks still present.
-
 ## Renders
 
 - Never create objects or arrays inline in JSX props — `useMemo` or module-level const.
@@ -40,11 +34,12 @@ batching) live in `frontend/performance.md`. This file covers React-specific pat
 - Keep expensive sorting/filtering/formatting out of render paths; derive it in selectors, RTK Query transforms, or memoized hooks after profiling.
 - Profile with React DevTools Profiler before adding `memo` / `useMemo` — measure, don't guess.
 
-## Real-time render budget (React-side)
+## Real-time render budget (React-side, canonical)
 
-- Apply the framework-agnostic frame-batching rules from `frontend/performance.md`.
-- Use `startTransition` for non-urgent updates (e.g. updating a leaderboard while user is interacting).
-- Wrap WS-driven setState in a tick aggregator hook, not direct dispatch in the bridge.
+- Cap re-renders triggered by streamed frames: ~30 fps for normal UI, 60 fps only for game canvases.
+- Batch high-rate updates (>10 Hz) via `requestAnimationFrame` or a tick aggregator hook — never re-render per frame, and never dispatch direct in the bridge.
+- Drop oldest non-critical frames when the buffer grows past threshold.
+- Use `startTransition` for non-urgent updates (e.g. updating a leaderboard while the user is interacting).
 
 ## Hooks discipline
 

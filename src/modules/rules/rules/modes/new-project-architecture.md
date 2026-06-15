@@ -17,17 +17,11 @@ tree and package boundaries the setup checklist scaffolds.
 ├── .prettierrc
 ├── .nvmrc                         pin Node major
 ├── .env.example                   documented env var names only, no secrets
-├── .traffic-one/
-│   ├── product.md                 one-page PRD and success metric
-│   ├── stack.md                   selected stack and version pins
-│   ├── known-issues.md            open bugs and intentional deferrals
-│   ├── schema.sql                 current DB schema snapshot
-│   ├── deployments.jsonl          append-only deploy log, no secrets
-│   ├── agent-log.md               short session summaries
-│   ├── .agentignore               paths agents avoid unless explicitly asked
-│   ├── decisions/                 ADRs
-│   ├── rules/                     coding/security rules + AGENTS.md source
-│   └── skills/                    reusable local team commands when needed
+├── .traffic-one/                  memory baseline (product/stack/coding/
+│   │                              security/known-issues/agent-log/.agentignore/
+│   │                              deployments.jsonl/schema.sql/decisions/) +
+│   │                              generated rules/ and skills/ — canonical file
+│   │                              inventory in rules/common/project-memory.md
 ├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
 ├── .github/
 │   └── workflows/                 CI/CD: verify, preview deploy, production deploy

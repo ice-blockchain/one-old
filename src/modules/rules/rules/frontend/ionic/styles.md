@@ -33,56 +33,35 @@ once in `src/main.tsx` (after the Ionic core CSS, before `globals.css`).
 
 The bridge:
 
-1. Defines the shadcn HSL CSS variables in `:root` (light) and `.dark` (dark).
-2. Maps those vars to Ionic's `--ion-*` tokens so `IonButton`, `IonHeader`,
-   `IonContent`, `IonTabBar`, etc. render in the shadcn palette.
+1. Defines the shadcn HSL CSS variables in `:root` (light) and `.dark` (dark) —
+   mirror the same token set used in `globals.css`, do not fork values.
+2. Maps every Ionic `--ion-*` token to the matching shadcn var via
+   `hsl(var(--…))` so `IonButton`, `IonHeader`, `IonContent`, `IonTabBar`, etc.
+   render in the shadcn palette. Cover at minimum: `--ion-background-color`,
+   `--ion-text-color`, `--ion-border-color`, and the `--ion-color-*`
+   (+ `-contrast`) families — primary←primary, secondary←secondary,
+   tertiary←accent, danger←destructive, medium←muted.
 3. Toggles dark mode via Ionic's `.ion-theme-dark` class on `<html>` (Ionic's
    convention) — the same selector also flips the shadcn `.dark` block.
 
-Required mappings (extend with project tokens, but do NOT delete these):
+Representative excerpt (extend with project tokens; never hardcode the Ionic
+values — always reference the shadcn var):
 
 ```css
-:root {
-  /* shadcn HSL tokens (mirrors globals.css) */
-  --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
-  --primary: 222.2 47.4% 11.2%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
-  --destructive: 0 84.2% 60.2%;
-  --destructive-foreground: 210 40% 98%;
-  --border: 214.3 31.8% 91.4%;
-  --ring: 222.2 84% 4.9%;
-}
-
 :root,
 .ion-theme-dark {
-  /* Ionic ← shadcn */
   --ion-background-color: hsl(var(--background));
   --ion-text-color: hsl(var(--foreground));
   --ion-border-color: hsl(var(--border));
-
   --ion-color-primary: hsl(var(--primary));
   --ion-color-primary-contrast: hsl(var(--primary-foreground));
-  --ion-color-secondary: hsl(var(--secondary));
-  --ion-color-secondary-contrast: hsl(var(--secondary-foreground));
-  --ion-color-tertiary: hsl(var(--accent));
-  --ion-color-tertiary-contrast: hsl(var(--accent-foreground));
-  --ion-color-danger: hsl(var(--destructive));
-  --ion-color-danger-contrast: hsl(var(--destructive-foreground));
-  --ion-color-medium: hsl(var(--muted));
-  --ion-color-medium-contrast: hsl(var(--muted-foreground));
+  /* …repeat for secondary←secondary, tertiary←accent,
+     danger←destructive, medium←muted, each with its -contrast */
 }
 ```
 
-The dark block in `globals.css` redefines the shadcn HSL vars; the bridge
-re-evaluates the Ionic `--ion-*` tokens automatically because they reference
-`var(--…)`.
+Because the Ionic tokens reference `var(--…)`, redefining the shadcn HSL vars in
+the `globals.css` dark block re-evaluates the `--ion-*` tokens automatically.
 
 ## className conventions
 

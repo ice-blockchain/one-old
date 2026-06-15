@@ -25,7 +25,7 @@ server-side auth + authorization, provider-first auth, rate limiting, sanitized
 errors, gitignored env files, restrictive CORS) — that rule is the source of
 truth; do not restate or fork it here. Then add these review-only checks:
 
-1. Tokens: never store JWT access tokens in `localStorage`; prefer httpOnly cookies or in-memory state per app rules.
+1. Tokens: for any JWT creation, validation, storage, or rotation concern, defer to the `jwt-security` skill (canonical owner of token-storage policy).
 2. Data access beyond injection: bounded reads, no N+1 loops, RLS/default-deny policies for user-data tables.
 3. Files and uploads: validate size, type, extension, storage path, and authorization before read/write.
 4. Frontend env discipline: no secrets in `VITE_`-prefixed (client-exposed) variables.

@@ -16,8 +16,7 @@ Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
 - One component per file, file named `ComponentName.tsx`.
 - Style in-file via NativeWind `className` strings; no sibling style files.
 - Components stay under 150 lines; split render-only subcomponents when larger.
-- Named exports only for reusable components — no `export default`.
-- Expo Router route files in `app/**` are the only default-export exception.
+- Export rules (named-only, the Expo Router default-export exception) are owned by `rules/frontend/react-native/core.md`.
 
 ## Props & types
 - Always declare an explicit `ComponentNameProps` interface above the component.
@@ -28,10 +27,7 @@ Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
 ## Rendering
 - Compose UI from React Native Reusables primitives in `packages/ui-native/src/components/ui/`. Add new primitives via `npx @react-native-reusables/cli@latest add <name>`; never hand-roll a button / dialog / dropdown / form control.
 - Underneath RNR, use the native primitives: `View`, `Text`, `Pressable`, `TextInput`, `Image`, `FlatList`, `SectionList`.
-- Every user-visible string must be inside `Text` and come from a translation key.
-- Use `react-i18next` for visible copy, placeholders, accessibility labels, loading/error/empty states, and image accessibility copy.
-- Keep translation catalogs in `packages/i18n` by default, using feature-based namespaces.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- Every user-visible string must be inside `Text`. i18n rules (translation keys, `react-i18next`, catalogs, hardcoded-string exceptions) live in `rules/frontend/i18n.md`.
 - Use `Pressable` for actions; set `accessibilityRole` and `accessibilityLabel` when the visible label is not enough.
 - Always handle loading, error, and empty states explicitly.
 - Subscribe to real-time streams via hooks; components never instantiate WebSocket connections.
@@ -47,14 +43,10 @@ Native-specific accessibility lives in `frontend/react-native/accessibility.md`.
 - Use measured `@shopify/flash-list` only for proven list bottlenecks and document the measurement.
 
 ## Styling
-- Use NativeWind utility classes via `className`; merge with `cn()` (= `clsx` + `tailwind-merge`); express variants via `class-variance-authority` (`cva`).
-- Pull design values from the HSL CSS variables (`--background`, `--foreground`, `--primary`, `--muted`, `--accent`, …) defined in `global.css` and exposed through the NativeWind preset. Never hardcode hex colours, raw spacing, font sizes, or radii.
-- Dark mode via the `dark:` variant.
+- NativeWind `className` (with `cn()` / `cva`), HSL CSS-var tokens, and the dark variant are the project styling contract — see `rules/frontend/react-native/core.md` and `rules/frontend/react-native/styles.md`.
 
 ## Must not do
 - No DOM tags (`div`, `span`, `button`, `a`, `input`).
-- No inline `style={{ ... }}` for static styling — Tailwind className only. Inline `style` is reserved for animated/derived values (Reanimated worklets, computed positioning).
-- No vanilla-extract / `.css.ts` / styled-components / `@emotion` / CSS modules.
 - No server data copied into local component state.
 - No desktop-first card grids or cramped controls on phones.
 - No fixed-height text containers that break dynamic type or localization.

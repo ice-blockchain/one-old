@@ -10,30 +10,25 @@ paths:
 
 # React Native Accessibility Rules
 
-## Screen readers
+WCAG floor, colour/contrast, reduced motion, flash limits, focus management, and
+localized accessibility copy are the framework-agnostic contract in
+`rules/frontend/accessibility.md`. This file is the native delta only.
+
+## Screen readers (VoiceOver / TalkBack)
 - Support VoiceOver and TalkBack for every critical journey.
-- Interactive controls expose `accessibilityRole`, `accessibilityLabel`, and state where needed.
-- Icon-only controls need accessible labels.
-- Hide decorative images from assistive tech; label meaningful images.
-- Accessibility labels, hints, validation errors, and state copy come from translation keys.
+- Interactive controls expose `accessibilityRole`, `accessibilityLabel`, and
+  `accessibilityState` where needed; icon-only controls always carry a label.
+- Hide decorative images from assistive tech (`accessibilityElementsHidden` /
+  `importantForAccessibility="no"`); label meaningful images.
 
 ## Touch and focus
-- Minimum touch target: 44x44 points.
-- Use `hitSlop` for compact controls.
-- Preserve logical focus order and avoid moving focus on real-time updates.
-- Manage focus after modals, auth redirects, and destructive confirmations.
+- Minimum touch target: 44x44 points; use `hitSlop` for compact controls.
+- Manage focus after modals, auth redirects, and destructive confirmations; do
+  not move focus on real-time updates.
 
-## Text and motion
-- Respect dynamic type; do not lock text into fixed-height containers.
-- Never use color alone to communicate state.
-- Respect reduce-motion settings; disable large looping animations when requested.
-- Avoid flashes at or above 3 Hz.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
-
-## Forms and errors
-- Every input has a visible label or a clear accessibility label.
-- Validation errors are announced and associated with the field.
-- Disabled controls must make the reason clear nearby.
+## Dynamic type
+- Respect dynamic type; do not lock text into fixed-height containers. Use
+  `numberOfLines` only when truncation is intentional.
 
 ## Testing
 - RNTL tests assert roles/labels for important controls.

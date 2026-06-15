@@ -12,20 +12,17 @@ metadata:
 
 Run before PRs, after major changes, and pre-deploy.
 
-## When to Use
+## When to Activate
 
 - Before opening a pull request for a Laravel project
 - After major refactors or dependency upgrades
 - Pre-deployment verification for staging or production
-- Running full lint -> test -> security -> deploy readiness pipeline
 
-## How It Works
-
-- Run phases sequentially from environment checks through deployment readiness so each layer builds on the last.
-- Environment and Composer checks gate everything else; stop immediately if they fail.
-- Linting/static analysis should be clean before running full tests and coverage.
-- Security and migration reviews happen after tests so you verify behavior before data or release steps.
-- Build/deploy readiness and queue/scheduler checks are final gates; any failure blocks release.
+The verification phase pipeline (Build → Type/Static → Lint → Test+Coverage →
+Security → Diff Review), the stop-on-fail gate, the 80% coverage target, and the
+VERIFICATION REPORT output template are owned by the `verification-loop` skill —
+do not restate them. Below are only the framework-specific commands per phase
+and framework-only phases.
 
 ## Phase 1: Environment Checks
 
@@ -146,38 +143,3 @@ php artisan queue:work --once --queue=healthcheck
 Verify the job produced the expected side effect (log entry, healthcheck table row, or metric).
 
 Only run this on non-production environments where processing a test job is safe.
-
-## Examples
-
-Minimal flow:
-
-```bash
-php -v
-composer --version
-php artisan --version
-composer validate
-vendor/bin/pint --test
-vendor/bin/phpstan analyse
-php artisan test
-composer audit
-php artisan migrate --pretend
-php artisan config:cache
-php artisan queue:failed
-```
-
-CI-style pipeline:
-
-```bash
-composer validate
-composer dump-autoload -o
-vendor/bin/pint --test
-vendor/bin/phpstan analyse
-XDEBUG_MODE=coverage php artisan test --coverage
-composer audit
-php artisan migrate --pretend
-php artisan optimize:clear
-php artisan config:cache
-php artisan route:cache
-php artisan view:cache
-php artisan schedule:list
-```

@@ -12,6 +12,8 @@ metadata:
 
 Comprehensive security guidance for Laravel applications to protect against common vulnerabilities.
 
+The framework-agnostic security checklist (secrets, input validation, parameterized SQL, output escaping, authn/authz, CORS, rate limiting, security headers, dependency audit, error sanitization) and the Traffic One pre-deploy gate are owned by the always-on `rules/common/security.md` — that rule is the source of truth; do not restate or fork it here. Below are only the framework-specific specifics.
+
 ## When to Activate
 
 - Adding authentication or authorization
@@ -96,9 +98,7 @@ Route::put('/projects/{project}', [ProjectController::class, 'update'])
 
 ## Validation and Data Sanitization
 
-- Always validate inputs with Form Requests
-- Use strict validation rules and type checks
-- Never trust request payloads for derived fields
+Validate inputs with Form Requests (`rules()` + typed `validated()`); never trust request payloads for derived fields.
 
 ## Mass Assignment Protection
 
@@ -107,8 +107,7 @@ Route::put('/projects/{project}', [ProjectController::class, 'update'])
 
 ## SQL Injection Prevention
 
-- Use Eloquent or query builder parameter binding
-- Avoid raw SQL unless strictly necessary
+Use Eloquent / the query builder; when raw SQL is unavoidable, bind parameters — never interpolate.
 
 ```php
 DB::select('select * from users where email = ?', [$email]);
@@ -116,16 +115,11 @@ DB::select('select * from users where email = ?', [$email]);
 
 ## XSS Prevention
 
-- Blade escapes output by default (`{{ }}`)
-- Use `{!! !!}` only for trusted, sanitized HTML
-- Sanitize rich text with a dedicated library
+Blade escapes `{{ }}` by default; use `{!! !!}` only for trusted, sanitized HTML.
 
 ## CSRF Protection
 
-- Keep `VerifyCsrfToken` middleware enabled
-- Include `@csrf` in forms and send XSRF tokens for SPA requests
-
-For SPA authentication with Sanctum, ensure stateful requests are configured:
+Keep `VerifyCsrfToken` enabled and include `@csrf` in forms. For SPA authentication with Sanctum, configure stateful domains:
 
 ```php
 // config/sanctum.php
@@ -180,12 +174,6 @@ RateLimiter::for('login', function (Request $request) {
 });
 ```
 
-## Secrets and Credentials
-
-- Never commit secrets to source control
-- Use environment variables and secret managers
-- Rotate keys after exposure and invalidate sessions
-
 ## Encrypted Attributes
 
 Use encrypted casts for sensitive columns at rest.
@@ -198,10 +186,7 @@ protected $casts = [
 
 ## Security Headers
 
-- Add CSP, HSTS, and frame protection where appropriate
-- Use trusted proxy configuration to enforce HTTPS redirects
-
-Example middleware to set headers:
+Set headers in a Laravel middleware (and configure trusted proxies so HTTPS redirects work behind a load balancer):
 
 ```php
 use Illuminate\Http\Request;
@@ -228,8 +213,7 @@ final class SecurityHeaders
 
 ## CORS and API Exposure
 
-- Restrict origins in `config/cors.php`
-- Avoid wildcard origins for authenticated routes
+Restrict origins in `config/cors.php`; never use wildcard origins on credentialed routes:
 
 ```php
 // config/cors.php
@@ -250,8 +234,7 @@ return [
 
 ## Logging and PII
 
-- Never log passwords, tokens, or full card data
-- Redact sensitive fields in structured logs
+Redact sensitive fields before they reach the log:
 
 ```php
 use Illuminate\Support\Facades\Log;

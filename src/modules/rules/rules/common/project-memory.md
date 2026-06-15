@@ -107,26 +107,18 @@ normal feature work:
   preserved and merged with a managed Traffic One pointer block.
 
 Active rule/skill materialization is not hand-authored memory. After
-`.traffic-one/.one.json` has the complete state schema and onboarding is complete,
-the generic post-tool hook must materialize the local bundle on the next host
-tool event. If a host runtime does not emit that hook, or an agent manually
-repairs project memory, run this from the project root before writing feature
-source:
+`.traffic-one/.one.json` has the complete state schema and onboarding is
+complete, the post-tool hook materializes the bundle automatically. If a host
+runtime does not emit that hook, or an agent manually repairs project memory,
+run this from the project root before writing feature source, then follow the
+`project-memory` skill (`.traffic-one/skills/project-memory/SKILL.md`) for the
+expected `materialized*` stamps and emitted files:
 
 ```bash
 node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
 ```
 
-The expected result is a stamped `.traffic-one/.one.json` with `version`,
-`materializedStack`, `materializedAt`, and `materializedVersion`, plus
-project-local `.traffic-one/rules/**`, `.traffic-one/manifest.json`,
-`.traffic-one/skills/**`, root `AGENTS.md` containing the compact active rule
-kernel/index (or the full bundle only when explicitly opted in), and root
-`CLAUDE.md` symlinked to `AGENTS.md` only when it did not already exist.
-Existing root `AGENTS.md` and `CLAUDE.md` files are merged in place and never
-replaced. Never write the
-`materialized*` fields by hand; the plugin treats them as valid only when the
-generated manifest, rules, skills, and root context files exist.
+Never write the `materialized*` fields by hand.
 
 ## Memory Shape
 
@@ -149,9 +141,9 @@ Keep persistent memory useful, not encyclopedic:
 ## Write Rules
 
 - Keep `.traffic-one/digests/`, `.traffic-one/reports/`, `.traffic-one/backups/`,
-  `.traffic-one/graphify-out/`, and `.traffic-one/.gitnexus/` local/ephemeral unless the user explicitly
-  asks to preserve a report. The codebase-graph artefact location depends on
-  the machine-wide `codeGraphProvider` setting.
+  and the codebase-graph artefact directory (provider-specific — see
+  `rules/common/codebase-graph.md`) local/ephemeral unless the user explicitly
+  asks to preserve a report.
 - Do not place secrets, service-role keys, database passwords, raw customer data,
   or production connection strings in project memory.
 - Append to `agent-log.md` and `deployments.jsonl`; do not rewrite history except

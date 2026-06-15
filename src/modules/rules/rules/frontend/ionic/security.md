@@ -27,15 +27,17 @@ and permission surfaces.
 
 - Treat deep links, push payloads, clipboard text, camera/gallery results, file
   paths, and share targets as untrusted input.
-- Validate every native-plugin payload before it reaches Redux, RTK Query cache,
-  or business logic.
+- **Zod inbound-payload validation (canonical for the Ionic stack):** validate
+  every native-plugin / deep-link / realtime payload against a zod schema before
+  it reaches Redux, RTK Query cache, or business logic. `capacitor.md`,
+  `navigation.md`, `realtime.md`, and `services` rules point here.
 - Allowlist external URL schemes and hosts before opening them from the app.
 - Production traffic uses HTTPS/WSS only.
 
 ## Permissions
 
-- Request permissions at the feature boundary, not at app startup.
-- Permission-denied states are explicit and recoverable.
+- Request permissions at the feature boundary — the just-in-time prompt rule is
+  owned by `rules/frontend/ionic/capacitor.md`.
 - Native logs strip tokens, PII, exact location, contact data, and payment data.
 
 ## Native crash reporting

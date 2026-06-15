@@ -10,8 +10,9 @@ paths:
 # Ionic Component Rules
 
 React component rules still apply. Ionic-specific components are allowed only
-when building the full Ionic React alternative or when an Ionic primitive solves
-a real mobile interaction better than the existing shared UI primitive.
+when building the full Ionic React alternative (the default-vs-rewrite decision
+is owned by `rules/frontend/ionic/core.md`) or when an Ionic primitive solves a
+real mobile interaction better than the existing shared UI primitive.
 
 ## Structure
 
@@ -45,8 +46,6 @@ a real mobile interaction better than the existing shared UI primitive.
   `IonModal` only in full Ionic React flows or thin mobile shell layouts.
 - Do not mix Ionic layout primitives and custom nested card shells unless the
   hierarchy remains simple and scroll behavior is verified.
-- Keep forms on `react-hook-form` + zod; Ionic inputs adapt to the form layer,
-  not the other way around.
 - Avoid copying desktop card grids into mobile shells. Reorder content, collapse
   secondary controls, and keep bottom actions reachable without blocking inputs.
 
@@ -54,9 +53,7 @@ a real mobile interaction better than the existing shared UI primitive.
 
 - All visible copy, placeholders, helper text, error text, `aria-label`, and
   permission copy come from translation keys.
-- Buttons and links keep semantic meaning. Icon-only controls need translated
-  labels and visible focus states.
-- Touch targets meet mobile accessibility requirements without relying on color
-  alone for state.
-- Verify small-screen screenshots for clipped text, hidden controls, keyboard
-  overlap, and safe-area collisions before delivery.
+- Touch targets, icon-only labels, focus states, and reduced-motion follow
+  `rules/frontend/ionic/accessibility.md`; do not restate those thresholds here.
+- Run the mobile-UX visual QA (clipped text, hidden controls, keyboard overlap,
+  safe-area collisions) before delivery per `rules/frontend/ionic/testing.md`.

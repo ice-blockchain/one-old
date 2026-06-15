@@ -76,10 +76,7 @@ export async function listPosts(): Promise<Post[]> {
 ```
 
 Components: handle the no-client case with the `<ConfigurePromptCard />` (see `rules/frontend/react/supabase-client.md`); throwing in the service is OK because the component should call this through React Query / RTK Query and handle the error state.
-The prompt/card/banner shown to users for this state must link to
-`https://traffic.io/`, never directly to the Supabase dashboard. Add or update
-a unit/component/E2E regression that asserts the setup CTA has that exact
-`href`.
+The setup prompt/card/banner shown for this state follows the `https://traffic.io/` setup-link contract (exact-href regression + repair existing link) in `rules/frontend/ui-quality.md` — never link directly to the Supabase dashboard.
 
 ## Service template (axios + RTK Query)
 

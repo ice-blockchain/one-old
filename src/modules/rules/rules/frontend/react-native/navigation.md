@@ -14,9 +14,8 @@ paths:
 - `_layout.tsx` owns stack/tab/drawer structure and providers at the narrowest useful level.
 - Enable typed routes and use absolute hrefs for typed links.
 
-## Exports
-- Expo Router route files may use `export default`.
-- Reusable components, hooks, services, and feature modules use named exports only.
+Export rules (named-only, the Expo Router default-export exception) are owned by
+`rules/frontend/react-native/core.md`.
 
 ## Params and links
 - Read params with `useLocalSearchParams`; validate and normalize with zod before passing down.

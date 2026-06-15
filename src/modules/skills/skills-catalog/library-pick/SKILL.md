@@ -1,6 +1,6 @@
 ---
 name: library-pick
-description: PROACTIVELY guide the library-vs-build decision when the user asks to add a library, integrate a new capability, or wonders whether a candidate package is acceptable. TRIGGER when the user says "add a library for X", "should I use Y", "I need a date picker / drag-drop / chart / fuzzy search / state machine / [any feature]", "find a lib for", "is package X any good", "evaluate this dependency", "what library should I use", or describes a need that suggests installing a new dependency. Walks through the quality gate from rules/common/dependencies.md and decides install-vs-build.
+description: PROACTIVELY guide the library-vs-build decision. TRIGGER on "add a library for X", "should I use Y", "I need a date picker / chart / [feature]", "find a lib for", "is package X any good", "what library should I use", or any need suggesting a new dependency. Walks the quality gate from rules/common/dependencies.md, decides install-vs-build.
 metadata:
   source: everything-claude-code
   source_path: skills/search-first/SKILL.md

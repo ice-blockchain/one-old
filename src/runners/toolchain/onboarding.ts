@@ -11,6 +11,7 @@ import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { ensureGitnexusTool } from '../gitnexus';
 import { ensureGraphifyTool, type GraphifyToolResult } from '../graphify';
+import { resolveNode, npmNextToNode } from '../../shared/runtime-resolve';
 import {
   getToolSpec,
   isToolUsable,
@@ -19,6 +20,8 @@ import {
   mergeToolchainStamp,
   probeTool,
   probeToolVersion,
+  toolInstallSpec,
+  toolRuntime,
 } from './index';
 
 type Rec = Record<string, unknown>;
@@ -48,10 +51,11 @@ function stampToolchain(cwd: string, toolName: string, binPath: string, version?
   writeStateMerge(cwd, { toolchain: updated.toolchain });
 }
 
+// LATEST-by-default install spec via the shared toolchain contract
+// (= "opencode-ai@latest"); the old "@<recommended>" pin is gone. `recommended`
+// survives only as a stamp fallback (opencodeRecommendedVersion below).
 function opencodePackageSpec(): string {
-  const spec = getToolSpec('opencode');
-  const pkg = typeof spec?.npmPackage === 'string' && spec.npmPackage ? spec.npmPackage : 'opencode-ai';
-  return typeof spec?.recommended === 'string' && spec.recommended ? `${pkg}@${spec.recommended}` : pkg;
+  return toolInstallSpec('opencode') || 'opencode-ai@latest';
 }
 
 function opencodeRecommendedVersion(): string | null {
@@ -101,9 +105,17 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     }
   }
 
-  const npm = which('npm');
+  // Prefer PATH npm (the working path); a stale GUI PATH with no npm must not
+  // doom the install, so fall back to the npm beside a runtime-resolved Node
+  // (nvm/Homebrew absolute paths). Only error when BOTH are unavailable.
+  let npm = which('npm');
   if (!npm) {
-    return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH, so the hook cannot install OpenCode automatically', binPath: null };
+    const { minMajor } = toolRuntime('opencode');
+    const node = resolveNode(minMajor);
+    npm = node ? npmNextToNode(node.path) : null;
+  }
+  if (!npm) {
+    return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH (and no runtime-resolved Node/npm was found), so the hook cannot install OpenCode automatically', binPath: null };
   }
 
   const result = spawnSync(npm, ['install', '-g', '--prefix', managedNpmPrefix('opencode'), opencodePackageSpec()], {

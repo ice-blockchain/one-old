@@ -33,8 +33,7 @@ Backend-focused rules for cpp projects.
 - Always initialize variables; avoid undefined behavior, dangling pointers, and unjustified casts.
 - Run sanitizers in CI for service code: AddressSanitizer and UndefinedBehaviorSanitizer.
 - Run `clang-tidy` and `cppcheck` on backend/native modules.
-- Prefer verified framework/provider auth components over custom crypto, session,
-  password, or JWT implementations.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
 
 ## Testing
 - Use GoogleTest/gMock with CMake/CTest.

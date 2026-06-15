@@ -11,26 +11,19 @@ paths:
 
 # React Native Styling Rules
 
-Stack: **NativeWind v4** (Tailwind for React Native) + **React Native
-Reusables (RNR)** primitives + `rn-primitives` for accessible behaviour.
+The NativeWind/RNR styling stack is owned by `rules/frontend/react-native/core.md`.
+This file holds the styling deltas (theme tokens, layout, cssInterop, prohibited
+patterns).
 
 ## Setup expectations
 
-The scaffold puts these in place; rules just enforce that they stay there.
+The scaffold wires up `tailwind.config.js` (`nativewind/preset`), `babel.config.js`,
+`metro.config.js` (`withNativeWind`), `global.css`, and `nativewind-env.d.ts`;
+rules just enforce that they stay in place.
 
 - `tailwindcss@^3.4` and `nativewind@^4` in `package.json` (NativeWind v4
   requires Tailwind v3 — this pin is deliberate; do not "upgrade" it to match
   the web stack's v4).
-- `tailwind.config.js` extends `nativewind/preset` and points `content` at
-  `app/`, `src/`, and `packages/ui-native/`.
-- `babel.config.js` includes the `babel-preset-expo` `jsxImportSource: "nativewind"`
-  setting and `nativewind/babel`.
-- `metro.config.js` wraps the Expo default with `withNativeWind` and points at
-  the project's `global.css`.
-- `global.css` contains the Tailwind `@tailwind base/components/utilities`
-  directives and the shadcn HSL theme block (light + dark).
-- `nativewind-env.d.ts` carries the `<reference types="nativewind/types" />`
-  triple-slash directive.
 
 ## Theme tokens
 
@@ -46,13 +39,13 @@ The scaffold puts these in place; rules just enforce that they stay there.
 
 ## className conventions
 
-- Merge classes with `cn()` (= `clsx` + `tailwind-merge`). Define `cn()` once,
-  in `packages/ui-native/src/lib/utils.ts` (RNR's init does this).
-- Variants via `class-variance-authority` (`cva`) — required for shared
-  primitives in `packages/ui-native/src/components/ui/`.
-- Dark mode via the `dark:` variant. The `useColorScheme` hook from NativeWind
-  controls the theme; do not branch on `Platform.OS` or `Appearance.getColorScheme()`
-  for theming.
+`cn()` / `cva` / the `dark:` variant are defined in
+`rules/frontend/react-native/core.md`. RN-specific placement deltas:
+
+- Define `cn()` once, in `packages/ui-native/src/lib/utils.ts` (RNR's init does this).
+- `cva` is required for shared primitives in `packages/ui-native/src/components/ui/`.
+- The `useColorScheme` hook from NativeWind controls the theme; do not branch on
+  `Platform.OS` or `Appearance.getColorScheme()` for theming.
 
 ## Layout
 

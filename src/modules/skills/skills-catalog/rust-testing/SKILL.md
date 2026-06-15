@@ -1,6 +1,6 @@
 ---
 name: rust-testing
-description: Rust testing patterns including unit tests, integration tests, async testing, property-based testing, mocking, and coverage. Follows TDD methodology.
+description: Rust testing patterns — #[cfg(test)] modules, #[tokio::test] async, rstest, proptest, mockall, doc tests, criterion, and cargo test/llvm-cov commands. Rust-specific testing idioms.
 metadata:
   source: everything-claude-code
   source_path: skills/rust-testing/SKILL.md
@@ -10,57 +10,22 @@ metadata:
 
 # Rust Testing Patterns
 
-Comprehensive Rust testing patterns for writing reliable, maintainable tests following TDD methodology.
+Comprehensive Rust testing patterns for writing reliable, maintainable tests.
 
-## When to Use
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
 
-- Writing new Rust functions, methods, or traits
-- Adding test coverage to existing code
+## When to Activate
+
+- Writing new Rust functions, methods, or traits, or adding coverage to existing code
 - Creating benchmarks for performance-critical code
 - Implementing property-based tests for input validation
-- Following TDD workflow in Rust projects
 
-## How It Works
+## Tooling at a Glance
 
-1. **Identify target code** — Find the function, trait, or module to test
-2. **Write a test** — Use `#[test]` in a `#[cfg(test)]` module, rstest for parameterized tests, or proptest for property-based tests
-3. **Mock dependencies** — Use mockall to isolate the unit under test
-4. **Run tests (RED)** — Verify the test fails with the expected error
-5. **Implement (GREEN)** — Write minimal code to pass
-6. **Refactor** — Improve while keeping tests green
-7. **Check coverage** — Use cargo-llvm-cov, target 80%+
-
-## TDD Workflow for Rust
-
-### The RED-GREEN-REFACTOR Cycle
-
-```
-RED     → Write a failing test first
-GREEN   → Write minimal code to pass the test
-REFACTOR → Improve code while keeping tests green
-REPEAT  → Continue with next requirement
-```
-
-### Step-by-Step TDD in Rust
-
-```rust
-// RED: Write test first, use todo!() as placeholder
-pub fn add(a: i32, b: i32) -> i32 { todo!() }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn test_add() { assert_eq!(add(2, 3), 5); }
-}
-// cargo test → panics at 'not yet implemented'
-```
-
-```rust
-// GREEN: Replace todo!() with minimal implementation
-pub fn add(a: i32, b: i32) -> i32 { a + b }
-// cargo test → PASS, then REFACTOR while keeping tests green
-```
+- Unit tests: `#[test]` in a `#[cfg(test)] mod tests` module.
+- Parameterized: `rstest`. Property-based: `proptest`.
+- Mocking: `mockall`. Async: `#[tokio::test]`. Benchmarks: `criterion`.
+- Coverage: `cargo-llvm-cov`.
 
 ## Unit Tests
 
@@ -434,15 +399,6 @@ cargo llvm-cov --lcov > lcov.info # LCOV format for CI
 cargo llvm-cov --fail-under-lines 80  # Fail if below threshold
 ```
 
-### Coverage Targets
-
-| Code Type | Target |
-|-----------|--------|
-| Critical business logic | 100% |
-| Public API | 90%+ |
-| General code | 80%+ |
-| Generated / FFI bindings | Exclude |
-
 ## Testing Commands
 
 ```bash
@@ -456,23 +412,12 @@ cargo test --no-fail-fast         # Don't stop on first failure
 cargo test -- --ignored           # Run ignored tests
 ```
 
-## Best Practices
+## Rust-Specific Idioms
 
-**DO:**
-- Write tests FIRST (TDD)
-- Use `#[cfg(test)]` modules for unit tests
-- Test behavior, not implementation
-- Use descriptive test names that explain the scenario
-- Prefer `assert_eq!` over `assert!` for better error messages
-- Use `?` in tests that return `Result` for cleaner error output
-- Keep tests independent — no shared mutable state
-
-**DON'T:**
-- Use `#[should_panic]` when you can test `Result::is_err()` instead
-- Mock everything — prefer integration tests when feasible
-- Ignore flaky tests — fix or quarantine them
-- Use `sleep()` in tests — use channels, barriers, or `tokio::time::pause()`
-- Skip error path testing
+- Prefer `assert_eq!` over `assert!` — it prints both values on failure.
+- Use `?` in tests that return `Result` for cleaner error output (see Error testing above).
+- Prefer testing `Result::is_err()` over `#[should_panic]` when the API returns a `Result`.
+- For async timing, use `tokio::time::pause()`/channels instead of `sleep()`.
 
 ## CI Integration
 
@@ -500,5 +445,3 @@ test:
     - name: Coverage
       run: cargo llvm-cov --fail-under-lines 80
 ```
-
-**Remember**: Tests are documentation. They show how your code is meant to be used. Write them clearly and keep them up to date.

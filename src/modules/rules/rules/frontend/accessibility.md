@@ -29,9 +29,11 @@ surfaces.
 
 ## Localized accessibility copy
 
-- All user-facing text used for accessibility comes from translation keys: visible labels, `aria-label`, `aria-describedby` text, live-region copy, image `alt`, form helper text, errors, and empty states.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
-- Keep translation values as complete phrases so screen readers announce natural copy; avoid concatenating translated fragments in JSX.
+All accessibility text (visible labels, `aria-label`, `aria-describedby`,
+live-region copy, image `alt`, form helper text, errors, empty states) goes
+through translation keys as complete phrases, never concatenated fragments. The
+canonical rule and the hardcoded-string exception list live in
+`rules/frontend/i18n.md`.
 
 ## Keyboard
 
@@ -48,6 +50,13 @@ surfaces.
   bottom navs, floating action buttons, or modal overlays.
 - Live regions: `aria-live="polite"` for non-urgent updates (chat, score ticks); `"assertive"` only for critical (errors, payment confirmations).
 - Don't move focus on real-time data updates — disorienting.
+
+## Touch targets
+
+- Interactive controls have a minimum 44×44 px hit area (pad small icons/links to
+  reach it); keep adjacent targets spaced so they are not mis-tapped.
+- This is the shared owner of the touch-target floor — native frontend files
+  point here.
 
 ## Forms
 

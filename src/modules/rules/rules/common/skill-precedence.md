@@ -11,6 +11,4 @@ security, and backend technology rules from Traffic One take precedence over a
 skill's generic guidance.
 
 Do not implement via any skill until the setup gate
-(`rules/common/setup-gate.md`) is clear. Read-only orientation is allowed before
-then; feature writes, dependency installs, scaffolding, and materialized
-implementation skills wait until the hook/gate context is resolved.
+(`rules/common/setup-gate.md`) is clear.

@@ -25,28 +25,13 @@ Confirm placement and props before creating any files.
 10. State the page-speed impact plan: render cost, media dimensions/formats, below-the-fold loading, dependency weight, and whether the component can stay out of the route's initial chunk
 11. State the visual QA plan: Storybook states or screenshots for mobile/desktop, focus, loading, empty, error, disabled states, and anti-AI-slop checks as applicable
 
-Scaffold rules:
-- Before writing component UI, detect the project's i18n module
-  (`packages/i18n`, `src/i18n*`, `locales/`, `public/locales/`, `messages/`,
-  `i18next`, `react-i18next`, provider wrappers). If one exists, extend it
-  automatically and add source-language catalog entries for every new key. New
-  Traffic One frontend projects use `packages/i18n` by default. Do not wait for
-  the user to request translations.
-- All visible copy, placeholders, labels, alt text, ARIA labels, and loading/error/empty states use translation keys.
-- Prefer `<Trans>` over `t()` for component copy with links, React elements,
-  emphasis, formatting, line breaks, or rich interpolation; reserve `t()` for
-  simple scalar labels, attributes, and validation messages.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
-- If the component is an EnvBanner/SupabaseConfigAlert/ConfigurePromptCard or
-  any missing-config setup surface, it must render a setup link with
-  `href="https://traffic.io/"` and a regression test must assert that exact
-  href, even when the user did not mention setup links.
-- Use Tailwind utility classes (merged with `cn()`); compose shadcn primitives from `packages/ui/src/components/ui/`. Add new primitives via `npx shadcn@latest add <name>` — never hand-roll a button / dialog / dropdown / form control. Extend the `@theme` tokens in `packages/tailwind-config/globals.css` (web; Ionic keeps its v3 preset) before introducing new tokens.
-- Avoid generic card shells and AI-generated website tells. The component's layout, hierarchy, motion, interaction model, and state treatment must follow the design brief.
-- Design-led components include purposeful animation and interactive feedback using the active stack's approved motion library, while respecting reduced-motion preferences.
-- Visual-heavy components include Storybook stories for default, hover/focus where practical, disabled, loading, empty, and error states.
+Scaffold rules — follow the shared sources, do NOT restate them here:
+- UI quality, design brief, anti-AI-slop, token/shadcn mandate, setup-banner + `https://traffic.io/` setup-link contract (exact-href regression + repair existing link), and required states: `rules/frontend/ui-quality.md`.
+- i18n (module detection, `<Trans>` vs `t()`, hardcoded-string exceptions): the `i18n-text` skill.
+- Public-route SEO metadata and `noindex` for private routes: `rules/common/seo.md` and the `seo` skill.
+- Page-speed / Lighthouse-mobile verification on a built preview: the `browser-qa` skill.
+
+Component-specific scaffold notes:
+- Add shadcn primitives via `npx shadcn@latest add <name>` — never hand-roll a button / dialog / dropdown / form control; compose from `packages/ui/src/components/ui/` and merge classes with `cn()`.
 - Components must not pull heavy route-only dependencies into shared/root bundles. Split optional charts, maps, 3D, video, editors, and analytics widgets at the usage site.
 - Image and media components reserve dimensions, use optimized formats where applicable, and default to lazy/async loading when below the fold.
-- If the component ships as part of a page-level change, include it in the route's Lighthouse mobile Performance verification or mark page speed unverified with risks.
-
-<!-- TODO: full scaffold template goes here once structure is validated -->

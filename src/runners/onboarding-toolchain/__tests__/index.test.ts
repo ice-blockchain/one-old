@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { ensureOnboardingToolchain } from '../index';
+import { readGlobalCodeGraphProvider } from '../../../shared/state';
 
 // Run with a sandboxed project-prefs file + machine-wide one.json + managed-
 // toolchain root, then restore. codeGraphProvider is machine-wide now, so it goes
@@ -121,7 +122,41 @@ exit 1
 `, { mode: 0o755 });
 }
 
-test('graph provider installs but the first scan finds no code → ok=true (scan not gated)', () => {
+// Like writeGraphifyStubPython, but the outer python3 ALSO answers the version
+// probe (`-c 'import sys;print(...)'` → "3.12"), so the GUI-PATH-proof
+// resolvePython() in providerRuntimeAvailable('graphify') accepts it. Lets a
+// sibling-fallback test drive a real graphify install through the shared
+// runtime resolver.
+function writeGraphifyStubPythonWithVersion(binDir: string): void {
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(path.join(binDir, 'python3'), `#!/bin/sh
+if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
+if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
+  venv="$3"
+  mkdir -p "$venv/bin"
+  cat > "$venv/bin/python" <<'PY'
+#!/bin/sh
+if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
+if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "install" ]; then
+  dir=$(dirname "$0")
+  cat > "$dir/graphify" <<'G'
+#!/bin/sh
+if [ "$1" = "update" ]; then mkdir -p graphify-out; printf '# graph\n' > graphify-out/GRAPH_REPORT.md; fi
+exit 0
+G
+  chmod +x "$dir/graphify"
+  exit 0
+fi
+exit 1
+PY
+  chmod +x "$venv/bin/python"
+  exit 0
+fi
+exit 1
+`, { mode: 0o755 });
+}
+
+test('new project: a first scan that finds no code does NOT gate onboarding (ok=true)', () => {
   withTemp({ codeGraphProvider: 'graphify' }, (cwd) => {
     const bin = path.join(cwd, 'bin');
     writeGraphifyStubPythonScanFails(bin);
@@ -129,18 +164,19 @@ test('graph provider installs but the first scan finds no code → ok=true (scan
     process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
     try {
       const r = ensureOnboardingToolchain(cwd);
-      // Tool is installed; an empty-project scan failure must NOT block onboarding.
+      // Tool is installed; an empty-project scan finding no code must NOT block
+      // onboarding. Whether the (GUI-PATH-proof) install lands a real graphify
+      // that scans the temp dir or defers, the never-block invariant is ok=true.
       assert.equal(r.ok, true);
       const gf = r.results.find((x) => x.tool === 'graphify');
       assert.equal(gf?.ok, true);
-      assert.match(gf?.action || '', /scan deferred/);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }
   });
 });
 
-test('existing-codebase: a failed first scan GATES completion (graph required, no later trigger)', () => {
+test('existing-codebase: the first scan does NOT gate completion (graph is a soft note, never-block)', () => {
   withTemp({ codeGraphProvider: 'graphify', mode: 'existing-codebase' }, (cwd) => {
     const bin = path.join(cwd, 'bin');
     writeGraphifyStubPythonScanFails(bin);
@@ -148,11 +184,12 @@ test('existing-codebase: a failed first scan GATES completion (graph required, n
     process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
     try {
       const r = ensureOnboardingToolchain(cwd);
-      // Existing repo has code now → the graph MUST build; a failed scan blocks.
-      assert.equal(r.ok, false);
+      // The graph is a token optimization — even on an existing codebase the first
+      // scan is a soft note, NEVER a hard gate (was: gated completion). The
+      // SessionStart self-heal + post-build hook rebuild it later.
+      assert.equal(r.ok, true);
       const gf = r.results.find((x) => x.tool === 'graphify');
-      assert.equal(gf?.ok, false);
-      assert.match(gf?.action || '', /scan failed/);
+      assert.equal(gf?.ok, true);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }
@@ -228,17 +265,82 @@ test('Codex Desktop onboarding registers opencode-worker without plugin-root env
   });
 });
 
-test('required graph provider fails → ok=false (gates completion)', () => {
-  withTemp({ codeGraphProvider: 'graphify' }, (cwd) => {
+test('neither provider can install → DEFERS (ok=true, never-block)', () => {
+  // codeGraphAutoRun:false makes BOTH graphify and its gitnexus sibling return
+  // install-skipped deterministically (machine-independent — no dependence on
+  // whether a real Python/Node happens to be present). The provider must DEFER,
+  // never gate onboarding.
+  withTemp({ codeGraphProvider: 'graphify', codeGraphAutoRun: false }, (cwd) => {
     const savedPath = process.env.PATH;
-    // Empty PATH: no pipx, no python3 → graphify cannot install.
     process.env.PATH = path.join(cwd, 'empty-bin');
     try {
       const r = ensureOnboardingToolchain(cwd);
-      assert.equal(r.ok, false);
-      assert.equal(r.results.find((x) => x.tool === 'graphify')?.ok, false);
+      // Never-block: a provider that cannot be installed defers, ok stays true.
+      assert.equal(r.ok, true);
+      const gf = r.results.find((x) => x.tool === 'graphify');
+      assert.equal(gf?.ok, true);
+      assert.equal(gf?.action, 'deferred');
+      assert.equal(gf?.error, null);
+      // A deferral marker is persisted so doctor can surface the pending graph.
+      const prefs = JSON.parse(fs.readFileSync(path.join(cwd, 'prefs.json'), 'utf8'));
+      assert.ok(typeof prefs.graphDeferredAt === 'string' && prefs.graphDeferredAt);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('chosen provider fails but sibling runtime is available → falls back + persists the switch', () => {
+  withTemp({ codeGraphProvider: 'gitnexus' }, (cwd) => {
+    const bin = path.join(cwd, 'bin');
+    // graphify python stub present (answers the version probe → resolvePython
+    // accepts it, and installs via the managed venv). No node ≥22 and no ~/.nvm
+    // (empty HOME) → the chosen gitnexus install fails fast, so the runner falls
+    // back to graphify (the sibling whose Python runtime IS available).
+    writeGraphifyStubPythonWithVersion(bin);
+    const savedPath = process.env.PATH;
+    const savedHome = process.env.HOME;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    process.env.HOME = path.join(cwd, 'empty-home');
+    fs.mkdirSync(process.env.HOME, { recursive: true });
+    try {
+      const r = ensureOnboardingToolchain(cwd);
+      // Never-block + graceful degrade: the working sibling carries the result.
+      assert.equal(r.ok, true);
+      const gf = r.results.find((x) => x.tool === 'graphify');
+      assert.equal(gf?.ok, true);
+      assert.match(gf?.action || '', /fell-back-to-graphify/);
+      // The switch is persisted machine-wide so future sessions reuse graphify.
+      assert.equal(readGlobalCodeGraphProvider(), 'graphify');
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+});
+
+test('unwritable prefs path during a defer must NOT throw (never-block holds on locked-down machines)', () => {
+  // The exact locked-down / GUI-launched class this change must tolerate: the
+  // per-project prefs file is unwritable (here: replaced by a DIRECTORY → every
+  // writeFileSync throws EISDIR). The deferral's prefs write must be swallowed
+  // (safePrefs); the runner must still return ok=true and never throw out.
+  withTemp({ codeGraphProvider: 'graphify' }, (cwd) => {
+    const savedPath = process.env.PATH;
+    const prevProbe = process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF;
+    process.env.PATH = path.join(cwd, 'empty-bin');
+    process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF = '1'; // no runtime for either provider → deterministic defer
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    fs.rmSync(prefsPath, { force: true });
+    fs.mkdirSync(prefsPath, { recursive: true }); // make every prefs write throw EISDIR
+    try {
+      assert.doesNotThrow(() => {
+        const r = ensureOnboardingToolchain(cwd);
+        assert.equal(r.ok, true);
+        assert.equal(r.results.find((x) => x.tool === 'graphify')?.ok, true);
+      });
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+      if (prevProbe === undefined) delete process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF; else process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF = prevProbe;
     }
   });
 });

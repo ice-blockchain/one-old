@@ -1,6 +1,6 @@
 ---
 name: kotlin-patterns
-description: Idiomatic Kotlin patterns, best practices, and conventions for building robust, efficient, and maintainable Kotlin applications with coroutines, null safety, and DSL builders.
+description: Idiomatic Kotlin patterns and conventions for robust, maintainable applications — null safety, data/value/sealed classes, scope functions, extension functions, and DSL builders (coroutines/Flow → kotlin-coroutines-flows).
 metadata:
   source: everything-claude-code
   source_path: skills/kotlin-patterns/SKILL.md
@@ -12,7 +12,7 @@ metadata:
 
 Idiomatic Kotlin patterns and best practices for building robust, efficient, and maintainable applications.
 
-## When to Use
+## When to Activate
 
 - Writing new Kotlin code
 - Reviewing Kotlin code
@@ -22,7 +22,11 @@ Idiomatic Kotlin patterns and best practices for building robust, efficient, and
 
 ## How It Works
 
-This skill enforces idiomatic Kotlin conventions across seven key areas: null safety using the type system and safe-call operators, immutability via `val` and `copy()` on data classes, sealed classes and interfaces for exhaustive type hierarchies, structured concurrency with coroutines and `Flow`, extension functions for adding behaviour without inheritance, type-safe DSL builders using `@DslMarker` and lambda receivers, and Gradle Kotlin DSL for build configuration.
+This skill enforces idiomatic Kotlin conventions: null safety using the type system and safe-call operators, immutability via `val` and `copy()` on data classes, sealed classes and interfaces for exhaustive type hierarchies, extension functions for adding behaviour without inheritance, type-safe DSL builders using `@DslMarker` and lambda receivers, and Gradle Kotlin DSL for build configuration.
+
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the language-specific idioms below.
+
+Coroutines, structured concurrency, Flow operators, and cancellation: see the `kotlin-coroutines-flows` skill.
 
 ## Examples
 
@@ -41,16 +45,6 @@ sealed class Result<out T> {
     data class Failure(val error: AppError) : Result<Nothing>()
     data object Loading : Result<Nothing>()
 }
-```
-
-**Structured concurrency with async/await:**
-```kotlin
-suspend fun fetchUserWithPosts(userId: String): UserProfile =
-    coroutineScope {
-        val user = async { userService.getUser(userId) }
-        val posts = async { postService.getUserPosts(userId) }
-        UserProfile(user = user.await(), posts = posts.await())
-    }
 ```
 
 ## Core Principles
@@ -287,99 +281,6 @@ class UserService {
         status == Status.ACTIVE && lastLogin.isAfter(Instant.now().minus(30, ChronoUnit.DAYS))
 
     fun getActiveUsers(): List<User> = userRepository.findAll().filter { it.isActive() }
-}
-```
-
-## Coroutines
-
-### Structured Concurrency
-
-```kotlin
-// Good: Structured concurrency with coroutineScope
-suspend fun fetchUserWithPosts(userId: String): UserProfile =
-    coroutineScope {
-        val userDeferred = async { userService.getUser(userId) }
-        val postsDeferred = async { postService.getUserPosts(userId) }
-
-        UserProfile(
-            user = userDeferred.await(),
-            posts = postsDeferred.await(),
-        )
-    }
-
-// Good: supervisorScope when children can fail independently
-suspend fun fetchDashboard(userId: String): Dashboard =
-    supervisorScope {
-        val user = async { userService.getUser(userId) }
-        val notifications = async { notificationService.getRecent(userId) }
-        val recommendations = async { recommendationService.getFor(userId) }
-
-        Dashboard(
-            user = user.await(),
-            notifications = try {
-                notifications.await()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                emptyList()
-            },
-            recommendations = try {
-                recommendations.await()
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                emptyList()
-            },
-        )
-    }
-```
-
-### Flow for Reactive Streams
-
-```kotlin
-// Good: Cold flow with proper error handling
-fun observeUsers(): Flow<List<User>> = flow {
-    while (currentCoroutineContext().isActive) {
-        val users = userRepository.findAll()
-        emit(users)
-        delay(5.seconds)
-    }
-}.catch { e ->
-    logger.error("Error observing users", e)
-    emit(emptyList())
-}
-
-// Good: Flow operators
-fun searchUsers(query: Flow<String>): Flow<List<User>> =
-    query
-        .debounce(300.milliseconds)
-        .distinctUntilChanged()
-        .filter { it.length >= 2 }
-        .mapLatest { q -> userRepository.search(q) }
-        .catch { emit(emptyList()) }
-```
-
-### Cancellation and Cleanup
-
-```kotlin
-// Good: Respect cancellation
-suspend fun processItems(items: List<Item>) {
-    items.forEach { item ->
-        ensureActive() // Check cancellation before expensive work
-        processItem(item)
-    }
-}
-
-// Good: Cleanup with try/finally
-suspend fun acquireAndProcess() {
-    val resource = acquireResource()
-    try {
-        resource.process()
-    } finally {
-        withContext(NonCancellable) {
-            resource.release() // Always release, even on cancellation
-        }
-    }
 }
 ```
 
@@ -665,8 +566,6 @@ val (active, inactive) = users.partition { it.isActive }
 | Extension functions | Add behavior without inheritance |
 | `copy()` | Immutable updates on data classes |
 | `require`/`check` | Precondition assertions |
-| Coroutine `async`/`await` | Structured concurrent execution |
-| `Flow` | Cold reactive streams |
 | `sequence` | Lazy evaluation |
 | Delegation `by` | Reuse implementation without inheritance |
 
@@ -693,14 +592,6 @@ try {
 // Good: Use nullable return or Result
 val user: User? = findUserOrNull(id)
 
-// Bad: Ignoring coroutine scope
-GlobalScope.launch { /* Avoid GlobalScope */ }
-
-// Good: Use structured concurrency
-coroutineScope {
-    launch { /* Properly scoped */ }
-}
-
 // Bad: Deeply nested scope functions
 user?.let { u ->
     u.address?.let { a ->
@@ -712,4 +603,4 @@ user?.let { u ->
 user?.address?.city?.let { process(it) }
 ```
 
-**Remember**: Kotlin code should be concise but readable. Leverage the type system for safety, prefer immutability, and use coroutines for concurrency. When in doubt, let the compiler help you.
+**Remember**: Kotlin code should be concise but readable. Leverage the type system for safety and prefer immutability. When in doubt, let the compiler help you.

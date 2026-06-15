@@ -10,15 +10,9 @@ paths:
 
 # React Native Service Layer
 
-Framework-agnostic service rules live in `frontend/services.md`. This file
-covers Expo/React Native boundaries.
-
-## HTTP
-- Use RTK Query for cached server data and shared subscriptions.
-- Use plain axios services for one-off uploads, downloads, and non-cacheable commands.
-- Components consume generated hooks or typed service wrappers only.
-- Validate every response with zod at the service boundary.
-- Map transport and validation failures to a typed `AppError` union.
+The REST/RTK-Query split, zod boundary validation, and the typed `AppError`
+contract are framework-agnostic — see `rules/frontend/services.md`. This file
+covers only the Expo/React Native deltas.
 
 ## Mobile concerns
 - Read auth tokens from `expo-secure-store` in the shared api-client layer, not in UI.
@@ -26,11 +20,11 @@ covers Expo/React Native boundaries.
 - Respect offline state: fail fast for non-queueable actions and clearly mark stale data.
 - File uploads use Expo file APIs in services; components pass typed file descriptors.
 
-## RTK Query
+## RTK Query placement
 - App endpoints live in `apps/mobile/src/features/<feature>/api.ts`.
 - Shared endpoints live in `packages/<name>/src/api.ts`.
 - Set `keepUnusedDataFor`, `refetchOnReconnect`, and polling intentionally per endpoint.
-- Optimistic updates must undo on failure.
+- Optimistic updates must roll back on failure (`onQueryStarted` + `queryFulfilled` catch).
 
 ## Environment
 - Public Expo config values use the approved `EXPO_PUBLIC_` surface.

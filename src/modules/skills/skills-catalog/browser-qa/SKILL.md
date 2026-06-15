@@ -1,11 +1,11 @@
 ---
 name: browser-qa
 description: >
-  Use this skill to automate visual testing, Lighthouse/page speed checks, Core
-  Web Vitals, accessibility, and UI interaction verification using browser
-  automation after deploying or building features. Trigger on "browser QA",
-  "visual QA", "Lighthouse", "page speed", "Core Web Vitals", "performance
-  score", "responsive testing", or "accessibility audit".
+  Drive a real browser to verify a built/deployed UI: Lighthouse and page-speed
+  scoring, Core Web Vitals, visual regression across breakpoints, and UI
+  interaction/flow checks. Trigger on "browser QA", "visual QA", "Lighthouse",
+  "page speed", "Core Web Vitals", "performance score", or "responsive testing".
+  Owns measured performance/visual QA, not content SEO or standalone WCAG audits.
 metadata:
   source: everything-claude-code
   source_path: skills/browser-qa/SKILL.md
@@ -15,7 +15,7 @@ metadata:
 
 # Browser QA — Automated Visual Testing & Interaction
 
-## When to Use
+## When to Activate
 
 - After deploying a feature to staging/preview
 - When you need to verify UI behavior across pages

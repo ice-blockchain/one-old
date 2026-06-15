@@ -39,11 +39,9 @@ paths:
 - Document rejected native alternatives in the commit body when adding a new native module.
 
 ## Native crash reporting
-- Explicit Expo/React Native releases need mobile crash reporting in addition
-  to JavaScript error boundaries. Prefer Sentry for Expo/React Native when the
-  app already uses Sentry; Firebase Crashlytics is acceptable only when Firebase
-  is already selected or the user explicitly chooses it.
-- Upload source maps plus iOS dSYM and Android mapping/native symbols in CI for
-  every release, tied to the deployed commit SHA.
-- Crash contexts, breadcrumbs, and custom attributes must not include tokens,
-  emails, payment fields, precise location, contacts, or other PII.
+- Crash-reporting tool choice (Sentry vs Crashlytics), PII-exclusion policy, and
+  release-tracking belong to the `observability` skill — trigger it, don't
+  restate the policy here.
+- Native symbol-upload delta: upload iOS dSYM and Android mapping/native symbols
+  (alongside JS source maps) in CI for every release, tied to the deployed
+  commit SHA, so native frames symbolicate.

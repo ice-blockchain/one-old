@@ -24,13 +24,9 @@ Backend-focused rules for golang projects.
 - Keep handlers thin; move business rules into services and persistence into repositories/stores.
 
 ## Security
-- Read secrets from environment variables or a secret manager and fail fast when missing.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
 - Run `gosec ./...` in CI for backend services.
-- Use parameterized database APIs; never concatenate user input into SQL.
 - Validate dynamic sort/filter fields before query composition.
-- Never log tokens, secrets, or PII.
-- Prefer framework/provider auth packages over custom password, session, or JWT
-  implementations.
 
 ## Testing
 - Use standard `go test` with table-driven tests.

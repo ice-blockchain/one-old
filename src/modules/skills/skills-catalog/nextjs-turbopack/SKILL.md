@@ -22,7 +22,7 @@ provider-first Next.js defaults instead of the React/Vite forced stack.
 
 Next.js 16+ uses Turbopack by default for local development: an incremental bundler written in Rust that significantly speeds up dev startup and hot updates.
 
-## When to Use
+## When to Activate
 
 - **Turbopack (default dev)**: Use for day-to-day development. Faster cold start and HMR, especially in large apps.
 - **Webpack (legacy dev)**: Use only if you hit a Turbopack bug or rely on a webpack-only plugin in dev. Disable with `--webpack` (or `--no-turbopack` depending on your Next.js version; check the docs for your release).

@@ -19,23 +19,7 @@ Test-driven development for Django applications using pytest, factory_boy, and D
 - Testing Django models, views, and serializers
 - Setting up testing infrastructure for Django projects
 
-## TDD Workflow for Django
-
-### Red-Green-Refactor Cycle
-
-```python
-# Step 1: RED - Write failing test
-def test_user_creation():
-    user = User.objects.create_user(email='test@example.com', password='testpass123')
-    assert user.email == 'test@example.com'
-    assert user.check_password('testpass123')
-    assert not user.is_staff
-
-# Step 2: GREEN - Make test pass
-# Create User model or factory
-
-# Step 3: REFACTOR - Improve while keeping tests green
-```
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
 
 ## Setup
 
@@ -100,53 +84,34 @@ CELERY_TASK_EAGER_PROPAGATES = True
 
 ### conftest.py
 
+Reusable fixtures — the DRF `APIClient` and `force_authenticate` wiring is the Django-specific part:
+
 ```python
 # tests/conftest.py
 import pytest
-from django.utils import timezone
 from django.contrib.auth import get_user_model
+from rest_framework.test import APIClient
 
 User = get_user_model()
 
-@pytest.fixture(autouse=True)
-def timezone_settings(settings):
-    """Ensure consistent timezone."""
-    settings.TIME_ZONE = 'UTC'
-
 @pytest.fixture
 def user(db):
-    """Create a test user."""
     return User.objects.create_user(
-        email='test@example.com',
-        password='testpass123',
-        username='testuser'
-    )
-
-@pytest.fixture
-def admin_user(db):
-    """Create an admin user."""
-    return User.objects.create_superuser(
-        email='admin@example.com',
-        password='adminpass123',
-        username='admin'
+        email='test@example.com', password='testpass123', username='testuser'
     )
 
 @pytest.fixture
 def authenticated_client(client, user):
-    """Return authenticated client."""
-    client.force_login(user)
+    client.force_login(user)  # Django test client
     return client
 
 @pytest.fixture
 def api_client():
-    """Return DRF API client."""
-    from rest_framework.test import APIClient
     return APIClient()
 
 @pytest.fixture
 def authenticated_api_client(api_client, user):
-    """Return authenticated API client."""
-    api_client.force_authenticate(user=user)
+    api_client.force_authenticate(user=user)  # DRF: bypass auth
     return api_client
 ```
 
@@ -446,108 +411,30 @@ class TestProductSerializer:
 
 ### API ViewSet Testing
 
+Representative cases: list (paginated `response.data['count']`), unauthenticated rejection, and an authenticated write. The remaining verbs (retrieve, update, delete, filter, search) follow the same `reverse(...)` + `status.HTTP_*` idiom.
+
 ```python
 # tests/test_api.py
-import pytest
-from rest_framework.test import APIClient
 from rest_framework import status
 from django.urls import reverse
-from tests.factories import ProductFactory, UserFactory
+from tests.factories import ProductFactory
 
 class TestProductAPI:
-    """Test Product API endpoints."""
-
-    @pytest.fixture
-    def api_client(self):
-        """Return API client."""
-        return APIClient()
-
     def test_list_products(self, api_client, db):
-        """Test listing products."""
         ProductFactory.create_batch(10)
-
-        url = reverse('api:product-list')
-        response = api_client.get(url)
-
+        response = api_client.get(reverse('api:product-list'))
         assert response.status_code == status.HTTP_200_OK
         assert response.data['count'] == 10
 
-    def test_retrieve_product(self, api_client, db):
-        """Test retrieving a product."""
-        product = ProductFactory()
-
-        url = reverse('api:product-detail', kwargs={'pk': product.id})
-        response = api_client.get(url)
-
-        assert response.status_code == status.HTTP_200_OK
-        assert response.data['id'] == product.id
-
     def test_create_product_unauthorized(self, api_client, db):
-        """Test creating product without authentication."""
-        url = reverse('api:product-list')
-        data = {'name': 'Test Product', 'price': '99.99'}
-
-        response = api_client.post(url, data)
-
+        response = api_client.post(reverse('api:product-list'), {'name': 'X', 'price': '99.99'})
         assert response.status_code == status.HTTP_401_UNAUTHORIZED
 
     def test_create_product_authorized(self, authenticated_api_client, db):
-        """Test creating product as authenticated user."""
-        url = reverse('api:product-list')
-        data = {
-            'name': 'Test Product',
-            'description': 'Test',
-            'price': '99.99',
-            'stock': 10,
-        }
-
-        response = authenticated_api_client.post(url, data)
-
+        data = {'name': 'Test Product', 'description': 'Test', 'price': '99.99', 'stock': 10}
+        response = authenticated_api_client.post(reverse('api:product-list'), data)
         assert response.status_code == status.HTTP_201_CREATED
         assert response.data['name'] == 'Test Product'
-
-    def test_update_product(self, authenticated_api_client, db):
-        """Test updating a product."""
-        product = ProductFactory(created_by=authenticated_api_client.user)
-
-        url = reverse('api:product-detail', kwargs={'pk': product.id})
-        data = {'name': 'Updated Product'}
-
-        response = authenticated_api_client.patch(url, data)
-
-        assert response.status_code == status.HTTP_200_OK
-        assert response.data['name'] == 'Updated Product'
-
-    def test_delete_product(self, authenticated_api_client, db):
-        """Test deleting a product."""
-        product = ProductFactory(created_by=authenticated_api_client.user)
-
-        url = reverse('api:product-detail', kwargs={'pk': product.id})
-        response = authenticated_api_client.delete(url)
-
-        assert response.status_code == status.HTTP_204_NO_CONTENT
-
-    def test_filter_products_by_price(self, api_client, db):
-        """Test filtering products by price."""
-        ProductFactory(price=50)
-        ProductFactory(price=150)
-
-        url = reverse('api:product-list')
-        response = api_client.get(url, {'price_min': 100})
-
-        assert response.status_code == status.HTTP_200_OK
-        assert response.data['count'] == 1
-
-    def test_search_products(self, api_client, db):
-        """Test searching products."""
-        ProductFactory(name='Apple iPhone')
-        ProductFactory(name='Samsung Galaxy')
-
-        url = reverse('api:product-list')
-        response = api_client.get(url, {'search': 'Apple'})
-
-        assert response.status_code == status.HTTP_200_OK
-        assert response.data['count'] == 1
 ```
 
 ## Mocking and Patching
@@ -617,103 +504,42 @@ def test_order_confirmation_email(db, order):
 
 ### Full Flow Testing
 
+Drive a multi-request flow through the same `client`, asserting redirect status between steps and patching the payment boundary at the end:
+
 ```python
 # tests/test_integration.py
-import pytest
 from django.urls import reverse
-from tests.factories import UserFactory, ProductFactory
+from unittest.mock import patch
+from tests.factories import ProductFactory
 
 class TestCheckoutFlow:
-    """Test complete checkout flow."""
-
     def test_guest_to_purchase_flow(self, client, db):
-        """Test complete flow from guest to purchase."""
-        # Step 1: Register
-        response = client.post(reverse('users:register'), {
-            'email': 'test@example.com',
-            'password': 'testpass123',
-            'password_confirm': 'testpass123',
+        client.post(reverse('users:register'), {
+            'email': 'test@example.com', 'password': 'testpass123', 'password_confirm': 'testpass123',
         })
-        assert response.status_code == 302
+        client.post(reverse('users:login'), {'email': 'test@example.com', 'password': 'testpass123'})
 
-        # Step 2: Login
-        response = client.post(reverse('users:login'), {
-            'email': 'test@example.com',
-            'password': 'testpass123',
-        })
-        assert response.status_code == 302
-
-        # Step 3: Browse products
         product = ProductFactory(price=100)
-        response = client.get(reverse('products:detail', kwargs={'slug': product.slug}))
-        assert response.status_code == 200
+        client.post(reverse('cart:add'), {'product_id': product.id, 'quantity': 1})
 
-        # Step 4: Add to cart
-        response = client.post(reverse('cart:add'), {
-            'product_id': product.id,
-            'quantity': 1,
-        })
-        assert response.status_code == 302
-
-        # Step 5: Checkout
-        response = client.get(reverse('checkout:review'))
-        assert response.status_code == 200
-        assert product.name in response.content.decode()
-
-        # Step 6: Complete purchase
-        with patch('apps.checkout.services.process_payment') as mock_payment:
-            mock_payment.return_value = True
+        with patch('apps.checkout.services.process_payment', return_value=True):
             response = client.post(reverse('checkout:complete'))
 
         assert response.status_code == 302
         assert Order.objects.filter(user__email='test@example.com').exists()
 ```
 
-## Testing Best Practices
+## Django-specific guidance
 
-### DO
-
-- **Use factories**: Instead of manual object creation
-- **One assertion per test**: Keep tests focused
-- **Descriptive test names**: `test_user_cannot_delete_others_post`
-- **Test edge cases**: Empty inputs, None values, boundary conditions
-- **Mock external services**: Don't depend on external APIs
-- **Use fixtures**: Eliminate duplication
-- **Test permissions**: Ensure authorization works
-- **Keep tests fast**: Use `--reuse-db` and `--nomigrations`
-
-### DON'T
-
-- **Don't test Django internals**: Trust Django to work
-- **Don't test third-party code**: Trust libraries to work
-- **Don't ignore failing tests**: All tests must pass
-- **Don't make tests dependent**: Tests should run in any order
-- **Don't over-mock**: Mock only external dependencies
-- **Don't test private methods**: Test public interface
-- **Don't use production database**: Always use test database
+- Trust Django and third-party code — don't test framework internals.
+- Keep tests fast with `--reuse-db` and `--nomigrations`; never point tests at a production database.
 
 ## Coverage
 
-### Coverage Configuration
-
 ```bash
-# Run tests with coverage
 pytest --cov=apps --cov-report=html --cov-report=term-missing
-
-# Generate HTML report
-open htmlcov/index.html
+open htmlcov/index.html  # macOS; xdg-open on Linux
 ```
-
-### Coverage Goals
-
-| Component | Target Coverage |
-|-----------|-----------------|
-| Models | 90%+ |
-| Serializers | 85%+ |
-| Views | 80%+ |
-| Services | 90%+ |
-| Utilities | 80%+ |
-| Overall | 80%+ |
 
 ## Quick Reference
 
@@ -729,5 +555,3 @@ open htmlcov/index.html
 | `assertRedirects` | Check for redirects |
 | `assertTemplateUsed` | Verify template usage |
 | `mail.outbox` | Check sent emails |
-
-Remember: Tests are documentation. Good tests explain how your code should work. Keep them simple, readable, and maintainable.

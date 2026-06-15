@@ -32,7 +32,7 @@ Backend-focused rules for php projects.
 - Escape template output by default; justify raw HTML rendering.
 - Use prepared statements (`PDO`, Doctrine, Eloquent query builder) for dynamic queries.
 - Scope ORM mass assignment carefully and whitelist writable fields.
-- Load secrets from environment variables or a secret manager.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
 - Run `composer audit` in CI and remove abandoned packages quickly.
 - Use `password_hash()` / `password_verify()` for password storage.
 - Regenerate session IDs after authentication or privilege changes.

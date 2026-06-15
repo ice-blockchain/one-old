@@ -11,17 +11,10 @@ paths:
 
 # Ionic Service Layer
 
-React service rules still apply. Ionic adds a native-plugin boundary through
-Capacitor.
-
-## API services
-
-- Cached server data lives in RTK Query.
-- Plain axios services are only for uploads, downloads, and non-cacheable
-  commands.
-- Validate request inputs and response bodies with zod.
-- Map failures to typed `AppError`; production UI never shows raw plugin,
-  network, or native stack errors.
+The shared service-layer contract (RTK Query for cached server data, axios for
+uploads/downloads/non-cacheable commands, zod validation, typed `AppError`
+mapping with sanitized production errors) lives in `rules/frontend/services.md`
+and applies in full. Ionic adds a native-plugin boundary through Capacitor.
 
 ## Capacitor services
 
@@ -33,8 +26,8 @@ Capacitor.
 
 ## Offline and platform behavior
 
-- Network-aware services expose stale, offline, reconnecting, and retry states
-  where the UI needs them.
+- For connection-state labels (idle/connecting/live/reconnecting/offline/
+  degraded) surfaced to network-aware UI, follow `rules/frontend/ionic/realtime.md`.
 - Queue optimistic native or network actions only when the product explicitly
   needs it; otherwise fail clearly and recoverably.
 - Keep platform-specific code behind `.ios.ts`, `.android.ts`, or service

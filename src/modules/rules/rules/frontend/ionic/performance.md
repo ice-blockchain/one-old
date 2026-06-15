@@ -29,7 +29,8 @@ native-startup constraints.
 - Test on at least one real or emulated iOS/Android target before calling a
   mobile package ready.
 - Avoid large fixed-position repaint areas and expensive scroll listeners.
-- Batch high-rate real-time updates with the existing frame-budget rules.
+- The high-rate / 30 fps real-time render budget lives in
+  `rules/frontend/performance.md`.
 - Use native plugin APIs sparingly and cache stable capability checks.
 
 ## Assets

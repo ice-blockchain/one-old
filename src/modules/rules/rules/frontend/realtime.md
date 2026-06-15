@@ -31,9 +31,11 @@ React-specific subscription hooks and Redux bridges live in `frontend/react/real
 
 ## Back-pressure
 
-- High-rate streams (>10 Hz): aggregate frames in a buffer and flush via `requestAnimationFrame`. Never dispatch per-frame for high-rate streams.
+- High-rate streams (>10 Hz): aggregate frames in a buffer and flush on a tick. Never dispatch per-frame for high-rate streams.
 - If the buffer grows beyond a threshold (~200 frames), drop oldest non-critical frames; never drop ordered messages without reporting it.
 - Watch the underlying socket's `bufferedAmount` — if it grows, throttle outbound sends.
+- The render budget for streamed frames (fps caps, `requestAnimationFrame`
+  batching) lives in `rules/frontend/performance.md`.
 
 ## Consistency
 
@@ -41,10 +43,16 @@ React-specific subscription hooks and Redux bridges live in `frontend/react/real
 - For state that must converge (scoreboard, balance), prefer authoritative snapshots over deltas, or send periodic snapshots to recover from delta drift.
 - On reconnect with no resume support: invalidate dependent caches and refetch.
 
-## Errors & defensive UI
+## Errors & defensive UI under degraded network
+
+This section is the canonical owner of degraded-network UI behaviour;
+`rules/frontend/performance.md` points here.
 
 - Validate every inbound frame with zod before dispatching. A bad frame logs + drops, never crashes the connection.
 - The app must render a sensible state for each lifecycle phase: `idle`, `connecting`, `live`, `reconnecting`, `offline`, `degraded`. Don't conflate `live` with `idle`.
+- Show a "reconnecting…" banner when the live channel signals disconnect; an "offline" state after the retry cap.
+- Keep last-known-good values rendered; mark them stale with `aria-busy="true"` + reduced opacity.
+- Disable optimistic actions that depend on a live socket; queue them and replay on reconnect (or surface as failed).
 - Use `aria-live="polite"` on the connection status region for assistive tech.
 
 ## Security

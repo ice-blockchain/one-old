@@ -34,46 +34,43 @@ paths:
 
 - Add Capacitor plugins only for a concrete user-facing requirement.
 - Wrap plugin calls in `services/` or feature hooks with explicit return types.
-- Validate plugin results with zod when data crosses into app state.
-- Permission prompts are just-in-time and explain the feature value in product
-  copy before the native dialog appears.
+- Validate plugin results before they cross into app state — the zod inbound-
+  payload rule is owned by `rules/frontend/ionic/security.md`.
+
+## Permissions (canonical for the Ionic stack)
+
+`security.md`, `components.md`, and `services` rules point here.
+
+- Permission prompts are just-in-time: ask in context, after a screen that
+  explains the feature value in product copy, never at app launch.
+- Permission-denied states are explicit and recoverable.
 
 ## Release readiness
 
-- Check signing, bundle identifiers, version codes, deep links, app icons, splash
-  screens, privacy manifests, and store metadata before calling a mobile build
-  complete.
-- iOS provisioning profile/signing identity and Android keystore/alias/passwords
-  live in CI/store secrets, not in git or `VITE_` env vars.
-- Serve Apple Universal Links and Android App Links from the production web
-  domain: `/.well-known/apple-app-site-association` and
-  `/.well-known/assetlinks.json`.
-- Store submission metadata includes bundle/application id, version/build bump,
-  required screenshots, App Privacy/Data Safety answers, age rating, privacy
-  policy URL, support URL, review notes/demo access, and iOS
-  `PrivacyInfo.xcprivacy` for the app plus required third-party SDK privacy
-  manifests and required-reason API usage.
-- App Store Connect launch evidence includes App Privacy answers and account
-  deletion inside the app when account creation is supported. Since May 1, 2024,
-  Apple requires approved reasons for listed APIs used by app code or
-  third-party SDKs when submitting new or updated apps.
-- Google Play launch evidence includes Data Safety answers, Play App Signing,
-  Android App Bundle readiness, and current target API compliance. Verify the
-  current requirement in official docs before release; the documented baseline
-  for new apps/updates starting August 31, 2025 is Android 15 / API level 35 or
-  higher, with listed platform exceptions.
-- ASO assets are release inputs: app name, subtitle and keywords for iOS,
-  short/long description for Android, localized screenshots for required device
-  sizes, app icon, content rating, and release notes.
-- Digital goods sold in mobile apps use Apple In-App Purchase and Google Play
-  Billing unless the project has a documented store-policy exception. Do not
-  ship Stripe in-app for digital goods.
-- Permission prompts are asked in context after a value explanation screen, not
-  at app launch.
-- Verify Universal Links/App Links and auth callback deep links on a physical
-  device before public release.
-- Run TestFlight and Play Internal Testing with at least five external testers
-  before public release unless the user explicitly accepts a smaller
-  private-launch risk.
-- Ship a force-update/version check before release and document the OTA/live
-  update provider or explain why store review is required for every fix.
+Highest-value compliance gates before calling a mobile build complete (verify
+the current store requirements in official docs at release time):
+
+- **Signing & secrets:** iOS provisioning profile/signing identity and Android
+  keystore/alias/passwords live in CI/store secrets, never in git or `VITE_`
+  vars. Confirm bundle/application ids and version/build codes are bumped.
+- **Privacy disclosures:** iOS App Privacy answers + `PrivacyInfo.xcprivacy`
+  (app and required third-party SDK manifests). Since **May 1, 2024** Apple
+  requires approved reasons for listed (required-reason) APIs used by app code or
+  third-party SDKs. Android Data Safety answers + Play App Signing. Offer in-app
+  account deletion when account creation is supported.
+- **Target-API baseline:** confirm current store target-API compliance — the
+  documented baseline for new apps/updates from **Aug 31, 2025** is Android 15 /
+  API level 35+ (with listed platform exceptions); verify the requirement in
+  official docs at release time.
+- **Store listing / ASO assets** (release inputs): app name, iOS subtitle +
+  keywords, Android short/long description, localized screenshots for required
+  device sizes, app icon, content rating, age rating, privacy-policy + support
+  URLs, review notes/demo access, and release notes.
+- **Deep links:** serve Universal Links / App Links from the production web
+  domain (`/.well-known/apple-app-site-association`, `.well-known/assetlinks.json`)
+  and verify them plus auth-callback deep links on a physical device.
+- **Digital goods:** use Apple IAP / Google Play Billing for digital goods
+  unless a documented store-policy exception exists — never Stripe in-app.
+- **Pre-launch testing:** run TestFlight + Play Internal Testing with external
+  testers before public release unless the user accepts a smaller private-launch
+  risk; ship a force-update/version check and document the OTA/live-update path.

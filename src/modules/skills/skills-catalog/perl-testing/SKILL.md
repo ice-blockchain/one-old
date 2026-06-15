@@ -1,6 +1,6 @@
 ---
 name: perl-testing
-description: Perl testing patterns using Test2::V0, Test::More, prove runner, mocking, coverage with Devel::Cover, and TDD methodology.
+description: Perl testing patterns using Test2::V0, Test::More, the prove runner, mocking with Test::MockModule, subtests, and coverage with Devel::Cover.
 metadata:
   source: everything-claude-code
   source_path: skills/perl-testing/SKILL.md
@@ -10,53 +10,16 @@ metadata:
 
 # Perl Testing Patterns
 
-Comprehensive testing strategies for Perl applications using Test2::V0, Test::More, prove, and TDD methodology.
+Comprehensive testing strategies for Perl applications using Test2::V0, Test::More, and prove.
+
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
 
 ## When to Activate
 
-- Writing new Perl code (follow TDD: red, green, refactor)
-- Designing test suites for Perl modules or applications
-- Reviewing Perl test coverage
-- Setting up Perl testing infrastructure
+- Writing or designing test suites for Perl modules or applications
+- Reviewing Perl test coverage or setting up testing infrastructure
 - Migrating tests from Test::More to Test2::V0
 - Debugging failing Perl tests
-
-## TDD Workflow
-
-Always follow the RED-GREEN-REFACTOR cycle.
-
-```perl
-# Step 1: RED — Write a failing test
-# t/unit/calculator.t
-use v5.36;
-use Test2::V0;
-
-use lib 'lib';
-use Calculator;
-
-subtest 'addition' => sub {
-    my $calc = Calculator->new;
-    is($calc->add(2, 3), 5, 'adds two numbers');
-    is($calc->add(-1, 1), 0, 'handles negatives');
-};
-
-done_testing;
-
-# Step 2: GREEN — Write minimal implementation
-# lib/Calculator.pm
-package Calculator;
-use v5.36;
-use Moo;
-
-sub add($self, $a, $b) {
-    return $a + $b;
-}
-
-1;
-
-# Step 3: REFACTOR — Improve while tests stay green
-# Run: prove -lv t/unit/calculator.t
-```
 
 ## Test::More Fundamentals
 
@@ -400,30 +363,12 @@ subtest 'database integration' => sub {
 done_testing;
 ```
 
-## Best Practices
+## Perl-Specific Idioms
 
-### DO
-
-- **Follow TDD**: Write tests before implementation (red-green-refactor)
-- **Use Test2::V0**: Modern assertions, better diagnostics
-- **Use subtests**: Group related assertions, isolate state
-- **Mock external dependencies**: Network, database, file system
-- **Use `prove -l`**: Always include lib/ in `@INC`
-- **Name tests clearly**: `'user login with invalid password fails'`
-- **Test edge cases**: Empty strings, undef, zero, boundary values
-- **Aim for 80%+ coverage**: Focus on business logic paths
-- **Keep tests fast**: Mock I/O, use in-memory databases
-
-### DON'T
-
-- **Don't test implementation**: Test behavior and output, not internals
-- **Don't share state between subtests**: Each subtest should be independent
-- **Don't skip `done_testing`**: Ensures all planned tests ran
-- **Don't over-mock**: Mock boundaries only, not the code under test
-- **Don't use `Test::More` for new projects**: Prefer Test2::V0
-- **Don't ignore test failures**: All tests must pass before merge
-- **Don't test CPAN modules**: Trust libraries to work correctly
-- **Don't write brittle tests**: Avoid over-specific string matching
+- Prefer **Test2::V0** for new projects (richer assertions, better diagnostics); use Test::More only for legacy.
+- Always run with **`prove -l`** so `lib/` is on `@INC`.
+- Group related assertions in **subtests**; always end a file with **`done_testing`**.
+- Don't test CPAN modules — trust installed libraries.
 
 ## Quick Reference
 
@@ -475,5 +420,3 @@ Mock the *dependency*, not the code under test. If your test only verifies that 
 ### Test Pollution
 
 Use `my` variables inside subtests — never `our` — to prevent state leaking between tests.
-
-**Remember**: Tests are your safety net. Keep them fast, focused, and independent. Use Test2::V0 for new projects, prove for running, and Devel::Cover for accountability.

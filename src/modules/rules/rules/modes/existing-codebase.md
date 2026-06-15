@@ -5,7 +5,10 @@ description: "Apply when working in an existing codebase Traffic One did not sca
 
 # Mode: Existing Codebase
 
-Preserve all existing structure. New code only.
+New code only; the surgical-change discipline (no unrelated refactors, never
+revert user edits, match local style) is owned by
+`rules/common/execution-discipline.md`. The mode-specific deltas below are
+quantitative and absolute.
 
 ## Setup gate
 - Follow `rules/common/setup-gate.md` before normal feature work. Existing
@@ -27,38 +30,14 @@ Preserve all existing structure. New code only.
     `.traffic-one/decisions/` when safe.
   - Do not include secrets, production data, or fake MCP/deploy configuration.
 - Before normal feature work, run the `auto-documentation-generator` baseline
-  reconciliation from `rules/common/documentation.md`:
-  - If a canonical doc does not exist, create it from verified repo facts at the
-    repo root.
-  - If a canonical doc already exists, update it in place.
-  - If legacy canonical docs exist under `docs/`, migrate them to the root path
-    when that can be done without overwriting a newer root file.
-  - Mark unknown facts as `Unverified` with the exact command/input needed.
-  - Never include secret values, production data, fake deploy URLs, or
-    boilerplate sections.
-- Before normal feature work on any existing web surface, run the `seo`
-  baseline reconciliation from `rules/common/seo.md`:
-  - Inspect routes, app shell HTML, public assets, sitemap/robots, metadata
-    helpers, and existing SEO tests before adding new SEO code.
-  - If SEO is missing or only partially present, add route-aware metadata,
-    canonical URLs, JSON-LD, Open Graph/Twitter tags, favicon/PWA assets,
-    `robots.txt`, `sitemap.xml`, and regression coverage.
-  - If SEO exists, update it in place for the changed public routes and preserve
-    verified brand/domain values.
-  - Mark unknown production domains as `Unverified`; do not invent deploy URLs.
-- Before normal frontend/UI work, reconcile the i18n baseline from
-  `rules/frontend/i18n.md`:
-  - Inspect package manifests and source for `packages/i18n`, `src/i18n*`,
-    `locales/`, `public/locales/`, `messages/`, catalog files, `i18next`,
-    `react-i18next`, `expo-localization`, or existing provider wrappers.
-  - If an i18n module exists, extend it automatically for changed UI even when
-    the user did not ask for translations. Add source-language catalog entries
-    for every new key.
-  - Prefer `<Trans>` for rich copy with links or React elements; use `t()` only
-    for simple labels, attributes, and validation strings.
-  - If no i18n module exists, do not invent a parallel system for a narrow edit;
-    follow the existing app convention and record the i18n baseline as
-    `Unverified` or `Not present` in the handoff.
+  reconciliation per `rules/common/documentation.md` (create-or-update canonical
+  docs in place, migrate legacy `docs/` copies, mark unknowns `Unverified`).
+- Before normal feature work on any existing web surface, run the `seo` baseline
+  reconciliation per `rules/common/seo.md` (inspect existing SEO first, then add
+  or update route-aware metadata/assets/coverage in place).
+- Before normal frontend/UI work, reconcile the i18n baseline per
+  `rules/frontend/i18n.md` (extend an existing i18n module for changed UI; do
+  not invent a parallel system for a narrow edit on a project without one).
 - For existing Supabase-backed web/Ionic surfaces, repair any missing-config
   setup banner/card touched by the work so its setup CTA points to
   `https://traffic.io/` and has regression coverage for that exact `href`.

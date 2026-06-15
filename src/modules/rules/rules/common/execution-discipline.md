@@ -27,12 +27,10 @@ drift, and invisible failure.
   before writing custom code.
 
 ## Simplicity first
-- Implement the smallest code that satisfies the current requirement.
-- Do not add abstractions, configuration, extension points, or alternate modes for
-  hypothetical future callers.
-- Prefer existing local patterns over new frameworks, helper layers, or clever APIs.
-- If a solution grows much larger than the behavior requires, simplify before
-  continuing.
+- Apply the KISS/DRY/YAGNI and no-speculative-abstraction rules from
+  `rules/common/clean-code.md`: implement the smallest code that satisfies the
+  current requirement, prefer existing local patterns, and simplify when a
+  solution outgrows the behavior it serves.
 - Use the model for judgment calls, not deterministic work. Routing, retries,
   status-code handling, formatting, parsing, sorting, and repeatable transforms
   should be code or tools whenever practical.
@@ -82,9 +80,7 @@ drift, and invisible failure.
   verification run, and any follow-up that needs the user's attention.
 
 ## External-action boundaries
-- Never take an external action on the user's behalf without explicit current
-  confirmation: send, post, publish, share, schedule, deploy, migrate, push to a
-  protected environment, or call an external API with side effects.
-- Before destructive local work, list what will be affected and wait for
-  explicit confirmation unless the user already gave that exact destructive
-  instruction in the current turn.
+- External or destructive actions need explicit current confirmation. The
+  enumerated boundary list (deploy/publish, shared/prod migrations, sending
+  messages, deleting data) is owned by `rules/common/security.md` § Explicit
+  confirmation boundaries — follow it; do not restate it here.

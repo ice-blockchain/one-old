@@ -19,10 +19,51 @@ type Rec = Record<string, unknown>;
 export interface ToolSpec {
   recommended?: string;
   minimum?: string;
+  installLatest?: boolean;
+  npmPackage?: string;
+  pipxPackage?: string;
+  runtime?: 'python' | 'node';
+  runtimeMinMajor?: number;
+  runtimeMinMinor?: number;
   versionCommand?: string;
   versionRegex?: string;
   installCommand?: string;
   [k: string]: unknown;
+}
+
+export interface ToolRuntimeReq {
+  runtime: 'python' | 'node' | null;
+  minMajor: number;
+  minMinor: number;
+}
+
+// Latest-by-default install spec for a tool's package manager. Tools flagged
+// `installLatest` install the newest published version (npm `<pkg>@latest`, pip
+// unpinned `<pkg>`); otherwise — or when no `recommended` is set — they still
+// default to latest. Pins to `recommended` only for a non-latest tool that has
+// one. Returns null when the tool declares no package name. Single source of
+// truth so every runner installs consistently.
+export function toolInstallSpec(toolName: string): string | null {
+  const spec = getToolSpec(toolName);
+  if (!spec) return null;
+  const npmPkg = typeof spec.npmPackage === 'string' ? spec.npmPackage : '';
+  const pipPkg = typeof spec.pipxPackage === 'string' ? spec.pipxPackage : '';
+  const rec = typeof spec.recommended === 'string' && spec.recommended ? spec.recommended : '';
+  const latest = spec.installLatest === true || !rec;
+  if (npmPkg) return latest ? `${npmPkg}@latest` : `${npmPkg}@${rec}`;
+  if (pipPkg) return latest ? pipPkg : `${pipPkg}==${rec}`;
+  return null;
+}
+
+// The language runtime a tool needs (declared in toolchain-versions.json). The
+// shared runtime resolver (src/shared/runtime-resolve.ts) consumes this to find a
+// satisfying interpreter via GUI-PATH-proof absolute locations.
+export function toolRuntime(toolName: string): ToolRuntimeReq {
+  const spec = getToolSpec(toolName);
+  const runtime = spec && (spec.runtime === 'python' || spec.runtime === 'node') ? spec.runtime : null;
+  const minMajor = spec && typeof spec.runtimeMinMajor === 'number' ? spec.runtimeMinMajor : 0;
+  const minMinor = spec && typeof spec.runtimeMinMinor === 'number' ? spec.runtimeMinMinor : 0;
+  return { runtime, minMajor, minMinor };
 }
 
 export type ToolStatusKind = 'unknown' | 'missing' | 'too-old' | 'outdated' | 'current';
