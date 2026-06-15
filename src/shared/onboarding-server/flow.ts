@@ -19,6 +19,7 @@ import {
 import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
+import { STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
 import { recommendTierForPlan } from '../model-tiers';
 import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
@@ -35,27 +36,11 @@ import {
 
 // The action the wizard should take next: a question id, 'finalize' (new-project,
 // all questions answered, commit the canonical state), or null (fully onboarded).
-export type WizardStep =
-  | 'open-code'
-  | 'performance'
-  | 'team-confirmation'
-  | 'code-graph'
-  | 'project-context'
-  | 'mobile'
-  | 'finalize'
-  | null;
+export type WizardStep = WizardStepId | 'finalize' | null;
 
-export interface StepOption {
-  id: string;
-  label: string;
-  hint?: string;
-}
-
-export interface FormField {
-  key: string;
-  label: string;
-  hint?: string;
-}
+// Re-exported so existing importers keep resolving these leaf types from flow.ts;
+// the definitions (and the static step copy) now live in config/onboarding.ts.
+export type { StepOption, FormField } from '../../config/onboarding';
 
 // One subagent in the team-confirmation line-up: a role, what it does, the
 // capability tier it runs at for the chosen performance level, and the concrete
@@ -68,13 +53,11 @@ export interface TeamMember {
   model: string;
 }
 
-export interface StepMeta {
+// The static step copy (kind/title/question/options/fields) is owned by
+// config/onboarding.ts (STEP_COPY); StepMeta layers on the fields flow.ts
+// resolves at display time.
+export interface StepMeta extends StepCopy {
   step: WizardStep;
-  kind: 'single_select' | 'form' | 'finalize' | 'done';
-  title: string;
-  question: string;
-  options?: StepOption[];
-  fields?: FormField[];
   domainQuestions?: string[];
   team?: TeamMember[];
   performanceLevel?: string;
@@ -82,18 +65,6 @@ export interface StepMeta {
   recommendedTier?: string;
   host?: string;
 }
-
-// The senior-engineer roster, in the order it should read on screen. Labels +
-// one-line blurbs come from the agent definitions (src/modules/senior-*/agent.md);
-// the per-role tier/model is resolved from PERFORMANCE_CONFIG at display time.
-const TEAM_ROLES: { role: string; label: string; blurb: string }[] = [
-  { role: 'senior-architect', label: 'Architect', blurb: 'Plans the build, public contracts & module map' },
-  { role: 'senior-frontend', label: 'Frontend', blurb: 'UI — pages, components, design system, accessibility' },
-  { role: 'senior-backend', label: 'Backend', blurb: 'APIs, data, auth, migrations, background jobs' },
-  { role: 'senior-reviewer', label: 'Reviewer', blurb: 'Read-only audit before every commit' },
-  { role: 'senior-tester', label: 'Tester', blurb: 'Unit, integration & end-to-end tests' },
-  { role: 'senior-shipper', label: 'Shipper', blurb: 'Deploy & release — only when you ask' },
-];
 
 // Build the per-role line-up for a performance level + host. Empty for levels with
 // no subagent team (low / main-agent) or an unknown level.
@@ -109,25 +80,6 @@ export function buildTeamLineup(level: string, host: string, overrides?: Rec | n
   }
   return out;
 }
-
-// Human-friendly label + placeholder for each PROJECT_CONTEXT_ANSWER_KEY, so the
-// wizard form reads like questions instead of camelCase identifiers.
-const PROJECT_CONTEXT_FIELDS: FormField[] = [
-  { key: 'audience', label: 'Who is it for?', hint: 'Primary users / audience' },
-  { key: 'coreFlows', label: 'Core user flows', hint: 'The main things a user does, end to end' },
-  { key: 'v1Features', label: 'V1 features', hint: 'What must ship in the first version' },
-  { key: 'rolesAuth', label: 'Roles & sign-in', hint: 'User roles and how they authenticate' },
-  { key: 'businessModel', label: 'Business model', hint: 'How it makes money — or free / internal' },
-  { key: 'payments', label: 'Payments', hint: 'Billing, subscriptions, or checkout?' },
-  { key: 'admin', label: 'Admin area', hint: 'What an admin needs to manage' },
-  { key: 'dataModel', label: 'Data model', hint: 'Key entities and how they relate' },
-  { key: 'contentSource', label: 'Content source', hint: 'Where the data / content comes from' },
-  { key: 'integrations', label: 'Integrations', hint: 'Third-party services or APIs to connect' },
-  { key: 'engagement', label: 'Engagement', hint: 'Notifications, email, retention' },
-  { key: 'successMetrics', label: 'Success metrics', hint: 'How you will measure success' },
-  { key: 'constraints', label: 'Constraints', hint: 'Deadlines, budget, tech, compliance' },
-  { key: 'domainSpecific', label: 'Anything domain-specific', hint: 'Unique rules or details for this domain' },
-];
 
 export interface OnboardingView {
   mode: string;
@@ -150,63 +102,6 @@ export interface AnswerOutcome {
   task?: { kind: 'onboarding-toolchain' };
 }
 
-// ── Step copy (the questions now live in the wizard, not in agent prose) ─────────
-const STEP_META: Record<Exclude<WizardStep, null | 'finalize'>, Omit<StepMeta, 'step' | 'domainQuestions'>> = {
-  'open-code': {
-    kind: 'single_select',
-    title: 'OpenCode',
-    question: 'Save tokens by delegating bounded coding tasks to OpenCode (a free coding agent — no account or API key needed)? It implements the task in an isolated git worktree and only a clean diff is applied. Enabling authorizes the bounded task prompts and relevant code context for those delegated units.',
-    options: [
-      { id: 'enable', label: 'Enable OpenCode delegation' },
-      { id: 'not_now', label: 'Not now' },
-    ],
-  },
-  performance: {
-    kind: 'single_select',
-    title: 'Performance',
-    question: 'How do you want to run agents for this build?',
-    options: [
-      { id: 'high', label: 'High', hint: 'A multi-agent senior team' },
-      { id: 'balanced', label: 'Balanced', hint: 'Multi-agent team on cheaper tiers' },
-      { id: 'low', label: 'Low', hint: 'Single main agent' },
-    ],
-  },
-  'team-confirmation': {
-    kind: 'single_select',
-    title: 'Your team',
-    question: 'Set by your performance choice — this is the senior team that will build. Start when you are ready, or re-pick performance to change it.',
-    options: [
-      { id: 'approve', label: 'Start the build' },
-      { id: 'repick_performance', label: 'Re-pick performance' },
-    ],
-  },
-  'code-graph': {
-    kind: 'single_select',
-    title: 'Code Graph',
-    question: 'Which provider should we use for the codebase graph?',
-    options: [
-      { id: 'gitnexus', label: 'GitNexus', hint: 'Node CLI' },
-      { id: 'graphify', label: 'graphify', hint: 'Python CLI' },
-    ],
-  },
-  mobile: {
-    kind: 'single_select',
-    title: 'Mobile App',
-    question: 'Do you want a mobile app too?',
-    options: [
-      { id: 'web_only', label: 'Web only', hint: 'Recommended' },
-      { id: 'ionic_capacitor', label: 'Ionic + Capacitor' },
-      { id: 'react_native_expo', label: 'React Native / Expo' },
-    ],
-  },
-  'project-context': {
-    kind: 'form',
-    title: 'About the project',
-    question: 'Tell me a bit about what you are building. Everything here is optional — fill what is relevant and I will infer the rest from your request.',
-    fields: PROJECT_CONTEXT_FIELDS,
-  },
-};
-
 function metaForStep(step: WizardStep, originalPrompt: string): StepMeta {
   if (step === null) {
     return { step: null, kind: 'done', title: 'All set', question: 'Traffic One setup is complete.' };
@@ -214,7 +109,7 @@ function metaForStep(step: WizardStep, originalPrompt: string): StepMeta {
   if (step === 'finalize') {
     return { step: 'finalize', kind: 'finalize', title: 'Finishing setup', question: 'Saving your configuration…' };
   }
-  const base = STEP_META[step];
+  const base = STEP_COPY[step];
   const meta: StepMeta = { step, ...base };
   if (step === 'project-context') meta.domainQuestions = projectContextDomainQuestionLines(originalPrompt);
   return meta;

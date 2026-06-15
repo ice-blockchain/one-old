@@ -12,9 +12,11 @@ import {
   isTrafficOneAuthCommand,
   isTrafficOneDoctorCommand,
 } from '../index';
-import { FRESHNESS_REASON } from '../../../config/auth';
+import { DEFAULT_ENDPOINT, FRESHNESS_REASON } from '../../../config/auth';
 
-const ENDPOINT = 'http://127.0.0.1:8787/mcp';
+// Bind to the configured default so the suite follows config/auth.ts and never
+// drifts when the endpoint changes (dev loopback → prod Supabase URL, etc.).
+const ENDPOINT = DEFAULT_ENDPOINT;
 function freshState(over: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     version: 1,
@@ -39,7 +41,7 @@ test('authStateFreshness reports the precise reason', () => {
 });
 
 test('endpointFromEnv: default + override', () => {
-  assert.equal(endpointFromEnv({}), 'http://127.0.0.1:8787/mcp');
+  assert.equal(endpointFromEnv({}), DEFAULT_ENDPOINT);
   assert.equal(endpointFromEnv({ TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'https://x/mcp' }), 'https://x/mcp');
 });
 
