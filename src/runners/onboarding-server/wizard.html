@@ -109,6 +109,12 @@
     .tier-cheapest { background: var(--muted-2); }
     .chip { font-size: 12px; font-weight: 600; color: var(--ink-2); background: var(--chip-bg);
       border: 1px solid var(--chip-border); border-radius: 999px; padding: 3px 10px; font-family: var(--mono); }
+    .member .model select { font-size: 12px; font-weight: 600; color: var(--ink-2); background: var(--chip-bg);
+      border: 1px solid var(--chip-border); border-radius: 999px; padding: 3px 26px 3px 10px; font-family: var(--mono);
+      cursor: pointer; appearance: none; -webkit-appearance: none;
+      background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+      background-position: calc(100% - 14px) 50%, calc(100% - 9px) 50%; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+    .member .model select:hover { border-color: var(--accent); }
     .team-foot { padding: 9px 14px; font-size: 11.5px; color: var(--muted); border-top: 1px solid var(--line); background: var(--bg-2); }
 
     /* ── Project-context form ───────────────────────── */
@@ -215,6 +221,10 @@
     ];
     const view = document.getElementById("view");
     const actions = document.getElementById("actions");
+    // Per-role model picks on the team step: role → chosen tier, plus the tier
+    // shown by default, so "Start the build" sends only the roles the user changed.
+    let teamSelections = {};
+    let teamDefaults = {};
 
     async function api(path, opts = {}) {
       const headers = Object.assign({ "x-t1-token": T1_TOKEN }, opts.headers || {});
@@ -320,28 +330,59 @@
     function renderTeam(v) {
       const team = v.meta.team || [];
       if (!team.length) return null;
+      teamSelections = {};
+      teamDefaults = {};
+      // The detected host's model menu (highest/balanced/cheapest → real model ids).
+      // Fall back to the member's own model when the server didn't supply a list.
+      const choices = (v.meta.modelChoices || []).slice();
       const box = el("div", { className: "team" });
       const lvl = v.meta.performanceLevel ? cap(v.meta.performanceLevel) + " performance · " : "";
+      const hostNote = v.meta.host ? cap(v.meta.host) + " · " : "";
       const tierNote = v.meta.recommendedTier ? " · " + cap(v.meta.recommendedTier) + " plan tier" : "";
       box.appendChild(el("div", { className: "team-head" }, [
         el("span", { className: "t" }, ["Your senior team"]),
-        el("span", { className: "lvl" }, [lvl + team.length + " agents" + tierNote]),
+        el("span", { className: "lvl" }, [hostNote + lvl + team.length + " agents" + tierNote]),
       ]));
       team.forEach((m) => {
+        teamSelections[m.role] = m.tier;
+        teamDefaults[m.role] = m.tier;
         const ic = el("div", { className: "ic" }, [(m.label || "?").charAt(0)]);
         const who = el("div", { className: "who" }, [
           el("div", { className: "name" }, [m.label || m.role]),
           el("div", { className: "blurb" }, [m.blurb || ""]),
         ]);
         const dot = el("span", { className: "tier-dot tier-" + (m.tier || "balanced") });
-        const chip = el("span", { className: "chip" }, [m.model || m.tier || ""]);
-        chip.title = (m.tier ? cap(m.tier) + " tier" : "");
-        box.appendChild(el("div", { className: "member" }, [ic, who, el("div", { className: "model" }, [dot, chip])]));
+        const sel = el("select", {});
+        sel.setAttribute("aria-label", (m.label || m.role) + " model");
+        const list = choices.length ? choices : [{ tier: m.tier, model: m.model || m.tier }];
+        list.forEach((c) => {
+          const opt = el("option", { value: c.tier }, [c.model || c.tier]);
+          if (c.tier === m.tier) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        sel.addEventListener("change", () => {
+          teamSelections[m.role] = sel.value;
+          dot.className = "tier-dot tier-" + sel.value;
+        });
+        box.appendChild(el("div", { className: "member" }, [ic, who, el("div", { className: "model" }, [dot, sel])]));
       });
       box.appendChild(el("div", { className: "team-foot" }, [
-        "Tester and Shipper run on lighter models to save tokens. Choose “Re-pick performance” to change the line-up.",
+        "Pick a model per agent. Tester and Shipper default to lighter models to save tokens. Choose “Re-pick performance” to change the line-up size.",
       ]));
       return box;
+    }
+
+    // Map a clicked option to the value posted to /answer. Most steps send the bare
+    // option id; the team step sends { action, overrides } so the per-agent model
+    // picks ride along — overrides carry only the roles the user changed.
+    function teamAnswerValue(v, id) {
+      if (v.step !== "team-confirmation") return id;
+      if (id !== "approve") return { action: id };
+      const overrides = {};
+      Object.keys(teamSelections).forEach((role) => {
+        if (teamSelections[role] && teamSelections[role] !== teamDefaults[role]) overrides[role] = teamSelections[role];
+      });
+      return { action: "approve", overrides };
     }
 
     function renderSingleSelect(v) {
@@ -354,7 +395,7 @@
         const main = el("div", { className: "opt-main" }, [el("div", { className: "label" }, [o.label])]);
         if (o.hint) main.appendChild(el("div", { className: "hint" }, [o.hint]));
         const btn = el("button", { className: "opt", type: "button" }, [main, el("span", { className: "opt-go" }, ["→"])]);
-        btn.addEventListener("click", () => submitAnswer(v.step, o.id));
+        btn.addEventListener("click", () => submitAnswer(v.step, teamAnswerValue(v, o.id)));
         opts.appendChild(btn);
       });
       view.appendChild(opts);

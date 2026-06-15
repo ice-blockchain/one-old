@@ -234,6 +234,62 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
   });
 });
 
+test('team step carries the host model menu (modelChoices) so each agent is selectable', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    // claude (default host) → opus/sonnet/haiku, one entry per capability tier.
+    assert.deepEqual(view.meta.modelChoices, [
+      { tier: 'highest', model: 'opus' },
+      { tier: 'balanced', model: 'sonnet' },
+      { tier: 'cheapest', model: 'haiku' },
+    ]);
+  });
+});
+
+test('team step model menu follows the detected host (codex → gpt-5.x)', () => {
+  withProject(null, (cwd) => {
+    process.env.CODEX_PLUGIN_ROOT = '/tmp/codex-root';
+    try {
+      applyAnswer(cwd, 'open-code', 'not_now');
+      applyAnswer(cwd, 'performance', 'high');
+      const view = computeOnboarding(cwd);
+      assert.equal(view.meta.host, 'codex');
+      assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+    } finally {
+      delete process.env.CODEX_PLUGIN_ROOT;
+    }
+  });
+});
+
+test('team approve with per-agent model overrides persists them under team.overrides', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    // The wizard sends only the roles the user changed away from the shown default.
+    assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'approve', overrides: { 'senior-tester': 'highest' } }).ok);
+    const team = asRec(readProjectPrefs(cwd).team);
+    assert.equal(team.approved, true);
+    assert.deepEqual(asRec(team.overrides), { 'senior-tester': 'highest' });
+    // …and that stored override drives the resolved line-up (tester jumps to opus).
+    const lineup = buildTeamLineup('high', 'claude', asRec(team.overrides));
+    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'opus');
+  });
+});
+
+test('team approve with an empty overrides object stores no overrides', () => {
+  withProject(null, (cwd) => {
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'high');
+    assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'approve', overrides: {} }).ok);
+    const team = asRec(readProjectPrefs(cwd).team);
+    assert.equal(team.approved, true);
+    assert.equal(team.overrides, undefined);
+  });
+});
+
 test('team step reads as a single "Start the build" confirmation (continue alias approves)', () => {
   withProject(null, (cwd) => {
     applyAnswer(cwd, 'open-code', 'not_now');
