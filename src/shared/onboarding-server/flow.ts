@@ -364,12 +364,17 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       // only needs their local prefs/toolchain seeded — don't re-derive and risk
       // overwriting the first user's choices). Derive only when stack is unset.
       const hasStack = typeof committed.stack === 'string' && committed.stack.trim() !== '';
-      // Stack signal: the user's original prompt, falling back to the MVP answers
-      // they typed — so the derived stack reflects the actual project even if the
-      // prompt wasn't captured.
+      // Stack signal: the user's original prompt MERGED WITH the MVP answers they
+      // typed — not a short-circuit on the first non-empty value. A present-but-thin
+      // originalPrompt (e.g. a later "ok build it" that became the seed) classifies
+      // to `minimal` on its own; folding in the answers recovers the real signal.
+      // Concatenation is monotonic for classifyPromptForStack — extra keywords only
+      // add signal, so a rich originalPrompt is never downgraded.
       const answers = obj((obj(committed.projectContext) || {}).answers) || {};
-      const promptSignal = projectContextOriginalPrompt(committed)
-        || Object.values(answers).filter((v): v is string => typeof v === 'string' && v.trim() !== '').join('. ');
+      const answerSignal = Object.values(answers).filter((v): v is string => typeof v === 'string' && v.trim() !== '').join('. ');
+      const promptSignal = [projectContextOriginalPrompt(committed), answerSignal]
+        .filter((s) => s.trim() !== '')
+        .join('. ');
       const mobile = obj(committed.mobile) || { enabled: false, framework: 'none' };
       const derived = hasStack ? {} : deriveStack(promptSignal, String(mobile.framework || 'none'));
       writeState(cwd, { ...committed, mode: 'new-project', ...derived });

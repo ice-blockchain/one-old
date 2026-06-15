@@ -11,6 +11,7 @@
 import { isKnownStack } from '../config';
 import { postWriteIncompleteWarning } from '../directives';
 import { isPluginAuthoringRoot } from '../authoring-root';
+import { isUnclaimedWorkspaceSubPackage } from '../hook-paths';
 import { detectMode } from '../detection';
 import { STACKS } from '../stacks';
 import { nowIsoNoMs } from '../text';
@@ -162,6 +163,15 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
   const reportOneMcp = opts.reportOneMcp || noopReporter;
 
   if (isPluginAuthoringRoot(cwd)) return null;
+
+  // Never auto-converge a monorepo SUB-PACKAGE as its own project. When `cwd` owns
+  // no Traffic One state but sits inside a workspace (an ancestor declares
+  // package.json workspaces / pnpm-workspace.yaml), it belongs to that workspace
+  // root — bail before normalizeState/writeState below would mint a stray shallow
+  // .traffic-one/.one.json here (detectMode labels any sparse dir 'new-project').
+  // resolveProjectRoot already anchors callers at the real root; this is the
+  // write-side backstop for a caller that passes a raw sub-package cwd.
+  if (isUnclaimedWorkspaceSubPackage(cwd)) return null;
 
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return null;

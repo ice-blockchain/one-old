@@ -35,6 +35,13 @@ export function managedNpmPrefix(toolName: string): string {
   return path.join(managedToolDir(toolName), 'npm-prefix');
 }
 
+// Shared store for managed standalone language runtimes (Python/Node) fetched by
+// src/shared/managed-runtime.ts. Keyed by kind+version (NOT per-tool) so a Node
+// downloaded for gitnexus is reused by opencode instead of fetched twice.
+export function managedRuntimeDir(kind: 'python' | 'node', version: string): string {
+  return path.join(toolchainRoot(), '_runtimes', kind, version);
+}
+
 export function managedNpmBin(toolName: string, binName: string = toolName): string {
   const ext = process.platform === 'win32' ? '.cmd' : '';
   return path.join(managedNpmPrefix(toolName), 'bin', `${binName}${ext}`);

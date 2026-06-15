@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { exec } from '../../shared/exec';
+import { ensureManagedRuntime } from '../../shared/managed-runtime';
 import { writeGraphPreview } from '../../shared/materialize';
 import { readEffectiveState, mergeProjectPrefs } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -234,6 +235,16 @@ function npmForGitnexus(): { npmCmd: string; nodeBin?: string | null; action: st
     const installed = findNvmNode22();
     if (installed && installed.npm && installed.node) {
       return { npmCmd: installed.npm, nodeBin: installed.node, action: 'installed-managed-nvm-v22', error: null };
+    }
+  }
+  // Last resort: a Traffic One-managed standalone Node (downloaded into an
+  // isolated dir, npm bundled in its bin/) — for machines with no nvm/PATH/brew
+  // Node >=22 at all. Never on PATH, never the system node.
+  const managed = ensureManagedRuntime('node', { minMajor: GITNEXUS_MIN_NODE_MAJOR });
+  if (managed.ok && managed.binDir) {
+    const npm = path.join(managed.binDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+    if (fs.existsSync(npm)) {
+      return { npmCmd: npm, nodeBin: managed.path, action: 'installed-managed-runtime-node', error: null };
     }
   }
   return {

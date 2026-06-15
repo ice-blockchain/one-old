@@ -25,7 +25,7 @@ import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hookSessionIdentity, normalizeState, readEffectiveState } from '../../shared/state';
+import { hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
@@ -72,19 +72,37 @@ export function onboardingGate(ctx: Ctx): HookResult {
   if (isStateFilePath(filePath) || isStateFileOnlyPatch(toolName, toolInput)) return noop();
 
   if (!computeOnboarding(root).done) {
-    // Read-only orientation (pwd, ls, Read, Glob, Grep) is allowed so the agent
-    // can find its bearings while the user completes the wizard.
-    if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
-    // The blocking "wait for setup" command is allowed so the agent can keep its
-    // turn open until the wizard finishes, then continue the build automatically.
+    // A SUBAGENT must never be sent to the setup wizard. Onboarding is the parent/
+    // main-agent's job, completed BEFORE any subagent spawns, and a worker thread
+    // cannot make the in-app browser visible to show the wizard — so a deny here
+    // just traps it looping on the wait command. Reaching this branch in a subagent
+    // means a stray nested root was resolved (e.g. a leaked packages/*/.traffic-one);
+    // let the worker proceed with its assigned task (often REMOVING that leak).
+    if (isSubagentThread(raw)) return noop();
+    // The blocking "wait for setup" command is allowed FIRST so the one-time recipe
+    // deny below never blocks it — on hosts where UserPromptSubmit already delivered
+    // the recipe, the wait command can be the agent's first gated call.
     if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
     const server = ensureOnboardingServer(root);
-    // The full preview-pane walkthrough (~2.3 KB) injects once per session; every
-    // further denied attempt repeats only the URL + wait-command essentials.
-    const denyBlock = firstEmitThisSession(root, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
-      ? 'server-deny-reason'
-      : 'server-deny-reason-repeat';
-    return deny(block(denyBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(root) }));
+    const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(root) };
+    // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
+    // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
+    // DENY REASON is the ONLY output surfaced to the model: PreToolUse
+    // additionalContext is rejected outright (openai/codex#19385) and
+    // UserPromptSubmit.additionalContext is version-flaky (#16486/#16933). A
+    // DEDICATED marker (not the UserPromptSubmit 'onboarding-deny' one) guarantees
+    // this fires regardless of whether the prompt hook's context landed — otherwise
+    // an orientation-only opening turn leaves the agent hunting for the wizard
+    // (observed on Codex). One denied orientation call is the cost; the deny prose
+    // itself says orientation is allowed and to open the wizard, so the agent
+    // pivots immediately.
+    if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
+      return deny(block('server-deny-reason', vars));
+    }
+    // Recipe already delivered this session → orientation flows; every further
+    // non-orientation / mutating attempt repeats only the URL + wait-command.
+    if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+    return deny(block('server-deny-reason-repeat', vars));
   }
 
   const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });

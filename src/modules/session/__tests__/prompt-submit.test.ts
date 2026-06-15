@@ -23,6 +23,12 @@ function ctxHost(cwd: string, prompt: string, host: HookInput['host']): Ctx {
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+// A subagent thread prompt: parent_session_id present → hookSessionIdentity flags it.
+function ctxSub(cwd: string, prompt: string): Ctx {
+  const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt, session_id: 'child-thread', parent_session_id: 'parent-session' } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 function spawnCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = {
     event: 'PreToolUse',
@@ -180,6 +186,27 @@ test('coding-intent gate: authed + no state + a clearly non-coding prompt → no
   withAuthedProject(null, (cwd) => {
     assert.equal(runUserPromptSubmit(ctx(cwd, 'hi there, how are you today?')).kind, 'noop');
     assert.equal(runUserPromptSubmit(ctx(cwd, 'what is the capital of France?')).kind, 'noop');
+    // A signal-less prompt must NOT seed state — otherwise the next chit-chat turn
+    // would find an initialized project and activate the wizard prematurely.
+    assert.ok(!fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), 'no state seeded for non-coding chat');
+  });
+});
+
+test('coding-intent gate: a verb-less project description is captured (not dropped) and wins over a later thin prompt', () => {
+  // Regression: "a marketplace where freelancers and clients find each other" has no
+  // coding verb, so the narrow isLikelyCodingPrompt dropped it — the first project
+  // description was captured nowhere and a later "ok build it" became originalPrompt,
+  // deriving `minimal`. promptHasStackSignal now admits it so the FIRST prompt wins.
+  withAuthedProject(null, (cwd) => {
+    const first = runUserPromptSubmit(ctx(cwd, 'a marketplace where freelancers and clients find each other'));
+    assert.equal(first.kind, 'context', 'a real project description activates instead of being dropped');
+    const seeded = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(String(seeded.originalPrompt || '').includes('marketplace'), 'the first project prompt is seeded as originalPrompt');
+
+    // A thin follow-up with a build verb must NOT overwrite the seeded project prompt.
+    runUserPromptSubmit(ctx(cwd, 'ok build it'));
+    const after = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(String(after.originalPrompt || '').includes('marketplace'), 'the thin follow-up does not clobber the seeded project prompt');
   });
 });
 
@@ -240,6 +267,14 @@ test('codex prompt mentioning an inner existing app bootstraps Traffic One in th
 test('authed + incomplete new project → setup required + wizard URL (no popup)', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'build a shop with checkout')));
+  });
+});
+
+test('authed + incomplete new project but a SUBAGENT prompt → noop (subagents never onboard)', () => {
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    // The same prompt from the parent surfaces the wizard; from a subagent it must not.
+    assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'build a shop with checkout')));
+    assert.equal(runUserPromptSubmit(ctxSub(cwd, 'build a shop with checkout')).kind, 'noop');
   });
 });
 

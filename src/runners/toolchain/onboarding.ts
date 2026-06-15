@@ -5,8 +5,10 @@
 
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as path from 'path';
 
 import { exec } from '../../shared/exec';
+import { ensureManagedRuntime } from '../../shared/managed-runtime';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { ensureGitnexusTool } from '../gitnexus';
@@ -115,7 +117,16 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     npm = node ? npmNextToNode(node.path) : null;
   }
   if (!npm) {
-    return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH (and no runtime-resolved Node/npm was found), so the hook cannot install OpenCode automatically', binPath: null };
+    // Last resort: the npm bundled with a Traffic One-managed standalone Node
+    // (isolated dir, never on PATH). Shared with gitnexus — fetched once.
+    const managed = ensureManagedRuntime('node', { minMajor: toolRuntime('opencode').minMajor });
+    if (managed.ok && managed.binDir) {
+      const cand = path.join(managed.binDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+      if (fs.existsSync(cand)) npm = cand;
+    }
+  }
+  if (!npm) {
+    return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH (and no runtime-resolved or managed Node/npm was found), so the hook cannot install OpenCode automatically', binPath: null };
   }
 
   const result = spawnSync(npm, ['install', '-g', '--prefix', managedNpmPrefix('opencode'), opencodePackageSpec()], {

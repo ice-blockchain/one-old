@@ -27,6 +27,7 @@ import { reconcileManagedToolStamp, toolRuntime } from '../toolchain';
 import { ensureOpenCodeTool } from '../toolchain/onboarding';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { resolvePython, resolveNode } from '../../shared/runtime-resolve';
+import { managedRuntimeAvailable } from '../../shared/managed-runtime';
 
 type GraphProvider = 'graphify' | 'gitnexus';
 
@@ -43,8 +44,10 @@ function siblingProvider(provider: GraphProvider): GraphProvider {
 // would just fail again.
 function providerRuntimeAvailable(provider: GraphProvider): boolean {
   const { runtime, minMajor, minMinor } = toolRuntime(provider);
-  if (runtime === 'python') return Boolean(resolvePython(minMajor, minMinor));
-  if (runtime === 'node') return Boolean(resolveNode(minMajor));
+  // A resolvable interpreter OR a managed standalone runtime we can download
+  // makes the sibling worth attempting (its install fetches the managed runtime).
+  if (runtime === 'python') return Boolean(resolvePython(minMajor, minMinor)) || managedRuntimeAvailable('python');
+  if (runtime === 'node') return Boolean(resolveNode(minMajor)) || managedRuntimeAvailable('node');
   return true;
 }
 

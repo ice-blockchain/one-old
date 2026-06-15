@@ -14,6 +14,14 @@ function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<str
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+// A subagent thread: its own session_id plus a parent_session_id (the Claude shape;
+// hookSessionIdentity flags isSubagent from parent_session_id alone).
+function ctxSub(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
+  const raw = { tool_name: rawName, tool_input: toolInput, session_id: 'child-thread', parent_session_id: 'parent-session' };
+  const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw, tool: { class: cls, rawName } };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-'));
   const env = process.env;
@@ -109,8 +117,14 @@ test('existing project with Traffic One state but no local prefs: mutating tools
   });
 });
 
-test('existing project with missing local prefs: read-only orientation is allowed', () => {
+test('existing project with missing local prefs: first gated call denies with the recipe, then orientation is allowed', () => {
   withProject(existingState(), (cwd) => {
+    // First gated tool of the session — even read-only orientation — denies ONCE
+    // with the full wizard recipe (the only PreToolUse channel Codex surfaces).
+    const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') assert.ok(first.reason.includes('http://127.0.0.1'), 'first deny carries the wizard URL');
+    // Recipe delivered this session → subsequent read-only orientation flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
   });
 });
@@ -123,9 +137,27 @@ test('existing project with complete local prefs: mutating tools proceed normall
   });
 });
 
-test('incomplete new project: read-only orientation (ls) is allowed', () => {
+test('incomplete new project: first gated call denies with the recipe, then orientation (ls) is allowed and mutating writes get the repeat', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
+    const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') assert.ok(first.reason.includes('http://127.0.0.1'), 'first deny carries the wizard URL');
+    // Recipe delivered → subsequent read-only orientation flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // A mutating write still denies after the one-time recipe (short repeat block, still URL-bearing).
+    const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(write.kind, 'deny');
+    if (write.kind === 'deny') assert.ok(write.reason.includes('http://127.0.0.1'));
+  });
+});
+
+test('a subagent thread is NEVER sent to the onboarding wizard (parent owns onboarding)', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    // A parent write on this incomplete project denies with the wizard…
+    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' })).kind, 'deny');
+    // …but the same write from a SUBAGENT thread is allowed through — a worker can't
+    // drive the wizard, so reaching the gate means a stray nested root was resolved.
+    assert.equal(onboardingGate(ctxSub(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' })).kind, 'noop');
   });
 });
 

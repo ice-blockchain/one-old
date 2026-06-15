@@ -17,6 +17,7 @@ import * as path from 'path';
 import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
+import { ensureManagedRuntime } from '../../shared/managed-runtime';
 import { resolvePython, runtimeMissingMessage } from '../../shared/runtime-resolve';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -159,11 +160,20 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   // shared resolver probes Homebrew/pyenv/PATH for an ABSOLUTE interpreter that
   // satisfies the declared minimum.
   const { minMajor, minMinor } = toolRuntime('graphify');
-  const py = resolvePython(minMajor, minMinor);
-  if (!py) {
+  // Resolve a satisfying interpreter (Homebrew/pyenv/PATH); if none exists, fall
+  // back to a Traffic One-managed standalone CPython downloaded into an isolated
+  // dir (never on PATH, never the system python). Both are absolute paths so a
+  // stale GUI PATH can't reintroduce the stock 3.9.x.
+  let pyPath = resolvePython(minMajor, minMinor)?.path ?? null;
+  if (!pyPath) {
+    const managed = ensureManagedRuntime('python', { minMajor, minMinor });
+    if (managed.ok && managed.path) pyPath = managed.path;
+  }
+  if (!pyPath) {
     // Beginner-friendly explanation, no raw pip output (this is the
-    // stock-macOS Python 3.9.6 case). A graph-provider problem must never
-    // block onboarding — the caller degrades gracefully on install-skipped.
+    // stock-macOS Python 3.9.6 case, on a platform/offline where the managed
+    // download couldn't help). A graph-provider problem must never block
+    // onboarding — the caller degrades gracefully on install-skipped.
     return {
       action: 'install-skipped',
       error: runtimeMissingMessage('graphify', 'python', minMajor, minMinor)
@@ -182,7 +192,7 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   }
 
   if (!fs.existsSync(venvPython)) {
-    const venv = spawnSync(py.path, ['-m', 'venv', venvDir], {
+    const venv = spawnSync(pyPath, ['-m', 'venv', venvDir], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 90 * 1000,

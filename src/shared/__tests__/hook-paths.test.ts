@@ -7,6 +7,7 @@ import * as path from 'path';
 import {
   findProjectRootForHookFile,
   isOnboardedProjectRoot,
+  isUnclaimedWorkspaceSubPackage,
   packageJsonDeclaresWorkspace,
   projectRelativeHookPath,
   resolveProjectRoot,
@@ -16,6 +17,11 @@ import {
 function writeState(dir: string, json: Record<string, unknown>): void {
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(json), 'utf8');
+}
+
+function writePkg(dir: string, json: Record<string, unknown>): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(json), 'utf8');
 }
 
 test('stateRequiresNewProjectMonorepo: default/realtime stacks and react+backend require monorepo', () => {
@@ -149,6 +155,89 @@ test('resolveProjectRoot: a stray shallow sub-package state never shadows the re
       assert.equal(resolveProjectRoot(fresh, path.join(fresh, 'a.ts')), fresh);
     } finally {
       fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: an UN-onboarded monorepo anchors at the workspace root, not a sub-package', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-wsroot-')));
+  try {
+    // Workspace root that has NOT been onboarded yet (no mode-bearing .one.json) —
+    // exactly the mid-onboarding state where the old code fell back to the cwd and
+    // minted a stray .traffic-one into the sub-package.
+    writePkg(root, { name: 'mono', private: true, workspaces: ['packages/*', 'apps/*'] });
+    const ui = path.join(root, 'packages', 'ui');
+    const target = path.join(ui, 'src', 'index.ts');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'x', 'utf8');
+
+    // A tool whose cwd OR target is the sub-package resolves UP to the workspace root.
+    assert.equal(resolveProjectRoot(ui, ''), root);
+    assert.equal(resolveProjectRoot(root, target), root);
+    assert.equal(resolveProjectRoot(ui, target), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: a LEAKED mode-bearing sub-package state never shadows the workspace root', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-leakroot-')));
+  try {
+    // Onboarded workspace root that DECLARES workspaces…
+    writePkg(root, { name: 'mono', private: true, workspaces: ['packages/*'] });
+    writeState(root, { mode: 'new-project', onboardingComplete: true });
+    // …plus a leaked, mode-bearing .traffic-one inside a sub-package (the incident:
+    // it looks like an onboarded root, so the old walk adopted it and re-onboarded).
+    const ui = path.join(root, 'packages', 'ui');
+    writeState(ui, { mode: 'new-project' });
+    const target = path.join(ui, 'src', 'index.ts');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'x', 'utf8');
+
+    // The leak is skipped in favor of the workspace root, from either vantage.
+    assert.equal(resolveProjectRoot(root, target), root);
+    assert.equal(resolveProjectRoot(ui, target), root);
+    assert.equal(resolveProjectRoot(ui, ''), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: a pnpm-workspace.yaml root is recognized as the anchor too', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-wsyaml-')));
+  try {
+    writePkg(root, { name: 'mono2', private: true });
+    fs.writeFileSync(path.join(root, 'pnpm-workspace.yaml'), 'packages:\n  - packages/*\n', 'utf8');
+    const api = path.join(root, 'packages', 'api');
+    fs.mkdirSync(api, { recursive: true });
+    assert.equal(resolveProjectRoot(api, ''), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('isUnclaimedWorkspaceSubPackage: true for a state-less sub-package, false for the root or a state-owning package', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-subpkg-')));
+  try {
+    writePkg(root, { name: 'mono', private: true, workspaces: ['packages/*'] });
+    const ui = path.join(root, 'packages', 'ui');
+    fs.mkdirSync(ui, { recursive: true });
+
+    assert.equal(isUnclaimedWorkspaceSubPackage(ui), true);    // inside a workspace, owns no state
+    assert.equal(isUnclaimedWorkspaceSubPackage(root), false); // the workspace root itself
+
+    // Once the sub-package owns a state file it is a real root — never blocked.
+    writeState(ui, { mode: 'new-project' });
+    assert.equal(isUnclaimedWorkspaceSubPackage(ui), false);
+
+    // A standalone dir with no workspace ancestor is never a sub-package.
+    const solo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-solo-')));
+    try {
+      assert.equal(isUnclaimedWorkspaceSubPackage(solo), false);
+    } finally {
+      fs.rmSync(solo, { recursive: true, force: true });
     }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
