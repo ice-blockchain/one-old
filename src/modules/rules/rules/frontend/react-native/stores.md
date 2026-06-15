@@ -10,19 +10,21 @@ paths:
 
 # React Native State Management — Redux Toolkit + zustand
 
-## Boundaries
+## Boundaries — pick exactly one
 
 | Need | Tool |
 |------|------|
-| Server data, cached entities, REST payloads | RTK Query |
-| Cross-feature business state | Redux Toolkit slice |
-| WebSocket-fed durable app state | Redux slice fed by the WS service |
-| Ephemeral UI state | zustand |
+| Server data (REST/WebSocket payloads, cached entities) | **RTK Query** (or a Redux slice fed by a WS service) |
+| Cross-feature global business state (auth, session, game phase) | **Redux Toolkit slice** |
+| Lightweight ephemeral UI state (modal open, active tab, drawer width) | **zustand** |
 | Component-local state | `useState` / `useReducer` |
-| Form state | react-hook-form |
+| Form state | `react-hook-form` |
 
-Server data lives in exactly one place: RTK Query or a Redux slice. Never copy
-server data into zustand, route params, or component state.
+**Hard rule**: server data lives in exactly one place — RTK Query (or a Redux slice). Never copy server data into zustand, route params, or component state.
+
+RTK Query slice discipline (zod `transformResponse`, precise tags,
+generated-hooks-only) lives in `rules/frontend/react-native/services.md`. This
+file covers the RN deltas below.
 
 ## Redux Toolkit
 - Store config lives in `apps/mobile/src/store/index.ts` or a shared package.
@@ -30,12 +32,6 @@ server data into zustand, route params, or component state.
 - One slice per domain; export named actions and selectors.
 - Use `createSelector` for non-trivial derivations.
 - Middleware order: RTK Query api -> WS bridge / analytics -> defaults.
-
-## RTK Query
-- One `createApi` per service domain.
-- Validate responses with zod in `transformResponse`.
-- Use tags precisely; mutations invalidate the smallest affected set.
-- Generated hooks only in components; never call endpoint internals from UI.
 
 ## zustand
 - UI-only state: modal open, active tab hint, local draft visibility, transient ids.

@@ -95,12 +95,15 @@ Analyse before every release with a bundle visualiser. Fail CI when over budget.
 
 ## Real-time render budget
 
+This section owns the render budget for streamed frames; the connection
+lifecycle, back-pressure buffering, and security rules live in
+`rules/frontend/realtime.md`.
+
 - Cap re-renders triggered by streamed frames: ~30 fps for normal UI, 60 fps only for game canvases.
 - Batch high-rate updates (>10 Hz) via `requestAnimationFrame` or a tick aggregator — never re-render per frame.
 - Drop oldest non-critical frames when the buffer grows past threshold.
 
 ## Defensive UI under degraded network
 
-- Show a "reconnecting…" banner when the live channel signals disconnect.
-- Keep last-known-good values rendered; mark them stale with `aria-busy="true"` + reduced opacity.
-- Disable optimistic actions that depend on a live socket; queue them and replay on reconnect (or surface as failed).
+Reconnect banners, stale last-known-good values, and queued optimistic actions
+are owned by `rules/frontend/realtime.md`.

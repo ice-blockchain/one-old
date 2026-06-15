@@ -10,20 +10,15 @@ metadata:
 
 # Spring Boot TDD Workflow
 
-TDD guidance for Spring Boot services with 80%+ coverage (unit + integration).
+TDD guidance for Spring Boot services (unit + integration).
 
-## When to Use
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
+
+## When to Activate
 
 - New features or endpoints
 - Bug fixes or refactors
 - Adding data access logic or security rules
-
-## Workflow
-
-1) Write tests first (they should fail)
-2) Implement minimal code to pass
-3) Refactor with tests green
-4) Enforce coverage (JaCoCo)
 
 ## Unit Tests (JUnit 5 + Mockito)
 
@@ -47,7 +42,6 @@ class MarketServiceTest {
 ```
 
 Patterns:
-- Arrange-Act-Assert
 - Avoid partial mocks; prefer explicit stubbing
 - Use `@ParameterizedTest` for variants
 
@@ -158,5 +152,3 @@ class MarketBuilder {
 
 - Maven: `mvn -T 4 test` or `mvn verify`
 - Gradle: `./gradlew test jacocoTestReport`
-
-**Remember**: Keep tests fast, isolated, and deterministic. Test behavior, not implementation details.

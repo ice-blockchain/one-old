@@ -1,6 +1,6 @@
 ---
 name: java-coding-standards
-description: "Java coding standards for Spring Boot services: naming, immutability, Optional usage, streams, exceptions, generics, and project layout."
+description: "Java 17+ idioms — records and sealed classes, Optional map/orElseThrow, stream pipelines, bounded generics, domain exceptions, Bean Validation, and JUnit 5/AssertJ/Mockito testing. Language layer over the generic clean-code floor."
 metadata:
   source: everything-claude-code
   source_path: skills/java-coding-standards/SKILL.md
@@ -10,42 +10,15 @@ metadata:
 
 # Java Coding Standards
 
-Standards for readable, maintainable Java (17+) code in Spring Boot services.
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the Java-specific idioms below.
 
-## When to Activate
+Apply when writing, reviewing, or refactoring Java (17+) code, especially around records, sealed classes, Optional, streams, and generics.
 
-- Writing or reviewing Java code in Spring Boot projects
-- Enforcing naming, immutability, or exception handling conventions
-- Working with records, sealed classes, or pattern matching (Java 17+)
-- Reviewing use of Optional, streams, or generics
-- Structuring packages and project layout
-
-## Core Principles
-
-- Prefer clarity over cleverness
-- Immutable by default; minimize shared mutable state
-- Fail fast with meaningful exceptions
-- Consistent naming and package structure
-
-## Naming
+## Records and Immutability
 
 ```java
-// PASS: Classes/Records: PascalCase
-public class MarketService {}
+// Favor records and final fields for data models
 public record Money(BigDecimal amount, Currency currency) {}
-
-// PASS: Methods/fields: camelCase
-private final MarketRepository marketRepository;
-public Market findBySlug(String slug) {}
-
-// PASS: Constants: UPPER_SNAKE_CASE
-private static final int MAX_PAGE_SIZE = 100;
-```
-
-## Immutability
-
-```java
-// PASS: Favor records and final fields
 public record MarketDto(Long id, String name, MarketStatus status) {}
 
 public class Market {
@@ -58,10 +31,10 @@ public class Market {
 ## Optional Usage
 
 ```java
-// PASS: Return Optional from find* methods
+// GOOD: Return Optional from find* methods
 Optional<Market> market = marketRepository.findBySlug(slug);
 
-// PASS: Map/flatMap instead of get()
+// GOOD: Map/flatMap instead of get()
 return market
     .map(MarketResponse::from)
     .orElseThrow(() -> new EntityNotFoundException("Market not found"));
@@ -70,13 +43,13 @@ return market
 ## Streams Best Practices
 
 ```java
-// PASS: Use streams for transformations, keep pipelines short
+// GOOD: Use streams for transformations, keep pipelines short
 List<String> names = markets.stream()
     .map(Market::name)
     .filter(Objects::nonNull)
     .toList();
 
-// FAIL: Avoid complex nested streams; prefer loops for clarity
+// BAD: Avoid complex nested streams; prefer loops for clarity
 ```
 
 ## Exceptions
@@ -116,18 +89,8 @@ src/test/java/... (mirrors main)
 
 ## Formatting and Style
 
-- Use 2 or 4 spaces consistently (project standard)
 - One public top-level type per file
-- Keep methods short and focused; extract helpers
 - Order members: constants, fields, constructors, public methods, protected, private
-
-## Code Smells to Avoid
-
-- Long parameter lists → use DTO/builders
-- Deep nesting → early returns
-- Magic numbers → named constants
-- Static mutable state → prefer dependency injection
-- Silent catch blocks → log and act or rethrow
 
 ## Logging
 
@@ -147,5 +110,3 @@ log.error("failed_fetch_market slug={}", slug, ex);
 - JUnit 5 + AssertJ for fluent assertions
 - Mockito for mocking; avoid partial mocks where possible
 - Favor deterministic tests; no hidden sleeps
-
-**Remember**: Keep code intentional, typed, and observable. Optimize for maintainability over micro-optimizations unless proven necessary.

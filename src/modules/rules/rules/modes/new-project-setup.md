@@ -22,13 +22,9 @@ do not skip. The spine carries the step index — this file is the detail.
    - Create `.traffic-one/` before feature work and invoke `project-memory`.
    - Confirm root `.traffic-one/.one.json` exists with the full Traffic One state
      schema. `.traffic-one/` is memory; `.traffic-one/.one.json` is stack/state.
-   - Write `.traffic-one/product.md`, `.traffic-one/stack.md`,
-     `.traffic-one/coding.md`, `.traffic-one/security.md`,
-     `.traffic-one/known-issues.md`,
-     `.traffic-one/agent-log.md`, `.traffic-one/.agentignore`,
-     `.traffic-one/deployments.jsonl`, `.traffic-one/schema.sql`,
-     `.traffic-one/decisions/`, and
-     `.traffic-one/skills/` when reusable commands are needed.
+   - Write the full `.traffic-one/` memory-baseline file inventory — the
+     canonical list and per-file purpose live in
+     `rules/common/project-memory.md`.
    - Ensure the generated active stack bundle exists before feature-source
      writes: `.traffic-one/rules/**`,
      `.traffic-one/manifest.json`, `.traffic-one/skills/**`, root `AGENTS.md`
@@ -69,7 +65,7 @@ do not skip. The spine carries the step index — this file is the detail.
      frontend stacks before generated page/component copy is written.
    - `packages/utils` — empty barrel; populate as needed.
    - `packages/api-client` — Supabase browser client, axios instance, AppError type, RTK Query baseQuery.
-   - `packages/ws-client` — transport + protocol scaffolding (per `rules/realtime.md`).
+   - `packages/ws-client` — transport + protocol scaffolding (per `rules/frontend/realtime.md`).
    - `packages/ui` — run `npx shadcn@latest init` here, then add the first batch:
      `npx shadcn@latest add button input label card dialog dropdown-menu form sheet tabs select sonner badge separator`.
      The CLI populates `src/components/ui/` and `src/lib/utils.ts` (`cn()`).
@@ -136,31 +132,18 @@ do not skip. The spine carries the step index — this file is the detail.
      reviewer will flag.
 
 7. **Mandatory SEO baseline**
-   - Invoke the `seo` skill before calling a generated website/app complete.
-   - Add a route-aware SEO layer for every public web surface:
-     `apps/web/src/components/Seo.tsx` and `apps/web/src/lib/seo.ts` for
-     React/Vite/Ionic SPA output, or the active framework's native metadata
-     API for explicit Next.js/minimal stacks.
-   - Add or update fallback metadata in `apps/web/index.html`: title,
-     description, canonical, Open Graph, Twitter Card, favicon links, and
-     `manifest.webmanifest`.
-   - Add public crawl/share assets: `robots.txt`, `sitemap.xml`,
-     `manifest.webmanifest`, `favicon.ico`, `apple-touch-icon`, `icon-192.png`,
-     `icon-512.png`, and a default `1200x630` `og-default.png` or JPG.
-   - Asset sequencing: ship cheap placeholders for those images first (solid
-     color, text-on-gradient, or SVG). Generate polished raster art (AI image
-     generation, brand/cover art) only after the scaffold typechecks, builds,
-     and serves — never as a pre-build step.
+   - Invoke the `seo` skill and apply `rules/common/seo.md` before calling a
+     generated website/app complete — that rule owns the full asset matrix
+     (metadata layer, crawl/share files, placeholder-then-polish sequencing,
+     regression coverage, and the SPA-prerender caveat).
+   - Scaffold targets for the React/Vite/Ionic SPA output: route-aware
+     `apps/web/src/components/Seo.tsx` + `apps/web/src/lib/seo.ts`, fallback
+     metadata in `apps/web/index.html`, and the public assets under
+     `apps/web/public/`. Explicit Next.js/minimal stacks use the framework's
+     native metadata API instead.
    - Add `VITE_SITE_URL` (or the framework's public site-url env var) to
      `.env.example`. Mark the production domain `Unverified` until the user or
      host provides it; do not invent deploy URLs.
-   - Add Playwright or unit regression coverage for every generated public
-     route's title, description, canonical, Open Graph image, JSON-LD, and
-     sitemap inclusion, plus `noindex,nofollow` on private/admin routes.
-   - If an SPA public route must rank, document the prerender/static rendering
-     or host-support plan in `.traffic-one/deployment.md` or
-     `.traffic-one/known-issues.md`.
-     Do not claim SEO parity from a client-rendered shell alone.
 
 8. **CI/CD pipeline (use Turborepo's caching)**
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
@@ -191,12 +174,10 @@ do not skip. The spine carries the step index — this file is the detail.
    - Add a monitorable `/health` path via an Edge Function, host function, or
      hosted heartbeat endpoint. If Capacitor is requested, add a force-update
      version check for mobile clients.
-   - Add the post-deploy observability baseline from
-     `rules/common/stack-recommendations.md`: Sentry release/source-map upload,
-     Supabase Logs visibility, PostHog or explicitly chosen LogRocket replay
-     with privacy masking, `/` and `/health` synthetic uptime checks, email plus
-     chat alert routing, SLO burn-rate alerts, failed-deploy log analysis, and
-     AI fix suggestions that require approval before PR/deploy actions.
+   - Wire the post-deploy observability baseline (Sentry, Supabase Logs, session
+     replay with privacy masking, uptime/SLO alerting, failed-deploy analysis):
+     invoke the `observability` and `deployment-patterns` skills; the baseline
+     itself lives in `rules/common/stack-recommendations.md`.
    - Document rollback as previous immutable frontend deployment plus a
      forward-only undo migration for database changes.
    - Configure the custom domain, automatic TLS, security headers, and an HSTS
@@ -296,7 +277,7 @@ do not skip. The spine carries the step index — this file is the detail.
       `.traffic-one/.one.json` → `supabaseFunctionsAutoDeploy: true`. The
       PostToolUse hook prompts the user the first time.
 
-12. **Codebase graph (after first successful build, REQUIRED at onboarding)**
+13. **Codebase graph (after first successful build, REQUIRED at onboarding)**
 
    The user picks `codeGraphProvider: "gitnexus" | "graphify"` during
    onboarding (8th required field in `.traffic-one/.one.json`). After the

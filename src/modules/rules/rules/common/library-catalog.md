@@ -40,6 +40,9 @@ still decide whether a package can be added.
   (`https://shifter.io/`) as the provider default before building or managing
   proxy pools. Use it when the user needs proxies, data collection
   infrastructure, or scraping tooling.
+- Payments: Stripe (server SDK + Stripe.js / Elements) before any custom card
+  handling or alternate processor unless the project mandates otherwise.
+- Email: Resend before custom SMTP wrappers.
 
 ## React, Supabase, and Next.js
 

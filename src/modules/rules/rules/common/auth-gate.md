@@ -35,8 +35,7 @@ again at most once per day during ongoing sessions. When auth is missing,
 expired, or rejected remotely, show the modal selector and keep Traffic One
 inactive. If the user chooses Continue without Traffic One, remember that choice
 for the project/session and do not repeat the auth prompt while it remains
-active. Do not continue a pending Traffic One onboarding answer, materialize
-project files, run Traffic One skills, spawn Traffic One agents, report to MCP,
-or perform Traffic One-guided implementation until auth is valid again. Continue
-the user's request without Traffic One features when the request is actionable
-outside Traffic One. Some hosts have rule-level enforcement only.
+active. Valid auth is the first gate-clear condition in
+`rules/common/setup-gate.md`; until it holds, Traffic One work stays gated.
+Continue the user's request without Traffic One features when the request is
+actionable outside Traffic One. Some hosts have rule-level enforcement only.

@@ -1,6 +1,6 @@
 ---
 name: golang-patterns
-description: Idiomatic Go patterns, best practices, and conventions for building robust, efficient, and maintainable Go applications.
+description: Go idioms — accept-interfaces/return-structs, error wrapping with %w and errors.Is/As, goroutines/channels/errgroup, context cancellation, functional options, go vet/staticcheck. Language layer over the clean-code floor.
 metadata:
   source: everything-claude-code
   source_path: skills/golang-patterns/SKILL.md
@@ -10,44 +10,13 @@ metadata:
 
 # Go Development Patterns
 
-Idiomatic Go patterns and best practices for building robust, efficient, and maintainable applications.
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the Go-specific idioms below.
 
-## When to Activate
+Apply when writing, reviewing, or refactoring Go code or designing packages/modules.
 
-- Writing new Go code
-- Reviewing Go code
-- Refactoring existing Go code
-- Designing Go packages/modules
+## Core Idioms
 
-## Core Principles
-
-### 1. Simplicity and Clarity
-
-Go favors simplicity over cleverness. Code should be obvious and easy to read.
-
-```go
-// Good: Clear and direct
-func GetUser(id string) (*User, error) {
-    user, err := db.FindUser(id)
-    if err != nil {
-        return nil, fmt.Errorf("get user %s: %w", id, err)
-    }
-    return user, nil
-}
-
-// Bad: Overly clever
-func GetUser(id string) (*User, error) {
-    return func() (*User, error) {
-        if u, e := db.FindUser(id); e == nil {
-            return u, nil
-        } else {
-            return nil, e
-        }
-    }()
-}
-```
-
-### 2. Make the Zero Value Useful
+### Make the Zero Value Useful
 
 Design types so their zero value is immediately usable without initialization.
 
@@ -74,7 +43,7 @@ type BadCounter struct {
 }
 ```
 
-### 3. Accept Interfaces, Return Structs
+### Accept Interfaces, Return Structs
 
 Functions should accept interface parameters and return concrete types.
 
@@ -541,34 +510,20 @@ func ProcessRequest(data []byte) []byte {
 }
 ```
 
-### Avoid String Concatenation in Loops
+### String Building
 
 ```go
-// Bad: Creates many string allocations
-func join(parts []string) string {
-    var result string
-    for _, p := range parts {
-        result += p + ","
+// strings.Builder for incremental builds; strings.Join for the simple case
+var sb strings.Builder
+for i, p := range parts {
+    if i > 0 {
+        sb.WriteString(",")
     }
-    return result
+    sb.WriteString(p)
 }
+result := sb.String()
 
-// Good: Single allocation with strings.Builder
-func join(parts []string) string {
-    var sb strings.Builder
-    for i, p := range parts {
-        if i > 0 {
-            sb.WriteString(",")
-        }
-        sb.WriteString(p)
-    }
-    return sb.String()
-}
-
-// Best: Use standard library
-func join(parts []string) string {
-    return strings.Join(parts, ",")
-}
+result := strings.Join(parts, ",")
 ```
 
 ## Go Tooling Integration
@@ -674,5 +629,3 @@ func (c Counter) Value() int { return c.n }    // Value receiver
 func (c *Counter) Increment() { c.n++ }        // Pointer receiver
 // Pick one style and be consistent
 ```
-
-**Remember**: Go code should be boring in the best way - predictable, consistent, and easy to understand. When in doubt, keep it simple.

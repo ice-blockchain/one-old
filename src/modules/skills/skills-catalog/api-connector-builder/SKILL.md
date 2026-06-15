@@ -21,7 +21,7 @@ The point is to match the host repository's pattern:
 - test style
 - registration/discovery wiring
 
-## When to Use
+## When to Activate
 
 - "Build a Jira connector for this project"
 - "Add a Slack provider following the existing pattern"
@@ -120,4 +120,3 @@ src/integrations/
 
 - `backend-patterns`
 - `mcp-server-patterns`
-- `github-ops`

@@ -23,9 +23,10 @@ defines mode/stack detection.
   mode, team confirmation, project context, mobile, code graph) and the state writes.
   Pointing the user at the wizard URL is the only onboarding action.
 - While setup is incomplete the onboarding gate denies mutating tools with the wizard
-  URL and allows read-only orientation (pwd, ls, reading files, searching). Surface the
-  URL, let the user finish in their browser (inline where the host supports it), then
-  continue the original request — Traffic One picks up where you left off.
+  URL (gate-clear conditions and the read-only-orientation allowance live in
+  `rules/common/setup-gate.md`). Surface the URL, let the user finish in their browser
+  (inline where the host supports it), then continue the original request — Traffic One
+  picks up where you left off.
 - Do not tell the user to restart the host. If the user prefers not to use Traffic One,
   they choose "Continue without Traffic One" from the auth prompt.
 

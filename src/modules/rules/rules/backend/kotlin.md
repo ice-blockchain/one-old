@@ -26,14 +26,9 @@ Backend-focused rules for kotlin projects.
 - Set HTTP client/server timeouts explicitly.
 
 ## Security
-- Never hardcode API keys, tokens, or credentials.
-- Use environment variables, CI secrets, or a production secret manager.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
 - Use HTTPS for external traffic and validate server responses before use.
 - Use parameterized queries with JDBC, Exposed, SQLDelight, Room, or the active database layer.
-- Validate file paths and user input before processing.
-- Do not log tokens, credentials, or PII.
-- Prefer framework/provider auth plugins over custom password, session, or JWT
-  implementations.
 
 ## Testing
 - Use `kotlin.test` or JUnit 5 for backend unit tests.

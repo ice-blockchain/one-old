@@ -26,14 +26,11 @@ Backend-focused rules for rust projects.
 - Use typed API response envelopes for success/error serialization.
 
 ## Security
-- Never hardcode credentials; read secrets from environment variables or a secret manager.
-- Fail fast when required secrets are missing at startup.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
 - Document every `unsafe` block with a `SAFETY:` comment and keep unsafe code isolated.
 - Run `cargo audit`, `cargo deny check`, and inspect `cargo tree` for dependency risk.
-- Return generic client errors; log details server-side with `tracing` or `log`.
+- Log details server-side with `tracing` or `log`; return generic client errors.
 - Use parameterized queries through SQLx, Diesel, tokio-postgres, or the active DB layer.
-- Prefer framework/provider auth crates or upstream identity providers over
-  custom password, session, or JWT implementations.
 
 ## Testing
 - Use `#[test]` and `#[cfg(test)]` modules for unit tests.

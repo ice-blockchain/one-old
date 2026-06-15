@@ -12,6 +12,8 @@ metadata:
 
 Use when adding auth, handling input, creating endpoints, or dealing with secrets.
 
+The framework-agnostic security checklist (secrets, input validation, parameterized SQL, output escaping, authn/authz, CORS, rate limiting, security headers, dependency audit, error sanitization) and the Traffic One pre-deploy gate are owned by the always-on `rules/common/security.md` — that rule is the source of truth; do not restate or fork it here. Below are only the framework-specific specifics.
+
 ## When to Activate
 
 - Adding authentication (JWT, OAuth2, session-based)
@@ -26,9 +28,10 @@ Use when adding auth, handling input, creating endpoints, or dealing with secret
 
 - Prefer Spring Security, OAuth2 resource server/client support, or a managed
   identity provider before custom password/session/JWT code.
-- Prefer stateless JWT or opaque tokens with revocation list
-- Use `httpOnly`, `Secure`, `SameSite=Strict` cookies for sessions
-- Validate tokens with `OncePerRequestFilter` or resource server
+- For token contents, signing, validation, rotation, revocation, and storage
+  (httpOnly/Secure/SameSite cookies vs in-memory), defer to the `jwt-security`
+  skill — it is the canonical owner.
+- Validate tokens with `OncePerRequestFilter` or the OAuth2 resource server.
 
 ```java
 @Component
@@ -248,31 +251,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
 
 ## Dependency Security
 
-- Run OWASP Dependency Check / Snyk in CI
-- Keep Spring Boot and Spring Security on supported versions
-- Fail builds on known CVEs
-
-## Logging and PII
-
-- Never log secrets, tokens, passwords, or full PAN data
-- Redact sensitive fields; use structured JSON logging
-
-## File Uploads
-
-- Validate size, content type, and extension
-- Store outside web root; scan if required
-
-## Checklist Before Release
-
-- [ ] Auth tokens validated and expired correctly
-- [ ] Authorization guards on every sensitive path
-- [ ] All inputs validated and sanitized
-- [ ] No string-concatenated SQL
-- [ ] CSRF posture correct for app type
-- [ ] Secrets externalized; none committed
-- [ ] Security headers configured
-- [ ] Rate limiting on APIs
-- [ ] Dependencies scanned and up to date
-- [ ] Logs free of sensitive data
+- Run OWASP Dependency Check / Snyk in CI; fail builds on known CVEs.
+- Keep Spring Boot and Spring Security on supported versions.
 
 **Remember**: Deny by default, validate inputs, least privilege, and secure-by-configuration first.

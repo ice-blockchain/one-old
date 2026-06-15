@@ -45,15 +45,16 @@ Three host-agnostic capability tiers, ordered most → least capable:
 - `balanced` — the strong mid-tier used for most implementation + review.
 - `cheapest` — the fast, low-cost model used for QA and high-volume work.
 
-Each performance level maps agents to tiers (see `performance-config.cjs`); this
-skill only changes which concrete model each tier resolves to per host. Never
-reorder or rename the tiers, and never change `performance-config.cjs`.
+Each performance level maps agents to tiers (see `src/shared/performance-config.ts`);
+this skill only changes which concrete model each tier resolves to per host. Never
+reorder or rename the tiers, and never change `src/shared/performance-config.ts`.
 
 ## Procedure
 
-1. **Locate the file.** It lives at
-   `${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime/model-tiers.cjs`.
-   Read it and note the current `HOST_MODELS` table (claude / cursor / codex rows).
+1. **Locate the file.** In the plugin authoring repo it is `src/config/model-tiers.ts` —
+   read it and note the current `HOST_MODELS` table (claude / cursor / codex rows).
+   (In an installed plugin the compiled copy is `scripts/config/model-tiers.js`, but
+   that is overwritten on every plugin update — edit the source, see *Skip when*.)
 
 2. **Research the current model lineup — official sources only.** Use WebSearch /
    WebFetch against the providers' own docs. Do NOT guess or use a model name you
@@ -75,15 +76,18 @@ reorder or rename the tiers, and never change `performance-config.cjs`.
    - Claude Code Task/Agent `model` param accepts `opus` | `sonnet` | `haiku`.
    - Codex `spawn_agent` `model` param accepts the provider's concrete ids.
 
-4. **Edit ONLY the `HOST_MODELS` object.** Do not touch `TIER_IDS`,
-   `TIER_ALIASES`, the resolver functions, or any other file. Keep the existing
-   formatting and comments.
+4. **Edit ONLY the `HOST_MODELS` object** in `src/config/model-tiers.ts`. Do not
+   touch `TIER_IDS`, `TIER_ALIASES`, the resolver functions, or any other file.
+   Keep the existing formatting and comments.
 
-5. **Validate**:
+5. **Validate** (from the authoring repo root):
    ```bash
-   node -e "const m=require('./scripts/hook-runtime/model-tiers.cjs'); for (const t of m.TIER_IDS) for (const h of m.HOST_IDS) { const v=m.resolveModel(t,h); if(!v) throw new Error('missing '+t+'/'+h); console.log(t,h,v); }"
-   node -e "require('./scripts/hook-runtime/agents-performance-prompt.cjs'); require('./scripts/hook-runtime/directives/directives.cjs'); require('./scripts/hook-runtime/handlers/handlers.cjs'); console.log('load OK')"
+   npm run typecheck && npm test
    ```
+   `src/shared/__tests__/model-tiers.test.ts` exercises `resolveModel(tier, host)`
+   for every tier × host and asserts the expected ids — update its expected values
+   to match any cell you changed, or the test will fail. Then run `npm run plugin:build`
+   to refresh the compiled `scripts/config/model-tiers.js`.
 
 6. **Bump the plugin version** (patch) in all three manifests so a reload picks
    up the change: `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,

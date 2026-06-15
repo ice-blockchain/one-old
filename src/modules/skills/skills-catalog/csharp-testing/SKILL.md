@@ -12,6 +12,8 @@ metadata:
 
 Comprehensive testing patterns for .NET applications using xUnit, FluentAssertions, and modern testing practices.
 
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
+
 ## When to Activate
 
 - Writing new tests for C# code
@@ -32,7 +34,7 @@ Comprehensive testing patterns for .NET applications using xUnit, FluentAssertio
 
 ## Unit Test Structure
 
-### Arrange-Act-Assert
+xUnit's constructor runs per test (fresh `_sut`); `Substitute.For<T>()` builds NSubstitute fakes; FluentAssertions' `.Should()...` gives readable failures.
 
 ```csharp
 public sealed class OrderServiceTests
@@ -49,17 +51,14 @@ public sealed class OrderServiceTests
     [Fact]
     public async Task PlaceOrderAsync_ReturnsSuccess_WhenRequestIsValid()
     {
-        // Arrange
         var request = new CreateOrderRequest
         {
             CustomerId = "cust-123",
             Items = [new OrderItem("SKU-001", 2, 29.99m)]
         };
 
-        // Act
         var result = await _sut.PlaceOrderAsync(request, CancellationToken.None);
 
-        // Assert
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().NotBeNull();
         result.Value!.CustomerId.Should().Be("cust-123");
@@ -68,17 +67,14 @@ public sealed class OrderServiceTests
     [Fact]
     public async Task PlaceOrderAsync_ReturnsFailure_WhenNoItems()
     {
-        // Arrange
         var request = new CreateOrderRequest
         {
             CustomerId = "cust-123",
             Items = []
         };
 
-        // Act
         var result = await _sut.PlaceOrderAsync(request, CancellationToken.None);
 
-        // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error.Should().Contain("at least one item");
     }
@@ -293,16 +289,13 @@ var order = new OrderBuilder()
     .Build();
 ```
 
-## Common Anti-Patterns
+## C#-Specific Anti-Patterns
 
 | Anti-Pattern | Fix |
 |---|---|
-| Testing implementation details | Test behavior and outcomes |
-| Shared mutable test state | Fresh instance per test (xUnit does this via constructors) |
+| Shared mutable test state | Rely on xUnit's per-test constructor for a fresh instance |
 | `Thread.Sleep` in async tests | Use `Task.Delay` with timeout, or polling helpers |
 | Asserting on `ToString()` output | Assert on typed properties |
-| One giant assertion per test | One logical assertion per test |
-| Test names describing implementation | Name by behavior: `Method_ExpectedResult_WhenCondition` |
 | Ignoring `CancellationToken` | Always pass and verify cancellation |
 
 ## Running Tests

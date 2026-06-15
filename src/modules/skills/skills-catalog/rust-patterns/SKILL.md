@@ -1,6 +1,6 @@
 ---
 name: rust-patterns
-description: Idiomatic Rust patterns, ownership, error handling, traits, concurrency, and best practices for building safe, performant applications.
+description: Rust idioms — ownership/borrowing and Cow, Result/? over unwrap with thiserror/anyhow, exhaustive enum matching, traits/generics, Arc/Mutex/channels/Tokio, cargo clippy/fmt/audit. Language layer over the clean-code floor.
 metadata:
   source: everything-claude-code
   source_path: skills/rust-patterns/SKILL.md
@@ -10,22 +10,13 @@ metadata:
 
 # Rust Development Patterns
 
-Idiomatic Rust patterns and best practices for building safe, performant, and maintainable applications.
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the Rust-specific idioms below.
 
-## When to Use
-
-- Writing new Rust code
-- Reviewing Rust code
-- Refactoring existing Rust code
-- Designing crate structure and module layout
-
-## How It Works
+Apply when writing, reviewing, or refactoring Rust code or designing crate/module layout.
 
 This skill enforces idiomatic Rust conventions across six key areas: ownership and borrowing to prevent data races at compile time, `Result`/`?` error propagation with `thiserror` for libraries and `anyhow` for applications, enums and exhaustive pattern matching to make illegal states unrepresentable, traits and generics for zero-cost abstraction, safe concurrency via `Arc<Mutex<T>>`, channels, and async/await, and minimal `pub` surfaces organized by domain.
 
-## Core Principles
-
-### 1. Ownership and Borrowing
+## Ownership and Borrowing
 
 Rust's ownership system prevents data races and memory bugs at compile time.
 

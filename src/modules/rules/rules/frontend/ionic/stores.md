@@ -10,13 +10,13 @@ paths:
 
 # Ionic State Management
 
-React state rules still apply. Ionic-specific state should describe mobile shell
-and native capability concerns without duplicating server data.
+The state-ownership boundary table and the "server data lives in exactly one
+place" hard rule live in `rules/frontend/react/stores.md` and apply in full.
+Ionic-specific state describes mobile shell and native capability concerns
+without duplicating server data.
 
-## Ownership
+## Mobile shell ownership delta
 
-- Server data stays in RTK Query or Redux slices fed by services.
-- Cross-feature business state stays in Redux Toolkit.
 - Ephemeral mobile shell state may use zustand: active sheet, transient scanner
   state, dismissed permission explainer, or temporary keyboard layout state.
 - Native capability state is normalized before it enters Redux/zustand.

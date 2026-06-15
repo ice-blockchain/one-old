@@ -18,11 +18,11 @@ Before creating files, state:
 2. Files to create: `types.ts`, `api.ts` or `services/`, `hooks/`, `components/`, optional `slice.ts`, `index.ts`.
 3. Route/screen files under `apps/mobile/app/` if the feature needs navigation.
 4. API endpoints, schemas, and state ownership: RTK Query, Redux slice, zustand, or local state.
-5. Native design brief: user goal, primary workflow, first-screen hierarchy, CTA placement, density, safe-area/keyboard behavior, and state coverage.
+5. Design brief and state coverage: see `rules/frontend/ui-quality.md` (design brief/states), including safe-area/keyboard behavior.
 6. Tests: reducer/selector/service unit tests, RNTL integration tests, and Maestro flow when critical.
-7. i18n namespace/key pattern and catalog location in `packages/i18n`.
-8. Translation consumption in feature UI: `useTranslation`, `t`, or `<Trans>`.
-9. Visual QA plan: small phone and larger device screenshots, plus loading/empty/error/offline states.
+7. Visual QA plan: small phone and larger device screenshots, plus loading/empty/error/offline states.
+
+i18n module detection, `<Trans>` vs `t()` preference, and the hardcoded-strings exception are owned by the `i18n-text` skill (auto-applied to generated/changed UI). Follow it for copy — do not restate the rules here.
 
 Scaffold rules:
 - Server state goes in RTK Query or Redux fed by a WS service.
@@ -30,6 +30,4 @@ Scaffold rules:
 - Validate external input and responses with zod.
 - Do not add native dependencies without the dependency quality gate and Expo Doctor compatibility check.
 - Keep route files thin; feature logic lives in the feature folder.
-- Feature UI copy, placeholders, validation errors, accessibility labels/hints, and loading/error/empty states use translation keys.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
 - Keep server state in RTK Query/Redux and design the UI around native scan order, touch targets, and dynamic type instead of desktop layout parity.

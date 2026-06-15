@@ -1,6 +1,6 @@
 ---
 name: springboot-patterns
-description: Spring Boot architecture patterns, REST API design, layered services, data access, caching, async processing, and logging. Use for Java Spring Boot backend work.
+description: Spring Boot architecture patterns, REST API design, layered services, caching, async processing, and logging. Use for Java Spring Boot backend work (JPA/persistence specifics → jpa-patterns).
 metadata:
   source: everything-claude-code
   source_path: skills/springboot-patterns/SKILL.md

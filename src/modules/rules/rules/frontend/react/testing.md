@@ -52,14 +52,10 @@ export function renderWithProviders(
 - Preset: `ts-jest` or `@swc/jest` for speed.
 - `testEnvironment: "jsdom"`.
 - `setupFilesAfterEach`: import `@testing-library/jest-dom` for matchers (`toBeInTheDocument`, `toHaveAccessibleName`).
-- Aim for ≥80% coverage on `apps/*/src/features/` and on every `packages/*` library.
 
 ## Real-time tests in React
 
-- Use the in-memory WS fake from `frontend/realtime.md`.
-- Render a component via `renderWithProviders` against a store where the WS bridge middleware is wired to the fake.
-- Push frames synchronously via `fake.push(...)`, then assert `await screen.findByText(...)`.
-- Cover: connect → first message, disconnect → degraded UI, reconnect → backlog drain, malformed frame ignored.
+Real-time test contract and coverage matrix: see `rules/frontend/testing.md`. React delta: render via `renderWithProviders` against a store whose WS bridge middleware is wired to the in-memory fake, then `await screen.findByText(...)`.
 
 ## Accessibility assertions
 

@@ -191,25 +191,23 @@ BEGIN
 END $$;
 ```
 
-## Prisma (TypeScript/Node.js)
+## Per-ORM Commands
 
-### Workflow
+Every tool below follows the same workflow: **create** a migration from schema
+changes (dev), **apply** pending migrations (production), and **roll back** via a
+new forward migration (or the tool's down/reset in dev only). The PostgreSQL
+safety patterns above still apply regardless of tool. Only the commands differ.
+
+### Prisma (TypeScript/Node.js)
 
 ```bash
-# Create migration from schema changes
-npx prisma migrate dev --name add_user_avatar
-
-# Apply pending migrations in production
-npx prisma migrate deploy
-
-# Reset database (dev only)
-npx prisma migrate reset
-
-# Generate client after schema changes
-npx prisma generate
+npx prisma migrate dev --name add_user_avatar  # create from schema changes
+npx prisma migrate deploy                       # apply pending (production)
+npx prisma migrate reset                        # reset (dev only)
+npx prisma generate                             # regenerate client after changes
 ```
 
-### Schema Example
+### Prisma Schema Example
 
 ```prisma
 model User {
@@ -226,7 +224,7 @@ model User {
 }
 ```
 
-### Custom SQL Migration
+#### Prisma Custom SQL Migration
 
 For operations Prisma cannot express (concurrent indexes, data backfills):
 
@@ -241,22 +239,15 @@ npx prisma migrate dev --create-only --name add_email_index
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_users_email ON users (email);
 ```
 
-## Drizzle (TypeScript/Node.js)
-
-### Workflow
+### Drizzle (TypeScript/Node.js)
 
 ```bash
-# Generate migration from schema changes
-npx drizzle-kit generate
-
-# Apply migrations
-npx drizzle-kit migrate
-
-# Push schema directly (dev only, no migration file)
-npx drizzle-kit push
+npx drizzle-kit generate  # create migration from schema changes
+npx drizzle-kit migrate   # apply migrations
+npx drizzle-kit push      # push schema directly (dev only, no migration file)
 ```
 
-### Schema Example
+### Drizzle Schema Example
 
 ```typescript
 import { pgTable, text, timestamp, uuid, boolean } from "drizzle-orm/pg-core";
@@ -271,28 +262,17 @@ export const users = pgTable("users", {
 });
 ```
 
-## Kysely (TypeScript/Node.js)
-
-### Workflow (kysely-ctl)
+### Kysely (TypeScript/Node.js)
 
 ```bash
-# Initialize config file (kysely.config.ts)
-kysely init
-
-# Create a new migration file
-kysely migrate make add_user_avatar
-
-# Apply all pending migrations
-kysely migrate latest
-
-# Rollback last migration
-kysely migrate down
-
-# Show migration status
-kysely migrate list
+kysely init                          # initialize config (kysely.config.ts)
+kysely migrate make add_user_avatar  # create a new migration file
+kysely migrate latest                # apply all pending
+kysely migrate down                  # roll back last (dev)
+kysely migrate list                  # show migration status
 ```
 
-### Migration File
+### Kysely Migration File
 
 ```typescript
 // migrations/2024_01_15_001_create_user_profile.ts
@@ -323,7 +303,7 @@ export async function down(db: Kysely<any>): Promise<void> {
 }
 ```
 
-### Programmatic Migrator
+#### Kysely Programmatic Migrator
 
 ```typescript
 import { Migrator, FileMigrationProvider } from 'kysely'
@@ -365,25 +345,16 @@ if (error) {
 }
 ```
 
-## Django (Python)
-
-### Workflow
+### Django (Python)
 
 ```bash
-# Generate migration from model changes
-python manage.py makemigrations
-
-# Apply migrations
-python manage.py migrate
-
-# Show migration status
-python manage.py showmigrations
-
-# Generate empty migration for custom SQL
-python manage.py makemigrations --empty app_name -n description
+python manage.py makemigrations                          # create from model changes
+python manage.py migrate                                 # apply migrations
+python manage.py showmigrations                          # show migration status
+python manage.py makemigrations --empty app_name -n desc # empty migration for custom SQL
 ```
 
-### Data Migration
+### Django Data Migration
 
 ```python
 from django.db import migrations
@@ -409,7 +380,7 @@ class Migration(migrations.Migration):
     ]
 ```
 
-### SeparateDatabaseAndState
+#### Django SeparateDatabaseAndState
 
 Remove a column from the Django model without dropping it from the database immediately:
 
@@ -425,25 +396,16 @@ class Migration(migrations.Migration):
     ]
 ```
 
-## golang-migrate (Go)
-
-### Workflow
+### golang-migrate (Go)
 
 ```bash
-# Create migration pair
-migrate create -ext sql -dir migrations -seq add_user_avatar
-
-# Apply all pending migrations
-migrate -path migrations -database "$DATABASE_URL" up
-
-# Rollback last migration
-migrate -path migrations -database "$DATABASE_URL" down 1
-
-# Force version (fix dirty state)
-migrate -path migrations -database "$DATABASE_URL" force VERSION
+migrate create -ext sql -dir migrations -seq add_user_avatar      # create up/down pair
+migrate -path migrations -database "$DATABASE_URL" up             # apply all pending
+migrate -path migrations -database "$DATABASE_URL" down 1         # roll back last
+migrate -path migrations -database "$DATABASE_URL" force VERSION  # fix dirty state
 ```
 
-### Migration Files
+### golang-migrate Migration Files
 
 ```sql
 -- migrations/000003_add_user_avatar.up.sql

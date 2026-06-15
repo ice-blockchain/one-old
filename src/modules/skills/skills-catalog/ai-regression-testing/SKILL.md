@@ -1,6 +1,6 @@
 ---
 name: ai-regression-testing
-description: Regression testing strategies for AI-assisted development. Sandbox-mode API testing without database dependencies, automated bug-check workflows, and patterns to catch AI blind spots where the same model writes and reviews code.
+description: Regression testing for AI-assisted development. Sandbox-mode DB-free API testing, automated bug-check workflows, and patterns catching AI blind spots where the same model writes and reviews code.
 metadata:
   source: everything-claude-code
   source_path: skills/ai-regression-testing/SKILL.md
@@ -52,77 +52,21 @@ The pattern: **sandbox/production path inconsistency** is the #1 AI-introduced r
 
 Most projects with AI-friendly architecture have a sandbox/mock mode. This is the key to fast, DB-free API testing.
 
-### Setup (Vitest + Next.js App Router)
+### Setup
 
-```typescript
-// vitest.config.ts
-import { defineConfig } from "vitest/config";
-import path from "path";
+The pattern needs two pieces of scaffolding (see the `tdd-workflow` skill and
+your language testing skill for the framework-specific config and helper
+boilerplate):
 
-export default defineConfig({
-  test: {
-    environment: "node",
-    globals: true,
-    include: ["__tests__/**/*.test.ts"],
-    setupFiles: ["__tests__/setup.ts"],
-  },
-  resolve: {
-    alias: {
-      "@": path.resolve(__dirname, "."),
-    },
-  },
-});
-```
+1. A test setup file that **forces sandbox mode and blanks the DB credentials**
+   (e.g. `process.env.SANDBOX_MODE = "true"` plus empty Supabase URL/key) so
+   routes run with no database.
+2. A small `createTestRequest(url, options)` helper that builds a request with
+   method/body/headers and injects a sandbox user id header (e.g.
+   `x-sandbox-user-id`), plus a `parseResponse` helper returning `{ status, json }`.
 
-```typescript
-// __tests__/setup.ts
-// Force sandbox mode — no database needed
-process.env.SANDBOX_MODE = "true";
-process.env.NEXT_PUBLIC_SUPABASE_URL = "";
-process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY = "";
-```
-
-### Test Helper for Next.js API Routes
-
-```typescript
-// __tests__/helpers.ts
-import { NextRequest } from "next/server";
-
-export function createTestRequest(
-  url: string,
-  options?: {
-    method?: string;
-    body?: Record<string, unknown>;
-    headers?: Record<string, string>;
-    sandboxUserId?: string;
-  },
-): NextRequest {
-  const { method = "GET", body, headers = {}, sandboxUserId } = options || {};
-  const fullUrl = url.startsWith("http") ? url : `http://localhost:3000${url}`;
-  const reqHeaders: Record<string, string> = { ...headers };
-
-  if (sandboxUserId) {
-    reqHeaders["x-sandbox-user-id"] = sandboxUserId;
-  }
-
-  const init: { method: string; headers: Record<string, string>; body?: string } = {
-    method,
-    headers: reqHeaders,
-  };
-
-  if (body) {
-    init.body = JSON.stringify(body);
-    reqHeaders["content-type"] = "application/json";
-  }
-
-  return new NextRequest(fullUrl, init);
-}
-
-export async function parseResponse(response: Response) {
-  const json = await response.json();
-  return { status: response.status, json };
-}
-```
+With those in place, you call the route handler directly and assert on the
+response shape — no server, no DB, sub-second runs.
 
 ### Writing Regression Tests
 
@@ -253,14 +197,14 @@ User: "バグチェックして" (or "/bug-check")
 **Frequency**: Most common (observed in 3 out of 4 regressions)
 
 ```typescript
-// FAIL: AI adds field to production path only
+// BAD: AI adds field to production path only
 if (isSandboxMode()) {
   return { data: { id, email, name } };  // Missing new field
 }
 // Production path
 return { data: { id, email, name, notification_settings } };
 
-// PASS: Both paths must return the same shape
+// GOOD: Both paths must return the same shape
 if (isSandboxMode()) {
   return { data: { id, email, name, notification_settings: null } };
 }
@@ -286,7 +230,7 @@ it("sandbox and production return same fields", async () => {
 **Frequency**: Common with Supabase/Prisma when adding new columns
 
 ```typescript
-// FAIL: New column added to response but not to SELECT
+// BAD: New column added to response but not to SELECT
 const { data } = await supabase
   .from("users")
   .select("id, email, name")  // notification_settings not here
@@ -295,7 +239,7 @@ const { data } = await supabase
 return { data: { ...data, notification_settings: data.notification_settings } };
 // → notification_settings is always undefined
 
-// PASS: Use SELECT * or explicitly include new columns
+// GOOD: Use SELECT * or explicitly include new columns
 const { data } = await supabase
   .from("users")
   .select("*")
@@ -307,13 +251,13 @@ const { data } = await supabase
 **Frequency**: Moderate — when adding error handling to existing components
 
 ```typescript
-// FAIL: Error state set but old data not cleared
+// BAD: Error state set but old data not cleared
 catch (err) {
   setError("Failed to load");
   // reservations still shows data from previous tab!
 }
 
-// PASS: Clear related state on error
+// GOOD: Clear related state on error
 catch (err) {
   setReservations([]);  // Clear stale data
   setError("Failed to load");
@@ -323,14 +267,14 @@ catch (err) {
 ### Pattern 4: Optimistic Update Without Proper Rollback
 
 ```typescript
-// FAIL: No rollback on failure
+// BAD: No rollback on failure
 const handleRemove = async (id: string) => {
   setItems(prev => prev.filter(i => i.id !== id));
   await fetch(`/api/items/${id}`, { method: "DELETE" });
   // If API fails, item is gone from UI but still in DB
 };
 
-// PASS: Capture previous state and rollback on failure
+// GOOD: Capture previous state and rollback on failure
 const handleRemove = async (id: string) => {
   const prevItems = [...items];
   setItems(prev => prev.filter(i => i.id !== id));

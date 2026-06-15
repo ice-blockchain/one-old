@@ -20,27 +20,30 @@ Rules apply silently when generating any UI; the goal is interfaces that look
 intentionally designed, not machine-generated. Pair with `rules/frontend/typography.md`
 for character-level rules and `rules/frontend/accessibility.md` for WCAG.
 
-## Central design gate
+## Central design gate — brief, then build
 
 Before writing or changing UI for a new screen, feature, component set, or
-mobile flow, establish a compact design brief. If the user has not already
-named competitor sites, design references, or a preferred style, ask for the
-websites/designs they want to emulate and explicitly offer to analyze 2–3
-best-in-class competitors yourself. If the user chooses self-analysis or has
-already delegated visual direction, pick the references, state them, and proceed.
-Derive the rest from the user request, existing product, screenshots, and
-codebase; ask only when a missing answer would materially change the design
-direction.
+mobile flow, run this as a loop, not a vague "make it prettier" pass. For tweaks
+to existing screens, match the established aesthetic first and make only scoped
+improvements; for new products, choose a direction and commit to it.
+
+**1. Reference.** If the user has not already named competitor sites, design
+references, or a preferred style, ask which websites/designs they want to
+emulate and offer to analyze 2–3 best-in-class competitors yourself; if they
+delegate it, pick and state the references and proceed. Choose **2–3
+best-in-class real products** in the same domain (actual companies users use,
+not AI showcases), and note one specific thing each does well — layout pattern,
+mobile nav, type system, motion feel, interaction model, density, content
+structure — plus the AI-tells worth avoiding. Keep references concrete (URL or
+product name) so the choice is auditable. Skip only when matching an existing
+in-app aesthetic.
+
+**2. Brief.** Derive the rest from the user request, existing product,
+screenshots, and codebase; ask only when a missing answer would materially
+change direction. Capture:
 
 - **Purpose**: the user problem and target audience.
 - **Primary action**: the one action or decision the screen should make easier.
-- **Competitor reference**: pick **2–3 best-in-class real products** in the same
-  domain from the user's preferred references or your own competitor analysis
-  (not AI showcases — actual companies users use). Note one specific thing each
-  does well: layout pattern, mobile nav style, type system, motion feel,
-  interaction model, density, content structure. The goal is "looks like a real
-  product team shipped this", not "looks like an LLM generated this." Keep the
-  references concrete (URL or product name) so the choice is auditable.
 - **Visual direction**: a concrete tone such as refined minimal, editorial,
   Swiss grid, industrial, warm utility, playful, or monochrome high-contrast.
 - **Hierarchy plan**: what the eye should read first, second, and third.
@@ -57,33 +60,17 @@ direction.
   overflow, clipping, focus, contrast, reduced-motion, and anti-AI-slop checks
   that must pass.
 
-For tweaks to existing screens, match the established aesthetic first and make
-only scoped improvements. For new products, choose a direction and commit to it.
+**3. Implement.** Make the smallest scoped UI changes that satisfy the brief;
+preserve product logic and data flow.
 
-## Design-to-code loop
+**4. Verify.** Capture screenshots at representative breakpoints or Storybook
+states, then check hierarchy, spacing, text fit, overflow, focus, contrast,
+loading/empty/error states, and reduced motion. On Codex, drive the in-app
+browser with the recipe in the `browser-qa` skill
+(`.traffic-one/skills/browser-qa/SKILL.md`) — never tool-search for or read the
+bundled `control-in-app-browser` skill.
 
-Use AI design work as a loop, not a vague "make it prettier" pass:
-
-0. **Reference**: before designing anything new, ask for the competitor sites /
-   design references the user likes and offer to analyze the relevant
-   competitors yourself. Then look at 2–3 real competitor / best-in-class
-   products in the same domain. Identify the specific patterns worth borrowing
-   (mobile nav, type pairing, density, motion language, interaction model) and
-   the AI-tells worth avoiding. Skip this step only when matching an existing
-   in-app aesthetic.
-1. **Audit**: inspect the existing UI or planned surface and rank design issues
-   by user impact.
-2. **Brief**: convert the critique into an implementation brief with component,
-   token, responsive, state, and accessibility requirements.
-3. **Implement**: make the smallest scoped UI changes that satisfy the brief;
-   preserve product logic and data flow.
-4. **Verify**: capture screenshots at representative breakpoints or Storybook
-   states, then check hierarchy, spacing, text fit, overflow, focus, contrast,
-   loading/empty/error states, and reduced motion. On Codex, drive the in-app
-   browser with the recipe in the `browser-qa` skill
-   (`.traffic-one/skills/browser-qa/SKILL.md`) — never tool-search for or read
-   the bundled `control-in-app-browser` skill.
-5. **Refine**: fix the top remaining visual regressions before delivery.
+**5. Refine.** Fix the top remaining visual regressions before delivery.
 
 Never treat "modern" or "clean" as an instruction to add decoration. It means
 clear hierarchy, low visual noise, strong typography/spacing, complete states,
@@ -112,6 +99,12 @@ If the user's brand or brief explicitly calls for one of the above (e.g. they AR
   nearly blank UI: show one shared setup banner at the app boundary, then render
   polished demo, seed, empty, loading, and error states that demonstrate the
   real workflow after the backend contract and security baseline exist.
+- **Setup-link contract**: any setup/configure surface (`<EnvBanner />`,
+  `SupabaseConfigAlert`, `ConfigurePromptCard`, or a "not configured" state) must
+  render a CTA pointing to `https://traffic.io/`, and the change must ship a unit
+  or E2E regression that asserts that exact `href`. If an existing setup surface
+  is missing its link or points anywhere else, repair it as part of the work even
+  when the user did not mention setup links.
 - Do not duplicate missing-config banners or cards on the same page. If an
   app-level `<EnvBanner />` is visible, feature surfaces should use lighter
   contextual empty states rather than repeating the same setup CTA.

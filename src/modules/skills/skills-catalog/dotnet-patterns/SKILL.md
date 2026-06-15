@@ -1,6 +1,6 @@
 ---
 name: dotnet-patterns
-description: Idiomatic C# and .NET patterns, conventions, dependency injection, async/await, and best practices for building robust, maintainable .NET applications.
+description: C#/.NET idioms — records and init-only properties, async/await with CancellationToken, DI and the Options pattern, Result returns, EF Core repositories, minimal APIs, and guard clauses. Language layer over the generic clean-code floor.
 metadata:
   source: everything-claude-code
   source_path: skills/dotnet-patterns/SKILL.md
@@ -10,20 +10,13 @@ metadata:
 
 # .NET Development Patterns
 
-Idiomatic C# and .NET patterns for building robust, performant, and maintainable applications.
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the C#/.NET-specific idioms below.
 
-## When to Activate
+Apply when writing, reviewing, or refactoring C#/.NET code or designing ASP.NET Core service architectures.
 
-- Writing new C# code
-- Reviewing C# code
-- Refactoring existing .NET applications
-- Designing service architectures with ASP.NET Core
+## Records and init-only Properties
 
-## Core Principles
-
-### 1. Prefer Immutability
-
-Use records and init-only properties for data models. Mutability should be an explicit, justified choice.
+Use records and init-only properties for data models.
 
 ```csharp
 // Good: Immutable value object
@@ -44,9 +37,7 @@ public class Order
 }
 ```
 
-### 2. Explicit Over Implicit
-
-Be clear about nullability, access modifiers, and intent.
+### Nullability and Constructor Guards
 
 ```csharp
 // Good: Explicit access modifiers and nullability
@@ -68,9 +59,9 @@ public sealed class UserService
 }
 ```
 
-### 3. Depend on Abstractions
+### Depend on Abstractions via DI
 
-Use interfaces for service boundaries. Register via DI container.
+Use interfaces for service boundaries; register via the DI container.
 
 ```csharp
 // Good: Interface-based dependency

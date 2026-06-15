@@ -26,15 +26,11 @@ Backend-focused rules for java projects.
 - Use builders for request/search criteria with many optional parameters.
 
 ## Security
-- Never hardcode secrets; use environment variables or a production secret manager.
-- Always use parameterized SQL (`PreparedStatement`, JDBC template, JPA parameters).
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
+- Use parameterized SQL via `PreparedStatement`, JDBC template, or JPA parameters.
 - Validate input at system boundaries with Bean Validation or explicit guards.
 - Store passwords with bcrypt or Argon2; never MD5/SHA1.
-- Enforce authorization at endpoint/service boundaries.
-- Prefer framework/provider auth modules and authorization policies over custom
-  token parsing or session code.
 - Scan dependencies with OWASP Dependency-Check, Snyk, or equivalent.
-- Map exceptions to safe client messages; never expose stack traces or SQL errors.
 
 ## Testing
 - Use JUnit 5 for unit and integration tests.

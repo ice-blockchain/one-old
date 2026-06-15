@@ -1,6 +1,6 @@
 ---
 name: supabase-setup
-description: PROACTIVELY walk a beginner through getting a real Supabase backend connected to a fresh project AND apply the local migrations to it. TRIGGER on "set up Supabase", "configure Supabase", "connect Supabase", "I don't have keys yet", "where do I get the URL", "where's my anon key", "how do I link my project", "run migrations", "apply schema", "auto run supabase", or whenever a `new-project` scaffold has just written `supabase/migrations/*.sql` and `.env.local` is still missing or empty. Cloud-first by default — also offers the fully-automatic local-first path (`pnpm db:start`, Docker required) for users who want zero dashboard work. After this skill runs, the schema is live and the `<EnvBanner />` is gone — do not finish a scaffold by listing manual SQL-editor steps in README; invoke this skill.
+description: PROACTIVELY connect a real Supabase backend and apply its local migrations. TRIGGER on "set up/configure/connect Supabase", "where's my anon key", "how do I link my project", "run migrations", "apply schema", or a fresh scaffold with `supabase/migrations/*.sql` but empty `.env.local`. Cloud-first, with a Docker local path; ends with schema live and `<EnvBanner />` gone.
 ---
 
 # Supabase setup — get keys, link, and push migrations

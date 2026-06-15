@@ -14,7 +14,7 @@ metadata:
 
 A comprehensive verification system for agent sessions.
 
-## When to Use
+## When to Activate
 
 Invoke this skill:
 - After completing a feature or significant code change
@@ -72,18 +72,28 @@ Report:
 - Failed: X
 - Coverage: X%
 
+Coverage target is 80% overall. Apply a higher bar to logic-heavy layers:
+
+| Layer | Target |
+| --- | --- |
+| Business logic / services | 90%+ |
+| Models / data access | 90%+ |
+| API handlers / controllers | 80%+ |
+| Serializers / DTOs / view models | 85%+ |
+| Overall | 80%+ |
+
 ### Phase 5: Security Scan
 ```bash
-# Traffic One pre-deploy scanner
+# Traffic One pre-deploy scanner (authoritative secret/credential scan)
 node ~/.traffic-one/bin/security-check-runner.cjs --strict --no-stamp
 
-# Check for secrets
-grep -rn "sk-" --include="*.ts" --include="*.js" . 2>/dev/null | head -10
-grep -rn "api_key" --include="*.ts" --include="*.js" . 2>/dev/null | head -10
-
-# Check for console.log
+# Leftover debug logging in shipped source
 grep -rn "console.log" --include="*.ts" --include="*.tsx" src/ 2>/dev/null | head -10
 ```
+
+Do not hand-roll secret greps (`sk-`, `api_key`, etc.); the pre-deploy
+scanner is the authoritative secret/credential detector. See
+`rules/common/security.md` and the `predeploy-security-check` skill.
 
 ### Phase 6: Diff Review
 ```bash
@@ -148,18 +158,19 @@ Capacitor app, or preview/prod release is actually shippable. Score only from
 verified evidence. If evidence is missing, mark the item `UNVERIFIED` and award
 partial or no credit instead of assuming it exists.
 
-Score out of 100 across 8 weighted dimensions:
+Score out of 100 across 8 weighted dimensions. Award full credit only on
+verified evidence; mark missing items `UNVERIFIED` for partial/no credit.
 
-| Dimension | Weight | Evidence |
+| Dimension | Weight | Key evidence |
 | --- | ---: | --- |
-| Security and privacy | 18 | Traffic One pre-deploy scanner / Section 1 security gate passes; OWASP Top 10:2025 risks are addressed; ASVS-relevant auth, session, access control, validation, and logging controls exist; secrets are rotated after exposure; RLS is enabled on every public Supabase table; sensitive/PII columns have least-privilege access. |
-| Code quality | 12 | Build, typecheck, lint, and tests pass; no `any` in critical auth/payment/data paths; no dead routes; no unresolved `TODO`/`FIXME` in payment, auth, RLS, or deployment code. |
-| Architecture and config | 12 | UI, data access, and business logic are separated; state ownership is consistent; no god component/service; config follows 12-factor environment config. |
-| Performance | 12 | Lighthouse mobile and field/CrUX evidence show Core Web Vitals at the 75th percentile: LCP <= 2.5s, INP <= 200ms, CLS <= 0.1. If field data is unavailable, mark CrUX/RUM as `UNVERIFIED` and use lab data only for partial credit. |
-| Deployment readiness | 12 | Reproducible build; pinned runtime and lockfile; immutable releases; strict build/release/run separation; preview environments per PR; documented rollback to previous frontend artifact plus forward-only DB undo migration; staging soft-launch evidence and provider env vars in encrypted stores. |
-| Database safety | 12 | RLS coverage is 100%; RLS-referenced columns are indexed; migrations are in git and applied by CI; backups are restore-tested; destructive migrations have a tested forward-only rollback or are blocked. |
-| Reliability and observability | 12 | Async routes have error boundaries; transient calls use retry/backoff; payment flows use idempotency keys; risky launches use feature flags; Sentry/PostHog Errors or equivalent is wired; Sentry release tags map to commit SHA and source maps upload in CI; Supabase Logs Explorer is usable for Supabase services; logs go to stdout/stderr and redact PII; `/` and `/health` synthetic checks run every 1-5 minutes; email plus one chat alert route exists; SLO burn-rate alerts cover auth/API/uptime; `pg_stat_statements` slow-query evidence exists for Supabase/Postgres; replay/analytics masking is documented before session replay is enabled. |
-| Docs, accessibility, mobile, and cost | 10 | README, AGENTS.md/CLAUDE.md, env setup, and architecture diagram/text exist; launch SEO metadata, OG/Twitter images, favicon/PWA manifest, robots, and sitemap are present for public surfaces; WCAG 2.2 AA critical-flow checks pass; privacy policy/terms/granular cookie consent/GPC handling/account deletion/data export exist where required; support form reaches a monitored inbox; admin surfaces have MFA/audit logs; payment production tests cover success/refund/failure/3DS/webhook idempotency; Ionic builds satisfy App Store/Play preflight; budget forecast and caps cover LLM calls, Supabase compute, and image transformations. |
+| Security and privacy | 18 | Pre-deploy scanner passes; OWASP Top 10:2025 + ASVS auth/session/access/validation/logging controls; secrets rotated after exposure; RLS on every public Supabase table; least-privilege on PII columns. |
+| Code quality | 12 | Build/typecheck/lint/tests pass; no `any` in auth/payment/data paths; no dead routes; no `TODO`/`FIXME` in payment/auth/RLS/deploy code. |
+| Architecture and config | 12 | UI / data access / business logic separated; consistent state ownership; no god component/service; 12-factor env config. |
+| Performance | 12 | Core Web Vitals at 75th pct: LCP <= 2.5s, INP <= 200ms, CLS <= 0.1 (Lighthouse mobile + field/CrUX). No field data -> CrUX/RUM `UNVERIFIED`, lab data = partial credit. |
+| Deployment readiness | 12 | Reproducible build; pinned runtime + lockfile; immutable releases; build/release/run separation; per-PR preview envs; documented frontend-artifact rollback + forward-only DB undo migration; staging soft-launch; env vars in encrypted stores. |
+| Database safety | 12 | RLS coverage 100%; RLS-referenced columns indexed; migrations in git + applied by CI; restore-tested backups; destructive migrations have a tested forward-only rollback or are blocked. |
+| Reliability and observability | 12 | Async error boundaries; retry/backoff on transient calls; payment idempotency keys; feature flags on risky launches; Sentry/PostHog wired with release tags -> SHA + source maps in CI; PII-redacted stdout/stderr logs; `/` and `/health` synthetic checks every 1-5 min; email + one chat alert route; SLO burn-rate alerts on auth/API/uptime; `pg_stat_statements` slow-query evidence; documented replay masking. |
+| Docs, accessibility, mobile, and cost | 10 | README/AGENTS.md/env setup/architecture exist; launch SEO + OG/Twitter/favicon/PWA manifest/robots/sitemap on public surfaces; WCAG 2.2 AA critical flows; privacy/terms/cookie consent/GPC/account deletion/data export where required; support form -> monitored inbox; admin MFA + audit logs; payment prod tests (success/refund/failure/3DS/webhook idempotency); Ionic App Store/Play preflight; budget forecast + caps on LLM/Supabase/image-transform spend. |
 
 Hard blockers override the numeric score and force `NOT_READY`:
 

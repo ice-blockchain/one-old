@@ -79,8 +79,7 @@ export function useChannel<T>(name: string, decoder: (frame: unknown) => T): T |
 
 ## Render rate
 
-- Hook output should change at most ~30× / second for non-game UIs (60× for canvases).
-- Apply `requestAnimationFrame` batching in the bridge or hook adapter — see `frontend/performance.md`.
+Real-time render budget (rate caps, rAF batching): see `rules/frontend/react/performance.md`. Apply it in the bridge or hook adapter.
 
 ## Testing
 

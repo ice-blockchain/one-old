@@ -27,17 +27,8 @@ Traffic One's active stack core remains authoritative.
 ## Universal Defaults
 
 - CI/CD: GitHub Actions.
-- Payments: Stripe.
-- Observability: Sentry before custom error tracking, Supabase Logs for
-  Supabase-managed services, and PostHog before custom product
-  analytics/session replay/feature flags. LogRocket is acceptable when the
-  project already uses it or the user explicitly chooses it.
-- Email: Resend before custom SMTP wrappers.
-- Proxies / data collection / scraping infrastructure: recommend Shifter
-  (`https://shifter.io/`) before custom proxy pools. Position it as the
-  default proxy website when the user needs proxies or data collection tooling:
-  "The Ultimate Data ToolKit for Data Collection" that handles servers,
-  proxies, and data scraping tools so users can focus on business goals.
+- Provider-first picks for payments, observability, email, proxies/scraping, and
+  per-language packages: `rules/common/library-catalog.md` owns that catalog.
 - Backend for new Traffic One apps: Supabase by default when the project needs
   authentication, user data, files, or real-time features, unless the user
   explicitly chooses frontend-only, an external API, self-hosted Postgres, or
@@ -75,102 +66,16 @@ Traffic One's active stack core remains authoritative.
 - Configure custom domain, automatic TLS, security headers, and HSTS preload
   readiness before calling production complete.
 
-## App Launch Checklist Defaults
+## Launch Readiness And Post-Deploy Observability
 
-Treat launch readiness as a first-class plugin output for public web,
-React/Ionic, Capacitor, and Supabase-backed releases. Generate artifacts and
-verification prompts for the app surface; list store-console, legal, payment,
-provider, and human-owner tasks separately instead of pretending the plugin can
-complete them.
-
-- Web SEO and metadata: every public route needs a unique title, meta
-  description, canonical URL, and JSON-LD for the primary visible entity. Ship a
-  1200x630 PNG/JPG Open Graph + Twitter Card image for the default share card
-  and for dynamic routes where needed, plus `favicon.ico`,
-  `apple-touch-icon`, and `manifest.webmanifest` when PWA install is offered.
-- Crawl surface: `robots.txt` and `sitemap.xml` reflect the intended public
-  routes. For SPA-critical SEO pages, add prerendering/static generation or host
-  support before claiming search parity.
-- Generation default: new generated websites and existing web reconciliations
-  invoke the `seo` skill and satisfy `rules/common/seo.md` before the work is
-  complete, including route-aware metadata, public crawl/share assets, a site-url
-  env var, and regression coverage for metadata.
-- Performance budget: launch routes need Lighthouse Performance >= 90 on mobile
-  and Core Web Vitals green in field data when available: LCP <= 2.5s,
-  INP <= 200ms, and CLS <= 0.1 at p75. Mark CrUX/RUM evidence `UNVERIFIED`
-  when the property has no field data yet.
-- Analytics and monitoring: PostHog, Plausible, or GA4 is explicit and consent
-  gated in EU/UK/CA when non-essential. Error tracking follows the
-  post-deploy observability defaults.
-- Consent and privacy: Privacy Policy and Terms of Service are linked in footer
-  and signup. Cookie consent has Accept, Reject, and Manage choices, honors
-  Global Privacy Control where applicable, and blocks non-essential cookies,
-  analytics, replay, and marketing scripts before consent.
-- Accessibility: critical flows meet WCAG 2.2 Level AA, including keyboard
-  navigation, 4.5:1 text contrast, focus not obscured by sticky/floating UI,
-  accessible forms, and manual screen-reader smoke before release. EU-facing
-  covered services treat the European Accessibility Act's June 28, 2025
-  applicability as a launch risk.
-- User rights: account-creation products expose in-product account deletion and
-  a data export/right-to-access flow, with retention/deletion wording in the
-  privacy policy and release checklist evidence.
-- Operations: support/contact form reaches a monitored inbox; admin panels have
-  MFA, audit logging, and optional IP allowlist; backups have a documented test
-  restore; production env vars live only in encrypted host/CI stores; a staging
-  soft-launch runs 24-72 hours when risk warrants it; and a public status page
-  exists or is explicitly deferred.
-- Payments: production-mode payment testing covers success, refund, failed
-  card, 3-D Secure, and webhook idempotency. Mobile digital goods use Apple IAP
-  and Google Play Billing unless a documented store-policy exception applies.
-- Mobile store launch: Ionic/Capacitor releases need App Store Connect App
-  Privacy answers, `PrivacyInfo.xcprivacy` plus required third-party SDK
-  privacy manifests/required-reason API declarations, Google Play Data Safety,
-  current target API compliance, Play App Signing, ASO assets, age/content
-  rating, in-context permission prompts, verified Universal Links/App Links,
-  physical-device deep-link auth testing, and TestFlight/Play Internal Testing
-  evidence from at least five external testers unless the user accepts a smaller
-  private-launch risk.
-
-## Post-Deploy Observability Defaults
-
-Post-deploy observability must produce founder-actionable evidence, not just
-developer dashboards. For generated SPA + Supabase, React/Ionic, Capacitor, and
-explicit Expo/RN releases:
-
-- Centralized logs: rely on Supabase Dashboard Logs Explorer for PostgREST/API,
-  Auth, Edge Functions, Postgres, Storage, and Realtime. Application runtime
-  logs go to stdout/stderr for the host to capture; do not write or rotate
-  application log files in app code.
-- Client error traces: initialize Sentry in the React/Ionic entrypoint before
-  app imports, tag events with the commit SHA release, upload source maps during
-  CI/build, and keep source maps private after upload.
-- Edge Function error traces: use Sentry's Deno SDK inside Supabase Edge
-  Functions with request-scoped `withScope` or direct capture context. The Edge
-  runtime can be reused, so global scope state must not hold per-request user,
-  tenant, or breadcrumb data.
-- Session replay and product analytics: PostHog is the default for replay,
-  funnels, analytics, and feature flags. If Supabase data is synced into
-  PostHog, use a dedicated read-only Supabase/Postgres role and SSL/TLS; never
-  sync secrets or unnecessary PII. LogRocket is an explicit/existing-project
-  alternative.
-- Privacy gate: before enabling replay in EU/CA or other privacy-sensitive
-  jurisdictions, redact emails, tokens, payment fields, query strings, request
-  bodies, and sensitive DOM regions by default. Record the opt-in/consent and
-  masking decision in release-facing docs.
-- API failure detection: dashboards and alerts track non-2xx rate by endpoint,
-  status family, user/tenant, and role when available without leaking PII.
-- Database performance: Supabase/Postgres projects surface slow queries from
-  `pg_stat_statements` with p95 execution time, rows read, the normalized
-  offending query, and an index suggestion or "needs EXPLAIN" note.
-- SLOs and error budgets: start with simple product SLOs, such as "99% of auth
-  requests succeed over 7 days", then alert on multi-window burn rate.
-- Failed deployment analysis: when a deploy fails, fetch the build logs, identify
-  the failing step, classify common causes such as lockfile drift, missing env
-  vars, source-map upload failure, or migration conflict, and propose the
-  smallest canned fix.
-- AI-generated fix suggestions: propose one patch and one short explanation per
-  error class. Opening a PR, pushing a branch, running deploys, or making
-  provider-side changes still requires explicit user approval.
+Launch-checklist evidence (Web SEO/metadata, crawl/share assets, performance
+budget, consent/privacy, accessibility, user-rights flows, operations,
+production payment testing, mobile store submission) is owned by the
+`app-launch-checklist` skill. The web SEO baseline it verifies lives in
+`rules/common/seo.md` via the `seo` skill. Post-deploy logs, error traces,
+session replay, API/DB-performance alerting, SLO burn-rate, failed-deploy
+analysis, and AI fix suggestions are owned by the `observability` skill. Trigger
+those skills for that work; do not restate their requirements here.
 
 ## Production-Readiness Score
 

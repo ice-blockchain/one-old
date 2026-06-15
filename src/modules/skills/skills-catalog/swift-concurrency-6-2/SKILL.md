@@ -212,7 +212,7 @@ To use `@concurrent`:
 - Fighting the compiler — if it reports a data race, the code has a real concurrency issue
 - Assuming all async code runs in the background (Swift 6.2 default: stays on calling actor)
 
-## When to Use
+## When to Activate
 
 - All new Swift 6.2+ projects (Approachable Concurrency is the recommended default)
 - Migrating existing apps from Swift 5.x or 6.0/6.1 concurrency

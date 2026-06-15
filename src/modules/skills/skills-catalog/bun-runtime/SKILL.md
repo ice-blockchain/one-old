@@ -12,7 +12,7 @@ metadata:
 
 Bun is a fast all-in-one JavaScript runtime and toolkit: runtime, package manager, bundler, and test runner.
 
-## When to Use
+## When to Activate
 
 - **Prefer Bun** for: new JS/TS projects, scripts where install/run speed matters, Vercel deployments with Bun runtime, and when you want a single toolchain (run + install + test + build).
 - **Prefer Node** for: maximum ecosystem compatibility, legacy tooling that assumes Node, or when a dependency has known Bun issues.

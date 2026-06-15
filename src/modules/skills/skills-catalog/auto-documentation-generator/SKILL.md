@@ -24,7 +24,7 @@ metadata:
 Generate the smallest useful documentation set for the current repo. The goal
 is not "more markdown"; it is a reliable map for humans and coding agents.
 
-## When to Use
+## When to Activate
 
 Use this skill when the user asks to:
 
@@ -54,13 +54,12 @@ Use this skill when the user asks to:
   docs instead of copying the same commands everywhere.
 - Do not generate empty boilerplate. Omit sections that cannot be filled with
   verified project facts, or mark them `Unverified` with the exact missing input.
-- Never include secret values. Document env var names, where they are configured,
-  and who owns rotation.
-- Keep agent-facing docs concise. `CLAUDE.md` should be a symlink to `AGENTS.md`
-  when that works for the project, or a focused file under ~300 lines containing
-  only what the agent would otherwise get wrong.
+- Keep agent-facing docs concise: name the deterministic command instead of
+  pasting full lint rules; include only what the agent would otherwise get wrong.
 - Treat docs as code: use existing package manager, scripts, deployment config,
   migrations, OpenAPI files, and git history as the source of truth.
+- Canonical `.traffic-one` file set, secret-redaction, pg_dump schema snapshot,
+  and AGENTS/CLAUDE symlink rules: see the `project-memory` skill.
 
 ## Discovery Order
 
@@ -82,17 +81,10 @@ Read only what is needed:
 ## Codebase Onboarding Artifacts
 
 When creating onboarding or agent docs, derive the short repo map from verified
-signals:
-
-- Package/workspace manifest, lockfile, runtime pins, and package-manager
-  scripts.
-- Framework/build fingerprints such as Vite, Next.js, Expo, Ionic, backend
-  framework, ORM, database, deploy target, CI provider, and Docker config.
-- Entrypoints and ownership boundaries: app roots, route files, API handlers,
-  Edge Functions, jobs, migrations, WebSocket services, and native config.
-- Test/lint/typecheck commands and the confidence each command provides.
-- Known hazards: env requirements, generated files, vendor folders, risky
-  migrations, external side effects, and protected deploy paths.
+signals (manifest/lockfile/runtime pins, framework fingerprints, entrypoints and
+ownership boundaries, test/lint/typecheck commands and their confidence, and
+known hazards). The `project-memory` skill's reconnaissance workflow covers how
+to gather these facts; here, distill them into a navigational map.
 
 Keep the artifact navigational. Link to graph reports, `.traffic-one/plan.md`, ADRs,
 and project memory for detail instead of copying large inventories into
@@ -106,12 +98,12 @@ Create or refresh these files when relevant:
 | --- | --- | --- |
 | `README.md` | Human entry point | What it is, who it is for, one-command setup, live deploy link, where deeper docs live. |
 | `AGENTS.md` | Agent entry point | Build/test commands, code-style rules, gotchas, repo map, security/deploy warnings. Root file first; nested files only for large subprojects. |
-| `CLAUDE.md` | Claude-specific memory | Symlink to `AGENTS.md` or keep under ~300 lines; include only project-specific traps and pointers. Do not duplicate linter rules. |
+| `CLAUDE.md` | Claude-specific memory | Per the `project-memory` symlink rule; otherwise keep under ~300 lines with only project-specific traps and pointers. Do not duplicate linter rules. |
 | `.cursor/rules/*.mdc` | Cursor-specific guidance | Short scoped rules with `description`, `globs`, and `alwaysApply`; split large rules by domain. |
 | `.traffic-one/plan.md` | Plan and system map | Current goal, module map, public contracts, risks, cut-list, key dependencies, and links to ADRs. Legacy `architecture.md` files are migration-only. |
 | `.traffic-one/decisions/NNNN-*.md` | Decision log | Use `architecture-decision-records`; one short Nygard-style ADR per significant decision with Context, Decision, Status, and Consequences. |
 | `.traffic-one/api.md` | API reference | Generate from OpenAPI for Edge Functions or route handlers. Include auth, request/response schemas, errors, and examples. |
-| `.traffic-one/database.md` | Schema/RLS reference | Generate from migrations or `pg_dump --schema-only --no-owner --no-privileges`; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
+| `.traffic-one/database.md` | Schema/RLS reference | Generate from migrations or the `project-memory` schema-snapshot command; include RLS policies next to each table using `pg_policies` or migration excerpts. No data dumps. |
 | `.traffic-one/deployment.md` | Release/runbook | Preview/staging/prod URLs, deploy commands, secrets list without values, rollback, "build failing", and "DB down" runbooks. |
 | `.traffic-one/security.md` | Security memory and operating doc | Merge project non-negotiables, threat model summary, vulnerability reporting, dependency update cadence, RLS testing, secret rotation, and scanner command. Do not create a separate root `security.md`. |
 | `CHANGELOG.md` | Release history | Keep a Changelog structure with `Unreleased`, generated from Conventional Commits and edited for humans. |
@@ -136,8 +128,8 @@ Keep it human-first:
 
 - `AGENTS.md` is the cross-agent standard. Include commands agents should run,
   style/architecture gotchas, security constraints, and repo-specific hazards.
-- `CLAUDE.md` should be a symlink to `AGENTS.md` when the repo does not need
-  Host-specific differences. Otherwise keep it concise and link outward.
+- `CLAUDE.md` follows the `project-memory` symlink rule; otherwise keep it
+  concise and link outward.
 - Do not paste the full lint rules; name the deterministic command.
 
 ### Plan and ADRs
@@ -155,16 +147,12 @@ Keep it human-first:
   Functions/route handlers and mark it `Generated from source; verify before
   publishing`.
 - For Supabase/Postgres docs, prefer migrations in git. If a live DB is
-  available and the user allows it, use:
-
-```bash
-pg_dump --schema-only --no-owner --no-privileges "$DATABASE_URL"
-```
-
+  available and the user allows it, take a schema-only snapshot via the
+  `project-memory` schema-snapshot command (never dump table data).
 - Include RLS policies inline next to each table. Good sources are
   `supabase/migrations/*.sql`, `pg_policies`, and Supabase CLI output.
-- Never dump table data, production secrets, anon/service keys, or connection
-  strings into docs.
+- Secret-redaction follows the `project-memory` skill: document env var names
+  and owners, never the values, keys, or connection strings.
 
 ### llms.txt
 

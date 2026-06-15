@@ -1,13 +1,13 @@
 ---
 name: monorepo-architecture
-description: Design, scaffold, and maintain Turborepo + pnpm monorepos for Traffic One React/Vite stacks. Covers package taxonomy, dependency direction, turbo pipeline config, TypeScript project references, versioning, and CI caching. Use when adding a new app/package, splitting code into `packages/*`, configuring `turbo.json`, or auditing workspace boundaries.
+description: Design and maintain Turborepo + pnpm monorepos for Traffic One React/Vite. Package taxonomy, dependency direction, `turbo.json`, TS project references. Use when adding an app/package, splitting into `packages/*`, or auditing boundaries.
 ---
 
 # Monorepo Architecture
 
 Turborepo + pnpm workspaces is the only supported monorepo layout for Traffic One. This skill goes beyond `rules/core.md` with the concrete package taxonomy, dependency direction, `turbo.json` pipeline, TypeScript project references, and versioning conventions agents should follow when working in `apps/*` and `packages/*`.
 
-## When to Use
+## When to Activate
 
 - Scaffolding a new monorepo or adding a new `apps/<name>` or `packages/<name>` workspace.
 - Splitting a single-app project into shared `packages/*` because two or more apps need the same code.

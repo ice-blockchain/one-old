@@ -12,7 +12,7 @@ metadata:
 
 Agent-focused testing workflow for modern C++ (C++17/20) using GoogleTest/GoogleMock with CMake/CTest.
 
-## When to Use
+## When to Activate
 
 - Writing new C++ tests or fixing existing tests
 - Designing unit/integration test coverage for C++ components
@@ -28,40 +28,15 @@ Agent-focused testing workflow for modern C++ (C++17/20) using GoogleTest/Google
 - Performance tuning without test regressions to validate
 - Non-C++ projects or non-test tasks
 
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
+
 ## Core Concepts
 
-- **TDD loop**: red → green → refactor (tests first, minimal fix, then cleanups).
 - **Isolation**: prefer dependency injection and fakes over global state.
 - **Test layout**: `tests/unit`, `tests/integration`, `tests/testdata`.
 - **Mocks vs fakes**: mock for interactions, fake for stateful behavior.
 - **CTest discovery**: use `gtest_discover_tests()` for stable test discovery.
 - **CI signal**: run subset first, then full suite with `--output-on-failure`.
-
-## TDD Workflow
-
-Follow the RED → GREEN → REFACTOR loop:
-
-1. **RED**: write a failing test that captures the new behavior
-2. **GREEN**: implement the smallest change to pass
-3. **REFACTOR**: clean up while tests stay green
-
-```cpp
-// tests/add_test.cpp
-#include <gtest/gtest.h>
-
-int Add(int a, int b); // Provided by production code.
-
-TEST(AddTest, AddsTwoNumbers) { // RED
-  EXPECT_EQ(Add(2, 3), 5);
-}
-
-// src/add.cpp
-int Add(int a, int b) { // GREEN
-  return a + b;
-}
-
-// REFACTOR: simplify/rename once tests pass
-```
 
 ## Code Examples
 
@@ -274,22 +249,12 @@ endif()
 - Avoid real time, network, or filesystem dependencies in unit tests.
 - Use deterministic seeds for randomized inputs.
 
-## Best Practices
+## C++-Specific Idioms
 
-### DO
-
-- Keep tests deterministic and isolated
-- Prefer dependency injection over globals
-- Use `ASSERT_*` for preconditions, `EXPECT_*` for multiple checks
-- Separate unit vs integration tests in CTest labels or directories
-- Run sanitizers in CI for memory and race detection
-
-### DON'T
-
-- Don't depend on real time or network in unit tests
-- Don't use sleeps as synchronization when a condition variable can be used
-- Don't over-mock simple value objects
-- Don't use brittle string matching for non-critical logs
+- Use `ASSERT_*` for preconditions (aborts the test), `EXPECT_*` for multiple non-fatal checks.
+- Separate unit vs integration tests via CTest labels or directories.
+- Run ASan/UBSan/TSan in CI for memory and race detection.
+- Synchronize with condition variables/latches, never `sleep`.
 
 ### Common Pitfalls
 

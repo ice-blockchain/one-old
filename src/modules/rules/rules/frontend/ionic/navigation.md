@@ -11,18 +11,21 @@ paths:
 
 # Ionic Navigation Rules
 
-## Capacitor wrapper default
+The Capacitor-wrapper-default vs full-Ionic-React-rewrite decision is owned by
+`rules/frontend/ionic/core.md`. This file covers the routing specifics for each.
+
+## Capacitor wrapper routing
 
 - Keep `react-router-dom v6` as the source routing model for packaged React apps.
 - Route params contain ids and filters only; validate external/deep-link params
-  with zod before use.
+  before use (the zod inbound-payload rule is owned by
+  `rules/frontend/ionic/security.md`).
 - Android back button maps to route pop, modal close, or explicit app-exit
   behavior. Do not let it close the app from an inner route unexpectedly.
 - Deep links enter through a small boundary that normalizes URLs before routing.
 
-## Full Ionic React alternative
+## Full Ionic React routing
 
-- Use Ionic navigation only when the user chooses the larger mobile-first rewrite.
 - `IonRouterOutlet`, tabs, and stack navigation must be planned per top-level
   workflow; do not translate web routes one-for-one without checking mobile UX.
 - Verify router compatibility before adding Ionic React Router packages.

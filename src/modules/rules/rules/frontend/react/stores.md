@@ -33,14 +33,12 @@ paths:
 - Never use `useSelector` to grab the whole state — always select the narrowest slice you need.
 - Type the store: export `RootState` and `AppDispatch`; consume via typed hooks `useAppDispatch` / `useAppSelector`.
 
-## RTK Query rules
+## RTK Query placement
 
-- One `createApi` per service domain.
-- Every query lists `providesTags`; every mutation lists `invalidatesTags`.
+RTK Query discipline (slice shape, tags, transforms, generated hooks): see `rules/frontend/react/services.md`.
+
 - `keepUnusedDataFor` set per endpoint based on staleness tolerance — never rely on the global default for hot data.
 - Polling and `refetchOnFocus` are explicit, per-endpoint.
-- Use `transformResponse` to validate with zod; reject malformed payloads.
-- Generated hooks (`useGetMarketsQuery`, `useCreateBetMutation`) — never call the underlying api manually.
 
 ## zustand rules (UI-only)
 
@@ -52,6 +50,4 @@ paths:
 
 ## WebSocket → Redux bridge
 
-- A WS service module dispatches Redux actions on relevant frames (e.g. `gameTick`, `oddsUpdate`).
-- Components read derived state via selectors — they never touch the socket directly.
-- See `frontend/react/realtime.md` for the full bridge pattern.
+WS → Redux bridge pattern: see `rules/frontend/react/realtime.md`.

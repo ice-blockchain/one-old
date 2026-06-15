@@ -1,7 +1,7 @@
 ---
 name: accessibility
-description: Design, implement, and audit inclusive digital products using WCAG 2.2 Level AA
-  standards. Use this skill to generate semantic ARIA for Web and accessibility traits for Web and Native platforms (iOS/Android).
+description: Design, implement, and audit inclusive digital products to WCAG 2.2 Level AA.
+  Use for ARIA, keyboard nav, screen reader support, focus management, color contrast, an a11y audit, or accessibility traits on Web and Native (iOS/Android).
 metadata:
   source: everything-claude-code
   source_path: skills/accessibility/SKILL.md
@@ -13,7 +13,7 @@ metadata:
 
 This skill ensures that digital interfaces are Perceivable, Operable, Understandable, and Robust (POUR) for all users, including those using screen readers, switch controls, or keyboard navigation. It focuses on the technical implementation of WCAG 2.2 success criteria.
 
-## When to Use
+## When to Activate
 
 - Defining UI component specifications for Web, iOS, or Android.
 - Auditing existing code for accessibility barriers or compliance gaps.
@@ -146,5 +146,4 @@ Switch(
 
 - `frontend-patterns`
 - `frontend-design`
-- `liquid-glass-design`
 - `swiftui-patterns`

@@ -28,16 +28,12 @@ Performance hooks (`React.memo`, `useCallback`) live in `frontend/react/performa
 ## Rendering & data
 - If the component fetches data, extract into a `useComponentName` hook — keep the component presentational.
 - Always handle `isLoading`, `isError`, and empty states explicitly — never render undefined data.
-- Render all user-facing copy through `react-i18next` translation keys, including labels, placeholders, alt text, ARIA labels, loading/error/empty states, and button text. Detect and extend an existing i18n module automatically; do not wait for the user to ask for translations.
-- Keep translation catalogs in `packages/i18n` by default, using feature-based namespaces. Prefer `<Trans>` when copy contains React elements, links, emphasis, line breaks, nested components, or rich interpolation; use `t()` only for simple scalar strings.
-- Hardcoded UI strings are allowed only for brand names, user-generated/server-provided content, technical IDs, and test fixtures.
+- Render all user-facing copy through translation keys — see `rules/frontend/i18n.md`.
 - Subscribe to real-time streams via a hook (e.g. `useGameTick(gameId)`) — components never instantiate WebSocket connections.
 - Lazy-load page-level components: `React.lazy` + `Suspense` with a skeleton fallback.
 
-## Styling (Tailwind + shadcn)
-- Compose UI from shadcn primitives in `packages/ui/src/components/ui/`. Add new primitives via `npx shadcn@latest add <name>`; never hand-roll a button / dialog / dropdown / input / form control.
-- Static styles use Tailwind utility classes inline. Merge classes with `cn()` (= `clsx` + `tailwind-merge`); express variants via `class-variance-authority` (`cva`).
-- Pull design values from the shadcn HSL CSS variables (`--background`, `--foreground`, `--primary`, `--muted`, `--accent`, `--destructive`, `--border`, `--ring`, …) defined in `src/styles/globals.css`. Never hardcode hex colours, raw spacing, font sizes, or radii in className strings — use the Tailwind theme tokens (`bg-background`, `text-foreground`, `rounded-md`, etc.).
+## Styling
+- Styling stack & shadcn composition (Tailwind utilities, `cn()`, `cva`, design tokens, no hardcoded values): see `rules/frontend/react/core.md`. Finish states (hover/focus/active/loading/empty/error) and anti-template guidance: see `rules/frontend/react/design-quality.md`.
 - Responsive: Tailwind breakpoints (`sm:` / `md:` / `lg:` / `xl:`) — no JS-driven media checks for layout.
 - Dark mode: shadcn's `class` strategy on `<html>` or `<body>`; the same HSL vars get redefined under `.dark` in `globals.css`.
 

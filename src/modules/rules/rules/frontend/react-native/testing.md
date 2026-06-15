@@ -11,7 +11,7 @@ paths:
 
 # React Native Testing — Jest + RNTL + Maestro
 
-Framework-agnostic test layering lives in `frontend/testing.md`. This file
+Framework-agnostic test layering lives in `rules/frontend/testing.md`. This file
 covers native-specific tools.
 
 ## Unit and integration
@@ -19,11 +19,9 @@ covers native-specific tools.
 - Use `@testing-library/react-native` for components and hooks.
 - Query order: role -> label text -> visible text -> placeholder -> testID last.
 - Use `userEvent` from RNTL when available; otherwise use `fireEvent` sparingly.
-- Render with the real provider chain: Redux, theme, safe area, and router mocks.
 
 ## Test helper
-- Every app exports `renderWithProviders` from `apps/mobile/src/test/render.tsx`.
-- Tests must not assemble ad-hoc provider stacks.
+- The shared-render-helper rule (every app exports `renderWithProviders`; tests never assemble ad-hoc provider stacks) is framework-agnostic — see `rules/frontend/testing.md`. The RN helper lives at `apps/mobile/src/test/render.tsx` and wires the real provider chain: Redux, theme, safe area, and router mocks.
 - Mock native modules at the boundary, not inside components.
 
 ## Services
@@ -38,5 +36,5 @@ covers native-specific tools.
 - Prefer stable accessibility labels over brittle text when selecting controls.
 
 ## Coverage
-- Aim for >=80% coverage on `apps/*/src/features/` and every `packages/*` library.
+- The coverage target (>=80% on `apps/*/src/features/` and every `packages/*` library, treated as a smoke alarm not a goal) is framework-agnostic — see `rules/frontend/testing.md`.
 - Coverage does not replace device smoke testing on iOS and Android before release.

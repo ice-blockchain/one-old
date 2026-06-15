@@ -27,7 +27,7 @@ Backend architecture patterns and best practices for scalable server-side applic
 ### RESTful API Structure
 
 ```typescript
-// PASS: Resource-based URLs
+// GOOD: Resource-based URLs
 GET    /api/markets                 # List resources
 GET    /api/markets/:id             # Get single resource
 POST   /api/markets                 # Create resource
@@ -35,7 +35,7 @@ PUT    /api/markets/:id             # Replace resource
 PATCH  /api/markets/:id             # Update resource
 DELETE /api/markets/:id             # Delete resource
 
-// PASS: Query parameters for filtering, sorting, pagination
+// GOOD: Query parameters for filtering, sorting, pagination
 GET /api/markets?status=active&sort=volume&limit=20&offset=0
 ```
 
@@ -135,7 +135,7 @@ export default withAuth(async (req, res) => {
 ### Query Optimization
 
 ```typescript
-// PASS: GOOD: Select only needed columns
+// GOOD Select only needed columns
 const { data } = await supabase
   .from('markets')
   .select('id, name, status, volume')
@@ -143,7 +143,7 @@ const { data } = await supabase
   .order('volume', { ascending: false })
   .limit(10)
 
-// FAIL: BAD: Select everything
+// BAD Select everything
 const { data } = await supabase
   .from('markets')
   .select('*')
@@ -152,13 +152,13 @@ const { data } = await supabase
 ### N+1 Query Prevention
 
 ```typescript
-// FAIL: BAD: N+1 query problem
+// BAD N+1 query problem
 const markets = await getMarkets()
 for (const market of markets) {
   market.creator = await getUser(market.creator_id)  // N queries
 }
 
-// PASS: GOOD: Batch fetch
+// GOOD Batch fetch
 const markets = await getMarkets()
 const creatorIds = markets.map(m => m.creator_id)
 const creators = await getUsers(creatorIds)  // 1 query
@@ -209,41 +209,12 @@ $$;
 
 ## Caching Strategies
 
-### Redis Caching Layer
-
-```typescript
-class CachedMarketRepository implements MarketRepository {
-  constructor(
-    private baseRepo: MarketRepository,
-    private redis: RedisClient
-  ) {}
-
-  async findById(id: string): Promise<Market | null> {
-    // Check cache first
-    const cached = await this.redis.get(`market:${id}`)
-
-    if (cached) {
-      return JSON.parse(cached)
-    }
-
-    // Cache miss - fetch from database
-    const market = await this.baseRepo.findById(id)
-
-    if (market) {
-      // Cache for 5 minutes
-      await this.redis.setex(`market:${id}`, 300, JSON.stringify(market))
-    }
-
-    return market
-  }
-
-  async invalidateCache(id: string): Promise<void> {
-    await this.redis.del(`market:${id}`)
-  }
-}
-```
-
 ### Cache-Aside Pattern
+
+Read from cache; on a miss, fetch from the source of truth, populate the cache
+with a TTL, then return. Invalidate on write (`redis.del(cacheKey)`). To layer
+this onto the repository pattern above, wrap a base repository in a
+`CachedMarketRepository` that applies this same get/set/del flow per method.
 
 ```typescript
 async function getMarketWithCache(id: string): Promise<Market> {
@@ -258,7 +229,7 @@ async function getMarketWithCache(id: string): Promise<Market> {
 
   if (!market) throw new Error('Market not found')
 
-  // Update cache
+  // Update cache (5 minute TTL)
   await redis.setex(cacheKey, 300, JSON.stringify(market))
 
   return market
@@ -349,94 +320,13 @@ const data = await fetchWithRetry(() => fetchFromAPI())
 
 ## Authentication & Authorization
 
-Use provider/framework auth before custom token code. Explicit Next.js projects
-use NextAuth/Auth.js unless an existing provider is already in place. Supabase
-projects use Supabase Auth and RLS-backed authorization. The JWT pattern below
-is only for provider-issued tokens, service-to-service flows, or a documented
-custom token layer that remains necessary after the provider-first check.
-
-### JWT Token Validation
-
-```typescript
-import jwt from 'jsonwebtoken'
-
-interface JWTPayload {
-  userId: string
-  email: string
-  role: 'admin' | 'user'
-}
-
-export function verifyToken(token: string): JWTPayload {
-  try {
-    const payload = jwt.verify(token, process.env.JWT_SECRET!) as JWTPayload
-    return payload
-  } catch (error) {
-    throw new ApiError(401, 'Invalid token')
-  }
-}
-
-export async function requireAuth(request: Request) {
-  const token = request.headers.get('authorization')?.replace('Bearer ', '')
-
-  if (!token) {
-    throw new ApiError(401, 'Missing authorization token')
-  }
-
-  return verifyToken(token)
-}
-
-// Usage in API route
-export async function GET(request: Request) {
-  const user = await requireAuth(request)
-
-  const data = await getDataForUser(user.userId)
-
-  return NextResponse.json({ success: true, data })
-}
-```
-
-### Role-Based Access Control
-
-```typescript
-type Permission = 'read' | 'write' | 'delete' | 'admin'
-
-interface User {
-  id: string
-  role: 'admin' | 'moderator' | 'user'
-}
-
-const rolePermissions: Record<User['role'], Permission[]> = {
-  admin: ['read', 'write', 'delete', 'admin'],
-  moderator: ['read', 'write', 'delete'],
-  user: ['read', 'write']
-}
-
-export function hasPermission(user: User, permission: Permission): boolean {
-  return rolePermissions[user.role].includes(permission)
-}
-
-export function requirePermission(permission: Permission) {
-  return (handler: (request: Request, user: User) => Promise<Response>) => {
-    return async (request: Request) => {
-      const user = await requireAuth(request)
-
-      if (!hasPermission(user, permission)) {
-        throw new ApiError(403, 'Insufficient permissions')
-      }
-
-      return handler(request, user)
-    }
-  }
-}
-
-// Usage - HOF wraps the handler
-export const DELETE = requirePermission('delete')(
-  async (request: Request, user: User) => {
-    // Handler receives authenticated user with verified permission
-    return new Response('Deleted', { status: 200 })
-  }
-)
-```
+Use provider/framework auth before custom token code: explicit Next.js projects
+use NextAuth/Auth.js, Supabase projects use Supabase Auth and RLS-backed
+authorization. For token validation, signature/expiry/algorithm checks, secret
+handling, and role/permission enforcement, see `rules/common/security.md` and
+the `jwt-security` skill. The `withAuth` middleware above shows where the
+verified user attaches to the request; wrap it with a permission check to gate
+privileged handlers.
 
 ## Rate Limiting
 

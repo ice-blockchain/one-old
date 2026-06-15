@@ -26,14 +26,11 @@ Backend-focused rules for csharp projects.
 - Register DI lifetimes intentionally: singleton for stateless shared services, scoped for request data, transient for lightweight workers.
 
 ## Security
-- Never hardcode API keys, tokens, or connection strings.
-- Use environment variables, local user secrets, and a production secret manager.
-- Keep `appsettings.*.json` free of real credentials.
+- Security baseline (secrets, parameterized SQL, authn/authz, error sanitization, no secret logging): rules/common/security.md.
+- Keep `appsettings.*.json` free of real credentials; use local user secrets in development.
 - Use parameterized queries with ADO.NET, Dapper, or EF Core.
 - Validate DTOs at application boundaries with data annotations, FluentValidation, or explicit guards.
 - Prefer framework auth handlers and authorization policies over custom token parsing.
-- Prefer provider/framework auth packages before custom password, session, or JWT code.
-- Return safe client errors; do not expose stack traces, SQL text, or filesystem paths.
 
 ## Testing
 - Prefer xUnit for unit and integration tests.

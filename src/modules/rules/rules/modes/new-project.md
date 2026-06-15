@@ -20,18 +20,10 @@ contract, env validation, and migrations/RLS baseline are in place.
 
 ## Mandatory frontend baselines
 
-- New Traffic One frontend projects include `packages/i18n` by default. Wire
-  the i18next/react-i18next provider before feature UI is scaffolded, and add
-  source-language catalog entries for all generated page/component copy even
-  when the user did not ask for translations. Prefer `<Trans>` for rich copy
-  with links or React elements; use `t()` only for simple strings.
-- New public web routes include SEO metadata before the route is considered
-  done: title, description, canonical, robots, Open Graph/Twitter image,
-  JSON-LD, sitemap inclusion, and regression coverage for every generated
-  public page. Private/admin routes use `noindex,nofollow`.
-- Supabase-backed web/Ionic scaffolds include the shared EnvBanner/setup CTA
-  pattern. Any website-facing setup link for missing env/Supabase keys must use
-  `https://traffic.io/`, with a regression test asserting that exact `href`.
+The blocking frontend baselines (i18n by default, per-route SEO metadata, the
+shared EnvBanner/setup CTA to `https://traffic.io/`) are owned by the setup
+steps — see `rules/modes/new-project-setup.md` (steps 2, 5, 7, 12).
+
 ## Target architecture
 
 pnpm + Turborepo monorepo: `apps/web` (React/Vite) plus shared `packages/*`
@@ -55,7 +47,8 @@ scaffolding and follow it step by step. The order is:
 9. Deployment artifact baseline.
 10. Tooling guards.
 11. Mandatory auto-documentation baseline.
-12. Supabase setup details + codebase graph (after first successful build).
+12. Supabase setup details (when backend is supabase/our-fork).
+13. Codebase graph (after first successful build).
 
 Never start feature code with earlier steps unfinished or unverified.
 

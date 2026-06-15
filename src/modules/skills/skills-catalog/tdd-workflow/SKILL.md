@@ -26,14 +26,23 @@ This skill ensures all code development follows TDD principles with comprehensiv
 
 ## Core Principles
 
-### 1. Tests BEFORE Code
-ALWAYS write tests first, then implement code to make tests pass.
+### 1. Tests BEFORE Code (RED-GREEN-REFACTOR)
+ALWAYS write tests first, then implement code to make tests pass. The canonical
+cycle every change follows:
+- **RED** — write a failing test that pins the intended behavior; run it and
+  confirm it fails for the right reason.
+- **GREEN** — write the minimal code to make the test pass; run it and confirm.
+- **REFACTOR** — improve the code while keeping tests green.
+
+The detailed gated steps are in TDD Workflow Steps below.
 
 ### 2. Coverage Requirements
-- Minimum 80% coverage (unit + integration + E2E)
-- All edge cases covered
-- Error scenarios tested
-- Boundary conditions verified
+Coverage tiers (the canonical targets all testing skills defer to):
+- Critical paths (auth, payments, data mutations): 100%
+- Public API surface (exported functions, endpoints, components): 90%
+- Overall (unit + integration + E2E): 80% minimum
+
+All edge cases, error scenarios, and boundary conditions must be tested regardless of tier.
 
 ### 3. Test Types
 
@@ -179,6 +188,10 @@ npm run test:coverage
 
 ## Testing Patterns
 
+Every test follows the canonical **Arrange-Act-Assert (AAA)** structure:
+**Arrange** the inputs and dependencies, **Act** by invoking the code under
+test, **Assert** the observable outcome. One logical behavior per test.
+
 ### Unit Test Pattern (Jest/Vitest)
 ```typescript
 import { render, screen, fireEvent } from '@testing-library/react'
@@ -237,58 +250,10 @@ describe('GET /api/markets', () => {
 })
 ```
 
-### E2E Test Pattern (Playwright)
-```typescript
-import { test, expect } from '@playwright/test'
-
-test('user can search and filter markets', async ({ page }) => {
-  // Navigate to markets page
-  await page.goto('/')
-  await page.click('a[href="/markets"]')
-
-  // Verify page loaded
-  await expect(page.locator('h1')).toContainText('Markets')
-
-  // Search for markets
-  await page.fill('input[placeholder="Search markets"]', 'election')
-
-  // Wait for debounce and results
-  await page.waitForTimeout(600)
-
-  // Verify search results displayed
-  const results = page.locator('[data-testid="market-card"]')
-  await expect(results).toHaveCount(5, { timeout: 5000 })
-
-  // Verify results contain search term
-  const firstResult = results.first()
-  await expect(firstResult).toContainText('election', { ignoreCase: true })
-
-  // Filter by status
-  await page.click('button:has-text("Active")')
-
-  // Verify filtered results
-  await expect(results).toHaveCount(3)
-})
-
-test('user can create a new market', async ({ page }) => {
-  // Login first
-  await page.goto('/creator-dashboard')
-
-  // Fill market creation form
-  await page.fill('input[name="name"]', 'Test Market')
-  await page.fill('textarea[name="description"]', 'Test description')
-  await page.fill('input[name="endDate"]', '2025-12-31')
-
-  // Submit form
-  await page.click('button[type="submit"]')
-
-  // Verify success message
-  await expect(page.locator('text=Market created successfully')).toBeVisible()
-
-  // Verify redirect to market page
-  await expect(page).toHaveURL(/\/markets\/test-market/)
-})
-```
+### E2E Tests
+E2E tests exercise critical user flows end-to-end (Playwright). For Page Object
+Model, config, flakiness control, artifacts, and CI integration, use the
+`e2e-testing` skill.
 
 ## Test File Organization
 
@@ -315,40 +280,18 @@ src/
 
 ## Mocking External Services
 
-### Supabase Mock
+Isolate units by stubbing their external dependencies (DB, cache, third-party
+APIs) at the module boundary so the dependency is never actually called:
+
 ```typescript
-jest.mock('@/lib/supabase', () => ({
-  supabase: {
-    from: jest.fn(() => ({
-      select: jest.fn(() => ({
-        eq: jest.fn(() => Promise.resolve({
-          data: [{ id: 1, name: 'Test Market' }],
-          error: null
-        }))
-      }))
-    }))
-  }
+vi.mock('@/lib/db', () => ({
+  getUser: vi.fn(() => Promise.resolve({ id: 1, name: 'Test' }))
 }))
 ```
 
-### Redis Mock
-```typescript
-jest.mock('@/lib/redis', () => ({
-  searchMarketsByVector: jest.fn(() => Promise.resolve([
-    { slug: 'test-market', similarity_score: 0.95 }
-  ])),
-  checkRedisHealth: jest.fn(() => Promise.resolve({ connected: true }))
-}))
-```
-
-### OpenAI Mock
-```typescript
-jest.mock('@/lib/openai', () => ({
-  generateEmbedding: jest.fn(() => Promise.resolve(
-    new Array(1536).fill(0.1) // Mock 1536-dim embedding
-  ))
-}))
-```
+For framework- and library-specific mocking idioms (Supabase, Redis, OpenAI,
+Prisma, etc.), use the matching language testing skill. For browser/network
+mocking in full user flows, use the `e2e-testing` skill.
 
 ## Test Coverage Verification
 
@@ -375,39 +318,39 @@ npm run test:coverage
 
 ## Common Testing Mistakes to Avoid
 
-### FAIL: WRONG: Testing Implementation Details
+### BAD Testing Implementation Details
 ```typescript
 // Don't test internal state
 expect(component.state.count).toBe(5)
 ```
 
-### PASS: CORRECT: Test User-Visible Behavior
+### GOOD Test User-Visible Behavior
 ```typescript
 // Test what users see
 expect(screen.getByText('Count: 5')).toBeInTheDocument()
 ```
 
-### FAIL: WRONG: Brittle Selectors
+### BAD Brittle Selectors
 ```typescript
 // Breaks easily
 await page.click('.css-class-xyz')
 ```
 
-### PASS: CORRECT: Semantic Selectors
+### GOOD Semantic Selectors
 ```typescript
 // Resilient to changes
 await page.click('button:has-text("Submit")')
 await page.click('[data-testid="submit-button"]')
 ```
 
-### FAIL: WRONG: No Test Isolation
+### BAD No Test Isolation
 ```typescript
 // Tests depend on each other
 test('creates user', () => { /* ... */ })
 test('updates same user', () => { /* depends on previous test */ })
 ```
 
-### PASS: CORRECT: Independent Tests
+### GOOD Independent Tests
 ```typescript
 // Each test sets up its own data
 test('creates user', () => {

@@ -1,6 +1,6 @@
 ---
 name: golang-testing
-description: Go testing patterns including table-driven tests, subtests, benchmarks, fuzzing, and test coverage. Follows TDD methodology with idiomatic Go practices.
+description: Go testing patterns including table-driven tests, subtests, t.Helper/t.Cleanup, benchmarks, fuzzing, golden files, and go test/cover commands. Idiomatic Go testing idioms.
 metadata:
   source: everything-claude-code
   source_path: skills/golang-testing/SKILL.md
@@ -10,68 +10,15 @@ metadata:
 
 # Go Testing Patterns
 
-Comprehensive Go testing patterns for writing reliable, maintainable tests following TDD methodology.
+Comprehensive Go testing patterns for writing reliable, maintainable tests.
+
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
 
 ## When to Activate
 
-- Writing new Go functions or methods
-- Adding test coverage to existing code
+- Writing new Go functions or methods, or adding coverage to existing code
 - Creating benchmarks for performance-critical code
 - Implementing fuzz tests for input validation
-- Following TDD workflow in Go projects
-
-## TDD Workflow for Go
-
-### The RED-GREEN-REFACTOR Cycle
-
-```
-RED     → Write a failing test first
-GREEN   → Write minimal code to pass the test
-REFACTOR → Improve code while keeping tests green
-REPEAT  → Continue with next requirement
-```
-
-### Step-by-Step TDD in Go
-
-```go
-// Step 1: Define the interface/signature
-// calculator.go
-package calculator
-
-func Add(a, b int) int {
-    panic("not implemented") // Placeholder
-}
-
-// Step 2: Write failing test (RED)
-// calculator_test.go
-package calculator
-
-import "testing"
-
-func TestAdd(t *testing.T) {
-    got := Add(2, 3)
-    want := 5
-    if got != want {
-        t.Errorf("Add(2, 3) = %d; want %d", got, want)
-    }
-}
-
-// Step 3: Run test - verify FAIL
-// $ go test
-// --- FAIL: TestAdd (0.00s)
-// panic: not implemented
-
-// Step 4: Implement minimal code (GREEN)
-func Add(a, b int) int {
-    return a + b
-}
-
-// Step 5: Run test - verify PASS
-// $ go test
-// PASS
-
-// Step 6: Refactor if needed, verify tests still pass
-```
 
 ## Table-Driven Tests
 
@@ -391,76 +338,25 @@ func TestUserService(t *testing.T) {
 
 ## Benchmarks
 
-### Basic Benchmarks
-
-```go
-func BenchmarkProcess(b *testing.B) {
-    data := generateTestData(1000)
-    b.ResetTimer() // Don't count setup time
-
-    for i := 0; i < b.N; i++ {
-        Process(data)
-    }
-}
-
-// Run: go test -bench=BenchmarkProcess -benchmem
-// Output: BenchmarkProcess-8   10000   105234 ns/op   4096 B/op   10 allocs/op
-```
-
-### Benchmark with Different Sizes
+Loop `b.N` times; call `b.ResetTimer()` after setup. Use `b.Run(name, ...)` for sub-benchmarks across sizes or strategies. Run with `go test -bench=. -benchmem` for ns/op plus B/op and allocs/op.
 
 ```go
 func BenchmarkSort(b *testing.B) {
-    sizes := []int{100, 1000, 10000, 100000}
-
-    for _, size := range sizes {
+    for _, size := range []int{100, 1000, 10000} {
         b.Run(fmt.Sprintf("size=%d", size), func(b *testing.B) {
             data := generateRandomSlice(size)
-            b.ResetTimer()
-
+            b.ResetTimer() // don't count setup time
             for i := 0; i < b.N; i++ {
-                // Make a copy to avoid sorting already sorted data
                 tmp := make([]int, len(data))
-                copy(tmp, data)
+                copy(tmp, data) // avoid sorting already-sorted data
                 sort.Ints(tmp)
             }
         })
     }
 }
-```
 
-### Memory Allocation Benchmarks
-
-```go
-func BenchmarkStringConcat(b *testing.B) {
-    parts := []string{"hello", "world", "foo", "bar", "baz"}
-
-    b.Run("plus", func(b *testing.B) {
-        for i := 0; i < b.N; i++ {
-            var s string
-            for _, p := range parts {
-                s += p
-            }
-            _ = s
-        }
-    })
-
-    b.Run("builder", func(b *testing.B) {
-        for i := 0; i < b.N; i++ {
-            var sb strings.Builder
-            for _, p := range parts {
-                sb.WriteString(p)
-            }
-            _ = sb.String()
-        }
-    })
-
-    b.Run("join", func(b *testing.B) {
-        for i := 0; i < b.N; i++ {
-            _ = strings.Join(parts, "")
-        }
-    })
-}
+// go test -bench=BenchmarkSort -benchmem
+// BenchmarkSort/size=100-8   10000   105234 ns/op   4096 B/op   10 allocs/op
 ```
 
 ## Fuzzing (Go 1.18+)
@@ -543,15 +439,6 @@ go tool cover -func=coverage.out
 # Coverage with race detection
 go test -race -coverprofile=coverage.out ./...
 ```
-
-### Coverage Targets
-
-| Code Type | Target |
-|-----------|--------|
-| Critical business logic | 100% |
-| Public APIs | 90%+ |
-| General code | 80%+ |
-| Generated code | Exclude |
 
 ### Excluding Generated Code from Coverage
 
@@ -682,23 +569,11 @@ go test -fuzz=FuzzParse -fuzztime=30s ./...
 go test -count=10 ./...
 ```
 
-## Best Practices
+## Go-Specific Idioms
 
-**DO:**
-- Write tests FIRST (TDD)
-- Use table-driven tests for comprehensive coverage
-- Test behavior, not implementation
-- Use `t.Helper()` in helper functions
-- Use `t.Parallel()` for independent tests
-- Clean up resources with `t.Cleanup()`
-- Use meaningful test names that describe the scenario
-
-**DON'T:**
-- Test private functions directly (test through public API)
-- Use `time.Sleep()` in tests (use channels or conditions)
-- Ignore flaky tests (fix or remove them)
-- Mock everything (prefer integration tests when possible)
-- Skip error path testing
+- `t.Helper()` in helper functions so failures point at the caller's line.
+- `t.Parallel()` for independent subtests; `t.Cleanup()` to release resources.
+- Use channels or conditions instead of `time.Sleep()` for synchronization.
 
 ## Integration with CI/CD
 
@@ -720,5 +595,3 @@ test:
         go tool cover -func=coverage.out | grep total | awk '{print $3}' | \
         awk -F'%' '{if ($1 < 80) exit 1}'
 ```
-
-**Remember**: Tests are documentation. They show how your code is meant to be used. Write them clearly and keep them up to date.

@@ -1,6 +1,6 @@
 ---
 name: python-patterns
-description: Pythonic idioms, PEP 8 standards, type hints, and best practices for building robust, efficient, and maintainable Python applications.
+description: Python idioms — EAFP error handling, type hints/Protocols, dataclasses, context managers, generators, asyncio, and the black/ruff/mypy/pytest toolchain. Language-specific layer over the generic clean-code floor.
 metadata:
   source: everything-claude-code
   source_path: skills/python-patterns/SKILL.md
@@ -10,14 +10,9 @@ metadata:
 
 # Python Development Patterns
 
-Idiomatic Python patterns and best practices for building robust, efficient, and maintainable applications.
+Generic naming, immutability, KISS/DRY/YAGNI, file/function size, and code-smell rules live in the always-on `rules/common/clean-code.md` — do not restate them. This skill keeps only the Python-specific idioms below.
 
-## When to Activate
-
-- Writing new Python code
-- Reviewing Python code
-- Refactoring existing Python code
-- Designing Python packages/modules
+Apply when writing, reviewing, or refactoring Python code or designing packages/modules.
 
 ## FastAPI Backend Defaults
 
@@ -26,43 +21,7 @@ Redis for shared cache, and Celery for durable jobs. Do not default to
 hand-rolled JWT/password auth; use a framework/provider integration unless the
 user explicitly requires local auth and no maintained provider fits.
 
-## Core Principles
-
-### 1. Readability Counts
-
-Python prioritizes readability. Code should be obvious and easy to understand.
-
-```python
-# Good: Clear and readable
-def get_active_users(users: list[User]) -> list[User]:
-    """Return only active users from the provided list."""
-    return [user for user in users if user.is_active]
-
-
-# Bad: Clever but confusing
-def get_active_users(u):
-    return [x for x in u if x.a]
-```
-
-### 2. Explicit is Better Than Implicit
-
-Avoid magic; be clear about what your code does.
-
-```python
-# Good: Explicit configuration
-import logging
-
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-# Bad: Hidden side effects
-import some_module
-some_module.setup()  # What does this do?
-```
-
-### 3. EAFP - Easier to Ask Forgiveness Than Permission
+## EAFP — Easier to Ask Forgiveness Than Permission
 
 Python prefers exception handling over checking conditions.
 
@@ -606,24 +565,11 @@ def read_lines(path: str) -> Iterator[str]:
             yield line.strip()
 ```
 
-### Avoid String Concatenation in Loops
+### String Building
 
 ```python
-# Bad: O(n²) due to string immutability
-result = ""
-for item in items:
-    result += str(item)
-
-# Good: O(n) using join
+# Use str.join over += in a loop
 result = "".join(str(item) for item in items)
-
-# Good: Using StringIO for building
-from io import StringIO
-
-buffer = StringIO()
-for item in items:
-    buffer.write(str(item))
-result = buffer.getvalue()
 ```
 
 ## Python Tooling Integration
@@ -757,5 +703,3 @@ try:
 except SpecificError as e:
     logger.error(f"Operation failed: {e}")
 ```
-
-__Remember__: Python code should be readable, explicit, and follow the principle of least surprise. When in doubt, prioritize clarity over cleverness.

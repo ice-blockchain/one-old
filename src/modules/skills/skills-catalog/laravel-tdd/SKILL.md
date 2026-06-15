@@ -10,34 +10,24 @@ metadata:
 
 # Laravel TDD Workflow
 
-Test-driven development for Laravel applications using PHPUnit and Pest with 80%+ coverage (unit + feature).
+Test-driven development for Laravel applications using PHPUnit and Pest (unit + feature).
 
-## When to Use
+## When to Activate
 
 - New features or endpoints in Laravel
 - Bug fixes or refactors
 - Testing Eloquent models, policies, jobs, and notifications
 - Prefer Pest for new tests unless the project already standardizes on PHPUnit
 
+The RED-GREEN-REFACTOR cycle, coverage tiers (Critical 100% / Public API 90% / Overall 80%), AAA structure, and the generic test maxims (test behavior not implementation, descriptive names, independent tests, no sleep(), don't over-mock) are owned by the `tdd-workflow` skill — do not restate them. Below are only the language-specific runner commands, frameworks, and idioms.
+
 ## How It Works
-
-### Red-Green-Refactor Cycle
-
-1) Write a failing test
-2) Implement the minimal change to pass
-3) Refactor while keeping tests green
 
 ### Test Layers
 
 - **Unit**: pure PHP classes, value objects, services
 - **Feature**: HTTP endpoints, auth, validation, policies
 - **Integration**: database + queue + external boundaries
-
-Choose layers based on scope:
-
-- Use **Unit** tests for pure business logic and services.
-- Use **Feature** tests for HTTP, auth, validation, and response shape.
-- Use **Integration** tests when validating DB/queues/external services together.
 
 ### Database Strategy
 
@@ -229,10 +219,9 @@ $response->assertOk();
 - Use `Http::fake()` to isolate external APIs
 - Assert outbound payloads with `Http::assertSent()`
 
-### Coverage Targets
+### Coverage Tooling
 
-- Enforce 80%+ coverage for unit + feature tests
-- Use `pcov` or `XDEBUG_MODE=coverage` in CI
+- Use `pcov` or `XDEBUG_MODE=coverage` in CI to collect coverage (Laravel/PHP-specific drivers)
 
 ### Test Commands
 

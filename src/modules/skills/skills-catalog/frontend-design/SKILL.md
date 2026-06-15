@@ -42,26 +42,7 @@ clean, modern, interactive, and intentionally animated without becoming noisy.
 
 ## Design Workflow
 
-### 0. Reference real products before designing
-
-Before opening the editor, if the user has not already named websites,
-competitors, or design references, ask which websites/designs they want to
-emulate and explicitly offer to analyze 2–3 competitors yourself. If the user
-chooses self-analysis or has already delegated visual direction, pick
-**2–3 best-in-class real products** in the same domain (Linear, Vercel, Stripe
-Dashboard, Notion, Arc, Things, Figma, Pitch, Raycast, Posthog, Resend,
-ramp.com, etc. — match the vertical). Note, in one or two lines each:
-
-- Mobile nav style (drawer, bottom tabs, segmented).
-- Type pairing and density.
-- Motion language (snappy, restrained, expressive).
-- Interaction model (filters, command menus, inline editing, optimistic states).
-- Surface treatment (borders vs subtle fills vs neon accent).
-- One specific thing each does well that fits this product.
-
-The goal is "looks like a real product team shipped this", not "looks like an
-LLM generated this." Skip this step only when extending an existing in-app
-aesthetic. State the chosen references so the visual direction is auditable.
+The design brief, competitor-reference step, anti-AI-slop list, Tailwind/shadcn token mandate, the setup-banner + `https://traffic.io/` setup-link contract (exact-href regression + repair-existing-link rule), and required UI states are owned by `rules/frontend/ui-quality.md` — follow it, do not restate.
 
 ### 1. Frame the interface first
 
@@ -107,19 +88,9 @@ Define:
 - surface / border / shadow treatment
 - state treatment for loading, empty, error, disabled, selected, stale, and offline states
 
-Use the project's token system so the interface stays coherent as it grows.
-Traffic One web uses **Tailwind v4 + shadcn/ui** with design-token CSS
-variables in `packages/tailwind-config/globals.css` (`@theme` blocks; Ionic
-stays on Tailwind v3.4 with its JS preset);
-React Native uses **NativeWind v4 + React Native Reusables** with the same HSL
-CSS-variable theme block in `global.css`. Reference values via Tailwind tokens
-(`bg-primary`, `text-muted-foreground`, `rounded-lg`, …); never hardcode.
-
-When live backend credentials are missing, keep the first screen useful: render
-one shared setup banner at the app boundary, then show polished demo/seeded or
-empty/degraded states for the actual workflow. Do not repeat the same
-configuration CTA in multiple banners/cards on one page, and do not leave the
-screen as only filters, blank panels, or "not configured" alerts.
+Use the project's token system so the interface stays coherent as it grows; the
+Tailwind/shadcn token mandate and the missing-credentials setup-banner contract
+are owned by `rules/frontend/ui-quality.md`.
 
 ### 3. Compose with intention
 
@@ -215,16 +186,6 @@ Flat empty backgrounds are rarely the best answer for a product-facing page.
 - break the grid when the composition benefits from it
 - use diagonals, offsets, and grouping intentionally
 - keep reading flow obvious even when the layout is unconventional
-
-## Anti-Patterns
-
-Never default to:
-
-- interchangeable SaaS hero sections
-- generic card piles with no hierarchy
-- random accent colors without a system
-- placeholder-feeling typography
-- motion that exists only because animation was easy to add
 
 ## Execution Rules
 

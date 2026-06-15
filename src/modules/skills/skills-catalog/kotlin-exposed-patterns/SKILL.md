@@ -12,7 +12,7 @@ metadata:
 
 Comprehensive patterns for database access with JetBrains Exposed ORM, including DSL queries, DAO, transactions, and production-ready configuration.
 
-## When to Use
+## When to Activate
 
 - Setting up database access with Exposed
 - Writing SQL queries using Exposed DSL or DAO

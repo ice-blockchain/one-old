@@ -1,6 +1,6 @@
 ---
 name: task-triage
-description: "Post-build maintenance triage. Once a project's main build is complete (existing codebases from the start; new projects after the orchestrator finishes), classify each new request by complexity and scale the machinery to it — trivial → a free/cheap quick-fix worker, small → a single role, complex → a single-feature orchestrator run. Read when the maintenance-phase directive fires, or before acting on an iteration request on a finished app."
+description: "Post-build maintenance triage: classify each request by complexity and scale the machinery — trivial → cheap quick-fix worker, small → single role, complex → orchestrator run. Read when the maintenance-phase directive fires."
 metadata:
   adapted_for: traffic-one
 ---

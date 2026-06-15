@@ -12,6 +12,8 @@ metadata:
 
 Comprehensive security guidelines for Perl applications covering input validation, injection prevention, and secure coding practices.
 
+The framework-agnostic security checklist (secrets, input validation, parameterized SQL, output escaping, authn/authz, CORS, rate limiting, security headers, dependency audit, error sanitization) and the Traffic One pre-deploy gate are owned by the always-on `rules/common/security.md` — that rule is the source of truth; do not restate or fork it here. Below are only the framework-specific specifics.
+
 ## When to Activate
 
 - Handling user input in Perl applications
@@ -457,23 +459,6 @@ perlcritic --severity 3 --theme security lib/
 # CI integration
 perlcritic --severity 4 --theme security --quiet lib/ || exit 1
 ```
-
-## Quick Security Checklist
-
-| Check | What to Verify |
-|---|---|
-| Taint mode | `-T` flag on CGI/web scripts |
-| Input validation | Allowlist patterns, length limits |
-| File operations | Three-arg open, path traversal checks |
-| Process execution | List-form system, no shell interpolation |
-| SQL queries | DBI placeholders, never interpolate |
-| HTML output | `encode_entities()`, template auto-escape |
-| CSRF tokens | Generated, verified on state-changing requests |
-| Session config | Secure, HttpOnly, SameSite cookies |
-| HTTP headers | CSP, X-Frame-Options, HSTS |
-| Dependencies | Pinned versions, audited modules |
-| Regex safety | No nested quantifiers, anchored patterns |
-| Error messages | No stack traces or paths leaked to users |
 
 ## Anti-Patterns
 
