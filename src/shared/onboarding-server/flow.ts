@@ -19,7 +19,8 @@ import {
 import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
-import { recommendTierForPlan } from '../model-tiers';
+import { TIER_IDS } from '../../config/model-tiers';
+import { recommendTierForPlan, resolveModel } from '../model-tiers';
 import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
@@ -81,6 +82,11 @@ export interface StepMeta {
   recommendedLevel?: string;
   recommendedTier?: string;
   host?: string;
+  // The model choices offered per agent on the team step: the detected host's
+  // capability tiers (highest/balanced/cheapest) resolved to concrete model ids
+  // (opus/sonnet/haiku, gpt-5.x, …). The wizard renders one <select> per role
+  // from this list; the chosen tier is sent back as a team.overrides entry.
+  modelChoices?: { tier: string; model: string }[];
 }
 
 // The senior-engineer roster, in the order it should read on screen. Labels +
@@ -274,6 +280,10 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   meta.performanceLevel = level;
   meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
   meta.host = host;
+  // The per-agent model menu: each tier resolved to the detected host's model id,
+  // so the wizard can offer real model names (and the user's pick maps straight
+  // back to a tier override the spawn gate already understands).
+  meta.modelChoices = TIER_IDS.map((tier) => ({ tier, model: resolveModel(tier, host) || tier }));
 }
 
 // Pre-select the wizard's recommended performance level from the detected plan +
