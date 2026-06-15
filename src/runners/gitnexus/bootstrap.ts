@@ -26,6 +26,7 @@ import {
   mergeToolchainStamp,
   probeTool,
   probeToolVersion,
+  toolInstallSpec,
   toolStatus,
 } from '../toolchain';
 import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
@@ -171,11 +172,11 @@ export interface GitnexusToolResult {
   installedVersion?: string | null;
 }
 
-function gitnexusPackageSpec(): string {
-  const spec = getToolSpec('gitnexus');
-  return typeof spec?.recommended === 'string' && spec.recommended
-    ? `gitnexus@${spec.recommended}`
-    : 'gitnexus';
+export function gitnexusPackageSpec(): string {
+  // Install LATEST by default (toolchain-versions.json: installLatest + npmPackage
+  // → "gitnexus@latest"). A stale `recommended` pin must not doom an install; the
+  // probed version is what we stamp afterwards.
+  return toolInstallSpec('gitnexus') || 'gitnexus';
 }
 
 function probeGitnexusVersion(gitnexusBin: string, nodeBin?: string | null): string | null {

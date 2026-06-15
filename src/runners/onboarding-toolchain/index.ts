@@ -2,22 +2,51 @@
 // Consolidated onboarding install task (compiles to scripts/onboarding-toolchain-runner.cjs).
 // Spawned by the onboarding wizard at the `finalize` step. It reads the committed
 // state and installs the dependencies the user actually chose:
-//   - the code-graph provider (gitnexus/graphify) — install + first scan, REQUIRED;
+//   - the code-graph provider (gitnexus/graphify) — install + first scan, WARN-AND-PROCEED;
 //   - the OpenCode CLI when `openCode.enabled` — install only, OPTIONAL.
 //
-// Exit code is the completion gate: non-zero ONLY when the REQUIRED graph
-// provider failed to install/run. OpenCode is an optional token-saver, so its
-// failure is reported in the JSON summary but never blocks onboarding (warn-and-
-// proceed). The wizard polls the task; a non-zero exit surfaces as task `error`
-// and keeps the "Setup complete" screen gated behind a Retry.
+// The code-graph provider is a TOKEN OPTIMIZATION (like OpenCode), NOT a hard
+// requirement: a non-technical user must reach "Setup complete" even if the
+// graph provider cannot be installed on their machine. So a provider problem
+// NEVER gates onboarding. Instead it degrades gracefully:
+//   1. if the chosen provider can't install, try the SIBLING (graphify↔gitnexus)
+//      but ONLY when the sibling's language runtime is actually present (no point
+//      installing graphify with no Python). A working sibling is persisted as the
+//      new machine-wide provider so future sessions reuse it.
+//   2. if neither provider can be installed, DEFER — record a deferred marker and
+//      let the SessionStart self-heal (ensureCodeGraphForExistingProject) and the
+//      post-build hook retry later. result.ok stays true.
+// OpenCode failure is likewise reported in the JSON summary but never blocks.
+// The wizard polls the task; result.ok===true → exit 0 → no Retry wall.
 
 import { bootstrap as graphifyBootstrap, ensureGraphifyTool } from '../graphify';
 import { bootstrap as gitnexusBootstrap, ensureGitnexusTool } from '../gitnexus';
-import { readEffectiveState } from '../../shared/state';
+import { readEffectiveState, writeGlobalCodeGraphProvider, mergeProjectPrefs, stateTimestamp } from '../../shared/state';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
-import { reconcileManagedToolStamp } from '../toolchain';
+import { reconcileManagedToolStamp, toolRuntime } from '../toolchain';
 import { ensureOpenCodeTool } from '../toolchain/onboarding';
 import { ensureRunnerShims } from '../../shared/runner-shims';
+import { resolvePython, resolveNode } from '../../shared/runtime-resolve';
+
+type GraphProvider = 'graphify' | 'gitnexus';
+
+// The other provider — falling back graphify↔gitnexus.
+function siblingProvider(provider: GraphProvider): GraphProvider {
+  return provider === 'graphify' ? 'gitnexus' : 'graphify';
+}
+
+// Is the language runtime a provider needs actually present on this machine?
+// Read the declared runtime (toolchain-versions.json) and probe for a satisfying
+// interpreter via the GUI-PATH-proof resolver. `none` → always available (no
+// runtime to find). Used to decide whether a sibling fallback is even worth
+// attempting — installing graphify with no Python (or gitnexus with no Node 22)
+// would just fail again.
+function providerRuntimeAvailable(provider: GraphProvider): boolean {
+  const { runtime, minMajor, minMinor } = toolRuntime(provider);
+  if (runtime === 'python') return Boolean(resolvePython(minMajor, minMinor));
+  if (runtime === 'node') return Boolean(resolveNode(minMajor));
+  return true;
+}
 
 type Rec = Record<string, unknown>;
 
@@ -34,28 +63,29 @@ interface ToolOutcome {
 //     point, so graphify/gitnexus legitimately find "no code files to index"
 //     (graphify even exits non-zero); the post-build hook rebuilds it later, so a
 //     deferred scan is NOT a failure → gate only on "installed/usable".
-//   - EXISTING codebase (`requireScan`): the repo already has code AND there is
-//     no later reliable trigger (the post-build hook needs a `build` command,
-//     Phase 5 only fires on full orchestrator runs). So the first scan MUST
-//     produce a graph before "Setup complete" — a failed scan gates completion.
-function installGraphProvider(cwd: string, provider: 'graphify' | 'gitnexus', requireScan: boolean): ToolOutcome {
+//   - EXISTING codebase (`requireScan`): the repo already has code, so we WANT the
+//     first scan now. But the graph is a token optimization, never a blocker — a
+//     failed scan is a SOFT note ('scan deferred'), not a hard gate. The
+//     SessionStart self-heal + post-build hook retry it later. `ok` stays true
+//     whenever the tool itself installed.
+function installGraphProvider(cwd: string, provider: GraphProvider, requireScan: boolean): ToolOutcome {
   const ensured = provider === 'graphify' ? ensureGraphifyTool(cwd) : ensureGitnexusTool(cwd);
   if (!ensured.ok) {
     return { tool: provider, ok: false, action: ensured.action, error: ensured.error, installedVersion: ensured.installedVersion ?? null };
   }
   const scan = provider === 'graphify' ? graphifyBootstrap(cwd, { force: false }) : gitnexusBootstrap(cwd, { force: false });
-  if (!scan.ok && requireScan) {
-    return {
-      tool: provider,
-      ok: false,
-      action: `${ensured.action}; scan failed`,
-      error: scan.error || 'graph scan produced no report on an existing codebase',
-      installedVersion: ensured.installedVersion ?? null,
-    };
+  // The tool installed. Whether or not the first scan produced a report, do not
+  // gate completion on it — note a deferred scan and proceed. On an existing
+  // codebase the deferral is called out so doctor/self-heal can prioritize it.
+  let action: string;
+  if (scan.ok) {
+    action = scan.action;
+  } else {
+    const reason = (scan.error || 'no code files yet').split('\n')[0];
+    action = requireScan
+      ? `${ensured.action}; scan deferred on existing codebase (${reason})`
+      : `${ensured.action}; scan deferred (${reason})`;
   }
-  const action = scan.ok
-    ? scan.action
-    : `${ensured.action}; scan deferred (${(scan.error || 'no code files yet').split('\n')[0]})`;
   return { tool: provider, ok: true, action, error: null, installedVersion: ensured.installedVersion ?? scan.installedVersion ?? null };
 }
 
@@ -65,6 +95,16 @@ export interface OnboardingToolchainResult {
   provider: string | null;
   openCodeEnabled: boolean;
   results: ToolOutcome[];
+}
+
+// Best-effort state writes: a failed prefs / one.json write (read-only
+// .traffic-one/, EACCES/EROFS, path-type clash) must NEVER throw out of this
+// runner and gate onboarding — mirrors the graph runners' writeStateMerge guard.
+function safePrefs(cwd: string, patch: Rec): void {
+  try { mergeProjectPrefs(cwd, patch); } catch { /* best-effort; never blocks onboarding */ }
+}
+function safeWriteProvider(provider: GraphProvider): void {
+  try { writeGlobalCodeGraphProvider(provider); } catch { /* best-effort; never blocks onboarding */ }
 }
 
 export function ensureOnboardingToolchain(cwd: string = process.cwd()): OnboardingToolchainResult {
@@ -104,19 +144,57 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
     }
   }
 
-  // Required: the chosen code-graph provider must be INSTALLED, plus the first
-  // scan must succeed on an existing codebase (see installGraphProvider). Guard
-  // against a throw so a scan failure can't take down the optional OpenCode
-  // install below (or the setup above) — it degrades to a gated completion.
-  let graphFailed = false;
+  // Code-graph provider — WARN-AND-PROCEED, never gates onboarding. Try the
+  // chosen provider; if it can't install, try the SIBLING (graphify↔gitnexus)
+  // but ONLY when the sibling's runtime is actually present; if neither can be
+  // installed, DEFER (the self-heal + post-build hook retry later). A throw is
+  // caught and likewise degrades to a deferral. result.ok is NEVER flipped by a
+  // provider install/runtime problem.
   if (provider === 'graphify' || provider === 'gitnexus') {
+    const chosen = provider as GraphProvider;
     try {
-      const r = installGraphProvider(cwd, provider, requireScan);
-      graphFailed = !r.ok;
-      results.push(r);
+      let r = installGraphProvider(cwd, chosen, requireScan);
+      if (!r.ok) {
+        // The chosen provider failed. Try the sibling only when its language
+        // runtime is present — otherwise installing it would just fail again.
+        const sibling = siblingProvider(chosen);
+        if (providerRuntimeAvailable(sibling)) {
+          const fb = installGraphProvider(cwd, sibling, requireScan);
+          if (fb.ok) {
+            // Persist the switch so every future session reuses the working
+            // provider (mirrors seed-provider's writeGlobalCodeGraphProvider).
+            safeWriteProvider(sibling);
+            r = { ...fb, action: `fell-back-to-${sibling} (${chosen} unavailable); ${fb.action}` };
+          }
+        }
+      }
+      if (!r.ok) {
+        // Neither provider could be installed. Defer instead of failing: record a
+        // marker doctor can surface; the self-heal retries later. ok stays true.
+        safePrefs(cwd, { graphDeferredAt: stateTimestamp() });
+        results.push({
+          tool: chosen,
+          ok: true,
+          action: 'deferred',
+          error: null,
+          installedVersion: null,
+        });
+      } else {
+        // Provider is installed/usable now — clear any prior deferral marker so
+        // doctor doesn't surface a stale pending-graph after a later success.
+        safePrefs(cwd, { graphDeferredAt: null });
+        results.push(r);
+      }
     } catch (e) {
-      graphFailed = true;
-      results.push({ tool: provider, ok: false, action: 'install-threw', error: (e as Error)?.message || 'graph provider threw', installedVersion: null });
+      // A throw is not a blocker either — defer and proceed (best-effort write).
+      safePrefs(cwd, { graphDeferredAt: stateTimestamp() });
+      results.push({
+        tool: chosen,
+        ok: true,
+        action: `deferred (install threw: ${(e as Error)?.message || 'graph provider threw'})`,
+        error: null,
+        installedVersion: null,
+      });
     }
   }
 
@@ -128,10 +206,12 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
     results.push({ tool: 'opencode', ok: r.ok, action: r.action, error: r.error, installedVersion: r.installedVersion ?? null });
   }
 
-  // Gate ONLY on the required graph provider. A missing provider (none chosen)
-  // is not a failure — there is simply nothing required to install.
-  const ok = !graphFailed;
-  return { ok, action: 'onboarding-toolchain', provider, openCodeEnabled, results };
+  // Nothing here gates completion. The code-graph provider is a token
+  // optimization that warns-and-proceeds (install failures fall back to the
+  // sibling or defer), and OpenCode is an optional token-saver. So onboarding
+  // always reaches "Setup complete"; provider/OpenCode problems are reported in
+  // the results for doctor + the self-heal to act on later.
+  return { ok: true, action: 'onboarding-toolchain', provider, openCodeEnabled, results };
 }
 
 // Targeted OpenCode-only pass: the SessionStart self-heal spawns this (detached,
@@ -163,24 +243,32 @@ export function ensureOpenCodeOnly(cwd: string = process.cwd()): OnboardingToolc
   return { ok: true, action: 'opencode-only', provider: null, openCodeEnabled, results };
 }
 
-// CLI entry. Returns the process exit code (the shim + the wizard task runner
-// map non-zero → task `error` → blocked "Setup complete" screen). The failing
-// provider's detail is echoed to stderr so the task surfaces it to the user.
+// CLI entry. Always exits 0 — the code-graph provider warns-and-proceeds (falls
+// back to the sibling or defers) and OpenCode is optional, so nothing here gates
+// the wizard's "Setup complete" screen. The JSON summary on stdout carries every
+// per-tool outcome (deferred provider, OpenCode warning) for doctor + self-heal.
 export function main(): number {
-  ensureRunnerShims(); // stable ~/.traffic-one/bin paths — written whenever the toolchain runs
-  if (process.argv.includes('--opencode-only')) {
-    const result = ensureOpenCodeOnly(process.cwd());
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-    return 0; // self-heal is best-effort; never surfaces as a task error
+  try { ensureRunnerShims(); } catch { /* shim write is best-effort; never blocks */ }
+  // Ultimate backstop: NOTHING here may produce a non-zero exit / Retry wall.
+  // Even an unforeseen throw (e.g. an unwritable prefs path on a locked-down or
+  // GUI-launched machine — exactly what this runner must tolerate) degrades to a
+  // clean exit 0 with the error reported in the JSON summary.
+  let result: OnboardingToolchainResult;
+  try {
+    result = process.argv.includes('--opencode-only')
+      ? ensureOpenCodeOnly(process.cwd())
+      : ensureOnboardingToolchain(process.cwd());
+  } catch (e) {
+    result = {
+      ok: true,
+      action: 'onboarding-toolchain',
+      provider: null,
+      openCodeEnabled: false,
+      results: [{ tool: 'onboarding-toolchain', ok: true, action: 'errored-but-not-blocking', error: (e as Error)?.message || 'onboarding toolchain threw', installedVersion: null }],
+    };
   }
-  const result = ensureOnboardingToolchain(process.cwd());
   process.stdout.write(`${JSON.stringify(result)}\n`);
-  if (!result.ok) {
-    const failed = result.results.find((r) => r.tool === result.provider && !r.ok);
-    process.stderr.write(`${result.provider} install failed: ${failed?.error || 'unknown error'}\n`);
-    return 1;
-  }
-  return 0;
+  return 0; // never gates onboarding — provider/OpenCode problems are warn-and-proceed
 }
 
 if (require.main === module) {

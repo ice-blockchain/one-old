@@ -17,6 +17,7 @@ import * as path from 'path';
 import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
+import { resolvePython, runtimeMissingMessage } from '../../shared/runtime-resolve';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import {
@@ -27,6 +28,8 @@ import {
   managedVenvPython,
   mergeToolchainStamp,
   probeToolVersion,
+  toolInstallSpec,
+  toolRuntime,
   toolStatus,
 } from '../toolchain';
 
@@ -76,11 +79,11 @@ interface InstallResult {
   installedVersion?: string | null;
 }
 
+// LATEST-by-default install spec from the shared toolchain contract. graphify is
+// flagged `installLatest`, so this is the bare package name `graphifyy` (no pin)
+// — the runner stamps whatever version actually landed via `pip show graphifyy`.
 function graphifyPackageSpec(): string {
-  const spec = getToolSpec('graphify');
-  return typeof spec?.recommended === 'string' && spec.recommended
-    ? `graphifyy==${spec.recommended}`
-    : 'graphifyy';
+  return toolInstallSpec('graphify') || 'graphifyy';
 }
 
 function graphifyRecommendedVersion(): string | null {
@@ -151,14 +154,20 @@ function installWithPipx(cwd: string): InstallResult {
 }
 
 function installWithManagedVenv(cwd: string, previousError: string | null = null): InstallResult {
-  const python = which('python3');
-  if (!python) {
+  // GUI-PATH-proof: never trust `which('python3')` (a Finder-launched host
+  // inherits the stock CLT 3.9.x, below graphifyy's Requires-Python >=3.10). The
+  // shared resolver probes Homebrew/pyenv/PATH for an ABSOLUTE interpreter that
+  // satisfies the declared minimum.
+  const { minMajor, minMinor } = toolRuntime('graphify');
+  const py = resolvePython(minMajor, minMinor);
+  if (!py) {
+    // Beginner-friendly explanation, no raw pip output (this is the
+    // stock-macOS Python 3.9.6 case). A graph-provider problem must never
+    // block onboarding — the caller degrades gracefully on install-skipped.
     return {
       action: 'install-skipped',
-      error: [
-        'graphify install needs either `pipx` or `python3` with venv support on PATH.',
-        previousError ? `pipx attempt: ${previousError}` : '',
-      ].filter(Boolean).join(' '),
+      error: runtimeMissingMessage('graphify', 'python', minMajor, minMinor)
+        + (previousError ? ` pipx attempt: ${previousError}` : ''),
       binPath: null,
     };
   }
@@ -173,7 +182,7 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   }
 
   if (!fs.existsSync(venvPython)) {
-    const venv = spawnSync(python, ['-m', 'venv', venvDir], {
+    const venv = spawnSync(py.path, ['-m', 'venv', venvDir], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 90 * 1000,
@@ -186,6 +195,15 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
       };
     }
   }
+
+  // Upgrade pip inside the venv before installing (best-effort): silences the
+  // misleading "you should upgrade pip" warning and covers any genuine old-pip
+  // metadata case. A failure here is non-fatal — continue to the install.
+  spawnSync(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip', '--quiet'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: 90 * 1000,
+  });
 
   const pip = spawnSync(venvPython, ['-m', 'pip', 'install', '--upgrade', graphifyPackageSpec(), '--quiet'], {
     encoding: 'utf8',

@@ -10,6 +10,7 @@ import {
   currentNodeMajor,
   findNvmNode22,
   gitnexusGraphIsEmpty,
+  gitnexusPackageSpec,
   nodeVersionMismatchMessage,
   nvmPresent,
 } from '../index';
@@ -83,6 +84,13 @@ test('currentNodeMajor returns the running major', () => {
   const major = currentNodeMajor();
   assert.equal(typeof major, 'number');
   assert.ok((major ?? 0) >= 1);
+});
+
+test('gitnexusPackageSpec installs LATEST (not the recommended pin)', () => {
+  // toolchain-versions.json marks gitnexus installLatest=true, so the install
+  // target is "gitnexus@latest" — a stale `recommended` pin must never doom an
+  // install. The probed version is what gets stamped afterwards.
+  assert.equal(gitnexusPackageSpec(), 'gitnexus@latest');
 });
 
 test('constants + messages are stable', () => {

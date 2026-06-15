@@ -13,6 +13,8 @@ import {
   managedVenvBin,
   managedVenvPython,
   mergeToolchainStamp,
+  toolInstallSpec,
+  toolRuntime,
   toolStatus,
   toolchainRoot,
 } from '../index';
@@ -25,6 +27,27 @@ test('loadSpec / getToolSpec read the curated spec (via __dirname)', () => {
   assert.equal(getToolSpec('opencode')?.npmPackage, 'opencode-ai');
   assert.equal(getToolSpec('opencode')?.recommended, '1.15.13');
   assert.equal(getToolSpec('not-a-tool'), null);
+});
+
+test('toolInstallSpec targets LATEST, not the recommended pin', () => {
+  // pip-managed: unpinned package name (the published name is intentionally double-y).
+  assert.equal(toolInstallSpec('graphify'), 'graphifyy');
+  // npm-managed: <pkg>@latest, never @<recommended>.
+  assert.equal(toolInstallSpec('opencode'), 'opencode-ai@latest');
+  assert.equal(toolInstallSpec('gitnexus'), 'gitnexus@latest');
+  // No package manager declared → no install spec.
+  assert.equal(toolInstallSpec('gitleaks'), null);
+  assert.equal(toolInstallSpec('not-a-tool'), null);
+});
+
+test('toolRuntime reports the declared language runtime + minimum', () => {
+  assert.deepEqual(toolRuntime('graphify'), { runtime: 'python', minMajor: 3, minMinor: 10 });
+  const gitnexus = toolRuntime('gitnexus');
+  assert.equal(gitnexus.runtime, 'node');
+  assert.equal(gitnexus.minMajor, 22);
+  // A tool with no declared runtime degrades to a null/zero shape (never throws).
+  assert.deepEqual(toolRuntime('gitleaks'), { runtime: null, minMajor: 0, minMinor: 0 });
+  assert.deepEqual(toolRuntime('not-a-tool'), { runtime: null, minMajor: 0, minMinor: 0 });
 });
 
 test('isToolUsable accepts current/outdated, rejects the rest', () => {
