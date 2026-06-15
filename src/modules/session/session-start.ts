@@ -29,12 +29,14 @@ import {
   hasRunAgentState,
   hookSessionIdentity,
   legacyRunAgentContext,
+  legacyStatePath,
   maintenanceLifecycle,
   normalizeState,
   readEffectiveState,
   resolveRunAgentContext,
   type RunAgentContext,
   stackFingerprint,
+  statePath,
   stateVersion,
   writeState,
 } from '../../shared/state';
@@ -136,6 +138,18 @@ function runSessionStartInner(ctx: Ctx): HookResult {
     const writeResult = tryWriteAuthChoice('pending-choice', cwd);
     return authRequiredHookResult('SessionStart', { authChoiceWrite: writeResult });
   }
+
+  // Defer brand-new-project activation to the first prompt. SessionStart fires
+  // before any prompt exists, so eagerly writing state + emitting the setup
+  // directive here would trip the onboarding gate even for a non-coding question
+  // — and Codex opens a fresh scratch dir per task, so EVERY session would look
+  // like a new project. Leave a pristine dir untouched and stay silent; the
+  // UserPromptSubmit coding-intent guard activates Traffic One only when the
+  // first prompt is actually a coding/implementation request (it re-runs this
+  // authed body then). An existing codebase still auto-detects below, because its
+  // mode is existing-codebase, not new-project.
+  const pristine = !fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd));
+  if (pristine && detectMode(cwd) === 'new-project') return noop();
 
   return runSessionStartAuthed(ctx);
 }
