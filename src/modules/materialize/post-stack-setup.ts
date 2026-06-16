@@ -25,7 +25,7 @@ import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { isStateFilePath } from '../../shared/tool-classify';
+import { isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -74,7 +74,9 @@ function architectDigestProjectRoot(filePath: string): string | null {
 export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): HookResult {
   const cwd = ctx.cwd;
   const raw = obj(ctx.input.raw) || {};
-  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
+  // parsedToolInput lifts ctx.input.tool.command on Cursor (no raw.tool_input) so the
+  // shell command-hint convergence (materializeFromToolInputHints) sees the command.
+  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path);
   const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
   const pathBase = workdir

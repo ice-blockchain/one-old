@@ -99,4 +99,11 @@ export const CURSOR_EVENTS: { event: string; subcommand: string }[] = [
   { event: 'afterShellExecution', subcommand: 'after-shell-execution' },
   { event: 'beforeReadFile', subcommand: 'before-read-file' },
   { event: 'afterFileEdit', subcommand: 'after-file-edit' },
+  // Generic tool hooks (fire for ALL tool types). The cursor adapter derives the
+  // tool class from the payload tool_name and excludes classes the fixed events
+  // above already own, so no gate double-fires. These close the pre-WRITE deny, the
+  // pre-search graphify hint, and the spawn-agent model-tier gate on Cursor.
+  { event: 'preToolUse', subcommand: 'before-tool-use' },
+  { event: 'postToolUse', subcommand: 'after-tool-use' },
+  { event: 'subagentStart', subcommand: 'subagent-start' },
 ];

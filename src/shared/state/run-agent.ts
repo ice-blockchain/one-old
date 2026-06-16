@@ -177,6 +177,9 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
     || nestedValue(payload, ['subagent', 'thread_spawn'])
     || {}) as Rec;
 
+  // NOTE: Cursor DOES send session_id (== conversation_id) on every event
+  // (verified across all event types in captured cursor.hooks logs), so data.session_id
+  // below already resolves it — no conversation_id alias is needed.
   const sessionId = firstString(
     data.session_id, data.sessionId, data.sessionID, data.id,
     payload.session_id, payload.sessionId, payload.id,

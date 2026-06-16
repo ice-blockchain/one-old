@@ -29,7 +29,7 @@ import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../..
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isNativeState, readEffectiveState } from '../../shared/state';
-import { commandFromToolInput, isShellToolName, normalizedToolName } from '../../shared/tool-classify';
+import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import { planReadinessViolations } from './plan-readiness';
 import { runTeamEnforcementViolation } from './plan-runteam';
 import { planStaticViolations, makePlanBlock } from './plan-static';
@@ -38,8 +38,11 @@ const block = makePlanBlock(makeSkillBlock(pluginRoot));
 
 export function planWriteGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
-  const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName) || 'Bash';
-  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
+  // Host-agnostic tool classification (see onboarding-gate): Cursor's rawName is a
+  // coarse subcommand and its command/path live on ctx.input.tool, not raw.tool_input
+  // — without this the shell feature-source-write deny is blind on Cursor.
+  const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName) || 'Bash';
+  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
 
   const rawFilePath = asString(toolInput.file_path).replace(/\\/g, '/');
   const rawCommand = commandFromToolInput(toolInput);

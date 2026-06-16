@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
+import type { ToolClass, ToolInput } from '../core/types';
 import { legacyStatePath, statePath } from './state';
 
 type Rec = Record<string, unknown>;
@@ -18,6 +19,46 @@ export function normalizedToolName(toolName: unknown): string {
 
 export function isShellToolName(toolName: unknown = ''): boolean {
   return /^(Bash|exec_command)$/i.test(normalizedToolName(toolName));
+}
+
+// Names the classifiers above recognize. rawName is already one of these on
+// Claude/Codex; Cursor's rawName is a host SUBCOMMAND (before-shell-execution,
+// before-read-file, after-file-edit) that matches none of them.
+const KNOWN_TOOL_NAME = /^(Bash|exec_command|Write|Edit|MultiEdit|apply_patch|Read|Glob|Grep|LS|NotebookRead|NotebookEdit)$/i;
+
+function nameForClass(cls: ToolClass): string {
+  switch (cls) {
+    case 'shell': return 'Bash';
+    case 'file-read': return 'Read';
+    case 'file-edit': return 'Edit';
+    case 'file-write': return 'Write';
+    case 'search': return 'Grep';
+    case 'spawn-agent': return 'Task';
+    default: return '';
+  }
+}
+
+// A host-agnostic tool name the classifiers understand. The adapter-parsed
+// ToolInput is canonical on every host — but Cursor sets rawName to a coarse
+// subcommand, so when rawName isn't a recognized tool name, map the canonical
+// CLASS to a representative one. Keeps Claude/Codex (already-canonical rawName)
+// byte-identical while making Cursor's gate checks actually classify.
+export function canonicalToolName(tool: ToolInput | undefined): string {
+  if (!tool) return '';
+  if (tool.rawName && KNOWN_TOOL_NAME.test(normalizedToolName(tool.rawName))) return tool.rawName;
+  return nameForClass(tool.class) || tool.rawName || '';
+}
+
+// Synthesize a {command,file_path,content} input from the adapter-parsed tool, for
+// hosts (Cursor) that carry these on the parsed tool rather than in raw.tool_input.
+// Returns null when there's nothing to contribute so callers can `|| {}` cleanly.
+export function parsedToolInput(tool: ToolInput | undefined): Rec | null {
+  if (!tool) return null;
+  const ti: Rec = {};
+  if (tool.command) ti.command = tool.command;
+  if (tool.filePath) ti.file_path = tool.filePath;
+  if (tool.content) ti.content = tool.content;
+  return Object.keys(ti).length > 0 ? ti : null;
 }
 
 export function isWriteLikeToolName(toolName: unknown = ''): boolean {

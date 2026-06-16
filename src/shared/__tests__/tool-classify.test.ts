@@ -2,15 +2,19 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import {
+  canonicalToolName,
   commandFromToolInput,
   isMutatingPreToolUse,
+  isOnboardingWaitCommand,
   isReadOnlyOrientationToolUse,
   isShellToolName,
   isStateFileOnlyPatch,
   isStateFilePath,
   isWriteLikeToolName,
   normalizedToolName,
+  parsedToolInput,
 } from '../tool-classify';
+import type { ToolInput } from '../../core/types';
 
 test('tool-name classification (host-prefixed names normalized)', () => {
   assert.equal(normalizedToolName('mcp.Bash'), 'Bash');
@@ -71,4 +75,33 @@ test('isStateFileOnlyPatch detects an apply_patch touching only the state file',
   assert.equal(isStateFileOnlyPatch('apply_patch', { patch: '*** Update File: .traffic-one/.one.json\n+x' }), true);
   assert.equal(isStateFileOnlyPatch('apply_patch', { patch: '*** Update File: src/app.ts\n+x' }), false);
   assert.equal(isStateFileOnlyPatch('Bash', { command: 'ls' }), false);
+});
+
+// Cursor parses tool events into a canonical ToolInput whose rawName is a COARSE
+// subcommand (before-shell-execution …) the classifiers don't recognize, and whose
+// command/path live on the parsed tool — NOT raw.tool_input. canonicalToolName +
+// parsedToolInput bridge that so the gate's allow-checks work on Cursor.
+const cursorTool = (over: Partial<ToolInput>): ToolInput => ({ class: 'shell', rawName: 'before-shell-execution', ...over });
+
+test('canonicalToolName maps Cursor coarse subcommands to recognized names; keeps known names', () => {
+  assert.equal(canonicalToolName(cursorTool({ class: 'shell', rawName: 'before-shell-execution' })), 'Bash');
+  assert.equal(canonicalToolName(cursorTool({ class: 'file-read', rawName: 'before-read-file' })), 'Read');
+  assert.equal(canonicalToolName(cursorTool({ class: 'file-edit', rawName: 'after-file-edit' })), 'Edit');
+  // Already-canonical rawName (Claude/Codex) is preserved unchanged.
+  assert.equal(canonicalToolName(cursorTool({ class: 'shell', rawName: 'Bash' })), 'Bash');
+  assert.equal(canonicalToolName(cursorTool({ class: 'file-edit', rawName: 'apply_patch' })), 'apply_patch');
+  assert.equal(canonicalToolName(undefined), '');
+});
+
+test('parsedToolInput lifts command/path/content off the parsed tool (Cursor has no raw.tool_input)', () => {
+  assert.deepEqual(parsedToolInput(cursorTool({ command: 'node x/onboarding-wait.cjs /p' })), { command: 'node x/onboarding-wait.cjs /p' });
+  assert.deepEqual(parsedToolInput(cursorTool({ class: 'file-read', filePath: '/p/a.ts' })), { file_path: '/p/a.ts' });
+  assert.equal(parsedToolInput(cursorTool({})), null);
+});
+
+test('REGRESSION: a Cursor wait command + orientation read now classify as allowed', () => {
+  const waitTool = cursorTool({ command: 'node "/x/scripts/onboarding-wait.cjs" "/proj"' });
+  assert.equal(isOnboardingWaitCommand(canonicalToolName(waitTool), parsedToolInput(waitTool) || {}), true);
+  const readTool = cursorTool({ class: 'file-read', rawName: 'before-read-file', filePath: '/proj/x.ts' });
+  assert.equal(isReadOnlyOrientationToolUse(canonicalToolName(readTool), parsedToolInput(readTool) || {}), true);
 });

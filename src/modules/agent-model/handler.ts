@@ -36,6 +36,12 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
 
+// NOTE: model-tier gating DOES fire on Cursor — the generic before-tool-use hook
+// derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), and this
+// gate has no host guard, so the tier deny applies once per spawn (the run-claim is
+// staked here ONLY; subagentStart is a different canonical event, so no double-claim).
+// Only agent REUSE/continuation stays inert on Cursor — subagentContinuationAvailable()
+// is false there (no SendMessage/continuation primitive), so the reuse path no-ops.
 export function agentModelGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();
 
