@@ -26,7 +26,7 @@ import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
-import { isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath } from '../../shared/tool-classify';
+import { canonicalToolName, isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -35,8 +35,13 @@ const block = (name: string, vars: Record<string, string | number | null | undef
 
 export function onboardingGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
-  const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
-  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
+  // Use the adapter-parsed (host-agnostic) tool for classification. Cursor's
+  // rawName is a coarse subcommand (before-shell-execution …) the classifiers
+  // don't recognize, and its command/path live on the parsed tool, NOT
+  // raw.tool_input — so deriving from raw alone made every command/file allow-check
+  // (the onboarding wait command, read-only orientation) silently fail on Cursor.
+  const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
+  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   const cwd = ctx.cwd;
 
   if (isPluginAuthoringRoot(cwd)) return noop();

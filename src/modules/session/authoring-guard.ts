@@ -17,7 +17,7 @@ import { GENERATED_MARKER } from '../../shared/materialize/generated';
 import { obj, type Rec } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { patchTextFromToolInput, patchTouchedFiles } from '../../shared/tool-classify';
+import { parsedToolInput, patchTextFromToolInput, patchTouchedFiles } from '../../shared/tool-classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 
@@ -47,7 +47,9 @@ function writtenContent(toolInput: Rec): string {
 
 export function authoringWriteGuard(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
-  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
+  // parsedToolInput supplies content/patch text on Cursor (no raw.tool_input) so the
+  // GENERATED_MARKER content check can see what's being written.
+  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
   const pathBase = workdir
     ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(ctx.cwd, workdir))

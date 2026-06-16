@@ -21,7 +21,12 @@ file yourself:
 - Claude Code: your FIRST action is to call preview_start with name
   "traffic-one-setup" — it is already registered in .claude/launch.json and points at
   the running wizard, so it opens in the in-app preview pane.
-- Cursor: open the link below in the built-in Simple Browser.
+- Cursor: your FIRST visible action MUST be to post the wizard URL (the link below)
+  to the user on its OWN LINE as a clickable link, with a one-line "Open the Traffic
+  One setup wizard" call to action — do this BEFORE you run the wait command, and do
+  NOT bury it or skip straight to waiting. The user opens it in Cursor's built-in
+  Simple Browser (click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste).
+  Cursor exposes no API to open it for you; do NOT pop an external browser.
 - Codex Desktop: do NOT tool-search for or read any browser skill — this is the
   complete recipe. Open the wizard with the node_repl `js` tool running exactly:
 
@@ -51,7 +56,8 @@ finishes setup (run it with a long timeout, ~9 minutes / 540000 ms):
 When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, first CLOSE the wizard view you opened
 (the page also closes itself where the host allows it): Claude Code → `preview_stop`
 for "traffic-one-setup"; Codex → node_repl `await trafficOneSetupTab.close()`;
-Cursor → close the in-app browser tab you opened.
+Cursor → tell the user they can close the wizard browser tab (Cursor cannot close it
+programmatically — the wizard already shows a "you can close this tab" note).
 Then IMMEDIATELY continue the user's original
 request and build it end to end — do not stop to ask "what next?". If it prints
 `TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup finished), run the exact same

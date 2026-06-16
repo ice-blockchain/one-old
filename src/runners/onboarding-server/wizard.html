@@ -510,12 +510,13 @@
         el("div", { className: "check" }, ["✓"]),
         el("div", { className: "step-title" }, ["Setup complete"]),
         el("p", { className: "step-desc" }, ["Traffic One is configured. Return to your editor — the build will continue."]),
-        el("p", { className: "hint" }, ["This tab closes by itself; if it stays open, you can close it."]),
+        el("p", { className: "hint" }, ["You can close this tab now."]),
       ]));
       api("/complete", { method: "POST", body: "{}" }).catch(() => {});
-      // Auto-close the wizard tab. window.close() only works where the tab is
-      // script-controlled (in-app preview panes, agent-opened tabs) — a tab the
-      // user opened manually ignores it, which the hint line above covers.
+      // Try to auto-close. window.close() only works where the tab is
+      // script-controlled (Claude/Codex in-app panes the agent opened); a Cursor
+      // Simple Browser or an OS-browser tab ignores it, so the hint line above
+      // tells the user they can close it themselves.
       setTimeout(() => { try { window.close(); } catch (_) { /* blocked by browser */ } }, 1500);
     }
 

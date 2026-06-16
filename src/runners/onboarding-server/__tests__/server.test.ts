@@ -71,6 +71,15 @@ test('external browser auto-open is OFF by default (in-app preview preferred); o
   assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_OPEN_BROWSER: '0' }), false);
 });
 
+test('no host auto-pops the EXTERNAL browser — Cursor uses the in-app Simple Browser link, not an OS-browser pop', () => {
+  // Cursor opens the wizard in-app via the agent-surfaced clickable link (Cursor has
+  // no API to auto-open it, and an external pop is off-target + double-open-prone), so
+  // host alone NEVER triggers the OS browser. Only the explicit opt-in does.
+  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_HOST: 'cursor' }), false);
+  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_HOST: 'claude' }), false);
+  assert.equal(shouldOpenBrowser({ TRAFFIC_ONE_HOST: 'cursor', TRAFFIC_ONE_OPEN_BROWSER: '1' }), true);
+});
+
 test('server: rejects a non-loopback Host header (anti DNS-rebind)', async () => {
   await withServer(async (server) => {
     const res = await request(server.port, '/healthz?t=secret', { host: 'evil.example.com' });

@@ -19,9 +19,12 @@ import { seedGlobalCodeGraphProviderIfInstalled } from './seed-provider';
 const DEFAULT_IDLE_MS = 15 * 60 * 1000;
 const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
 
-// Off by DEFAULT — Traffic One targets the editor's in-app preview pane (Claude
-// Code preview / Cursor Simple Browser), not an external browser window. Opt in to
-// also pop the OS default browser with TRAFFIC_ONE_OPEN_BROWSER=1. Fire-and-forget.
+// Off by DEFAULT — Traffic One targets the editor's in-app surface: Claude Code's
+// preview pane, and on Cursor the built-in Simple Browser opened by clicking the
+// agent-surfaced wizard link (Cursor has no API to auto-open it, and auto-popping
+// the EXTERNAL OS browser is both off-target and prone to double-open under the
+// gate's spawn race — so we do NOT do it for Cursor). Opt in to pop the OS default
+// browser only with TRAFFIC_ONE_OPEN_BROWSER=1. Fire-and-forget.
 export function shouldOpenBrowser(env: NodeJS.ProcessEnv): boolean {
   const flag = (env.TRAFFIC_ONE_OPEN_BROWSER || '').trim().toLowerCase();
   return flag === '1' || flag === 'true' || flag === 'yes' || flag === 'on';
