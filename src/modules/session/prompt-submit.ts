@@ -10,7 +10,7 @@
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { detectMode, isLikelyCodingPrompt } from '../../shared/detection';
+import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -21,7 +21,7 @@ import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hookSessionIdentity, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { maintenanceTriageDirective } from './triage-directive';
@@ -125,7 +125,16 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // running, the user just authenticated, or the prompt looks like build/
   // implementation work, the normal path runs — an active project is never
   // mis-skipped (and the PreToolUse gate still fires if a tool is attempted).
-  if (uninitialized && !loginSucceeded && !serverRecordExists(cwd) && !isLikelyCodingPrompt(promptText)) {
+  //
+  // `promptHasStackSignal` widens "looks like work" to also admit a verb-less
+  // PROJECT DESCRIPTION ("a marketplace for freelancers", "a platform connecting
+  // tutors and students"). Without it, such a first prompt is dropped here, the
+  // FIRST project description is captured nowhere (seedOriginalPrompt runs only
+  // past this gate), and a later thin "ok build it" becomes originalPrompt — which
+  // classifyPromptForStack maps to `minimal`. A signal-less greeting/question still
+  // has no stack signal, so genuine chit-chat is still suppressed.
+  if (uninitialized && !loginSucceeded && !serverRecordExists(cwd)
+    && !isLikelyCodingPrompt(promptText) && !promptHasStackSignal(promptText)) {
     return noop();
   }
 
@@ -157,6 +166,10 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // at it and waits. Covers new-project onboarding AND an already-configured
   // project missing this user's local preferences.
   if (!computeOnboarding(cwd).done) {
+    // Subagents never onboard — onboarding is the parent/main-agent's job and a
+    // worker thread cannot drive the wizard (see the onboarding-gate handler). If a
+    // subagent prompt reaches here (e.g. a stray nested root), don't surface it.
+    if (isSubagentThread(raw)) return noop();
     seedOriginalPrompt(cwd, promptText);
     const server = ensureOnboardingServer(cwd);
     // Full walkthrough once per session (shared marker with the PreToolUse gate);

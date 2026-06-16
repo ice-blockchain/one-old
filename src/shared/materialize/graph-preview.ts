@@ -9,7 +9,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../codegraph';
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, graphifyGraphIsEmpty } from '../codegraph';
 
 const GRAPH_PREVIEW_MAX_BYTES = 2048;
 const GRAPH_PREVIEW_MAX_MODULES = 30;
@@ -21,6 +21,16 @@ export function generateGraphPreview(cwd: string, provider: string): string | nu
   if (provider === 'graphify') {
     const reportPath = path.join(cwd, GRAPHIFY_REPORT_REL);
     if (!fs.existsSync(reportPath)) return null;
+    // Honest empty-state: an index built before the code existed (the deferred
+    // new-project onboarding scan) has a 0-node graph.json. Claiming "graph
+    // available" would invite every agent to waste reads on empty artefacts;
+    // say it is empty and how it refreshes instead (mirrors the gitnexus branch).
+    if (graphifyGraphIsEmpty(cwd)) {
+      lines.push('Provider: graphify · index is EMPTY (0 nodes — scanned before the code existed).');
+      lines.push('');
+      lines.push('Do NOT read `.traffic-one/graphify-out/` artefacts yet. The graph refreshes after the next production build, or run the graphify runner from the project root to rebuild it now.');
+      return `${lines.join('\n')}\n`;
+    }
     let text: string;
     try { text = fs.readFileSync(reportPath, 'utf8'); } catch { return null; }
     const modules: string[] = [];

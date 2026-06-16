@@ -176,6 +176,25 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
   });
 });
 
+test('finalize: a thin originalPrompt is rescued by the typed project-context answers (not minimal)', () => {
+  withProject(null, (cwd) => {
+    // The bug case: a later "ok build it" became the seed, which alone derives `minimal`.
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'ok build it' });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    // The user describes the real project in the wizard form.
+    applyAnswer(cwd, 'project-context', { summary: 'a marketplace', answers: { audience: 'freelancers and clients', features: 'user accounts, payments, an admin dashboard' } });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.equal(computeOnboarding(cwd).step, 'finalize');
+    applyAnswer(cwd, 'finalize', null);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'default', 'answers fold into the stack signal even though originalPrompt was thin');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'supabase');
+  });
+});
+
 test('buildTeamLineup: high performance maps each role to its tier + claude model', () => {
   const team = buildTeamLineup('high', 'claude');
   assert.equal(team.length, 6);

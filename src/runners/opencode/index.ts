@@ -18,13 +18,13 @@
 // server errors) — failures surface as {"type":"error",...} events in the JSON
 // stream. We detect failure by parsing the stream, never by exit code.
 
-import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
 import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
+import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { markOpenCodeRoleAttempted, recordOpenCodeAttemptOutcome } from '../../shared/opencode-roles';
 import { roleDigestName } from '../../shared/packing';
@@ -85,7 +85,7 @@ export interface DelegateResult {
 }
 
 function git(cwd: string, args: string[], timeout = 60_000, env?: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
-  const r = spawnSync('git', args, {
+  const r = spawnTool('git', args, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -179,7 +179,7 @@ export function postApplyTypecheck(cwd: string, touched: string[]): string | nul
     }
   }
   for (const dir of [...projDirs].slice(0, 3)) {
-    const r = spawnSync(tsc, ['--noEmit', '-p', dir], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+    const r = spawnTool(tsc, ['--noEmit', '-p', dir], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
     if (r.error || r.status === null || r.status === 0) continue;
     const out = `${r.stdout || ''}\n${r.stderr || ''}`;
     const mentionsTouched = tsTouched.some((f) => out.includes(f.replace(/\\/g, '/')) || out.includes(path.basename(f)));
@@ -471,7 +471,9 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
     // gateway error or process failure won't fix itself on retry, so bail at once.
     for (let attempt = 1; attempt <= MAX_DELEGATE_ATTEMPTS; attempt++) {
       onCliAttempt?.();
-      const run = spawnSync(bin, runArgs, {
+      // spawnTool: `bin` is the managed opencode.cmd shim on Windows (Node >=22
+      // refuses a bare .cmd without it); an absolute .exe/PATH bin passes through.
+      const run = spawnTool(bin, runArgs, {
         cwd: wt,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],

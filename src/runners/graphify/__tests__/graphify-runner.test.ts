@@ -4,9 +4,18 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { bootstrap, ensureGraphifyTool } from '../index';
+import { bootstrap, ensureGraphifyTool, graphifyGraphIsEmpty } from '../index';
 import { toolInstallSpec, toolRuntime } from '../../toolchain';
 import { runtimeMissingMessage } from '../../../shared/runtime-resolve';
+
+const EMPTY_GRAPH = JSON.stringify({ directed: false, multigraph: false, graph: {}, nodes: [], links: [], hyperedges: [] });
+const POPULATED_GRAPH = JSON.stringify({ directed: false, multigraph: false, graph: {}, nodes: [{ id: 'a' }, { id: 'b' }], links: [{ source: 'a', target: 'b' }] });
+
+function writeGraphifyOut(cwd: string, files: Record<string, string>): void {
+  const out = path.join(cwd, '.traffic-one', 'graphify-out');
+  fs.mkdirSync(out, { recursive: true });
+  for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(out, name), body, 'utf8');
+}
 
 function withProject(fn: (cwd: string, prefs: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gfboot-'));
@@ -70,6 +79,98 @@ test('graphify bootstrap short-circuits on a fresh GRAPH_REPORT.md', () => {
     assert.equal(r.ok, true);
     assert.equal(r.action, 'fresh');
     assert.ok(r.report?.endsWith(path.join('graphify-out', 'GRAPH_REPORT.md')));
+  });
+});
+
+test('graphifyGraphIsEmpty: true for a 0-node graph.json, false for populated/missing/unparseable', () => {
+  withProject((cwd) => {
+    // Missing graph.json → can't tell → NOT empty (don't force a needless rebuild).
+    assert.equal(graphifyGraphIsEmpty(cwd), false);
+    // Empty node-link document → empty.
+    writeGraphifyOut(cwd, { 'graph.json': EMPTY_GRAPH });
+    assert.equal(graphifyGraphIsEmpty(cwd), true);
+    // Populated → not empty.
+    writeGraphifyOut(cwd, { 'graph.json': POPULATED_GRAPH });
+    assert.equal(graphifyGraphIsEmpty(cwd), false);
+    // Unparseable → can't tell → NOT empty (matches gitnexus catch behaviour).
+    writeGraphifyOut(cwd, { 'graph.json': '{ not valid json' });
+    assert.equal(graphifyGraphIsEmpty(cwd), false);
+    // >64KB → far too large to be an empty (~110-byte) graph → NOT empty without
+    // parsing (keeps the freshness fast-path cheap; never misreads a real graph).
+    writeGraphifyOut(cwd, { 'graph.json': JSON.stringify({ graph: { pad: 'x'.repeat(70 * 1024) }, nodes: [], links: [] }) });
+    assert.equal(graphifyGraphIsEmpty(cwd), false);
+  });
+});
+
+test('graphify bootstrap does NOT short-circuit a fresh-but-EMPTY graph (forces rebuild)', () => {
+  withProject((cwd) => {
+    // Fresh report mtime + 0-node graph.json = the frozen onboarding scan. The
+    // 7-day window alone would call this "fresh"; the empty-guard must defeat it.
+    writeGraphifyOut(cwd, { 'GRAPH_REPORT.md': '# graph\n', 'graph.json': EMPTY_GRAPH });
+    const savedPath = process.env.PATH;
+    process.env.PATH = path.join(cwd, 'empty-bin'); // graphify absent → deterministic
+    try {
+      const r = bootstrap(cwd, { skipInstall: true });
+      assert.notEqual(r.action, 'fresh'); // empty-guard defeated the 7-day window
+      assert.equal(r.action, 'install-skipped'); // proceeded past the short-circuit to ensure
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('graphify bootstrap still short-circuits fresh when graph.json has nodes', () => {
+  withProject((cwd) => {
+    writeGraphifyOut(cwd, { 'GRAPH_REPORT.md': '# graph\n', 'graph.json': POPULATED_GRAPH });
+    const r = bootstrap(cwd);
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'fresh'); // non-empty fresh graph is left alone
+  });
+});
+
+test('graphify bootstrap does NOT short-circuit when a source file is newer than the index (stale → rebuild)', () => {
+  withProject((cwd) => {
+    // Non-empty, mtime-fresh report, but a project source file landed AFTER it
+    // (fix-cycle / post-index edit) — the index is stale and must rebuild.
+    writeGraphifyOut(cwd, { 'GRAPH_REPORT.md': '# graph\n', 'graph.json': POPULATED_GRAPH });
+    const reportPath = path.join(cwd, '.traffic-one', 'graphify-out', 'GRAPH_REPORT.md');
+    const reportSec = Math.floor(fs.statSync(reportPath).mtimeMs / 1000);
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src', 'late.ts'), 'export const x = 1;\n', 'utf8');
+    fs.utimesSync(path.join(cwd, 'src', 'late.ts'), reportSec + 60, reportSec + 60); // newer than the index
+    const savedPath = process.env.PATH;
+    process.env.PATH = path.join(cwd, 'empty-bin'); // graphify absent → deterministic
+    try {
+      const r = bootstrap(cwd, { skipInstall: true });
+      assert.notEqual(r.action, 'fresh'); // staleness defeated the 7-day window
+      assert.equal(r.action, 'install-skipped'); // proceeded past the short-circuit
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('graphify bootstrap SWEEPS a stray root graphify-out/ when the scan exits non-zero (no root pollution; good graph preserved)', () => {
+  withProject((cwd) => {
+    // Pre-existing GOOD graph under .traffic-one (must survive the failed re-scan).
+    writeGraphifyOut(cwd, { 'GRAPH_REPORT.md': '# graph\n', 'graph.json': POPULATED_GRAPH });
+    // Stub graphify on PATH that writes a PARTIAL root graphify-out/cache then exits
+    // NON-ZERO (graphify's "Nothing to update or rebuild failed"). A bare PATH graphify
+    // with no adjacent python is usable (version falls back to the pinned recommended),
+    // so bootstrap runs it directly. The fix must sweep the stray root output.
+    const bin = path.join(cwd, 'gbin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'graphify'), '#!/bin/sh\nif [ "$1" = "update" ]; then mkdir -p graphify-out/cache; echo "Nothing to update or rebuild failed" >&2; exit 1; fi\nexit 0\n', { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = bootstrap(cwd, { force: true }); // force → skip fresh short-circuit → run the stub
+      assert.equal(r.ok, false); // graphify exited non-zero
+      assert.equal(fs.existsSync(path.join(cwd, 'graphify-out')), false, 'stray root graphify-out/ swept');
+      assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'graphify-out', 'graph.json')), 'good relocated graph preserved');
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
   });
 });
 

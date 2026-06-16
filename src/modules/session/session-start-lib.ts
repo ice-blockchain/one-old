@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIsEmpty } from '../../shared/codegraph';
 import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
@@ -79,13 +79,24 @@ function codeGraphBuildLockMs(cwd: string): number {
 // build was attempted within the cooldown (disk lock).
 export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): boolean {
   const mode = state.mode;
-  if (mode !== 'existing-codebase' && mode !== 'existing-with-supabase') return false;
+  const isExisting = mode === 'existing-codebase' || mode === 'existing-with-supabase';
+  // Also self-heal a NEW project whose onboarding graph install DEFERRED (offline /
+  // transient / no runtime yet): otherwise its only retry is the post-build hook,
+  // which never fires if the user iterates without ever running a `*build*` command.
+  // Gated on onboardingComplete + the graphDeferredAt marker so a mid-onboarding
+  // scaffold isn't scanned early. The hasGraph check below stops it once built.
+  const isDeferredNewProject = mode === 'new-project' && state.onboardingComplete === true && Boolean(state.graphDeferredAt);
+  if (!isExisting && !isDeferredNewProject) return false;
   if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) return false;
   const provider = state.codeGraphProvider;
   if (provider !== 'graphify' && provider !== 'gitnexus') return false;
-  const hasGraph = provider === 'graphify'
+  // Present AND non-empty: a 0-node onboarding-scan artefact exists on disk but
+  // is useless, so it must NOT count as "has graph" — otherwise the self-heal
+  // never fires and the empty index lingers.
+  const artefactExists = provider === 'graphify'
     ? fs.existsSync(path.join(cwd, GRAPHIFY_REPORT_REL))
     : fs.existsSync(path.join(cwd, GITNEXUS_REL));
+  const hasGraph = artefactExists && !codeGraphIsEmpty(cwd, provider);
   if (hasGraph) return false;
   const lockMs = codeGraphBuildLockMs(cwd);
   if (lockMs && (nowMs - lockMs) < CODE_GRAPH_SELF_HEAL_COOLDOWN_MS) return false;
@@ -245,10 +256,12 @@ export function tokenEconomyBanner(cwd: string, probe?: ToolchainProbe | null): 
   if (memoryPaths.some((relPath) => fs.existsSync(path.join(cwd, relPath)))) {
     lines.push('[memory] .traffic-one/ project memory present — read product/stack/rules/known-issues before broad source reads.');
   }
-  if (fs.existsSync(path.join(cwd, GRAPHIFY_REPORT_REL))) {
+  // Only advertise a graph worth consulting — an empty (0-node) artefact would
+  // send agents to read useless files before falling back to grep/glob anyway.
+  if (fs.existsSync(path.join(cwd, GRAPHIFY_REPORT_REL)) && !codeGraphIsEmpty(cwd, 'graphify')) {
     lines.push(`[graph: graphify] ${GRAPHIFY_REPORT_REL} present — consult before grep/glob for module/structure questions.`);
   }
-  if (fs.existsSync(path.join(cwd, GITNEXUS_REL))) {
+  if (fs.existsSync(path.join(cwd, GITNEXUS_REL)) && !codeGraphIsEmpty(cwd, 'gitnexus')) {
     lines.push(`[graph: gitnexus] ${GITNEXUS_REL} present — consult before grep/glob for module/structure questions.`);
   }
   try {

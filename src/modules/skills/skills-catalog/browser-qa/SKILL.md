@@ -49,14 +49,34 @@ bundled `control-in-app-browser` SKILL.md wastes ~8k tokens:
 Then per check (each its own `js` call): `await qaTab.goto(url)` to navigate
 (`networkidle` is NOT supported by this browser API — use
 `await qaTab.playwright.waitForLoadState({ state: "domcontentloaded" })`, then a
-short fixed wait before reading the DOM so SPA hydration finishes);
-`await qaTab.screenshot()` for visual evidence; resize for responsive passes via
+short fixed wait before reading the DOM so SPA hydration finishes); resize for
+responsive passes via
 `await (await browser.capabilities.get("viewport")).set({ width: 390, height: 844 })`
 (mobile) and back to `{ width: 1280, height: 800 }` (desktop); read the DOM with
 `await qaTab.playwright.evaluate(...)` (e.g. `document.documentElement.scrollWidth >
 window.innerWidth` to detect horizontal overflow). Close with `await qaTab.close()`
 when QA is done. If node_repl or the in-app browser is unavailable, fall back to
 the browser automation MCP listed above.
+
+> **Screenshots — NEVER call the IAB `qaTab.screenshot()` from a role subagent
+> thread.** The Codex in-app browser runs INSIDE the editor process; rasterizing
+> its surface from a spawned subagent — where `browser.capabilities.get("visibility")`
+> returns "IAB visibility is not supported in a subagent thread" — **crashes the
+> whole Codex app** (observed live: the senior-frontend subagent took the app down
+> on a mobile-catalog screenshot). DOM-reading QA above (`playwright.evaluate`,
+> goto, viewport) is safe in a subagent; pixel capture is not. For visual evidence
+> when you are a role subagent, use one of these instead, and cite the artifact path
+> in your digest:
+> 1. **Project Playwright to a file** (separate browser process, never touches the
+>    editor): a Playwright `page.screenshot({ path: ".traffic-one/reports/qa/<runId>/<name>.png" })`
+>    via the project's e2e setup, or the browser-automation MCP above.
+> 2. **Defer the screenshot to the parent/orchestrator thread**, where `visibility`
+>    toggles cleanly and `qaTab.screenshot()` is safe.
+>
+> Only call the in-app `qaTab.screenshot()` / set `visibility` from the PARENT
+> thread, never inside a `spawn_agent` role worker. The `setup-gate`/orchestrator
+> already runs roles as subagents on Codex, so a role doing visual QA must take
+> path 1 or 2.
 
 Before running visual QA, identify the design brief or acceptance criteria:
 primary action, intended hierarchy, responsive behavior, state coverage, and

@@ -35,7 +35,33 @@ export function managedNpmPrefix(toolName: string): string {
   return path.join(managedToolDir(toolName), 'npm-prefix');
 }
 
+// npm config flags for a managed `npm install -g`. npm >= 11 REJECTS the same
+// config file at two levels ("Exit prior to config file resolving / double-loading
+// config <p> as global, previously loaded as user") — which broke every managed
+// opencode/gitnexus install on node 25 / npm 11, leaving the tool unstamped and
+// delegation silently off. Pass two DISTINCT managed paths instead: both absent →
+// npm treats them as empty user+global config, still shielding the install from a
+// real `~/.npmrc`/global `prefix=` that could redirect it out of the managed dir
+// (the `--prefix` CLI flag sets the real target with highest precedence).
+export function managedNpmConfigFlags(prefix: string): string[] {
+  return [
+    '--userconfig', path.join(prefix, 'managed-user.npmrc'),
+    '--globalconfig', path.join(prefix, 'managed-global.npmrc'),
+  ];
+}
+
+// Shared store for managed standalone language runtimes (Python/Node) fetched by
+// src/shared/managed-runtime.ts. Keyed by kind+version (NOT per-tool) so a Node
+// downloaded for gitnexus is reused by opencode instead of fetched twice.
+export function managedRuntimeDir(kind: 'python' | 'node', version: string): string {
+  return path.join(toolchainRoot(), '_runtimes', kind, version);
+}
+
 export function managedNpmBin(toolName: string, binName: string = toolName): string {
-  const ext = process.platform === 'win32' ? '.cmd' : '';
-  return path.join(managedNpmPrefix(toolName), 'bin', `${binName}${ext}`);
+  // `npm install -g --prefix P` lays the bin shim out differently per OS:
+  //   POSIX → P/bin/<name>;  Windows → FLAT at P/<name>.cmd (no bin/ subdir).
+  if (process.platform === 'win32') {
+    return path.join(managedNpmPrefix(toolName), `${binName}.cmd`);
+  }
+  return path.join(managedNpmPrefix(toolName), 'bin', binName);
 }

@@ -1,6 +1,6 @@
 {
   "name": "traffic-one",
-  "version": "2.9.139",
+  "version": "2.9.147",
   "private": true,
   "type": "commonjs",
   "description": "Build + codegen tooling for the Traffic One plugin. Readable source lives in src/; generated plugin output lives in ignored dist/.",
@@ -17,7 +17,7 @@
     "plugin:build": "npm run gen && npm run build",
     "plugin:check": "npm run gen:check && npm run build:verify",
     "smoke": "tsx src/build/compiled-smoke.ts",
-    "test": "node --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\""
+    "test": "node --import ./src/build/test-preload.mjs --import tsx --test \"src/**/*.test.ts\" \"tests/**/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

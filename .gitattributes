@@ -1,0 +1,9 @@
+# Force LF on checkout on every OS. The golden snapshot
+# (tests/golden/generated-manifest.sha256) is a BYTE hash of the generated tree;
+# a Windows checkout converting source files to CRLF would change those bytes and
+# break the byte-identical golden test on the windows-latest CI leg. eol=lf keeps
+# the working tree identical across platforms.
+* text=auto eol=lf
+
+# The golden manifest itself and shipped content must never be CRLF-normalized.
+tests/golden/generated-manifest.sha256 text eol=lf

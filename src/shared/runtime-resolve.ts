@@ -69,6 +69,7 @@ function probePython(py: string): { major: number; minor: number } | null {
 // satisfying modern interpreter is preferred over the stock 3.9.x even when the
 // generic name resolves first on PATH.
 function pythonCandidates(minMajor: number, minMinor: number): string[] {
+  if (process.platform === 'win32') return windowsPythonCandidates(minMajor, minMinor);
   const out: string[] = [];
   const dirs = ['/opt/homebrew/bin', '/usr/local/bin', path.join(home(), '.pyenv', 'shims')];
   // Probe minors from a high ceiling down to the required minimum.
@@ -110,10 +111,63 @@ function probeDisabled(): boolean {
   return process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF === '1';
 }
 
+// ── Windows interpreter discovery ─────────────────────────────────────────────
+// Windows has no /opt/homebrew or python3.X aliases; the canonical entrypoints are
+// the `py` launcher and per-user/all-users `python.exe` installs. These mirror the
+// POSIX candidate logic but with Windows paths/names, guarded by process.platform.
+
+function windowsPythonCandidates(minMajor: number, minMinor: number): string[] {
+  const out: string[] = [];
+  const localApp = process.env.LOCALAPPDATA || path.join(home(), 'AppData', 'Local');
+  const progFiles = [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean) as string[];
+  // Per-minor installs, newest first: PythonXY\python.exe (e.g. Python313).
+  for (let minor = 13; minor >= minMinor; minor -= 1) {
+    const tag = `Python${minMajor}${minor}`;
+    out.push(path.join(localApp, 'Programs', 'Python', tag, 'python.exe'));
+    for (const pf of progFiles) out.push(path.join(pf, tag, 'python.exe'));
+  }
+  // Generic on PATH (Windows registers python.exe, not python3).
+  const onPath = which('python');
+  if (onPath) out.push(onPath);
+  // Microsoft Store shim LAST. When Python isn't installed this is an app-installer
+  // stub; invoked WITH args (as probePython does) it returns a fast non-zero exit
+  // (9009) rather than hanging, so it's harmless — ranked last only to prefer a
+  // real install / `py`.
+  out.push(path.join(localApp, 'Microsoft', 'WindowsApps', 'python.exe'));
+  return [...new Set(out)].filter(Boolean);
+}
+
+// The Windows `py` launcher (`py -<major>`) reads the registry and selects the
+// newest installed interpreter — the single most reliable Windows discovery
+// mechanism. We ask it for the concrete python.exe path (callers need a real
+// interpreter to run `python -m venv`, not the launcher itself).
+function resolveWindowsPyLauncher(minMajor: number, minMinor: number): ResolvedRuntime | null {
+  const launcher = which('py');
+  if (!launcher) return null;
+  let result;
+  try {
+    result = spawnSync(launcher, [`-${minMajor}`, '-c', 'import sys;print("%d %d %s" % (sys.version_info[0], sys.version_info[1], sys.executable))'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: PROBE_TIMEOUT_MS,
+    });
+  } catch { return null; }
+  if (result.status !== 0) return null;
+  const m = /^(\d+)\s+(\d+)\s+(.+)$/m.exec((result.stdout || '').trim());
+  if (!m) return null;
+  const major = Number(m[1]);
+  const minor = Number(m[2]);
+  const exe = (m[3] || '').trim();
+  if (!exe || !exists(exe) || !meetsMin(major, minor, minMajor, minMinor)) return null;
+  return { path: exe, version: `${major}.${minor}`, major, minor };
+}
+
 // Resolve a Python interpreter satisfying >= minMajor.minMinor. Absolute-path
 // preferred so a stale GUI PATH can't force the stock CLT interpreter.
 export function resolvePython(minMajor: number, minMinor: number): ResolvedRuntime | null {
   if (probeDisabled()) return null;
+  if (process.platform === 'win32') {
+    const viaLauncher = resolveWindowsPyLauncher(minMajor, minMinor);
+    if (viaLauncher) return viaLauncher;
+  }
   for (const candidate of pythonCandidates(minMajor, minMinor)) {
     const v = probePython(candidate);
     if (v && meetsMin(v.major, v.minor, minMajor, minMinor)) {
@@ -153,7 +207,40 @@ function nvmNodes(minMajor: number): string[] {
     .filter(exists);
 }
 
+// Glob a version-manager node store (fnm/volta/nvm-windows) for vX.Y.Z dirs with
+// major>=min, newest first, mapping each to <dir>/<subdir>/node.exe (subdir '' →
+// node.exe at the version-dir root, as nvm-windows/volta use).
+function windowsNodeVersionStore(root: string, subdir: string, minMajor: number): string[] {
+  let entries: string[] = [];
+  try { entries = fs.readdirSync(root); } catch { return []; }
+  return entries
+    .map((name) => ({ name, m: /^v?(\d+)\.(\d+)\.(\d+)$/.exec(name) }))
+    .filter((e): e is { name: string; m: RegExpExecArray } => Boolean(e.m) && Number(e.m![1]) >= minMajor)
+    .sort((a, b) => { for (let i = 1; i <= 3; i += 1) { const d = Number(b.m[i]) - Number(a.m[i]); if (d) return d; } return 0; })
+    .map((e) => path.join(root, e.name, subdir, 'node.exe'))
+    .filter(exists);
+}
+
+function windowsNodeCandidates(minMajor: number): string[] {
+  const out: string[] = [];
+  const localApp = process.env.LOCALAPPDATA || path.join(home(), 'AppData', 'Local');
+  const appData = process.env.APPDATA || path.join(home(), 'AppData', 'Roaming');
+  // nvm-windows: %NVM_HOME% (or %APPDATA%\nvm)\v<X.Y.Z>\node.exe (node.exe at root).
+  out.push(...windowsNodeVersionStore(process.env.NVM_HOME || path.join(appData, 'nvm'), '', minMajor));
+  // fnm: %APPDATA%\fnm\node-versions\v<X.Y.Z>\installation\node.exe
+  out.push(...windowsNodeVersionStore(path.join(appData, 'fnm', 'node-versions'), 'installation', minMajor));
+  // volta: %LOCALAPPDATA%\Volta\tools\image\node\<X.Y.Z>\node.exe
+  out.push(...windowsNodeVersionStore(path.join(localApp, 'Volta', 'tools', 'image', 'node'), '', minMajor));
+  const onPath = which('node');
+  if (onPath) out.push(onPath);
+  for (const pf of [process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean) as string[]) {
+    out.push(path.join(pf, 'nodejs', 'node.exe'));
+  }
+  return [...new Set(out)].filter(Boolean);
+}
+
 function nodeCandidates(minMajor: number): string[] {
+  if (process.platform === 'win32') return windowsNodeCandidates(minMajor);
   const out: string[] = [...nvmNodes(minMajor)];
   const onPath = which('node');
   if (onPath) out.push(onPath);
@@ -188,8 +275,15 @@ export function npmNextToNode(nodePath: string): string | null {
 // this only explains, it never blocks.
 export function runtimeMissingMessage(tool: string, runtime: 'python' | 'node', minMajor: number, minMinor = 0): string {
   const need = runtime === 'python' ? `Python >=${minMajor}.${minMinor}` : `Node >=${minMajor}`;
-  const hint = runtime === 'python'
-    ? 'Install a newer Python (e.g. `brew install python@3.12`) — Traffic One looks for one on PATH and in Homebrew/pyenv locations.'
-    : 'Install a newer Node (e.g. `nvm install 22` or `brew install node`) — Traffic One looks for one via nvm and Homebrew.';
+  let hint: string;
+  if (process.platform === 'win32') {
+    hint = runtime === 'python'
+      ? 'Install Python from python.org or `winget install Python.Python.3.12` — Traffic One looks for the `py` launcher, per-user/all-users installs, and PATH.'
+      : 'Install Node from nodejs.org or `winget install OpenJS.NodeJS` (or nvm-windows) — Traffic One looks for standard, nvm-windows, fnm and volta locations and PATH.';
+  } else {
+    hint = runtime === 'python'
+      ? 'Install a newer Python (e.g. `brew install python@3.12`) — Traffic One looks for one on PATH and in Homebrew/pyenv locations.'
+      : 'Install a newer Node (e.g. `nvm install 22` or `brew install node`) — Traffic One looks for one via nvm and Homebrew.';
+  }
   return `${tool} needs ${need}, and none was found on this machine. ${hint}`;
 }

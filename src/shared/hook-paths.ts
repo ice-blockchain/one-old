@@ -2,6 +2,7 @@
 // Project-root resolution from a hook tool's file path + new-project monorepo
 // predicates. Ported 1:1 from scripts/hook-runtime/handlers/_helpers.cjs.
 
+import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
@@ -66,7 +67,13 @@ function nearestOnboardedRoot(startDir: string): string | null {
     // A mode-bearing .one.json INSIDE the plugin authoring repo is a stray, never
     // a project — skip it and keep walking so an enclosing real workspace (if
     // any) still resolves. The repo can therefore never be adopted as a project.
-    if (isOnboardedProjectRoot(current) && !hasPluginAuthoringMarkers(current)) return current;
+    if (isOnboardedProjectRoot(current) && !hasPluginAuthoringMarkers(current)) {
+      // …and a mode-bearing .one.json BELOW a workspace root is a leak, not a
+      // project root: a monorepo has ONE root (the workspace), so a stray
+      // packages/*/.traffic-one (the packages/ui incident) must not shadow it.
+      // Keep climbing to the workspace root instead of adopting the sub-package.
+      if (nearestWorkspaceRoot(path.dirname(current)) === null) return current;
+    }
     const parent = path.dirname(current);
     if (parent === current) break; // filesystem root
     current = parent;
@@ -74,15 +81,61 @@ function nearestOnboardedRoot(startDir: string): string | null {
   return null;
 }
 
+// A directory is a WORKSPACE ROOT when it declares workspaces — npm/yarn/bun
+// `workspaces` in package.json, or a pnpm-workspace.yaml. Lenient by design: the
+// cost of a false positive is resolving up one level; the cost of a miss is a
+// stray .traffic-one minted into a sub-package (see resolveProjectRoot below).
+function dirDeclaresWorkspace(dir: string): boolean {
+  if (fs.existsSync(path.join(dir, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(dir, 'pnpm-workspace.yml'))) {
+    return true;
+  }
+  const pkg = readJson<Rec>(path.join(dir, 'package.json'), {} as Rec);
+  const ws = pkg ? (pkg as Rec).workspaces : undefined;
+  if (Array.isArray(ws)) return ws.length > 0;
+  if (ws && typeof ws === 'object') return Array.isArray((ws as Rec).packages);
+  return false;
+}
+
+// Nearest ancestor-or-self (within the bounded walk, never above $HOME) that is a
+// workspace root. Used as the project-root anchor when no ONBOARDED root exists
+// yet — e.g. mid-onboarding, before the workspace root has committed `mode`.
+function nearestWorkspaceRoot(startDir: string): string | null {
+  let home = '';
+  try { home = path.resolve(os.homedir()); } catch { /* no home → MAX_ROOT_WALK-capped */ }
+  let current = path.resolve(startDir);
+  for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
+    if (home && current === home) break;
+    if (dirDeclaresWorkspace(current) && !hasPluginAuthoringMarkers(current)) return current;
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  return null;
+}
+
+// True when `cwd` is a monorepo sub-package with NO Traffic One state of its own
+// that sits inside a workspace root — so it must never be materialized as its own
+// project. The write-side backstop for the resolveProjectRoot anchor below
+// (detectMode labels any sparse dir 'new-project', so an un-guarded converge would
+// mint a stray shallow .traffic-one/.one.json into packages/* during a build).
+export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
+  const dir = path.resolve(cwd);
+  if (hasStateFile(dir)) return false;                      // owns state → a real root, leave it
+  return nearestWorkspaceRoot(path.dirname(dir)) !== null;  // an ANCESTOR is a workspace root
+}
+
 // Resolve the effective Traffic One project root for a hook operating at `cwd` on
 // an optional target `filePath`. Walks UP from the target file's dir (then from
 // `cwd`) — deliberately NOT bounded by `cwd` — to the nearest ancestor that is a
 // real onboarded root, so a monorepo sub-package (`apps/web`, `packages/*`)
 // resolves to the workspace root that holds the onboarding/lifecycle state rather
-// than tripping a bogus per-package wizard or hiding maintenance phase. Falls back
-// to the legacy cwd-bounded nearest-any-state-file resolution (then `cwd`) when no
-// onboarded ancestor exists — e.g. a fresh project whose root state has no `mode`
-// yet — so gating of genuinely un-onboarded projects is unchanged.
+// than tripping a bogus per-package wizard or hiding maintenance phase. When no
+// onboarded ancestor exists yet — e.g. mid-onboarding, before the workspace root
+// has committed `mode` — anchor at the enclosing WORKSPACE root if one exists, so
+// every writer (gate, server, once-markers, convergence) targets the workspace
+// instead of minting a stray shallow .traffic-one into the sub-package. Falls back
+// to the legacy cwd-bounded nearest-any-state-file resolution (then `cwd`) for a
+// standalone project with no workspace ancestor, so its gating is unchanged.
 export function resolveProjectRoot(cwd: string, filePath?: unknown): string {
   const normalized = String(filePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
   const fileAbs = normalized
@@ -91,6 +144,8 @@ export function resolveProjectRoot(cwd: string, filePath?: unknown): string {
   const fileStart = fileAbs ? path.dirname(fileAbs) : '';
   const onboarded = (fileStart && nearestOnboardedRoot(fileStart)) || nearestOnboardedRoot(cwd);
   if (onboarded) return onboarded;
+  const workspace = (fileStart && nearestWorkspaceRoot(fileStart)) || nearestWorkspaceRoot(cwd);
+  if (workspace) return workspace;
   return findProjectRootForHookFile(cwd, filePath);
 }
 

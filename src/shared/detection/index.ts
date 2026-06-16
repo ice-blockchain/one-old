@@ -300,6 +300,28 @@ export function isLikelyCodingPrompt(prompt: unknown): boolean {
   return CODING_INTENT_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+// True when the prompt carries an explicit STACK signal — i.e. it reads as a real
+// project description even without an imperative coding verb. Derived from
+// classifyPromptForStack so there is ONE keyword source of truth (its backendNeed /
+// frontend / backend / mobile / wantsMinimal evidence) rather than a parallel list
+// that drifts out of sync with isLikelyCodingPrompt. The coding-intent gate uses
+// this to AVOID dropping a verb-less first prompt like "a marketplace for
+// freelancers": dropping it loses the genuine project description, and a later thin
+// "ok build it" then becomes the seeded originalPrompt and derives `minimal`. A pure
+// greeting/question ("hi there") has no stack signal, so the gate still suppresses it.
+export function promptHasStackSignal(prompt: unknown): boolean {
+  const text = String(prompt || '').toLowerCase().trim();
+  if (!text) return false;
+  const { evidence } = classifyPromptForStack(text);
+  return Boolean(
+    evidence.backendNeed
+    || evidence.frontend
+    || evidence.backend
+    || evidence.mobileIntentDetected
+    || evidence.wantsMinimal,
+  );
+}
+
 // Broader edit-intent patterns for POST-BUILD MAINTENANCE: once the app exists, the
 // bar for "this is an edit request" is lower than the onboarding coding-intent bar.
 // Copy tweaks ("change the hero headline"), restyles ("shorten the title", "move the

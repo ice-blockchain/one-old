@@ -202,6 +202,16 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath };
 }
 
+// True when the hook is firing inside a SUBAGENT thread (not the parent/main
+// agent). On Claude a subagent has its own session_id plus a parent_session_id; on
+// Codex every thread reports the parent's session_id, so the reliable per-thread
+// discriminator is a transcript threadId that differs from the reported session_id.
+// Used to keep parent-only flows (onboarding wizard) from ever running in a worker.
+export function isSubagentThread(rawInput: unknown): boolean {
+  const id = hookSessionIdentity(rawInput);
+  return id.isSubagent || Boolean(id.threadId && id.sessionId && id.threadId !== id.sessionId);
+}
+
 function timestampAgeMs(value: unknown): number {
   if (typeof value !== 'string' || !value.trim()) return Infinity;
   const ts = Date.parse(value);

@@ -14,9 +14,11 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
+import { CODE_GRAPH_SCAN_EXCLUDES, GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, applyCodeGraphScanIgnore, codeGraphIndexIsStale, graphifyGraphIsEmpty, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
+import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { spawnTool } from '../../shared/spawn-tool';
 import { resolvePython, runtimeMissingMessage } from '../../shared/runtime-resolve';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -133,7 +135,8 @@ function stampToolchain(cwd: string, binPath: string, version?: string | null): 
 
 function installWithPipx(cwd: string): InstallResult {
   if (which('pipx')) {
-    const result = spawnSync('pipx', ['install', graphifyPackageSpec(), '--force', '--quiet'], {
+    // spawnTool: a Windows pipx may be a .cmd/.exe shim.
+    const result = spawnTool('pipx', ['install', graphifyPackageSpec(), '--force', '--quiet'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 90 * 1000,
@@ -159,11 +162,20 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   // shared resolver probes Homebrew/pyenv/PATH for an ABSOLUTE interpreter that
   // satisfies the declared minimum.
   const { minMajor, minMinor } = toolRuntime('graphify');
-  const py = resolvePython(minMajor, minMinor);
-  if (!py) {
+  // Resolve a satisfying interpreter (Homebrew/pyenv/PATH); if none exists, fall
+  // back to a Traffic One-managed standalone CPython downloaded into an isolated
+  // dir (never on PATH, never the system python). Both are absolute paths so a
+  // stale GUI PATH can't reintroduce the stock 3.9.x.
+  let pyPath = resolvePython(minMajor, minMinor)?.path ?? null;
+  if (!pyPath) {
+    const managed = ensureManagedRuntime('python', { minMajor, minMinor });
+    if (managed.ok && managed.path) pyPath = managed.path;
+  }
+  if (!pyPath) {
     // Beginner-friendly explanation, no raw pip output (this is the
-    // stock-macOS Python 3.9.6 case). A graph-provider problem must never
-    // block onboarding — the caller degrades gracefully on install-skipped.
+    // stock-macOS Python 3.9.6 case, on a platform/offline where the managed
+    // download couldn't help). A graph-provider problem must never block
+    // onboarding — the caller degrades gracefully on install-skipped.
     return {
       action: 'install-skipped',
       error: runtimeMissingMessage('graphify', 'python', minMajor, minMinor)
@@ -182,7 +194,7 @@ function installWithManagedVenv(cwd: string, previousError: string | null = null
   }
 
   if (!fs.existsSync(venvPython)) {
-    const venv = spawnSync(py.path, ['-m', 'venv', venvDir], {
+    const venv = spawnSync(pyPath, ['-m', 'venv', venvDir], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 90 * 1000,
@@ -284,12 +296,22 @@ function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr
   // graphify's CLI requires a subcommand. `update <path>` (re-)extracts code
   // files and writes graphify-out/{GRAPH_REPORT.md, graph.json, graph.html} in
   // the project ROOT (no output-dir flag). Works on a fresh directory too.
-  const result = spawnSync(graphifyBin, ['update', '.'], {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 5 * 60 * 1000,
-  });
+  // `update` has NO --exclude flag (it errors "unknown update option"); the scan
+  // honors a root `.graphifyignore` instead, so keep Traffic One's own materialized
+  // docs out of the graph via a scoped ignore file restored after the scan. Seed
+  // from .gitignore because .graphifyignore otherwise shadows it per-directory.
+  const restoreIgnore = applyCodeGraphScanIgnore(cwd, '.graphifyignore', CODE_GRAPH_SCAN_EXCLUDES, { seedFromGitignore: true });
+  let result;
+  try {
+    result = spawnSync(graphifyBin, ['update', '.'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5 * 60 * 1000,
+    });
+  } finally {
+    restoreIgnore();
+  }
   const status = typeof result.status === 'number' ? result.status : 1;
   // Relocate the root-level graphify-out/ under .traffic-one/ so the graph never
   // pollutes the project root. (graphify has no --out flag → move after the scan.)
@@ -298,6 +320,12 @@ function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr
   if (status === 0) {
     relocateUnderTrafficOne(cwd, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_OUT_REL);
     relocateProviderSkills(cwd);
+  } else {
+    // A non-zero exit (e.g. graphify's "Nothing to update" on a --force re-scan)
+    // can still leave a PARTIAL root graphify-out/ (cache/ only, no graph.json).
+    // Don't relocate it over the good relocated graph, but never leave it polluting
+    // the project root — sweep the stray (the real graph stays under .traffic-one/).
+    try { fs.rmSync(path.join(cwd, GRAPHIFY_OUT_ROOT_DIRNAME), { recursive: true, force: true }); } catch { /* best-effort */ }
   }
   return {
     status,
@@ -320,10 +348,16 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
 
   // Fresh-report short-circuit. Lets the orchestrator's Phase 5 invoke the
   // runner unconditionally without paying install/scan cost on every run.
+  // "Fresh" requires three things, not just a recent mtime: within the 7-day
+  // window, NOT empty (the 0-node onboarding scan predates the code), and NOT
+  // stale vs source (no project file is newer than the index — catches fix-cycle
+  // / ad-hoc edits and a crash that dropped the parent-side --force). Any of the
+  // three failing rebuilds even without --force, so refresh is correct on every
+  // host/mode without depending on an orchestrator step.
   if (!opts.force && fs.existsSync(reportAbs)) {
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(reportAbs).mtimeMs; } catch { mtimeMs = 0; }
-    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS) {
+    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS && !graphifyGraphIsEmpty(cwd) && !codeGraphIndexIsStale(cwd, mtimeMs)) {
       return { ok: true, action: 'fresh', report: reportAbs, error: null, durationMs: 0 };
     }
   }
@@ -373,6 +407,7 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
 
 export { nowIso };
 export { which };
+export { graphifyGraphIsEmpty };
 
 // CLI entry: runs the bootstrap from cwd and prints a one-line JSON summary.
 // Exit code is 0 on success AND on graceful skip — the caller is the post-build

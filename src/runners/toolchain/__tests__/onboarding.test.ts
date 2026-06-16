@@ -101,6 +101,30 @@ test('reconcileManagedToolStamp is a no-op when nothing is installed', () => {
   });
 });
 
+test('ensureOpenCodeTool rejects a PATH npm backed by a too-old Node (never installs an unrunnable CLI)', () => {
+  withTemp((cwd) => {
+    const bin = path.join(cwd, 'bin');
+    fs.mkdirSync(bin, { recursive: true });
+    // A PATH npm whose adjacent `node` reports v12 (below opencode-ai's >=18). The
+    // backing-Node gate must reject it; with the resolver off + managed runtime off
+    // (test preload), that means install-skipped — NOT installing a CLI the old Node
+    // can't run (the "enabled but unusable" trap).
+    fs.writeFileSync(path.join(bin, 'npm'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'node'), '#!/bin/sh\necho v12.22.12\nexit 0\n', { mode: 0o755 });
+    const prevProbe = process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF;
+    process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF = '1'; // no resolveNode fallback → deterministic
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = ensureOpenCodeTool(cwd);
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'install-skipped'); // too-old PATH npm rejected; no other npm
+    } finally {
+      if (prevProbe === undefined) delete process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF;
+      else process.env.TRAFFIC_ONE_RUNTIME_PROBE_OFF = prevProbe;
+    }
+  });
+});
+
 test('ensureOpenCodeTool reports install-skipped when npm is not on PATH', () => {
   withTemp((cwd) => {
     process.env.PATH = path.join(cwd, 'empty-bin');

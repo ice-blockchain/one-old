@@ -31,6 +31,11 @@ function writeState(dir: string, state: Record<string, unknown>): void {
   fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
 }
 
+function writePkg(dir: string, json: Record<string, unknown>): void {
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify(json), 'utf8');
+}
+
 // A fully-materialized fixture: manifest + rule + skill on disk, AGENTS.md with
 // the generated marker, and a .one.json whose materializedStack matches the
 // fingerprint so isMaterialized() + hasMaterializedProjectAssets() are true.
@@ -115,5 +120,20 @@ test('materializeProjectIfNeeded: unknown stack + not new-project + not onboarde
     writeState(dir, { mode: 'existing-codebase', stack: 'not-a-stack' });
     const out = materializeProjectIfNeeded(dir, {});
     assert.equal(out, null);
+  });
+});
+
+test('materializeProjectIfNeeded: a state-less monorepo sub-package is NOT minted its own .traffic-one', () => {
+  withTempProject((root) => {
+    // Un-onboarded workspace root + a sparse sub-package with no state of its own —
+    // detectMode would call it 'new-project' and the old path wrote a stray shallow
+    // .traffic-one/.one.json into it (the packages/ui incident).
+    writePkg(root, { name: 'mono', private: true, workspaces: ['packages/*'] });
+    const ui = path.join(root, 'packages', 'ui');
+    fs.mkdirSync(ui, { recursive: true });
+
+    const out = materializeProjectIfNeeded(ui, { trigger: 'unit' });
+    assert.equal(out, null);
+    assert.equal(fs.existsSync(path.join(ui, '.traffic-one')), false, 'no stray state minted into the sub-package');
   });
 });

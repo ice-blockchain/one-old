@@ -1,9 +1,10 @@
 // src/runners/security-check/helpers.ts
 // Low-level helpers: process/git exec, fingerprint + file walking, path
 // classifiers, audit-json parsing, CLI args, the reporter, and package.json IO.
-import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
+
+import { spawnTool } from '../../shared/spawn-tool';
 
 import {
   AUTHORING_SCAN_SKIP_PREFIXES, FINGERPRINT_IGNORES, LEGACY_STATE_REL_PATH,
@@ -31,7 +32,10 @@ export function timestampSlug(iso: string): string {
 }
 
 export function runCommand(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv; maxBuffer?: number } = {}): CommandResult {
-  const result = spawnSync(command, args, {
+  // spawnTool (not raw spawnSync): on Windows the package managers this audits
+  // (npm/pnpm/yarn) resolve to `.cmd` shims that Node >=22 refuses to spawn
+  // without it; bare names also get PATHEXT-aware resolution. POSIX = passthrough.
+  const result = spawnTool(command, args, {
     cwd: options.cwd || process.cwd(),
     env: options.env || process.env,
     encoding: 'utf8',

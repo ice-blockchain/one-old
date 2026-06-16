@@ -3,10 +3,12 @@
 // user's OpenCode/code-graph choices are the consent record; this module checks
 // installed versions and installs/upgrades user-local managed tools when needed.
 
-import { spawnSync } from 'child_process';
 import * as fs from 'fs';
+import * as path from 'path';
 
 import { exec } from '../../shared/exec';
+import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { spawnTool } from '../../shared/spawn-tool';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { ensureGitnexusTool } from '../gitnexus';
@@ -16,6 +18,7 @@ import {
   getToolSpec,
   isToolUsable,
   managedNpmBin,
+  managedNpmConfigFlags,
   managedNpmPrefix,
   mergeToolchainStamp,
   probeTool,
@@ -70,9 +73,28 @@ function opencodeRecommendedVersion(): string | null {
 // reliable. Best-effort; never throws.
 function warmUpOpencode(binPath: string): void {
   try {
-    spawnSync(binPath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5 * 60 * 1000 });
+    // spawnTool: binPath is the managed opencode.cmd shim on Windows.
+    spawnTool(binPath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5 * 60 * 1000 });
   } catch {
     // best-effort
+  }
+}
+
+// Major version of the Node backing an npm (the node beside it, else the PATH
+// node), probed DIRECTLY — not via the probe-gated resolveNode — so it works under
+// the test preload and doesn't bypass a stubbed PATH npm. Returns null when no node
+// is found or the version can't be parsed (caller treats null as "unknown → keep").
+function npmBackingNodeMajor(npm: string): number | null {
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const adjacent = path.join(path.dirname(npm), `node${ext}`);
+  const nodePath = fs.existsSync(adjacent) ? adjacent : which('node');
+  if (!nodePath) return null;
+  try {
+    const r = spawnTool(nodePath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 1000 });
+    const m = /v?(\d+)\./.exec((r.stdout || '').trim());
+    return m && m[1] ? Number(m[1]) : null;
+  } catch {
+    return null;
   }
 }
 
@@ -105,33 +127,56 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     }
   }
 
-  // Prefer PATH npm (the working path); a stale GUI PATH with no npm must not
-  // doom the install, so fall back to the npm beside a runtime-resolved Node
-  // (nvm/Homebrew absolute paths). Only error when BOTH are unavailable.
+  // Prefer PATH npm (the working path) — but ONLY when its backing Node satisfies
+  // opencode-ai's minimum. A PATH npm on a too-old Node (e.g. 16) would install a
+  // CLI that can't run (the "enabled but unusable" trap). Reject a KNOWN-too-old
+  // backing Node; unknown (no node found) keeps the prior behavior. A stale GUI PATH
+  // with no usable npm falls back to a runtime-resolved Node's npm (nvm/Homebrew
+  // absolutes), then the managed Node's. Only error when ALL are unavailable.
+  const { minMajor } = toolRuntime('opencode');
   let npm = which('npm');
+  if (npm) {
+    const backingMajor = npmBackingNodeMajor(npm);
+    if (backingMajor !== null && backingMajor < minMajor) npm = null;
+  }
   if (!npm) {
-    const { minMajor } = toolRuntime('opencode');
     const node = resolveNode(minMajor);
     npm = node ? npmNextToNode(node.path) : null;
   }
   if (!npm) {
-    return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH (and no runtime-resolved Node/npm was found), so the hook cannot install OpenCode automatically', binPath: null };
+    // Last resort: the npm bundled with a Traffic One-managed standalone Node
+    // (isolated dir, never on PATH). Shared with gitnexus — fetched once.
+    const managed = ensureManagedRuntime('node', { minMajor });
+    if (managed.ok && managed.binDir) {
+      const cand = path.join(managed.binDir, process.platform === 'win32' ? 'npm.cmd' : 'npm');
+      if (fs.existsSync(cand)) npm = cand;
+    }
+  }
+  if (!npm) {
+    return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH (and no runtime-resolved or managed Node/npm was found), so the hook cannot install OpenCode automatically', binPath: null };
   }
 
-  const result = spawnSync(npm, ['install', '-g', '--prefix', managedNpmPrefix('opencode'), opencodePackageSpec()], {
+  // spawnTool for the Windows npm.cmd shim; managed user+global config (two
+  // DISTINCT absent files via managedNpmConfigFlags) so a user `.npmrc prefix=`
+  // can't redirect the install out of the managed dir, WITHOUT tripping npm >= 11's
+  // "double-loading config ... as global, previously loaded as user" rejection
+  // (which silently broke every opencode install on node 25 / npm 11).
+  const ocPrefix = managedNpmPrefix('opencode');
+  const result = spawnTool(npm, ['install', '-g', '--prefix', ocPrefix, ...managedNpmConfigFlags(ocPrefix), opencodePackageSpec()], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,
   });
   if (result.status !== 0 || !fs.existsSync(managedBin)) {
-    return {
-      tool: 'opencode',
-      ok: false,
-      action: 'install-skipped',
-      error: `managed npm install of OpenCode failed: ${(result.stderr || '').trim() || 'non-zero exit'}`,
-      binPath: null,
-    };
+    const error = `managed npm install of OpenCode failed: ${(result.stderr || '').trim() || 'non-zero exit'}`;
+    // Persist the failure so an "enabled but installedVersion:null" project is
+    // diagnosable (doctor) instead of silently failing — the detached self-heal
+    // install discards stdio, so this stamp is the only trace it leaves.
+    writeStateMerge(cwd, { opencodeLastErrorAt: nowIso(), opencodeLastError: error });
+    return { tool: 'opencode', ok: false, action: 'install-skipped', error, binPath: null };
   }
+  // Clear any prior failure marker on a successful install.
+  writeStateMerge(cwd, { opencodeLastErrorAt: null, opencodeLastError: null });
 
   // Complete the one-time DB migration now (generous timeout) so the version
   // probe — and the first real delegation — don't pay it / time out later.
