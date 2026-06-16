@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as path from 'node:path';
 
-import { managedNpmBin, managedNpmPrefix, managedVenvBin, managedVenvPython, managedRuntimeDir } from '../toolchain-paths';
+import { managedNpmBin, managedNpmConfigFlags, managedNpmPrefix, managedVenvBin, managedVenvPython, managedRuntimeDir } from '../toolchain-paths';
 
 // process.platform is read at call time by the path helpers, so the win32 branches
 // can only be exercised on a non-Windows CI by temporarily overriding it. ALWAYS
@@ -58,4 +58,17 @@ test('managedRuntimeDir is the shared _runtimes/<kind>/<version> store', () => {
     assert.equal(managedRuntimeDir('node', '22.11.0'), path.join(ROOT, '_runtimes', 'node', '22.11.0'));
     assert.equal(managedRuntimeDir('python', '3.12.7'), path.join(ROOT, '_runtimes', 'python', '3.12.7'));
   });
+});
+
+test('managedNpmConfigFlags uses two DISTINCT paths (npm >= 11 rejects same file at both levels)', () => {
+  const prefix = path.join(ROOT, 'opencode', 'npm-prefix');
+  const flags = managedNpmConfigFlags(prefix);
+  const ui = flags.indexOf('--userconfig');
+  const gi = flags.indexOf('--globalconfig');
+  assert.ok(ui >= 0 && gi >= 0, 'both flags present');
+  const userPath = flags[ui + 1];
+  const globalPath = flags[gi + 1];
+  assert.ok(userPath && globalPath, 'both config paths present'); // narrows string|undefined → string
+  assert.notEqual(userPath, globalPath, 'user and global config paths MUST differ');
+  assert.ok(userPath.startsWith(prefix) && globalPath.startsWith(prefix), 'both under the managed prefix');
 });

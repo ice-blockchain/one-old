@@ -14,9 +14,9 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIndexIsStale } from '../../shared/codegraph';
 import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../runners/gitnexus';
-import { bootstrap as graphifyBootstrapImpl } from '../../runners/graphify';
+import { bootstrap as graphifyBootstrapImpl, graphifyGraphIsEmpty } from '../../runners/graphify';
 import { authSatisfied } from '../../shared/auth';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -70,12 +70,24 @@ export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
     ? path.join(cwd, GITNEXUS_REL)
     : path.join(cwd, GRAPHIFY_REPORT_REL);
   const artefactExists = fs.existsSync(artefactPath);
-  // An existing-but-empty gitnexus index (built pre-scaffold, files:0) is NOT
-  // fresh — force a rebuild so it picks up the real code (graphify produces no
-  // report on an empty project, so it self-heals without this check).
-  const artefactEmpty = provider === 'gitnexus' && gitnexusGraphIsEmpty(cwd);
-  const artefactFresh = artefactExists && !artefactEmpty
-    ? (Date.now() - fs.statSync(artefactPath).mtimeMs) < GRAPHIFY_FRESH_MS
+  let artefactMtime = 0;
+  if (artefactExists) {
+    try { artefactMtime = fs.statSync(artefactPath).mtimeMs; } catch { artefactMtime = 0; }
+  }
+  // An existing-but-empty index (built pre-scaffold) is NOT fresh: its mtime is
+  // recent but it predates the real code, so force a rebuild to pick the code up.
+  // BOTH providers need this — gitnexus records stats.files:0, and graphify (the
+  // earlier belief that it "produces no report on an empty project" was wrong)
+  // leaves a frozen 0-node graph.json + report from the onboarding scan.
+  const artefactEmpty = provider === 'gitnexus'
+    ? gitnexusGraphIsEmpty(cwd)
+    : graphifyGraphIsEmpty(cwd);
+  // A build just landed code: if any source is newer than a non-empty index, the
+  // graph is stale and must rebuild too (not only when empty). This is the build
+  // hook's whole point — refresh the graph against the code that was just built.
+  const artefactStale = artefactExists && codeGraphIndexIsStale(cwd, artefactMtime);
+  const artefactFresh = artefactExists && !artefactEmpty && !artefactStale
+    ? (Date.now() - artefactMtime) < GRAPHIFY_FRESH_MS
     : false;
   if (artefactFresh) return noop();
 

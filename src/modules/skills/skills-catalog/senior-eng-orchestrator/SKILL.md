@@ -313,7 +313,11 @@ index predates the new code (observed live: "fresh" answered for 2 indexed
 files vs ~60 on disk):
 `node ~/.traffic-one/bin/gitnexus-runner.cjs --force`
 (or `graphify-runner.cjs --force`). Worker threads cannot trigger the post-build rescan
-hook on every host, so this parent-side refresh is the deterministic path.
+hook on every host, so this parent-side refresh is the in-run path that guarantees
+reviewer/tester see fresh structure. If it is ever missed (crash/resume, or a host with
+no subagent barrier such as Cursor/Low), the runner self-heals: a later no-force
+invocation (Phase 5, the post-build hook, or the next session) still rebuilds, because
+the index is now empty or stale vs the new source.
 
 Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls before any `wait_agent`, then `wait_agent` on each). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 
@@ -451,9 +455,14 @@ case "$PROVIDER" in
 esac
 ```
 
-Same cooldown / freshness logic as the post-build hook applies for either
-provider (each runner checks its own `*LastRunAt` field and is a no-op when
-the artefact is fresh). Opt out per-project with `"codeGraphAutoRun": false`
+Each runner self-heals and is otherwise a cheap no-op: it rebuilds when the
+artefact is missing, older than 7 days, EMPTY (the 0-node onboarding scan), or
+STALE (a project source file is newer than the index), and short-circuits as
+`fresh` only when none of those hold. So this no-`--force` Phase 5 call still
+refreshes an empty/stale index left by a missed Phase 3 step, and is the refresh
+that lands on Cursor/Low. (`*LastRunAt` in state is telemetry, not the freshness
+gate — the gate is report mtime + empty-guard + source-mtime.) Opt out
+per-project with `"codeGraphAutoRun": false`
 (provider-agnostic; legacy `"graphifyAutoRun": false` honoured for one
 version). This step never blocks the run summary — the runner returns a
 structured result and the orchestrator notes the outcome in one line of the

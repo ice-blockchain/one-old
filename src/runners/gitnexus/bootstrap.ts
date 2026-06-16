@@ -16,6 +16,7 @@ import * as path from 'path';
 
 import { exec } from '../../shared/exec';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { resolveNode, npmNextToNode } from '../../shared/runtime-resolve';
 import { spawnTool } from '../../shared/spawn-tool';
 import { writeGraphPreview } from '../../shared/materialize';
 import { readEffectiveState, mergeProjectPrefs } from '../../shared/state';
@@ -24,6 +25,7 @@ import {
   getToolSpec,
   isToolUsable,
   managedNpmBin,
+  managedNpmConfigFlags,
   managedNpmPrefix,
   mergeToolchainStamp,
   probeTool,
@@ -32,7 +34,7 @@ import {
   toolStatus,
 } from '../toolchain';
 import { CONFLICT_PATHS, GITNEXUS_DIR, GITNEXUS_MIN_NODE_MAJOR, REPORT_FRESH_MS } from '../../config/gitnexus';
-import { GITNEXUS_ROOT_DIRNAME, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
+import { CODE_GRAPH_SCAN_EXCLUDES, GITNEXUS_ROOT_DIRNAME, applyCodeGraphScanIgnore, codeGraphIndexIsStale, gitnexusGraphIsEmpty, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import {
   currentNodeMajor,
   findNvmNode22,
@@ -236,6 +238,16 @@ function npmForGitnexus(): { npmCmd: string; nodeBin?: string | null; action: st
   if (major !== null && major >= GITNEXUS_MIN_NODE_MAJOR && which('npm')) {
     return { npmCmd: 'npm', nodeBin: which('node'), action: 'installed-managed-npm', error: null };
   }
+  // A Homebrew/volta/fnm (or any PATH-absolute) Node >=22 that is neither an nvm v22
+  // nor the hook's own runtime: install through the npm beside it BEFORE paying for
+  // `nvm install 22` or a managed download (mirrors opencode's resolveNode ladder).
+  const resolved = resolveNode(GITNEXUS_MIN_NODE_MAJOR);
+  if (resolved) {
+    const resolvedNpm = npmNextToNode(resolved.path);
+    if (resolvedNpm) {
+      return { npmCmd: resolvedNpm, nodeBin: resolved.path, action: 'installed-managed-npm', error: null };
+    }
+  }
   const nvmInstall = installNode22WithNvm();
   if (nvmInstall.ok) {
     const installed = findNvmNode22();
@@ -271,11 +283,12 @@ function tryInstall(cwd: string): InstallResult {
   }
   const prefix = managedNpmPrefix('gitnexus');
   // Route through spawnTool so a Windows npm.cmd shim is invoked correctly (Node
-  // >=22 refuses a bare .cmd without it). Pin user/global config to a managed
-  // (absent → empty) file so a user `.npmrc prefix=` can't redirect the install
+  // >=22 refuses a bare .cmd without it). Pin user+global config to managed
+  // (absent → empty) files so a user `.npmrc prefix=` can't redirect the install
   // out of the managed dir — keeps the "never the user's global prefix" invariant.
-  const managedNpmrc = path.join(prefix, 'managed.npmrc');
-  const result = spawnTool(npm.npmCmd, ['install', '-g', '--prefix', prefix, '--userconfig', managedNpmrc, '--globalconfig', managedNpmrc, gitnexusPackageSpec()], {
+  // managedNpmConfigFlags uses two DISTINCT paths: npm >= 11 rejects the same file
+  // at both levels ("double-loading config ... as global, previously loaded as user").
+  const result = spawnTool(npm.npmCmd, ['install', '-g', '--prefix', prefix, ...managedNpmConfigFlags(prefix), gitnexusPackageSpec()], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,
@@ -339,18 +352,31 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
   // stderr. Pre-detect and pass `--skip-git` ourselves.
   const hasGit = fs.existsSync(path.join(cwd, '.git'));
   if (!hasGit) baseArgs.push('--skip-git');
+  // Keep Traffic One's own materialized docs out of the graph. gitnexus already
+  // built-in-excludes .claude/.cursor/AGENTS.md/CLAUDE.md but NOT .traffic-one, and
+  // has no `--exclude` flag — it honors a root `.gitnexusignore`, which we scope to
+  // the scan and restore afterwards so the project root is never permanently changed.
+  const restoreIgnore = applyCodeGraphScanIgnore(cwd, '.gitnexusignore', CODE_GRAPH_SCAN_EXCLUDES);
   // spawnTool: cmd may be `npx`/bare `gitnexus` (→ .cmd shims on Windows) or an
   // absolute node/managed bin (passes straight through).
-  const result = spawnTool(cmd, baseArgs, {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 5 * 60 * 1000,
-  });
+  let result;
+  try {
+    result = spawnTool(cmd, baseArgs, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5 * 60 * 1000,
+    });
+  } finally {
+    restoreIgnore();
+  }
   const status = typeof result.status === 'number' ? result.status : 1;
   // GitNexus writes ./.gitnexus in the project root (no output-dir flag).
   // Relocate it under .traffic-one/ so the graph never pollutes the root.
   if (status === 0) relocateUnderTrafficOne(cwd, GITNEXUS_ROOT_DIRNAME, GITNEXUS_DIR);
+  // A non-zero exit can still leave a partial root .gitnexus/; sweep it so the
+  // project root is never polluted (the good index stays under .traffic-one/).
+  else { try { fs.rmSync(path.join(cwd, GITNEXUS_ROOT_DIRNAME), { recursive: true, force: true }); } catch { /* best-effort */ } }
   return {
     status,
     stderr: (result.stderr || '').trim(),
@@ -370,8 +396,21 @@ export function ensureGitnexusTool(cwd: string = process.cwd(), opts: BootstrapO
   const nvm22 = findNvmNode22();
   const major = typeof opts.nodeMajor === 'number' ? opts.nodeMajor : currentNodeMajor();
   const managedBin = managedNpmBin('gitnexus', 'gitnexus');
+  // Node to RUN an already-installed managed gitnexus: nvm-v22 → PATH node (if >=22)
+  // → a resolved Homebrew/volta/fnm node → the managed node. Without the last two, a
+  // machine whose only Node>=22 is the managed one couldn't reuse the managed gitnexus
+  // on later sessions and would needlessly reinstall. Resolve the costlier fallbacks
+  // ONLY when a managed gitnexus actually exists (else candidate (a) is skipped).
+  let managedReuseNode: string | null = (nvm22 && nvm22.node) || (major !== null && major >= GITNEXUS_MIN_NODE_MAJOR ? which('node') : null);
+  if (!managedReuseNode && fs.existsSync(managedBin)) {
+    managedReuseNode = resolveNode(GITNEXUS_MIN_NODE_MAJOR)?.path ?? null;
+    if (!managedReuseNode) {
+      const mn = ensureManagedRuntime('node', { minMajor: GITNEXUS_MIN_NODE_MAJOR });
+      if (mn.ok && mn.path) managedReuseNode = mn.path;
+    }
+  }
   const candidates = [
-    { binPath: fs.existsSync(managedBin) ? managedBin : null, action: 'used-managed', nodeBin: (nvm22 && nvm22.node) || (major !== null && major >= GITNEXUS_MIN_NODE_MAJOR ? which('node') : null) },
+    { binPath: fs.existsSync(managedBin) ? managedBin : null, action: 'used-managed', nodeBin: managedReuseNode },
     { binPath: nvm22 && nvm22.gitnexus ? nvm22.gitnexus : null, action: 'used-nvm-v22', nodeBin: nvm22 && nvm22.node },
     { binPath: which('gitnexus'), action: 'used-existing', nodeBin: null },
   ];
@@ -408,21 +447,9 @@ export function ensureGitnexusTool(cwd: string = process.cwd(), opts: BootstrapO
   };
 }
 
-// A gitnexus index built on a pre-scaffold/empty project records `stats.files: 0`.
-// Treat that as stale so the next build / orchestrator Phase 5 reindexes the real
-// code once it exists — otherwise the 7-day freshness window keeps the empty graph.
-export function gitnexusGraphIsEmpty(cwd: string): boolean {
-  try {
-    const meta = JSON.parse(fs.readFileSync(path.join(cwd, GITNEXUS_DIR, 'meta.json'), 'utf8')) as Rec;
-    const stats = meta && typeof meta.stats === 'object' && meta.stats ? (meta.stats as Rec) : null;
-    if (!stats) return false;
-    const files = Number(stats.files);
-    const nodes = Number(stats.nodes);
-    return (Number.isFinite(files) && files === 0) || (Number.isFinite(nodes) && nodes === 0);
-  } catch {
-    return false; // no/unreadable meta → can't tell → don't force a rebuild
-  }
-}
+// gitnexusGraphIsEmpty now lives in shared/codegraph (so runner-free consumers
+// can use it too); re-export it here to preserve the runner's public surface.
+export { gitnexusGraphIsEmpty };
 
 export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {}): BootstrapResult {
   const startedAt = Date.now();
@@ -435,11 +462,14 @@ export function bootstrap(cwd: string = process.cwd(), opts: BootstrapOpts = {})
     return { ok: false, action: 'install-skipped', report: null, error: 'codeGraphAutoRun is false in local Traffic One preferences', durationMs: 0 };
   }
 
-  // Fresh-cache short-circuit.
+  // Fresh-cache short-circuit. "Fresh" = within 7 days AND non-empty (the 0-file
+  // onboarding scan predates the code) AND not stale vs source (no project file
+  // newer than the index — catches fix-cycle/ad-hoc edits and a dropped --force).
+  // Any failing rebuilds even without --force, so refresh self-heals on every host.
   if (!opts.force && fs.existsSync(reportAbs)) {
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(reportAbs).mtimeMs; } catch { mtimeMs = 0; }
-    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS && !gitnexusGraphIsEmpty(cwd)) {
+    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS && !gitnexusGraphIsEmpty(cwd) && !codeGraphIndexIsStale(cwd, mtimeMs)) {
       return { ok: true, action: 'fresh', report: reportAbs, error: null, durationMs: 0, license: 'PolyForm Noncommercial' };
     }
   }

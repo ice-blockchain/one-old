@@ -14,7 +14,7 @@ import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
+import { CODE_GRAPH_SCAN_EXCLUDES, GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, applyCodeGraphScanIgnore, codeGraphIndexIsStale, graphifyGraphIsEmpty, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
@@ -296,12 +296,22 @@ function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr
   // graphify's CLI requires a subcommand. `update <path>` (re-)extracts code
   // files and writes graphify-out/{GRAPH_REPORT.md, graph.json, graph.html} in
   // the project ROOT (no output-dir flag). Works on a fresh directory too.
-  const result = spawnSync(graphifyBin, ['update', '.'], {
-    cwd,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 5 * 60 * 1000,
-  });
+  // `update` has NO --exclude flag (it errors "unknown update option"); the scan
+  // honors a root `.graphifyignore` instead, so keep Traffic One's own materialized
+  // docs out of the graph via a scoped ignore file restored after the scan. Seed
+  // from .gitignore because .graphifyignore otherwise shadows it per-directory.
+  const restoreIgnore = applyCodeGraphScanIgnore(cwd, '.graphifyignore', CODE_GRAPH_SCAN_EXCLUDES, { seedFromGitignore: true });
+  let result;
+  try {
+    result = spawnSync(graphifyBin, ['update', '.'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 5 * 60 * 1000,
+    });
+  } finally {
+    restoreIgnore();
+  }
   const status = typeof result.status === 'number' ? result.status : 1;
   // Relocate the root-level graphify-out/ under .traffic-one/ so the graph never
   // pollutes the project root. (graphify has no --out flag → move after the scan.)
@@ -310,6 +320,12 @@ function runGraphify(cwd: string, graphifyBin: string): { status: number; stderr
   if (status === 0) {
     relocateUnderTrafficOne(cwd, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_OUT_REL);
     relocateProviderSkills(cwd);
+  } else {
+    // A non-zero exit (e.g. graphify's "Nothing to update" on a --force re-scan)
+    // can still leave a PARTIAL root graphify-out/ (cache/ only, no graph.json).
+    // Don't relocate it over the good relocated graph, but never leave it polluting
+    // the project root — sweep the stray (the real graph stays under .traffic-one/).
+    try { fs.rmSync(path.join(cwd, GRAPHIFY_OUT_ROOT_DIRNAME), { recursive: true, force: true }); } catch { /* best-effort */ }
   }
   return {
     status,
@@ -332,10 +348,16 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
 
   // Fresh-report short-circuit. Lets the orchestrator's Phase 5 invoke the
   // runner unconditionally without paying install/scan cost on every run.
+  // "Fresh" requires three things, not just a recent mtime: within the 7-day
+  // window, NOT empty (the 0-node onboarding scan predates the code), and NOT
+  // stale vs source (no project file is newer than the index — catches fix-cycle
+  // / ad-hoc edits and a crash that dropped the parent-side --force). Any of the
+  // three failing rebuilds even without --force, so refresh is correct on every
+  // host/mode without depending on an orchestrator step.
   if (!opts.force && fs.existsSync(reportAbs)) {
     let mtimeMs = 0;
     try { mtimeMs = fs.statSync(reportAbs).mtimeMs; } catch { mtimeMs = 0; }
-    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS) {
+    if (mtimeMs > 0 && (Date.now() - mtimeMs) < REPORT_FRESH_MS && !graphifyGraphIsEmpty(cwd) && !codeGraphIndexIsStale(cwd, mtimeMs)) {
       return { ok: true, action: 'fresh', report: reportAbs, error: null, durationMs: 0 };
     }
   }
@@ -385,6 +407,7 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
 
 export { nowIso };
 export { which };
+export { graphifyGraphIsEmpty };
 
 // CLI entry: runs the bootstrap from cwd and prints a one-line JSON summary.
 // Exit code is 0 on success AND on graceful skip — the caller is the post-build

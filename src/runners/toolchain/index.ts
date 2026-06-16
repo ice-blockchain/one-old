@@ -100,6 +100,7 @@ import { managedNpmBin } from '../../shared/toolchain-paths';
 
 export {
   managedNpmBin,
+  managedNpmConfigFlags,
   managedNpmPrefix,
   managedToolDir,
   managedVenvBin,

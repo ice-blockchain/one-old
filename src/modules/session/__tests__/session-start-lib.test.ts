@@ -40,6 +40,12 @@ test('shouldBuildCodeGraph: builds for existing project missing a graph; guards 
     assert.equal(shouldBuildCodeGraph(cwd, { mode: 'new-project', codeGraphProvider: 'graphify' }, NOW), false);
     assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase' }, NOW), false);
     assert.equal(shouldBuildCodeGraph(cwd, { ...base, codeGraphAutoRun: false }, NOW), false);
+    // new-project that DEFERRED at onboarding (onboardingComplete + graphDeferredAt)
+    // self-heals (no artifact yet → build); a new-project WITHOUT the deferral marker
+    // does not (avoids scanning a mid-onboarding scaffold).
+    const np = { mode: 'new-project', codeGraphProvider: 'graphify', onboardingComplete: true };
+    assert.equal(shouldBuildCodeGraph(cwd, { ...np, graphDeferredAt: '2026-06-08T11:00:00Z' }, NOW), true);
+    assert.equal(shouldBuildCodeGraph(cwd, { ...np }, NOW), false);
     // gitnexus keys on .gitnexus/
     assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase', codeGraphProvider: 'gitnexus' }, NOW), true);
     fs.mkdirSync(path.join(cwd, '.traffic-one', '.gitnexus'), { recursive: true });
