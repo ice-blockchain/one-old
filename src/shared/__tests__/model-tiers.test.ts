@@ -16,7 +16,10 @@ test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
 test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'claude'), 'opus');
   assert.equal(resolveModel('balanced', 'codex'), 'gpt-5.4');
-  assert.equal(resolveModel('cheapest', 'cursor'), 'haiku');
+  // Cursor uses real Cursor model IDs, not Anthropic aliases.
+  assert.equal(resolveModel('highest', 'cursor'), 'gpt-5.5');
+  assert.equal(resolveModel('balanced', 'cursor'), 'claude-4.6-sonnet');
+  assert.equal(resolveModel('cheapest', 'cursor'), 'composer-latest');
   assert.equal(resolveModel('bad', 'claude'), null);
 });
 
@@ -27,7 +30,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'opus',
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'gpt-5.5',
   });
   assert.equal(tierModelTable('bad'), null);
 });

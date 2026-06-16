@@ -36,12 +36,20 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
 
-// NOTE: model-tier gating DOES fire on Cursor — the generic before-tool-use hook
-// derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), and this
-// gate has no host guard, so the tier deny applies once per spawn (the run-claim is
-// staked here ONLY; subagentStart is a different canonical event, so no double-claim).
-// Only agent REUSE/continuation stays inert on Cursor — subagentContinuationAvailable()
-// is false there (no SendMessage/continuation primitive), so the reuse path no-ops.
+// NOTE: this gate FIRES and ENFORCES on Cursor — the generic before-tool-use hook
+// derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), the model is
+// passed in tool_input.model, and HOST_MODELS.cursor now holds REAL Cursor model IDs
+// (gpt-5.5 / claude-4.6-sonnet / composer-latest) that Cursor's subagent tool accepts —
+// so the per-role model-param deny is enforced on all three hosts identically. (This
+// replaced an earlier advisory-only stopgap: HOST_MODELS.cursor used to hold Anthropic
+// aliases (opus/sonnet/haiku) that Cursor REJECTS, making a hard equality deny
+// un-satisfiable. With valid Cursor slugs that's gone — an unavailable-but-valid model
+// falls back gracefully inside Cursor, so only an INVALID slug would reject, and we
+// ship none.) The gate also stakes the run-claim here (subagentStart is a different
+// canonical event, so no double-claim), which the subagent-team write gate needs to
+// resolve a role on Cursor. Agent REUSE/continuation still stays inert on Cursor —
+// subagentContinuationAvailable() is false there (no SendMessage/continuation
+// primitive), so the reuse path no-ops.
 export function agentModelGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();
 

@@ -85,12 +85,12 @@ function withMaterialized(opts: { teamApproved: boolean }, fn: (cwd: string) => 
   }
 }
 
-function spawnCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' = 'claude'): Ctx {
   const input: HookInput = {
-    event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: 'Task', tool_input: toolInput },
+    event: 'PreToolUse', host, cwd, raw: { tool_name: 'Task', tool_input: toolInput },
     tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
   };
-  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 test('non-spawn tools are ignored', () => {
@@ -116,6 +116,37 @@ test('team approved but wrong model → deny model-param; correct model → allo
     // high senior-frontend → highest tier → claude "opus"
     const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('Cursor: model-param is ENFORCED with real Cursor IDs — Anthropic alias denies, real Cursor slug allows + stakes claim', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // high senior-frontend → highest tier → cursor "gpt-5.5" (a REAL Cursor model ID).
+    // Passing the Anthropic alias Cursor rejects must DENY (the bug the tester hit, now
+    // enforced instead of deadlocking — because the expected value is now a valid slug).
+    const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }, 'cursor'));
+    assert.equal(wrong.kind, 'deny');
+    if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
+
+    // No model param → still denied (would inherit the parent model).
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'deny');
+
+    // The exact real Cursor model ID is accepted and stakes the run claim.
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'gpt-5.5' }, 'cursor'));
+    assert.equal(ok.kind, 'noop');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    assert.ok(runId.length > 0, 'currentRunId minted on Cursor spawn');
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
+    assert.ok(pending.length > 0, 'pending senior-frontend claim staked on Cursor');
+  });
+});
+
+test('Cursor quick-fix is pinned to the real cheapest Cursor model (composer-latest)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // quick-fix → cheapest tier → cursor "composer-latest". A pricier/alias model denies.
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }, 'cursor')).kind, 'deny');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-latest' }, 'cursor')).kind, 'noop');
   });
 });
 

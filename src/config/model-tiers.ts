@@ -20,7 +20,15 @@ export type HostModelKey = (typeof HOST_IDS)[number];
 
 export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>> = {
   claude: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
-  cursor: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
+  // cursor: REAL Cursor model IDs (the values Cursor's subagent `model:` field / Task
+  // tool accept) — NOT the Anthropic family aliases, which Cursor rejects. ENFORCED by
+  // the spawn-agent gate like claude/codex. `composer-latest` is Cursor's own model
+  // (stable alias, no Max Mode, cost-optimized); the others are versioned and drift, so
+  // re-confirm against Cursor's `/v1/models` endpoint / model picker when syncing (see
+  // the model-tier-sync skill). cheapest is cost-optimized (Composer is cheap despite
+  // solid intelligence). An unavailable-but-valid model falls back gracefully inside
+  // Cursor; only an INVALID slug rejects — so keep these to confirmed real IDs.
+  cursor: { highest: 'gpt-5.5', balanced: 'claude-4.6-sonnet', cheapest: 'composer-latest' },
   codex: { highest: 'gpt-5.5', balanced: 'gpt-5.4', cheapest: 'gpt-5.4-mini' },
 };
 
