@@ -3,12 +3,12 @@
 // user's OpenCode/code-graph choices are the consent record; this module checks
 // installed versions and installs/upgrades user-local managed tools when needed.
 
-import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { exec } from '../../shared/exec';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { spawnTool } from '../../shared/spawn-tool';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { ensureGitnexusTool } from '../gitnexus';
@@ -72,7 +72,8 @@ function opencodeRecommendedVersion(): string | null {
 // reliable. Best-effort; never throws.
 function warmUpOpencode(binPath: string): void {
   try {
-    spawnSync(binPath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5 * 60 * 1000 });
+    // spawnTool: binPath is the managed opencode.cmd shim on Windows.
+    spawnTool(binPath, ['--version'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 5 * 60 * 1000 });
   } catch {
     // best-effort
   }
@@ -129,7 +130,11 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
     return { tool: 'opencode', ok: false, action: 'install-skipped', error: '`npm` is not on PATH (and no runtime-resolved or managed Node/npm was found), so the hook cannot install OpenCode automatically', binPath: null };
   }
 
-  const result = spawnSync(npm, ['install', '-g', '--prefix', managedNpmPrefix('opencode'), opencodePackageSpec()], {
+  // spawnTool for the Windows npm.cmd shim; managed user/global config so a user
+  // `.npmrc prefix=` can't redirect the install out of the managed dir.
+  const ocPrefix = managedNpmPrefix('opencode');
+  const ocNpmrc = path.join(ocPrefix, 'managed.npmrc');
+  const result = spawnTool(npm, ['install', '-g', '--prefix', ocPrefix, '--userconfig', ocNpmrc, '--globalconfig', ocNpmrc, opencodePackageSpec()], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,

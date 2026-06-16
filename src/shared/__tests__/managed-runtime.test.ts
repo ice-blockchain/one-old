@@ -25,8 +25,19 @@ test('nodeAsset builds the official nodejs.org tarball + SHASUMS url', () => {
 
 test('nodeAsset maps linux/x64 and rejects unsupported platforms/arches', () => {
   assert.match(nodeAsset(NODE_PIN, 'linux', 'x64')!.url, /node-v.*-linux-x64\.tar\.gz$/);
-  assert.equal(nodeAsset(NODE_PIN, 'win32', 'x64'), null);
+  assert.equal(nodeAsset(NODE_PIN, 'sunos', 'x64'), null);
   assert.equal(nodeAsset(NODE_PIN, 'linux', 'ppc64'), null);
+});
+
+test('Windows Node asset is a .zip with binaries at the stem root (no bin/)', () => {
+  const x64 = nodeAsset(NODE_PIN, 'win32', 'x64');
+  assert.ok(x64);
+  assert.equal(x64!.url, `https://nodejs.org/dist/v${NODE_PIN.version}/node-v${NODE_PIN.version}-win-x64.zip`);
+  assert.equal(x64!.format, 'zip');
+  assert.equal(x64!.checksumStyle, 'shasums-list'); // SHASUMS256.txt lists the .zip too
+  assert.equal(x64!.binSubdir, `node-v${NODE_PIN.version}-win-x64`); // stem ROOT, no /bin
+  // win-arm64 also ships from Node 20+.
+  assert.match(nodeAsset(NODE_PIN, 'win32', 'arm64')!.url, /node-v.*-win-arm64\.zip$/);
 });
 
 test('pythonAsset builds the python-build-standalone install_only asset + sidecar', () => {
@@ -38,11 +49,27 @@ test('pythonAsset builds the python-build-standalone install_only asset + sideca
   assert.equal(a!.binSubdir, 'python/bin');
 });
 
-test('pythonAsset maps the four tranche-1 triples and rejects the rest', () => {
+test('pythonAsset maps the tranche-1 triples and rejects the rest', () => {
   assert.match(pythonAsset(PYTHON_PIN, 'darwin', 'x64')!.archiveName, /x86_64-apple-darwin/);
   assert.match(pythonAsset(PYTHON_PIN, 'linux', 'x64')!.archiveName, /x86_64-unknown-linux-gnu/);
   assert.match(pythonAsset(PYTHON_PIN, 'linux', 'arm64')!.archiveName, /aarch64-unknown-linux-gnu/);
-  assert.equal(pythonAsset(PYTHON_PIN, 'win32', 'x64'), null);
+  assert.equal(pythonAsset(PYTHON_PIN, 'sunos', 'x64'), null);
+});
+
+test('Windows Python asset is the msvc triple, .tar.gz, python/ root; no win-arm64', () => {
+  const x64 = pythonAsset(PYTHON_PIN, 'win32', 'x64');
+  assert.ok(x64);
+  assert.match(x64!.archiveName, /x86_64-pc-windows-msvc-install_only\.tar\.gz$/);
+  assert.equal(x64!.format, 'tar.gz'); // PBS ships Windows as .tar.gz (unlike Node)
+  assert.equal(x64!.binSubdir, 'python'); // python.exe at python/ root, no /bin
+  // PBS publishes no aarch64-pc-windows-msvc install_only → graceful skip.
+  assert.equal(pythonAsset(PYTHON_PIN, 'win32', 'arm64'), null);
+});
+
+test('non-Windows assets carry format tar.gz and the bin/ layout', () => {
+  assert.equal(nodeAsset(NODE_PIN, 'darwin', 'arm64')!.format, 'tar.gz');
+  assert.match(nodeAsset(NODE_PIN, 'darwin', 'arm64')!.binSubdir, /\/bin$/);
+  assert.equal(pythonAsset(PYTHON_PIN, 'linux', 'x64')!.binSubdir, 'python/bin');
 });
 
 test('runtimeAsset returns the resolved version alongside the asset', () => {

@@ -28,21 +28,27 @@ export const NODE_PIN: NodePin = { version: '22.11.0' };
 export const PYTHON_PIN: PythonPin = { version: '3.12.7', releaseTag: '20241016' };
 
 export interface RuntimeAsset {
-  url: string;                                   // tarball URL
+  url: string;                                   // archive URL
   archiveName: string;                           // basename (matched in a SHASUMS list)
   checksumUrl: string;                           // publisher's checksum file
   checksumStyle: 'shasums-list' | 'sidecar-hex'; // how to read the checksum file
+  format: 'tar.gz' | 'zip';                      // archive container → extractor selection
   binSubdir: string;                             // bin dir relative to the extraction root
 }
 
-const NODE_PLATFORM: Record<string, string> = { darwin: 'darwin', linux: 'linux' };
+// Node platform tokens. Windows ships .zip (handled below); win-arm64 exists from
+// Node 20+. macOS/Linux ship .tar.gz.
+const NODE_PLATFORM: Record<string, string> = { darwin: 'darwin', linux: 'linux', win32: 'win' };
 const NODE_ARCH: Record<string, string> = { arm64: 'arm64', x64: 'x64' };
-// python-build-standalone target triples.
+// python-build-standalone target triples. NOTE: there is NO aarch64-pc-windows-msvc
+// install_only build, so win32:arm64 is intentionally absent → graceful skip on
+// Windows-ARM (it can run the x64 build under emulation, but we don't auto-map it).
 const PY_TRIPLE: Record<string, string> = {
   'darwin:arm64': 'aarch64-apple-darwin',
   'darwin:x64': 'x86_64-apple-darwin',
   'linux:x64': 'x86_64-unknown-linux-gnu',
   'linux:arm64': 'aarch64-unknown-linux-gnu',
+  'win32:x64': 'x86_64-pc-windows-msvc',
 };
 
 export function nodeAsset(pin: NodePin, platform: string, arch: string): RuntimeAsset | null {
@@ -50,12 +56,17 @@ export function nodeAsset(pin: NodePin, platform: string, arch: string): Runtime
   const a = NODE_ARCH[arch];
   if (!plat || !a) return null;
   const stem = `node-v${pin.version}-${plat}-${a}`;
+  // Windows: .zip with node.exe + npm.cmd at the stem ROOT (no bin/ subdir).
+  // macOS/Linux: .tar.gz with the binaries under <stem>/bin.
+  const isWin = platform === 'win32';
+  const ext = isWin ? 'zip' : 'tar.gz';
   return {
-    url: `https://nodejs.org/dist/v${pin.version}/${stem}.tar.gz`,
-    archiveName: `${stem}.tar.gz`,
+    url: `https://nodejs.org/dist/v${pin.version}/${stem}.${ext}`,
+    archiveName: `${stem}.${ext}`,
     checksumUrl: `https://nodejs.org/dist/v${pin.version}/SHASUMS256.txt`,
     checksumStyle: 'shasums-list',
-    binSubdir: `${stem}/bin`, // tarball top dir is the stem; npm/npx ship inside bin/
+    format: isWin ? 'zip' : 'tar.gz',
+    binSubdir: isWin ? stem : `${stem}/bin`,
   };
 }
 
@@ -64,12 +75,16 @@ export function pythonAsset(pin: PythonPin, platform: string, arch: string): Run
   if (!triple) return null;
   const archiveName = `cpython-${pin.version}+${pin.releaseTag}-${triple}-install_only.tar.gz`;
   const url = `https://github.com/astral-sh/python-build-standalone/releases/download/${pin.releaseTag}/${archiveName}`;
+  // install_only extracts to ./python/. On Windows python.exe sits at python/ ROOT
+  // (no bin/, no python3 alias); on macOS/Linux the interpreter is python/bin/python3.
+  // The archive is .tar.gz on EVERY OS (unlike Node), so the tar extractor covers it.
   return {
     url,
     archiveName,
     checksumUrl: `${url}.sha256`,
     checksumStyle: 'sidecar-hex',
-    binSubdir: 'python/bin', // install_only archives extract to ./python/
+    format: 'tar.gz',
+    binSubdir: platform === 'win32' ? 'python' : 'python/bin',
   };
 }
 

@@ -18,6 +18,7 @@ import { GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, reloc
 import { exec } from '../../shared/exec';
 import { writeGraphPreview } from '../../shared/materialize';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { spawnTool } from '../../shared/spawn-tool';
 import { resolvePython, runtimeMissingMessage } from '../../shared/runtime-resolve';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -134,7 +135,8 @@ function stampToolchain(cwd: string, binPath: string, version?: string | null): 
 
 function installWithPipx(cwd: string): InstallResult {
   if (which('pipx')) {
-    const result = spawnSync('pipx', ['install', graphifyPackageSpec(), '--force', '--quiet'], {
+    // spawnTool: a Windows pipx may be a .cmd/.exe shim.
+    const result = spawnTool('pipx', ['install', graphifyPackageSpec(), '--force', '--quiet'], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 90 * 1000,

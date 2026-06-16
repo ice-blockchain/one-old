@@ -43,6 +43,10 @@ export function managedRuntimeDir(kind: 'python' | 'node', version: string): str
 }
 
 export function managedNpmBin(toolName: string, binName: string = toolName): string {
-  const ext = process.platform === 'win32' ? '.cmd' : '';
-  return path.join(managedNpmPrefix(toolName), 'bin', `${binName}${ext}`);
+  // `npm install -g --prefix P` lays the bin shim out differently per OS:
+  //   POSIX → P/bin/<name>;  Windows → FLAT at P/<name>.cmd (no bin/ subdir).
+  if (process.platform === 'win32') {
+    return path.join(managedNpmPrefix(toolName), `${binName}.cmd`);
+  }
+  return path.join(managedNpmPrefix(toolName), 'bin', binName);
 }

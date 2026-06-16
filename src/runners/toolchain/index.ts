@@ -6,11 +6,11 @@
 // __dirname so it works in src under tsx and compiled at scripts/). Ported 1:1
 // from scripts/toolchain.cjs.
 
-import { spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { nowIsoNoMs } from '../../shared/text';
+import { spawnTool } from '../../shared/spawn-tool';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
 
 export const SPEC_PATH = path.join(__dirname, 'toolchain-versions.json');
@@ -136,7 +136,8 @@ export function probeToolVersion(toolName: string, opts: { binPath?: string } = 
 
   let result;
   try {
-    result = spawnSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 1000 });
+    // spawnTool: a managed tool's bin may be a Windows .cmd shim (e.g. opencode.cmd).
+    result = spawnTool(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 10 * 1000 });
   } catch {
     return null;
   }

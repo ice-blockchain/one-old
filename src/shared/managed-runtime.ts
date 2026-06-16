@@ -22,7 +22,7 @@
 // everywhere), so the network download runs in a spawnSync'd child `node` — the
 // parent blocks, no async ripples through ensure*Tool/bootstrap/main.
 
-import { spawnSync } from 'child_process';
+import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -53,8 +53,56 @@ function downloadDisabled(): boolean {
 }
 
 function binName(kind: RuntimeKind): string {
-  const ext = process.platform === 'win32' ? '.exe' : '';
-  return (kind === 'node' ? 'node' : 'python3') + ext;
+  // Windows: node.exe and python.exe (the PBS install_only build ships NO
+  // python3.exe alias). macOS/Linux: node / python3.
+  if (process.platform === 'win32') return kind === 'node' ? 'node.exe' : 'python.exe';
+  return kind === 'node' ? 'node' : 'python3';
+}
+
+// Block the calling thread for ~ms without async — used only for the Windows
+// rename retry below. Atomics.wait on a throwaway SharedArrayBuffer is the
+// standard sync-sleep; if SAB is unavailable we simply don't wait.
+function sleepSync(ms: number): void {
+  try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB → skip */ }
+}
+
+// Extract an archive by container type. macOS/Linux + Python-on-Windows are
+// .tar.gz (system `tar -xzf`, same tool the other runners use). Windows Node is a
+// .zip: bsdtar (`tar.exe -xf`, Win10 1803+) autodetects zip; PowerShell
+// `Expand-Archive` is the fallback for older Windows. Paths ride env vars into the
+// PowerShell call so nothing is interpolated into a -Command string (no injection).
+function extractArchive(asset: RuntimeAsset, archivePath: string, destDir: string): { ok: boolean; error: string | null } {
+  const base: SpawnSyncOptionsWithStringEncoding = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: DOWNLOAD_TIMEOUT_MS };
+  if (asset.format === 'tar.gz') {
+    const r = spawnSync('tar', ['-xzf', archivePath, '-C', destDir], base);
+    return r.status === 0 ? { ok: true, error: null } : { ok: false, error: `tar extract failed: ${(r.stderr || '').trim() || 'non-zero exit'}` };
+  }
+  // zip
+  const tarZip = spawnSync('tar', ['-xf', archivePath, '-C', destDir], base);
+  if (tarZip.status === 0) return { ok: true, error: null };
+  const ps = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', 'Expand-Archive -LiteralPath $env:T1_ZIP -DestinationPath $env:T1_OUT -Force'], {
+    ...base,
+    env: { ...process.env, T1_ZIP: archivePath, T1_OUT: destDir },
+  });
+  return ps.status === 0
+    ? { ok: true, error: null }
+    : { ok: false, error: `zip extract failed: ${(ps.stderr || tarZip.stderr || '').trim() || 'non-zero exit'}` };
+}
+
+// Move the verified tree into place. On Windows a freshly-extracted .exe can be
+// transiently locked by Defender real-time scan, intermittently failing the
+// rename with EPERM/EBUSY — so retry a few times before giving up (the caller
+// still degrades gracefully if it ultimately fails). Node's libuv handles
+// >260-char paths internally, so no manual \\?\ prefixing is needed here.
+function placeAtomic(srcDir: string, finalDir: string): void {
+  try { fs.rmSync(finalDir, { recursive: true, force: true }); } catch { /* fresh */ }
+  fs.mkdirSync(path.dirname(finalDir), { recursive: true });
+  if (process.platform !== 'win32') { fs.renameSync(srcDir, finalDir); return; }
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try { fs.renameSync(srcDir, finalDir); return; } catch (e) { lastErr = e; sleepSync(150); }
+  }
+  throw lastErr;
 }
 
 // Probe the just-extracted (or cached) interpreter: confirm it RUNS and meets the
@@ -175,26 +223,26 @@ function downloadAndExtract(asset: RuntimeAsset, finalDir: string): { ok: boolea
     const dl = childDownload(asset.url, tarball, expected, DOWNLOAD_TIMEOUT_MS);
     if (!dl.ok) return { ok: false, error: `download failed: ${dl.error}` };
 
-    // 3. extract via system tar (present on macOS/Linux; same family the other
-    //    runners shell out to).
+    // 3. extract by container type (.tar.gz everywhere except Windows Node .zip).
     const extractTmp = path.join(tmpRoot, 'x');
     fs.mkdirSync(extractTmp, { recursive: true });
-    const untar = spawnSync('tar', ['-xzf', tarball, '-C', extractTmp], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: DOWNLOAD_TIMEOUT_MS });
-    if (untar.status !== 0) return { ok: false, error: `tar extract failed: ${(untar.stderr || '').trim() || 'non-zero exit'}` };
+    const extracted = extractArchive(asset, tarball, extractTmp);
+    if (!extracted.ok) return extracted;
     if (!fs.existsSync(path.join(extractTmp, asset.binSubdir))) {
       return { ok: false, error: `extracted archive has no ${asset.binSubdir}` };
     }
 
     // 4. best-effort: strip macOS quarantine (programmatic downloads usually
     //    aren't tagged, but a belt-and-braces clear avoids a Gatekeeper prompt).
+    //    No Windows analog needed: a file written by our child `node` https stream
+    //    is NOT mark-of-the-web tagged (MOTW is applied by Explorer/the Attachment
+    //    Manager, not a raw socket write), so no Unblock-File step is required.
     if (process.platform === 'darwin') {
       spawnSync('xattr', ['-dr', 'com.apple.quarantine', extractTmp], { stdio: 'ignore', timeout: 30 * 1000 });
     }
 
-    // 5. atomic place: replace any partial finalDir, then rename the verified tree in.
-    try { fs.rmSync(finalDir, { recursive: true, force: true }); } catch { /* fresh */ }
-    fs.mkdirSync(path.dirname(finalDir), { recursive: true });
-    fs.renameSync(extractTmp, finalDir);
+    // 5. atomic place (Windows-AV-lock-tolerant rename).
+    placeAtomic(extractTmp, finalDir);
     return { ok: true, error: null };
   } catch (e) {
     return { ok: false, error: (e as Error)?.message || 'install error' };

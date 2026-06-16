@@ -16,6 +16,7 @@ import * as path from 'path';
 
 import { exec } from '../../shared/exec';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
+import { spawnTool } from '../../shared/spawn-tool';
 import { writeGraphPreview } from '../../shared/materialize';
 import { readEffectiveState, mergeProjectPrefs } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -181,7 +182,12 @@ export function gitnexusPackageSpec(): string {
 }
 
 function probeGitnexusVersion(gitnexusBin: string, nodeBin?: string | null): string | null {
-  if (nodeBin && fs.existsSync(nodeBin)) {
+  // `node <bin>` only works when <bin> is a node-runnable JS shim (the POSIX npm
+  // layout). On Windows the managed/nvm/PATH bin is a `.cmd` BATCH wrapper that
+  // node.exe cannot parse as JS — so for a .cmd/.bat bin, fall through to
+  // probeToolVersion, which runs it through spawnTool (cmd.exe). It self-locates node.
+  const isBatchBin = /\.(cmd|bat)$/i.test(gitnexusBin);
+  if (nodeBin && fs.existsSync(nodeBin) && !isBatchBin) {
     try {
       const result = spawnSync(nodeBin, [gitnexusBin, '--version'], {
         encoding: 'utf8',
@@ -264,7 +270,12 @@ function tryInstall(cwd: string): InstallResult {
     };
   }
   const prefix = managedNpmPrefix('gitnexus');
-  const result = spawnSync(npm.npmCmd, ['install', '-g', '--prefix', prefix, gitnexusPackageSpec()], {
+  // Route through spawnTool so a Windows npm.cmd shim is invoked correctly (Node
+  // >=22 refuses a bare .cmd without it). Pin user/global config to a managed
+  // (absent → empty) file so a user `.npmrc prefix=` can't redirect the install
+  // out of the managed dir — keeps the "never the user's global prefix" invariant.
+  const managedNpmrc = path.join(prefix, 'managed.npmrc');
+  const result = spawnTool(npm.npmCmd, ['install', '-g', '--prefix', prefix, '--userconfig', managedNpmrc, '--globalconfig', managedNpmrc, gitnexusPackageSpec()], {
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,
@@ -305,7 +316,10 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
   let baseArgs = ['analyze', '.', '--skip-agents-md'];
   const nvm22 = findNvmNode22();
   let nodeUsed: string | null | undefined;
-  if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin) && opts.nodeBin && fs.existsSync(opts.nodeBin)) {
+  // A Windows `.cmd` bin must NOT be run as `node <bin>` (node can't parse a batch
+  // wrapper as JS) — run the .cmd directly so spawnTool routes it through cmd.exe.
+  const batchBin = /\.(cmd|bat)$/i.test(opts.gitnexusBin || '');
+  if (opts.gitnexusBin && fs.existsSync(opts.gitnexusBin) && opts.nodeBin && fs.existsSync(opts.nodeBin) && !batchBin) {
     cmd = opts.nodeBin;
     baseArgs = [opts.gitnexusBin, ...baseArgs];
     nodeUsed = opts.nodeBin;
@@ -325,7 +339,9 @@ function runGitnexus(cwd: string, opts: { useNpx?: boolean; gitnexusBin?: string
   // stderr. Pre-detect and pass `--skip-git` ourselves.
   const hasGit = fs.existsSync(path.join(cwd, '.git'));
   if (!hasGit) baseArgs.push('--skip-git');
-  const result = spawnSync(cmd, baseArgs, {
+  // spawnTool: cmd may be `npx`/bare `gitnexus` (→ .cmd shims on Windows) or an
+  // absolute node/managed bin (passes straight through).
+  const result = spawnTool(cmd, baseArgs, {
     cwd,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'pipe'],
