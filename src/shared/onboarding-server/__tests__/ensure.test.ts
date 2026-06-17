@@ -8,6 +8,7 @@ import { ensureOnboardingServer } from '../ensure';
 import {
   clearServerRecord,
   readServerRecord,
+  serverLockPath,
   serverRecordExists,
   writeServerRecord,
   type ServerRecord,
@@ -106,5 +107,62 @@ test('ensure: clears a stale (dead-pid) record and relaunches', () => {
     assert.equal(r.started, true);
     assert.equal(r.port, 53000);
     assert.equal(launchedPid, 7777);
+  });
+});
+
+test('registry: writeServerRecord is atomic — leaves no .tmp file behind', () => {
+  withProject((cwd, env) => {
+    writeServerRecord(cwd, rec(), env);
+    const runtimeDir = path.dirname(env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string);
+    assert.deepEqual(fs.readdirSync(runtimeDir).filter((f) => f.includes('.tmp')), []);
+    assert.equal(readServerRecord(cwd, env)?.port, 51000);
+  });
+});
+
+test('ensure: releases the launch lock after spawning', () => {
+  withProject((cwd, env) => {
+    const r = ensureOnboardingServer(cwd, {
+      env,
+      isAlive: () => false,
+      launch: (c, e) => { writeServerRecord(c, rec({ pid: 4242, port: 52000, token: 'z', url: 'http://127.0.0.1:52000/?t=z' }), e); return 4242; },
+    });
+    assert.equal(r.started, true);
+    assert.equal(fs.existsSync(serverLockPath(cwd, env)), false); // lock released in finally
+  });
+});
+
+test('ensure: steals a stale (dead-holder) launch lock and relaunches', () => {
+  withProject((cwd, env) => {
+    // A crashed launcher left its lock behind without ever publishing a record.
+    fs.writeFileSync(serverLockPath(cwd, env), JSON.stringify({ pid: 999999, at: Date.now() }));
+    let launched = false;
+    const r = ensureOnboardingServer(cwd, {
+      env,
+      isAlive: (pid) => pid !== 999999, // lock holder dead; the relaunched server is alive
+      launch: (c, e) => { launched = true; writeServerRecord(c, rec({ pid: 4242, port: 53000, token: 'n', url: 'http://127.0.0.1:53000/?t=n' }), e); return 4242; },
+    });
+    assert.equal(launched, true);
+    assert.equal(r.port, 53000);
+    assert.equal(fs.existsSync(serverLockPath(cwd, env)), false);
+  });
+});
+
+test('ensure: defers to a LIVE launcher — reuses its record, no second spawn, lock untouched', () => {
+  withProject((cwd, env) => {
+    // The single-launcher invariant: a concurrent live launcher holds the lock and
+    // has published its record. A second ensure() must reuse it, never spawn a
+    // duplicate (the port-churn bug), and never steal the live holder's lock.
+    fs.writeFileSync(serverLockPath(cwd, env), JSON.stringify({ pid: 4242, at: Date.now() }));
+    writeServerRecord(cwd, rec({ pid: 4242, port: 54000, token: 'live', url: 'http://127.0.0.1:54000/?t=live' }), env);
+    let launched = false;
+    const r = ensureOnboardingServer(cwd, {
+      env,
+      isAlive: () => true,
+      launch: () => { launched = true; return 1; },
+    });
+    assert.equal(launched, false);
+    assert.equal(r.started, false);
+    assert.equal(r.port, 54000);
+    assert.equal(fs.existsSync(serverLockPath(cwd, env)), true); // we never held it → never remove it
   });
 });

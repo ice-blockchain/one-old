@@ -13,6 +13,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../config/opencode-mcp';
+import { planDelegationQueueRoles } from '../../shared/opencode-roles';
 
 // The runner prints one JSON line. delegate() → {ok, action, digest, touched,
 // error, model}; delegateFromPlan() → {total, delegated, units}. We keep the
@@ -128,59 +129,46 @@ export async function runDelegate(a: DelegateArgs): Promise<RunnerResult> {
   }
 }
 
-// Distinct normalized roles in the plan's delegation queue, in first-seen
-// order. Empty on any read/parse problem (→ single-runner fallback).
-export function planQueueRoles(projectRoot: string): string[] {
-  let plan = '';
-  try { plan = fs.readFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), 'utf8'); } catch { return []; }
-  const start = plan.indexOf('opencode-delegate:start');
-  const end = plan.indexOf('opencode-delegate:end');
-  if (start < 0 || end < 0 || end < start) return [];
-  const roles: string[] = [];
-  for (const line of plan.slice(start, end).split('\n')) {
-    const m = /^\s*-\s*role:\s*([a-z][a-z-]*)/i.exec(line);
-    if (!m || !m[1]) continue;
-    const role = m[1].toLowerCase().replace(/^senior-/, '');
-    if (!roles.includes(role)) roles.push(role);
-  }
-  return roles;
-}
+// Distinct normalized roles in the plan's delegation queue, in first-seen order
+// (empty on any read/parse problem → single-runner fallback). Single source lives in
+// shared/opencode-roles so the spawn gate (roleHasQueuedUnits) reads the SAME queue
+// without depending on this runner module; aliased here for the MCP surface/tests and
+// used by startFromPlan above.
+export const planQueueRoles = planDelegationQueueRoles;
 
-// Units within one role stay SEQUENTIAL (they share a digest file and often a
-// package); different roles run as concurrent runner shards. Safe because the
-// queue contract gives each unit exact, disjoint files; each shard applies only
-// its own clean diff (`git apply` touches the working tree, never the index, so
-// shards don't contend on .git locks). Capped to keep machine load sane.
-const MAX_PLAN_SHARDS = 3;
-
-function startFromPlan(projectRoot: string, runId: string, model: string | undefined, onChild?: (child: ReturnType<typeof spawn>) => void): Promise<RunnerResult> {
+// Run the plan's queued roles as ONE runner each, SEQUENTIALLY — never concurrently.
+// Concurrent runner shards proved unreliable on Cursor: only the FIRST reached the
+// OpenCode CLI; the rest delivered nothing (no attempt markers, no per-role logs —
+// they failed fast, well inside the run window), so FORCED-delegate roles like
+// senior-frontend silently went undelegated and their paid spawns were then blocked
+// ("New subagent — Couldn't start"). Codex tolerated the concurrency; Cursor did not.
+// Sequential is slower but delivers every queued role's units on every host (units are
+// bounded ~2 min each, and the resumable protocol keeps the run alive across the
+// host's tool-call timeout). Per-role runners also isolate failures — a crash in one
+// role's runner doesn't take the others down. (Units within a role were already
+// sequential — they share a digest file; we now serialize ACROSS roles too.)
+async function startFromPlan(projectRoot: string, runId: string, model: string | undefined, onChild?: (child: ReturnType<typeof spawn>) => void): Promise<RunnerResult> {
   const modelArgs = (model || '').trim() ? ['--model', (model as string).trim()] : [];
   const roles = planQueueRoles(projectRoot);
   if (roles.length <= 1) {
     return runRunner(['--run-id', runId, '--from-plan', ...modelArgs], projectRoot, onChild);
   }
-  const shardCount = Math.min(MAX_PLAN_SHARDS, roles.length);
-  const shards: string[][] = Array.from({ length: shardCount }, () => []);
-  roles.forEach((role, i) => { (shards[i % shardCount] as string[]).push(role); });
-  return Promise.all(shards.map((shardRoles) =>
-    runRunner(['--run-id', runId, '--from-plan', '--roles', shardRoles.join(','), ...modelArgs], projectRoot, onChild),
-  )).then((results) => {
-    const merged: RunnerResult = { total: 0, delegated: 0, units: [] };
-    const errors: string[] = [];
-    for (const r of results) {
-      merged.total = (merged.total || 0) + (typeof r.total === 'number' ? r.total : 0);
-      merged.delegated = (merged.delegated || 0) + (typeof r.delegated === 'number' ? r.delegated : 0);
-      if (Array.isArray(r.units)) (merged.units as NonNullable<RunnerResult['units']>).push(...r.units);
-      if (r.error) errors.push(r.error);
-    }
-    if (errors.length) merged.error = errors.join('; ');
-    return merged;
-  });
+  const merged: RunnerResult = { total: 0, delegated: 0, units: [] };
+  const errors: string[] = [];
+  for (const role of roles) {
+    const r = await runRunner(['--run-id', runId, '--from-plan', '--roles', role, ...modelArgs], projectRoot, onChild);
+    merged.total = (merged.total || 0) + (typeof r.total === 'number' ? r.total : 0);
+    merged.delegated = (merged.delegated || 0) + (typeof r.delegated === 'number' ? r.delegated : 0);
+    if (Array.isArray(r.units)) (merged.units as NonNullable<RunnerResult['units']>).push(...r.units);
+    if (r.error) errors.push(r.error);
+  }
+  if (errors.length) merged.error = errors.join('; ');
+  return merged;
 }
 
 // The batch path: opencode-runner.cjs --run-id <id> --from-plan [--roles csv].
-// Reads the architect's queue from <projectRoot>/.traffic-one/plan.md, sharded
-// by role across concurrent runners. Best-effort.
+// Reads the architect's queue from <projectRoot>/.traffic-one/plan.md, processed
+// one role per runner, sequentially. Best-effort.
 export async function runDelegateFromPlan(a: FromPlanArgs): Promise<RunnerResult> {
   const projectRoot = (a.projectRoot || '').trim() || process.cwd();
   const runId = (a.runId || '').trim();

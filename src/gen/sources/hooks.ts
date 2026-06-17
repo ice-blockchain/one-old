@@ -13,7 +13,7 @@
 // the ${...} stays verbatim in the emitted command). Exported so the .mcp.json
 // generator launches the bundled MCP server through the SAME chain (one shared
 // .mcp.json must resolve on Claude/Codex/Cursor alike).
-export const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}';
+export const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}';
 
 export function claudeCommand(subcommand: string): string {
   return `node "${PLUGIN_ROOT_EXPR}/scripts/hook-runtime.cjs" ${subcommand}`;

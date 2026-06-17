@@ -18,7 +18,18 @@ after(() => {
   else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
 });
 
-interface ProjectOpts { mode?: string; files?: number; digest?: boolean; verified?: boolean; claimFresh?: boolean; }
+interface ProjectOpts {
+  mode?: string;
+  files?: number;
+  digest?: boolean;
+  verified?: boolean;
+  claimFresh?: boolean;
+  // Override the verdict tokens written into reviewer.md / tester.md. `verified`
+  // is shorthand for a TERMINAL pair (reviewer APPROVED + tester TESTS_GREEN).
+  reviewerVerdict?: string;
+  testerVerdict?: string;
+  shipper?: boolean;
+}
 
 function mkproject(opts: ProjectOpts): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'to-build-complete-'));
@@ -33,12 +44,18 @@ function mkproject(opts: ProjectOpts): string {
     fs.mkdirSync(src, { recursive: true });
     for (let i = 0; i < files; i += 1) fs.writeFileSync(path.join(src, `f${i}.ts`), 'export const x = 1;\n');
   }
-  if (opts.digest || opts.verified) {
+  // `verified` ⇒ a terminal verdict pair unless a non-terminal verdict is set
+  // explicitly. Existence alone is not settlement, so the digest CONTENT matters.
+  const reviewerVerdict = opts.reviewerVerdict ?? (opts.verified ? 'APPROVED' : undefined);
+  const testerVerdict = opts.testerVerdict ?? (opts.verified ? 'TESTS_GREEN' : undefined);
+  if (opts.digest || reviewerVerdict || testerVerdict || opts.shipper) {
     const dd = path.join(dir, '.traffic-one', 'digests', '123');
     fs.mkdirSync(dd, { recursive: true });
-    // architect.md = Phase 1 (early); reviewer.md = Phase 3 (build reached verification).
-    if (opts.digest) fs.writeFileSync(path.join(dd, 'architect.md'), '# plan\n');
-    if (opts.verified) fs.writeFileSync(path.join(dd, 'reviewer.md'), '# APPROVED\n');
+    // architect.md = Phase 1 (early); reviewer/tester = Phase 3 (verification).
+    if (opts.digest) fs.writeFileSync(path.join(dd, 'architect.md'), '# plan\nverdict: PLAN_READY\n');
+    if (reviewerVerdict) fs.writeFileSync(path.join(dd, 'reviewer.md'), `# reviewer\nverdict: ${reviewerVerdict}\n`);
+    if (testerVerdict) fs.writeFileSync(path.join(dd, 'tester.md'), `# tester\nverdict: ${testerVerdict}\n`);
+    if (opts.shipper) fs.writeFileSync(path.join(dd, 'shipper.md'), '# shipper\nurl: https://app.example\n');
   }
   if (opts.claimFresh) {
     const rd = path.join(dir, '.traffic-one', 'runs', '123');
@@ -49,11 +66,11 @@ function mkproject(opts: ProjectOpts): string {
 }
 
 function run(dir: string): boolean {
-  try {
-    return maybeFlipToMaintenance(dir, readState(dir));
-  } finally {
-    // leave the dir for assertions; cleaned by the OS temp reaper
-  }
+  return maybeFlipToMaintenance(dir, readState(dir));
+}
+
+function runAtPromptBoundary(dir: string): boolean {
+  return maybeFlipToMaintenance(dir, readState(dir), { atPromptBoundary: true });
 }
 
 test('no flip for an existing-codebase (heuristic is new-project only)', () => {
@@ -94,4 +111,59 @@ test('flips to maintenance when the build reached verification and every guard h
   assert.equal((state.lifecycle as Record<string, unknown>).source, 'heuristic');
   // second call: already maintenance → no-op
   assert.equal(run(dir), false);
+});
+
+test('atPromptBoundary flips PAST a stale pending claim — a new prompt means the build turn ended', () => {
+  // The exact Cursor stuck-in-building case: build reached verification, but a
+  // never-activated pending claim lingers so the PostToolUse heuristic (no-active-
+  // claims guard) refuses to flip. At the prompt boundary the claim is a leftover, so
+  // the flip proceeds and the maintenance gates fail open for the next request.
+  const dir = mkproject({ files: 30, verified: true, claimFresh: true });
+  assert.equal(run(dir), false, 'mid-turn heuristic still blocked by the active claim');
+  assert.equal(runAtPromptBoundary(dir), true, 'prompt boundary flips past it');
+  const state = readState(dir);
+  assert.equal(projectPhase(state, 'new-project'), 'maintenance');
+  assert.equal((state.lifecycle as Record<string, unknown>).source, 'prompt-boundary');
+});
+
+test('atPromptBoundary still requires the build to have reached verification', () => {
+  // The claims guard is the only one relaxed at the boundary — a build that never
+  // reached review (only an architect digest) must NOT flip, even on a new prompt.
+  const dir = mkproject({ files: 30, digest: true, verified: false });
+  assert.equal(runAtPromptBoundary(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
+});
+
+test('atPromptBoundary still requires real source output and new-project mode', () => {
+  const tooSmall = mkproject({ files: 4, verified: true });
+  assert.equal(runAtPromptBoundary(tooSmall), false);
+  const existing = mkproject({ mode: 'existing-codebase', files: 30, verified: true });
+  assert.equal(runAtPromptBoundary(existing), false);
+});
+
+test('no flip while the reviewer verdict is CHANGES_REQUESTED (digest exists but is non-terminal)', () => {
+  // The exact 16:26:19Z forensic case: reviewer.md exists but says CHANGES_REQUESTED
+  // and no tester digest yet. Existence-only would flip mid-fix-cycle; the terminal-
+  // verdict gate keeps it building. This also closes the prompt-boundary bypass.
+  const dir = mkproject({ files: 30, reviewerVerdict: 'CHANGES_REQUESTED' });
+  assert.equal(run(dir), false);
+  assert.equal(runAtPromptBoundary(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
+});
+
+test('no flip with reviewer APPROVED but no tester digest (terminal requires both)', () => {
+  const dir = mkproject({ files: 30, reviewerVerdict: 'APPROVED' });
+  assert.equal(run(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
+});
+
+test('no flip with tester TESTS_FAILING even when reviewer is APPROVED', () => {
+  const dir = mkproject({ files: 30, reviewerVerdict: 'APPROVED', testerVerdict: 'TESTS_FAILING' });
+  assert.equal(run(dir), false);
+});
+
+test('flips on a terminal shipper digest alone (shipper runs only post-deploy)', () => {
+  const dir = mkproject({ files: 30, shipper: true });
+  assert.equal(run(dir), true);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'maintenance');
 });

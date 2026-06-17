@@ -7,17 +7,26 @@
 
 
 These are the canonical templates the orchestrator uses when spawning each
-subagent via `Task`. Substituting placeholders (`<run-id>`, `<user-request>`,
+subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's
-context stays clean.
+context stays clean. The ONE exception is `<run-id>` — see below.
 
 ## Run-id format
 
-The orchestrator generates the run-id once in Phase 0 (a filesystem-safe epoch-millisecond
-string such as `1715091785000`, stored as `currentRunId`) and passes it to every spawn
-VERBATIM. Use that exact value everywhere — the claim files, the `assignments.json` manifest,
-and the digest folder all key off it, so any divergence breaks role resolution and scope
-enforcement.
+The run-id is `currentRunId`: a plain epoch-**millisecond number** (e.g. `1715091785000`),
+**pre-minted by Traffic One into `.traffic-one/.one.json` before Phase 0** (the onboarding
+gate announces it the moment the build starts). Do NOT generate it — and NEVER use
+`date`/ISO/UTC (e.g. `2026-06-17T10-08-00Z`). A self-generated id splits run state into a
+second `runs/<id>/` tree, so the run-team gate finds no `assignments.json` under
+`currentRunId` and blocks every implementer write ("New subagent — Couldn't start"). This is
+now **doubly enforced**: the SPAWN gate DENIES a subagent spawn whose prompt references any
+run-id other than `currentRunId` (so you cannot even hand a worker a wrong id), and the plan
+gate DENIES any write to `.traffic-one/runs/<id>/…` or `digests/<id>/…` whose `<id>` is not
+`currentRunId` — both naming the correct value. Wherever a
+template shows `<run-id>`, **read `currentRunId` from `.traffic-one/.one.json` and use that
+exact value** — the orchestrator does NOT substitute it; each subagent reads it itself. The
+claim files, `opencode-attempts`/`opencode-gate-denies` markers, `assignments.json`, and the
+digest folder all key off this one value.
 
 ## Phase 1 — Architect
 
@@ -81,7 +90,7 @@ only.
 Before emitting PLAN_READY, verify project-local context is materialized. If
 `.traffic-one/manifest.json`, `.traffic-one/rules`, `.traffic-one/skills`,
 root `AGENTS.md`, or root `CLAUDE.md` is missing, run:
-  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project
+  node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project
 from the project root, then verify those paths again. If materialization fails,
 report the blocker instead of emitting PLAN_READY.
 

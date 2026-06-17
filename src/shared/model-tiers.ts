@@ -37,6 +37,22 @@ export function resolveModel(tier: unknown, host: unknown): string | null {
   return HOST_MODELS[canonicalHost(host)][canonical];
 }
 
+// Does a passed `model` parameter satisfy a tier's expected model? True when it IS
+// that model OR a same-family VARIANT of it (the expected id followed by a `-suffix`).
+// Cursor model IDs carry reasoning/speed variant suffixes the agent appends —
+// `gpt-5.5` → `gpt-5.5-medium`/`-high`/`-fast`, `claude-4.6-sonnet` → `…-thinking`,
+// `composer-latest` → `…-fast` — and a strict equality check rejects those VALID
+// variants, stalling the spawn (observed: agent passed `gpt-5.5-medium`, gate wanted
+// `gpt-5.5`). A different family (e.g. `claude-opus-4-8-…` vs `gpt-5.5`) never matches,
+// so tier enforcement holds. Claude/Codex pass bare ids, so this is exact-equality
+// there in practice. An empty/absent model never matches (deny → inherit guard).
+export function modelMatchesExpected(passed: unknown, expected: unknown): boolean {
+  const e = typeof expected === 'string' ? expected.trim() : '';
+  const p = typeof passed === 'string' ? passed.trim() : '';
+  if (!e || !p) return false;
+  return p === e || p.startsWith(`${e}-`);
+}
+
 export function tierModelTable(
   tier: unknown,
 ): { tier: TierId; claude: string; codex: string; cursor: string } | null {

@@ -13,7 +13,9 @@ import { BOOTSTRAP_SKILLS } from '../../config/skill-filters';
 import { activeSkillsFor } from '../skill-filters';
 import { stackSpecForState, templatePath } from '../stacks';
 import { nowIsoNoMs } from '../text';
+import { detectHost } from '../host';
 import { cleanupPrevious, loadPreviousManifest, modeRulesForState } from './cleanup';
+import { writeCursorAgentFiles } from './cursor-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
@@ -97,6 +99,13 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   const localAgents = renderAgentsWithLocalContext(cwd, state, rules, indexSkills, { mandatoryRules, referenceRules });
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
+
+  // Cursor-only: native per-role subagent files (.cursor/agents/<role>.md) with the
+  // resolved tier model pinned in frontmatter, so an orchestrator Task spawn runs the
+  // role on the right model FIRST-TRY (Cursor honors the frontmatter model) instead of
+  // inheriting the session model and eating a spawn-gate deny/retry. Claude/Codex pass
+  // the model via the spawn tool, so they get no agent files.
+  if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
 
   const mobile = state.mobile as Rec | undefined;
   const manifest = {

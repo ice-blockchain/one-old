@@ -244,6 +244,53 @@ test('isUnclaimedWorkspaceSubPackage: true for a state-less sub-package, false f
   }
 });
 
+test('resolveProjectRoot: a workspace ceiling never escapes above the host workspace (Cursor double-onboarding)', () => {
+  const parent = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ceiling-')));
+  try {
+    // A container P with a STRAY onboarded .one.json; the opened Cursor workspace is W = P/sub.
+    writeState(parent, { mode: 'new-project', onboardingComplete: true });
+    const ws = path.join(parent, 'sub');
+    fs.mkdirSync(ws, { recursive: true });
+    // A tool path ABOVE the workspace (e.g. the agent reading the parent's rules) —
+    // this is what re-rooted resolution to P and spawned the second wizard.
+    const outOfTree = path.join(parent, '.traffic-one', 'rules', 'common', 'x.md');
+
+    // WITHOUT a ceiling the unbounded upward walk escapes to the stray parent (the bug).
+    assert.equal(resolveProjectRoot(ws, outOfTree), parent);
+
+    // WITH the workspace ceiling it stays at the workspace root — no second wizard.
+    assert.equal(resolveProjectRoot(ws, outOfTree, { ceiling: ws }), ws);
+    assert.equal(resolveProjectRoot(ws, '', { ceiling: ws }), ws);          // no file → the cwd walk is bounded too
+    const inTree = path.join(ws, 'src', 'a.ts');
+    assert.equal(resolveProjectRoot(ws, inTree, { ceiling: ws }), ws);
+
+    // Even when the workspace itself is onboarded, an out-of-tree file can't re-root it.
+    writeState(ws, { mode: 'new-project', onboardingComplete: true });
+    assert.equal(resolveProjectRoot(ws, outOfTree, { ceiling: ws }), ws);
+    assert.equal(resolveProjectRoot(ws, inTree, { ceiling: ws }), ws);
+  } finally {
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: a ceiling AT the monorepo root still resolves a sub-package UP to the root', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ceil-mono-')));
+  try {
+    // Cursor opened the monorepo root (ceiling = root); the climb to it must survive.
+    writePkg(root, { name: 'mono', private: true, workspaces: ['packages/*'] });
+    writeState(root, { mode: 'new-project', onboardingComplete: true });
+    const ui = path.join(root, 'packages', 'ui');
+    const target = path.join(ui, 'src', 'index.ts');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'x', 'utf8');
+    assert.equal(resolveProjectRoot(root, target, { ceiling: root }), root);
+    assert.equal(resolveProjectRoot(ui, target, { ceiling: root }), root);
+    assert.equal(resolveProjectRoot(ui, '', { ceiling: root }), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('resolveProjectRoot never escapes into the home directory (stray ~/.traffic-one)', () => {
   const fakeHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-home-')));
   const prevHome = process.env.HOME;

@@ -31,6 +31,7 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { isNativeState, readEffectiveState } from '../../shared/state';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import { planReadinessViolations } from './plan-readiness';
+import { runIdPathViolation } from './plan-runid';
 import { runTeamEnforcementViolation } from './plan-runteam';
 import { planStaticViolations, makePlanBlock } from './plan-static';
 
@@ -57,7 +58,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   if (isPluginAuthoringRoot(cwd)) return noop();
   if (authChoiceAllowsContinue(cwd)) return noop();
 
-  const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '');
+  const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '', { ceiling: ctx.input.workspaceRoot });
   // The resolver's fallback can still hand back a dir inside the plugin repo.
   if (isPluginAuthoringRoot(projectRoot)) return noop();
   const filePath = projectRelativeHookPath(cwd, projectRoot, rawFilePath);
@@ -83,6 +84,12 @@ export function planWriteGate(ctx: Ctx): HookResult {
 
   const violations: string[] = [];
   violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, block }));
+  // Run-id write-guard: a stray (e.g. `date` ISO) run-id in a runs/<id> or
+  // digests/<id> write path splits run state away from currentRunId. Check the
+  // direct target, apply_patch targets, and the shell command.
+  const runIdTargets = [filePath, ...patchTargetPaths.map((p) => projectRelativeHookPath(cwd, projectRoot, p))];
+  const runIdViolation = runIdPathViolation({ state, relTargets: runIdTargets, command: rawCommand, block });
+  if (runIdViolation) violations.push(runIdViolation);
   const runTeam = runTeamEnforcementViolation({
     projectRoot, filePath, state, rawData: raw, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
   });

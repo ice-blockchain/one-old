@@ -135,7 +135,9 @@ test('runDelegateFromPlan passes --from-plan + run-id', async () => {
   });
 });
 
-// ── Plan-batch sharding: one runner per role, merged result ──────────────────
+// ── Plan-batch: one runner per role, run SEQUENTIALLY, merged result ─────────
+// (Shards used to run concurrently; that dropped later shards on Cursor — only the
+// first reached the OpenCode CLI — so forced roles went undelegated. Now serial.)
 
 const PLAN_TWO_ROLES = [
   '# Plan', '',
@@ -170,11 +172,13 @@ test('planQueueRoles: distinct normalized roles in order; empty without a plan',
   }
 });
 
-test('runDelegateFromPlan shards a multi-role queue across concurrent runners and merges', async () => {
+test('runDelegateFromPlan runs a multi-role queue as per-role shards (sequential) and merges every role', async () => {
   await withStubRunner(SHARD_STUB, async (projectRoot) => {
     fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
     const r = (await runDelegateFromPlan({ runId: 'rp-shard', projectRoot })) as Any;
+    // EVERY role's units land in the merged result — the Cursor bug was that later
+    // (concurrent) shards silently delivered nothing.
     assert.equal(r.total, 2);
     assert.equal(r.delegated, 2);
     assert.deepEqual(r.units.map((u: Any) => u.role).sort(), ['frontend', 'tester']);

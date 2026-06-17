@@ -8,10 +8,16 @@ import { runSessionStart, runSessionStartAuthed } from '../session-start';
 import type { Ctx, HookInput } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
+import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 
 function ctx(cwd: string): Ctx {
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function ctxHost(cwd: string, host: HookInput['host']): Ctx {
+  const input: HookInput = { event: 'SessionStart', host, cwd, raw: {} };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 // A temp project with isolated prefs. The post-auth body (runSessionStartAuthed)
@@ -184,6 +190,39 @@ test('Flow 1: an onboarded new project without local prefs asks local-pref steps
       assert.equal(r.promptRequest, undefined);
     }
   });
+});
+
+test('cursor: a pending new project surfaces the LIVE wizard URL in the user-facing systemMessage', () => {
+  const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // never spawn a real detached server in tests
+  try {
+    withProject({ mode: 'new-project' }, (cwd) => {
+      // A live server record → ensureOnboardingServer reuses its URL (no spawn).
+      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' });
+      const r = runSessionStartAuthed(ctxHost(cwd, 'cursor'));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.ok(r.systemMessage?.includes('http://127.0.0.1:51999'), 'cursor user_message carries the live wizard URL');
+      }
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prev;
+  }
+});
+
+test('non-cursor: a pending new project keeps the plain banner (URL only via the agent recipe)', () => {
+  const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  try {
+    withProject({ mode: 'new-project' }, (cwd) => {
+      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' });
+      const r = runSessionStartAuthed(ctx(cwd)); // host=claude
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one [setup required]');
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prev;
+  }
 });
 
 test('Flow 2: an existing codebase with no state auto-detects, writes state, then asks local prefs', () => {

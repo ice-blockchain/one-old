@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { canonicalHost, canonicalPlan, canonicalTier, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
+import { canonicalHost, canonicalPlan, canonicalTier, modelMatchesExpected, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
 
 test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
   assert.equal(canonicalTier('highest'), 'highest');
@@ -16,8 +16,31 @@ test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
 test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'claude'), 'opus');
   assert.equal(resolveModel('balanced', 'codex'), 'gpt-5.4');
-  assert.equal(resolveModel('cheapest', 'cursor'), 'haiku');
+  // Cursor uses real Cursor model IDs, not Anthropic aliases.
+  assert.equal(resolveModel('highest', 'cursor'), 'claude-opus-4-8');
+  assert.equal(resolveModel('balanced', 'cursor'), 'claude-4.6-sonnet');
+  assert.equal(resolveModel('cheapest', 'cursor'), 'composer-latest');
   assert.equal(resolveModel('bad', 'claude'), null);
+});
+
+test('modelMatchesExpected accepts exact + same-family variants, rejects other families/empty', () => {
+  // Exact match (Claude/Codex pass bare ids).
+  assert.equal(modelMatchesExpected('gpt-5.5', 'gpt-5.5'), true);
+  assert.equal(modelMatchesExpected('opus', 'opus'), true);
+  // Cursor reasoning/speed variants of the same family.
+  assert.equal(modelMatchesExpected('gpt-5.5-medium', 'gpt-5.5'), true);
+  assert.equal(modelMatchesExpected('gpt-5.5-fast', 'gpt-5.5'), true);
+  assert.equal(modelMatchesExpected('claude-4.6-sonnet-thinking', 'claude-4.6-sonnet'), true);
+  assert.equal(modelMatchesExpected('composer-latest-fast', 'composer-latest'), true);
+  // The agent's natural Opus spawn matches the Opus-family expected (the highest tier).
+  assert.equal(modelMatchesExpected('claude-opus-4-8-thinking-max-fast', 'claude-opus-4-8'), true);
+  // A DIFFERENT family never matches (tier enforcement holds).
+  assert.equal(modelMatchesExpected('claude-opus-4-8-thinking-max-fast', 'gpt-5.5'), false);
+  assert.equal(modelMatchesExpected('sonnet', 'opus'), false);
+  // Empty/absent or non-string never matches (deny → inherit guard).
+  assert.equal(modelMatchesExpected('', 'gpt-5.5'), false);
+  assert.equal(modelMatchesExpected('gpt-5.5', ''), false);
+  assert.equal(modelMatchesExpected(undefined, 'gpt-5.5'), false);
 });
 
 test('canonicalHost defaults to claude for unknowns', () => {
@@ -27,7 +50,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'opus',
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8',
   });
   assert.equal(tierModelTable('bad'), null);
 });

@@ -7,61 +7,54 @@
 // must hold, so a still-building project is never misrouted to trivial handling:
 //   • new-project + onboarding finalized (caller's responsibility)
 //   • not already in maintenance
-//   • the build reached VERIFICATION — a reviewer/tester/shipper digest exists
-//     (Phase 3+). The architect digest alone is NOT enough: it lands minutes into
-//     a build (Phase 1), so combined with the staleness-based no-active-claims
-//     guard it could flip a long or BLOCKED build mid-recovery (the implementer
-//     claims simply age out after 30 min). Requiring a Phase-3 artifact means a
-//     build blocked before review never trips this path — it stays "building"
-//     until the orchestrator's explicit Phase-5 stamp lands.
+//   • the build reached VERIFICATION with a TERMINAL verdict — a reviewer
+//     `APPROVED` + tester `TESTS_GREEN` (or a shipper digest). Mere EXISTENCE of a
+//     reviewer/tester digest is NOT enough: the file is created when the role
+//     first runs (Phase 3) and re-emitted on every fix-cycle pass, so a live
+//     review→fix→re-review loop (verdict still `CHANGES_REQUESTED` / `TESTS_FAILING`)
+//     would otherwise trip this path mid-verification. Requiring a terminal verdict
+//     means a build still being reviewed/fixed — or blocked before review — stays
+//     "building" until it genuinely settles (or the orchestrator's Phase-5 stamp lands).
 //   • no subagent currently in flight (never flip mid-orchestration)
 //   • the codebase has real output (source-file count well past the new-project bar)
 
-import * as fs from 'fs';
-import * as path from 'path';
-
 import { countSourceFiles } from '../../shared/detection';
-import { hasActiveRunClaims, isMaintenancePhase, markMaintenance } from '../../shared/state';
+import { anyRunReachedTerminalVerdict, hasActiveRunClaims, isMaintenancePhase, markMaintenance } from '../../shared/state';
 
-// Floor only — the verification-digest + no-active-claims guards already prove the
+// Floor only — the terminal-verdict + no-active-claims guards already prove the
 // orchestrator ran through review and settled. Comfortably above detectMode's
 // `≤5 files = new-project` bar.
 const MAINTENANCE_FILE_THRESHOLD = 15;
 
-// Phase-3+ handoff artifacts. Their presence proves the build reached verification
-// (review/test) or shipping — i.e. the implementers finished, not just the
-// architect's Phase-1 plan. (`frontend`/`backend` are Phase-2 implement digests and
-// can exist while the build is still being reviewed/fixed, so they don't count.)
-const VERIFICATION_DIGESTS = ['reviewer.md', 'tester.md', 'shipper.md'];
-
+// The build reached verification AND it terminally settled: reviewer APPROVED +
+// tester TESTS_GREEN, or a shipper digest. Existence-only would false-positive on a
+// mid-fix-cycle digest (see header), so this delegates to the verdict-aware reader.
 function reachedVerification(root: string): boolean {
-  const digests = path.join(root, '.traffic-one', 'digests');
-  try {
-    if (!fs.existsSync(digests)) return false;
-    for (const entry of fs.readdirSync(digests, { withFileTypes: true })) {
-      if (!entry.isDirectory()) continue;
-      const runDir = path.join(digests, entry.name);
-      if (VERIFICATION_DIGESTS.some((name) => fs.existsSync(path.join(runDir, name)))) return true;
-    }
-  } catch {
-    // best-effort
-  }
-  return false;
+  return anyRunReachedTerminalVerdict(root);
 }
 
 // Returns true iff it flipped the project to maintenance. Best-effort — never
-// throws (a state-IO failure must not break the PostToolUse hook). The caller
-// gates the cheap conditions (new-project, not-already-maintenance, onboarding
-// done) so the expensive disk scans here only run during the building window.
-export function maybeFlipToMaintenance(root: string, state: unknown): boolean {
+// throws (a state-IO failure must not break the hook). The caller gates the cheap
+// conditions (new-project, not-already-maintenance, onboarding done) so the
+// expensive disk scans here only run during the building window.
+//
+// `opts.atPromptBoundary` is set when called from UserPromptSubmit (a NEW user prompt
+// ⇒ the prior orchestration turn has ENDED). There, leftover PENDING claims are not
+// in-flight work — and on Cursor they NEVER activate or clear, so the no-active-claims
+// guard would otherwise pin a finished build in "building" forever and mis-gate every
+// maintenance request. So at the prompt boundary we skip that guard (the verification-
+// digest + file-count guards still prove the build actually reached Phase-3+). During
+// a turn (PostToolUse) the guard stays, so a long/blocked build is never flipped
+// mid-recovery.
+export function maybeFlipToMaintenance(root: string, state: unknown, opts: { atPromptBoundary?: boolean } = {}): boolean {
   try {
     const mode = state && typeof state === 'object' ? (state as { mode?: unknown }).mode : undefined;
     if (mode !== 'new-project') return false;
     if (isMaintenancePhase(state, 'new-project')) return false;
     if (!reachedVerification(root)) return false;
-    if (hasActiveRunClaims(root, state)) return false;
+    if (!opts.atPromptBoundary && hasActiveRunClaims(root, state)) return false;
     if (countSourceFiles(root) <= MAINTENANCE_FILE_THRESHOLD) return false;
-    return markMaintenance(root, 'heuristic');
+    return markMaintenance(root, opts.atPromptBoundary ? 'prompt-boundary' : 'heuristic');
   } catch {
     return false;
   }

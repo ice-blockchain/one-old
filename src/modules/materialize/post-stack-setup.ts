@@ -96,7 +96,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // Resolve UP to the workspace root so the one-mcp report + maintenance flip + state
   // read target the real project, not a monorepo sub-package whose stray shallow
   // .one.json would otherwise mint a one-uid / hide maintenance phase there.
-  const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath);
+  const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath, { ceiling: ctx.input.workspaceRoot });
   // digestRoot bypasses resolveProjectRoot's authoring filter — re-check the result.
   if (isPluginAuthoringRoot(reportRoot)) return noop();
   const state = readEffectiveState(reportRoot);
@@ -166,10 +166,10 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // 3. Non-state-file write → write-triggered convergence.
   if (!isStateFilePath(filePath)) {
-    const mem = materializeFromProjectMemoryWrite(cwd, targetPath || filePath);
+    const mem = materializeFromProjectMemoryWrite(cwd, targetPath || filePath, { workspaceRoot: ctx.input.workspaceRoot });
     if (mem) return outcomeToResult(mem);
     const hintInput = targetPath ? { ...toolInput, file_path: targetPath } : toolInput;
-    const hint = materializeFromToolInputHints(cwd, hintInput);
+    const hint = materializeFromToolInputHints(cwd, hintInput, { workspaceRoot: ctx.input.workspaceRoot });
     if (hint) return outcomeToResult(hint);
     return outcomeToResult(materializeProjectIfNeeded(reportRoot, { trigger: 'generic post-tool convergence' }));
   }

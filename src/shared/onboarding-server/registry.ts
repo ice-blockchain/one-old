@@ -35,16 +35,28 @@ export function completionSentinelPath(cwd: string, env: NodeJS.ProcessEnv = pro
   return path.join(runtimeDir(cwd, env), 'onboarding-complete.json');
 }
 
+// Single-launcher lock: ensureOnboardingServer creates this O_EXCL before spawning,
+// so concurrent hook PROCESSES (each Cursor hook is its own `node` process) can't
+// each spawn a server on a different ephemeral port — the port-churn that handed the
+// agent a URL pointing at an orphaned/dead instance.
+export function serverLockPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(runtimeDir(cwd, env), 'onboarding-server.lock');
+}
+
 // 0700 dir + 0600 file, matching the auth-choice state writer — the token grants
-// access to the wizard, so keep it readable only by the owning user.
+// access to the wizard, so keep it readable only by the owning user. Written
+// atomically (temp + rename) so a concurrent reader never sees a half-written or
+// last-writer-torn record (the onboarding-server port-churn race).
 function writeSecureJson(filePath: string, value: unknown): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  const tmp = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
   try {
-    fs.chmodSync(filePath, 0o600);
+    fs.chmodSync(tmp, 0o600);
   } catch {
     // best-effort; some filesystems ignore chmod
   }
+  fs.renameSync(tmp, filePath); // atomic on the same filesystem
 }
 
 export function readServerRecord(cwd: string, env: NodeJS.ProcessEnv = process.env): ServerRecord | null {

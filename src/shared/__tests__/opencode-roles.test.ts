@@ -8,8 +8,31 @@ import {
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
   openCodeRoleAttempted,
+  planDelegationQueueRoles,
+  roleHasQueuedUnits,
   shouldRunRoleOnOpenCode,
 } from '../opencode-roles';
+
+test('planDelegationQueueRoles + roleHasQueuedUnits: read the plan queue, normalized', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocqueue-')));
+  try {
+    assert.deepEqual(planDelegationQueueRoles(dir), []);              // no plan → empty
+    assert.equal(roleHasQueuedUnits(dir, 'senior-frontend'), false);
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: senior-frontend | files: a | task: t\n'
+      + '- role: frontend | files: a2 | task: t\n'
+      + '- role: tester | files: b | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    assert.deepEqual(planDelegationQueueRoles(dir), ['frontend', 'tester']); // senior- stripped, deduped, in order
+    assert.equal(roleHasQueuedUnits(dir, 'senior-frontend'), true);  // role id normalizes to a queued label
+    assert.equal(roleHasQueuedUnits(dir, 'senior-tester'), true);
+    assert.equal(roleHasQueuedUnits(dir, 'senior-backend'), false);  // not queued → not gated
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', () => {
   // senior-shipper deliberately absent: deploys/credentials never ride the free tier.

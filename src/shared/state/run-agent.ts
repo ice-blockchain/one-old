@@ -618,6 +618,82 @@ export function readRunAssignments(cwd: string, runId: unknown): RunManifest | n
   };
 }
 
+// Resilient assignment lookup for the run-team gate. The architect SHOULD write
+// assignments under `currentRunId`, but a RUN-ID SPLIT (the orchestrator generated a
+// stray id — e.g. an ISO `date` string — instead of reading currentRunId) lands them
+// under a DIFFERENT runs/<id>/ dir. Reading only currentRunId's path then returns null,
+// so the gate can resolve no scope and blocks EVERY implementer write (observed: 36
+// run-team denies → all subagents "Couldn't start"). Fall back to the NEWEST
+// runs/<id>/assignments.json present so scope resolution survives the split. Ownership
+// is matched by ROLE within the manifest, so a manifest from a stray run-id is still
+// correct. (The orchestrator prose also eliminates the split at the source.)
+export function readRunAssignmentsResilient(cwd: string, preferredRunId: unknown): RunManifest | null {
+  const preferred = readRunAssignments(cwd, preferredRunId);
+  if (preferred) return preferred;
+  let newest: { runId: string; mtime: number } | null = null;
+  try {
+    const runsBase = path.join(cwd, '.traffic-one', 'runs');
+    for (const entry of fs.readdirSync(runsBase, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      let mtime = 0;
+      try { mtime = fs.statSync(assignmentsFile(cwd, entry.name)).mtimeMs; } catch { continue; }
+      if (!newest || mtime > newest.mtime) newest = { runId: entry.name, mtime };
+    }
+  } catch {
+    // no runs dir — nothing to recover
+  }
+  return newest ? readRunAssignments(cwd, newest.runId) : null;
+}
+
+// --- Verification settlement (terminal verdict) ----------------------------
+// A digest FILE exists from the moment its role first runs (Phase 3) and is
+// re-emitted on every fix-cycle pass, so EXISTENCE never means "done" — the
+// verdict LINE inside must be terminal. Canonical tokens (orchestrator SKILL +
+// prompt-templates): reviewer `APPROVED` (vs `CHANGES_REQUESTED`), tester
+// `TESTS_GREEN` (vs `TESTS_FAILING`). The opencode runner emits `DELEGATED_OK`
+// until the orchestrator normalizes it — also non-terminal here by design.
+
+function digestDir(cwd: string, runId: string): string {
+  return path.join(cwd, '.traffic-one', 'digests', safePathSegment(runId));
+}
+function readDigest(cwd: string, runId: string, name: string): string {
+  try {
+    return fs.readFileSync(path.join(digestDir(cwd, runId), name), 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+// True when run <runId>'s verification has TERMINALLY settled: a shipper digest
+// (written only post-deploy, after reviewer+tester already passed) exists, OR
+// reviewer is APPROVED and tester is TESTS_GREEN. A `CHANGES_REQUESTED` reviewer
+// or a mid-fix-cycle `TESTS_FAILING` tester is non-terminal → the run is still
+// live. The "terminal token present AND non-terminal token absent" shape avoids a
+// false positive from a non-terminal digest that merely mentions the other token.
+export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  if (readDigest(cwd, runId, 'shipper.md').trim()) return true;
+  const reviewer = readDigest(cwd, runId, 'reviewer.md');
+  const tester = readDigest(cwd, runId, 'tester.md');
+  const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
+  const testerGreen = /\bTESTS_GREEN\b/.test(tester) && !/\bTESTS_FAILING\b/.test(tester);
+  return reviewerApproved && testerGreen;
+}
+
+// True when ANY run dir under .traffic-one/digests has a terminal verdict. The
+// build-completion heuristic scans all run dirs (it does not assume currentRunId).
+export function anyRunReachedTerminalVerdict(cwd: string): boolean {
+  try {
+    const base = path.join(cwd, '.traffic-one', 'digests');
+    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+      if (entry.isDirectory() && runReachedTerminalVerdict(cwd, entry.name)) return true;
+    }
+  } catch {
+    // best-effort — no digests dir means nothing has reached verification
+  }
+  return false;
+}
+
 // Resolve which assignment a writing agent owns. Prefer an indexed agentKey
 // (`<role>#<spawnIndex>`), then a role-named agentKey, then the sole entry for the
 // role. Null when the role maps to zero or ambiguously-many entries.

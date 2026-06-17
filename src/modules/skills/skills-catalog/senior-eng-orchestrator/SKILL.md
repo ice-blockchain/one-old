@@ -107,7 +107,7 @@ How it works:
 
 (A single ad-hoc unit can be delegated with the `opencode_delegate` tool — `{ role, task, runId, projectRoot }` — or the runner's `--role <r> --task-file <path>` mode.) OpenCode picks its own free model by default; only non-sensitive bounded units are queued. Pin a specific model per project via `openCode.model` if needed.
 
-**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled`, on every host. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, task }` where `task` is ONE bounded unit per the rule above — NEVER the entire role implementation. While a delegation runs, your re-polls are its keep-alive — stop polling for ~6 minutes and it is cancelled cleanly (killed before any diff applies), so falling back to a paid worker is always safe. (No `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — you write it in Phase 0.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
+**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled`, on every host. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, task }` where `task` is ONE bounded unit per the rule above — NEVER the entire role implementation. While a delegation runs, your re-polls are its keep-alive — stop polling for ~6 minutes and it is cancelled cleanly (killed before any diff applies), so falling back to a paid worker is always safe. (No `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — Traffic One pre-mints it before Phase 0; you only read it.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
 
 ## When you fire
 
@@ -172,27 +172,40 @@ Read `.traffic-one/.one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md
 - If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
 
-**Generate a run-id** (Unix epoch milliseconds, filesystem-safe):
+**Do NOT generate a run-id.** The run-id is `currentRunId` — a plain epoch-**millisecond
+NUMBER** like `1715091785000`, **pre-minted by Traffic One into `.traffic-one/.one.json`
+before Phase 0** (the onboarding gate announces it the moment the build starts). You and every
+subagent **READ** it from there; you never create it, and NEVER use `date`/`date -u` or an
+ISO/UTC string (e.g. `2026-06-17T10-08-00Z`) — that is the single most damaging mistake (it
+splits run state). Read it FIRST, before building any spawn prompt:
 
 ```bash
-RUN_ID=$(node -e "console.log(Date.now().toString())")
-mkdir -p ".traffic-one/digests/$RUN_ID"
+RUN_ID=$(node -e "try{process.stdout.write((JSON.parse(require('fs').readFileSync('.traffic-one/.one.json','utf8')).currentRunId)||'')}catch(e){}")
 ```
 
-Expected shape: a 13-digit epoch-millisecond string such as `1715091785000`. Pass this run-id verbatim to every subagent in the synthetic prompt. The full per-phase prompt templates live in `resources/prompt-templates.md`; reference them rather than inlining their full text in this skill body.
+This is now **doubly enforced**: the SPAWN gate DENIES a subagent spawn whose prompt
+references any run-id other than `currentRunId` (you cannot hand a worker a fabricated id),
+and the plan gate DENIES any write to `.traffic-one/runs/<id>/…` or `digests/<id>/…` whose
+`<id>` is not `currentRunId` — both naming the correct value, so a stray `date` id is rejected
+at the spawn and the write, never silently split.
+
+The spawn gate, the run-team gate, and OpenCode delegation key EVERY per-run marker
+(run-agent claims, `opencode-attempts/<role>`, `opencode-gate-denies/<role>`), the
+`assignments.json` manifest, and every digest off this EXACT `currentRunId`. A second or
+differently-formatted id creates a separate `.traffic-one/runs/<id>/` tree, so the run-team
+gate finds no `assignments.json` and blocks every implementer write ("New subagent —
+Couldn't start"). Each subagent template tells the subagent to read `currentRunId` itself
+for its `.traffic-one/runs/<runId>/…` and `.traffic-one/digests/<runId>/…` paths — do not
+substitute a literal. The full per-phase prompt templates live in
+`resources/prompt-templates.md`; reference them rather than inlining their full text here.
 
 Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
 
 ### Subagent token-economy: per-agent run claims
 
-After computing `RUN_ID`, persist only the active run pointer in `.traffic-one/.one.json`:
-
-```jsonc
-{
-  // ...existing fields...
-  "currentRunId": "<the RUN_ID computed above>"
-}
-```
+`currentRunId` is already persisted in `.traffic-one/.one.json` (Traffic One pre-mints it
+before Phase 0) — you READ it, you do not write it. If it is somehow absent, the spawn gate
+mints it on the first spawn; never substitute a `date` value.
 
 Do **not** write `activeAgentRole` for new runs. It is a legacy fallback only.
 The spawn preflight hook creates a pending per-agent claim for each valid role

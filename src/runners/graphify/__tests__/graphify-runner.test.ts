@@ -17,6 +17,22 @@ function writeGraphifyOut(cwd: string, files: Record<string, string>): void {
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(out, name), body, 'utf8');
 }
 
+// A bare-PATH graphify stub whose `update` subcommand prints to stdout/stderr and
+// exits with `code`. A PATH graphify with no adjacent python is usable (version
+// falls back to the pinned recommended), so bootstrap runs it directly.
+function stubGraphify(cwd: string, body: { stdout?: string; stderr?: string; code: number }): string {
+  const bin = path.join(cwd, 'gbin');
+  fs.mkdirSync(bin, { recursive: true });
+  const out = body.stdout ? `echo ${JSON.stringify(body.stdout)}` : ':';
+  const err = body.stderr ? `echo ${JSON.stringify(body.stderr)} >&2` : ':';
+  fs.writeFileSync(
+    path.join(bin, 'graphify'),
+    `#!/bin/sh\nif [ "$1" = "update" ]; then ${out}; ${err}; exit ${body.code}; fi\nexit 0\n`,
+    { mode: 0o755 },
+  );
+  return bin;
+}
+
 function withProject(fn: (cwd: string, prefs: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gfboot-'));
   const saved = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -168,6 +184,55 @@ test('graphify bootstrap SWEEPS a stray root graphify-out/ when the scan exits n
       assert.equal(r.ok, false); // graphify exited non-zero
       assert.equal(fs.existsSync(path.join(cwd, 'graphify-out')), false, 'stray root graphify-out/ swept');
       assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'graphify-out', 'graph.json')), 'good relocated graph preserved');
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('a "No code files found" failure becomes a graceful skip, not an alarming graphifyLastError', () => {
+  withProject((cwd, prefs) => {
+    // graphify 0.8.x prints the real cause to STDOUT and only the opaque summary to
+    // STDERR. An all-source-ignored / empty project is not a tool failure.
+    const bin = stubGraphify(cwd, {
+      stdout: '[graphify watch] No code files found - nothing to rebuild.',
+      stderr: 'Nothing to update or rebuild failed — check output above.',
+      code: 1,
+    });
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = bootstrap(cwd, { force: true });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'install-skipped');
+      assert.match(r.error || '', /no source files to index/);
+      // The scary error must NOT be persisted for a benign no-source case.
+      const saved = JSON.parse(fs.readFileSync(prefs, 'utf8'));
+      assert.equal(saved.graphifyLastError, undefined);
+      assert.equal(saved.graphifyLastErrorAt, undefined);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('a genuine graphify failure surfaces the STDOUT diagnostic, not just the opaque stderr summary', () => {
+  withProject((cwd, prefs) => {
+    // The real cause lives on stdout; stderr is the useless summary. graphifyLastError
+    // must carry the stdout line so the failure is debuggable (regression lock).
+    const bin = stubGraphify(cwd, {
+      stdout: 'Rebuild failed: boom in extractor',
+      stderr: 'Nothing to update or rebuild failed — check output above.',
+      code: 1,
+    });
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = bootstrap(cwd, { force: true });
+      assert.equal(r.ok, false);
+      assert.match(r.error || '', /Rebuild failed: boom in extractor/);
+      const saved = JSON.parse(fs.readFileSync(prefs, 'utf8'));
+      assert.match(saved.graphifyLastError || '', /Rebuild failed: boom in extractor/);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }

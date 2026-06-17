@@ -4,8 +4,45 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, resolveRunAgentContext, runIdNow, transcriptThreadId } from '../run-agent';
+import { anyRunReachedTerminalVerdict, claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, readRunAssignmentsResilient, resolveRunAgentContext, runIdNow, runReachedTerminalVerdict, transcriptThreadId } from '../run-agent';
 import { stackFingerprint } from '../materialization';
+
+function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
+  const d = path.join(dir, '.traffic-one', 'digests', runId);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, name), `# ${name}\nverdict: ${verdict}\n`, 'utf8');
+}
+
+test('runReachedTerminalVerdict requires terminal verdict tokens, not mere digest existence', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verdict-'));
+  try {
+    // No digests at all → not terminal.
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), false);
+    // Reviewer mid-fix-cycle (CHANGES_REQUESTED), no tester → not terminal.
+    writeDigest(dir, 'r1', 'reviewer.md', 'CHANGES_REQUESTED');
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), false);
+    // Reviewer APPROVED but no tester digest → still not terminal (needs both).
+    writeDigest(dir, 'r1', 'reviewer.md', 'APPROVED');
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), false);
+    // Tester delegated-but-unverified token is non-terminal by design.
+    writeDigest(dir, 'r1', 'tester.md', 'DELEGATED_OK');
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), false);
+    // Tester TESTS_FAILING → not terminal.
+    writeDigest(dir, 'r1', 'tester.md', 'TESTS_FAILING');
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), false);
+    // Reviewer APPROVED + tester TESTS_GREEN → terminal.
+    writeDigest(dir, 'r1', 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), true);
+    // A shipper digest (written only post-deploy) is terminal on its own.
+    writeDigest(dir, 'r2', 'shipper.md', 'deployed https://app.example');
+    assert.equal(runReachedTerminalVerdict(dir, 'r2'), true);
+    // anyRunReachedTerminalVerdict scans every run dir.
+    assert.equal(anyRunReachedTerminalVerdict(dir), true);
+    assert.equal(anyRunReachedTerminalVerdict(path.join(dir, 'nope')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 function withPrefs<T>(fn: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runagent-'));
@@ -22,6 +59,40 @@ function withPrefs<T>(fn: (dir: string) => T): T {
 
 test('runIdNow returns a unix epoch millisecond string', () => {
   assert.match(runIdNow(), /^\d{13}$/);
+});
+
+function writeAssignments(dir: string, runId: string, role: string): void {
+  const d = path.join(dir, '.traffic-one', 'runs', runId);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, 'assignments.json'), JSON.stringify({
+    version: 1, runId, assignments: [{ role, scope: { include: ['apps/web/**'] } }],
+  }), 'utf8');
+}
+
+test('readRunAssignmentsResilient recovers from a run-id split (assignments under a stray id)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runassign-'));
+  try {
+    // Architect wrote assignments under a stray ISO id; the gate's currentRunId differs.
+    writeAssignments(dir, '2026-06-17T10-30-00Z', 'senior-frontend');
+    const m = readRunAssignmentsResilient(dir, '1781692097241');
+    assert.ok(m && m.assignments[0]?.role === 'senior-frontend', 'found assignments despite the split');
+    // Nothing anywhere → null.
+    assert.equal(readRunAssignmentsResilient(path.join(dir, 'nope'), '1781692097241'), null);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readRunAssignmentsResilient prefers the exact runId over the fallback', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runassign2-'));
+  try {
+    writeAssignments(dir, '1781692097241', 'senior-backend');     // matches currentRunId
+    writeAssignments(dir, '2026-06-17T10-30-00Z', 'senior-frontend'); // stray (newer name, but exact wins)
+    const m = readRunAssignmentsResilient(dir, '1781692097241');
+    assert.ok(m && m.assignments[0]?.role === 'senior-backend', 'exact runId match preferred');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('ensureRunAgentClaim writes a pending claim and stamps run state', () => {

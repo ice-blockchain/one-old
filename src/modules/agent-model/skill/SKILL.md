@@ -18,7 +18,7 @@ rerun the same agent spawn now; the canonical `.traffic-one/.one.json` and proje
 <!-- T1BLOCK:BEGIN agent-materialization-missing -->
 Traffic One agent spawn gate: project-local rules/skills are not materialized yet.
 Do not spawn frontend/backend/reviewer/tester workers until `.traffic-one/.one.json` has current `materializedStack`, `materializedAt`, and `materializedVersion`, and `.traffic-one/manifest.json`, `.traffic-one/rules/**`, `.traffic-one/skills/**`, root `AGENTS.md`, and root `CLAUDE.md` exist.
-Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root, then retry the agent spawn.
+Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project` from the project root, then retry the agent spawn.
 <!-- T1BLOCK:END agent-materialization-missing -->
 
 <!-- T1BLOCK:BEGIN performance-main-agent -->

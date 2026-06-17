@@ -59,16 +59,27 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
 2. **Research the current model lineup — official sources only.** Use WebSearch /
    WebFetch against the providers' own docs. Do NOT guess or use a model name you
    cannot confirm from an official page.
-   - **Anthropic (claude, cursor)**: confirm the family aliases `opus`, `sonnet`,
+   - **Anthropic (claude row)**: confirm the family aliases `opus`, `sonnet`,
      `haiku` still exist. These aliases auto-resolve to the newest version of each
-     family, so the claude/cursor rows usually need NO change. Only edit them if
-     Anthropic renames a tier or introduces a new capability tier worth adopting.
+     family, so the claude row usually needs NO change. Only edit it if Anthropic
+     renames a tier or introduces a new capability tier worth adopting.
    - **OpenAI / Codex (codex row)**: find the current top coding model, a strong
      general model, and a fast/mini model. These use concrete versioned ids
      (e.g. a `*-codex`, a flagship `gpt-*`, and a `*-mini`/`*-nano`) and DO drift,
      so this row is the one that most often needs updating.
-   - **Cursor**: if Cursor exposes its own model identifiers distinct from the
-     Anthropic aliases, map those; otherwise keep the Anthropic aliases.
+   - **Cursor (enforced — real Cursor model IDs)**: Cursor's subagent `model:` field /
+     Task tool accept Cursor's OWN model IDs and REJECT the Anthropic family aliases, so
+     the `cursor` row holds real Cursor slugs (currently `gpt-5.5` / `claude-4.6-sonnet`
+     / `composer-latest`) and the spawn-agent gate enforces them like claude/codex. The
+     authoritative ID list is Cursor's `/v1/models` API endpoint (each model returns
+     `id` + `aliases` + `variants`); the public docs mostly show display names, so
+     confirm exact slugs there or in Cursor's model picker — do NOT guess. Prefer stable
+     aliases (e.g. `composer-latest`, which auto-resolves like Anthropic's `opus`) to
+     resist version drift. Keep capability/cost order highest ≥ balanced ≥ cheapest;
+     `composer-latest` is Cursor's own cost-optimized model (no Max Mode). NOTE: an
+     unavailable-but-valid Cursor model falls back gracefully (to Composer) rather than
+     hard-rejecting, so the only thing that breaks a spawn is an INVALID slug — ship only
+     confirmed IDs.
 
 3. **Map newest → tiers per host**, preserving capability order
    (`highest` strictly ≥ `balanced` ≥ `cheapest` in capability). Verify the

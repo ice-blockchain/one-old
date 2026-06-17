@@ -12,6 +12,7 @@ import type { Ctx, Handler, HookInput, HookResult, ToolClass } from '../../../co
 import { markOpenCodeGateDenied, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
+import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
@@ -297,6 +298,31 @@ test('authed + complete existing project but missing local prefs → setup requi
   });
 });
 
+test('cursor: incomplete onboarding puts the LIVE wizard URL in the USER-facing systemMessage (not just agent context)', () => {
+  // On Cursor the recipe rides additional_context (agent-only) and the agent may skip
+  // reposting the link — so the live URL must ALSO ride systemMessage → user_message.
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    // Seed a live server record so ensureOnboardingServer returns a REAL url under
+    // NO_SPAWN (the ':0/' placeholder is intentionally NOT surfaced — formatWizardBanner).
+    writeServerRecord(cwd, { pid: process.pid, port: 51234, token: 't', url: 'http://127.0.0.1:51234/?t=t', startedAt: 'x' });
+    const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'cursor'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'), 'banner preserved');
+      assert.ok(r.systemMessage?.includes('http://127.0.0.1:51234'), 'systemMessage (user_message) carries the LIVE wizard URL on Cursor');
+      assert.ok(r.context.includes('http://127.0.0.1'), 'agent context still carries the URL too');
+    }
+  });
+});
+
+test('non-cursor host keeps the plain setup banner (URL only in agent context)', () => {
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'claude'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one [setup required]');
+  });
+});
+
 function writeMaterialized(cwd: string, stackId: string): void {
   const t1 = path.join(cwd, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
@@ -486,6 +512,59 @@ test('new project flipped to maintenance → triage directive appears', () => {
     const r = runUserPromptSubmit(ctx(cwd, 'add a new feature for exporting data'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') assert.ok(r.context.includes('MAINTENANCE PHASE'), 'triage after the build flips');
+  });
+});
+
+test('settled new-project build stuck in "building" flips to maintenance at the prompt boundary → triage appears', () => {
+  // The Cursor regression: the build reached verification but the orchestrator's
+  // Phase-5 stamp never landed and a spawned worker's claim never activated (stays
+  // `pending`), so the project is pinned in `building` and the next edit request is
+  // mis-gated. A NEW user prompt is the boundary: the prior turn ended, so the leftover
+  // claim isn't in-flight — UserPromptSubmit flips to maintenance and triages the request.
+  withAuthedProject(completeSharedState(), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    // Real build output (> the maintenance file floor).
+    const srcDir = path.join(cwd, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    for (let i = 0; i < 20; i += 1) fs.writeFileSync(path.join(srcDir, `f${i}.ts`), 'export const x = 1;\n', 'utf8');
+    // Build reached verification and TERMINALLY settled (reviewer APPROVED + tester
+    // TESTS_GREEN). Existence alone is not settlement — a mid-fix-cycle digest must
+    // not flip; this scenario is a genuinely-finished build whose Phase-5 stamp never landed.
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'build-run');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'reviewer.md'), '# reviewer\nverdict: APPROVED\n', 'utf8');
+    fs.writeFileSync(path.join(dd, 'tester.md'), '# tester\nverdict: TESTS_GREEN\n', 'utf8');
+    // A leftover pending claim that never activated (would block the PostToolUse heuristic).
+    const runDir = path.join(cwd, '.traffic-one', 'runs', 'build-run');
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(path.join(runDir, 'sess.json'), JSON.stringify({ role: 'senior-frontend', runId: 'build-run', createdAt: new Date(Date.now() - 60_000).toISOString() }), 'utf8');
+
+    const r = runUserPromptSubmit(ctx(cwd, 'add a new page (news)'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') assert.ok(r.context.includes('MAINTENANCE PHASE'), 'flips + triages the request');
+    // The flip is persisted so the worker write gate (run-team) re-reads maintenance.
+    const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(persisted.lifecycle?.phase, 'maintenance');
+    assert.equal(persisted.lifecycle?.source, 'prompt-boundary');
+  });
+});
+
+test('subagent prompt does NOT flip the project lifecycle at the boundary', () => {
+  // Only the main agent's prompt boundary represents the end of the build turn.
+  withAuthedProject(completeSharedState(), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    const srcDir = path.join(cwd, 'src');
+    fs.mkdirSync(srcDir, { recursive: true });
+    for (let i = 0; i < 20; i += 1) fs.writeFileSync(path.join(srcDir, `f${i}.ts`), 'export const x = 1;\n', 'utf8');
+    const dd = path.join(cwd, '.traffic-one', 'digests', 'build-run');
+    fs.mkdirSync(dd, { recursive: true });
+    fs.writeFileSync(path.join(dd, 'reviewer.md'), '# APPROVED\n', 'utf8');
+
+    runUserPromptSubmit(ctxSub(cwd, 'add a new page (news)'));
+    const persisted = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(!persisted.lifecycle, 'subagent prompt left the lifecycle untouched (still building)');
   });
 });
 

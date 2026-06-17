@@ -23,7 +23,7 @@ State gate: root .traffic-one/.one.json is missing or incomplete. Write the Traf
 <!-- T1BLOCK:END state-gate -->
 
 <!-- T1BLOCK:BEGIN materialization-gate -->
-Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}/scripts/hook-runtime.cjs" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
+Materialization gate: stack context for {{FINGERPRINT}} has not been materialized on disk yet. Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}/scripts/hook-runtime.cjs" materialize-project` from the project root and verify `.traffic-one/rules/**`, `.traffic-one/skills/**`, `.traffic-one/manifest.json`, root `AGENTS.md`, and root `CLAUDE.md` exist before writing feature source.
 <!-- T1BLOCK:END materialization-gate -->
 
 <!-- T1BLOCK:BEGIN plan-gate -->

@@ -44,14 +44,26 @@ export interface McpStdioServerEntry {
   readonly args: readonly string[];
 }
 
-// The `.mcp.json` stdio entry for the opencode-worker server. `pluginRootExpr` is
-// injected by the generator (the same `${TRAFFIC_ONE_PLUGIN_ROOT:-…}` shell chain
-// the hooks use) so a SINGLE shared `.mcp.json` resolves on Claude/Codex/Cursor.
-// We launch via `sh -c` precisely so that shell chain expands — a bare
-// command/args pair is exec'd without a shell and would not expand `${…}`.
+// The `.mcp.json` stdio entry for the opencode-worker server. We launch via `sh -c`
+// so the shell can RESOLVE where the server script lives, because hosts disagree:
+//   - Claude/Codex set a *_PLUGIN_ROOT env var → `pluginRootExpr` resolves to the
+//     real plugin dir, so we exec `<root>/scripts/opencode-mcp.cjs` directly.
+//   - Cursor launches plugin MCP servers with a BARE env (no *_PLUGIN_ROOT) and
+//     CWD=$HOME, so `pluginRootExpr` collapses to `.` → `$HOME/scripts/...` which
+//     does not exist (observed: MODULE_NOT_FOUND → opencode-worker dead → delegation
+//     degrades → role-gate "Couldn't start"). When the resolved path isn't a file we
+//     fall back to the VERSION-STABLE shim at `<state-home>/bin/opencode-mcp.cjs`
+//     (RUNNER_SHIMS); that shim self-locates the live plugin from the host plugin
+//     caches/local dirs with no env and no useful CWD — proven to resolve bare.
 export function openCodeMcpServerEntry(pluginRootExpr: string): McpStdioServerEntry {
+  // JS-interpolated: the host-aware plugin path (Claude/Codex). The other ${…}/$…
+  // tokens below are PLAIN string constants → emitted verbatim for the shell to expand
+  // at launch (mirrors stableBinDir(): XDG_STATE_HOME/traffic-one, else $HOME/.traffic-one).
+  const direct = `${pluginRootExpr}/${OPENCODE_MCP_SHIM_PATH}`;
+  const stateHome = '${XDG_STATE_HOME:+$XDG_STATE_HOME/traffic-one}';
+  const binFallback = '${S:-$HOME/.traffic-one}/bin/opencode-mcp.cjs';
   return {
     command: 'sh',
-    args: ['-c', `exec node "${pluginRootExpr}/${OPENCODE_MCP_SHIM_PATH}"`],
+    args: ['-c', `P="${direct}"; [ -f "$P" ] && exec node "$P"; S="${stateHome}"; exec node "${binFallback}"`],
   };
 }
