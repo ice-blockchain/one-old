@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { anyRunReachedTerminalVerdict, claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, readRunAssignmentsResilient, resolveRunAgentContext, runIdNow, runReachedTerminalVerdict, transcriptThreadId } from '../run-agent';
+import { anyRunReachedTerminalVerdict, claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, readRunAssignments, readRunAssignmentsResilient, resolveRunAgentContext, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, transcriptThreadId } from '../run-agent';
 import { stackFingerprint } from '../materialization';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
@@ -33,12 +33,61 @@ test('runReachedTerminalVerdict requires terminal verdict tokens, not mere diges
     // Reviewer APPROVED + tester TESTS_GREEN → terminal.
     writeDigest(dir, 'r1', 'tester.md', 'TESTS_GREEN');
     assert.equal(runReachedTerminalVerdict(dir, 'r1'), true);
+    // Orchestrators deviate: a tester digest with `verdict: APPROVED` (observed: gpt-5.5)
+    // is also a PASSING tester → terminal (was a false-negative before the broadening).
+    writeDigest(dir, 'r1', 'tester.md', 'APPROVED');
+    assert.equal(runReachedTerminalVerdict(dir, 'r1'), true);
     // A shipper digest (written only post-deploy) is terminal on its own.
     writeDigest(dir, 'r2', 'shipper.md', 'deployed https://app.example');
     assert.equal(runReachedTerminalVerdict(dir, 'r2'), true);
     // anyRunReachedTerminalVerdict scans every run dir.
     assert.equal(anyRunReachedTerminalVerdict(dir), true);
     assert.equal(anyRunReachedTerminalVerdict(path.join(dir, 'nope')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('readRunAssignments tolerates the `roles`-object schema (ownedPaths/readOnlyPaths)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-roles-'));
+  try {
+    const d = path.join(dir, '.traffic-one', 'runs', 'R');
+    fs.mkdirSync(d, { recursive: true });
+    // The exact deviation observed live (gpt-5.5 architect): a `roles` object, no `assignments` array.
+    fs.writeFileSync(path.join(d, 'assignments.json'), JSON.stringify({
+      runId: 'R', installOwner: 'senior-backend',
+      roles: {
+        'senior-frontend': { ownedPaths: ['apps/web/**', 'packages/ui/**'], readOnlyPaths: ['supabase/**'] },
+        'senior-backend': { ownedPaths: ['supabase/**', 'packages/api-client/**'] },
+      },
+      nonOverlapAssertion: 'no overlap',
+    }), 'utf8');
+    const m = readRunAssignments(dir, 'R');
+    assert.ok(m, 'roles schema must parse');
+    assert.equal(m?.assignments.length, 2);
+    const fe = m?.assignments.find((a) => a.role === 'senior-frontend');
+    assert.deepEqual(fe?.scope.include, ['apps/web/**', 'packages/ui/**']);
+    assert.deepEqual(fe?.scope.exclude, ['supabase/**']); // readOnlyPaths → exclude
+    const be = m?.assignments.find((a) => a.role === 'senior-backend');
+    assert.deepEqual(be?.scope.include, ['supabase/**', 'packages/api-client/**']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runHasOrchestratedArtifacts: schema-agnostic raw-existence of assignments OR a digest', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-artifacts-'));
+  try {
+    assert.equal(runHasOrchestratedArtifacts(dir, 'R'), false); // nothing yet
+    // A non-conforming assignments.json (would NOT parse) still counts — raw existence.
+    const rd = path.join(dir, '.traffic-one', 'runs', 'R');
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, 'assignments.json'), '{"totally":"unparseable-for-scope"}', 'utf8');
+    assert.equal(runHasOrchestratedArtifacts(dir, 'R'), true);
+    // A digest alone also counts (no assignments file).
+    writeDigest(dir, 'R2', 'architect.md', 'PLAN_READY');
+    assert.equal(runHasOrchestratedArtifacts(dir, 'R2'), true);
+    assert.equal(runHasOrchestratedArtifacts(dir, ''), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -19,7 +19,7 @@ import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readRunAssignments, readState, runIdNow, runReachedTerminalVerdict, writeState } from '../../shared/state';
+import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readState, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, writeState } from '../../shared/state';
 import { classifyPromptComplexity } from '../../shared/triage/classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -27,15 +27,19 @@ const block = (name: string, vars: Record<string, string | number | null | undef
   skillBlock('onboarding-gate', name, vars);
 
 function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
-  // Never rotate while the current orchestrated run is still LIVE: assignments
-  // exist for currentRunId but it has no terminal verdict (reviewer APPROVED +
-  // tester TESTS_GREEN, or a shipper digest). Rotating then would split run state
-  // across two ids — the run-id gate resolves no scope for the in-flight role
-  // spawns ("subagents couldn't start"). When unsettled, KEEP currentRunId. A plain
-  // maintenance edit with no orchestrated run (no assignments.json) still rotates,
-  // preserving the per-prompt fresh-run behavior for the common case.
+  // Never rotate while the CURRENT run is still LIVE: it has run artifacts
+  // (assignments/digests) but has NOT reached a terminal verdict. Rotating then would
+  // split run state across two ids — the run-id gate resolves no scope for the in-flight
+  // role spawns ("subagents couldn't start"). "Terminal" is per-run (this run's reviewer
+  // APPROVED + tester passed, or a shipper digest), so a SETTLED run rotates and a LIVE one
+  // (incl. a 2nd maintenance feature mid-fix-cycle) does not. NOTE: we deliberately do NOT
+  // treat `lifecycle.source==='orchestrator'` as "settled" — that stamp is written once at
+  // the first build's completion and never reset, so it stays true for the project's life
+  // and would wrongly green-light rotating a LATER mid-verification run. The artifact check
+  // is SCHEMA-AGNOSTIC (raw existence) so a non-conforming manifest can't defeat it. A plain
+  // maintenance edit with no orchestrated run still rotates (the common per-prompt case).
   const current = typeof state.currentRunId === 'string' ? state.currentRunId : '';
-  if (current && readRunAssignments(cwd, current) && !runReachedTerminalVerdict(cwd, current)) return;
+  if (current && runHasOrchestratedArtifacts(cwd, current) && !runReachedTerminalVerdict(cwd, current)) return;
   const runId = runIdNow();
   const sharedState = readState(cwd);
   writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });

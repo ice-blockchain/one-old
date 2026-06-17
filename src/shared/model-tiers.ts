@@ -4,6 +4,7 @@
 // src/config/model-tiers.ts — edit knobs there, not here.
 
 import {
+  CURSOR_MODEL_ALTERNATES,
   DEFAULT_HOST_PLAN,
   HOST_IDS,
   HOST_MODELS,
@@ -39,18 +40,35 @@ export function resolveModel(tier: unknown, host: unknown): string | null {
 
 // Does a passed `model` parameter satisfy a tier's expected model? True when it IS
 // that model OR a same-family VARIANT of it (the expected id followed by a `-suffix`).
-// Cursor model IDs carry reasoning/speed variant suffixes the agent appends —
-// `gpt-5.5` → `gpt-5.5-medium`/`-high`/`-fast`, `claude-4.6-sonnet` → `…-thinking`,
-// `composer-latest` → `…-fast` — and a strict equality check rejects those VALID
-// variants, stalling the spawn (observed: agent passed `gpt-5.5-medium`, gate wanted
-// `gpt-5.5`). A different family (e.g. `claude-opus-4-8-…` vs `gpt-5.5`) never matches,
-// so tier enforcement holds. Claude/Codex pass bare ids, so this is exact-equality
-// there in practice. An empty/absent model never matches (deny → inherit guard).
+// The cursor row already stores the full Task-tool slug (e.g.
+// `claude-opus-4-8-thinking-high`), so this prefix match mainly covers a deeper
+// sub-variant; a different family/tier (e.g. `gpt-5.5-medium` vs a highest opus slug)
+// never matches, so tier enforcement holds. Claude/Codex pass bare ids, so this is
+// exact-equality there in practice. An empty/absent model never matches (deny →
+// inherit guard). See acceptableModelsFor for the cursor same-tier fallback set.
 export function modelMatchesExpected(passed: unknown, expected: unknown): boolean {
   const e = typeof expected === 'string' ? expected.trim() : '';
   const p = typeof passed === 'string' ? passed.trim() : '';
   if (!e || !p) return false;
   return p === e || p.startsWith(`${e}-`);
+}
+
+// The full set of models that satisfy a tier whose PREFERRED model is `expected`,
+// ordered preferred-first. On Cursor this folds in CURSOR_MODEL_ALTERNATES so a
+// build that doesn't offer the preferred slug can still spawn on a same-class model
+// the runner DOES offer (and the gate accepts it). claude/codex have no alternates
+// → exactly `[expected]`, preserving strict per-tier enforcement there.
+export function acceptableModelsFor(expected: unknown, host: unknown): string[] {
+  const e = typeof expected === 'string' ? expected.trim() : '';
+  if (!e) return [];
+  if (canonicalHost(host) !== 'cursor') return [e];
+  const alternates = CURSOR_MODEL_ALTERNATES[e] ?? [];
+  return [e, ...alternates.filter((m) => m && m !== e)];
+}
+
+// True when `passed` matches ANY model in the acceptable set (family-aware).
+export function modelMatchesAny(passed: unknown, acceptable: readonly string[]): boolean {
+  return acceptable.some((e) => modelMatchesExpected(passed, e));
 }
 
 export function tierModelTable(

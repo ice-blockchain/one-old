@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { canonicalHost, canonicalPlan, canonicalTier, modelMatchesExpected, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
+import { acceptableModelsFor, canonicalHost, canonicalPlan, canonicalTier, modelMatchesAny, modelMatchesExpected, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
 
 test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
   assert.equal(canonicalTier('highest'), 'highest');
@@ -17,9 +17,9 @@ test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'claude'), 'opus');
   assert.equal(resolveModel('balanced', 'codex'), 'gpt-5.4');
   // Cursor uses real Cursor model IDs, not Anthropic aliases.
-  assert.equal(resolveModel('highest', 'cursor'), 'claude-opus-4-8');
-  assert.equal(resolveModel('balanced', 'cursor'), 'claude-4.6-sonnet');
-  assert.equal(resolveModel('cheapest', 'cursor'), 'composer-latest');
+  assert.equal(resolveModel('highest', 'cursor'), 'claude-opus-4-8-thinking-high');
+  assert.equal(resolveModel('balanced', 'cursor'), 'claude-4.6-sonnet-medium-thinking');
+  assert.equal(resolveModel('cheapest', 'cursor'), 'composer-2.5-fast');
   assert.equal(resolveModel('bad', 'claude'), null);
 });
 
@@ -50,7 +50,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8',
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8-thinking-high',
   });
   assert.equal(tierModelTable('bad'), null);
 });
@@ -69,6 +69,35 @@ test('canonicalPlan resolves ids/aliases per host and falls back to the host def
   assert.equal(canonicalPlan('codex', 'max'), 'free'); // max isn't a codex plan → codex default
   assert.equal(canonicalPlan('cursor', 'nope'), 'free'); // unknown → cursor default
   assert.equal(canonicalPlan('claude', 5), 'free'); // non-string → default
+});
+
+test('acceptableModelsFor: Cursor folds in same-tier fallbacks; claude/codex stay exact', () => {
+  // Cursor Task-tool slugs per Cursor's own tier labels: balanced sonnet ↔ gpt-5.5 fallback.
+  const balanced = acceptableModelsFor('claude-4.6-sonnet-medium-thinking', 'cursor');
+  assert.equal(balanced[0], 'claude-4.6-sonnet-medium-thinking', 'preferred slug stays first');
+  assert.ok(balanced.includes('gpt-5.5-medium'));
+  // composer-2.5-fast is the LAST-RESORT fallback on highest+balanced (survives API-budget
+  // exhaustion — the only model in the included Composer bucket), ordered last.
+  assert.equal(balanced[balanced.length - 1], 'composer-2.5-fast', 'composer is the last-resort fallback');
+  const highest = acceptableModelsFor('claude-opus-4-8-thinking-high', 'cursor');
+  assert.ok(highest.includes('claude-fable-5-thinking-high'));
+  assert.equal(highest[highest.length - 1], 'composer-2.5-fast', 'composer is the last-resort fallback');
+  // cheapest has no configured fallback → just itself.
+  assert.deepEqual(acceptableModelsFor('composer-2.5-fast', 'cursor'), ['composer-2.5-fast']);
+  // claude/codex have no alternates → strict single-model enforcement preserved.
+  assert.deepEqual(acceptableModelsFor('sonnet', 'claude'), ['sonnet']);
+  assert.deepEqual(acceptableModelsFor('gpt-5.4', 'codex'), ['gpt-5.4']);
+  // A model with no configured alternates → just itself, even on Cursor.
+  assert.deepEqual(acceptableModelsFor('some-unknown-slug', 'cursor'), ['some-unknown-slug']);
+  assert.deepEqual(acceptableModelsFor('', 'cursor'), []);
+});
+
+test('modelMatchesAny: the preferred slug or any same-tier fallback satisfies the set', () => {
+  const balanced = acceptableModelsFor('claude-4.6-sonnet-medium-thinking', 'cursor');
+  assert.equal(modelMatchesAny('claude-4.6-sonnet-medium-thinking', balanced), true); // preferred
+  assert.equal(modelMatchesAny('gpt-5.5-medium', balanced), true); // the same-tier fallback
+  // A different-tier Cursor model (opus = highest) does NOT satisfy balanced.
+  assert.equal(modelMatchesAny('claude-opus-4-8-thinking-high', balanced), false);
 });
 
 test('recommendTierForPlan maps plan → tier, bumps one step with OpenCode, clamps at top', () => {

@@ -30,7 +30,7 @@ Team gate: spawning subagents needs `team.approved: true`, which the Traffic One
 <!-- T1BLOCK:END team-confirmation -->
 
 <!-- T1BLOCK:BEGIN performance-model-param -->
-Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect. Per-role model tiers are defined by the plugin's model-tiers config (`scripts/config/model-tiers.js` in the installed plugin).
+Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect.{{ALTERNATES}} Per-role model tiers are defined by the plugin's model-tiers config (`scripts/config/model-tiers.js` in the installed plugin).
 <!-- T1BLOCK:END performance-model-param -->
 
 <!-- T1BLOCK:BEGIN opencode-role-delegate -->

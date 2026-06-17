@@ -9,6 +9,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { SKIP_DIRS, SKIP_FILES } from '../config/reporting';
+import { SOURCE_EXTS } from './detection';
+import { globToRegExp } from './scope';
 
 // Where the tools write (project root) — no output-dir flag exists.
 export const GRAPHIFY_OUT_ROOT_DIRNAME = 'graphify-out';
@@ -139,6 +141,77 @@ export function codeGraphIndexIsStale(cwd: string, indexMtimeMs: number): boolea
 // root `.gitignore`. When set, seed the temp file with the existing `.gitignore`
 // first so the user's patterns are preserved alongside ours. (gitnexus reads BOTH
 // files, so it doesn't need seeding.)
+// --- Degenerate-seed guard --------------------------------------------------
+// Seeding `.graphifyignore` from a project `.gitignore` (above) is the vector for
+// a real failure: a sparse repo whose only source sits under a gitignored path, or
+// an allowlist-style `.gitignore` (`*` + `!keep`), makes the seeded ignore exclude
+// ALL source → graphify exits "No code files found - nothing to rebuild". graphify
+// 0.8.x already reads `.gitignore` per-directory itself, so the seed is redundant
+// for that — and dropping it when it would zero out the scan is safe (graphify's
+// built-in skips + native .gitignore reading still exclude node_modules/dist/.git).
+
+// Compile gitignore-style patterns into a path tester. Negations (`!…`) and
+// comments are skipped, so the result leans toward classifying paths as ignored —
+// the SAFE direction here (a false "all ignored" only drops the redundant seed; a
+// false "not all" just lets graphify decide). A pattern with an internal slash (or
+// a leading `/`) is root-anchored and tested against each path prefix; a slashless
+// pattern matches any single path segment (gitignore's "match at any depth").
+function compilePositiveIgnore(patterns: string[]): (relPath: string) => boolean {
+  const tests: Array<{ rx: RegExp; anchored: boolean }> = [];
+  for (const raw of patterns) {
+    let pat = (raw || '').trim();
+    if (!pat || pat.startsWith('#') || pat.startsWith('!')) continue;
+    if (pat.endsWith('/')) pat = pat.slice(0, -1); // dir marker — prefix test covers it
+    const rooted = pat.startsWith('/');
+    if (rooted) pat = pat.slice(1);
+    if (!pat) continue;
+    tests.push({ rx: globToRegExp(pat), anchored: rooted || pat.includes('/') });
+  }
+  return (relPath) => {
+    const segs = relPath.split('/');
+    let prefix = '';
+    const prefixes = segs.map((s) => (prefix = prefix ? `${prefix}/${s}` : s));
+    for (const { rx, anchored } of tests) {
+      if (anchored ? prefixes.some((p) => rx.test(p)) : segs.some((s) => rx.test(s))) return true;
+    }
+    return false;
+  };
+}
+
+const IGNORE_WALK_MAX_NODES = 20000;
+
+// Cheap, conservative pre-check: returns true iff source files EXIST under `cwd`
+// (built-in skips only) but EVERY one would be matched by `ignorePatterns`. Walks
+// into ignored dirs too (so source under an ignored path is still SEEN, then tested
+// via its ancestor prefixes), bounded by a node cap → over the cap or any error
+// returns false (assume not-all-ignored; keep the seed).
+export function wouldIgnoreAllSource(cwd: string, ignorePatterns: string[]): boolean {
+  const isIgnored = compilePositiveIgnore(ignorePatterns);
+  let sawSource = false;
+  let budget = IGNORE_WALK_MAX_NODES;
+  const stack: string[] = [''];
+  try {
+    while (stack.length > 0) {
+      const rel = stack.pop() as string;
+      let entries: fs.Dirent[];
+      try { entries = fs.readdirSync(path.join(cwd, rel || '.'), { withFileTypes: true }); } catch { continue; }
+      for (const entry of entries) {
+        if (--budget <= 0) return false; // too large to scan cheaply → keep the seed
+        const childRel = rel ? `${rel}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          if (!SKIP_DIRS.has(entry.name)) stack.push(childRel);
+        } else if (entry.isFile() && SOURCE_EXTS.has(path.extname(entry.name))) {
+          sawSource = true;
+          if (!isIgnored(childRel)) return false; // a source file SURVIVES → not all ignored
+        }
+      }
+    }
+  } catch {
+    return false; // walk failed → can't tell → keep the seed
+  }
+  return sawSource; // source existed but none survived → all ignored
+}
+
 export function applyCodeGraphScanIgnore(
   cwd: string,
   ignoreFilename: string,
@@ -152,8 +225,16 @@ export function applyCodeGraphScanIgnore(
     existed = fs.existsSync(ignorePath);
     prev = existed ? fs.readFileSync(ignorePath, 'utf8') : null;
     let seed = prev || '';
+    let seededFromGitignore = false;
     if (!existed && opts.seedFromGitignore) {
-      try { seed = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8'); } catch { seed = ''; }
+      try { seed = fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8'); seededFromGitignore = true; } catch { seed = ''; }
+    }
+    // Degenerate-seed guard: if the .gitignore seed would make graphify scan zero
+    // source files, drop it and write only our own patterns (which never match
+    // source). Only when we actually seeded from .gitignore — never override a
+    // user's explicit ignore file or our own bare patterns.
+    if (seededFromGitignore && seed.trim() && wouldIgnoreAllSource(cwd, seed.split('\n').concat(patterns))) {
+      seed = '';
     }
     const present = new Set(seed.split('\n').map((s) => s.trim()).filter(Boolean));
     const missing = patterns.filter((p) => !present.has(p));

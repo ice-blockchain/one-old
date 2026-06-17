@@ -581,15 +581,38 @@ function stringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
+// Normalize the manifest's raw role entries. The canonical shape is an `assignments`
+// ARRAY (`[{ role, scope:{ include, exclude } }]`). Some orchestrators deviate and emit
+// a `roles` OBJECT instead (observed live: gpt-5.5 wrote
+// `roles: { "<role>": { ownedPaths, readOnlyPaths, notes } }`), which the strict array
+// reader rejected → the run-team scope gate resolved no scope and the rotation guard
+// couldn't see the run. Tolerate that shape by mapping ownedPaths→scope.include and
+// readOnlyPaths→scope.exclude (the role must not write another role's read-only paths).
+function rawAssignmentEntries(raw: Rec): unknown[] {
+  if (Array.isArray(raw.assignments)) return raw.assignments;
+  const roles = obj(raw.roles);
+  if (!roles) return [];
+  const entries: unknown[] = [];
+  for (const [role, value] of Object.entries(roles)) {
+    const v = obj(value);
+    if (!v) continue;
+    const include = stringArray(v.ownedPaths).length ? stringArray(v.ownedPaths) : stringArray(v.include);
+    const exclude = stringArray(v.readOnlyPaths).length ? stringArray(v.readOnlyPaths) : stringArray(v.exclude);
+    entries.push({ role, scope: exclude.length ? { include, exclude } : { include } });
+  }
+  return entries;
+}
+
 // Read + validate the run's assignment manifest. Returns null when absent or
 // structurally invalid. The manifest's runId dir is the same fingerprint-guarded run
 // that resolved the agent's claim, so no extra fingerprint check is needed here.
+// Tolerant of the `roles`-object schema deviation (see rawAssignmentEntries).
 export function readRunAssignments(cwd: string, runId: unknown): RunManifest | null {
   if (typeof runId !== 'string' || !runId) return null;
   const raw = obj(readJson(assignmentsFile(cwd, runId), null));
-  if (!raw || !Array.isArray(raw.assignments)) return null;
+  if (!raw) return null;
   const assignments: AssignmentEntry[] = [];
-  for (const entry of raw.assignments as unknown[]) {
+  for (const entry of rawAssignmentEntries(raw)) {
     const e = obj(entry);
     if (!e) continue;
     const scope = obj(e.scope);
@@ -666,18 +689,38 @@ function readDigest(cwd: string, runId: string, name: string): string {
 
 // True when run <runId>'s verification has TERMINALLY settled: a shipper digest
 // (written only post-deploy, after reviewer+tester already passed) exists, OR
-// reviewer is APPROVED and tester is TESTS_GREEN. A `CHANGES_REQUESTED` reviewer
-// or a mid-fix-cycle `TESTS_FAILING` tester is non-terminal → the run is still
-// live. The "terminal token present AND non-terminal token absent" shape avoids a
-// false positive from a non-terminal digest that merely mentions the other token.
+// reviewer PASSED and tester PASSED. The canonical tester token is `TESTS_GREEN`,
+// but orchestrators deviate (observed live: gpt-5.5 wrote the tester digest with
+// `verdict: APPROVED`), so a tester is "passed" when it carries a passing token
+// (`TESTS_GREEN`/`APPROVED`) AND no NON-terminal token (`TESTS_FAILING` = failing,
+// `DELEGATED_OK` = delegated-but-unverified). A `CHANGES_REQUESTED` reviewer or a
+// mid-fix-cycle `TESTS_FAILING` tester stays non-terminal. The "passing token present
+// AND non-terminal token absent" shape avoids a false positive from a digest that
+// merely mentions the other token.
 export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean {
   if (typeof runId !== 'string' || !runId) return false;
   if (readDigest(cwd, runId, 'shipper.md').trim()) return true;
   const reviewer = readDigest(cwd, runId, 'reviewer.md');
   const tester = readDigest(cwd, runId, 'tester.md');
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
-  const testerGreen = /\bTESTS_GREEN\b/.test(tester) && !/\bTESTS_FAILING\b/.test(tester);
-  return reviewerApproved && testerGreen;
+  const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
+  return reviewerApproved && testerPassed;
+}
+
+// Schema-agnostic "an orchestrated run exists under <runId>" check — raw artifact
+// EXISTENCE, never manifest parsing (so it survives the `roles`-schema deviation and
+// any future shape). Used by the maintenance-rotation guard to decide whether a run is
+// real before refusing to rotate its id. assignments.json OR an implementer/architect
+// digest both prove the architect ran for this id.
+export function runHasOrchestratedArtifacts(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  try {
+    if (fs.existsSync(assignmentsFile(cwd, runId))) return true;
+    const dd = digestDir(cwd, runId);
+    return ['architect.md', 'frontend.md', 'backend.md', 'reviewer.md', 'tester.md'].some((n) => fs.existsSync(path.join(dd, n)));
+  } catch {
+    return false;
+  }
 }
 
 // True when ANY run dir under .traffic-one/digests has a terminal verdict. The

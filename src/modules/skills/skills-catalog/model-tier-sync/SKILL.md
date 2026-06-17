@@ -67,19 +67,22 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
      general model, and a fast/mini model. These use concrete versioned ids
      (e.g. a `*-codex`, a flagship `gpt-*`, and a `*-mini`/`*-nano`) and DO drift,
      so this row is the one that most often needs updating.
-   - **Cursor (enforced — real Cursor model IDs)**: Cursor's subagent `model:` field /
-     Task tool accept Cursor's OWN model IDs and REJECT the Anthropic family aliases, so
-     the `cursor` row holds real Cursor slugs (currently `gpt-5.5` / `claude-4.6-sonnet`
-     / `composer-latest`) and the spawn-agent gate enforces them like claude/codex. The
-     authoritative ID list is Cursor's `/v1/models` API endpoint (each model returns
-     `id` + `aliases` + `variants`); the public docs mostly show display names, so
-     confirm exact slugs there or in Cursor's model picker — do NOT guess. Prefer stable
-     aliases (e.g. `composer-latest`, which auto-resolves like Anthropic's `opus`) to
-     resist version drift. Keep capability/cost order highest ≥ balanced ≥ cheapest;
-     `composer-latest` is Cursor's own cost-optimized model (no Max Mode). NOTE: an
-     unavailable-but-valid Cursor model falls back gracefully (to Composer) rather than
-     hard-rejecting, so the only thing that breaks a spawn is an INVALID slug — ship only
-     confirmed IDs.
+   - **Cursor (enforced — exact Task-tool subagent slugs)**: Cursor's subagent `model:`
+     field / Task tool accept Cursor's OWN slugs (with reasoning suffixes) and REJECT the
+     Anthropic aliases, so the `cursor` row in HOST_MODELS holds the exact Task-tool slugs
+     (currently highest `claude-opus-4-8-thinking-high` / balanced `claude-4.6-sonnet-medium-thinking`
+     / cheapest `composer-2.5-fast`), and `CURSOR_MODEL_ALTERNATES` holds a same-tier
+     FALLBACK per slug (highest→`claude-fable-5-thinking-high`, balanced→`gpt-5.5-medium`)
+     that the spawn gate's accept-set ALSO honors. CRITICAL: ask Cursor directly for its
+     "available subagent models (Task tool)" list — that surface differs from the chat
+     model PICKER (different reasoning suffixes: Task tool uses `-thinking-high`/`-medium-thinking`,
+     the picker uses `-thinking-max`/`-extra-high`) and from the `/v1/models` API (base
+     ids, dot-versions like `claude-opus-4.8`). The Task-tool list is authoritative for
+     what to put here. Cursor's subagent lineup is account/plan/build-specific and a slug
+     it does NOT offer is REJECTED as invalid (NOT gracefully downgraded — that earlier
+     assumption was wrong; it deadlocked a `claude-4.6-sonnet` balanced build), which is why
+     each tier carries a fallback. Keep capability/cost order highest ≥ balanced ≥ cheapest;
+     `composer-2.5` is Cursor's own cost-optimized model (no Max Mode, always available).
 
 3. **Map newest → tiers per host**, preserving capability order
    (`highest` strictly ≥ `balanced` ≥ `cheapest` in capability). Verify the

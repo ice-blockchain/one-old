@@ -13,7 +13,7 @@ import type { Rec } from '../../../shared/obj';
 // verdict). Rotating then splits run state across two ids and the run-id gate
 // resolves no scope for the in-flight role spawns. (The 2026-06-17 tests/9a bug.)
 
-function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; assignments?: boolean }): { dir: string; state: Rec } {
+function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; assignments?: boolean; rolesAssignments?: boolean; orchestratorStamped?: boolean }): { dir: string; state: Rec } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-triage-'));
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -21,18 +21,20 @@ function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; as
     mode: 'new-project',
     stack: 'default', frontend: 'react-vite', backend: 'supabase',
     onboardingComplete: true, confirmed: true,
-    lifecycle: { phase: 'maintenance', source: 'heuristic', completedAt: new Date().toISOString() },
+    lifecycle: { phase: 'maintenance', source: opts.orchestratorStamped ? 'orchestrator' : 'heuristic', completedAt: new Date().toISOString() },
     team: { mode: 'subagents', approved: true },
     currentRunId: 'OLD',
     spawnIndex: { 'senior-frontend': 1, 'senior-backend': 1 },
   };
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state));
-  if (opts.assignments) {
+  if (opts.assignments || opts.rolesAssignments) {
     const rd = path.join(dir, '.traffic-one', 'runs', 'OLD');
     fs.mkdirSync(rd, { recursive: true });
-    fs.writeFileSync(path.join(rd, 'assignments.json'), JSON.stringify({
-      version: 1, runId: 'OLD', assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/**'] } }],
-    }));
+    const manifest = opts.rolesAssignments
+      // the non-conforming `roles` schema some orchestrators emit (gpt-5.5)
+      ? { runId: 'OLD', roles: { 'senior-frontend': { ownedPaths: ['apps/web/**'] } } }
+      : { version: 1, runId: 'OLD', assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/**'] } }] };
+    fs.writeFileSync(path.join(rd, 'assignments.json'), JSON.stringify(manifest));
   }
   if (opts.reviewer || opts.tester || opts.shipper) {
     const dd = path.join(dir, '.traffic-one', 'digests', 'OLD');
@@ -57,6 +59,31 @@ test('does NOT rotate currentRunId while the current run is live (assignments + 
     maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
     assert.equal(state.currentRunId, 'OLD', 'run-id must not rotate while the run is unsettled');
     assert.deepEqual(state.spawnIndex, { 'senior-frontend': 1, 'senior-backend': 1 }, 'spawnIndex must not be cleared');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('does NOT rotate while a live run carries the non-conforming `roles` manifest (schema-agnostic guard)', () => {
+  // The gpt-5.5 deviation: assignments.json uses a `roles` object. The guard must STILL
+  // see the run (via raw artifact existence) and refuse to rotate while it is unsettled.
+  const { dir, state } = setup({ rolesAssignments: true, reviewer: 'CHANGES_REQUESTED' });
+  try {
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
+    assert.equal(state.currentRunId, 'OLD', 'a non-conforming manifest must not defeat the guard');
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('a stale orchestrator lifecycle stamp does NOT green-light rotating a LATER live run', () => {
+  // Regression guard: `lifecycle.source==='orchestrator'` is stamped once at the first
+  // build and never reset. A 2nd maintenance feature that is mid-fix-cycle (CHANGES_REQUESTED)
+  // must STILL be protected — the persistent stamp must not allow rotating it (would split).
+  const { dir, state } = setup({ assignments: true, reviewer: 'CHANGES_REQUESTED', orchestratorStamped: true });
+  try {
+    maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
+    assert.equal(state.currentRunId, 'OLD', 'a live run is not rotated just because the project was orchestrator-stamped earlier');
   } finally {
     cleanup(dir);
   }

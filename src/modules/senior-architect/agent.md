@@ -183,6 +183,8 @@ This is what makes parallel implementers conflict-free across ANY stack. Each im
 }
 ```
 
+Use EXACTLY this shape: the top-level key is **`assignments`** (a JSON ARRAY of `{ role, scope: { include, exclude } }`). Do NOT invent an alternate shape — e.g. a `roles` object keyed by role name, or `ownedPaths`/`readOnlyPaths` fields. The run-team gate reads `assignments[].scope.include`; a non-conforming manifest silently degrades scope ownership to per-path first-writer locks (the gate tolerates the `roles`/`ownedPaths` deviation as a fallback, but the canonical `assignments` array is required).
+
 Patterns are project-relative, `/`-separated; a trailing `/` is a directory prefix, and `*`/`**`/`?` are globs (`**` crosses `/`). Emit exactly `senior-frontend` and `senior-backend` for now — the format allows N roles / arbitrary labels (e.g. a future `senior-mobile`) but this version spawns only those two.
 
 Derive the partition from REAL paths, never guessed directory names:
