@@ -40,6 +40,12 @@ export interface HookInput {
   readonly event: CanonicalEvent;
   readonly host: HostId;
   readonly cwd: string;
+  // The host's AUTHORITATIVE workspace root, when it declares one (Cursor's
+  // `workspace_roots`). Project-root resolution never climbs above it, so a hook
+  // touching a path above the opened workspace (or a stray onboarded ancestor)
+  // cannot re-root Traffic One to the parent. Unset for hosts with no workspace
+  // boundary (Claude/Codex), where cwd may legitimately be a monorepo sub-package.
+  readonly workspaceRoot?: string;
   readonly tool?: ToolInput;
   readonly prompt?: string;
   readonly raw: unknown;

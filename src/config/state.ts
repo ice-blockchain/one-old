@@ -52,7 +52,11 @@ export const OPEN_CODE_SOURCE_IDS = new Set(['prompted', 'explicit', 'unavailabl
 // Existing codebases are `maintenance` from first detection; new projects flip
 // once the initial build finishes. Absence of `lifecycle` is valid → inferred from mode.
 export const LIFECYCLE_PHASE_IDS = new Set(['building', 'maintenance']);
-export const LIFECYCLE_SOURCE_IDS = new Set(['existing-detected', 'orchestrator', 'heuristic', 'manual']);
+// `heuristic` flips at PostToolUse (mid-session, no-active-claims guard held);
+// `prompt-boundary` flips at UserPromptSubmit (a new prompt ⇒ the prior turn ended,
+// so leftover pending claims aren't in-flight — the guard relaxed there). Both are
+// the safety net for an orchestrated build whose explicit Phase-5 stamp never landed.
+export const LIFECYCLE_SOURCE_IDS = new Set(['existing-detected', 'orchestrator', 'heuristic', 'prompt-boundary', 'manual']);
 
 export const TEAM_MODE_ALIASES = new Map<string, string>([
   ['enabled', 'subagents'],

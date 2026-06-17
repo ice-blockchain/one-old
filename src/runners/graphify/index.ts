@@ -93,10 +93,11 @@ function graphifyRecommendedVersion(): string | null {
   return typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
 }
 
-// graphify (0.7.10) ships NO `--version`/`version`/`-V` CLI — every form errors
+// graphify (0.8.x) ships NO `--version`/`version`/`-V` CLI — every form errors
 // with "unknown command". The reliable version source is the package metadata,
 // read via the Python interpreter that sits next to the graphify binary (the
-// managed venv's bin dir, or a pipx venv): `pip show graphifyy`.
+// managed venv's bin dir, or a pipx venv): `pip show graphifyy`. (0.8.40 also
+// reads `.gitignore` per-directory on its own, so the scan honors it natively.)
 function graphifyPipShowVersion(binPath: string): string | null {
   const dir = path.dirname(binPath);
   const ext = process.platform === 'win32' ? '.exe' : '';
@@ -370,8 +371,27 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
 
   const run = runGraphify(cwd, ensured.binPath);
   if (run.status !== 0) {
-    writeStateMerge(cwd, { graphifyLastErrorAt: nowIso(), graphifyLastError: run.stderr || 'graphify exited non-zero' });
-    return { ok: false, action, report: null, error: run.stderr || 'graphify exited non-zero', durationMs: Date.now() - startedAt };
+    // graphify writes the REAL cause to STDOUT (e.g. "[graphify watch] No code
+    // files found - nothing to rebuild.") and only the opaque "Nothing to update or
+    // rebuild failed — check output above." summary to STDERR. Returning run.stderr
+    // alone discards the diagnostic and makes every failure undebuggable, so surface
+    // BOTH streams, preferring the informative stdout line.
+    const diagnostic = [run.stdout, run.stderr].filter(Boolean).join('\n').trim() || 'graphify exited non-zero';
+    // "No code files found" is not a tool failure: the project is empty or its
+    // .gitignore/.graphifyignore covers all source. Degrade gracefully — return a
+    // clear skip and DON'T record an alarming graphifyLastError (the caller, a
+    // post-build hint, already degrades on a non-ok result).
+    if (/No code files found/i.test(run.stdout)) {
+      return {
+        ok: false,
+        action: 'install-skipped',
+        report: null,
+        error: 'graphify found no source files to index — the project may be empty or fully ignored',
+        durationMs: Date.now() - startedAt,
+      };
+    }
+    writeStateMerge(cwd, { graphifyLastErrorAt: nowIso(), graphifyLastError: diagnostic });
+    return { ok: false, action, report: null, error: diagnostic, durationMs: Date.now() - startedAt };
   }
 
   // Sanity-check that the report actually landed.

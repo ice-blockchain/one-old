@@ -93,6 +93,18 @@ function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+// Queue one bounded OpenCode unit for `role` in plan.md — the OpenCode role gate
+// only forces delegation-first for roles the architect actually QUEUED work for.
+function queueDelegateRole(cwd: string, role: string): void {
+  const t1 = path.join(cwd, '.traffic-one');
+  fs.mkdirSync(t1, { recursive: true });
+  fs.writeFileSync(
+    path.join(t1, 'plan.md'),
+    `<!-- opencode-delegate:start -->\n- role: ${role} | files: x.ts | task: one bounded unit. Acceptance: ok.\n<!-- opencode-delegate:end -->\n`,
+    'utf8',
+  );
+}
+
 test('non-spawn tools are ignored', () => {
   const cwd = process.cwd();
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: 'Bash' }, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command: 'ls' } };
@@ -119,20 +131,53 @@ test('team approved but wrong model → deny model-param; correct model → allo
   });
 });
 
-test('Cursor: model-param is ENFORCED with real Cursor IDs — Anthropic alias denies, real Cursor slug allows + stakes claim', () => {
+test('spawn whose prompt fabricates a non-currentRunId run-id is denied, naming the correct id', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // high senior-frontend → highest tier → cursor "gpt-5.5" (a REAL Cursor model ID).
-    // Passing the Anthropic alias Cursor rejects must DENY (the bug the tester hit, now
-    // enforced instead of deadlocking — because the expected value is now a valid slug).
+    // A clean architect spawn mints currentRunId.
+    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-architect', model: 'opus' }));
+    const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+    assert.ok(runId.length > 0, 'currentRunId minted');
+
+    // A spawn prompt with a fabricated ISO run-id path → denied, naming both ids.
+    const bad = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect', model: 'opus',
+      prompt: 'You are the architect. Write .traffic-one/runs/2026-06-17T13-47-00Z/assignments.json and digests/2026-06-17T13-47-00Z/architect.md',
+    }));
+    assert.equal(bad.kind, 'deny');
+    if (bad.kind === 'deny') {
+      assert.ok(bad.reason.includes('run-id gate'), 'is the run-id gate deny');
+      assert.ok(bad.reason.includes('2026-06-17T13-47-00Z'), 'names the stray id');
+      assert.ok(bad.reason.includes(runId), 'names the correct currentRunId');
+    }
+
+    // The SAME prompt using currentRunId does not trip the run-id gate.
+    const ok = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect', model: 'opus',
+      prompt: `You are the architect. Write .traffic-one/runs/${runId}/assignments.json and digests/${runId}/architect.md`,
+    }));
+    assert.ok(!(ok.kind === 'deny' && ok.reason.includes('run-id gate')), 'correct run-id must not trip the gate');
+  });
+});
+
+test('Cursor: model-param enforced FAMILY-AWARE — alias/wrong-family deny, exact + variant suffix allow, claim staked', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // high senior-frontend → highest tier → cursor "claude-opus-4-8" (Cursor's Opus family).
+    // The bare Anthropic alias Cursor rejects → deny (the original tester bug, now enforced).
     const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }, 'cursor'));
     assert.equal(wrong.kind, 'deny');
     if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
 
-    // No model param → still denied (would inherit the parent model).
+    // A DIFFERENT real Cursor family (gpt-5.5, even a variant) → deny: family matching must
+    // NOT cross families.
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'gpt-5.5-medium' }, 'cursor')).kind, 'deny');
+
+    // No model param → deny (would inherit the parent model).
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'deny');
 
-    // The exact real Cursor model ID is accepted and stakes the run claim.
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'gpt-5.5' }, 'cursor'));
+    // The bare id AND the agent's natural Opus reasoning VARIANT both pass (zero-friction —
+    // `claude-opus-4-8-thinking-max-fast` is exactly what the Cursor agent reached for).
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8' }, 'cursor')).kind, 'noop');
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-max-fast' }, 'cursor'));
     assert.equal(ok.kind, 'noop');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
@@ -142,11 +187,35 @@ test('Cursor: model-param is ENFORCED with real Cursor IDs — Anthropic alias d
   });
 });
 
-test('Cursor quick-fix is pinned to the real cheapest Cursor model (composer-latest)', () => {
+test('Cursor: a materialized .cursor/agents/<role>.md model satisfies the gate with NO Task model param (first-try spawn)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // quick-fix → cheapest tier → cursor "composer-latest". A pricier/alias model denies.
+    // high senior-frontend → highest tier → cursor "claude-opus-4-8". Materialization
+    // writes .cursor/agents/senior-frontend.md pinning that model; Cursor honors the
+    // file's model (not the Task arg), so the gate must accept the spawn with NO model.
+    const agentsDir = path.join(cwd, '.cursor', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const write = (model: string): void =>
+      fs.writeFileSync(path.join(agentsDir, 'senior-frontend.md'), `---\nname: senior-frontend\nmodel: ${model}\n---\nbody\n`, 'utf8');
+
+    write('claude-opus-4-8');
+    // No model param → allowed (the file pins the tier model — first-try, no retry).
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'noop');
+    // The session-model default would normally deny, but the file overrides it on Cursor.
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'gpt-5.5-medium' }, 'cursor')).kind, 'noop');
+
+    // A file pinning the WRONG family still denies (defense if the file were stale).
+    write('gpt-5.5');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'deny');
+  });
+});
+
+test('Cursor quick-fix is pinned to the real cheapest Cursor model family (composer-latest + variants)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // quick-fix → cheapest tier → cursor "composer-latest". A pricier/alias model denies;
+    // the exact id and a same-family variant both pass.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }, 'cursor')).kind, 'deny');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-latest' }, 'cursor')).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-latest-fast' }, 'cursor')).kind, 'noop');
   });
 });
 
@@ -214,6 +283,7 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-Q';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRole(cwd, 'quick-fix');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
@@ -235,6 +305,7 @@ test('opencode role gate: a configured role is denied until OpenCode is tried, t
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-X';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRole(cwd, 'senior-frontend');
 
     // senior-frontend is in the default delegateRoles → deny until OpenCode tried
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
@@ -247,6 +318,24 @@ test('opencode role gate: a configured role is denied until OpenCode is tried, t
 
     // a role NOT in the configured set (senior-backend) is never opencode-gated
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
+  });
+});
+
+test('opencode role gate: a forced role with NO queued units is NOT trapped (proceeds to paid)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-noqueue';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    // No opencode-delegate queue for senior-frontend → from-plan can't deliver it, so
+    // denying its paid spawn would STALL the role. The gate must NOT deny (the gap fix);
+    // the paid implementer proceeds (correct model → noop).
+    const r = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.notEqual(r.kind, 'deny');
   });
 });
 
@@ -263,6 +352,8 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
     one.mode = 'existing-codebase';
     delete one.currentRunId;
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    // existing-codebase ⇒ maintenance phase, so the gate forces delegation even with no
+    // plan queue (small fixes go to OpenCode ad hoc).
 
     // senior-frontend (a default delegate role) → the gate mints a run id + denies.
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
@@ -293,6 +384,7 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-reviewer-reject';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRole(cwd, 'senior-frontend');
 
     // First spawn → denied (with the delegate instructions), deny recorded.
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
@@ -312,6 +404,7 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-clean';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRole(cwd, 'senior-frontend');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(denied.kind, 'deny');
@@ -333,6 +426,7 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-codex';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRole(cwd, 'senior-frontend');
 
     // A configured role on Codex is delegated to OpenCode first, exactly like Claude/Cursor.
     const denied = agentModelGate(codexSpawnCtx(cwd, {
@@ -361,6 +455,7 @@ test('a pinned openCode.model does not change gating (no per-model branch)', () 
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-pinned';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRole(cwd, 'senior-frontend');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(denied.kind, 'deny');

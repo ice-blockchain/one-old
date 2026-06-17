@@ -6,6 +6,8 @@
 // every handler that matches the canonical (event, tool class), driven by the
 // generated dispatch table. Field extraction mirrors the legacy cursor runtime.
 
+import * as path from 'path';
+
 import type { CanonicalEvent, ToolClass, ToolInput } from '../core/types';
 import { toolClassForRawName } from '../core/events';
 import { parseJson } from '../shared/fsjson';
@@ -138,12 +140,23 @@ export function makeCursorAdapter(): HostAdapter {
       }
 
       const prompt = firstString(data.prompt, data.user_prompt, data.userPrompt, data.message, data.text);
+      // The opened workspace is the authoritative project boundary; surface it RAW
+      // (not the cwd fold below, which a deeper shell `cwd` could override) so the
+      // project-root resolver can use it as a ceiling and never re-root above it.
+      const wsRoot = firstWorkspaceRoot(data);
+      // Only an ABSOLUTE workspace root is a usable ceiling: a relative value would
+      // path.resolve() against the hook's process.cwd() (the plugin dir under Cursor),
+      // yielding a bogus boundary. Cursor always sends absolute paths, so this just
+      // keeps the ceiling unset (→ safe unbounded fallback) rather than wrong if a
+      // future/edge payload ever sends a relative root.
+      const wsCeiling = wsRoot && path.isAbsolute(wsRoot) ? wsRoot : undefined;
       return {
         event: mapping.event,
         host: 'cursor',
         // Cursor provides `workspace_roots`, not `cwd`; consult it before falling
         // back to process.cwd() (which under Cursor is the plugin dir, not the project).
-        cwd: firstString(data.cwd) || firstWorkspaceRoot(data) || process.cwd(),
+        cwd: firstString(data.cwd) || wsRoot || process.cwd(),
+        ...(wsCeiling ? { workspaceRoot: wsCeiling } : {}),
         raw: data,
         ...(tool ? { tool } : {}),
         ...(prompt ? { prompt } : {}),

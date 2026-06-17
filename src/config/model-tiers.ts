@@ -22,13 +22,15 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
   claude: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
   // cursor: REAL Cursor model IDs (the values Cursor's subagent `model:` field / Task
   // tool accept) — NOT the Anthropic family aliases, which Cursor rejects. ENFORCED by
-  // the spawn-agent gate like claude/codex. `composer-latest` is Cursor's own model
-  // (stable alias, no Max Mode, cost-optimized); the others are versioned and drift, so
-  // re-confirm against Cursor's `/v1/models` endpoint / model picker when syncing (see
-  // the model-tier-sync skill). cheapest is cost-optimized (Composer is cheap despite
-  // solid intelligence). An unavailable-but-valid model falls back gracefully inside
-  // Cursor; only an INVALID slug rejects — so keep these to confirmed real IDs.
-  cursor: { highest: 'gpt-5.5', balanced: 'claude-4.6-sonnet', cheapest: 'composer-latest' },
+  // the spawn-agent gate like claude/codex, but matched FAMILY-aware (modelMatchesExpected
+  // in shared/model-tiers.ts) since the agent appends reasoning/speed variant suffixes
+  // (claude-opus-4-8 → `…-thinking-max-fast`, gpt-5.5 → `…-medium`). highest mirrors the
+  // claude row (Opus) — it's what the Cursor agent reaches for, so zero spawn friction.
+  // `composer-latest` is Cursor's own model (stable alias, no Max Mode, cost-optimized).
+  // Versioned ids drift → re-confirm against Cursor's `/v1/models` endpoint / model picker
+  // when syncing (see the model-tier-sync skill). An unavailable-but-valid model falls back
+  // gracefully inside Cursor; only an INVALID slug rejects — keep these to confirmed IDs.
+  cursor: { highest: 'claude-opus-4-8', balanced: 'claude-4.6-sonnet', cheapest: 'composer-latest' },
   codex: { highest: 'gpt-5.5', balanced: 'gpt-5.4', cheapest: 'gpt-5.4-mini' },
 };
 

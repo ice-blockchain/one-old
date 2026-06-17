@@ -28,6 +28,7 @@ export function stableBinDir(): string {
 export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
   { shim: 'lighthouse-runner.cjs', rel: 'scripts/lighthouse-runner.mjs' },
   { shim: 'opencode-runner.cjs', rel: 'scripts/opencode-runner.cjs' },
+  { shim: 'opencode-mcp.cjs', rel: 'scripts/opencode-mcp.cjs' },
   { shim: 'gitnexus-runner.cjs', rel: 'scripts/gitnexus-runner.cjs' },
   { shim: 'graphify-runner.cjs', rel: 'scripts/graphify-runner.cjs' },
   { shim: 'security-check-runner.cjs', rel: 'scripts/security-check-runner.cjs' },
@@ -55,7 +56,7 @@ function numericDesc(a, b) {
 
 function candidateRoots() {
   const roots = [];
-  for (const key of ['TRAFFIC_ONE_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT']) {
+  for (const key of ['TRAFFIC_ONE_PLUGIN_ROOT', 'CURSOR_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CLAUDE_PLUGIN_ROOT']) {
     const v = (process.env[key] || '').trim();
     if (v) roots.push(v);
   }
@@ -71,6 +72,13 @@ function candidateRoots() {
       for (const v of versions.sort(numericDesc)) roots.push(path.join(pluginDir, v));
     }
   }
+  // Local (unversioned) installs — Cursor's \`plugins/local/traffic-one\` has no
+  // cache dir and the host sets no *_PLUGIN_ROOT for MCP-server processes, so this
+  // is the only way the shim resolves the plugin when launched bare (CWD=\$HOME).
+  for (const host of ['.codex', '.claude', '.cursor']) {
+    const local = path.join(home, host, 'plugins', 'local', 'traffic-one');
+    try { if (fs.statSync(local).isDirectory()) roots.push(local); } catch { /* no local install */ }
+  }
   return roots;
 }
 
@@ -82,7 +90,7 @@ for (const root of candidateRoots()) {
   const r = spawnSync(process.execPath, [target, ...process.argv.slice(2)], { stdio: 'inherit' });
   process.exit(typeof r.status === 'number' ? r.status : 1);
 }
-console.error('traffic-one: no installed plugin provides ' + REL + ' (checked TRAFFIC_ONE_PLUGIN_ROOT/CODEX_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT and the .codex/.claude/.cursor plugin caches). Reinstall the traffic-one plugin.');
+console.error('traffic-one: no installed plugin provides ' + REL + ' (checked TRAFFIC_ONE_PLUGIN_ROOT/CURSOR_PLUGIN_ROOT/CODEX_PLUGIN_ROOT/CLAUDE_PLUGIN_ROOT and the .codex/.claude/.cursor plugin caches). Reinstall the traffic-one plugin.');
 process.exit(1);
 `;
 }

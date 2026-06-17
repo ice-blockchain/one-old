@@ -19,7 +19,7 @@ import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readState, runIdNow, writeState } from '../../shared/state';
+import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readRunAssignments, readState, runIdNow, runReachedTerminalVerdict, writeState } from '../../shared/state';
 import { classifyPromptComplexity } from '../../shared/triage/classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -27,6 +27,15 @@ const block = (name: string, vars: Record<string, string | number | null | undef
   skillBlock('onboarding-gate', name, vars);
 
 function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
+  // Never rotate while the current orchestrated run is still LIVE: assignments
+  // exist for currentRunId but it has no terminal verdict (reviewer APPROVED +
+  // tester TESTS_GREEN, or a shipper digest). Rotating then would split run state
+  // across two ids — the run-id gate resolves no scope for the in-flight role
+  // spawns ("subagents couldn't start"). When unsettled, KEEP currentRunId. A plain
+  // maintenance edit with no orchestrated run (no assignments.json) still rotates,
+  // preserving the per-prompt fresh-run behavior for the common case.
+  const current = typeof state.currentRunId === 'string' ? state.currentRunId : '';
+  if (current && readRunAssignments(cwd, current) && !runReachedTerminalVerdict(cwd, current)) return;
   const runId = runIdNow();
   const sharedState = readState(cwd);
   writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });

@@ -83,6 +83,26 @@ test('cursor: cwd is resolved from workspace_roots when no cwd field is sent (th
   assert.equal(r4.additional_context, '/explicit');
 });
 
+test('cursor: workspaceRoot is surfaced from workspace_roots as the authoritative ceiling', () => {
+  // resolveProjectRoot uses this as an upper bound so a hook touching a path ABOVE the
+  // opened workspace can't re-root Traffic One to the parent (the double-onboarding bug).
+  const a = cursor.parse(inv('before-read-file', { workspace_roots: ['/proj/x'], file_path: '/proj/x/.traffic-one/x.md' }));
+  assert.equal(a.workspaceRoot, '/proj/x');
+  // file:// + object element forms normalize the same as cwd.
+  assert.equal(cursor.parse(inv('session-start', { workspace_roots: ['file:///proj/z'] })).workspaceRoot, '/proj/z');
+  assert.equal(cursor.parse(inv('session-start', { workspace_roots: [{ path: '/proj/y' }] })).workspaceRoot, '/proj/y');
+  // A deeper shell cwd folds into cwd but must NOT move the workspace boundary: cwd
+  // can drift into a sub-package, the ceiling stays the opened workspace root.
+  const c = cursor.parse(inv('before-shell-execution', { cwd: '/proj/x/packages/ui', workspace_roots: ['/proj/x'] }));
+  assert.equal(c.cwd, '/proj/x/packages/ui');
+  assert.equal(c.workspaceRoot, '/proj/x');
+  // No workspace_roots → unset (no ceiling; Claude/Codex monorepo climb unchanged).
+  assert.equal(cursor.parse(inv('session-start', {})).workspaceRoot, undefined);
+  // A RELATIVE workspace root is NOT a usable ceiling (would resolve against the
+  // plugin dir) → left unset so we fall back to safe unbounded resolution.
+  assert.equal(cursor.parse(inv('session-start', { workspace_roots: ['relative/proj'] })).workspaceRoot, undefined);
+});
+
 test('cursor: generic preToolUse derives tool class from tool_name (pre-write/search/spawn now reachable)', () => {
   const w = cursor.parse(inv('before-tool-use', { tool_name: 'Write', tool_input: { file_path: '/a.ts', content: 'hi' } }));
   assert.equal(w.event, 'PreToolUse');

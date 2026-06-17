@@ -7,7 +7,7 @@
 
 import { STACK_IDS } from '../../config/stacks';
 import { detectMode } from '../../shared/detection';
-import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
+import { isPathWithin, projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import {
   type MaterializeOutcome,
@@ -33,11 +33,15 @@ const noopReporter: ReportOneMcp = () => {};
 export function materializeFromToolInputHints(
   cwd: string,
   toolInput: unknown,
-  opts: { trigger?: string; reportOneMcp?: ReportOneMcp } = {},
+  opts: { trigger?: string; reportOneMcp?: ReportOneMcp; workspaceRoot?: string } = {},
 ): MaterializeOutcome | null {
   const trigger = opts.trigger || 'generic post-tool convergence';
   const reportOneMcp = opts.reportOneMcp || noopReporter;
+  const ceiling = opts.workspaceRoot ? path.resolve(opts.workspaceRoot) : '';
   for (const projectRoot of projectRootsFromToolInputHints(cwd, toolInput)) {
+    // Never materialize a project root OUTSIDE the host's authoritative workspace
+    // (Cursor's workspace_roots) — a path hint above it would mint a stray parent root.
+    if (ceiling && !isPathWithin(projectRoot, ceiling)) continue;
     const relativeRoot = path.relative(cwd, projectRoot).replace(/\\/g, '/') || '.';
     const result = materializeProjectIfNeeded(projectRoot, { trigger: `${trigger}: ${relativeRoot}` });
     const state = readEffectiveState(projectRoot);
@@ -50,10 +54,10 @@ export function materializeFromToolInputHints(
 export function materializeFromProjectMemoryWrite(
   cwd: string,
   filePath: unknown,
-  opts: { reportOneMcp?: ReportOneMcp } = {},
+  opts: { reportOneMcp?: ReportOneMcp; workspaceRoot?: string } = {},
 ): MaterializeOutcome | null {
   const reportOneMcp = opts.reportOneMcp || noopReporter;
-  const projectRoot = resolveProjectRoot(cwd, filePath);
+  const projectRoot = resolveProjectRoot(cwd, filePath, { ceiling: opts.workspaceRoot });
   if (isPluginAuthoringRoot(projectRoot)) return null;
 
   const relativePath = projectRelativeHookPath(cwd, projectRoot, filePath);

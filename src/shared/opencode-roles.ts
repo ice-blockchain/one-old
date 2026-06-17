@@ -38,6 +38,36 @@ export function shouldRunRoleOnOpenCode(role: string, state: unknown): boolean {
   return openCodeDelegateRoles(state).includes(role);
 }
 
+// The distinct roles the architect QUEUED bounded OpenCode units for in plan.md's
+// `opencode-delegate` block — normalized (senior- stripped, deduped, first-seen
+// order), empty on any read/parse problem. Single source shared by the from-plan
+// runner (which delegates these) and the spawn gate (roleHasQueuedUnits below).
+export function planDelegationQueueRoles(cwd: string): string[] {
+  let plan = '';
+  try { plan = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { return []; }
+  const start = plan.indexOf('opencode-delegate:start');
+  const end = plan.indexOf('opencode-delegate:end');
+  if (start < 0 || end < 0 || end < start) return [];
+  const roles: string[] = [];
+  for (const line of plan.slice(start, end).split('\n')) {
+    const m = /^\s*-\s*role:\s*([a-z][a-z-]*)/i.exec(line);
+    if (!m || !m[1]) continue;
+    const role = normalizeAttemptRole(m[1].toLowerCase());
+    if (role && !roles.includes(role)) roles.push(role);
+  }
+  return roles;
+}
+
+// True when the architect queued at least one bounded OpenCode unit for `role`. The
+// spawn gate uses this to AVOID trapping a forced-delegate role with NOTHING queued:
+// from-plan can't deliver work that was never queued, so denying its paid spawn would
+// stall the role forever. Roles WITH queued units stay gated (deny until from-plan
+// delivers → marks attempted → the gate clears and the paid implementer proceeds).
+export function roleHasQueuedUnits(cwd: string, role: string): boolean {
+  if (!role) return false;
+  return planDelegationQueueRoles(cwd).includes(normalizeAttemptRole(role));
+}
+
 // Per-run marker that an OpenCode delegation reached the CLI for a role. The
 // runner intentionally writes this only after setup/preconditions pass; sandbox
 // worktree failures and host-policy rejections are not real OpenCode attempts.

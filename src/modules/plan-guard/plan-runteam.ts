@@ -14,7 +14,7 @@ import {
   isMaintenancePhase,
   isSubagentSession,
   legacyRunAgentContext,
-  readRunAssignments,
+  readRunAssignmentsResilient,
   resolveRunAgentContext,
   tryFallbackClaim,
   type RunAgentContext,
@@ -76,7 +76,10 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Preferred path: explicit per-run assignment manifest authored by the architect.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.
   const runId = agentContext && agentContext.runId != null ? String(agentContext.runId) : null;
-  const manifest = runId ? readRunAssignments(projectRoot, runId) : null;
+  // Resilient: tolerates a run-id split (assignments written under a stray id) so the
+  // gate doesn't block every implementer write when the orchestrator's run-id diverges
+  // from currentRunId. See readRunAssignmentsResilient.
+  const manifest = readRunAssignmentsResilient(projectRoot, runId);
 
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);

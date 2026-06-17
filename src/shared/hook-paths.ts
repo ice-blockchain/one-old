@@ -27,9 +27,9 @@ export function findProjectRootForHookFile(cwd: string, filePath: unknown): stri
   if (!normalized) return cwd;
   const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
   const cwdAbs = path.resolve(cwd);
-  // Segment-aware containment: a sibling dir sharing a name prefix (/repo vs
-  // /repo2) must not be walked as if it were inside cwd.
-  const within = (dir: string): boolean => dir === cwdAbs || dir.startsWith(cwdAbs + path.sep);
+  // Segment-aware containment (isPathWithin): a sibling dir sharing a name prefix
+  // (/repo vs /repo2) must not be walked as if it were inside cwd.
+  const within = (dir: string): boolean => isPathWithin(dir, cwdAbs);
   let current = path.dirname(absPath);
   while (within(current)) {
     // The plugin's own repo is never a project root, even with a stray state file.
@@ -53,7 +53,14 @@ export function isOnboardedProjectRoot(dir: string): boolean {
 // Bound the upward walk so a hook can never spend unbounded fs reads climbing to /.
 const MAX_ROOT_WALK = 40;
 
-function nearestOnboardedRoot(startDir: string): string | null {
+// Ancestor-or-self containment (segment-aware: /repo is not within /repo2).
+export function isPathWithin(dir: string, root: string): boolean {
+  const d = path.resolve(dir);
+  const r = path.resolve(root);
+  return d === r || d.startsWith(r + path.sep);
+}
+
+function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null {
   // The home dir is machine-wide config space (`~/.traffic-one`), never a project
   // root. Stop the walk there (and never above it): a stray mode-bearing
   // `~/.traffic-one/.one.json` — e.g. from running the plugin in `~` once — must
@@ -61,9 +68,15 @@ function nearestOnboardedRoot(startDir: string): string | null {
   // Computed per-call (not module-scoped) so tests can pin $HOME.
   let home = '';
   try { home = path.resolve(os.homedir()); } catch { /* no home → unbounded but MAX-capped */ }
+  const ceil = ceiling ? path.resolve(ceiling) : '';
   let current = path.resolve(startDir);
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
     if (home && current === home) break; // reached the home dir — don't treat it (or above) as a root
+    // Never resolve above the host's authoritative workspace root (Cursor's
+    // workspace_roots): a dir OUTSIDE the opened workspace is not this project, even
+    // with a stray onboarded .one.json. Without this an out-of-tree tool path (or a
+    // stray ancestor) re-roots Traffic One to the parent → a second onboarding wizard.
+    if (ceil && !isPathWithin(current, ceil)) break;
     // A mode-bearing .one.json INSIDE the plugin authoring repo is a stray, never
     // a project — skip it and keep walking so an enclosing real workspace (if
     // any) still resolves. The repo can therefore never be adopted as a project.
@@ -72,7 +85,7 @@ function nearestOnboardedRoot(startDir: string): string | null {
       // project root: a monorepo has ONE root (the workspace), so a stray
       // packages/*/.traffic-one (the packages/ui incident) must not shadow it.
       // Keep climbing to the workspace root instead of adopting the sub-package.
-      if (nearestWorkspaceRoot(path.dirname(current)) === null) return current;
+      if (nearestWorkspaceRoot(path.dirname(current), ceiling) === null) return current;
     }
     const parent = path.dirname(current);
     if (parent === current) break; // filesystem root
@@ -99,12 +112,14 @@ function dirDeclaresWorkspace(dir: string): boolean {
 // Nearest ancestor-or-self (within the bounded walk, never above $HOME) that is a
 // workspace root. Used as the project-root anchor when no ONBOARDED root exists
 // yet — e.g. mid-onboarding, before the workspace root has committed `mode`.
-function nearestWorkspaceRoot(startDir: string): string | null {
+function nearestWorkspaceRoot(startDir: string, ceiling?: string): string | null {
   let home = '';
   try { home = path.resolve(os.homedir()); } catch { /* no home → MAX_ROOT_WALK-capped */ }
+  const ceil = ceiling ? path.resolve(ceiling) : '';
   let current = path.resolve(startDir);
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
     if (home && current === home) break;
+    if (ceil && !isPathWithin(current, ceil)) break; // never anchor above the host workspace root
     if (dirDeclaresWorkspace(current) && !hasPluginAuthoringMarkers(current)) return current;
     const parent = path.dirname(current);
     if (parent === current) break;
@@ -126,8 +141,10 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
 
 // Resolve the effective Traffic One project root for a hook operating at `cwd` on
 // an optional target `filePath`. Walks UP from the target file's dir (then from
-// `cwd`) — deliberately NOT bounded by `cwd` — to the nearest ancestor that is a
-// real onboarded root, so a monorepo sub-package (`apps/web`, `packages/*`)
+// `cwd`) — deliberately NOT bounded by `cwd` (but capped by `opts.ceiling` when the
+// host supplies an authoritative workspace root; see below) — to the nearest
+// ancestor that is a real onboarded root, so a monorepo sub-package (`apps/web`,
+// `packages/*`)
 // resolves to the workspace root that holds the onboarding/lifecycle state rather
 // than tripping a bogus per-package wizard or hiding maintenance phase. When no
 // onboarded ancestor exists yet — e.g. mid-onboarding, before the workspace root
@@ -136,15 +153,27 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
 // instead of minting a stray shallow .traffic-one into the sub-package. Falls back
 // to the legacy cwd-bounded nearest-any-state-file resolution (then `cwd`) for a
 // standalone project with no workspace ancestor, so its gating is unchanged.
-export function resolveProjectRoot(cwd: string, filePath?: unknown): string {
+//
+// `opts.ceiling` is the host's AUTHORITATIVE workspace root (Cursor's
+// workspace_roots): resolution never climbs above it. This is what keeps a hook
+// that touches a path ABOVE the opened workspace — or a stray onboarded ancestor —
+// from re-rooting Traffic One to the parent (the Cursor double-onboarding incident).
+// Hosts that declare no workspace boundary (Claude/Codex) leave it unset, so the
+// monorepo sub-package climb is unchanged.
+export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceiling?: string } = {}): string {
+  const ceiling = opts.ceiling ? path.resolve(opts.ceiling) : '';
   const normalized = String(filePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
   const fileAbs = normalized
     ? (path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized))
     : '';
-  const fileStart = fileAbs ? path.dirname(fileAbs) : '';
-  const onboarded = (fileStart && nearestOnboardedRoot(fileStart)) || nearestOnboardedRoot(cwd);
+  let fileStart = fileAbs ? path.dirname(fileAbs) : '';
+  // A target file OUTSIDE the authoritative workspace root is out-of-tree — never
+  // let it re-root resolution to an ancestor. Drop the file hint and resolve from
+  // cwd within the workspace.
+  if (ceiling && fileStart && !isPathWithin(fileStart, ceiling)) fileStart = '';
+  const onboarded = (fileStart && nearestOnboardedRoot(fileStart, ceiling)) || nearestOnboardedRoot(cwd, ceiling);
   if (onboarded) return onboarded;
-  const workspace = (fileStart && nearestWorkspaceRoot(fileStart)) || nearestWorkspaceRoot(cwd);
+  const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling)) || nearestWorkspaceRoot(cwd, ceiling);
   if (workspace) return workspace;
   return findProjectRootForHookFile(cwd, filePath);
 }

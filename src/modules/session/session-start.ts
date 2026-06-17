@@ -23,6 +23,7 @@ import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
+import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
@@ -50,6 +51,20 @@ import { ensureRunnerShims } from '../../shared/runner-shims';
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
+
+// Surface the live wizard URL in the setup banner. Host-gated to Cursor (only it
+// needs the URL in the user-facing channel — see formatWizardBanner) so we don't spawn
+// the server on other hosts; spawning up front is idempotent (the PreToolUse gate
+// reuses it). Best-effort: a spawn failure falls back to the plain banner (the
+// PreToolUse deny still carries the URL).
+function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
+  if (ctx.host !== 'cursor') return banner;
+  try {
+    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd).url, banner);
+  } catch {
+    return banner;
+  }
+}
 const STACK_IDS = new Set(Object.keys(STACKS));
 
 // Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
@@ -280,7 +295,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     const graphPreview = readGraphPreview(cwd);
     if (nextLocalPreferenceStep(state)) {
       return context(`${banner}\n\n${block('setup-pending')}`, {
-        systemMessage: `traffic-one [${state.stack || mode}] setup required`,
+        systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${state.stack || mode}] setup required`),
       });
     }
     return context(`${banner}\n\n${header}${graphPreview}\n${body}`);
@@ -288,7 +303,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
   if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state)) {
     return context(`[ACTIVE STACK: ${stackId}]\n\n${block('setup-pending')}`, {
-      systemMessage: 'traffic-one [setup required]',
+      systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
     });
   }
 
@@ -298,7 +313,9 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const { body } = packBundle(root, spec.mandatory, spec.optional);
   if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();
   writeState(cwd, state);
-  return context(`${directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n${body}`);
+  return context(`${directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n${body}`, {
+    systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
+  });
 }
 
 // Stamp materialization fields after a successful copy (best-effort).

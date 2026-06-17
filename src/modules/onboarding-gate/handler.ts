@@ -25,7 +25,7 @@ import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { canonicalToolName, isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
@@ -51,7 +51,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // sub-package file. Resolve UP to the workspace root that holds onboarding state,
   // so a stray per-package state file can't trip a bogus per-package wizard or hide
   // that the root is already onboarded. Falls back to cwd for a standalone project.
-  const root = resolveProjectRoot(cwd, filePath);
+  const root = resolveProjectRoot(cwd, filePath, { ceiling: ctx.input.workspaceRoot });
   // The resolver skips authoring roots, but its fallback can still return cwd /
   // a hint dir inside the plugin repo — never gate or materialize there.
   if (isPluginAuthoringRoot(root)) return noop();
@@ -110,10 +110,29 @@ export function onboardingGate(ctx: Ctx): HookResult {
     return deny(block('server-deny-reason-repeat', vars));
   }
 
+  // Onboarding is complete → the build is starting. PRE-mint the build run-id for
+  // new-project so the orchestrator READS `currentRunId` at Phase 0 instead of
+  // fabricating one with `date` — a self-generated ISO/UTC id splits run state into a
+  // stray `runs/<id>` tree (assignments/digests the run-team + OpenCode gates can't
+  // see). Idempotent (reuses an existing id); the spawn gate would otherwise mint it
+  // only on the first spawn, AFTER the orchestrator has already built the prompt.
+  const buildRunId = mode === 'new-project' ? ensureCurrentRunId(root, effectiveState) : '';
+
   const materialized = materializeProjectIfNeeded(root, { trigger: 'generic pre-tool convergence' });
   if (materialized) {
     if (isMutatingPreToolUse(toolName, toolInput)) return deny(block('repaired-materialization'));
     return context(materialized.context, { systemMessage: materialized.systemMessage });
+  }
+  // Announce the run-id ONCE, before the first spawn prompt is built, so the literal
+  // value is salient (where the host surfaces PreToolUse context). The plan gate's
+  // run-id write-guard enforces it regardless of whether this context lands.
+  if (buildRunId && firstEmitThisSession(root, 'run-id-announce', hookSessionIdentity(raw).sessionId)) {
+    return context(
+      `traffic-one — build run-id: ${buildRunId}. This is \`currentRunId\` in .traffic-one/.one.json. `
+      + `Use this EXACT value wherever a run-id is needed — \`.traffic-one/runs/${buildRunId}/\` and `
+      + `\`.traffic-one/digests/${buildRunId}/\` paths, and "Run ID:" lines in spawn prompts. Do NOT run `
+      + '`date` to mint one; the plan gate denies writing under any other run-id.',
+    );
   }
   return noop();
 }

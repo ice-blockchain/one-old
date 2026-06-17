@@ -193,11 +193,18 @@ const completeNewProject = (): Record<string, unknown> => ({
   materializedStack: 'default|react-vite|supabase|none',
 });
 
-test('a fully materialized, complete new project lets tool use through (noop)', () => {
+test('a fully materialized, complete new project lets tool use through (run-id announce once, then noop)', () => {
   withProject(completeNewProject(), (cwd) => {
     writeLocalPrefs();
     materializeFixture(cwd, 'default');
-    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'apps/web/src/x.ts', content: 'export const x = 1;' })).kind, 'noop');
+    // First post-onboarding call announces the pre-minted build run-id (one-time) — it
+    // still ALLOWS the write (context, not deny), and stamps currentRunId so the
+    // orchestrator reads it instead of fabricating one with `date`.
+    const first = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'apps/web/src/x.ts', content: 'export const x = 1;' }));
+    assert.equal(first.kind, 'context');
+    if (first.kind === 'context') assert.match(first.context, /build run-id: \d+/);
+    // The announce fired once → subsequent calls fall through to noop.
+    assert.equal(onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'apps/web/src/y.ts', content: 'export const y = 1;' })).kind, 'noop');
   });
 });
 
@@ -215,6 +222,9 @@ test('monorepo: a write from an onboarded workspace sub-package is NOT blocked (
     // Before the fix this resolved apps/web as its own un-onboarded project and
     // denied with a bogus wizard URL; now it resolves up to the onboarded root.
     const r = onboardingGate(ctx(appWeb, 'Write', 'file-write', { file_path: 'src/LandingPage.tsx', content: 'export const x = 1;' }));
-    assert.equal(r.kind, 'noop');
+    // Resolves up to the onboarded root → allowed (never the bogus per-package wizard
+    // deny). The first such call may carry the one-time run-id announce context; the
+    // invariant under test is that it is NOT denied.
+    assert.notEqual(r.kind, 'deny');
   });
 });

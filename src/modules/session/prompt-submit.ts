@@ -12,7 +12,8 @@ import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
-import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
+import { maybeFlipToMaintenance } from '../materialize/build-complete';
+import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { serverRecordExists } from '../../shared/onboarding-server/registry';
@@ -177,9 +178,30 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
       ? 'server-deny-reason'
       : 'server-deny-reason-repeat';
+    // The full recipe rides additional_context (agent-facing). On Cursor that is the
+    // ONLY place the URL would appear unless the agent reposts it as a link — and it
+    // may not. So also put the LIVE clickable wizard URL in the user-facing channel
+    // (systemMessage → user_message on Cursor), so the user always gets a working link
+    // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
+    // in its preview pane and Codex via its own recipe, so they keep the plain banner.
+    const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
     return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
-      systemMessage: 'traffic-one [setup required]',
+      systemMessage,
     });
+  }
+
+  // ── A settled new-project build flips to maintenance at the prompt boundary ──
+  // The orchestrator's explicit Phase-5 stamp is the primary maintenance signal, but
+  // on Cursor it (and claim activation) is unreliable: a FINISHED build can stay in
+  // "building" with leftover never-activated pending claims. That mis-routes this
+  // request through the build-phase gates (new-project monorepo + run-team) and blocks
+  // the spawned worker. A NEW user prompt means the prior build turn ended, so flip
+  // here (the no-active-claims guard is relaxed at the prompt boundary — see
+  // maybeFlipToMaintenance) and refresh the in-memory lifecycle so the triage below
+  // sees maintenance + the completion watermark. Subagent prompts never flip the
+  // project lifecycle (that is the main agent's boundary).
+  if (!isSubagentThread(raw) && maybeFlipToMaintenance(cwd, normalizedState, { atPromptBoundary: true })) {
+    normalizedState.lifecycle = (readState(cwd) as Rec).lifecycle;
   }
 
   // ── Post-build maintenance triage (appended to whatever context we return) ──
