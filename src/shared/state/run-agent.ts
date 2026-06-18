@@ -116,6 +116,42 @@ const SPAWN_ROLE_RES = [
   /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
   /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
 ] as const;
+// Pull the text of a user-authored line from EITHER host transcript shape:
+//   - Codex: { payload?: { type:'message', role:'user', content:[{type:'input_text',text}] } }
+//   - Cursor: { role:'user', message:'<string>' }  (or message:{ content:'<string>'|[{text}] })
+// Returns '' for non-user lines / unknown shapes. Cursor's subagent transcript is the
+// {role, message} shape — parsing only the Codex shape returned null for every Cursor
+// subagent, so the run-team gate could not resolve a Cursor role and hard-denied its
+// writes (run-team-not-subagent). The `[t1-role: senior-X]` marker rides the spawn
+// prompt, which lands as a user line on both hosts.
+function userLineText(parsed: unknown): string {
+  const o = obj(parsed) || {};
+  const p = obj(o.payload) || o;
+  // Codex shape.
+  if (p.type === 'message' && p.role === 'user' && Array.isArray(p.content)) {
+    return (p.content as unknown[])
+      .map((seg) => { const s = obj(seg); return s && s.type === 'input_text' && typeof s.text === 'string' ? s.text : ''; })
+      .filter(Boolean)
+      .join('\n');
+  }
+  // Cursor shape: top-level role + message (string, or {content:string|[{text}]}).
+  if (o.role === 'user') {
+    const m = o.message;
+    if (typeof m === 'string') return m;
+    const mo = obj(m);
+    if (mo) {
+      if (typeof mo.content === 'string') return mo.content;
+      if (Array.isArray(mo.content)) {
+        return (mo.content as unknown[])
+          .map((seg) => { const s = obj(seg); return s && typeof s.text === 'string' ? s.text : ''; })
+          .filter(Boolean)
+          .join('\n');
+      }
+    }
+  }
+  return '';
+}
+
 export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
   let raw: string;
@@ -133,15 +169,7 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
     } catch {
       continue;
     }
-    const p = obj((parsed as Rec)?.payload) || obj(parsed) || {};
-    if (p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) continue;
-    const text = (p.content as unknown[])
-      .map((seg) => {
-        const s = obj(seg);
-        return s && s.type === 'input_text' && typeof s.text === 'string' ? s.text : '';
-      })
-      .filter(Boolean)
-      .join('\n');
+    const text = userLineText(parsed);
     if (text) userTexts.push(text);
   }
   for (let i = userTexts.length - 1; i >= 0; i -= 1) {
@@ -151,7 +179,12 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
       if (role && VALID_AGENT_ROLES.has(role)) return role;
     }
   }
-  return null;
+  // Last resort: the unambiguous structured marker can appear in a line shape the
+  // per-line parser above didn't recognize (host transcript drift). It is unique to
+  // the spawn prompt, so a raw scan can't cross-match another role's prose.
+  const marker = raw.match(SPAWN_ROLE_RES[0]);
+  const markerRole = marker ? (marker[1] as string).toLowerCase() : null;
+  return markerRole && VALID_AGENT_ROLES.has(markerRole) ? markerRole : null;
 }
 
 export interface SessionIdentity {
@@ -810,10 +843,19 @@ export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 // the Claude flag silently disabled the whole regime on Codex). On Claude it is
 // SendMessage, which only registers when the agent-teams feature flag was set
 // at session start. An explicit falsy flag still switches it off everywhere.
-export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+// `host` is the gate's already-resolved host (preferred — authoritative); env is the
+// fallback signal when a caller has no host in hand. An explicit off-flag disables
+// everywhere, on any host.
+export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env, host?: string): boolean {
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
-  if (env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  // Codex: send_input (native to the multi_agent toolset, always present).
+  if (host === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  // Cursor: the Task tool accepts an `agentId` to RESUME a previous subagent with full
+  // context preserved (cursor.com/docs/subagents) — the analogue of send_input/SendMessage.
+  // Without this every Cursor role task re-spawned a fresh subagent, re-loading rules+skills.
+  if (host === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
+  // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }
 

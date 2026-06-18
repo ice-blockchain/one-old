@@ -323,6 +323,41 @@ test('non-cursor host keeps the plain setup banner (URL only in agent context)',
   });
 });
 
+test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post link FIRST" recipe in the AGENT channel', () => {
+  // The 5b failure: a truly pristine new-project dir takes the uninitialized early
+  // return into runSessionStartAuthed → Flow 3, which previously emitted the URL-less
+  // `setup-pending` block in additional_context — so on Cursor the agent saw no link
+  // and no instruction to post one (user_message is not rendered on user-prompt-submit).
+  // Flow 3 must now carry the live URL AND the explicit "post the wizard URL FIRST,
+  // before the wait command" instruction in the agent-facing channel for Cursor.
+  withAuthedProject(null, (cwd) => {
+    // Seed a live server record so ensureOnboardingServer returns a REAL url under
+    // NO_SPAWN (the ':0/' placeholder is intentionally not surfaced).
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'cursor'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('http://127.0.0.1:56858'), 'agent context carries the LIVE wizard URL on the pristine first prompt');
+      assert.ok(/post the wizard URL/i.test(r.context), 'agent context instructs Cursor to post the link');
+      assert.ok(/FIRST/.test(r.context) && /wait command/i.test(r.context), 'instruction says post FIRST, before the wait command');
+    }
+  });
+});
+
+test('non-cursor PRISTINE first coding prompt keeps the URL-less setup-pending note (recipe rides the PreToolUse deny)', () => {
+  // Claude opens via its preview pane and Codex via node_repl — both driven by the
+  // PreToolUse deny recipe — so Flow 3 must NOT spam the full URL recipe into their
+  // agent context: the plain `setup-pending` note (no live URL) is correct for them.
+  withAuthedProject(null, (cwd) => {
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'claude'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(!r.context.includes('http://127.0.0.1:56858'), 'non-cursor agent context does not carry the live URL on the pristine first prompt');
+    }
+  });
+});
+
 function writeMaterialized(cwd: string, stackId: string): void {
   const t1 = path.join(cwd, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });

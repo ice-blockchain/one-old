@@ -105,7 +105,7 @@ You do **not** touch backend modules (`apps/*/server/`, `packages/api*`, `servic
    action, first-screen hierarchy, visual direction, token plan, motion plan,
    responsive behavior, and state coverage.
 4. Pick the right scaffolder skill (`create-component` / `create-page` / `create-feature`) based on the artefact type.
-5. Compose existing shadcn / RNR primitives; add new primitives via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button, dialog, dropdown, or form control.
+5. Compose existing shadcn / RNR primitives; add new primitives via `npx shadcn@latest add <name>` (web/Ionic) or `npx @react-native-reusables/cli@latest add <name>` (RN). Never hand-roll a button, dialog, dropdown, or form control. The shadcn/ui component catalog (names + APIs) is at https://ui.shadcn.com/docs/components — check it for the right primitive before building anything custom.
 6. Pull values from Tailwind tokens (`bg-primary`, `text-muted-foreground`, …) backed by the shadcn HSL CSS variables. No hardcoded hex/rgb/px.
 7. For generated or changed web routes, implement the SEO baseline from
    `rules/common/seo.md`: route-aware metadata (`Seo.tsx` + `src/lib/seo.ts`

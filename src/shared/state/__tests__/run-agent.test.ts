@@ -330,3 +330,29 @@ test('inferRoleFromTranscript honors the [t1-role:] marker contract', () => {
     assert.equal(inferRoleFromTranscript(file), 'senior-reviewer');
   });
 });
+
+test('inferRoleFromTranscript parses the CURSOR {role, message} transcript shape', () => {
+  withPrefs((dir) => {
+    // Cursor's subagent transcript is {role, message} per line — NOT the Codex
+    // payload/content shape. This is the run-team-not-subagent block: parsing only
+    // the Codex shape returned null for every Cursor subagent. (tests/4b live bug.)
+    const f1 = path.join(dir, 'rollout-cursor-be.jsonl');
+    fs.writeFileSync(f1, [
+      JSON.stringify({ role: 'user', message: '[t1-role: senior-backend]\nRun R. Implement the API layer.', type: 'message', status: 'ok' }),
+      JSON.stringify({ role: 'assistant', message: 'Working on it.' }),
+    ].join('\n') + '\n', 'utf8');
+    assert.equal(inferRoleFromTranscript(f1), 'senior-backend');
+
+    // Cursor message-as-object shape ({content:string}) also resolves.
+    const f2 = path.join(dir, 'rollout-cursor-fe.jsonl');
+    fs.writeFileSync(f2, JSON.stringify({
+      role: 'user', message: { content: 'You are Traffic One `senior-frontend` for run R. senior-backend owns the API.' },
+    }) + '\n', 'utf8');
+    assert.equal(inferRoleFromTranscript(f2), 'senior-frontend');
+
+    // Last-resort raw marker scan: marker present but in an unrecognized line shape.
+    const f3 = path.join(dir, 'rollout-cursor-odd.jsonl');
+    fs.writeFileSync(f3, JSON.stringify({ kind: 'thread_item', data: { text: 'spawn [t1-role: senior-tester] user' } }) + '\n', 'utf8');
+    assert.equal(inferRoleFromTranscript(f3), 'senior-tester');
+  });
+});

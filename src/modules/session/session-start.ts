@@ -24,6 +24,7 @@ import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/pack
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
+import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
@@ -63,6 +64,27 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
     return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd).url, banner);
   } catch {
     return banner;
+  }
+}
+
+// The AGENT-FACING setup directive (additional_context). On Cursor the user-facing
+// channel (systemMessage→user_message) is NOT rendered on user-prompt-submit, so the
+// URL-less `setup-pending` prose leaves the agent with no link and no instruction to
+// post one — the user gets stuck (the 5b first-prompt failure). For Cursor, emit the
+// full `server-deny-reason` recipe instead: it carries the live URL AND the explicit
+// "post the wizard URL FIRST, before the wait command" instruction. Other hosts keep
+// the plain `setup-pending` note (Claude opens via its preview pane, Codex via node_repl
+// — both driven by the PreToolUse deny recipe, neither needs the link surfaced in chat).
+// Best-effort: a server-spawn failure falls back to the plain note (the PreToolUse deny
+// still carries the URL). Single source for every SessionStart/Flow-3 setup-pending path.
+function setupPendingDirective(ctx: Ctx, cwd: string): string {
+  if (ctx.host !== 'cursor') return block('setup-pending');
+  try {
+    const server = ensureOnboardingServer(cwd);
+    if (!server.url || server.url.includes(':0/')) return block('setup-pending');
+    return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) });
+  } catch {
+    return block('setup-pending');
   }
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
@@ -294,7 +316,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
     if (nextLocalPreferenceStep(state)) {
-      return context(`${banner}\n\n${block('setup-pending')}`, {
+      return context(`${banner}\n\n${setupPendingDirective(ctx, cwd)}`, {
         systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${state.stack || mode}] setup required`),
       });
     }
@@ -302,13 +324,15 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   }
 
   if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state)) {
-    return context(`[ACTIVE STACK: ${stackId}]\n\n${block('setup-pending')}`, {
+    return context(`[ACTIVE STACK: ${stackId}]\n\n${setupPendingDirective(ctx, cwd)}`, {
       systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
     });
   }
 
   // ── Flow 3 — new project (or undetectable existing) → point at the setup wizard ──
-  const directive = block('setup-pending');
+  // On Cursor the directive carries the live URL + "post the link FIRST" recipe in the
+  // agent-facing channel (additional_context); other hosts keep the plain note.
+  const directive = setupPendingDirective(ctx, cwd);
   const spec = STACKS.minimal;
   const { body } = packBundle(root, spec.mandatory, spec.optional);
   if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();

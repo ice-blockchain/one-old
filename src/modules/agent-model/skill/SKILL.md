@@ -50,9 +50,9 @@ To stop routing this role through OpenCode, remove it from `openCode.delegateRol
 <!-- T1BLOCK:END opencode-role-delegate -->
 
 <!-- T1BLOCK:BEGIN agent-reuse-continue -->
-Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{AGENT_ID}}`. Do NOT spawn a fresh `{{ROLE}}`: every fresh spawn re-loads the full rules+skills context (~20k tokens before any work) and re-explores the codebase. Send the next task to the SAME agent instead:
-1. Call `SendMessage` with `to: "{{AGENT_ID}}"` and `message: <the task>`. The message carries ONLY what is NEW: the task spec, exact file paths, acceptance criteria, and (for fix cycles) the reviewer/tester findings VERBATIM. The agent keeps everything it already read — rules, skills, plan, digests, prior source — so do not re-paste any of that.
-2. Treat the SendMessage reply exactly like a fresh spawn's final report (same digest + verdict-token contract: it must still end with its terminal token and update its digest under `.traffic-one/digests/<runId>/`).
-3. Parallel roles stay parallel: continuations of different roles (e.g. frontend + backend follow-ups) go out as multiple SendMessage calls in ONE message, like parallel spawns.
-4. Only if that agent is genuinely unusable — SendMessage errors ("agent not found"), or its replies show context exhaustion — re-spawn `{{ROLE}}` with the literal marker `{{MARKER}}` anywhere in the spawn prompt. The gate then allows ONE replacement spawn (same model-tier rules) and records the new agent id automatically.
+Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{AGENT_ID}}`. Do NOT spawn a fresh `{{ROLE}}`: every fresh spawn re-loads the full rules+skills context (~20k tokens before any work) and re-explores the codebase. Continue the SAME agent instead:
+1. {{CONTINUE_CALL}} The message carries ONLY what is NEW: the task spec, exact file paths, acceptance criteria, and (for fix cycles) the reviewer/tester findings VERBATIM. The agent keeps everything it already read — rules, skills, plan, digests, prior source — so do not re-paste any of that.
+2. Treat the reply exactly like a fresh spawn's final report (same digest + verdict-token contract: it must still end with its terminal token and update its digest under `.traffic-one/digests/<runId>/`).
+3. Parallel roles stay parallel: continuations of different roles (e.g. frontend + backend follow-ups) go out together in ONE turn, like parallel spawns.
+4. Only if that agent is genuinely unusable — {{CONTINUE_TOOL}} errors ("agent not found"/unavailable), or its replies show context exhaustion — re-spawn `{{ROLE}}` with the literal marker `{{MARKER}}` anywhere in the spawn prompt. The gate then allows ONE replacement spawn (same model-tier rules) and records the new agent id automatically.
 <!-- T1BLOCK:END agent-reuse-continue -->

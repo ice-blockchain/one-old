@@ -320,12 +320,23 @@ Wait for both to return before Phase 3.
 **Pre-step — refresh the codebase graph** (cheap, parent-side, do not skip): the
 implementers just wrote the real code, but the graph index still holds the empty
 onboarding scan, so reviewer/tester would navigate a stale near-empty graph.
-From the project root run the provider runner per `codeGraphProvider` — WITH
-`--force`, because the runner's mtime freshness check cannot tell that a recent
-index predates the new code (observed live: "fresh" answered for 2 indexed
-files vs ~60 on disk):
-`node ~/.traffic-one/bin/gitnexus-runner.cjs --force`
-(or `graphify-runner.cjs --force`). Worker threads cannot trigger the post-build rescan
+RESOLVE the provider via `readEffectiveState`, NEVER by reading `.one.json` directly:
+`codeGraphProvider` is a MACHINE-WIDE setting in `~/.traffic-one/one.json`, intentionally
+absent from the project's `.one.json` — an empty/missing `codeGraphProvider` field in
+`.one.json` does NOT mean "no provider configured", so never skip the refresh on that basis.
+Run it WITH `--force` (the runner's mtime freshness check cannot tell a recent index predates
+the new code — observed live: "fresh" answered for 2 indexed files vs ~60 on disk):
+
+```bash
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
+case "$PROVIDER" in
+  gitnexus) node ~/.traffic-one/bin/gitnexus-runner.cjs --force ;;
+  graphify) node ~/.traffic-one/bin/graphify-runner.cjs --force ;;
+  *) : ;;  # genuinely unset (rare) — skip; do NOT infer "unset" from .one.json
+esac
+```
+
+Worker threads cannot trigger the post-build rescan
 hook on every host, so this parent-side refresh is the in-run path that guarantees
 reviewer/tester see fresh structure. If it is ever missed (crash/resume, or a host with
 no subagent barrier such as Cursor/Low), the runner self-heals: a later no-force
@@ -453,7 +464,7 @@ the user typing `pnpm build`.
 Dispatch on `codeGraphProvider` from the effective Traffic One state, which merges shared `.traffic-one/.one.json` with the current user's local preferences:
 
 ```bash
-PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
     node ~/.traffic-one/bin/gitnexus-runner.cjs
