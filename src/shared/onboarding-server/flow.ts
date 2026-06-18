@@ -7,7 +7,7 @@
 // module only maps an answer → a writeState/mergeProjectPrefs call. The code-graph
 // install is returned as a `task` signal for the HTTP layer to run out-of-band.
 
-import { classifyPromptForStack, detectMode } from '../detection';
+import { classifyPromptForStack, detectMode, promptHasStackSignal } from '../detection';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
@@ -376,7 +376,17 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
         .filter((s) => s.trim() !== '')
         .join('. ');
       const mobile = obj(committed.mobile) || { enabled: false, framework: 'none' };
-      const derived = hasStack ? {} : deriveStack(promptSignal, String(mobile.framework || 'none'));
+      // No-signal floor: reaching finalize on a new-project onboarding means a build
+      // WAS intended, but the prompt can be LOST before it is ever seeded (observed on
+      // Cursor 9b: the user-prompt-submit hook no-ops when the host payload carries no
+      // prompt text, so seedOriginalPrompt never runs; the wizard form has no prompt
+      // field, so promptSignal === ''). deriveStack('') collapses to `minimal/none/none`,
+      // silently scaffolding the wrong (empty) stack. So when there is NO stack signal at
+      // all, floor to the default build seed instead of minimal. An EXPLICIT minimal
+      // request ("landing page", "static site") carries promptHasStackSignal===true, so it
+      // classifies normally and is preserved — only a truly signal-less build is floored.
+      const stackSeed = promptHasStackSignal(promptSignal) ? promptSignal : 'app with users and an admin dashboard';
+      const derived = hasStack ? {} : deriveStack(stackSeed, String(mobile.framework || 'none'));
       writeState(cwd, { ...committed, mode: 'new-project', ...derived });
       return { ok: true };
     }

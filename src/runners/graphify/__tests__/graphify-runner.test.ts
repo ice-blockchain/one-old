@@ -216,6 +216,32 @@ test('a "No code files found" failure becomes a graceful skip, not an alarming g
   });
 });
 
+test('a "No code files found" emitted on STDERR is also a graceful skip (graphify uses either stream by path)', () => {
+  withProject((cwd, prefs) => {
+    // The non-watch update path emits the "no code files" line to STDERR, with the
+    // opaque summary on stdout. The graceful-skip classification must match the
+    // COMBINED output, not stdout alone, or this benign case reverts to a scary
+    // graphifyLastError that doctor surfaces as LAST_RUN_FAILED.
+    const bin = stubGraphify(cwd, {
+      stdout: 'Nothing to update or rebuild failed — check output above.',
+      stderr: 'No code files found - nothing to rebuild.',
+      code: 1,
+    });
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = bootstrap(cwd, { force: true });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'install-skipped');
+      assert.match(r.error || '', /no source files to index/);
+      const saved = JSON.parse(fs.readFileSync(prefs, 'utf8'));
+      assert.equal(saved.graphifyLastError, undefined);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
 test('a genuine graphify failure surfaces the STDOUT diagnostic, not just the opaque stderr summary', () => {
   withProject((cwd, prefs) => {
     // The real cause lives on stdout; stderr is the useless summary. graphifyLastError
@@ -233,6 +259,42 @@ test('a genuine graphify failure surfaces the STDOUT diagnostic, not just the op
       assert.match(r.error || '', /Rebuild failed: boom in extractor/);
       const saved = JSON.parse(fs.readFileSync(prefs, 'utf8'));
       assert.match(saved.graphifyLastError || '', /Rebuild failed: boom in extractor/);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('a project whose .gitignore covers all source still produces a graph (degenerate seed dropped)', () => {
+  withProject((cwd) => {
+    // Source lives under src/, and the project .gitignore ignores src/ — seeding that
+    // into .graphifyignore would make graphify scan zero files ("No code files found").
+    // The degenerate-seed guard must drop the seed so the scan still sees the source.
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src', 'index.ts'), 'export const x = 1;\n', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.gitignore'), 'src/\n', 'utf8');
+    // Stub graphify that HONORS .graphifyignore: if it would exclude src, exit 1 with
+    // graphify's "No code files found"; otherwise write the graph and exit 0.
+    const bin = path.join(cwd, 'gbin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(
+      path.join(bin, 'graphify'),
+      '#!/bin/sh\n'
+      + 'if [ "$1" = "update" ]; then\n'
+      + '  if grep -qE "^src/?$" .graphifyignore 2>/dev/null; then echo "No code files found - nothing to rebuild."; exit 1; fi\n'
+      + '  mkdir -p graphify-out; printf "{\\"nodes\\":[{\\"id\\":\\"a\\"}],\\"links\\":[]}" > graphify-out/graph.json; printf "# graph\\n" > graphify-out/GRAPH_REPORT.md; exit 0\n'
+      + 'fi\nexit 0\n',
+      { mode: 0o755 },
+    );
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const r = bootstrap(cwd, { force: true });
+      assert.equal(r.ok, true, 'scan succeeds because the source-hiding seed was dropped');
+      assert.ok(r.report?.endsWith(path.join('graphify-out', 'GRAPH_REPORT.md')));
+      assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'graphify-out', 'graph.json')), 'graph relocated under .traffic-one');
+      assert.equal(fs.existsSync(path.join(cwd, '.graphifyignore')), false, 'scoped ignore removed after the scan');
+      assert.equal(fs.readFileSync(path.join(cwd, '.gitignore'), 'utf8'), 'src/\n', '.gitignore untouched');
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }

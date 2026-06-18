@@ -111,5 +111,52 @@ test('OPENCODE_DELEGATE_UNIT_KINDS catalog: bounded kinds present, never-list in
   }
   assert.ok(OPENCODE_NEVER_DELEGATE.some((s) => /security|RLS/i.test(s)));
   assert.ok(OPENCODE_NEVER_DELEGATE.some((s) => /credential|deploy/i.test(s)));
+  // The .traffic-one project-memory baseline is architect-owned, never delegated
+  // (the 5b/Cursor partial-baseline bug: the docs delegate wrote only README/.env).
+  assert.ok(
+    OPENCODE_NEVER_DELEGATE.some((s) => /\.traffic-one/.test(s) && /baseline/i.test(s)),
+    'the .traffic-one memory baseline must be on the never-delegate list',
+  );
+  // The docs-draft unit kind must scope to ROOT human docs, not the .traffic-one baseline.
+  const docsDraft = OPENCODE_DELEGATE_UNIT_KINDS.find((k) => k.id === 'docs-draft');
+  assert.ok(docsDraft && /\.traffic-one/.test(docsDraft.summary) && /never/i.test(docsDraft.summary),
+    'docs-draft must explicitly exclude the .traffic-one baseline');
   assert.ok(!DEFAULT_OPENCODE_DELEGATE_ROLES.includes('senior-shipper'), 'shipper must not ride the free tier by default');
+});
+
+// The 5b/Cursor failure: the architect wrote only 4 of the baseline files and
+// emitted PLAN_READY anyway, because the memory baseline (unlike the workspace
+// scaffold) had no hard ls-verify gate. Lock the gate into the role doc so it
+// can't silently regress to soft "mandatory" prose again.
+test('senior-architect agent.md enforces the full .traffic-one memory baseline before PLAN_READY', () => {
+  const doc = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'modules', 'senior-architect', 'agent.md'),
+    'utf8',
+  );
+  assert.match(doc, /Required project-memory baseline/, 'baseline subsection present');
+  // Every canonical baseline file is named in the hard ls-verify rule.
+  for (const f of ['coding', 'security', 'api', 'database', 'deployment', 'environment-setup']) {
+    assert.ok(doc.includes(`${f}.md`) || doc.includes(`${f},`) || doc.includes(`,${f}`),
+      `baseline file ${f}.md must be enumerated in the architect doc`);
+  }
+  assert.match(doc, /ls .*\.traffic-one.*decisions\/\*\.md/, 'hard ls-verify gate present');
+  assert.match(doc, /MUST NOT be delegated to OpenCode|not delegate the `?\.traffic-one/, 'never-delegate note present');
+});
+
+// The 9b/Cursor failure: the agent printed "Cursor doesn't expose senior-architect
+// subagents" and simulated the team, even though the runtime fully supports Cursor
+// subagents (Task tool + materialized .cursor/agents/<role>.md). The orchestrator skill
+// + team rule must name Cursor's spawn tool and must NOT group Cursor as a no-subagent
+// host in the spawn decision — lock that into the prose so it can't regress.
+test('orchestrator + team prose name Cursor as a first-class subagent host (Task tool), not no-subagent', () => {
+  const modules = path.join(__dirname, '..', '..', 'modules');
+  const skill = fs.readFileSync(path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
+  // The skill names Cursor's concrete spawn tool.
+  assert.match(skill, /Cursor\s*=\s*the `Task` tool/, 'orchestrator skill must name Cursor = the `Task` tool');
+  assert.match(skill, /first-class subagent host/i, 'skill must affirm Cursor is a first-class subagent host');
+  // The misleading phrasing that grouped Cursor under "no subagent" is gone.
+  assert.doesNotMatch(skill, /no subagent barrier such as Cursor/i, 'must not group Cursor under "no subagent barrier"');
+  // The team rule names Cursor's Task+agentId continuation primitive.
+  assert.match(teamRule, /Cursor.*`Task` tool.*agentId|agentId.*Cursor/i, 'team rule must name Cursor Task+agentId continuation');
 });

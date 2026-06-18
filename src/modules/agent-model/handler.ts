@@ -12,7 +12,7 @@ import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
-import { modelMatchesExpected, resolveModel } from '../../shared/model-tiers';
+import { acceptableModelsFor, modelMatchesAny, resolveModel } from '../../shared/model-tiers';
 import { cursorAgentModel } from '../../shared/materialize/cursor-agent-model';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
@@ -45,28 +45,73 @@ const block = (name: string, vars: Record<string, string | number | null | undef
 // with no `model` param and no deny/retry, while still enforcing the tier (Traffic One
 // wrote the file). Family-aware (modelMatchesExpected) so reasoning/speed variants pass.
 function modelSatisfiesTier(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string): boolean {
-  if (modelMatchesExpected(passedModel, expected)) return true;
+  // Family-aware AND accept-set-aware: on Cursor the tier is satisfied by the
+  // preferred slug OR any same-class alternate (CURSOR_MODEL_ALTERNATES), so a build
+  // that doesn't offer the preferred model can still spawn on one it does offer.
+  const acceptable = acceptableModelsFor(expected, ctx.host);
+  if (modelMatchesAny(passedModel, acceptable)) return true;
   if (ctx.host === 'cursor') {
     const fileModel = cursorAgentModel(cwd, role);
-    if (fileModel && modelMatchesExpected(fileModel, expected)) return true;
+    if (fileModel && modelMatchesAny(fileModel, acceptable)) return true;
   }
   return false;
 }
 
+// The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
+// orchestrator can pass a model the runner actually offers when a Cursor build does
+// not offer the preferred slug (Cursor rejects an unavailable slug as invalid). The
+// gate stays strict — a wrong-FAMILY model is still denied; only the maintainer-
+// defined accept-set (CURSOR_MODEL_ALTERNATES) widens what satisfies the tier.
+// Host-specific "continue the live agent" recipe for the agent-reuse deny. The
+// continuation primitive differs per host: Cursor RE-INVOKES the Task tool with an
+// `agentId` (cursor.com/docs/subagents — resumes the subagent with context preserved),
+// Codex uses `send_input`, Claude uses `SendMessage`. The agentId is interpolated here
+// so the SKILL block stays a single host-agnostic template.
+function continuationRecipe(host: string, agentId: string): { call: string; tool: string } {
+  if (host === 'cursor') {
+    return {
+      call: `Re-invoke the \`Task\` tool with \`agentId: "${agentId}"\` and \`prompt\` = the NEW task only — Cursor resumes the SAME subagent with full context preserved.`,
+      tool: 'the Task `agentId` resume',
+    };
+  }
+  if (host === 'codex') {
+    return {
+      call: `Call \`send_input\` with \`target: "${agentId}"\` and the NEW task as the message.`,
+      tool: 'send_input',
+    };
+  }
+  return {
+    call: `Call \`SendMessage\` with \`to: "${agentId}"\` and \`message\` = the NEW task.`,
+    tool: 'SendMessage',
+  };
+}
+
+function modelTierDeny(ctx: Ctx, role: string, passedModel: string, expected: string, level: string): HookResult {
+  const passedNote = passedModel
+    ? `You passed model="${passedModel}". `
+    : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
+  const altModels = acceptableModelsFor(expected, ctx.host).slice(1);
+  const altNote = altModels.length
+    ? ` If this host's subagent runner does NOT offer "${expected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
+    : '';
+  return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote, ALTERNATES: altNote }));
+}
+
 // NOTE: this gate FIRES and ENFORCES on Cursor — the generic before-tool-use hook
 // derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), the model is
-// passed in tool_input.model, and HOST_MODELS.cursor now holds REAL Cursor model IDs
-// (gpt-5.5 / claude-4.6-sonnet / composer-latest) that Cursor's subagent tool accepts —
-// so the per-role model-param deny is enforced on all three hosts identically. (This
+// passed in tool_input.model, and HOST_MODELS.cursor holds the EXACT Cursor Task-tool
+// slugs (claude-opus-4-8-thinking-high / claude-4.6-sonnet-medium-thinking / composer-2.5-fast)
+// — so the per-role model-param deny is enforced on all three hosts identically. (This
 // replaced an earlier advisory-only stopgap: HOST_MODELS.cursor used to hold Anthropic
 // aliases (opus/sonnet/haiku) that Cursor REJECTS, making a hard equality deny
-// un-satisfiable. With valid Cursor slugs that's gone — an unavailable-but-valid model
-// falls back gracefully inside Cursor, so only an INVALID slug would reject, and we
-// ship none.) The gate also stakes the run-claim here (subagentStart is a different
+// un-satisfiable. Cursor REJECTS a slug it doesn't offer rather than downgrading, and its
+// subagent lineup is account/build-specific, so each cursor tier carries same-tier
+// fallbacks (CURSOR_MODEL_ALTERNATES) that the accept-set in modelSatisfiesTier honors.)
+// The gate also stakes the run-claim here (subagentStart is a different
 // canonical event, so no double-claim), which the subagent-team write gate needs to
-// resolve a role on Cursor. Agent REUSE/continuation still stays inert on Cursor —
-// subagentContinuationAvailable() is false there (no SendMessage/continuation
-// primitive), so the reuse path no-ops.
+// resolve a role on Cursor. Agent REUSE/continuation is ENABLED on Cursor via the Task
+// tool's `agentId` resume param (subagentContinuationAvailable() returns true there); a
+// resume Task call carries agentId and is allowed straight through the reuse gate.
 export function agentModelGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();
 
@@ -152,15 +197,26 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // so the recorder can capture the replacement. Entries from another parent
   // session never match (liveRunAgent) — in-process agents die with their
   // session, so a resumed orchestrator spawns fresh without friction.
-  if (subagentContinuationAvailable()) {
+  if (subagentContinuationAvailable(process.env, ctx.host)) {
     const runId = typeof state.currentRunId === 'string' && state.currentRunId.trim() ? state.currentRunId.trim() : null;
     if (runId) {
+      // A spawn that ALREADY carries an `agentId` is a RESUME (the sanctioned
+      // continuation on Cursor, where the resume primitive IS the Task tool re-invoked
+      // with agentId) — never deny it, or the gate would block the very continuation it
+      // asks for. On Codex/Claude the continuation is a different tool (send_input /
+      // SendMessage), so spawn_agent/Task never carries agentId there → this is inert.
+      const isResume = typeof (toolInput.agentId ?? toolInput.agent_id) === 'string'
+        && String(toolInput.agentId ?? toolInput.agent_id).trim().length > 0;
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
         markRunAgentReplaced(cwd, runId, role);
-      } else {
+      } else if (!isResume) {
         const live = liveRunAgent(cwd, runId, role, hookSessionIdentity(raw).sessionId);
         if (live) {
-          return deny(block('agent-reuse-continue', { ROLE: role, RUN_ID: runId, AGENT_ID: live.agentId, MARKER: REPLACE_AGENT_MARKER }));
+          const recipe = continuationRecipe(ctx.host, live.agentId);
+          return deny(block('agent-reuse-continue', {
+            ROLE: role, RUN_ID: runId, AGENT_ID: live.agentId, MARKER: REPLACE_AGENT_MARKER,
+            CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
+          }));
         }
       }
     }
@@ -175,10 +231,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     const expected = resolveModel('cheapest', ctx.host);
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
     if (expected && !modelSatisfiesTier(ctx, cwd, role, passedModel, expected)) {
-      const passedNote = passedModel
-        ? `You passed model="${passedModel}". `
-        : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
-      return deny(block('performance-model-param', { LEVEL: 'maintenance', HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
+      return modelTierDeny(ctx, role, passedModel, expected, 'maintenance');
     }
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
@@ -217,10 +270,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
   if (!modelSatisfiesTier(ctx, cwd, role, passedModel, expected)) {
-    const passedNote = passedModel
-      ? `You passed model="${passedModel}". `
-      : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
-    return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
+    return modelTierDeny(ctx, role, passedModel, expected, level);
   }
 
   ensureRunAgentClaim(cwd, state, role, raw, {

@@ -29,7 +29,7 @@ export function workspaceYamlPresent(cwd: string): boolean {
   return fs.existsSync(path.join(cwd, 'pnpm-workspace.yaml')) || fs.existsSync(path.join(cwd, 'pnpm-workspace.yml'));
 }
 
-const SOURCE_EXTS = new Set([
+export const SOURCE_EXTS = new Set([
   '.tsx', '.ts', '.jsx', '.js', '.vue', '.svelte',
   '.go', '.rs', '.py', '.java', '.kt', '.kts', '.cs', '.php', '.rb',
   '.swift', '.dart', '.cpp', '.cc', '.cxx', '.c', '.h', '.hpp',

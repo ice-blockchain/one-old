@@ -21,6 +21,14 @@ onboarding stops re-prompting). Valid values:
 `gitnexus`, `graphify`. Both produce different on-disk artefacts; the read
 protocol below covers each.
 
+**Resolving the provider (do not misread it as unset):** because it is machine-wide,
+`codeGraphProvider` is intentionally ABSENT from a project's `.one.json` (it is stripped
+from shared state and re-injected onto the effective state at read time). So an empty/missing
+`codeGraphProvider` in `.one.json` does NOT mean "no provider configured" — always resolve it
+via `readEffectiveState(projectRoot)`, never by reading `.one.json` directly. Use the full
+plugin-root chain (`TRAFFIC_ONE_PLUGIN_ROOT` → `CURSOR_PLUGIN_ROOT` → `CODEX_PLUGIN_ROOT` →
+`CLAUDE_PLUGIN_ROOT`) so resolution works on every host.
+
 ## Provider-aware read protocol (priority order)
 
 ### When `codeGraphProvider: "gitnexus"`

@@ -371,17 +371,18 @@ export function bootstrap(cwd: string = process.cwd(), opts: GraphifyOpts = {}):
 
   const run = runGraphify(cwd, ensured.binPath);
   if (run.status !== 0) {
-    // graphify writes the REAL cause to STDOUT (e.g. "[graphify watch] No code
-    // files found - nothing to rebuild.") and only the opaque "Nothing to update or
-    // rebuild failed — check output above." summary to STDERR. Returning run.stderr
-    // alone discards the diagnostic and makes every failure undebuggable, so surface
-    // BOTH streams, preferring the informative stdout line.
+    // graphify writes the REAL cause (e.g. "[graphify watch] No code files found -
+    // nothing to rebuild.") to STDOUT on the watch path but to STDERR on others, and
+    // only the opaque "Nothing to update or rebuild failed — check output above."
+    // summary to the other stream. Returning run.stderr alone discards the diagnostic
+    // and makes every failure undebuggable, so surface BOTH streams.
     const diagnostic = [run.stdout, run.stderr].filter(Boolean).join('\n').trim() || 'graphify exited non-zero';
     // "No code files found" is not a tool failure: the project is empty or its
     // .gitignore/.graphifyignore covers all source. Degrade gracefully — return a
     // clear skip and DON'T record an alarming graphifyLastError (the caller, a
-    // post-build hint, already degrades on a non-ok result).
-    if (/No code files found/i.test(run.stdout)) {
+    // post-build hint, already degrades on a non-ok result). Match the COMBINED
+    // output, not one stream — graphify emits this line on stdout OR stderr by path.
+    if (/No code files found/i.test(diagnostic)) {
       return {
         ok: false,
         action: 'install-skipped',

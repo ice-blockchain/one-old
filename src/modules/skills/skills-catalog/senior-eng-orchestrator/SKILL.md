@@ -44,8 +44,9 @@ work already started, pause at the next safe point, resolve it, then continue.
   - High → architect/frontend/backend/reviewer = `highest` tier, tester = `cheapest` tier, shipper = `balanced` tier.
   - Tier → model: resolve each tier (`highest`|`balanced`|`cheapest`) to your host's concrete model via the plugin's tier→model table; the Team Confirmation line-up renders the resolved per-host models.
 - **Spawn**: auto-spawn each role with your host's subagent tool when this skill triggers, passing the `model` parameter resolved to that role's tier on EVERY spawn (a model name in prompt text has no effect). Where the host uses model aliases, the alias auto-tracks the newest model of that family.
+- **Spawn tool per host — all three DO expose one, never claim otherwise:** Claude = the `Task`/`Agent` tool; Codex = `spawn_agent`; **Cursor = the `Task` tool**. Cursor IS a first-class subagent host: Traffic One has already materialized one `.cursor/agents/senior-<role>.md` (with the role's tier model pinned) per team role for this project, so a `Task` spawn of `senior-<role>` runs on the correct model from the first call. Do NOT assert "Cursor doesn't expose subagents" or simulate merely because you are on Cursor.
 - Subagents do not inherit the parent's skills. Keep every `agents/senior-*.md` frontmatter `skills:` list complete for that role.
-- If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). If the host exposes no callable agent facility, Low is chosen, or subagents are blocked, simulate the same roles manually in the same dependency order using the mirrored `00-agent-senior-*` role contexts.
+- If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime — all three supported hosts (Claude, Codex, Cursor) expose a callable subagent tool, so never simulate merely because you are on Cursor.
 - Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its owned area; a read-only agent for the reviewer). For implementers the AUTHORITATIVE scope is the role's entry in the per-run assignments manifest `.traffic-one/runs/<runId>/assignments.json` (authored by the architect in Phase 1, enforced by the run-team gate). The lines below are the human summary:
   - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, and the per-run `assignments.json` manifest. Writes no feature source.
   - `senior-frontend` — owned write scope = its `assignments.json` entry (UI / routing / i18n / SEO for this project's actual layout).
@@ -82,13 +83,17 @@ How it works:
    helpers, i18n source catalogs + DRAFT translations, test scaffolding,
    QA-report sweeps, reviewer-input audit sweeps (npm audit / unused-deps /
    TODO inventory / i18n key-completeness / SEO meta presence — reports the
-   paid reviewer consumes), docs drafts (incl. secret-free deploy manifests),
-   Storybook story stubs, and mechanical refactors/codemods. A productive
-   greenfield queue has 3–6 units — an EMPTY queue wastes the free tier
+   paid reviewer consumes), ROOT human-docs drafts ONLY (`README`/`CONTRIBUTING`/
+   `CHANGELOG`, incl. secret-free deploy manifests — NEVER the `.traffic-one/`
+   memory baseline), Storybook story stubs, and mechanical refactors/codemods. A
+   productive greenfield queue has 3–6 units — an EMPTY queue wastes the free tier
    (measured: a populated queue delivered 2–6 units/run at ~2 min each). NEVER
    queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts,
    security/auth/RLS, data-model/migrations, cross-file invariants, deploys or
-   credentials — those stay on the named senior subagents.
+   credentials, and the `.traffic-one/` project-memory/docs baseline (product/
+   stack/coding/security/api/database/deployment/environment-setup/known-issues/
+   `.agentignore`/agent-log/schema.sql + decisions ADRs — the architect writes
+   these DIRECTLY before `PLAN_READY`) — those stay on the named senior subagents.
 
 2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }`.
 
@@ -320,15 +325,26 @@ Wait for both to return before Phase 3.
 **Pre-step — refresh the codebase graph** (cheap, parent-side, do not skip): the
 implementers just wrote the real code, but the graph index still holds the empty
 onboarding scan, so reviewer/tester would navigate a stale near-empty graph.
-From the project root run the provider runner per `codeGraphProvider` — WITH
-`--force`, because the runner's mtime freshness check cannot tell that a recent
-index predates the new code (observed live: "fresh" answered for 2 indexed
-files vs ~60 on disk):
-`node ~/.traffic-one/bin/gitnexus-runner.cjs --force`
-(or `graphify-runner.cjs --force`). Worker threads cannot trigger the post-build rescan
+RESOLVE the provider via `readEffectiveState`, NEVER by reading `.one.json` directly:
+`codeGraphProvider` is a MACHINE-WIDE setting in `~/.traffic-one/one.json`, intentionally
+absent from the project's `.one.json` — an empty/missing `codeGraphProvider` field in
+`.one.json` does NOT mean "no provider configured", so never skip the refresh on that basis.
+Run it WITH `--force` (the runner's mtime freshness check cannot tell a recent index predates
+the new code — observed live: "fresh" answered for 2 indexed files vs ~60 on disk):
+
+```bash
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
+case "$PROVIDER" in
+  gitnexus) node ~/.traffic-one/bin/gitnexus-runner.cjs --force ;;
+  graphify) node ~/.traffic-one/bin/graphify-runner.cjs --force ;;
+  *) : ;;  # genuinely unset (rare) — skip; do NOT infer "unset" from .one.json
+esac
+```
+
+Worker threads cannot trigger the post-build rescan
 hook on every host, so this parent-side refresh is the in-run path that guarantees
-reviewer/tester see fresh structure. If it is ever missed (crash/resume, or a host with
-no subagent barrier such as Cursor/Low), the runner self-heals: a later no-force
+reviewer/tester see fresh structure. If it is ever missed (crash/resume, or where worker
+threads can't fire the post-build rescan hook — e.g. Cursor or Low/main-agent mode), the runner self-heals: a later no-force
 invocation (Phase 5, the post-build hook, or the next session) still rebuilds, because
 the index is now empty or stale vs the new source.
 
@@ -453,7 +469,7 @@ the user typing `pnpm build`.
 Dispatch on `codeGraphProvider` from the effective Traffic One state, which merges shared `.traffic-one/.one.json` with the current user's local preferences:
 
 ```bash
-PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
+PROVIDER=$(node -e "try{const root=process.env.TRAFFIC_ONE_PLUGIN_ROOT||process.env.CURSOR_PLUGIN_ROOT||process.env.CODEX_PLUGIN_ROOT||process.env.CLAUDE_PLUGIN_ROOT||'.'; const {readEffectiveState}=require(require('path').join(root,'scripts/shared/state/local-prefs.js')); console.log(readEffectiveState(process.cwd()).codeGraphProvider||'')}catch{}")
 case "$PROVIDER" in
   gitnexus)
     node ~/.traffic-one/bin/gitnexus-runner.cjs

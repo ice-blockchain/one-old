@@ -110,6 +110,26 @@ packages/i18n/src/index.ts            # empty barrel
 
 Empty `src/index.ts` barrels are allowed (skeleton is the architect's job; filling them is the frontend role's job). Do not write feature code in these packages — only the skeleton.
 
+### Required project-memory baseline (mode: new-project)
+
+Before emitting `PLAN_READY` you MUST write the full `.traffic-one/` memory baseline YOURSELF — exactly like the workspace scaffold above. These are **baseline, not speculative**: every later phase (and a fresh session) reads them, and **nothing else creates them** — the materializer emits only `rules/`, `skills/`, `manifest.json`, and `.one.json`, never this prose. They are **architect-owned and MUST NOT be delegated to OpenCode** (the `docs` delegate is scoped to root human docs — `README`/`CONTRIBUTING`/`CHANGELOG` — never `.traffic-one/*`). Author them via `project-memory` + `auto-documentation-generator` with real, verified facts (no empty boilerplate; omit sections you cannot fill from repo facts):
+
+```
+.traffic-one/product.md
+.traffic-one/stack.md
+.traffic-one/coding.md
+.traffic-one/security.md
+.traffic-one/known-issues.md
+.traffic-one/api.md
+.traffic-one/database.md
+.traffic-one/deployment.md
+.traffic-one/environment-setup.md
+.traffic-one/agent-log.md
+.traffic-one/.agentignore
+.traffic-one/schema.sql                # DB schema snapshot, or "Not applicable" + reason if no DB
+.traffic-one/decisions/NNNN-*.md       # one ADR per non-default choice (architecture-decision-records)
+```
+
 Plan sections in order:
 
 ```markdown
@@ -183,6 +203,8 @@ This is what makes parallel implementers conflict-free across ANY stack. Each im
 }
 ```
 
+Use EXACTLY this shape: the top-level key is **`assignments`** (a JSON ARRAY of `{ role, scope: { include, exclude } }`). Do NOT invent an alternate shape — e.g. a `roles` object keyed by role name, or `ownedPaths`/`readOnlyPaths` fields. The run-team gate reads `assignments[].scope.include`; a non-conforming manifest silently degrades scope ownership to per-path first-writer locks (the gate tolerates the `roles`/`ownedPaths` deviation as a fallback, but the canonical `assignments` array is required).
+
 Patterns are project-relative, `/`-separated; a trailing `/` is a directory prefix, and `*`/`**`/`?` are globs (`**` crosses `/`). Emit exactly `senior-frontend` and `senior-backend` for now — the format allows N roles / arbitrary labels (e.g. a future `senior-mobile`) but this version spawns only those two.
 
 Derive the partition from REAL paths, never guessed directory names:
@@ -217,6 +239,7 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 
 - You do **not** write feature source files (no `apps/*/src/**`, `packages/*/src/**` other than empty package skeletons that are part of scaffolding the workspace itself).
 - On `stack: default` or `frontend: react-vite`, the "Required workspace scaffold" subsection of "What you write" is non-negotiable: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls pnpm-workspace.yaml turbo.json packages/ui/package.json packages/tailwind-config/package.json packages/i18n/package.json` — if any is missing, the run is incomplete. The "least amount of architecture" principle (above) does not override this — workspace skeleton is baseline, not speculative.
+- On `mode: new-project`, the "Required project-memory baseline" subsection of "What you write" is non-negotiable the SAME way: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls .traffic-one/{product,stack,coding,security,known-issues,api,database,deployment,environment-setup,agent-log}.md .traffic-one/.agentignore .traffic-one/schema.sql .traffic-one/decisions/*.md` — if any is missing, the run is incomplete; write it (real content, not an empty stub) before `PLAN_READY`. This is where `auto-documentation-generator` being "mandatory" is enforced: you do NOT skip it, and you do NOT delegate the `.traffic-one/` baseline to OpenCode (`OPENCODE_NEVER_DELEGATE`) — the `docs` delegate may only touch root human docs (`README`/`CONTRIBUTING`/`CHANGELOG`).
 - You do not skip the plan to "save time". The plan-gate hook will deny feature writes until `.traffic-one/plan.md` exists.
 - Before `PLAN_READY` you MUST write `.traffic-one/runs/<run-id>/assignments.json` with a disjoint scope for `senior-frontend` and `senior-backend`, derived from real paths (see "Assignments manifest"). Verify it exists and parses. If the surface can't be partitioned disjointly, report the blocker instead of `PLAN_READY`.
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.

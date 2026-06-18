@@ -119,23 +119,27 @@ function codeGraphBuildLockMs(cwd: string): number {
   return diskLockMs(path.join(cwd, '.traffic-one', CODE_GRAPH_BUILD_LOCK));
 }
 
-// Should we (re)build the code graph for this EXISTING project? Auto-detected
-// existing projects (SessionStart Flow 2) never run the wizard's onboarding
-// scan, and a project onboarded before that scan existed has no graph either —
-// so without this, the whole codebase-graph token economy (read the map once
-// instead of Glob/Grep) never activates. True only when: existing-codebase mode,
-// a provider is set, auto-run isn't disabled, the artifact is missing, and no
-// build was attempted within the cooldown (disk lock).
+// Should we (re)build the code graph at SessionStart? Auto-detected existing projects
+// (Flow 2) never run the wizard's onboarding scan, and a project onboarded before that
+// scan existed has no graph either — so without this, the codebase-graph token economy
+// (read the map once instead of Glob/Grep) never activates. True only when: the project
+// is in scope (existing-codebase, OR a new-project whose onboarding is COMPLETE — so a
+// degraded/deferred build still self-heals its graph), a provider is set, auto-run isn't
+// disabled, the artifact is missing/empty, and no build ran within the cooldown (disk lock).
 export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): boolean {
   const mode = state.mode;
   const isExisting = mode === 'existing-codebase' || mode === 'existing-with-supabase';
-  // Also self-heal a NEW project whose onboarding graph install DEFERRED (offline /
-  // transient / no runtime yet): otherwise its only retry is the post-build hook,
-  // which never fires if the user iterates without ever running a `*build*` command.
-  // Gated on onboardingComplete + the graphDeferredAt marker so a mid-onboarding
-  // scaffold isn't scanned early. The hasGraph check below stops it once built.
-  const isDeferredNewProject = mode === 'new-project' && state.onboardingComplete === true && Boolean(state.graphDeferredAt);
-  if (!isExisting && !isDeferredNewProject) return false;
+  // Also self-heal a NEW project once onboarding is complete and a provider is set but the
+  // graph is missing/empty. This covers BOTH (a) a deferred onboarding graph install
+  // (offline / transient / no runtime yet) AND (b) a build that DEGRADED before its Phase-5
+  // parent-side graph refresh — observed on Cursor (tests/4b): the run blocked mid-stream and
+  // the orchestrator only emitted a "no provider configured, skipped" no-op, so the graph
+  // never landed in-run. Previously this required the `graphDeferredAt` marker; dropping that
+  // makes the NEXT SessionStart land the graph the same way Codex's Phase 5 did. Gated on
+  // onboardingComplete so a mid-onboarding scaffold isn't scanned early; the hasGraph +
+  // cooldown guards below keep it a cheap no-op once a non-empty graph exists.
+  const isNewProjectNeedingGraph = mode === 'new-project' && state.onboardingComplete === true;
+  if (!isExisting && !isNewProjectNeedingGraph) return false;
   if (state.codeGraphAutoRun === false || state.graphifyAutoRun === false) return false;
   const provider = state.codeGraphProvider;
   if (provider !== 'graphify' && provider !== 'gitnexus') return false;

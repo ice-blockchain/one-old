@@ -188,3 +188,38 @@ test('applyCodeGraphScanIgnore: graphify seeds a fresh .graphifyignore from .git
     assert.equal(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), 'my-secrets/\n*.log\n');
   });
 });
+
+test('wouldIgnoreAllSource: true only when source EXISTS and every file is ignored', async () => {
+  const { wouldIgnoreAllSource } = await import('../codegraph');
+  withDir((dir) => {
+    write(path.join(dir, 'src', 'index.ts'), 'export const x = 1;\n');
+    write(path.join(dir, 'main.ts'), 'export const y = 2;\n');
+    assert.equal(wouldIgnoreAllSource(dir, []), false);            // nothing ignored
+    assert.equal(wouldIgnoreAllSource(dir, ['src/']), false);      // main.ts survives
+    assert.equal(wouldIgnoreAllSource(dir, ['*.ts']), true);       // slashless glob, any depth → both hidden
+    assert.equal(wouldIgnoreAllSource(dir, ['*', '!keep.md']), true); // allowlist .gitignore (negation ignored)
+    assert.equal(wouldIgnoreAllSource(dir, ['/src', '/main.ts']), true); // root-anchored, covers all
+  });
+  withDir((dir) => {
+    // Built-in-skipped trees are not "source" — a repo of only node_modules has none.
+    write(path.join(dir, 'node_modules', 'pkg', 'a.ts'), 'export {};\n');
+    assert.equal(wouldIgnoreAllSource(dir, ['*']), false); // no candidate source at all
+  });
+});
+
+test('applyCodeGraphScanIgnore drops a .gitignore seed that would hide ALL source', async () => {
+  const { applyCodeGraphScanIgnore } = await import('../codegraph');
+  withDir((dir) => {
+    write(path.join(dir, 'src', 'index.ts'), 'export const x = 1;\n');
+    // A degenerate .gitignore whose pattern covers the only source dir.
+    fs.writeFileSync(path.join(dir, '.gitignore'), 'src/\n', 'utf8');
+    const gp = path.join(dir, '.graphifyignore');
+    const restore = applyCodeGraphScanIgnore(dir, '.graphifyignore', ['.traffic-one'], { seedFromGitignore: true });
+    const during = fs.readFileSync(gp, 'utf8');
+    assert.doesNotMatch(during, /^src\/?$/m, 'source-hiding .gitignore pattern must be dropped');
+    assert.match(during, /^\.traffic-one$/m, 'our own (source-safe) exclude is still written');
+    restore();
+    assert.equal(fs.existsSync(gp), false);
+    assert.equal(fs.readFileSync(path.join(dir, '.gitignore'), 'utf8'), 'src/\n'); // .gitignore untouched
+  });
+});

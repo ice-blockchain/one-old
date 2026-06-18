@@ -176,6 +176,42 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
   });
 });
 
+test('finalize: NO captured prompt + blank form does NOT collapse to minimal (the 9b regression)', () => {
+  withProject(null, (cwd) => {
+    // 9b reproduction: the Cursor user-prompt-submit hook no-op'd (no prompt text in the
+    // host payload), so seedOriginalPrompt never ran and the wizard form was blank →
+    // promptSignal === ''. Pre-fix this derived stack=minimal/none/none. The no-signal
+    // floor must scaffold the default build stack instead (a build WAS intended).
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.equal(computeOnboarding(cwd).step, 'finalize');
+    applyAnswer(cwd, 'finalize', null);
+    const s = readState(cwd);
+    assert.notEqual(s.stack, 'minimal');
+    assert.equal(s.stack, 'default');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'supabase');
+  });
+});
+
+test('finalize: an EXPLICIT minimal request is preserved (the no-signal floor does not over-fire)', () => {
+  withProject(null, (cwd) => {
+    // "static landing page" carries promptHasStackSignal===true (wantsMinimal), so the
+    // floor must NOT fire — intentional minimal is honored.
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'a simple static landing page' });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    applyAnswer(cwd, 'finalize', null);
+    assert.equal(readState(cwd).stack, 'minimal');
+  });
+});
+
 test('finalize: a thin originalPrompt is rescued by the typed project-context answers (not minimal)', () => {
   withProject(null, (cwd) => {
     // The bug case: a later "ok build it" became the seed, which alone derives `minimal`.

@@ -34,7 +34,7 @@ export const OPENCODE_DELEGATE_UNIT_KINDS: readonly OpenCodeUnitKind[] = [
   { id: 'test-scaffolding', summary: 'Test skeletons and simple specs against stated contracts', examples: ['happy-path unit specs', 'SEO metadata route tests'] },
   { id: 'qa-report-sweep', summary: 'Scripted verification producing a report file, no source edits', examples: ['route/console/overflow sweep into .traffic-one/reports/qa/<runId>/', 'curl-level endpoint checks'] },
   { id: 'reviewer-input-sweeps', summary: 'Mechanical audit reports CONSUMED by the paid reviewer (never replaces its judgment)', examples: ['npm audit summary', 'unused-deps/dead-code inventory', 'TODO/FIXME/console.log inventory', 'i18n key-completeness diff', 'SEO meta presence per route'] },
-  { id: 'docs-draft', summary: 'Draft documentation from existing facts (verified by architect/reviewer before landing)', examples: ['README sections', 'API docs from public contracts', 'deploy manifests/CI files WITHOUT secrets'] },
+  { id: 'docs-draft', summary: 'Draft ROOT human docs from existing facts (verified by architect/reviewer before landing) — NEVER the .traffic-one/ memory baseline, which the architect writes directly', examples: ['README/CONTRIBUTING/CHANGELOG sections', 'deploy manifests/CI files WITHOUT secrets'] },
   { id: 'storybook-stories', summary: 'Story stubs for existing components', examples: ['one story per shadcn-derived component'] },
   { id: 'mechanical-refactor', summary: 'Codemods, renames, and formatting with exact before/after rules', examples: ['rename a symbol across named files', 'apply a lint autofix class'] },
 ];
@@ -48,6 +48,7 @@ export const OPENCODE_NEVER_DELEGATE: readonly string[] = [
   'data-model and migrations',
   'cross-file invariants',
   'deploys or anything touching credentials',
+  'the .traffic-one project-memory/docs baseline (product/stack/coding/security/api/database/deployment/environment-setup/known-issues/.agentignore/agent-log/schema.sql + decisions ADRs) — architect-owned, written directly; the docs delegate is scoped to root human docs (README/CONTRIBUTING/CHANGELOG) only',
   'entire role implementations (whole-role passes are 0-for-3 lifetime; bounded units are ~2 min each)',
 ];
 

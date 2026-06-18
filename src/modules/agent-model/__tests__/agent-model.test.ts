@@ -159,31 +159,67 @@ test('spawn whose prompt fabricates a non-currentRunId run-id is denied, naming 
   });
 });
 
-test('Cursor: model-param enforced FAMILY-AWARE — alias/wrong-family deny, exact + variant suffix allow, claim staked', () => {
+test('Cursor: model-param enforced FAMILY-AWARE — alias/wrong-tier deny, exact Task-tool slug + sub-variant allow, claim staked', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // high senior-frontend → highest tier → cursor "claude-opus-4-8" (Cursor's Opus family).
-    // The bare Anthropic alias Cursor rejects → deny (the original tester bug, now enforced).
+    // high senior-frontend → highest tier → cursor "claude-opus-4-8-thinking-high" (the exact
+    // Task-tool slug). The bare Anthropic alias Cursor rejects → deny (the original tester bug).
     const wrong = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }, 'cursor'));
     assert.equal(wrong.kind, 'deny');
     if (wrong.kind === 'deny') assert.ok(wrong.reason.includes('Performance gate'));
 
-    // A DIFFERENT real Cursor family (gpt-5.5, even a variant) → deny: family matching must
-    // NOT cross families.
+    // gpt-5.5-medium is a BALANCED Task-tool slug, NOT highest → deny: no cross-tier acceptance.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'gpt-5.5-medium' }, 'cursor')).kind, 'deny');
 
     // No model param → deny (would inherit the parent model).
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'deny');
 
-    // The bare id AND the agent's natural Opus reasoning VARIANT both pass (zero-friction —
-    // `claude-opus-4-8-thinking-max-fast` is exactly what the Cursor agent reached for).
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8' }, 'cursor')).kind, 'noop');
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-max-fast' }, 'cursor'));
+    // The exact highest Task-tool slug passes; a sub-variant of it (family-prefix) also passes.
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor')).kind, 'noop');
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high-fast' }, 'cursor'));
     assert.equal(ok.kind, 'noop');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(runId.length > 0, 'currentRunId minted on Cursor spawn');
     const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
     assert.ok(pending.length > 0, 'pending senior-frontend claim staked on Cursor');
+  });
+});
+
+test('Cursor: the configured same-tier FALLBACK model satisfies the gate when the build lacks the preferred slug', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // highest preferred = claude-opus-4-8-thinking-high; if a build doesn't offer it, the
+    // configured same-tier fallback (claude-fable-5-thinking-high — Cursor's "highest alternate")
+    // satisfies the tier via the accept-set and stakes a claim, instead of deadlocking.
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-fable-5-thinking-high' }, 'cursor'));
+    assert.equal(ok.kind, 'noop', 'the configured same-tier fallback satisfies the gate');
+    const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
+    assert.ok(pending.length > 0, 'claim staked on the fallback-model spawn');
+  });
+});
+
+test('Cursor: a highest/balanced role may fall back to composer-2.5-fast when the API budget is exhausted', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // At 100% API usage (on-demand off) Cursor makes the premium models — including the
+    // premium FALLBACKS — unavailable; composer-2.5-fast (included "Auto + Composer" bucket)
+    // is the last-resort that survives, so the gate must accept it for a highest role.
+    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'composer-2.5-fast' }, 'cursor'));
+    assert.equal(ok.kind, 'noop', 'composer last-resort fallback satisfies a highest-tier spawn');
+    const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
+    assert.ok(pending.length > 0, 'claim staked on the composer fallback spawn');
+  });
+});
+
+test('Cursor: the model-param deny LISTS the same-tier fallback so the agent can pick an offered one', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // A wrong/alias model still denies, but the deny now names the acceptable fallback.
+    const d = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }, 'cursor'));
+    assert.equal(d.kind, 'deny');
+    if (d.kind === 'deny') {
+      assert.ok(d.reason.includes('claude-opus-4-8-thinking-high'), 'names the preferred tier model');
+      assert.ok(d.reason.includes('claude-fable-5-thinking-high'), 'lists the same-tier fallback to use');
+    }
   });
 });
 
@@ -197,7 +233,7 @@ test('Cursor: a materialized .cursor/agents/<role>.md model satisfies the gate w
     const write = (model: string): void =>
       fs.writeFileSync(path.join(agentsDir, 'senior-frontend.md'), `---\nname: senior-frontend\nmodel: ${model}\n---\nbody\n`, 'utf8');
 
-    write('claude-opus-4-8');
+    write('claude-opus-4-8-thinking-high');
     // No model param → allowed (the file pins the tier model — first-try, no retry).
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'noop');
     // The session-model default would normally deny, but the file overrides it on Cursor.
@@ -209,13 +245,13 @@ test('Cursor: a materialized .cursor/agents/<role>.md model satisfies the gate w
   });
 });
 
-test('Cursor quick-fix is pinned to the real cheapest Cursor model family (composer-latest + variants)', () => {
+test('Cursor quick-fix is pinned to the real cheapest Cursor model (composer-2.5-fast + sub-variants)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    // quick-fix → cheapest tier → cursor "composer-latest". A pricier/alias model denies;
-    // the exact id and a same-family variant both pass.
+    // quick-fix → cheapest tier → cursor "composer-2.5-fast". A pricier/alias model denies;
+    // the exact Task-tool slug and a same-family sub-variant both pass.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }, 'cursor')).kind, 'deny');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-latest' }, 'cursor')).kind, 'noop');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-latest-fast' }, 'cursor')).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast' }, 'cursor')).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast-high' }, 'cursor')).kind, 'noop');
   });
 });
 
@@ -756,6 +792,36 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   assert.equal(subagentContinuationAvailable({ CODEX_PLUGIN_ROOT: '/x', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0' } as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } as NodeJS.ProcessEnv), true);
+  // Cursor: the Task `agentId` resume primitive enables reuse (CURSOR_PLUGIN_ROOT signal),
+  // and the explicit off-flag still force-disables everywhere.
+  assert.equal(subagentContinuationAvailable({ CURSOR_PLUGIN_ROOT: '/x' } as NodeJS.ProcessEnv), true);
+  assert.equal(subagentContinuationAvailable({ CURSOR_PLUGIN_ROOT: '/x', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: 'off' } as NodeJS.ProcessEnv), false);
+});
+
+test('Cursor reuse deny names the Task agentId resume recipe (host-aware continuation)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // First Cursor spawn passes the gate + mints currentRunId + stakes a claim.
+    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
+    const runId = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string;
+    // Simulate the PostToolUse recorder writing the live-agent registry.
+    const rd = path.join(cwd, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+      version: 1, agents: { 'senior-frontend': { agentId: 'cursor-agent-xyz', recordedAt: new Date().toISOString(), tasks: 1, replaced: false } },
+    }));
+    // Duplicate Cursor spawn → reuse deny with the Task+agentId recipe (NOT SendMessage).
+    const d = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
+    assert.equal(d.kind, 'deny');
+    if (d.kind === 'deny') {
+      assert.ok(d.reason.includes('cursor-agent-xyz'), 'names the live agent id');
+      assert.ok(/Task/.test(d.reason) && /agentId/.test(d.reason), 'uses the Cursor Task agentId resume recipe');
+      assert.ok(!d.reason.includes('SendMessage'), 'no Claude SendMessage on Cursor');
+    }
+    // The RESUME itself (Task carrying agentId) must pass the gate — never block the
+    // continuation it just asked for. This makes the deny satisfiable → no soft-loop.
+    const resume = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high', agentId: 'cursor-agent-xyz' }, 'cursor'));
+    assert.equal(resume.kind, 'noop', 'a Task call carrying agentId (resume) passes the reuse gate');
+  });
 });
 
 test('inferTrafficOneSpawnRole reads the clause-anchored "Traffic One senior-X" declaration despite sibling mentions', () => {

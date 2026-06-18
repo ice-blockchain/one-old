@@ -27,7 +27,9 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 // `agent_?id` covers Codex's snake_case spawn result (`{"agent_id":"…"}`) —
 // camelCase-only matching left the registry empty on Codex, disabling the
 // duplicate-spawn gate exactly where send_input continuation is native.
-const AGENT_ID_RE = /agent_?id['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/i;
+// Leading `\b` so `subagent_id`/`subagentId` (a spawn-INPUT key Cursor may echo in the
+// post payload) cannot match via the `agent_id` substring and capture the wrong id.
+const AGENT_ID_RE = /\bagent_?id['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/i;
 
 export function extractSpawnedAgentId(response: unknown): string | null {
   // Claude's PostToolUse payload carries the id as a STRUCTURED field:
@@ -56,7 +58,7 @@ export function extractSpawnedAgentId(response: unknown): string | null {
 export function recordSpawnedAgent(ctx: Ctx): HookResult {
   // Without continuation the registry is dead weight — skip the write entirely
   // so non-teams hosts keep byte-identical run dirs.
-  if (!subagentContinuationAvailable()) return noop();
+  if (!subagentContinuationAvailable(process.env, ctx.host)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);

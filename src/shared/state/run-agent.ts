@@ -116,6 +116,42 @@ const SPAWN_ROLE_RES = [
   /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
   /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
 ] as const;
+// Pull the text of a user-authored line from EITHER host transcript shape:
+//   - Codex: { payload?: { type:'message', role:'user', content:[{type:'input_text',text}] } }
+//   - Cursor: { role:'user', message:'<string>' }  (or message:{ content:'<string>'|[{text}] })
+// Returns '' for non-user lines / unknown shapes. Cursor's subagent transcript is the
+// {role, message} shape — parsing only the Codex shape returned null for every Cursor
+// subagent, so the run-team gate could not resolve a Cursor role and hard-denied its
+// writes (run-team-not-subagent). The `[t1-role: senior-X]` marker rides the spawn
+// prompt, which lands as a user line on both hosts.
+function userLineText(parsed: unknown): string {
+  const o = obj(parsed) || {};
+  const p = obj(o.payload) || o;
+  // Codex shape.
+  if (p.type === 'message' && p.role === 'user' && Array.isArray(p.content)) {
+    return (p.content as unknown[])
+      .map((seg) => { const s = obj(seg); return s && s.type === 'input_text' && typeof s.text === 'string' ? s.text : ''; })
+      .filter(Boolean)
+      .join('\n');
+  }
+  // Cursor shape: top-level role + message (string, or {content:string|[{text}]}).
+  if (o.role === 'user') {
+    const m = o.message;
+    if (typeof m === 'string') return m;
+    const mo = obj(m);
+    if (mo) {
+      if (typeof mo.content === 'string') return mo.content;
+      if (Array.isArray(mo.content)) {
+        return (mo.content as unknown[])
+          .map((seg) => { const s = obj(seg); return s && typeof s.text === 'string' ? s.text : ''; })
+          .filter(Boolean)
+          .join('\n');
+      }
+    }
+  }
+  return '';
+}
+
 export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
   if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
   let raw: string;
@@ -133,15 +169,7 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
     } catch {
       continue;
     }
-    const p = obj((parsed as Rec)?.payload) || obj(parsed) || {};
-    if (p.type !== 'message' || p.role !== 'user' || !Array.isArray(p.content)) continue;
-    const text = (p.content as unknown[])
-      .map((seg) => {
-        const s = obj(seg);
-        return s && s.type === 'input_text' && typeof s.text === 'string' ? s.text : '';
-      })
-      .filter(Boolean)
-      .join('\n');
+    const text = userLineText(parsed);
     if (text) userTexts.push(text);
   }
   for (let i = userTexts.length - 1; i >= 0; i -= 1) {
@@ -151,7 +179,12 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
       if (role && VALID_AGENT_ROLES.has(role)) return role;
     }
   }
-  return null;
+  // Last resort: the unambiguous structured marker can appear in a line shape the
+  // per-line parser above didn't recognize (host transcript drift). It is unique to
+  // the spawn prompt, so a raw scan can't cross-match another role's prose.
+  const marker = raw.match(SPAWN_ROLE_RES[0]);
+  const markerRole = marker ? (marker[1] as string).toLowerCase() : null;
+  return markerRole && VALID_AGENT_ROLES.has(markerRole) ? markerRole : null;
 }
 
 export interface SessionIdentity {
@@ -623,15 +656,38 @@ function stringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
+// Normalize the manifest's raw role entries. The canonical shape is an `assignments`
+// ARRAY (`[{ role, scope:{ include, exclude } }]`). Some orchestrators deviate and emit
+// a `roles` OBJECT instead (observed live: gpt-5.5 wrote
+// `roles: { "<role>": { ownedPaths, readOnlyPaths, notes } }`), which the strict array
+// reader rejected → the run-team scope gate resolved no scope and the rotation guard
+// couldn't see the run. Tolerate that shape by mapping ownedPaths→scope.include and
+// readOnlyPaths→scope.exclude (the role must not write another role's read-only paths).
+function rawAssignmentEntries(raw: Rec): unknown[] {
+  if (Array.isArray(raw.assignments)) return raw.assignments;
+  const roles = obj(raw.roles);
+  if (!roles) return [];
+  const entries: unknown[] = [];
+  for (const [role, value] of Object.entries(roles)) {
+    const v = obj(value);
+    if (!v) continue;
+    const include = stringArray(v.ownedPaths).length ? stringArray(v.ownedPaths) : stringArray(v.include);
+    const exclude = stringArray(v.readOnlyPaths).length ? stringArray(v.readOnlyPaths) : stringArray(v.exclude);
+    entries.push({ role, scope: exclude.length ? { include, exclude } : { include } });
+  }
+  return entries;
+}
+
 // Read + validate the run's assignment manifest. Returns null when absent or
 // structurally invalid. The manifest's runId dir is the same fingerprint-guarded run
 // that resolved the agent's claim, so no extra fingerprint check is needed here.
+// Tolerant of the `roles`-object schema deviation (see rawAssignmentEntries).
 export function readRunAssignments(cwd: string, runId: unknown): RunManifest | null {
   if (typeof runId !== 'string' || !runId) return null;
   const raw = obj(readJson(assignmentsFile(cwd, runId), null));
-  if (!raw || !Array.isArray(raw.assignments)) return null;
+  if (!raw) return null;
   const assignments: AssignmentEntry[] = [];
-  for (const entry of raw.assignments as unknown[]) {
+  for (const entry of rawAssignmentEntries(raw)) {
     const e = obj(entry);
     if (!e) continue;
     const scope = obj(e.scope);
@@ -708,18 +764,38 @@ function readDigest(cwd: string, runId: string, name: string): string {
 
 // True when run <runId>'s verification has TERMINALLY settled: a shipper digest
 // (written only post-deploy, after reviewer+tester already passed) exists, OR
-// reviewer is APPROVED and tester is TESTS_GREEN. A `CHANGES_REQUESTED` reviewer
-// or a mid-fix-cycle `TESTS_FAILING` tester is non-terminal → the run is still
-// live. The "terminal token present AND non-terminal token absent" shape avoids a
-// false positive from a non-terminal digest that merely mentions the other token.
+// reviewer PASSED and tester PASSED. The canonical tester token is `TESTS_GREEN`,
+// but orchestrators deviate (observed live: gpt-5.5 wrote the tester digest with
+// `verdict: APPROVED`), so a tester is "passed" when it carries a passing token
+// (`TESTS_GREEN`/`APPROVED`) AND no NON-terminal token (`TESTS_FAILING` = failing,
+// `DELEGATED_OK` = delegated-but-unverified). A `CHANGES_REQUESTED` reviewer or a
+// mid-fix-cycle `TESTS_FAILING` tester stays non-terminal. The "passing token present
+// AND non-terminal token absent" shape avoids a false positive from a digest that
+// merely mentions the other token.
 export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean {
   if (typeof runId !== 'string' || !runId) return false;
   if (readDigest(cwd, runId, 'shipper.md').trim()) return true;
   const reviewer = readDigest(cwd, runId, 'reviewer.md');
   const tester = readDigest(cwd, runId, 'tester.md');
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
-  const testerGreen = /\bTESTS_GREEN\b/.test(tester) && !/\bTESTS_FAILING\b/.test(tester);
-  return reviewerApproved && testerGreen;
+  const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
+  return reviewerApproved && testerPassed;
+}
+
+// Schema-agnostic "an orchestrated run exists under <runId>" check — raw artifact
+// EXISTENCE, never manifest parsing (so it survives the `roles`-schema deviation and
+// any future shape). Used by the maintenance-rotation guard to decide whether a run is
+// real before refusing to rotate its id. assignments.json OR an implementer/architect
+// digest both prove the architect ran for this id.
+export function runHasOrchestratedArtifacts(cwd: string, runId: unknown): boolean {
+  if (typeof runId !== 'string' || !runId) return false;
+  try {
+    if (fs.existsSync(assignmentsFile(cwd, runId))) return true;
+    const dd = digestDir(cwd, runId);
+    return ['architect.md', 'frontend.md', 'backend.md', 'reviewer.md', 'tester.md'].some((n) => fs.existsSync(path.join(dd, n)));
+  } catch {
+    return false;
+  }
 }
 
 // True when ANY run dir under .traffic-one/digests has a terminal verdict. The
@@ -809,10 +885,23 @@ export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 // the Claude flag silently disabled the whole regime on Codex). On Claude it is
 // SendMessage, which only registers when the agent-teams feature flag was set
 // at session start. An explicit falsy flag still switches it off everywhere.
-export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env): boolean {
+// `host` is the gate's already-resolved host (preferred — authoritative); env is the
+// fallback signal when a caller has no host in hand. An explicit off-flag disables
+// everywhere, on any host.
+export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env, host?: string): boolean {
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
-  if (env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  if (host) {
+    if (host === 'codex' || host === 'cursor') return true;
+    return flag !== '';
+  }
+  // Codex: send_input (native to the multi_agent toolset, always present).
+  if (host === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  // Cursor: the Task tool accepts an `agentId` to RESUME a previous subagent with full
+  // context preserved (cursor.com/docs/subagents) — the analogue of send_input/SendMessage.
+  // Without this every Cursor role task re-spawned a fresh subagent, re-loading rules+skills.
+  if (host === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
+  // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }
 
