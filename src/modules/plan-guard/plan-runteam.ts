@@ -10,6 +10,7 @@ import { matchesScope } from '../../shared/scope';
 import {
   activeAgentRole,
   assignmentForContext,
+  captureClaimDebug,
   hasRunAgentState,
   isMaintenancePhase,
   isSubagentSession,
@@ -55,6 +56,17 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const acRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
   const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, state) && isSubagentSession(state));
   const role = acRole || activeAgentRole(state) || 'main agent';
+
+  // DIAGNOSTIC (best-effort): record the raw payload of every feature-source write
+  // attempt in subagents mode so we can see how Claude agent-teams role agents
+  // identify when their claim fails to bind (see project_agent_teams_claim_deadlock).
+  // Does NOT affect the decision below.
+  captureClaimDebug(projectRoot, typeof state.currentRunId === 'string' ? state.currentRunId : null, 'runteam-write', rawData, {
+    filePath,
+    resolved: Boolean(agentContext),
+    role,
+    runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,
+  });
   const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
 
   if (!inSubagent) {
