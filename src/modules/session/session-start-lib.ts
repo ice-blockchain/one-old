@@ -30,8 +30,57 @@ import {
   writeState,
 } from '../../shared/state';
 import { ensureInitialCommit } from '../../shared/git-init';
+import { obj } from '../../shared/obj';
 
 type Rec = Record<string, unknown>;
+
+// The Claude Code feature flag that registers the `SendMessage` tool and powers
+// the senior-team's one-agent-per-role continuation (see senior-engineer-team).
+const AGENT_TEAMS_FLAG = 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS';
+
+// Make the senior-team's subagent reuse work without the user knowing the flag
+// exists: persist CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 into the project's
+// .claude/settings.local.json `env` (the officially-supported enable path —
+// https://code.claude.com/docs/en/agent-teams). Claude reads settings `env` at
+// STARTUP, so it activates on the NEXT launch — we return a one-time restart
+// nudge while the flag is set in settings but not yet live in this process. Once
+// the env var is present (post-restart) we stay silent. Claude-only: Codex uses
+// native send_input, Cursor has no such flag. Merge-preserving, best-effort, and
+// never touches an explicit user value (including a deliberate "0" to disable).
+export function ensureAgentTeamsEnv(cwd: string, host: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (host !== 'claude') return '';
+  if (isPluginAuthoringRoot(cwd)) return '';
+  const live = String(env[AGENT_TEAMS_FLAG] ?? '').trim().toLowerCase();
+  if (live === '0' || live === 'false' || live === 'off') return ''; // user explicitly disabled — respect it
+  const alreadyLive = live !== '';
+
+  const file = path.join(cwd, '.claude', 'settings.local.json');
+  let settings: Rec = {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) settings = parsed as Rec;
+  } catch {
+    // missing or invalid → start fresh (preserving nothing we can't parse)
+  }
+  const envBlock = obj(settings.env) || {};
+  // Only ADD when the key is absent — an explicit value (even "0") is the user's.
+  if (!Object.prototype.hasOwnProperty.call(envBlock, AGENT_TEAMS_FLAG)) {
+    envBlock[AGENT_TEAMS_FLAG] = '1';
+    settings.env = envBlock;
+    try {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`, 'utf8');
+    } catch {
+      return ''; // unwritable → silent; the orchestrator falls back to fresh spawns
+    }
+  }
+  if (alreadyLive) return ''; // flag is live in this process → feature already active
+  // Respect an explicit disable that lives only in settings (process env unset).
+  const effective = String(envBlock[AGENT_TEAMS_FLAG] ?? '').trim().toLowerCase();
+  if (effective !== '1' && effective !== 'true' && effective !== 'on') return '';
+  return '[agent teams] Enabled senior-team continuation in .claude/settings.local.json — '
+    + 'restart Claude Code once to activate it, so agents reuse one worker per role instead of re-spawning each task.\n';
+}
 
 // Keep the newest `keepCount` orchestrator digest runs; remove older ones.
 export function sweepOldDigests(cwd: string, keepCount = 5): number {

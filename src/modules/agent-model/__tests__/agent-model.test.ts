@@ -10,7 +10,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
+import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', () => {
@@ -713,6 +713,76 @@ test('extractSpawnedAgentId reads Codex snake_case agent_id (structured and seri
   const { extractSpawnedAgentId } = require('../record-agent') as typeof import('../record-agent');
   assert.equal(extractSpawnedAgentId({ agent_id: '019ebb7f-0691-7281-b686-27e7fe6b393f', nickname: 'Volta' }), '019ebb7f-0691-7281-b686-27e7fe6b393f');
   assert.equal(extractSpawnedAgentId('{"agent_id":"019ebb7f-0842-7a93-8a9f-674d63b8c556","nickname":"Arendt"}'), '019ebb7f-0842-7a93-8a9f-674d63b8c556');
+});
+
+// ── Claude agent-teams: worker identity binds by agent_id / agent_type ───────
+// Reproduces the captured payload (learning-platform run-20260617): a team worker
+// stamps agent_id + agent_type on the write but sends NO parent_session_id and the
+// PARENT's session_id/transcript. Before the fix this read as "main agent" and the
+// run-team gate deadlocked. See project_agent_teams_claim_deadlock.
+const AGENT_TEAMS_WRITE = {
+  session_id: '154f721d-49f5-4ec8-9dc1-7ce51767b8fb', // PARENT session
+  transcript_path: '/x/154f721d-49f5-4ec8-9dc1-7ce51767b8fb.jsonl', // PARENT transcript
+  agent_id: 'a05438499c80df496',
+  agent_type: 'traffic-one:senior-frontend',
+  hook_event_name: 'PreToolUse',
+  tool_name: 'Write',
+  tool_input: { file_path: '/x/apps/web/src/App.tsx', content: 'export default function App(){}' },
+};
+
+test('agent-teams: hookSessionIdentity reads agent_id + agent_type as a subagent worker', () => {
+  const id = hookSessionIdentity(AGENT_TEAMS_WRITE);
+  assert.equal(id.isSubagent, true, 'agent_id + role agent_type ⇒ subagent');
+  assert.equal(id.declaredRole, 'senior-frontend', 'role read straight from agent_type');
+  assert.equal(id.agentId, 'a05438499c80df496');
+  // A bare orchestrator payload (no agent_id/agent_type) is NOT a subagent.
+  assert.equal(hookSessionIdentity({ session_id: 'p1' }).isSubagent, false);
+});
+
+test('agent-teams: a worker write binds its claim by agent_id (no transcript inference)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-at-1');
+    const state = readEffectiveState(cwd);
+    // First write: resolves by binding a fresh claim keyed by agent_id.
+    const ctx = resolveRunAgentContext(cwd, state, AGENT_TEAMS_WRITE, { claimPending: true });
+    assert.ok(ctx, 'worker write resolves instead of denying as "main agent"');
+    assert.equal(ctx!.role, 'senior-frontend');
+    // The claim is persisted keyed by agent_id, so a SECOND write resolves by exact match.
+    const again = resolveRunAgentContext(cwd, readEffectiveState(cwd), AGENT_TEAMS_WRITE, { claimPending: false });
+    assert.ok(again, 'second write resolves by exact agent_id match');
+    assert.equal(again!.role, 'senior-frontend');
+  });
+});
+
+test('agent-teams: binding records the role for reuse so a duplicate same-role spawn is denied', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => { // flag on → the reuse registry is live
+      setCurrentRunId(cwd, 'run-at-2');
+      // Backend worker's first write binds its claim AND mirrors into agents.json.
+      const backendWrite = {
+        ...AGENT_TEAMS_WRITE,
+        agent_id: 'bbb111backend',
+        agent_type: 'traffic-one:senior-backend',
+        tool_input: { file_path: '/x/supabase/migrations/0001_init.sql', content: '-- sql' },
+      };
+      const ctx = resolveRunAgentContext(cwd, readEffectiveState(cwd), backendWrite, { claimPending: true });
+      assert.equal(ctx?.role, 'senior-backend');
+      assert.equal(readRunAgentRegistry(cwd, 'run-at-2')['senior-backend']?.agentId, 'bbb111backend',
+        'the bind mirrored the live backend agent into the reuse registry');
+      // A SECOND backend spawn ("gap-fill exports") from the same parent session is
+      // now denied and pointed at the live agent — no fresh rule-reloading spawn.
+      const dup = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'gap-fill the backend exports' },
+        '154f721d-49f5-4ec8-9dc1-7ce51767b8fb', // == the worker write's (parent) session_id
+      ));
+      assert.equal(dup.kind, 'deny');
+      if (dup.kind === 'deny') {
+        assert.ok(dup.reason.includes('bbb111backend'), 'deny names the live agent id to continue');
+        assert.ok(dup.reason.includes('SendMessage'), 'deny teaches the continuation tool');
+      }
+    });
+  });
 });
 
 test('subagentContinuationAvailable is true on Codex without the Claude flag, and the flag still force-disables', async () => {
