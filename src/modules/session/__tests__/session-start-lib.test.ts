@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner } from '../session-start-lib';
+import { ensureAgentTeamsEnv, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, shouldBuildCodeGraph, sweepOldDigests, tokenEconomyBanner } from '../session-start-lib';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sslib-'));
@@ -16,6 +16,55 @@ function withTmp(fn: (cwd: string) => void): void {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
+
+const TEAMS_FLAG = 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS';
+const readSettingsEnv = (cwd: string): Record<string, unknown> => {
+  const p = path.join(cwd, '.claude', 'settings.local.json');
+  const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+  return (parsed.env || {}) as Record<string, unknown>;
+};
+
+test('ensureAgentTeamsEnv: fresh Claude project → writes the flag + returns a restart nudge', () => {
+  withTmp((cwd) => {
+    const notice = ensureAgentTeamsEnv(cwd, 'claude', {} as NodeJS.ProcessEnv); // flag not yet live in this process
+    assert.equal(readSettingsEnv(cwd)[TEAMS_FLAG], '1');
+    assert.ok(notice.includes('restart Claude Code'), 'nudges the user to restart');
+  });
+});
+
+test('ensureAgentTeamsEnv: flag already live in the process → ensures settings but stays silent', () => {
+  withTmp((cwd) => {
+    const notice = ensureAgentTeamsEnv(cwd, 'claude', { [TEAMS_FLAG]: '1' } as NodeJS.ProcessEnv);
+    assert.equal(readSettingsEnv(cwd)[TEAMS_FLAG], '1');
+    assert.equal(notice, '', 'no nudge once the feature is active');
+  });
+});
+
+test('ensureAgentTeamsEnv: merge-preserving — keeps existing env + never overrides an explicit value', () => {
+  withTmp((cwd) => {
+    const dir = path.join(cwd, '.claude');
+    fs.mkdirSync(dir, { recursive: true });
+    // User has their own env var AND an explicit disable of the flag.
+    fs.writeFileSync(path.join(dir, 'settings.local.json'),
+      JSON.stringify({ env: { FOO: 'bar', [TEAMS_FLAG]: '0' }, permissions: { allow: ['Read(./**)'] } }), 'utf8');
+    const notice = ensureAgentTeamsEnv(cwd, 'claude', {} as NodeJS.ProcessEnv);
+    const env = readSettingsEnv(cwd);
+    assert.equal(env.FOO, 'bar', 'unrelated env preserved');
+    assert.equal(env[TEAMS_FLAG], '0', 'explicit user "0" is not overridden');
+    assert.equal(notice, '', 'an explicit disable is respected (no write, no nudge)');
+    // permissions block survives the merge.
+    const full = JSON.parse(fs.readFileSync(path.join(dir, 'settings.local.json'), 'utf8'));
+    assert.deepEqual(full.permissions.allow, ['Read(./**)']);
+  });
+});
+
+test('ensureAgentTeamsEnv: non-Claude hosts and the plugin authoring root are no-ops', () => {
+  withTmp((cwd) => {
+    assert.equal(ensureAgentTeamsEnv(cwd, 'codex', {} as NodeJS.ProcessEnv), '');
+    assert.equal(ensureAgentTeamsEnv(cwd, 'cursor', {} as NodeJS.ProcessEnv), '');
+    assert.equal(fs.existsSync(path.join(cwd, '.claude', 'settings.local.json')), false, 'no write on non-Claude hosts');
+  });
+});
 
 test('shouldBuildCodeGraph: builds for existing project missing a graph; guards otherwise', () => {
   withTmp((cwd) => {

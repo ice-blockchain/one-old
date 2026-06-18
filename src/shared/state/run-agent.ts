@@ -164,6 +164,21 @@ export interface SessionIdentity {
   // The raw transcript_path (the running thread's rollout) — read to infer the role
   // of a Codex subagent that has no claim yet.
   transcriptPath: string | null;
+  // Claude agent-teams worker id (`agent_id`) — a STABLE per-worker key stamped on
+  // every payload (unlike Codex, the transcript is the parent's). Null elsewhere.
+  agentId: string | null;
+  // The role the host declares via `agent_type` (agent-teams), canonicalized to a
+  // Traffic One role; null when absent or not a role. Lets a team worker bind its
+  // claim without transcript inference. See project_agent_teams_claim_deadlock.
+  declaredRole: string | null;
+}
+
+// Map a host `agent_type` (e.g. "traffic-one:senior-frontend" or "senior-frontend")
+// to a canonical Traffic One role, or null when it is not one.
+function roleFromAgentType(agentType: string | null): string | null {
+  if (!agentType) return null;
+  const role = (agentType.split(':').pop() || '').trim().toLowerCase();
+  return VALID_AGENT_ROLES.has(role) ? role : null;
 }
 
 export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
@@ -194,15 +209,22 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   const transcriptPath = firstString(data.transcript_path, data.transcriptPath, payload.transcript_path, payload.transcriptPath);
   const threadId = transcriptThreadId(transcriptPath);
   const threadSource = firstString(data.thread_source, data.threadSource, payload.thread_source, payload.threadSource);
+  // Claude agent-teams stamps the worker's stable id + role directly on every
+  // payload (agent_id / agent_type) and sends NO parent_session_id, no `subagent`
+  // block, and the PARENT's session_id/transcript. Read them so a team worker is
+  // recognized as a subagent and its claim binds by agent_id.
+  const agentId = firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId);
+  const declaredRole = roleFromAgentType(firstString(data.agent_type, data.agentType, payload.agent_type, payload.agentType));
   const isSubagent = Boolean(
     threadSource === 'subagent'
     || parentSessionId
+    || (agentId && declaredRole)
     || nestedValue(source, ['subagent'])
     || nestedValue(data, ['subagent'])
     || nestedValue(payload, ['subagent']),
   );
 
-  return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath };
+  return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath, agentId, declaredRole };
 }
 
 // True when the hook is firing inside a SUBAGENT thread (not the parent/main
@@ -388,10 +410,10 @@ export function resolveRunAgentContext(
   const shouldClaimPending = options.claimPending !== false;
   const runIds = runIdsForLookup(cwd, state);
 
-  // Exact claim match. threadId (from transcript_path) is the reliable Codex key —
-  // a subagent's tool-call hook reports the parent's session_id, so try threadId
-  // first, then session_id (the per-thread id on Claude).
-  const exactKeys = [identity.threadId, identity.sessionId].filter((v): v is string => Boolean(v));
+  // Exact claim match. agentId (Claude agent-teams) is the most specific key, then
+  // threadId (from transcript_path, the reliable Codex key — a subagent's tool-call
+  // hook reports the parent's session_id), then session_id (per-thread id on Claude).
+  const exactKeys = [identity.agentId, identity.threadId, identity.sessionId].filter((v): v is string => Boolean(v));
   for (const runId of runIds) {
     for (const key of exactKeys) {
       const claim = readClaimFile(runAgentFile(cwd, runId, key));
@@ -399,6 +421,16 @@ export function resolveRunAgentContext(
         return contextFromClaim(claim, 'run-agent');
       }
     }
+  }
+
+  // Claude agent-teams self-heal: the worker stamps its role (agent_type) + stable
+  // id (agent_id) on the payload but provides no per-thread transcript, so the
+  // transcript-inference path below never sees it. Bind the claim keyed by agent_id
+  // with the declared role — no inference needed. This is what unblocks team
+  // workers' feature-source writes (see project_agent_teams_claim_deadlock).
+  if (shouldClaimPending && identity.agentId && identity.declaredRole) {
+    const ctx = claimThreadRole(cwd, state, identity.agentId, identity.declaredRole, { parentSessionId: identity.sessionId });
+    if (ctx) return ctx;
   }
 
   // Codex self-heal: a subagent thread (threadId differs from the parent session_id
@@ -498,6 +530,16 @@ export function claimThreadRole(
   };
   fs.mkdirSync(runDir(cwd, runId), { recursive: true });
   writeJson(runAgentFile(cwd, runId, id), claim);
+  // Mirror the bind into the role-keyed reuse registry (agents.json), so the spawn
+  // dedup gate sees a LIVE agent for the role and routes the next same-role task to
+  // SendMessage/send_input — one agent per role instead of a fresh rule-reloading
+  // spawn. Only the host's spawn-result recorder ran before, which never fires for
+  // hosts that bind here (Codex SubagentStart; Claude agent-teams, whose workers
+  // carry agent_id/agent_type but no separately-recorded spawn result). Gated on
+  // continuation (the registry is dead weight without it) and best-effort.
+  if (subagentContinuationAvailable()) {
+    recordRunAgent(cwd, runId, role, { agentId: id, parentSessionId: firstString(options.parentSessionId) });
+  }
   // Deliberately NOT writeState() here. Parallel subagents self-heal their claims
   // near-simultaneously on their first writes, and writeState does a non-atomic
   // read-modify-rewrite of the shared .one.json — concurrent calls would clobber it.
