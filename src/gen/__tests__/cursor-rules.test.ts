@@ -31,6 +31,10 @@ test('cursorFrontmatter emits description + globs + alwaysApply', () => {
   assert.ok(lines.includes('description: "Desc"'));
   assert.ok(lines.includes('globs: a/**'));
   assert.ok(lines.includes('alwaysApply: true'));
+
+  const noGlobLines = cursorFrontmatter('Desc', [], false);
+  assert.ok(!noGlobLines.some((line) => line.startsWith('globs:')));
+  assert.ok(noGlobLines.includes('alwaysApply: false'));
 });
 
 test('generatedCursorRules gathers rule + agent docs from the repo tree', () => {

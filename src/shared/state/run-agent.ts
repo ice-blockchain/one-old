@@ -891,6 +891,10 @@ export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.env, host?: string): boolean {
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
+  if (host) {
+    if (host === 'codex' || host === 'cursor') return true;
+    return flag !== '';
+  }
   // Codex: send_input (native to the multi_agent toolset, always present).
   if (host === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
   // Cursor: the Task tool accepts an `agentId` to RESUME a previous subagent with full

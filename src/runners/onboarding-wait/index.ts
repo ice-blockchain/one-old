@@ -21,6 +21,7 @@ import { maintenanceTriageDirective } from '../../modules/session/triage-directi
 import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { normalizeState, readEffectiveState } from '../../shared/state';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
@@ -99,8 +100,33 @@ export function postSetupTriage(cwd: string): string {
   }
 }
 
+// Print the live wizard URL to this command's OWN stdout before blocking. This is
+// the one channel that reliably reaches the Cursor user: the agent watches (and the
+// user sees) this command's terminal output, whereas Cursor does NOT render
+// systemMessage→user_message on user-prompt-submit and the agent often won't repost
+// the URL from the agent-facing additional_context. Host-agnostic (Claude/Codex open
+// the wizard programmatically, but the printed URL is a harmless, useful fallback
+// there too). Best-effort: no record / placeholder URL ⇒ print nothing.
+export function announceWizardUrl(cwd: string, write: (s: string) => void = (s) => process.stdout.write(s)): void {
+  try {
+    const rec = readServerRecord(cwd);
+    if (!rec || !rec.url || rec.url.includes(':0/')) return;
+    write(
+      '\n════════════════════════════════════════════════════════════════\n'
+      + '  TRAFFIC ONE SETUP WIZARD — open this link to finish setup:\n\n'
+      + `  ${rec.url}\n\n`
+      + '  Cursor: click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste it.\n'
+      + '  Waiting for setup to complete (this command keeps the turn open)…\n'
+      + '════════════════════════════════════════════════════════════════\n',
+    );
+  } catch {
+    // best-effort — the wait still works without the banner
+  }
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
+  announceWizardUrl(cwd);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,

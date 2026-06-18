@@ -86,3 +86,42 @@ test('postSetupTriage emits the subagents triage (with OpenCode-first) for the s
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── announceWizardUrl: the URL reaches the Cursor user via the wait command's OWN
+// stdout (the one channel Cursor renders) — not via user_message (dropped on
+// user-prompt-submit) or the agent reposting additional_context (composer won't). ──
+
+test('announceWizardUrl prints the live wizard URL from the server record (and skips when absent/placeholder)', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { announceWizardUrl } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-wizurl-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    // No record yet → prints nothing.
+    let out = '';
+    announceWizardUrl(dir, (s) => { out += s; });
+    assert.equal(out, '', 'no server record → no banner');
+
+    // Live record → the literal URL is printed for the user to click.
+    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' });
+    out = '';
+    announceWizardUrl(dir, (s) => { out += s; });
+    assert.ok(out.includes('http://127.0.0.1:55174/?t=tok'), 'banner carries the live wizard URL');
+    assert.match(out, /SETUP WIZARD/i, 'banner is recognizable to the user');
+
+    // Placeholder (:0/) → never surfaced.
+    writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' });
+    out = '';
+    announceWizardUrl(dir, (s) => { out += s; });
+    assert.equal(out, '', 'placeholder URL is not surfaced');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
