@@ -658,6 +658,39 @@ test('reuse: recorder persists the agent id, duplicate same-role spawn is denied
   });
 });
 
+test('reuse (Cursor): subagent-start records the spawned subagent_id into the registry (10b re-spawn-pileup fix)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-cursor-1');
+    // Cursor's subagent-start carries the spawned id as `subagent_id` (= tool_<uuid>) and
+    // the role as `subagent_type` — NOT agent_id/agent_type. The PostToolUse(Task) recorder
+    // never sees this id, so without recording it on subagent-start the registry stays empty
+    // and every fix-cycle re-spawns the role fresh (observed 10b: backend ×3, frontend ×3,
+    // 11 unbound pending claims, stalled mid-review-fix-cycle).
+    const cursorCtx = {
+      input: {
+        event: 'SubagentStart', host: 'cursor', cwd,
+        raw: {
+          hook_event_name: 'subagent-start',
+          subagent_id: 'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb',
+          subagent_type: 'senior-architect',
+          subagent_model: 'composer-2.5-fast',
+          session_id: 'orchestrator-parent',
+          conversation_id: 'conv-child-1',
+        },
+      },
+      host: 'cursor', cwd, now: () => 'x',
+    } as unknown as Ctx;
+    subagentStartBind(cursorCtx);
+    const registry = readRunAgentRegistry(cwd, 'run-cursor-1');
+    assert.equal(
+      registry['senior-architect']?.agentId,
+      'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb',
+      'Cursor subagent_id must be recorded for reuse (else fix-cycles re-spawn)',
+    );
+    assert.equal(registry['senior-architect']?.agentType, 'senior-architect');
+  });
+});
+
 test('reuse: the replace marker retires the recorded agent and lets ONE replacement spawn through', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     withTeamsEnv(() => {

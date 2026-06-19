@@ -20,6 +20,7 @@ import { execFileSync } from 'child_process';
 import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
 import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
+import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { normalizeState, readEffectiveState } from '../../shared/state';
@@ -132,6 +133,19 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,
   });
   if (outcome === 'complete') {
+    // Converge project materialization NOW, before the agent resumes and spawns its
+    // first subagent. Without this the architect (Phase-1, the FIRST spawn) races the
+    // bundle: onboarding is `confirmed` but `manifest`/`rules`/`skills`/`AGENTS.md`
+    // aren't stamped for ~tens of seconds, so the agent-model gate denies the spawn
+    // ("materialization not complete" → Cursor renders "New subagent — Couldn't
+    // start"), and the agent falls back to building the role INLINE (observed 13b).
+    // Materializing here makes the bundle ready at SETUP_COMPLETE, so the first spawn
+    // is clean. Idempotent + best-effort (the gate still self-heals if this is skipped).
+    try {
+      materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait setup-complete (pre-spawn materialize)' });
+    } catch {
+      // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
+    }
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
     const triage = postSetupTriage(cwd);
     if (triage) {

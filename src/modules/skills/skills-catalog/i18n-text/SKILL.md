@@ -35,9 +35,15 @@ Implementation rules:
   parallel i18n system.
 - Add source-language catalog entries in the same change for every key used.
 - Translate visible text, placeholders, form labels, validation errors, loading/error/empty copy, alt text, ARIA labels, accessibility labels, and accessibility hints.
-- Prefer `<Trans>` over `t()` when copy contains links, React elements,
-  emphasis, line breaks, nested components, or rich interpolation. Use `t()` for
-  simple labels, attributes, and validation strings.
+- Use `<Trans>` over `t()` when copy contains links, React elements, emphasis,
+  line breaks, nested components, or rich interpolation. Use `t()` only for simple
+  scalars — labels, attributes, validation strings, and a whole link/button whose
+  text is one scalar (`<Link to="/x">{t('nav.x')}</Link>`).
+- **The most common rich case = a sentence with an inline link.** Do NOT split it
+  into `t()` fragments: `{t('login.noAccount')} <Link>{t('login.signupLink')}</Link>`
+  ❌ → `<Trans i18nKey="login.noAccount" components={{ signup: <Link to="/signup" /> }}>Don't have an account? <signup>Sign up</signup></Trans>` ✅.
+  Tell: a `{t(...)}` fragment next to an inline `<Link>`/`<a>`/`<strong>`/`<em>` in the
+  same text node is a split sentence — make it one `<Trans>` (with source-language children).
 - Prefer complete translation phrases with interpolation values over concatenated fragments.
 - Keep route params, enum values, analytics names, and technical IDs unlocalized unless they are displayed to users.
 - In tests, assert accessible names/labels from the rendered UI; do not couple tests to private translation internals unless testing the i18n package itself.
