@@ -102,22 +102,31 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
 // so the generous default (max plan / undetected host) is a no-op versus today.
 // Lower a single subagent here (e.g. senior-tester) and it applies everywhere
 // unless a plan overrides it in PLAN_AGENT_TIERS below.
+// `withOpenCode` is DISABLED for now: it equals `base` for every role/level, so
+// enabling OpenCode delegation no longer bumps the paid team up a tier. The field is
+// kept (not removed) so the bump can be re-enabled later by editing these values —
+// set a role's `withOpenCode` above its `base`. Why disabled: the bump made the
+// performance choice meaningless when OpenCode was on (balanced.withOpenCode='highest'
+// === high → "balanced" silently ran the seniors on the highest model, Opus), and it
+// diverged from what the wizard's Team-Confirmation line-up showed the user. Note High
+// keeps `withOpenCode: 'highest'` (= its base) — equal-to-base, NOT 'balanced', so
+// OpenCode never DOWNGRADES a High run below its chosen tier.
 export const DEFAULT_AGENT_TIERS: Readonly<Record<TeamLevel, Record<AgentRole, PlanTier>>> = {
   balanced: {
-    'senior-architect': { base: 'balanced', withOpenCode: 'highest' },
-    'senior-frontend': { base: 'balanced', withOpenCode: 'highest' },
-    'senior-backend': { base: 'balanced', withOpenCode: 'highest' },
-    'senior-reviewer': { base: 'balanced', withOpenCode: 'highest' },
-    'senior-tester': { base: 'cheapest', withOpenCode: 'balanced' },
-    'senior-shipper': { base: 'balanced', withOpenCode: 'highest' },
+    'senior-architect': { base: 'balanced', withOpenCode: 'balanced' },
+    'senior-frontend': { base: 'balanced', withOpenCode: 'balanced' },
+    'senior-backend': { base: 'balanced', withOpenCode: 'balanced' },
+    'senior-reviewer': { base: 'balanced', withOpenCode: 'balanced' },
+    'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
+    'senior-shipper': { base: 'balanced', withOpenCode: 'balanced' },
   },
   high: {
     'senior-architect': { base: 'highest', withOpenCode: 'highest' },
     'senior-frontend': { base: 'highest', withOpenCode: 'highest' },
     'senior-backend': { base: 'highest', withOpenCode: 'highest' },
     'senior-reviewer': { base: 'highest', withOpenCode: 'highest' },
-    'senior-tester': { base: 'cheapest', withOpenCode: 'balanced' },
-    'senior-shipper': { base: 'balanced', withOpenCode: 'highest' },
+    'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
+    'senior-shipper': { base: 'balanced', withOpenCode: 'balanced' },
   },
 };
 
@@ -125,18 +134,18 @@ export const DEFAULT_AGENT_TIERS: Readonly<Record<TeamLevel, Record<AgentRole, P
 // across hosts; replace a host's entry with an inline object to diverge one host.
 // internal: consumed by PLAN_AGENT_TIERS below.
 export const FREE_BALANCED: Readonly<Partial<Record<AgentRole, PlanTier>>> = {
-  'senior-architect': { base: 'cheapest', withOpenCode: 'balanced' },
-  'senior-frontend': { base: 'cheapest', withOpenCode: 'balanced' },
-  'senior-backend': { base: 'cheapest', withOpenCode: 'balanced' },
-  'senior-reviewer': { base: 'cheapest', withOpenCode: 'balanced' },
-  'senior-shipper': { base: 'cheapest', withOpenCode: 'balanced' },
+  'senior-architect': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-frontend': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-backend': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-reviewer': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-shipper': { base: 'cheapest', withOpenCode: 'cheapest' },
 };
 // internal: consumed by PLAN_AGENT_TIERS below.
 export const FREE_HIGH: Readonly<Partial<Record<AgentRole, PlanTier>>> = {
-  'senior-architect': { base: 'balanced', withOpenCode: 'highest' },
-  'senior-frontend': { base: 'balanced', withOpenCode: 'highest' },
-  'senior-backend': { base: 'balanced', withOpenCode: 'highest' },
-  'senior-reviewer': { base: 'balanced', withOpenCode: 'highest' },
+  'senior-architect': { base: 'balanced', withOpenCode: 'balanced' },
+  'senior-frontend': { base: 'balanced', withOpenCode: 'balanced' },
+  'senior-backend': { base: 'balanced', withOpenCode: 'balanced' },
+  'senior-reviewer': { base: 'balanced', withOpenCode: 'balanced' },
 };
 
 // Sparse per-(host, plan, level) deviations from DEFAULT_AGENT_TIERS. List only the

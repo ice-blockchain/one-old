@@ -246,8 +246,12 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   // payload (agent_id / agent_type) and sends NO parent_session_id, no `subagent`
   // block, and the PARENT's session_id/transcript. Read them so a team worker is
   // recognized as a subagent and its claim binds by agent_id.
-  const agentId = firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId);
-  const declaredRole = roleFromAgentType(firstString(data.agent_type, data.agentType, payload.agent_type, payload.agentType));
+  // Cursor's subagent-start payload carries the spawned id as `subagent_id`
+  // (= tool_<uuid>) and the role as `subagent_type` (Claude uses agent_id/agent_type;
+  // Codex carries neither). Read Cursor's spellings too so a Cursor subagent is
+  // recognized as a subagent and its reuse id + role are captured.
+  const agentId = firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId, data.subagent_id, payload.subagent_id);
+  const declaredRole = roleFromAgentType(firstString(data.agent_type, data.agentType, payload.agent_type, payload.agentType, data.subagent_type, payload.subagent_type));
   const isSubagent = Boolean(
     threadSource === 'subagent'
     || parentSessionId

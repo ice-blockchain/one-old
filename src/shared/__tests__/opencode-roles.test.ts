@@ -160,3 +160,18 @@ test('orchestrator + team prose name Cursor as a first-class subagent host (Task
   // The team rule names Cursor's Task+agentId continuation primitive.
   assert.match(teamRule, /Cursor.*`Task` tool.*agentId|agentId.*Cursor/i, 'team rule must name Cursor Task+agentId continuation');
 });
+
+// The 13b failure: the architect's FIRST spawn hit a one-time materialization
+// readiness deny ("New subagent — Couldn't start"), and composer fell back to
+// building the role inline instead of re-spawning. Both docs must instruct a
+// re-spawn-before-inline-fallback so a retryable deny never drops to main-agent.
+test('orchestrator + team prose: a denied/"Couldn\'t start" first spawn must RE-SPAWN, never fall back to inline', () => {
+  const modules = path.join(__dirname, '..', '..', 'modules');
+  const skill = fs.readFileSync(path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
+  for (const [name, doc] of [['orchestrator SKILL', skill], ['team rule', teamRule]] as const) {
+    assert.match(doc, /re-?spawn/i, `${name} must instruct a re-spawn`);
+    assert.match(doc, /couldn'?t start|denied/i, `${name} must name the Couldn't-start/denied case`);
+    assert.match(doc, /(not|never)[^.\n]*inline/i, `${name} must forbid building the role inline on a first spawn failure`);
+  }
+});
