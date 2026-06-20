@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { anyRunReachedTerminalVerdict, claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, readRunAssignments, readRunAssignmentsResilient, resolveRunAgentContext, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, transcriptThreadId } from '../run-agent';
+import { anyRunProducedImplementerOutput, anyRunReachedTerminalVerdict, claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, readRunAssignments, readRunAssignmentsResilient, resolveRunAgentContext, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, transcriptThreadId } from '../run-agent';
 import { stackFingerprint } from '../materialization';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
@@ -43,6 +43,30 @@ test('runReachedTerminalVerdict requires terminal verdict tokens, not mere diges
     // anyRunReachedTerminalVerdict scans every run dir.
     assert.equal(anyRunReachedTerminalVerdict(dir), true);
     assert.equal(anyRunReachedTerminalVerdict(path.join(dir, 'nope')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('anyRunProducedImplementerOutput sees frontend/backend digests, not architect-only', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-impl-'));
+  try {
+    // No digests dir at all → no implementer output.
+    assert.equal(anyRunProducedImplementerOutput(dir), false);
+    // Only an architect digest (the build merely planned) → not implementer output.
+    writeDigest(dir, 'r1', 'architect.md', 'PLAN_READY');
+    assert.equal(anyRunProducedImplementerOutput(dir), false);
+    // A frontend digest (code was written) → implementer output, even with no verdict.
+    writeDigest(dir, 'r1', 'frontend.md', 'done');
+    assert.equal(anyRunProducedImplementerOutput(dir), true);
+    // Scans every run dir; a backend-only digest in another run also counts.
+    const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 't1-impl2-'));
+    try {
+      writeDigest(dir2, 'r9', 'backend.md', 'done');
+      assert.equal(anyRunProducedImplementerOutput(dir2), true);
+    } finally {
+      fs.rmSync(dir2, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
