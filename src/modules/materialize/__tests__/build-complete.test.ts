@@ -22,6 +22,10 @@ interface ProjectOpts {
   mode?: string;
   files?: number;
   digest?: boolean;
+  // Implementer output: a frontend/backend digest with NO reviewer/tester verdict.
+  // Proof the orchestrator got past planning and code was written, but verification
+  // never recorded a terminal verdict — the prompt-boundary flip accepts this.
+  implementer?: boolean;
   verified?: boolean;
   claimFresh?: boolean;
   // Override the verdict tokens written into reviewer.md / tester.md. `verified`
@@ -48,11 +52,16 @@ function mkproject(opts: ProjectOpts): string {
   // explicitly. Existence alone is not settlement, so the digest CONTENT matters.
   const reviewerVerdict = opts.reviewerVerdict ?? (opts.verified ? 'APPROVED' : undefined);
   const testerVerdict = opts.testerVerdict ?? (opts.verified ? 'TESTS_GREEN' : undefined);
-  if (opts.digest || reviewerVerdict || testerVerdict || opts.shipper) {
+  if (opts.digest || opts.implementer || reviewerVerdict || testerVerdict || opts.shipper) {
     const dd = path.join(dir, '.traffic-one', 'digests', '123');
     fs.mkdirSync(dd, { recursive: true });
-    // architect.md = Phase 1 (early); reviewer/tester = Phase 3 (verification).
+    // architect.md = Phase 1 (early); frontend/backend = Phase 2 (implementation);
+    // reviewer/tester = Phase 3 (verification).
     if (opts.digest) fs.writeFileSync(path.join(dd, 'architect.md'), '# plan\nverdict: PLAN_READY\n');
+    if (opts.implementer) {
+      fs.writeFileSync(path.join(dd, 'frontend.md'), '# frontend\nTouched: src/App.tsx\n');
+      fs.writeFileSync(path.join(dd, 'backend.md'), '# backend\nTouched: supabase/migrations\n');
+    }
     if (reviewerVerdict) fs.writeFileSync(path.join(dd, 'reviewer.md'), `# reviewer\nverdict: ${reviewerVerdict}\n`);
     if (testerVerdict) fs.writeFileSync(path.join(dd, 'tester.md'), `# tester\nverdict: ${testerVerdict}\n`);
     if (opts.shipper) fs.writeFileSync(path.join(dd, 'shipper.md'), '# shipper\nurl: https://app.example\n');
@@ -126,12 +135,27 @@ test('atPromptBoundary flips PAST a stale pending claim — a new prompt means t
   assert.equal((state.lifecycle as Record<string, unknown>).source, 'prompt-boundary');
 });
 
-test('atPromptBoundary still requires the build to have reached verification', () => {
-  // The claims guard is the only one relaxed at the boundary — a build that never
-  // reached review (only an architect digest) must NOT flip, even on a new prompt.
+test('atPromptBoundary still requires the build to have produced implementer output', () => {
+  // The boundary relaxes the claims guard AND the terminal-verdict requirement, but
+  // not to nothing: a build that only PLANNED (an architect digest, no frontend/
+  // backend digest) must NOT flip, even on a new prompt — no code was written yet.
   const dir = mkproject({ files: 30, digest: true, verified: false });
   assert.equal(runAtPromptBoundary(dir), false);
   assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
+});
+
+test('atPromptBoundary flips on implementer output even WITHOUT a terminal verdict', () => {
+  // The exact pshihological-raport case: the team built a real app (architect +
+  // frontend + backend digests) but the reviewer/tester never wrote their digests,
+  // so there is no terminal verdict and the project was pinned in "building" forever
+  // — every maintenance follow-up bypassed triage. At a new prompt boundary the build
+  // turn has ended, so implementer output is enough to settle into maintenance.
+  const dir = mkproject({ files: 30, digest: true, implementer: true, verified: false });
+  assert.equal(run(dir), false, 'mid-turn still demands a terminal verdict');
+  assert.equal(runAtPromptBoundary(dir), true, 'prompt boundary accepts implementer output');
+  const state = readState(dir);
+  assert.equal(projectPhase(state, 'new-project'), 'maintenance');
+  assert.equal((state.lifecycle as Record<string, unknown>).source, 'prompt-boundary');
 });
 
 test('atPromptBoundary still requires real source output and new-project mode', () => {

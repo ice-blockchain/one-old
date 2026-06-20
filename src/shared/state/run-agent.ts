@@ -816,6 +816,30 @@ export function anyRunReachedTerminalVerdict(cwd: string): boolean {
   return false;
 }
 
+// True when ANY run dir under .traffic-one/digests has an IMPLEMENTER digest
+// (frontend.md or backend.md) — proof the orchestrator got past planning and an
+// implementer actually wrote code. WEAKER than a terminal verdict: it does NOT
+// require a reviewer `APPROVED` + tester `TESTS_GREEN`. Used only at the prompt
+// boundary by the maintenance flip, where the build turn has already ended — a
+// build that produced real implementer output but never recorded a clean
+// reviewer/tester verdict (interrupted verification, a role that skipped its
+// digest, a multi-session resume) must still settle to maintenance so follow-ups
+// get triaged, instead of staying pinned in "building" forever. The strict
+// terminal-verdict gate still guards the mid-turn (PostToolUse) flip.
+export function anyRunProducedImplementerOutput(cwd: string): boolean {
+  try {
+    const base = path.join(cwd, '.traffic-one', 'digests');
+    for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dd = digestDir(cwd, entry.name);
+      if (['frontend.md', 'backend.md'].some((n) => fs.existsSync(path.join(dd, n)))) return true;
+    }
+  } catch {
+    // best-effort — no digests dir means nothing has been implemented yet
+  }
+  return false;
+}
+
 // Resolve which assignment a writing agent owns. Prefer an indexed agentKey
 // (`<role>#<spawnIndex>`), then a role-named agentKey, then the sole entry for the
 // role. Null when the role maps to zero or ambiguously-many entries.
