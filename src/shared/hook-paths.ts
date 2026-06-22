@@ -175,6 +175,16 @@ export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceil
   if (onboarded) return onboarded;
   const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling)) || nearestWorkspaceRoot(cwd, ceiling);
   if (workspace) return workspace;
+  // Cursor can run a subagent shell with cwd under its internal metadata tree
+  // (for example ~/.cursor/.../terminals), outside workspace_roots. The ceiling
+  // bounded walks above correctly refuse to climb from that cwd, but falling back
+  // to cwd would make Traffic One think this out-of-tree dir is a fresh project.
+  if (ceiling && !isPathWithin(path.resolve(cwd), ceiling)) {
+    if (isOnboardedProjectRoot(ceiling)) return ceiling;
+    const workspaceAtCeiling = nearestWorkspaceRoot(ceiling, ceiling);
+    if (workspaceAtCeiling) return workspaceAtCeiling;
+    return ceiling;
+  }
   return findProjectRootForHookFile(cwd, filePath);
 }
 

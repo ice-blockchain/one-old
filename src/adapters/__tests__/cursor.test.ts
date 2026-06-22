@@ -94,9 +94,18 @@ test('cursor: cwd is resolved from workspace_roots when no cwd field is sent (th
   assert.equal(r2.additional_context, '/proj/y');
   const r3 = JSON.parse(await dispatch(cursor, echoCwd, inv('session-start', { workspace_roots: ['file:///proj/z'] })));
   assert.equal(r3.additional_context, '/proj/z');
-  // Explicit cwd still wins over workspace_roots.
-  const r4 = JSON.parse(await dispatch(cursor, echoCwd, inv('session-start', { cwd: '/explicit', workspace_roots: ['/proj/x'] })));
-  assert.equal(r4.additional_context, '/explicit');
+  // Explicit cwd still wins when it is inside workspace_roots.
+  const r4 = JSON.parse(await dispatch(cursor, echoCwd, inv('session-start', { cwd: '/proj/x/packages/ui', workspace_roots: ['/proj/x'] })));
+  assert.equal(r4.additional_context, '/proj/x/packages/ui');
+  // Cursor may report an internal metadata cwd (for example terminals/) outside
+  // the opened workspace. That must not re-root Traffic One to the metadata dir.
+  const echoShellCwd: Handler[] = [{ id: 'shell-cwd', event: 'PreToolUse', tools: ['shell'], priority: 0, run: (ctx) => context(ctx.input.cwd) }];
+  const r5 = JSON.parse(await dispatch(cursor, echoShellCwd, inv('before-shell-execution', {
+    cwd: '/Users/u/.cursor/projects/Users-u-Projects-app/terminals',
+    workspace_roots: ['/proj/x'],
+    command: 'head -n 12 *.txt',
+  })));
+  assert.equal(r5.additional_context, '/proj/x');
 });
 
 test('cursor: workspaceRoot is surfaced from workspace_roots as the authoritative ceiling', () => {
@@ -112,6 +121,13 @@ test('cursor: workspaceRoot is surfaced from workspace_roots as the authoritativ
   const c = cursor.parse(inv('before-shell-execution', { cwd: '/proj/x/packages/ui', workspace_roots: ['/proj/x'] }));
   assert.equal(c.cwd, '/proj/x/packages/ui');
   assert.equal(c.workspaceRoot, '/proj/x');
+  // A shell cwd outside the workspace is ignored in favor of the workspace root.
+  const d = cursor.parse(inv('before-shell-execution', {
+    cwd: '/Users/u/.cursor/projects/Users-u-Projects-x/terminals',
+    workspace_roots: ['/proj/x'],
+  }));
+  assert.equal(d.cwd, '/proj/x');
+  assert.equal(d.workspaceRoot, '/proj/x');
   // No workspace_roots → unset (no ceiling; Claude/Codex monorepo climb unchanged).
   assert.equal(cursor.parse(inv('session-start', {})).workspaceRoot, undefined);
   // A RELATIVE workspace root is NOT a usable ceiling (would resolve against the

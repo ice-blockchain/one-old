@@ -12,7 +12,8 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { runGen } from '../gen';
-import { pluginRoot } from '../shared/paths';
+
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 // Byte copies of repo-root source docs plus the runtime-populated skills seed —
 // deliberately not hashed (they are inputs or runtime surface, not generated
@@ -34,7 +35,7 @@ function sha256(file: string): string {
 }
 
 export function updateGoldenManifest(
-  repoRoot: string = pluginRoot(),
+  repoRoot: string = REPO_ROOT,
   manifestPath: string = path.join(repoRoot, 'tests', 'golden', 'generated-manifest.sha256'),
 ): { count: number; manifestPath: string } {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 't1-golden-update-'));

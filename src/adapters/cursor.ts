@@ -76,6 +76,19 @@ function firstWorkspaceRoot(data: Record<string, unknown>): string | undefined {
   return undefined;
 }
 
+function isInsideOrEqual(candidate: string, boundary: string): boolean {
+  const rel = path.relative(path.resolve(boundary), path.resolve(candidate));
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+function cursorCwd(data: Record<string, unknown>, wsRoot: string | undefined): string {
+  const explicit = firstString(data.cwd);
+  if (!explicit) return wsRoot || process.cwd();
+  if (!wsRoot || !path.isAbsolute(wsRoot)) return explicit;
+  const resolved = path.isAbsolute(explicit) ? explicit : path.resolve(wsRoot, explicit);
+  return isInsideOrEqual(resolved, wsRoot) ? explicit : wsRoot;
+}
+
 export function makeCursorAdapter(): HostAdapter {
   return {
     id: 'cursor',
@@ -160,7 +173,9 @@ export function makeCursorAdapter(): HostAdapter {
         host: 'cursor',
         // Cursor provides `workspace_roots`, not `cwd`; consult it before falling
         // back to process.cwd() (which under Cursor is the plugin dir, not the project).
-        cwd: firstString(data.cwd) || wsRoot || process.cwd(),
+        // If Cursor reports a tool cwd OUTSIDE workspace_roots (for example its
+        // internal terminal metadata dir), keep Traffic One anchored at the workspace.
+        cwd: cursorCwd(data, wsRoot),
         ...(wsCeiling ? { workspaceRoot: wsCeiling } : {}),
         raw: data,
         ...(tool ? { tool } : {}),

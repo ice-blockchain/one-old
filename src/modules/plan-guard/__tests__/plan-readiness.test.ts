@@ -85,6 +85,26 @@ test('monorepo-package-json: a non-workspace root package.json on a monorepo sta
   });
 });
 
+test('monorepo-package-json: pnpm-workspace.yaml satisfies workspace declaration for root package.json', () => {
+  withProject((dir) => {
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - "apps/*"\n  - "packages/*"\n', 'utf8');
+    const v = planReadinessViolations({
+      filePath: 'package.json',
+      content: JSON.stringify({
+        name: 'devlearn',
+        private: true,
+        packageManager: 'pnpm@10.23.0',
+        engines: { node: '>=22' },
+      }),
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
+  });
+});
+
 test('monorepo-root-vite: a root src/ Vite file on a monorepo stack is blocked', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
@@ -167,6 +187,27 @@ test('architect completion gate: PLAN_READY requires the baseline monorepo scaff
 test('architect completion gate: PLAN_READY is allowed once scaffold files exist', () => {
   withProject((dir) => {
     writeRequiredScaffold(dir);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
+  });
+});
+
+test('architect completion gate: PLAN_READY accepts pnpm-workspace.yaml plus root package without workspaces', () => {
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+      name: 'devlearn',
+      private: true,
+      packageManager: 'pnpm@10.23.0',
+      engines: { node: '>=22' },
+    }), 'utf8');
     const v = planReadinessViolations({
       filePath: '.traffic-one/digests/R/architect.md',
       content: 'verdict: PLAN_READY\n',
