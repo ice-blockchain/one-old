@@ -5,6 +5,7 @@
 
 import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../authoring-root';
@@ -91,6 +92,22 @@ function nestedValue(source: unknown, keys: string[]): unknown {
     current = (current as Rec)[key];
   }
   return current;
+}
+
+function stringValues(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
 }
 
 // Codex reports the orchestrator's session_id in every hook payload — even for
@@ -233,12 +250,13 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
     || nestedValue(payload, ['subagent', 'thread_spawn'])
     || {}) as Rec;
 
-  // NOTE: Cursor DOES send session_id (== conversation_id) on every event
-  // (verified across all event types in captured cursor.hooks logs), so data.session_id
-  // below already resolves it — no conversation_id alias is needed.
+  // Cursor usually sends session_id (== conversation_id), but some event shapes have
+  // drifted across versions. Treat conversation_id as a fallback so child-session
+  // writes can still bind their per-run role claim.
   const sessionId = firstString(
     data.session_id, data.sessionId, data.sessionID, data.id,
     payload.session_id, payload.sessionId, payload.id,
+    data.conversation_id, data.conversationId, payload.conversation_id, payload.conversationId,
     nestedValue(data, ['session', 'id']), nestedValue(payload, ['session', 'id']),
   );
   const parentSessionId = firstString(
@@ -356,6 +374,133 @@ function listPendingClaims(cwd: string, runId: string): PendingClaim[] {
   } catch {
     return [];
   }
+}
+
+function matchingPendingClaim(
+  cwd: string,
+  state: unknown,
+  runId: string,
+  role: string,
+  parentSessionId: string | null,
+): PendingClaim | null {
+  const pending = listPendingClaims(cwd, runId)
+    .filter(({ claim }) => claimAllowsState(state, claim))
+    .filter(({ claim }) => claim.role === role);
+  return pending.find(({ claim }) => (
+    parentSessionId && claim.parentSessionId && claim.parentSessionId === parentSessionId
+  )) || pending[0] || null;
+}
+
+function removePendingClaim(filePath: string): void {
+  try {
+    fs.rmSync(filePath, { force: true });
+  } catch {
+    // a leftover pending file is harmless; freshness expires it
+  }
+}
+
+function cursorProjectsRoot(): string | null {
+  const override = firstString(process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR);
+  if (override) return override;
+  const home = firstString(process.env.HOME, os.homedir());
+  return home ? path.join(home, '.cursor', 'projects') : null;
+}
+
+function cursorProjectDirNames(projectRoot: string): string[] {
+  const roots: string[] = [projectRoot];
+  try {
+    const real = fs.realpathSync(projectRoot);
+    if (real) roots.push(real);
+  } catch {
+    // best-effort; cwd may not exist in a unit test or after a deleted project
+  }
+  return uniqueStrings(roots.map((root) => {
+    const normalized = path.resolve(root).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+    return normalized.replace(/[/:\s]+/g, '-');
+  }));
+}
+
+function workspaceRootsForCursorLookup(cwd: string, rawInput: unknown): string[] {
+  const data = obj(rawInput) || {};
+  const payload = obj(data.payload) || {};
+  return uniqueStrings([
+    cwd,
+    ...stringValues(data.workspace_roots),
+    ...stringValues(data.workspaceRoots),
+    ...stringValues(payload.workspace_roots),
+    ...stringValues(payload.workspaceRoots),
+  ]);
+}
+
+interface CursorTranscriptCandidate {
+  filePath: string;
+  parentSessionId: string;
+  mtimeMs: number;
+}
+
+function subagentTranscriptCandidates(projectDir: string, sessionId: string): CursorTranscriptCandidate[] {
+  const out: CursorTranscriptCandidate[] = [];
+  const agentTranscriptsDir = path.join(projectDir, 'agent-transcripts');
+  try {
+    for (const parent of fs.readdirSync(agentTranscriptsDir, { withFileTypes: true })) {
+      if (!parent.isDirectory()) continue;
+      const filePath = path.join(agentTranscriptsDir, parent.name, 'subagents', `${sessionId}.jsonl`);
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.isFile()) out.push({ filePath, parentSessionId: parent.name, mtimeMs: stat.mtimeMs });
+      } catch {
+        // no subagent transcript under this parent
+      }
+    }
+  } catch {
+    // no Cursor transcript cache for this project
+  }
+  return out;
+}
+
+// Cursor child tool events currently report only the child conversation/session id
+// and `transcript_path: null`. The role marker lives in Cursor's local child
+// transcript at:
+//   ~/.cursor/projects/<project-key>/agent-transcripts/<parent>/subagents/<child>.jsonl
+// Locate that file so the normal transcript role-inference path can bind the child
+// session instead of denying it as "main agent".
+function cursorSubagentTranscript(cwd: string, rawInput: unknown, sessionId: string | null): CursorTranscriptCandidate | null {
+  if (!sessionId || /[\\/]/.test(sessionId) || sessionId.includes('..')) return null;
+  const root = cursorProjectsRoot();
+  if (!root) return null;
+
+  const projectRoots = workspaceRootsForCursorLookup(cwd, rawInput);
+  const projectDirs: string[] = [];
+  for (const projectRoot of projectRoots) {
+    for (const dirName of cursorProjectDirNames(projectRoot)) {
+      projectDirs.push(path.join(root, dirName));
+    }
+  }
+
+  const candidates: CursorTranscriptCandidate[] = [];
+  for (const projectDir of uniqueStrings(projectDirs)) {
+    candidates.push(...subagentTranscriptCandidates(projectDir, sessionId));
+  }
+
+  // Encoding has changed before; if the exact project key misses, fall back to
+  // project dirs that end with the workspace basename. The child session id still
+  // has to match exactly, so this remains deterministic in normal Cursor caches.
+  if (candidates.length === 0) {
+    const basenames = uniqueStrings(projectRoots.map((projectRoot) => path.basename(projectRoot)).filter(Boolean));
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (!basenames.some((base) => entry.name === base || entry.name.endsWith(`-${base}`))) continue;
+        candidates.push(...subagentTranscriptCandidates(path.join(root, entry.name), sessionId));
+      }
+    } catch {
+      // no Cursor projects root
+    }
+  }
+
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0]!;
 }
 
 function listClaimedAgents(cwd: string, runId: string): Rec[] {
@@ -478,18 +623,29 @@ export function resolveRunAgentContext(
     if (ctx) return ctx;
   }
 
-  // Codex self-heal: a subagent thread (threadId differs from the parent session_id
-  // Codex reports) with no claim yet — infer its role from its own transcript and
-  // stake the claim now. This runs at the child's first gated write, by which point
-  // the rollout carries the spawn assignment (SubagentStart can fire before it does).
-  const inferredRole = shouldClaimPending && identity.transcriptPath
-    ? inferRoleFromTranscript(identity.transcriptPath)
+  // Codex/Cursor self-heal: a subagent thread with no claim yet can still bind from
+  // its own transcript. Codex sends transcript_path directly; Cursor child writes
+  // omit it, so we locate the child transcript by conversation/session id.
+  const cursorTranscript = shouldClaimPending && !identity.transcriptPath && identity.sessionId
+    ? cursorSubagentTranscript(cwd, rawInput, identity.sessionId)
     : null;
-  if (shouldClaimPending && identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId) {
-    if (inferredRole) {
-      const ctx = claimThreadRole(cwd, state, identity.threadId, inferredRole, { parentSessionId: identity.sessionId });
-      if (ctx) return ctx;
-    }
+  const cursorTranscriptPath = cursorTranscript ? cursorTranscript.filePath : null;
+  const inferenceTranscriptPath = identity.transcriptPath || cursorTranscriptPath;
+  const inferredRole = shouldClaimPending && inferenceTranscriptPath
+    ? inferRoleFromTranscript(inferenceTranscriptPath)
+    : null;
+  const inferredThreadId = identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId
+    ? identity.threadId
+    : (cursorTranscriptPath && identity.sessionId ? identity.sessionId : null);
+  if (shouldClaimPending && inferredThreadId && inferredRole) {
+    const parentSessionId = identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId
+      ? identity.sessionId
+      : (identity.parentSessionId || cursorTranscript?.parentSessionId || null);
+    const ctx = claimThreadRole(cwd, state, inferredThreadId, inferredRole, {
+      parentSessionId,
+      recordAgent: !cursorTranscriptPath,
+    });
+    if (ctx) return ctx;
   }
 
   if (shouldClaimPending && identity.isSubagent) {
@@ -545,7 +701,7 @@ export function claimThreadRole(
   state: unknown,
   threadId: string,
   role: string,
-  options: { parentSessionId?: string | null } = {},
+  options: { parentSessionId?: string | null; recordAgent?: boolean } = {},
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
@@ -559,22 +715,29 @@ export function claimThreadRole(
     return contextFromClaim(existing, 'subagent-start');
   }
 
-  const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
+  const parentSessionId = firstString(options.parentSessionId);
+  const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId);
+  const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
+    ? pending.claim.spawnIndex
+    : nextSpawnIndex(cwd, source, runId, role);
+  const now = stateTimestamp();
   const claim: Rec = {
-    version: 1,
-    runId,
-    claimId: `${role}-${spawnIndex}-${id.slice(-8)}`,
-    role,
+    ...(pending ? pending.claim : {}),
+    version: pending && typeof pending.claim.version === 'number' ? pending.claim.version : 1,
+    runId: pending && typeof pending.claim.runId === 'string' ? pending.claim.runId : runId,
+    claimId: pending && typeof pending.claim.claimId === 'string' ? pending.claim.claimId : `${role}-${spawnIndex}-${id.slice(-8)}`,
+    role: pending && typeof pending.claim.role === 'string' ? pending.claim.role : role,
     spawnIndex,
     status: 'claimed',
     sessionId: id,
-    parentSessionId: firstString(options.parentSessionId),
-    createdAt: stateTimestamp(),
-    claimedAt: stateTimestamp(),
-    stackFingerprint: stackFingerprint(source),
+    parentSessionId: parentSessionId || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null),
+    createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
+    claimedAt: now,
+    stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
   };
   fs.mkdirSync(runDir(cwd, runId), { recursive: true });
   writeJson(runAgentFile(cwd, runId, id), claim);
+  if (pending) removePendingClaim(pending.filePath);
   // Mirror the bind into the role-keyed reuse registry (agents.json), so the spawn
   // dedup gate sees a LIVE agent for the role and routes the next same-role task to
   // SendMessage/send_input — one agent per role instead of a fresh rule-reloading
@@ -582,8 +745,8 @@ export function claimThreadRole(
   // hosts that bind here (Codex SubagentStart; Claude agent-teams, whose workers
   // carry agent_id/agent_type but no separately-recorded spawn result). Gated on
   // continuation (the registry is dead weight without it) and best-effort.
-  if (subagentContinuationAvailable()) {
-    recordRunAgent(cwd, runId, role, { agentId: id, parentSessionId: firstString(options.parentSessionId) });
+  if (options.recordAgent !== false && subagentContinuationAvailable()) {
+    recordRunAgent(cwd, runId, role, { agentId: id, parentSessionId });
   }
   // Deliberately NOT writeState() here. Parallel subagents self-heal their claims
   // near-simultaneously on their first writes, and writeState does a non-atomic

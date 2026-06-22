@@ -75,6 +75,6 @@ export function cursorPickedModelUnavailableNotice(projectRoot: string, state: R
     + `${rows.join('\n')}\n\n`
     + `Reply **fallback** to proceed on the listed model(s).\n`
     + `Reply **enable** to turn ${enable} on (Cmd/Ctrl+Shift+J → Models), re-capture models, then retry.\n`
-    + 'The team will NOT spawn, scaffold directly, or edit project files until you reply.'
+    + 'The team will NOT spawn until you reply; do not scaffold directly or edit project files.'
   );
 }

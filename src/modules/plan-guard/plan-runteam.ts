@@ -29,6 +29,7 @@ export interface RunTeamArgs {
   filePath: string;          // project-relative target path
   state: Rec;
   rawData: unknown;          // raw hook input, for run-claim session identity
+  writeTargetPaths?: string[];
   featureTargetPaths: string[];
   writingFeatureSource: boolean;
   writingFeatureSourceViaCommand: boolean;
@@ -39,7 +40,18 @@ export interface RunTeamArgs {
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const { projectRoot, filePath, state, rawData, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
   const team = obj(state.team);
-  if (!writingFeatureSource || !team || team.mode !== 'subagents') return null;
+  if (!team || team.mode !== 'subagents') return null;
+
+  const writeTargetPaths = (args.writeTargetPaths && args.writeTargetPaths.length > 0)
+    ? args.writeTargetPaths.filter(Boolean)
+    : (filePath ? [filePath] : []);
+  const stateRunId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
+  const preManifest = readRunAssignmentsResilient(projectRoot, stateRunId);
+  const assignedTargets = preManifest
+    ? writeTargetPaths.filter((target) => preManifest.assignments.some((assignment) => matchesScope(target, assignment.scope)))
+    : [];
+  const writingRunTeamTarget = writingFeatureSource || assignedTargets.length > 0;
+  if (!writingRunTeamTarget) return null;
 
   const suffix = block('run-team-suffix',
     'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
@@ -67,8 +79,6 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     role,
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,
   });
-  const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
-
   if (!inSubagent) {
     // Maintenance fail-open. Run-team coordinates PARALLEL BUILD implementers via
     // the architect's per-run assignments manifest; in maintenance the build is
@@ -81,7 +91,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // checks below still run, so a real feature run stays coordinated.)
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
     return deny(block('run-team-not-subagent',
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit feature source yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
+      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role }));
   }
 
@@ -91,7 +101,10 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Resilient: tolerates a run-id split (assignments written under a stray id) so the
   // gate doesn't block every implementer write when the orchestrator's run-id diverges
   // from currentRunId. See readRunAssignmentsResilient.
-  const manifest = readRunAssignmentsResilient(projectRoot, runId);
+  const manifest = (runId === stateRunId ? preManifest : readRunAssignmentsResilient(projectRoot, runId)) || preManifest;
+  const ownershipTargets = featureTargetPaths.length > 0
+    ? featureTargetPaths
+    : (assignedTargets.length > 0 ? assignedTargets : writeTargetPaths);
 
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);

@@ -100,12 +100,16 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     });
   }
 
-  // Best-effort EARLY claim bind: needs the child's thread id (Cursor: subagent_id via
-  // identity.agentId) AND its transcript to confirm the child. Skipped silently when
-  // either is not available yet — resolveRunAgentContext re-attempts at the child's first
-  // gated call.
-  const threadId = identity.agentId || transcriptThreadId(transcriptPath);
-  if (threadId && transcriptPath) {
+  // Best-effort EARLY claim bind: needs the child's thread id and its own transcript
+  // to confirm the child. Cursor SubagentStart reports `subagent_id=tool_<id>` plus
+  // the PARENT transcript, while later child writes report the real child
+  // conversation id with `transcript_path:null`; binding `tool_<id>` here creates a
+  // duplicate claim the child can never resolve. For Cursor, only bind when the
+  // transcript filename yields a child id distinct from the parent session; otherwise
+  // resolveRunAgentContext will bind from Cursor's child transcript cache on first write.
+  const transcriptThread = transcriptThreadId(transcriptPath);
+  const threadId = ctx.host === 'cursor' ? transcriptThread : (identity.agentId || transcriptThread);
+  if (threadId && transcriptPath && threadId !== identity.sessionId) {
     claimThreadRole(ctx.cwd, state, threadId, role, { parentSessionId: identity.sessionId });
   }
   return noop();

@@ -82,10 +82,13 @@ export function planWriteGate(ctx: Ctx): HookResult {
   }
 
   // Resolve which targets are feature source (direct path + apply_patch targets).
+  const writeTargetPaths: string[] = [];
+  if (filePath) writeTargetPaths.push(filePath);
   const featureTargetPaths: string[] = [];
   if (FEATURE_SOURCE_RE.test(filePath)) featureTargetPaths.push(filePath);
   for (const targetPath of patchTargetPaths) {
     const rel = projectRelativeHookPath(cwd, projectRoot, targetPath);
+    if (rel && !writeTargetPaths.includes(rel)) writeTargetPaths.push(rel);
     if (FEATURE_SOURCE_RE.test(rel) && !featureTargetPaths.includes(rel)) featureTargetPaths.push(rel);
   }
   const writingFeatureSourceViaCommand = isShellToolName(toolName) && commandAppearsToWriteFeatureSource(rawCommand);
@@ -100,7 +103,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const runIdViolation = runIdPathViolation({ state, relTargets: runIdTargets, command: rawCommand, block });
   if (runIdViolation) violations.push(runIdViolation);
   const runTeam = runTeamEnforcementViolation({
-    projectRoot, filePath, state, rawData: raw, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
+    projectRoot, filePath, state, rawData: raw, writeTargetPaths, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
   });
   if (runTeam) violations.push(runTeam);
   violations.push(...planStaticViolations(filePath, content, isNative, block));

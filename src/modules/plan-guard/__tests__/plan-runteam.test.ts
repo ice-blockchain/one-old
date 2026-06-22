@@ -8,6 +8,7 @@ import { runTeamEnforcementViolation, type RunTeamArgs } from '../plan-runteam';
 import {
   assignmentForContext,
   claimThreadRole,
+  ensureRunAgentClaim,
   readRunAssignments,
   type RunAgentContext,
 } from '../../../shared/state';
@@ -35,6 +36,14 @@ const block = (_name: string, fallback: string) => fallback;
 
 function rawFor(threadId: string): Record<string, unknown> {
   return { session_id: 'orchestrator', transcript_path: `/tmp/rollout-2026-06-07T00-00-00-${threadId}.jsonl` };
+}
+function writeTranscript(dir: string, threadId: string, body: string): string {
+  const file = path.join(dir, `rollout-2026-06-07T00-00-00-${threadId}.jsonl`);
+  fs.writeFileSync(file, `${JSON.stringify({
+    type: 'response_item',
+    payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: body }] },
+  })}\n`, 'utf8');
+  return file;
 }
 
 function safeKey(p: string): string {
@@ -101,6 +110,35 @@ test('manifest mode: writing inside another role\'s scope is a scope conflict', 
     assert.ok(reason && reason.includes('assigned scope'));
     assert.ok(reason && reason.includes('src/app/api/route.ts'));
     assert.ok(reason && reason.includes('senior-backend'));
+  });
+});
+
+test('manifest mode: assignment-owned non-source writes bind a pending backend claim', () => {
+  withDir((dir) => {
+    const state = baseState();
+    ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: 'orchestrator' }, { toolName: 'Task' });
+    writeManifest(dir, [
+      { role: 'senior-backend', scope: { include: ['supabase/**', '.env.example', 'README.md'] } },
+    ]);
+    const transcript = writeTranscript(dir, THREAD, '[t1-role: senior-backend]\nImplement Supabase migrations and README for run run-1.');
+
+    const reason = runTeamEnforcementViolation({
+      projectRoot: dir,
+      filePath: 'README.md',
+      state: state as RunTeamArgs['state'],
+      rawData: { session_id: 'orchestrator', transcript_path: transcript },
+      writeTargetPaths: ['README.md'],
+      featureTargetPaths: [],
+      writingFeatureSource: false,
+      writingFeatureSourceViaCommand: false,
+      block,
+    });
+
+    assert.equal(reason, null);
+    assert.ok(fs.existsSync(path.join(dir, '.traffic-one', 'runs', RUN, `${THREAD}.json`)),
+      'backend child claim should be persisted even though README.md is not feature source');
+    const pending = path.join(dir, '.traffic-one', 'runs', RUN, 'pending');
+    assert.deepEqual(fs.readdirSync(pending).filter((name) => name.endsWith('.json')), []);
   });
 });
 

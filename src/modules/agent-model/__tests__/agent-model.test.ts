@@ -902,6 +902,7 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
           subagent_model: 'composer-2.5-fast',
           session_id: 'orchestrator-parent',
           conversation_id: 'conv-child-1',
+          transcript_path: '/tmp/orchestrator-parent.jsonl',
         },
       },
       host: 'cursor', cwd, now: () => 'x',
@@ -914,6 +915,11 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
       'Cursor subagent_id must be recorded for reuse (else fix-cycles re-spawn)',
     );
     assert.equal(registry['senior-architect']?.agentType, 'senior-architect');
+    assert.equal(
+      fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-cursor-1', 'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb.json')),
+      false,
+      'Cursor subagent-start must not claim tool_<id>; the child conversation claims itself on first write',
+    );
   });
 });
 

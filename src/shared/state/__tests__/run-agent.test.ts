@@ -380,3 +380,55 @@ test('inferRoleFromTranscript parses the CURSOR {role, message} transcript shape
     assert.equal(inferRoleFromTranscript(f3), 'senior-tester');
   });
 });
+
+function cursorProjectKey(projectRoot: string): string {
+  return path.resolve(projectRoot).replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '').replace(/[/:\s]+/g, '-');
+}
+
+function writeCursorSubagentTranscript(cursorProjectsRoot: string, projectRoot: string, parentId: string, childId: string, body: string): string {
+  const file = path.join(cursorProjectsRoot, cursorProjectKey(projectRoot), 'agent-transcripts', parentId, 'subagents', `${childId}.jsonl`);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    role: 'user',
+    message: { content: [{ type: 'text', text: body }] },
+  }) + '\n', 'utf8');
+  return file;
+}
+
+test('resolveRunAgentContext binds Cursor child writes from the local subagent transcript cache', () => {
+  withPrefs((dir) => {
+    const prev = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const cursorRoot = path.join(dir, 'cursor-projects');
+    process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = cursorRoot;
+    try {
+      const parentId = '8a93bb38-0503-4c9a-ab15-fec68978ad1b';
+      const childId = '8602964e-64f8-4b29-94d6-6836622a27b0';
+      const state = { ...materializedState(), currentRunId: 'run-cursor-child' };
+      ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: parentId }, { toolName: 'Task' });
+      writeCursorSubagentTranscript(cursorRoot, dir, parentId, childId,
+        'You are senior-frontend for DevLearn. Read .traffic-one/runs/run-cursor-child/assignments.json and write only your scope.');
+
+      const ctx = resolveRunAgentContext(dir, state, {
+        conversation_id: childId,
+        session_id: childId,
+        workspace_roots: [dir],
+        transcript_path: null,
+        hook_event_name: 'preToolUse',
+        tool_name: 'Write',
+      }, { claimPending: true });
+
+      assert.ok(ctx, 'Cursor child write should resolve instead of being treated as main agent');
+      assert.equal(ctx!.role, 'senior-frontend');
+      assert.equal(ctx!.sessionId, childId);
+      assert.equal(ctx!.spawnIndex, 1, 'the child consumes the existing pending spawn claim');
+      const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-child', 'pending');
+      assert.deepEqual(fs.readdirSync(pending).filter((name) => name.endsWith('.json')), []);
+
+      const again = resolveRunAgentContext(dir, state, { session_id: childId }, { claimPending: false });
+      assert.equal(again?.role, 'senior-frontend');
+    } finally {
+      if (prev === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prev;
+    }
+  });
+});
