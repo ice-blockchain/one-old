@@ -19,6 +19,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { modelChoiceReplyPending } from '../agent-model/model-choice';
 import {
   applyPatchTargetPaths,
   commandAppearsToWriteFeatureSource,
@@ -71,6 +72,14 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const content = asString(toolInput.content) || asString(toolInput.new_string) || '';
   const state = readEffectiveState(projectRoot);
   const isNative = isNativeState(state);
+
+  if (ctx.host === 'cursor' && state && modelChoiceReplyPending(projectRoot, state as Rec)) {
+    return deny(
+      'traffic-one — model choice required (build paused): reply `fallback` to proceed on the listed fallback model(s), '
+      + 'or `enable` to turn on the picked model(s), re-capture Cursor models, and retry. '
+      + 'Do not spawn subagents, scaffold directly, or edit project files until the user replies.',
+    );
+  }
 
   // Resolve which targets are feature source (direct path + apply_patch targets).
   const featureTargetPaths: string[] = [];

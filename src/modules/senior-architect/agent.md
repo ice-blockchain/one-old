@@ -184,7 +184,7 @@ Before emitting `PLAN_READY`, write a machine-readable counterpart of the Module
 .traffic-one/runs/<run-id>/assignments.json
 ```
 
-This is what makes parallel implementers conflict-free across ANY stack. Each implementer role gets one entry with a DISJOINT set of owned path patterns; the run-team write gate lets a role write only inside its own scope. Use the exact `<run-id>` the orchestrator gave you (the same id as the run's claim dir) — never invent one.
+This is what makes parallel implementers conflict-free across ANY stack. Each implementer role gets one entry with a DISJOINT set of owned path patterns; the run-team write gate lets a role write only inside its own scope. Use `currentRunId` from `.traffic-one/.one.json` (an epoch-ms number, the same id as the run's claim dir) — never invent one, and never a `date`/ISO/UTC string.
 
 ```jsonc
 {
@@ -227,7 +227,7 @@ If you cannot partition the surface disjointly, report the blocker instead of em
 
 ## Digest output (REQUIRED)
 
-The orchestrator will pass you a `<run-id>` in your synthetic prompt (UTC second-precision, e.g. `2026-05-07T14-23-05Z`). Before emitting `PLAN_READY`, write your handoff digest to:
+Read your run-id from `currentRunId` in `.traffic-one/.one.json` — it is a plain epoch-**millisecond number** (e.g. `1715091785000`), NEVER a `date`/ISO/UTC string. Do not invent one or reformat it. Before emitting `PLAN_READY`, write your handoff digest to (substituting that `currentRunId` for `<run-id>`):
 
 ```
 .traffic-one/digests/<run-id>/architect.md

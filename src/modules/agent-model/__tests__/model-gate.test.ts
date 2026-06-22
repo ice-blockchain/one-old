@@ -1,0 +1,138 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+import { modelGateShell } from '../model-gate';
+import { isModelGateCommand } from '../../../shared/tool-classify';
+import { modelGateCommand } from '../../../shared/model-gate-command';
+import { readModelChoice, writeModelChoice } from '../model-choice';
+import { runModelGate } from '../../../runners/model-gate';
+import type { Ctx, ToolClass } from '../../../core/types';
+
+function withProj(opts: { models: string[] | null; overrides?: Record<string, string> }, fn: (cwd: string) => void): void {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-mgate-')));
+  const env = process.env;
+  const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const pl = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+    performance: { level: 'high', source: 'prompted' },
+    team: { mode: 'subagents', source: 'prompted', approved: true, overrides: opts.overrides || {} },
+  }), 'utf8');
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+    mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
+  }), 'utf8');
+  if (opts.models !== null) {
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({ models: opts.models }), 'utf8');
+  }
+  try { fn(dir); } finally {
+    if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
+    if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function ctxFor(cwd: string, command: string, host: 'cursor' | 'claude' = 'cursor'): Ctx {
+  const rawName = host === 'cursor' ? 'before-shell-execution' : 'Bash';
+  return {
+    input: { event: 'PreToolUse', host, cwd, raw: { command }, tool: { class: 'shell' as ToolClass, rawName, command } },
+    host, cwd, now: () => 'x',
+  } as unknown as Ctx;
+}
+
+function captureStdout(fn: () => number): { code: number; out: string } {
+  const original = process.stdout.write;
+  let out = '';
+  (process.stdout.write as unknown as (chunk: string | Uint8Array) => boolean) = (chunk: string | Uint8Array): boolean => {
+    out += Buffer.isBuffer(chunk) ? chunk.toString('utf8') : String(chunk);
+    return true;
+  };
+  try {
+    return { code: fn(), out };
+  } finally {
+    process.stdout.write = original;
+  }
+}
+
+test('isModelGateCommand recognizes the model-gate command (and rejects others)', () => {
+  assert.equal(isModelGateCommand('Bash', { command: modelGateCommand('/proj', 'cursor') }), true);
+  assert.equal(isModelGateCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd' }), false);
+  assert.equal(isModelGateCommand('Bash', { command: 'node /p/model-gate.cjs /cwd && rm -rf /' }), false); // chaining rejected
+});
+
+test('modelGateShell: a PICKED model not offered → askUser (permission:ask) naming the model + fallback', () => {
+  // architect overridden to balanced (claude-4.6-sonnet), which the captured list LACKS.
+  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.equal((r as { askUser?: boolean }).askUser, true, 'is a user APPROVE/REJECT prompt, not a hard deny');
+      assert.ok(r.reason.includes('claude-4.6-sonnet'), 'names the unavailable picked model');
+      assert.ok(/gpt-5\.5/.test(r.reason), 'names the fallback it would use');
+      assert.ok(/approve/i.test(r.reason) && /reject/i.test(r.reason), 'offers approve/reject');
+      assert.ok(/fallback.*enable/i.test(r.reason), 'directs chat consent before spawn');
+      assert.ok((r as { agentMessage?: string }).agentMessage, 'carries per-branch agent instructions');
+    }
+  });
+});
+
+test('modelGate runner fails closed until explicit chat consent (use-fallback)', () => {
+  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.currentRunId = 'run-model-gate';
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+
+    const closed = captureStdout(() => runModelGate([cwd, '--host=cursor']));
+    assert.equal(closed.code, 2, 'without explicit consent the runner refuses');
+    assert.match(closed.out, /STOP|model choice required/i);
+    assert.equal(readModelChoice(cwd, 'run-model-gate'), null, 'fail-closed path writes no fallback choice');
+
+    writeModelChoice(cwd, 'run-model-gate', 'use-fallback');
+    const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
+    assert.equal(approved.code, 0);
+    assert.match(approved.out, /fallback confirmed/i);
+    assert.equal(readModelChoice(cwd, 'run-model-gate'), 'use-fallback', 'explicit chat consent unblocks the runner');
+  });
+});
+
+test('modelGate runner fails closed when Cursor model capture is missing', () => {
+  withProj({ models: null, overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.currentRunId = 'run-missing-capture';
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+
+    const closed = captureStdout(() => runModelGate([cwd, '--host=cursor']));
+    assert.equal(closed.code, 2, 'missing capture must never be treated as all models available');
+    assert.match(closed.out, /STOP|cursor-models\.json|model capture/i);
+    assert.doesNotMatch(closed.out, /all picked models are available/i);
+    assert.equal(readModelChoice(cwd, 'run-missing-capture'), null, 'missing capture writes no fallback choice');
+  });
+});
+
+test('modelGateShell: recognizes the real Cursor before-shell-execution shape', () => {
+  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.equal((r as { askUser?: boolean }).askUser, true);
+  });
+});
+
+test('modelGateShell: every picked model offered → noop (the command runs, no prompt)', () => {
+  withProj({ models: ['claude-opus-4-8-thinking-high', 'claude-4.6-sonnet-thinking', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'))).kind, 'noop');
+  });
+});
+
+test('modelGateShell: non-cursor host and non-model-gate commands → noop', () => {
+  withProj({ models: ['gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'), 'claude')).kind, 'noop', 'claude → inert');
+    assert.equal(modelGateShell(ctxFor(cwd, 'ls -la')).kind, 'noop', 'unrelated command → inert');
+  });
+});

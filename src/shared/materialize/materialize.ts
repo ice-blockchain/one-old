@@ -101,10 +101,9 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (writeRootClaude(cwd)) written += 1;
 
   // Cursor-only: native per-role subagent files (.cursor/agents/<role>.md) with the
-  // resolved tier model pinned in frontmatter, so an orchestrator Task spawn runs the
-  // role on the right model FIRST-TRY (Cursor honors the frontmatter model) instead of
-  // inheriting the session model and eating a spawn-gate deny/retry. Claude/Codex pass
-  // the model via the spawn tool, so they get no agent files.
+  // resolved tier model pinned in frontmatter. The frontmatter is a source for the
+  // orchestrator to read and pass as the Task `model` parameter; Cursor does not reliably
+  // auto-apply it, so the spawn gate still enforces the passed model arg.
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
 
   const mobile = state.mobile as Rec | undefined;

@@ -24,7 +24,7 @@ import * as path from 'path';
 
 import { DEFAULT_HOST_PLAN, type HostModelKey, type UserPlan } from '../config/model-tiers';
 import { readJson } from './fsjson';
-import { canonicalHost, canonicalPlan } from './model-tiers';
+import { canonicalHost, canonicalPlan, planIsRecognized } from './model-tiers';
 import { obj } from './obj';
 
 const cache = new Map<string, UserPlan>();
@@ -165,6 +165,17 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
     else if (host === 'cursor') raw = detectCursorPlan(env);
   } catch {
     raw = null;
+  }
+  // Cursor's stripeMembershipType spellings for Pro+/Ultra/Teams are unconfirmed by
+  // docs; an unrecognized value silently collapses to DEFAULT_HOST_PLAN (free). Flag
+  // it (opt-in via TRAFFIC_ONE_DEBUG so the hook runtime stays quiet by default) so a
+  // real install's string can be added to PLAN_ALIASES. Best-effort; never throws.
+  if (host === 'cursor' && raw && !planIsRecognized(raw) && env.TRAFFIC_ONE_DEBUG) {
+    try {
+      process.stderr.write(`[traffic-one] cursor: unrecognized plan string ${JSON.stringify(raw)} (cursorAuth/stripeMembershipType) → treated as "${DEFAULT_HOST_PLAN.cursor}". Add an alias in config/model-tiers.ts PLAN_ALIASES.\n`);
+    } catch {
+      /* stderr unavailable; diagnostic is best-effort */
+    }
   }
   return raw ? canonicalPlan(host, raw) : DEFAULT_HOST_PLAN[host];
 }

@@ -5,10 +5,12 @@
   "skills": [{ "id": "agent-model-gate", "path": "skill/SKILL.md", "shipped": false }],
   "subscriptions": [
     { "event": "PreToolUse", "subcommand": "check-agent-model", "tools": ["spawn-agent"] },
+    { "event": "PreToolUse", "subcommand": "check-model-gate", "tools": ["shell"] },
     { "event": "PostToolUse", "subcommand": "post-agent-spawned", "tools": ["spawn-agent"] },
     { "event": "SubagentStart", "subcommand": "subagent-start" }
   ],
   "gates": [
-    { "id": "agent-model", "event": "PreToolUse", "priority": 40, "tools": ["spawn-agent"] }
+    { "id": "agent-model", "event": "PreToolUse", "priority": 40, "tools": ["spawn-agent"] },
+    { "id": "model-gate", "event": "PreToolUse", "priority": 41, "tools": ["shell"] }
   ]
 }

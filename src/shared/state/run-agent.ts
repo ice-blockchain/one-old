@@ -35,11 +35,19 @@ export function runIdNow(): string {
 // the existing or newly minted run id.
 export function ensureCurrentRunId(cwd: string, state: unknown): string {
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
-  const existing = typeof source.currentRunId === 'string' ? source.currentRunId.trim() : '';
+  const existing = typeof source.currentRunId === 'string'
+    ? source.currentRunId.trim()
+    : (typeof source.currentRunId === 'number' && Number.isFinite(source.currentRunId) ? String(Math.trunc(source.currentRunId)) : '');
   if (existing) return existing;
   const runId = runIdNow();
   source.currentRunId = runId;
   writeState(cwd, source);
+  // Keep the caller's in-memory `state` in sync so a later ensureRunAgentClaim (which
+  // reads currentRunId off the SAME state object) reuses THIS id instead of minting a
+  // second one. Without this the spawn's run markers (OpenCode attempts, model
+  // advisory/choice) land under an orphaned id that never matches the persisted
+  // currentRunId that subsequent gate calls read back.
+  if (obj(state)) (state as Rec).currentRunId = runId;
   return runId;
 }
 

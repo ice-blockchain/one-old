@@ -1,24 +1,28 @@
 // src/shared/materialize/cursor-agents.ts
-// Cursor-native per-role subagent definitions. Cursor honors the `model:` frontmatter
-// of a `.cursor/agents/<name>.md` file (cursor.com/docs/subagents: "Cursor honors the
-// model field in your subagent frontmatter" unless team-admin/Max-Mode/plan limits), so
-// materializing ONE file per team role — with that role's resolved performance-tier model
-// baked in — makes the orchestrator's Task spawn run on the CORRECT model from the first
-// call. No inheriting the session model, no spawn-gate deny/retry ("New subagent —
-// Couldn't start"). Cursor-only: Claude/Codex set the per-role model via the spawn tool's
-// `model` parameter instead, so they need no agent files.
+// Cursor-native per-role subagent definitions: ONE `.cursor/agents/<role>.md` per team role
+// with the role's resolved performance-tier model in the `model:` frontmatter.
 //
-// The agent-model gate reads these back via cursorAgentModel() and validates the model
-// Cursor will ACTUALLY use (the frontmatter), not the Task `model` arg Cursor ignores.
+// IMPORTANT (corrected): despite cursor.com/docs/subagents claiming "Cursor honors the model
+// field in your subagent frontmatter", live evidence showed it does NOT auto-apply it — when the
+// orchestrator's `Task` spawn omits the `model` arg, the subagent INHERITS THE PARENT
+// (orchestrator) model (captured: `subagent_model == parent model`; a balanced-override frontend
+// pinned `gpt-5.5-medium` ran on the parent's Opus). So this file is the SOURCE the orchestrator
+// reads to know which model to PASS in the Task `model` arg per role (and the value the spawn
+// gate enforces) — it is NOT a substitute for passing the arg. The agent-model gate validates
+// the PASSED `model` only; the orchestrator prose (resources/prompt-templates.md) tells it to
+// read this `model:` and pass it. Claude/Codex set the per-role model via the spawn arg and need
+// no agent files; the file body still gives the role its identity/scope on Cursor.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
 import { writeTextIfChanged } from '../fs-text';
 import { detectHostPlan } from '../host-plan';
+import { acceptableModelsFor } from '../model-tiers';
 import { buildTeamLineup } from '../onboarding-server/flow';
 import { openCodeDelegationActive } from '../performance';
 import { CURSOR_AGENTS_REL } from './cursor-agent-model';
+import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
 type Rec = Record<string, unknown>;
 
@@ -75,11 +79,22 @@ export function writeCursorAgentFiles(cwd: string, state: Rec): number {
   } catch {
     return 0;
   }
+  // The lineup's `model` is now a bare FAMILY anchor (e.g. claude-opus-4-8). When this build's
+  // actual Task-tool model list has been captured (.traffic-one/cursor-models.json), pin the
+  // REAL build slug for the role's tier — the first captured model whose family matches the
+  // tier family or a same-tier alternate — so the orchestrator can pass an exact model arg
+  // instead of a guessed family. Without a captured list we write the bare family (refreshed on
+  // capture via the PostToolUse re-materialize trigger). composer is the universal floor, so a
+  // paid build always resolves SOMETHING.
+  const captured = freshCursorModels(cwd, planCtx.plan);
   let written = 0;
   for (const m of lineup) {
     if (!m.role || !m.model) continue;
+    const model = captured.length
+      ? (pickCursorSlug(acceptableModelsFor(m.model, 'cursor'), captured) || m.model)
+      : m.model;
     try {
-      if (writeTextIfChanged(path.join(dir, `${m.role}.md`), agentFile(m.role, m.label, m.blurb, m.model))) written += 1;
+      if (writeTextIfChanged(path.join(dir, `${m.role}.md`), agentFile(m.role, m.label, m.blurb, model))) written += 1;
     } catch {
       // best-effort per file
     }

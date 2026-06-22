@@ -29,7 +29,7 @@ test('cursorFrontmatter emits description + globs + alwaysApply', () => {
   const lines = cursorFrontmatter('Desc', ['a/**'], true);
   assert.equal(lines[0], '---');
   assert.ok(lines.includes('description: "Desc"'));
-  assert.ok(lines.includes('globs: a/**'));
+  assert.ok(lines.includes('globs: "a/**"'));
   assert.ok(lines.includes('alwaysApply: true'));
 
   const noGlobLines = cursorFrontmatter('Desc', [], false);

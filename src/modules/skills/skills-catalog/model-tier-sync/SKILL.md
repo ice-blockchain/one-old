@@ -67,22 +67,24 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
      general model, and a fast/mini model. These use concrete versioned ids
      (e.g. a `*-codex`, a flagship `gpt-*`, and a `*-mini`/`*-nano`) and DO drift,
      so this row is the one that most often needs updating.
-   - **Cursor (enforced — exact Task-tool subagent slugs)**: Cursor's subagent `model:`
-     field / Task tool accept Cursor's OWN slugs (with reasoning suffixes) and REJECT the
-     Anthropic aliases, so the `cursor` row in HOST_MODELS holds the exact Task-tool slugs
-     (currently highest `claude-opus-4-8-thinking-high` / balanced `claude-4.6-sonnet-medium-thinking`
-     / cheapest `composer-2.5-fast`), and `CURSOR_MODEL_ALTERNATES` holds a same-tier
-     FALLBACK per slug (highest→`claude-fable-5-thinking-high`, balanced→`gpt-5.5-medium`)
-     that the spawn gate's accept-set ALSO honors. CRITICAL: ask Cursor directly for its
-     "available subagent models (Task tool)" list — that surface differs from the chat
-     model PICKER (different reasoning suffixes: Task tool uses `-thinking-high`/`-medium-thinking`,
-     the picker uses `-thinking-max`/`-extra-high`) and from the `/v1/models` API (base
-     ids, dot-versions like `claude-opus-4.8`). The Task-tool list is authoritative for
-     what to put here. Cursor's subagent lineup is account/plan/build-specific and a slug
-     it does NOT offer is REJECTED as invalid (NOT gracefully downgraded — that earlier
-     assumption was wrong; it deadlocked a `claude-4.6-sonnet` balanced build), which is why
-     each tier carries a fallback. Keep capability/cost order highest ≥ balanced ≥ cheapest;
-     `composer-2.5` is Cursor's own cost-optimized model (no Max Mode, always available).
+   - **Cursor (enforced — bare model FAMILIES, matched family-aware)**: the `cursor` row in
+     HOST_MODELS holds bare model-FAMILY anchors (currently highest `claude-opus-4-8` / balanced
+     `claude-4.6-sonnet` / cheapest `composer-2.5`) — NOT full reasoning-variant slugs and NOT the
+     Anthropic aliases (Cursor rejects `opus`/`sonnet`). The spawn gate matches FAMILY-aware
+     (`modelMatchesExpected`: `passed === family || passed.startsWith(family + '-')`), so ANY
+     reasoning variant the user's plan/build offers satisfies the tier (`claude-opus-4-8-thinking-max`,
+     `…-thinking-high`, `…-thinking-max-fast` all match `claude-opus-4-8`). This is deliberate:
+     the reasoning suffix is plan/build-SPECIFIC, so pinning one (e.g. `-thinking-high`) wrongly
+     rejected a higher plan's `-thinking-max` variant of the SAME family. `CURSOR_MODEL_ALTERNATES`
+     holds same-tier FALLBACK FAMILIES (highest→`claude-opus-4-7`,`claude-fable-5`,`composer-2.5`;
+     balanced→`gpt-5.5`,`composer-2.5`) with `composer-2.5` as the universal floor. The CONCRETE
+     build slug (with its suffix) is NOT hardcoded — it is discovered at build time from
+     `.traffic-one/cursor-models.json` (the in-Cursor orchestrator enumerates its Task-tool list;
+     see `shared/materialize/cursor-models.ts`/`pickCursorSlug`) and written into
+     `.cursor/agents/<role>.md`. So when SYNCING you only change a FAMILY here when a generation
+     bumps (opus-4-8 → opus-5); you do NOT chase reasoning suffixes. Keep capability/cost order
+     highest ≥ balanced ≥ cheapest; `composer-2.5` is Cursor's own cost-optimized model (always
+     available, survives API-budget exhaustion).
 
 3. **Map newest → tiers per host**, preserving capability order
    (`highest` strictly ≥ `balanced` ≥ `cheapest` in capability). Verify the

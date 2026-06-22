@@ -67,7 +67,7 @@ export function modelForRole(
   planCtx?: PlanCtx | null,
 ): { tier: TierId; claude: string; codex: string; cursor: string } | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
-  return tier ? tierModelTable(tier) : null;
+  return tier ? tierModelTable(tier, planCtx?.plan) : null;
 }
 
 export function modelForRoleHost(
@@ -78,5 +78,5 @@ export function modelForRoleHost(
   planCtx?: PlanCtx | null,
 ): string | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
-  return tier ? resolveModel(tier, host) : null;
+  return tier ? resolveModel(tier, host, planCtx?.plan) : null;
 }

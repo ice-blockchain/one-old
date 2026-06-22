@@ -14,6 +14,12 @@ export function onboardingWaitScriptPath(): string {
   return path.join(pluginRoot(), 'scripts', 'onboarding-wait.cjs');
 }
 
-export function onboardingWaitCommand(cwd: string): string {
-  return `node ${JSON.stringify(onboardingWaitScriptPath())} ${JSON.stringify(cwd)}`;
+// `host` stamps an explicit `--host=<id>` arg so the spawned runner subprocess detects the
+// host correctly — its env has no CURSOR_PLUGIN_ROOT/CODEX_* markers (those are set only for
+// the hook process), so without this the runner would mis-detect as `claude` and skip the
+// Cursor-only pre-spawn model directive. JSON-quoted so the gate's clean-node-invocation
+// allow-list (isOnboardingWaitCommand) still recognizes it.
+export function onboardingWaitCommand(cwd: string, host?: string): string {
+  const hostArg = host ? ` ${JSON.stringify(`--host=${host}`)}` : '';
+  return `node ${JSON.stringify(onboardingWaitScriptPath())} ${JSON.stringify(cwd)}${hostArg}`;
 }

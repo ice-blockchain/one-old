@@ -347,11 +347,20 @@ function readRawState(cwd: string): Rec {
   return readState(cwd);
 }
 
+function normalizeRuntimeIds(state: Rec): Rec {
+  if (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId)) {
+    state.currentRunId = String(Math.trunc(state.currentRunId));
+  } else if (typeof state.currentRunId === 'string') {
+    state.currentRunId = state.currentRunId.trim();
+  }
+  return state;
+}
+
 export function readEffectiveState(cwd: string, env: NodeJS.ProcessEnv = process.env): Rec {
   const state = readRawState(cwd);
   const embeddedPrefs = extractProjectPrefs(state);
   const prefs = Object.keys(embeddedPrefs).length > 0
     ? mergeProjectPrefsObject(readProjectPrefs(cwd, env), embeddedPrefs)
     : readProjectPrefs(cwd, env);
-  return applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), prefs), env);
+  return normalizeRuntimeIds(applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), prefs), env));
 }

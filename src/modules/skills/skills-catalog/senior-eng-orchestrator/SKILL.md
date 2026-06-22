@@ -175,11 +175,11 @@ Read `.traffic-one/.one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md
 `.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
 `.traffic-one/plan.md` when they exist.
 
-- If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan.
+- If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan. **Do NOT spawn ANY subagent (architect included) until onboarding is COMPLETE** (`.one.json` has `stack` + `onboardingComplete: true` and materialization has run). Onboarding runs in THIS main thread — you drive the setup wizard here; a subagent cannot (it can't show the wizard, and would get trapped on the "wait for setup" command). Spawning before onboarding is a protocol violation: finish setup in the main thread, THEN spawn the team.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
 
 **Do NOT generate a run-id.** The run-id is `currentRunId` — a plain epoch-**millisecond
-NUMBER** like `1715091785000`, **pre-minted by Traffic One into `.traffic-one/.one.json`
+digit string** like `"1715091785000"`, **pre-minted by Traffic One into `.traffic-one/.one.json`
 before Phase 0** (the onboarding gate announces it the moment the build starts). You and every
 subagent **READ** it from there; you never create it, and NEVER use `date`/`date -u` or an
 ISO/UTC string (e.g. `2026-06-17T10-08-00Z`) — that is the single most damaging mistake (it
@@ -206,6 +206,16 @@ substitute a literal. The full per-phase prompt templates live in
 `resources/prompt-templates.md`; reference them rather than inlining their full text here.
 
 Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
+
+**Cursor only — capture your subagent model list (before the first spawn).** Cursor's offered
+subagent models are plan/build-specific and their reasoning suffixes differ per plan
+(`-thinking-max`, `-extra-high`, `-thinking-max-fast`, …); only you (inside Cursor) can see the
+list. Before spawning the team, list the model ids your `Task` tool offers and write them to
+`.traffic-one/cursor-models.json` as `{ "models": ["<id>", …] }` using the EXACT ids (never
+invent one). Traffic One then materializes `.cursor/agents/<role>.md` with the real slug for each
+role's tier, so the team runs on your plan's models with no silent downgrade. (If you skip this,
+the spawn gate asks for it once, then falls back to family-aware matching — pass any model whose
+family fits the tier.)
 
 ### Subagent token-economy: per-agent run claims
 

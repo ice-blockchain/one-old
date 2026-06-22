@@ -82,7 +82,7 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   try {
     const server = ensureOnboardingServer(cwd);
     if (!server.url || server.url.includes(':0/')) return block('setup-pending');
-    return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) });
+    return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
   } catch {
     return block('setup-pending');
   }

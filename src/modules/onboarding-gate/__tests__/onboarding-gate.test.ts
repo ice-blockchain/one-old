@@ -5,6 +5,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { onboardingGate } from '../handler';
+import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
+import { writeServerRecord } from '../../../shared/onboarding-server/registry';
+import { onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
@@ -20,6 +23,15 @@ function ctxSub(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<
   const raw = { tool_name: rawName, tool_input: toolInput, session_id: 'child-thread', parent_session_id: 'parent-session' };
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw, tool: { class: cls, rawName } };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+// A Cursor thread: host=cursor + its conversation session_id; a MAIN thread carries a
+// transcript_path, a subagent's own events do NOT (verified from captured Cursor payloads).
+function ctxCursor(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>, sessionId: string, transcriptPath?: string): Ctx {
+  const raw: Record<string, unknown> = { tool_name: rawName, tool_input: toolInput, session_id: sessionId, workspace_roots: [cwd] };
+  if (transcriptPath) raw.transcript_path = transcriptPath;
+  const input: HookInput = { event: 'PreToolUse', host: 'cursor', cwd, raw, tool: { class: cls, rawName }, workspaceRoot: cwd };
+  return { input, host: 'cursor', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
@@ -226,5 +238,45 @@ test('monorepo: a write from an onboarded workspace sub-package is NOT blocked (
     // deny). The first such call may carry the one-time run-id announce context; the
     // invariant under test is that it is NOT denied.
     assert.notEqual(r.kind, 'deny');
+  });
+});
+
+test('Cursor: once the orchestrator is recorded (via subagentStart), a subagent session is NOT sent to the wizard', () => {
+  withProject(null, (cwd) => {
+    // The subagentStart handler records the orchestrator's session as MAIN (its session_id ==
+    // parent_conversation_id, fired in the parent context before the subagent runs).
+    recordMainOnboardingSession(cwd, 'orchestrator-conv');
+    // The orchestrator's own gate event still gets the wizard.
+    const main = onboardingGate(ctxCursor(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'x' }, 'orchestrator-conv'));
+    assert.equal(main.kind, 'deny', 'the orchestrator (main) thread gets the wizard');
+    // The architect subagent's own event (a DIFFERENT conversation id — regardless of transcript)
+    // → suppressed (noop), so it is never trapped on the "wait for setup" command.
+    const sub = onboardingGate(ctxCursor(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'x' }, 'architect-subagent-conv', '/x/transcript.jsonl'));
+    assert.equal(sub.kind, 'noop', 'a subagent thread is not sent to the wizard (even with a transcript_path)');
+  });
+});
+
+test('Cursor: before any orchestrator is recorded, the main thread still gets the wizard (no false suppression)', () => {
+  withProject(null, (cwd) => {
+    const r = onboardingGate(ctxCursor(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'x' }, 'main-conv', '/x/transcript.jsonl'));
+    assert.equal(r.kind, 'deny', 'no recorded main yet → nobody is suppressed → wizard shows');
+  });
+});
+
+test('Cursor: first onboarding wait command is denied once with a clickable wizard link, then allowed', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const url = 'http://127.0.0.1:55222/?t=tok';
+    writeServerRecord(cwd, { pid: process.pid, port: 55222, token: 'tok', url, startedAt: 'x' });
+    const command = onboardingWaitCommand(cwd, 'cursor');
+
+    const first = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'main-conv', '/x/transcript.jsonl'));
+    assert.equal(first.kind, 'deny', 'first wait is stopped to surface the link');
+    if (first.kind === 'deny') {
+      assert.ok(first.reason.includes(`Open the Traffic One setup wizard: ${url}`), 'deny carries a direct clickable URL line');
+      assert.ok(first.reason.includes(command), 'deny tells the agent to re-run the wait command');
+    }
+
+    const second = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'main-conv', '/x/transcript.jsonl'));
+    assert.equal(second.kind, 'noop', 'after the visible link, the wait command is allowed');
   });
 });

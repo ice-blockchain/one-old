@@ -67,6 +67,25 @@ export function authChoicePromptRequest(fallbackText?: string): PromptRequest {
   });
 }
 
+// The recommended-model-unavailable spawn choice (Cursor). Surfaces as a modal on
+// hosts that render promptRequest (Claude); on Cursor/Codex the question rides the
+// deny `reason` prose instead (those hosts drop promptRequest), so the gate always
+// passes the same text as `fallbackText`. Cause-agnostic labels: the recommended
+// model can be unavailable because the API budget is exhausted OR because it's
+// disabled in Settings → Models — Cursor exposes no signal to tell which.
+export function modelUnavailablePromptRequest(expected: string, fallback: string, fallbackText?: string): PromptRequest {
+  return singleSelectPromptRequest({
+    id: 'traffic-one.agent-model.model-unavailable-choice',
+    title: 'Traffic One — recommended model unavailable',
+    question: `"${expected}" can't be used for this subagent (likely API budget exhausted, or it's disabled in Settings → Models). Fix the cause and retry, or use the fallback "${fallback}"?`,
+    options: [
+      { id: 'enable-retry', label: `Restore budget / enable ${expected}, then retry (Recommended)` },
+      { id: 'use-fallback', label: `Use ${fallback} now` },
+    ],
+    ...(fallbackText ? { fallbackText } : {}),
+  });
+}
+
 export function authApiKeyPromptRequest(fallbackText?: string): PromptRequest {
   return secureTextPromptRequest({
     id: 'traffic-one.auth.api-key',
