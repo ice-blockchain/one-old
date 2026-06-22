@@ -1,7 +1,7 @@
 // src/modules/agent-model/index.ts
 import type { Handler } from '../../core/types';
 import { agentModelGate } from './handler';
-import { modelGateShell } from './model-gate';
+import { modelGateAfterShell, modelGateShell } from './model-gate';
 import { recordSpawnedAgent } from './record-agent';
 import { subagentStartBind } from './subagent-bind';
 
@@ -34,6 +34,16 @@ export const handlers: Handler[] = [
     subcommands: ['post-agent-spawned'],
     priority: 60,
     run: (ctx) => recordSpawnedAgent(ctx),
+  },
+  {
+    // Cursor afterShellExecution: if model-gate.cjs STOPs with exit 2, surface the same
+    // fallback/enable choice as a user-visible message instead of leaving it in shell stdout.
+    id: 'agent-model.model-gate-after-shell',
+    event: 'PostToolUse',
+    tools: ['shell'],
+    subcommands: ['after-shell-execution'],
+    priority: 41,
+    run: (ctx) => modelGateAfterShell(ctx),
   },
   {
     // Codex SubagentStart: bind the pending role claim to the new subagent thread id.

@@ -109,13 +109,48 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
     fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
       models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
     }), 'utf8');
-    const state = {
+    const state: Record<string, unknown> = {
       mode: 'new-project', currentRunId: 'run-pending', performance: { level: 'high' },
       team: { mode: 'subagents', approved: true, overrides: { 'senior-architect': 'balanced' } },
     };
     assert.equal(modelChoiceReplyPending(cwd, state), true);
     writeModelChoice(cwd, 'run-pending', 'use-fallback');
     assert.equal(modelChoiceReplyPending(cwd, state), false);
+  } finally {
+    if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
+    if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('modelChoiceReplyPending: unavailable picks mint currentRunId instead of failing open', () => {
+  const cwd = tmp();
+  const env = process.env;
+  const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const pl = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      performance: { level: 'high', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+    }), 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
+    }), 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
+      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
+    }), 'utf8');
+    const state: Record<string, unknown> = {
+      mode: 'new-project', performance: { level: 'high' },
+      team: { mode: 'subagents', approved: true, overrides: { 'senior-architect': 'balanced' } },
+    };
+    assert.equal(modelChoiceReplyPending(cwd, state), true);
+    assert.ok(typeof state.currentRunId === 'string' && state.currentRunId.length > 0, 'pending check mints a run id in memory');
+    const disk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(disk.currentRunId, state.currentRunId, 'pending check persists the minted run id');
   } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;

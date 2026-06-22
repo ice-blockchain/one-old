@@ -8,13 +8,27 @@
 // build), it no-ops so the command runs.
 
 import { asString } from '../../adapters/coerce';
-import { noop } from '../../core/result';
+import { context, noop } from '../../core/result';
 import { askUser } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
-import { cursorUnavailablePicks } from '../../shared/materialize/cursor-eligibility';
-import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
+import { cursorPickedModelUnavailableNotice, cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
+import { readEffectiveState } from '../../shared/state';
 import { canonicalToolName, isModelGateCommand, parsedToolInput } from '../../shared/tool-classify';
+
+function shellExitFailed(raw: Record<string, unknown>): boolean {
+  const code = raw.exit_code ?? raw.exitCode ?? raw.status ?? raw.code;
+  if (typeof code === 'number') return code !== 0;
+  if (typeof code === 'string' && code.trim()) {
+    const n = Number(code.trim());
+    if (Number.isFinite(n)) return n !== 0;
+  }
+  const success = raw.success ?? raw.ok;
+  if (typeof success === 'boolean') return !success;
+  const stderr = asString(raw.stderr ?? raw.error);
+  const stdout = asString(raw.stdout ?? raw.output);
+  return /traffic-one model-gate:\s*STOP/i.test(`${stdout}\n${stderr}`);
+}
 
 export function modelGateShell(ctx: Ctx): HookResult {
   if (ctx.host !== 'cursor') return noop();
@@ -44,4 +58,20 @@ export function modelGateShell(ctx: Ctx): HookResult {
     + `project files (shell approval alone does NOT record consent). If the user REJECTED it: STOP — tell them to enable ${models} in Cursor Settings `
     + `→ Models, then re-run the build.`;
   return askUser(question, agentMessage);
+}
+
+export function modelGateAfterShell(ctx: Ctx): HookResult {
+  if (ctx.host !== 'cursor') return noop();
+  const raw = obj(ctx.input.raw) || {};
+  const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
+  const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  if (!isModelGateCommand(toolName, toolInput)) return noop();
+  if (!shellExitFailed(raw)) return noop();
+
+  const state = readEffectiveState(ctx.cwd);
+  if (!state || (state as Record<string, unknown>).mode !== 'new-project') return noop();
+  const stop = formatModelChoiceRequiredStop(ctx.cwd, state as Record<string, unknown>);
+  const visible = cursorPickedModelUnavailableNotice(ctx.cwd, state as Record<string, unknown>) || stop;
+  if (!stop && !visible) return noop();
+  return context(stop || visible, { systemMessage: visible || stop });
 }

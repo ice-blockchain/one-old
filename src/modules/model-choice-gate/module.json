@@ -1,0 +1,12 @@
+{
+  "id": "model-choice-gate",
+  "kind": "runtime",
+  "entry": "index",
+  "skills": [{ "id": "model-choice-gate", "path": "skill/SKILL.md", "shipped": false }],
+  "subscriptions": [
+    { "event": "PreToolUse", "subcommand": "check-model-choice-gate", "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent", "search"] }
+  ],
+  "gates": [
+    { "id": "model-choice-gate", "event": "PreToolUse", "priority": 15, "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent", "search"] }
+  ]
+}

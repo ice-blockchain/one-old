@@ -4,10 +4,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { modelGateShell } from '../model-gate';
+import { modelGateAfterShell, modelGateShell } from '../model-gate';
 import { isModelGateCommand } from '../../../shared/tool-classify';
 import { modelGateCommand } from '../../../shared/model-gate-command';
-import { readModelChoice, writeModelChoice } from '../model-choice';
+import { modelGatePromptFresh, readModelChoice, writeModelChoice } from '../model-choice';
 import { runModelGate } from '../../../runners/model-gate';
 import type { Ctx, ToolClass } from '../../../core/types';
 
@@ -42,6 +42,19 @@ function ctxFor(cwd: string, command: string, host: 'cursor' | 'claude' = 'curso
   return {
     input: { event: 'PreToolUse', host, cwd, raw: { command }, tool: { class: 'shell' as ToolClass, rawName, command } },
     host, cwd, now: () => 'x',
+  } as unknown as Ctx;
+}
+
+function afterCtxFor(cwd: string, command: string, rawExtra: Record<string, unknown> = {}): Ctx {
+  return {
+    input: {
+      event: 'PostToolUse',
+      host: 'cursor',
+      cwd,
+      raw: { command, ...rawExtra },
+      tool: { class: 'shell' as ToolClass, rawName: 'after-shell-execution', command },
+    },
+    host: 'cursor', cwd, now: () => 'x',
   } as unknown as Ctx;
 }
 
@@ -92,12 +105,30 @@ test('modelGate runner fails closed until explicit chat consent (use-fallback)',
     assert.equal(closed.code, 2, 'without explicit consent the runner refuses');
     assert.match(closed.out, /STOP|model choice required/i);
     assert.equal(readModelChoice(cwd, 'run-model-gate'), null, 'fail-closed path writes no fallback choice');
+    assert.equal(modelGatePromptFresh(cwd, 'run-model-gate'), true, 'runner marks that a user-visible choice is required');
 
     writeModelChoice(cwd, 'run-model-gate', 'use-fallback');
     const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
     assert.equal(approved.code, 0);
     assert.match(approved.out, /fallback confirmed/i);
     assert.equal(readModelChoice(cwd, 'run-model-gate'), 'use-fallback', 'explicit chat consent unblocks the runner');
+  });
+});
+
+test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible message', () => {
+  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    const statePath = path.join(cwd, '.traffic-one', '.one.json');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    state.currentRunId = 'run-after-shell';
+    fs.writeFileSync(statePath, JSON.stringify(state), 'utf8');
+
+    const r = modelGateAfterShell(afterCtxFor(cwd, modelGateCommand(cwd, 'cursor'), { exit_code: 2 }));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(/model choice required/i.test(r.context), 'context carries the STOP table');
+      assert.ok(/fallback/i.test(String(r.systemMessage)) && /enable/i.test(String(r.systemMessage)), 'systemMessage is visible to Cursor as user_message');
+      assert.ok(String(r.systemMessage).includes('claude-4.6-sonnet'), 'visible message names the unavailable picked model');
+    }
   });
 });
 

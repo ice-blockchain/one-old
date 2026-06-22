@@ -6,6 +6,7 @@
   "subscriptions": [
     { "event": "PreToolUse", "subcommand": "check-agent-model", "tools": ["spawn-agent"] },
     { "event": "PreToolUse", "subcommand": "check-model-gate", "tools": ["shell"] },
+    { "event": "PostToolUse", "subcommand": "after-shell-execution", "tools": ["shell"] },
     { "event": "PostToolUse", "subcommand": "post-agent-spawned", "tools": ["spawn-agent"] },
     { "event": "SubagentStart", "subcommand": "subagent-start" }
   ],

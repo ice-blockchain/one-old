@@ -49,7 +49,7 @@ Model tier gate (level={{LEVEL}}, host={{HOST}}): `{{ROLE}}` should run on the r
    • **API budget exhausted** (most common): your premium/API usage is spent, so Cursor marks "{{EXPECTED}}" unavailable and drops to Composer. Turn on usage-based / on-demand spend, or upgrade your plan, in Cursor → Settings (Billing) — or wait for the budget to reset. Then reply `enable`.
    • **Model disabled**: "{{EXPECTED}}" is toggled off in your model list. Open Cursor Settings (Cmd/Ctrl+Shift+J) → Models and enable it (or click "Add Model" if it isn't listed). Then reply `enable`.
 2. **fallback** — proceed now on "{{FALLBACK}}" (available immediately; it may be a same-tier alternate or the Composer floor depending on what Cursor offers).
-Asked once per build; if you do not answer, I proceed on "{{FALLBACK}}" so the team is never blocked.
+Do not proceed until the user replies `fallback` or `enable` in chat. End your turn after showing this choice.
 <!-- T1BLOCK:END model-unavailable-choice -->
 
 <!-- T1BLOCK:BEGIN model-choice-enable-required -->

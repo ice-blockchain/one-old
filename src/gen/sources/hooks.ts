@@ -54,6 +54,10 @@ export const PRE_TOOL_USE: HookGroup[] = [
     entries: [{ subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' }],
   },
   {
+    matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|Task|Agent|spawn_agent|send_input|wait_agent|multi_tool_use',
+    entries: [{ subcommand: 'check-model-choice-gate', statusMessage: 'Checking model choice gate...' }],
+  },
+  {
     matcher: 'Task|Agent|spawn_agent',
     entries: [{ subcommand: 'check-agent-model', statusMessage: 'Checking agent model tier...' }],
   },

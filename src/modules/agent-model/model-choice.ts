@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { cursorUnavailablePicks } from '../../shared/materialize/cursor-eligibility';
+import { ensureCurrentRunId } from '../../shared/state';
 
 export type ModelChoiceStatus = 'use-fallback' | 'enable-retry';
 const VALID: ReadonlySet<string> = new Set<string>(['use-fallback', 'enable-retry']);
@@ -40,9 +41,12 @@ function modelGatePromptPath(cwd: string, runId: string): string {
 // Covers unavailable picked models (capture list) and the Composer-floor degradation path
 // (modelChoicePrompted marker set by the spawn gate on first deny).
 export function modelChoiceReplyPending(cwd: string, state: Record<string, unknown>): boolean {
-  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
-  if (!runId || readModelChoice(cwd, runId)) return false;
-  if (cursorUnavailablePicks(cwd, state).length > 0) return true;
+  let runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  const unavailable = cursorUnavailablePicks(cwd, state).length > 0;
+  if (!runId && unavailable) runId = ensureCurrentRunId(cwd, state);
+  if (!runId) return false;
+  if (readModelChoice(cwd, runId)) return false;
+  if (unavailable) return true;
   return modelChoicePrompted(cwd, runId);
 }
 

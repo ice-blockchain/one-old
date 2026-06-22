@@ -6,7 +6,7 @@
 //
 //   node model-gate.cjs <cwd> [--host=cursor]
 
-import { readModelChoice } from '../../modules/agent-model/model-choice';
+import { markModelGatePrompted, readModelChoice } from '../../modules/agent-model/model-choice';
 import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { hasFreshCursorModels } from '../../shared/materialize/cursor-models';
 import { detectHostPlan } from '../../shared/host-plan';
@@ -72,11 +72,13 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
     if (state) {
       const stop = formatModelChoiceRequiredStop(cwd, state);
       if (stop) {
+        markModelGatePrompted(cwd, runId);
         process.stdout.write(`${stop}\n`);
         return 2;
       }
     }
 
+    if (runId) markModelGatePrompted(cwd, runId);
     process.stdout.write('traffic-one model-gate: STOP — model choice required.\n');
     return 2;
   } catch {
