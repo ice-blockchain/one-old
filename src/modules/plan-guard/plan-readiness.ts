@@ -43,11 +43,22 @@ function hasAnyAppPackage(projectRoot: string): boolean {
   }
 }
 
-function rootPackageJsonDeclaresWorkspace(projectRoot: string): boolean {
+function packageJsonMatchesWorkspaceRoot(projectRoot: string, content: string): boolean {
+  if (packageJsonDeclaresWorkspace(content)) return true;
+  if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) return false;
+  try {
+    const pkg = JSON.parse(content);
+    const hasPnpmPackageManager = typeof pkg?.packageManager === 'string' && /^pnpm@\d/.test(pkg.packageManager);
+    return pkg?.private === true && hasPnpmPackageManager;
+  } catch {
+    return true;
+  }
+}
+
+function rootPackageJsonMatchesWorkspaceRoot(projectRoot: string): boolean {
   try {
     const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8');
-    JSON.parse(content);
-    return packageJsonDeclaresWorkspace(content);
+    return packageJsonMatchesWorkspaceRoot(projectRoot, content);
   } catch {
     return false;
   }
@@ -59,8 +70,8 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) missing.push('pnpm-workspace.yaml');
   if (!exists(projectRoot, 'turbo.json')) missing.push('turbo.json');
   if (!exists(projectRoot, 'tsconfig.base.json')) missing.push('tsconfig.base.json');
-  if (!rootPackageJsonDeclaresWorkspace(projectRoot)) {
-    missing.push('package.json (private + pnpm packageManager + apps/*/packages/* workspaces)');
+  if (!rootPackageJsonMatchesWorkspaceRoot(projectRoot)) {
+    missing.push('package.json (private + pnpm packageManager + workspace declaration)');
   }
   if (!hasAnyAppPackage(projectRoot)) missing.push('apps/<name>/package.json');
   if (!exists(projectRoot, 'packages/ui/package.json')) missing.push('packages/ui/package.json');
@@ -90,9 +101,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
 
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(state);
 
-  if (requiresMonorepoScaffold && filePath === 'package.json' && !packageJsonDeclaresWorkspace(content)) {
+  if (requiresMonorepoScaffold && filePath === 'package.json' && !packageJsonMatchesWorkspaceRoot(projectRoot, content)) {
     violations.push(block('monorepo-package-json',
-      'New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: `private: true`, `packageManager: pnpm@...`, and workspaces for `apps/*` and `packages/*`. Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.'));
+      'New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: `private: true`, `packageManager: pnpm@...`, and a workspace declaration (`pnpm-workspace.yaml` or package.json `workspaces`) for `apps/*` and `packages/*`. Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.'));
   }
 
   if (requiresMonorepoScaffold && ROOT_VITE_RE.test(filePath)) {

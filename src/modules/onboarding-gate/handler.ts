@@ -16,7 +16,7 @@ import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
-import { resolveProjectRoot } from '../../shared/hook-paths';
+import { isOnboardedProjectRoot, resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -91,7 +91,11 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // that is NOT a known main session is a subagent → let it proceed (don't trap it on the wizard).
     if (ctx.host === 'cursor') {
       const id = hookSessionIdentity(raw);
-      if (id.sessionId && isForeignOnboardingThread(root, id.sessionId)) return noop();
+      const workspaceRoot = asString(ctx.input.workspaceRoot);
+      const sessionRoot = isOnboardedProjectRoot(root)
+        ? root
+        : (workspaceRoot && isOnboardedProjectRoot(workspaceRoot) ? workspaceRoot : root);
+      if (id.sessionId && isForeignOnboardingThread(sessionRoot, id.sessionId)) return noop();
     }
     // Cursor does not reliably render UserPromptSubmit user_message, and agents sometimes skip
     // reposting the URL before running the wait command. Force one visible, clickable link at the

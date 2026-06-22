@@ -261,6 +261,9 @@ test('resolveProjectRoot: a workspace ceiling never escapes above the host works
     // WITH the workspace ceiling it stays at the workspace root — no second wizard.
     assert.equal(resolveProjectRoot(ws, outOfTree, { ceiling: ws }), ws);
     assert.equal(resolveProjectRoot(ws, '', { ceiling: ws }), ws);          // no file → the cwd walk is bounded too
+    const terminalCwd = path.join(parent, '.cursor', 'projects', 'Users-u-Projects-sub', 'terminals');
+    fs.mkdirSync(terminalCwd, { recursive: true });
+    assert.equal(resolveProjectRoot(terminalCwd, '', { ceiling: ws }), ws); // Cursor internal cwd outside workspace → workspace
     const inTree = path.join(ws, 'src', 'a.ts');
     assert.equal(resolveProjectRoot(ws, inTree, { ceiling: ws }), ws);
 

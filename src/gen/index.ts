@@ -9,7 +9,6 @@
 
 import * as path from 'path';
 
-import { pluginRoot } from '../shared/paths';
 import { emitAgents } from './emit/agents';
 import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
@@ -19,7 +18,14 @@ import { emitSkills } from './emit/skills';
 import { emitStaticPluginFiles } from './emit/static';
 import { GenRun } from './lib/run';
 
-export function distRoot(sourceRoot: string = pluginRoot()): string {
+export function sourceRepoRoot(): string {
+  // Codegen is authoring tooling, not installed runtime code. Runtime hooks must
+  // honor *_PLUGIN_ROOT env vars, but `npm run gen` should always read the source
+  // checkout even when a maintainer shell inherited TRAFFIC_ONE_PLUGIN_ROOT=dist.
+  return path.resolve(__dirname, '..', '..');
+}
+
+export function distRoot(sourceRoot: string = sourceRepoRoot()): string {
   return path.join(sourceRoot, 'dist');
 }
 
@@ -29,7 +35,7 @@ export function distRoot(sourceRoot: string = pluginRoot()): string {
 export const MANAGED_OUTPUT_DIRS = ['agents', 'rules', 'skills-catalog', path.join('.cursor', 'rules')] as const;
 
 export function runGen(opts: { check: boolean; root?: string; sourceRoot?: string }): GenRun {
-  const sourceRoot = opts.sourceRoot ?? pluginRoot();
+  const sourceRoot = opts.sourceRoot ?? sourceRepoRoot();
   const run = new GenRun({ check: opts.check, root: opts.root ?? distRoot(sourceRoot), sourceRoot });
   emitManifests(run);
   emitMcp(run);

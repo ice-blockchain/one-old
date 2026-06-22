@@ -4,7 +4,7 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { distRoot, runGen } from '../index';
+import { distRoot, runGen, sourceRepoRoot } from '../index';
 import { GenRun } from '../lib/run';
 import { emitManifests, emitMcp } from '../emit/manifests';
 
@@ -81,6 +81,34 @@ test('emitManifests produces all five manifests', () => {
 
 test('distRoot points generation at dist under the source checkout by default', () => {
   assert.equal(distRoot(REPO_ROOT), path.join(REPO_ROOT, 'dist'));
+});
+
+test('codegen ignores runtime plugin-root env vars and still reads the source checkout', () => {
+  const saved = {
+    traffic: process.env.TRAFFIC_ONE_PLUGIN_ROOT,
+    codex: process.env.CODEX_PLUGIN_ROOT,
+    claude: process.env.CLAUDE_PLUGIN_ROOT,
+    cursor: process.env.CURSOR_PLUGIN_ROOT,
+  };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-env-'));
+  try {
+    process.env.TRAFFIC_ONE_PLUGIN_ROOT = path.join(REPO_ROOT, 'dist');
+    process.env.CODEX_PLUGIN_ROOT = path.join(REPO_ROOT, 'dist');
+    process.env.CLAUDE_PLUGIN_ROOT = path.join(REPO_ROOT, 'dist');
+    process.env.CURSOR_PLUGIN_ROOT = path.join(REPO_ROOT, 'dist');
+
+    assert.equal(sourceRepoRoot(), REPO_ROOT);
+    assert.equal(distRoot(), path.join(REPO_ROOT, 'dist'));
+    const write = runGen({ check: false, root: dir });
+    assert.ok(write.written.includes('AGENTS.md'));
+    assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')));
+  } finally {
+    if (saved.traffic === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT; else process.env.TRAFFIC_ONE_PLUGIN_ROOT = saved.traffic;
+    if (saved.codex === undefined) delete process.env.CODEX_PLUGIN_ROOT; else process.env.CODEX_PLUGIN_ROOT = saved.codex;
+    if (saved.claude === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = saved.claude;
+    if (saved.cursor === undefined) delete process.env.CURSOR_PLUGIN_ROOT; else process.env.CURSOR_PLUGIN_ROOT = saved.cursor;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('GenRun.json writes canonical 2-space JSON with a trailing newline; --check round-trips', () => {

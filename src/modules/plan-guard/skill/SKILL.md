@@ -11,7 +11,7 @@ Enforcement (the actual conditions + `permissionDecision:"deny"`) lives in
 Each block has a verbatim fallback in code, so a missing block never disables a gate.
 
 <!-- T1BLOCK:BEGIN monorepo-package-json -->
-New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: `private: true`, `packageManager: pnpm@...`, and workspaces for `apps/*` and `packages/*`. Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.
+New-project monorepo gate: stack=default / React-Vite new projects must start with the Traffic One Turborepo root package.json: `private: true`, `packageManager: pnpm@...`, and a workspace declaration (`pnpm-workspace.yaml` or package.json `workspaces`) for `apps/*` and `packages/*`. Read `rules/modes/new-project.md` and scaffold the monorepo before feature code.
 <!-- T1BLOCK:END monorepo-package-json -->
 
 <!-- T1BLOCK:BEGIN monorepo-root-vite -->

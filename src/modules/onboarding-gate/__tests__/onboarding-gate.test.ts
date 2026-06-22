@@ -27,10 +27,18 @@ function ctxSub(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<
 
 // A Cursor thread: host=cursor + its conversation session_id; a MAIN thread carries a
 // transcript_path, a subagent's own events do NOT (verified from captured Cursor payloads).
-function ctxCursor(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>, sessionId: string, transcriptPath?: string): Ctx {
-  const raw: Record<string, unknown> = { tool_name: rawName, tool_input: toolInput, session_id: sessionId, workspace_roots: [cwd] };
+function ctxCursor(
+  cwd: string,
+  rawName: string,
+  cls: ToolClass,
+  toolInput: Record<string, unknown>,
+  sessionId: string,
+  transcriptPath?: string,
+  workspaceRoot = cwd,
+): Ctx {
+  const raw: Record<string, unknown> = { tool_name: rawName, tool_input: toolInput, session_id: sessionId, workspace_roots: [workspaceRoot] };
   if (transcriptPath) raw.transcript_path = transcriptPath;
-  const input: HookInput = { event: 'PreToolUse', host: 'cursor', cwd, raw, tool: { class: cls, rawName }, workspaceRoot: cwd };
+  const input: HookInput = { event: 'PreToolUse', host: 'cursor', cwd, raw, tool: { class: cls, rawName }, workspaceRoot };
   return { input, host: 'cursor', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
@@ -238,6 +246,28 @@ test('monorepo: a write from an onboarded workspace sub-package is NOT blocked (
     // deny). The first such call may carry the one-time run-id announce context; the
     // invariant under test is that it is NOT denied.
     assert.notEqual(r.kind, 'deny');
+  });
+});
+
+test('Cursor: a subagent shell cwd outside workspace_roots is NOT sent to the onboarding wizard', () => {
+  withProject(completeNewProject(), (cwd) => {
+    writeLocalPrefs();
+    materializeFixture(cwd, 'default');
+    recordMainOnboardingSession(cwd, 'orchestrator-conv');
+    const terminalCwd = path.join(path.dirname(cwd), '.cursor', 'projects', 'Users-u-Projects-app', 'terminals');
+    fs.mkdirSync(terminalCwd, { recursive: true });
+
+    const r = onboardingGate(ctxCursor(
+      terminalCwd,
+      'before-shell-execution',
+      'shell',
+      { command: 'head -n 12 *.txt' },
+      'backend-subagent-conv',
+      undefined,
+      cwd,
+    ));
+
+    assert.notEqual(r.kind, 'deny', 'out-of-workspace Cursor terminal cwd must not trigger a setup wizard');
   });
 });
 
