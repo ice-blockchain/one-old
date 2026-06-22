@@ -26,7 +26,7 @@ import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
-import { markOpenCodeRoleAttempted, recordOpenCodeAttemptOutcome } from '../../shared/opencode-roles';
+import { markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted, recordOpenCodeAttemptOutcome } from '../../shared/opencode-roles';
 import { roleDigestName } from '../../shared/packing';
 import { readEffectiveState } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -597,7 +597,10 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';
-  const runId = (opts.runId || '').trim() || runStamp();
+  const stateRunId = typeof state.currentRunId === 'string'
+    ? state.currentRunId.trim()
+    : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
+  const runId = (opts.runId || '').trim() || stateRunId || runStamp();
   const startedAt = Date.now();
   let markedAttempt = false;
   const markCliAttempt = (): void => {
@@ -706,6 +709,11 @@ export function normalizePlanRole(role: string): string {
 }
 
 export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string; roles?: readonly string[] } = {}): PlanDelegationResult {
+  const state = (readEffectiveState(cwd) || {}) as Rec;
+  const stateRunId = typeof state.currentRunId === 'string'
+    ? state.currentRunId.trim()
+    : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
+  const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
   let queue = parsePlanDelegationQueue(planText);
@@ -717,11 +725,27 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   }
   const units: PlanDelegationResult['units'] = [];
   let delegated = 0;
+  const totalByRole = new Map<string, number>();
+  const processedByRole = new Map<string, number>();
   for (const u of queue) {
-    const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
-    const r = delegate(cwd, { role: u.role, task, runId: opts.runId, model: opts.model });
-    if (r.ok) delegated += 1;
-    units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched, model: r.model });
+    const normalizedRole = normalizePlanRole(u.role);
+    totalByRole.set(normalizedRole, (totalByRole.get(normalizedRole) || 0) + 1);
+  }
+  try {
+    for (const u of queue) {
+      const normalizedRole = normalizePlanRole(u.role);
+      const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
+      const r = delegate(cwd, { role: u.role, task, runId, model: opts.model });
+      if (r.ok) delegated += 1;
+      units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched, model: r.model });
+      processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
+    }
+  } finally {
+    if (runId) {
+      for (const [role, total] of totalByRole) {
+        if ((processedByRole.get(role) || 0) >= total) markOpenCodePlanRoleCompleted(cwd, runId, role);
+      }
+    }
   }
   return { total: queue.length, delegated, units };
 }

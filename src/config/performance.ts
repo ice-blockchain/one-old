@@ -93,7 +93,13 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
   cursor: {
     free: { base: 'low', withOpenCode: 'balanced' },
     pro: { base: 'balanced', withOpenCode: 'high' },
+    // Pro+(plus) / Ultra(max) / Teams(team or business) / Enterprise: larger usage
+    // budgets than Pro (same model set) → recommend the full High team by default.
+    plus: { base: 'high', withOpenCode: 'high' },
+    max: { base: 'high', withOpenCode: 'high' },
     business: { base: 'high', withOpenCode: 'high' },
+    team: { base: 'high', withOpenCode: 'high' },
+    enterprise: { base: 'high', withOpenCode: 'high' },
   },
 };
 

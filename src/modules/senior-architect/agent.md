@@ -184,7 +184,7 @@ Before emitting `PLAN_READY`, write a machine-readable counterpart of the Module
 .traffic-one/runs/<run-id>/assignments.json
 ```
 
-This is what makes parallel implementers conflict-free across ANY stack. Each implementer role gets one entry with a DISJOINT set of owned path patterns; the run-team write gate lets a role write only inside its own scope. Use the exact `<run-id>` the orchestrator gave you (the same id as the run's claim dir) — never invent one.
+This is what makes parallel implementers conflict-free across ANY stack. Each implementer role gets one entry with a DISJOINT set of owned path patterns; the run-team write gate lets a role write only inside its own scope. Use `currentRunId` from `.traffic-one/.one.json` (an epoch-ms number, the same id as the run's claim dir) — never invent one, and never a `date`/ISO/UTC string.
 
 ```jsonc
 {
@@ -205,7 +205,7 @@ This is what makes parallel implementers conflict-free across ANY stack. Each im
 
 Use EXACTLY this shape: the top-level key is **`assignments`** (a JSON ARRAY of `{ role, scope: { include, exclude } }`). Do NOT invent an alternate shape — e.g. a `roles` object keyed by role name, or `ownedPaths`/`readOnlyPaths` fields. The run-team gate reads `assignments[].scope.include`; a non-conforming manifest silently degrades scope ownership to per-path first-writer locks (the gate tolerates the `roles`/`ownedPaths` deviation as a fallback, but the canonical `assignments` array is required).
 
-Patterns are project-relative, `/`-separated; a trailing `/` is a directory prefix, and `*`/`**`/`?` are globs (`**` crosses `/`). Emit exactly `senior-frontend` and `senior-backend` for now — the format allows N roles / arbitrary labels (e.g. a future `senior-mobile`) but this version spawns only those two.
+Patterns are project-relative, `/`-separated; a trailing `/` is a directory prefix, and `*`/`**`/`?` are globs (`**` crosses `/`). Emit exactly `senior-frontend` and `senior-backend` for now — the format allows N roles / arbitrary labels (e.g. a future `senior-mobile`) but this version spawns only those two. **Never add a `senior-architect` entry** to this manifest: the architect may create empty scaffold files, but it does not reserve implementation ownership after `PLAN_READY`.
 
 Derive the partition from REAL paths, never guessed directory names:
 - Existing project: classify the directories you actually read in the tree (where routes/components/controllers/migrations live for THIS repo's stack — Next.js `src/app`, Laravel `app/Http` + `routes` + `database`, Django `*/views.py` + `*/migrations`, Flutter `lib/`, etc.).
@@ -215,6 +215,7 @@ Derive the partition from REAL paths, never guessed directory names:
 Guarantees you must uphold (the gate trusts the manifest):
 - **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).
 - **Covers the work surface** — every module an implementer will build falls in exactly one role's scope. Anything left uncovered is governed by a first-writer fallback lock — a safety net, not the plan.
+- **Scaffold barrels transfer to implementers** — empty package barrels the architect creates are baseline scaffold only. Assign `packages/ui/src/index.ts`, `packages/i18n/src/index.ts`, `packages/types/src/index.ts`, and similar shared exports to the role expected to fill/export them; do not exclude a barrel from a role while also asking that role to author the package contracts.
 - **Real paths only** — every `include`/`exclude` is a directory that exists or that this run creates.
 - **Lockfiles are side-effects, not owned source** — `pnpm-lock.yaml` /
   `package-lock.json` / `yarn.lock` / `bun.lock*` are written by installs, not
@@ -227,7 +228,7 @@ If you cannot partition the surface disjointly, report the blocker instead of em
 
 ## Digest output (REQUIRED)
 
-The orchestrator will pass you a `<run-id>` in your synthetic prompt (UTC second-precision, e.g. `2026-05-07T14-23-05Z`). Before emitting `PLAN_READY`, write your handoff digest to:
+Read your run-id from `currentRunId` in `.traffic-one/.one.json` — it is a plain epoch-**millisecond number** (e.g. `1715091785000`), NEVER a `date`/ISO/UTC string. Do not invent one or reformat it. Before emitting `PLAN_READY`, write your handoff digest to (substituting that `currentRunId` for `<run-id>`):
 
 ```
 .traffic-one/digests/<run-id>/architect.md

@@ -15,6 +15,7 @@ import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { serverRecordExists } from '../../shared/onboarding-server/registry';
 import { projectContextOriginalPrompt } from '../../shared/onboarding/project-context';
@@ -38,6 +39,7 @@ import {
   sessionExpiredReauthPromptResult,
 } from './auth-gate';
 import { authChoiceAllowsContinue, authChoiceStatus, tryWriteAuthChoice } from './auth-choice';
+import { modelChoiceReplyPending, parseModelChoice, writeModelChoice } from '../agent-model/model-choice';
 import { runSessionStartAuthed } from './session-start';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
@@ -56,6 +58,14 @@ const sessionBlock = (name: string, vars: Record<string, string | number> = {}):
 function seedOriginalPrompt(cwd: string, prompt: string): void {
   const text = (prompt || '').trim();
   if (!text) return;
+  // `originalPrompt` is the project DESCRIPTION — the wizard derives the stack from it and the
+  // maintenance-triage continuation routes on it. A control / non-coding command ("stop all",
+  // "cancel", "pause", a greeting) is NOT a description; seeding it pollutes both. Only seed a
+  // prompt that looks like build/coding work — the SAME predicates the activation gate uses, so
+  // anything that could legitimately be the first build prompt still seeds. This also stops a
+  // later control command from becoming `originalPrompt` when the first build prompt wasn't
+  // captured (e.g. state was reset mid-session).
+  if (!isLikelyCodingPrompt(text) && !promptHasStackSignal(text)) return;
   const state = readState(cwd);
   // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
   // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing
@@ -118,6 +128,24 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     }
   }
 
+  // ── Disabled/unavailable-model spawn choice (Cursor) ──
+  // When picked tier models aren't offered (or the spawn gate surfaced a degradation choice),
+  // the user's reply lands here. Honor it before any other handling. Fail closed: nothing
+  // records `use-fallback` except this explicit chat reply (or a future host modal).
+  {
+    const choiceState = readEffectiveState(cwd);
+    const choiceRunId = typeof choiceState.currentRunId === 'string' && choiceState.currentRunId.trim()
+      ? choiceState.currentRunId.trim() : '';
+    if (choiceRunId && modelChoiceReplyPending(cwd, choiceState as Record<string, unknown>)) {
+      const modelChoice = parseModelChoice(promptText);
+      if (modelChoice) {
+        writeModelChoice(cwd, choiceRunId, modelChoice);
+        const recordedBlock = modelChoice === 'enable-retry' ? 'model-choice-recorded-enable' : 'model-choice-recorded-fallback';
+        return context(skillBlock('agent-model', recordedBlock, {}), { systemMessage: 'traffic-one: model choice recorded' });
+      }
+    }
+  }
+
   const uninitialized = !fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd));
 
   // ── Coding-intent gate ──
@@ -171,6 +199,13 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // worker thread cannot drive the wizard (see the onboarding-gate handler). If a
     // subagent prompt reaches here (e.g. a stray nested root), don't surface it.
     if (isSubagentThread(raw)) return noop();
+    // Cursor fallback: a subagent's own events carry no reliable subagent marker, so
+    // isSubagentThread misses them. The orchestrator is recorded as MAIN at subagentStart; a
+    // session that is NOT a known main session is a subagent → don't surface the wizard to it.
+    if (ctx.host === 'cursor') {
+      const id = hookSessionIdentity(raw);
+      if (id.sessionId && isForeignOnboardingThread(cwd, id.sessionId)) return noop();
+    }
     seedOriginalPrompt(cwd, promptText);
     const server = ensureOnboardingServer(cwd);
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
@@ -185,7 +220,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
     // in its preview pane and Codex via its own recipe, so they keep the plain banner.
     const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd) })}`, {
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) })}`, {
       systemMessage,
     });
   }

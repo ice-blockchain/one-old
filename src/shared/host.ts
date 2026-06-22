@@ -10,7 +10,19 @@ export function detectHost(
   env: NodeJS.ProcessEnv = process.env,
   argv: readonly string[] = process.argv,
 ): HostId {
-  if (argv.includes('--host=cursor') || env.CURSOR_PLUGIN_ROOT) return 'cursor';
+  // An explicit `--host=<id>` arg is AUTHORITATIVE — it is how a plugin-spawned runner
+  // subprocess (e.g. onboarding-wait.cjs) learns the host, since the env markers below
+  // (CURSOR_PLUGIN_ROOT / CODEX_*) are set for the hook process but NOT for arbitrary
+  // terminal commands the agent runs. The plugin builds the command in a context where
+  // the host IS known and stamps it on. Generalized from the original `--host=cursor`-only
+  // check so Codex/Claude runners detect correctly too.
+  for (const a of argv) {
+    if (typeof a === 'string' && a.startsWith('--host=')) {
+      const h = a.slice('--host='.length).trim();
+      if (h === 'cursor' || h === 'codex' || h === 'claude') return h;
+    }
+  }
+  if (env.CURSOR_PLUGIN_ROOT) return 'cursor';
   // Codex marks the hook subprocess at runtime. CODEX_PLUGIN_ROOT covers the CLI;
   // Codex Desktop instead sets CODEX_INTERNAL_ORIGINATOR_OVERRIDE (observed on every
   // Desktop hook invocation); CODEX_THREAD_ID is present on subagent threads. These

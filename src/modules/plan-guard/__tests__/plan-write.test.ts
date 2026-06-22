@@ -5,8 +5,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { planWriteGate } from '../plan-write';
-import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
 import { writeAuthChoice } from '../../session/auth-choice';
+import { writeModelChoice } from '../../agent-model/model-choice';
 import { claimThreadRole } from '../../../shared/state/run-agent';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
@@ -46,13 +47,14 @@ function writeCtx(
   cls: ToolClass,
   toolInput: Record<string, unknown>,
   rawExtra: Record<string, unknown> = {},
+  host: HostId = 'claude',
 ): Ctx {
   const input: HookInput = {
-    event: 'PreToolUse', host: 'claude', cwd,
+    event: 'PreToolUse', host, cwd,
     raw: { ...rawExtra, tool_name: rawName, tool_input: toolInput },
     tool: { class: cls, rawName },
   };
-  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 test('clean write in a materialized main-agent project → noop', () => {
@@ -75,6 +77,43 @@ test('subagents project: a feature write outside any role session is denied (run
       assert.ok(r.reason.includes('team.mode'));
     }
   });
+});
+
+test('Cursor pending model choice blocks direct scaffold writes until the user replies', () => {
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    const runId = '1780000000000';
+    withMaterialized({
+      currentRunId: runId,
+      performance: { level: 'high', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+    }, (cwd) => {
+      fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
+        models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
+      }), 'utf8');
+
+      const blocked = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+        file_path: 'README.md',
+        content: '# Project\n',
+      }, {}, 'cursor'));
+      assert.equal(blocked.kind, 'deny');
+      if (blocked.kind === 'deny') {
+        assert.ok(/model choice required/i.test(blocked.reason));
+        assert.ok(/scaffold directly|edit project files/i.test(blocked.reason));
+      }
+
+      writeModelChoice(cwd, runId, 'use-fallback');
+      const allowed = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+        file_path: 'README.md',
+        content: '# Project\n',
+      }, {}, 'cursor'));
+      assert.equal(allowed.kind, 'noop');
+    });
+  } finally {
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+  }
 });
 
 test('subagents project: claimed senior-frontend can write flat root Next UI source', () => {

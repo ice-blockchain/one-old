@@ -141,6 +141,13 @@ export function normalizeState(state: unknown, defaultMode?: string): boolean {
   if (!s) return false;
 
   let changed = canonicalizeStateShape(s);
+  if (typeof s.currentRunId === 'number' && Number.isFinite(s.currentRunId)) {
+    s.currentRunId = String(Math.trunc(s.currentRunId));
+    changed = true;
+  } else if (typeof s.currentRunId === 'string' && s.currentRunId.trim() && s.currentRunId !== s.currentRunId.trim()) {
+    s.currentRunId = s.currentRunId.trim();
+    changed = true;
+  }
   if (!s.stack) return changed;
 
   changed = normalizeLegacyStack(s) || changed;

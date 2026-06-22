@@ -5,6 +5,7 @@
 
 import {
   CURSOR_MODEL_ALTERNATES,
+  CURSOR_PLAN_MODELS,
   DEFAULT_HOST_PLAN,
   HOST_IDS,
   HOST_MODELS,
@@ -32,20 +33,33 @@ export function canonicalHost(host: unknown): HostModelKey {
   return (HOST_IDS as readonly string[]).includes(value) ? (value as HostModelKey) : 'claude';
 }
 
-export function resolveModel(tier: unknown, host: unknown): string | null {
+// Resolve a tier to a concrete model id for a host. Optional `plan` makes the
+// Cursor row plan-aware via CURSOR_PLAN_MODELS (Free resolves frontier tiers to
+// Composer; paid plans share the base HOST_MODELS.cursor row). claude/codex ignore
+// `plan` — their rows are plan-agnostic.
+export function resolveModel(tier: unknown, host: unknown, plan?: unknown): string | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
-  return HOST_MODELS[canonicalHost(host)][canonical];
+  const h = canonicalHost(host);
+  // Apply the per-plan overlay ONLY when a plan was explicitly supplied. A plan-agnostic
+  // caller (no plan arg) keeps the generous base row — canonicalPlan(undefined) would
+  // otherwise default to 'free' and silently downgrade every plan-less lookup to Composer.
+  if (h === 'cursor' && plan !== undefined && plan !== null && plan !== '') {
+    const overlay = CURSOR_PLAN_MODELS[canonicalPlan('cursor', plan)];
+    const planned = overlay ? overlay[canonical] : undefined;
+    if (planned) return planned;
+  }
+  return HOST_MODELS[h][canonical];
 }
 
 // Does a passed `model` parameter satisfy a tier's expected model? True when it IS
 // that model OR a same-family VARIANT of it (the expected id followed by a `-suffix`).
-// The cursor row already stores the full Task-tool slug (e.g.
-// `claude-opus-4-8-thinking-high`), so this prefix match mainly covers a deeper
-// sub-variant; a different family/tier (e.g. `gpt-5.5-medium` vs a highest opus slug)
-// never matches, so tier enforcement holds. Claude/Codex pass bare ids, so this is
-// exact-equality there in practice. An empty/absent model never matches (deny →
-// inherit guard). See acceptableModelsFor for the cursor same-tier fallback set.
+// Cursor rows are family anchors whose concrete Task-tool slug is resolved from the captured
+// model list when available, so this prefix match covers reasoning/build suffixes. A different
+// family/tier (e.g. `gpt-5.5-medium` vs a highest opus family) never matches, so tier
+// enforcement holds. Claude/Codex pass bare ids, so this is exact-equality there in practice.
+// An empty/absent model never matches (deny → inherit guard). See acceptableModelsFor for the
+// cursor same-tier fallback set.
 export function modelMatchesExpected(passed: unknown, expected: unknown): boolean {
   const e = typeof expected === 'string' ? expected.trim() : '';
   const p = typeof passed === 'string' ? passed.trim() : '';
@@ -71,8 +85,11 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
   return acceptable.some((e) => modelMatchesExpected(passed, e));
 }
 
+// Optional `plan` makes the cursor cell plan-aware (Free → Composer for the
+// frontier tiers). claude/codex cells are plan-agnostic.
 export function tierModelTable(
   tier: unknown,
+  plan?: unknown,
 ): { tier: TierId; claude: string; codex: string; cursor: string } | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
@@ -80,7 +97,7 @@ export function tierModelTable(
     tier: canonical,
     claude: HOST_MODELS.claude[canonical],
     codex: HOST_MODELS.codex[canonical],
-    cursor: HOST_MODELS.cursor[canonical],
+    cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor[canonical],
   };
 }
 
@@ -94,6 +111,18 @@ export function canonicalPlan(host: unknown, plan: unknown): UserPlan {
     : (PLAN_ALIASES[value] ?? null);
   if (!resolved) return fallback;
   return HOST_PLAN_IDS[h].has(resolved) ? resolved : fallback;
+}
+
+// True when `plan` is a string we recognize as SOME canonical plan id (directly or
+// via an alias), host-agnostic. host-plan.ts uses this to flag an UNRECOGNIZED raw
+// membership string for follow-up — distinct from a recognized plan a host simply
+// doesn't expose (which canonicalPlan also maps to the fallback). Mirrors
+// canonicalPlan's normalization (note: `+` is not stripped, matching the `pro+` alias).
+export function planIsRecognized(plan: unknown): boolean {
+  if (typeof plan !== 'string') return false;
+  const value = plan.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  if (!value) return false;
+  return (PLAN_IDS as readonly string[]).includes(value) || Object.prototype.hasOwnProperty.call(PLAN_ALIASES, value);
 }
 
 export function recommendTierForPlan(host: unknown, plan: unknown, useOpenCode = false): TierId {

@@ -36,6 +36,25 @@ test('strayRunIdInText: the correct currentRunId path is allowed', () => {
   assert.equal(strayRunIdInText('.traffic-one/plan.md', CURRENT), null);
 });
 
+test('strayRunIdInText: a shell glob/wildcard run-dir segment is an inspection, not a stray id', () => {
+  // The incident: the orchestrator runs a READ-ONLY inspection across every run dir; the `*`
+  // glob must NOT be flagged as a fabricated run-id (it would block `cat`/`ls` of run state).
+  assert.equal(
+    strayRunIdInText('cat .traffic-one/runs/*/agents.json 2>/dev/null; ls -la .traffic-one/runs/', CURRENT),
+    null,
+  );
+  // Other glob forms are likewise inspections, not fabricated ids.
+  assert.equal(strayRunIdInText('.traffic-one/runs/*/assignments.json', CURRENT), null);
+  assert.equal(strayRunIdInText('.traffic-one/digests/[0-9]*/architect.md', CURRENT), null);
+  assert.equal(strayRunIdInText('.traffic-one/runs/{1,2}/x', CURRENT), null);
+  // …but a CONCRETE diverging id alongside a glob is still caught (the glob is skipped, the real
+  // stray id wins) — the write guard isn't disarmed by adding a wildcard elsewhere.
+  assert.equal(
+    strayRunIdInText('.traffic-one/runs/*/x\n.traffic-one/runs/2026-06-17T12-09-40Z/y', CURRENT),
+    '2026-06-17T12-09-40Z',
+  );
+});
+
 test('strayRunIdInText: no enforcement when currentRunId is empty (nothing minted yet)', () => {
   assert.equal(strayRunIdInText('.traffic-one/runs/2026-06-17T12-09-40Z/assignments.json', ''), null);
   assert.equal(strayRunIdInText('.traffic-one/runs/anything/x', undefined), null);

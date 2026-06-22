@@ -37,7 +37,7 @@ export const handlers: Handler[] = [
     id: 'session.auth',
     event: 'PreToolUse',
     tools: ['shell', 'file-write', 'file-edit', 'file-read', 'spawn-agent', 'search'],
-    subcommands: ['check-onboarding-gate', 'check-agent-model', 'check-plan-write', 'check-library-allowlist'],
+    subcommands: ['check-onboarding-gate', 'check-model-choice-gate', 'check-agent-model', 'check-plan-write', 'check-library-allowlist'],
     priority: 0,
     run: (ctx) => authPreToolGate(ctx),
   },

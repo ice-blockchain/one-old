@@ -153,6 +153,17 @@ export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): 
   return /(^|\s)node(\s|$)/.test(command) && command.includes('onboarding-wait.cjs');
 }
 
+// The pre-spawn model-gate command (node …/model-gate.cjs <cwd>) the Cursor orchestrator runs
+// after capturing models, before spawning. Same clean-node-invocation allow-list shape as the
+// wait command — recognized so the beforeShellExecution model-gate handler can intercept it.
+export function isModelGateCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (!isShellToolName(toolName)) return false;
+  const command = commandFromToolInput(toolInput).trim();
+  if (!command || command.includes('\n')) return false;
+  if (/[;&|`$<>(){}]/.test(command)) return false;
+  return /(^|\s)node(\s|$)/.test(command) && command.includes('model-gate.cjs');
+}
+
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');

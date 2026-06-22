@@ -11,9 +11,21 @@ subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's
 context stays clean. The ONE exception is `<run-id>` — see below.
 
+## Per-role model — PASS IT in the `Task` `model` parameter (Cursor)
+
+Each role runs at a specific model tier (it can be overridden per role in the wizard, e.g.
+frontend → balanced). The correct model for each role is pinned in
+`.cursor/agents/<role>.md` (`model:` line). **On Cursor you MUST pass that value in the `Task`
+`model` parameter for every spawn** — read `.cursor/agents/<role>.md` and set
+`model: "<that value>"`. Cursor does NOT auto-apply the `.cursor/agents` frontmatter: if you
+omit `model`, the subagent silently INHERITS YOUR (orchestrator) model — so an Opus orchestrator
+would run a balanced-tier frontend on Opus, ignoring the override. The spawn gate enforces this:
+a spawn whose `model` does not match the role's tier is DENIED with the exact value to pass. Do
+NOT put the model in the prompt text — only the `model` parameter sets it.
+
 ## Run-id format
 
-The run-id is `currentRunId`: a plain epoch-**millisecond number** (e.g. `1715091785000`),
+The run-id is `currentRunId`: a plain epoch-**millisecond digit string** (e.g. `"1715091785000"`),
 **pre-minted by Traffic One into `.traffic-one/.one.json` before Phase 0** (the onboarding
 gate announces it the moment the build starts). Do NOT generate it — and NEVER use
 `date`/ISO/UTC (e.g. `2026-06-17T10-08-00Z`). A self-generated id splits run state into a
@@ -31,7 +43,7 @@ digest folder all key off this one value.
 ## Phase 1 — Architect
 
 ```
-Run-id: <run-id>. The user's request is:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The user's request is:
 
 > <user-request quoted verbatim>
 
@@ -75,8 +87,13 @@ existing translation catalogs instead of creating parallel systems.
 Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json: one entry
 per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
 patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
-directories — not guessed names. This is the machine-readable Module map; the run-team gate
-uses it so the parallel implementers never collide. See "Assignments manifest" in your role
+directories — not guessed names. Do NOT include `senior-architect` in this manifest: the
+architect may create empty scaffold barrels/packages, but those files must remain writable by
+the implementer that fills them. Shared package barrels such as `packages/ui/src/index.ts`,
+`packages/i18n/src/index.ts`, and `packages/types/src/index.ts` belong to the implementer that
+exports real code/types from them; do not exclude them from that role if the role prompt asks it
+to fill/export those contracts. This is the machine-readable Module map; the run-team gate uses
+it so the parallel implementers never collide. See "Assignments manifest" in your role
 instructions for the schema and guarantees. Write it before PLAN_READY.
 
 On finish, write your handoff digest to:
@@ -101,7 +118,7 @@ token PLAN_READY on its own line.
 ## Phase 2 — Frontend (parallel with Backend)
 
 ```
-Run-id: <run-id>. The architect digest is at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
@@ -146,6 +163,12 @@ shared EnvBanner/SupabaseConfigAlert/ConfigurePromptCard setup CTA so every
 website-facing missing-config link points to `https://traffic.io/`, and add or
 update a regression test for that exact `href`.
 
+Missing Supabase/env config is not a license to ship sparse UI: create typed,
+product-specific demo/seed fixture data inside your owned frontend scope and
+render the actual workflow in demo/degraded mode until live data is configured.
+Do not invent a backend contract beyond the plan; make fixtures conform to the
+planned public contract and surface any contract gaps in your digest.
+
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
 
@@ -159,7 +182,7 @@ pending.
 ## Phase 2 — Backend (parallel with Frontend)
 
 ```
-Run-id: <run-id>. The architect digest is at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The architect digest is at:
   .traffic-one/digests/<run-id>/architect.md
 
 Read in priority order:
@@ -199,7 +222,7 @@ End your reply with a one-line status of what you produced.
 ## Phase 3 — Reviewer (parallel with Tester)
 
 ```
-Run-id: <run-id>. The implementer digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The implementer digests are at:
   .traffic-one/digests/<run-id>/frontend.md
   .traffic-one/digests/<run-id>/backend.md
 
@@ -241,7 +264,7 @@ Token budget: ~6k. Don't full-scroll files; read targeted line ranges.
 ## Phase 3 — Tester (parallel with Reviewer)
 
 ```
-Run-id: <run-id>. The implementer digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The implementer digests are at:
   .traffic-one/digests/<run-id>/frontend.md
   .traffic-one/digests/<run-id>/backend.md
 
@@ -279,7 +302,7 @@ Token budget: ~8k.
 ## Phase 4 — Shipper (only on explicit deploy intent)
 
 ```
-Run-id: <run-id>. The reviewer + tester digests are at:
+Run-id: read `currentRunId` from .traffic-one/.one.json (an epoch-ms digit string — never a `date`/ISO/UTC string) and use it wherever a path below shows `<run-id>`. The reviewer + tester digests are at:
   .traffic-one/digests/<run-id>/reviewer.md     (must contain "verdict: APPROVED")
   .traffic-one/digests/<run-id>/tester.md       (must contain "verdict: TESTS_GREEN")
 

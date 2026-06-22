@@ -29,17 +29,53 @@ export interface RunTeamArgs {
   filePath: string;          // project-relative target path
   state: Rec;
   rawData: unknown;          // raw hook input, for run-claim session identity
+  content?: string;
+  writeTargetPaths?: string[];
   featureTargetPaths: string[];
   writingFeatureSource: boolean;
   writingFeatureSourceViaCommand: boolean;
   block: Block;
 }
 
+function isArchitectEmptyPackageBarrelTarget(filePath: string): boolean {
+  return /^packages\/[^/]+\/src\/index\.ts$/.test(filePath);
+}
+
+function isEmptyBarrelContent(content: string): boolean {
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n\r]*/g, '')
+    .trim();
+  return stripped === '' || stripped === 'export {}' || stripped === 'export {};';
+}
+
+function isArchitectScaffoldBarrelWrite(role: string | null, targets: string[], content: string | undefined): boolean {
+  return role === 'senior-architect'
+    && targets.length > 0
+    && targets.every(isArchitectEmptyPackageBarrelTarget)
+    && isEmptyBarrelContent(content || '');
+}
+
+function isArchitectScaffoldReservation(role: string | null | undefined, target: string): boolean {
+  return role === 'senior-architect' && isArchitectEmptyPackageBarrelTarget(target);
+}
+
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
-  const { projectRoot, filePath, state, rawData, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
+  const { projectRoot, filePath, state, rawData, content, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
   const team = obj(state.team);
-  if (!writingFeatureSource || !team || team.mode !== 'subagents') return null;
+  if (!team || team.mode !== 'subagents') return null;
+
+  const writeTargetPaths = (args.writeTargetPaths && args.writeTargetPaths.length > 0)
+    ? args.writeTargetPaths.filter(Boolean)
+    : (filePath ? [filePath] : []);
+  const stateRunId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
+  const preManifest = readRunAssignmentsResilient(projectRoot, stateRunId);
+  const assignedTargets = preManifest
+    ? writeTargetPaths.filter((target) => preManifest.assignments.some((assignment) => matchesScope(target, assignment.scope)))
+    : [];
+  const writingRunTeamTarget = writingFeatureSource || assignedTargets.length > 0;
+  if (!writingRunTeamTarget) return null;
 
   const suffix = block('run-team-suffix',
     'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
@@ -67,8 +103,6 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     role,
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,
   });
-  const ownershipTargets = featureTargetPaths.length > 0 ? featureTargetPaths : [filePath];
-
   if (!inSubagent) {
     // Maintenance fail-open. Run-team coordinates PARALLEL BUILD implementers via
     // the architect's per-run assignments manifest; in maintenance the build is
@@ -81,9 +115,12 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // checks below still run, so a real feature run stays coordinated.)
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
     return deny(block('run-team-not-subagent',
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit feature source yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
+      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role }));
   }
+
+  const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;
+  if (isArchitectScaffoldBarrelWrite(acRole, scaffoldTargets, content)) return null;
 
   // Preferred path: explicit per-run assignment manifest authored by the architect.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.
@@ -91,14 +128,19 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Resilient: tolerates a run-id split (assignments written under a stray id) so the
   // gate doesn't block every implementer write when the orchestrator's run-id diverges
   // from currentRunId. See readRunAssignmentsResilient.
-  const manifest = readRunAssignmentsResilient(projectRoot, runId);
+  const manifest = (runId === stateRunId ? preManifest : readRunAssignmentsResilient(projectRoot, runId)) || preManifest;
+  const ownershipTargets = featureTargetPaths.length > 0
+    ? featureTargetPaths
+    : (assignedTargets.length > 0 ? assignedTargets : writeTargetPaths);
 
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);
     const myKey = (mine && (mine.agentKey || mine.role)) || role;
     for (const target of ownershipTargets) {
       if (mine && matchesScope(target, mine.scope)) continue; // inside my scope -> allowed
-      const conflict = manifest.assignments.find((a) => a !== mine && matchesScope(target, a.scope));
+      const conflict = manifest.assignments.find((a) => a !== mine
+        && matchesScope(target, a.scope)
+        && !isArchitectScaffoldReservation(a.role, target));
       if (conflict) {
         return deny(block('run-team-scope-conflict',
           `Run-team enforcement gate: \`${target}\` is in \`${conflict.agentKey || conflict.role}\`'s assigned scope for this run, not \`${myKey}\`'s. Each subagent writes only within its own assignment in \`.traffic-one/runs/<runId>/assignments.json\`. Let the owning role write this file, or split the patch by assignment.`,

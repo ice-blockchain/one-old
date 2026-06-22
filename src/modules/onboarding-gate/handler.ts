@@ -20,6 +20,7 @@ import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
@@ -84,12 +85,33 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // means a stray nested root was resolved (e.g. a leaked packages/*/.traffic-one);
     // let the worker proceed with its assigned task (often REMOVING that leak).
     if (isSubagentThread(raw)) return noop();
-    // The blocking "wait for setup" command is allowed FIRST so the one-time recipe
-    // deny below never blocks it — on hosts where UserPromptSubmit already delivered
-    // the recipe, the wait command can be the agent's first gated call.
-    if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
+    // Cursor fallback: a subagent's OWN events carry no reliable subagent marker, so
+    // isSubagentThread can't catch them, and an onboarding-incomplete subagent here would loop on
+    // the wait command. The orchestrator's session is recorded as MAIN at subagentStart; a session
+    // that is NOT a known main session is a subagent → let it proceed (don't trap it on the wizard).
+    if (ctx.host === 'cursor') {
+      const id = hookSessionIdentity(raw);
+      if (id.sessionId && isForeignOnboardingThread(root, id.sessionId)) return noop();
+    }
+    // Cursor does not reliably render UserPromptSubmit user_message, and agents sometimes skip
+    // reposting the URL before running the wait command. Force one visible, clickable link at the
+    // shell boundary, then allow the retry so setup can block normally.
+    if (isOnboardingWaitCommand(toolName, toolInput)) {
+      if (ctx.host === 'cursor') {
+        const server = ensureOnboardingServer(root);
+        const id = hookSessionIdentity(raw).sessionId;
+        if (server.url && !server.url.includes(':0/')
+          && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
+          return deny(block('cursor-wait-link-first', {
+            URL: server.url,
+            WAIT_CMD: onboardingWaitCommand(root, ctx.host),
+          }));
+        }
+      }
+      return noop();
+    }
     const server = ensureOnboardingServer(root);
-    const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(root) };
+    const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(root, ctx.host) };
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
     // DENY REASON is the ONLY output surfaced to the model: PreToolUse

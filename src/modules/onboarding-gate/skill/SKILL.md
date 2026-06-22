@@ -21,10 +21,12 @@ file yourself:
 - Claude Code: your FIRST action is to call preview_start with name
   "traffic-one-setup" — it is already registered in .claude/launch.json and points at
   the running wizard, so it opens in the in-app preview pane.
-- Cursor: your FIRST visible action MUST be to post the wizard URL (the link below)
-  to the user on its OWN LINE as a clickable link, with a one-line "Open the Traffic
-  One setup wizard" call to action — do this BEFORE you run the wait command, and do
-  NOT bury it or skip straight to waiting. The user opens it in Cursor's built-in
+- Cursor: your FIRST visible action MUST be exactly this clickable line, before any
+  tool call or wait command:
+
+      Open the Traffic One setup wizard: {{URL}}
+
+  Do NOT bury it in a terminal block and do NOT skip straight to waiting. The user opens it in Cursor's built-in
   Simple Browser (click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste).
   Cursor exposes no API to open it for you; do NOT pop an external browser.
 - Codex Desktop: do NOT tool-search for or read any browser skill — this is the
@@ -75,6 +77,14 @@ the questions and Traffic One owns the preview config.
 If the user would rather not use Traffic One, they can choose "Continue without
 Traffic One" from the Traffic One auth prompt.
 <!-- T1BLOCK:END server-deny-reason -->
+
+<!-- T1BLOCK:BEGIN cursor-wait-link-first -->
+Open the Traffic One setup wizard: {{URL}}
+
+Cursor did not show the setup link in chat before the wait command, so Traffic One stopped this first wait attempt to surface the clickable URL. Now re-run the wait command and keep the turn open:
+
+{{WAIT_CMD}}
+<!-- T1BLOCK:END cursor-wait-link-first -->
 
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
 Traffic One setup is still pending — building stays blocked until the wizard finishes.

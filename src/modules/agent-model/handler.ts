@@ -7,17 +7,41 @@
 
 import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
-import { deny, noop } from '../../core/result';
+import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { acceptableModelsFor, modelMatchesAny, resolveModel } from '../../shared/model-tiers';
-import { cursorAgentModel } from '../../shared/materialize/cursor-agent-model';
+import {
+  cursorModelsCapturePrompted,
+  cursorModelsFresh,
+  freshCursorModels,
+  markCursorModelsCapturePrompted,
+  pickCursorSlug,
+} from '../../shared/materialize/cursor-models';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
+import { AGENT_ROLES } from '../../config/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { markOpenCodeGateDenied, openCodeGateDenied, openCodeRoleAttempted, roleHasQueuedUnits, shouldRunRoleOnOpenCode } from '../../shared/opencode-roles';
+import { modelUnavailablePromptRequest } from '../../shared/prompt-request';
+import {
+  markModelAdvisoryShown,
+  markModelChoicePrompted,
+  type ModelChoiceStatus,
+  modelAdvisoryShown,
+  modelChoicePrompted,
+  readModelChoice,
+} from './model-choice';
+import {
+  markOpenCodeGateDenied,
+  openCodeGateDenied,
+  openCodePlanRoleCompleted,
+  openCodeRoleAttempted,
+  pendingOpenCodePlanRoles,
+  roleHasQueuedUnits,
+  shouldRunRoleOnOpenCode,
+} from '../../shared/opencode-roles';
 import {
   ensureCurrentRunId,
   ensureRunAgentClaim,
@@ -35,26 +59,27 @@ import { strayRunIdInText } from '../../shared/run-id-paths';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
+const PLAN_BATCH_GATED_ROLES = new Set(['senior-frontend', 'senior-backend']);
 
-// A role's tier model is satisfied when the spawn's `model` param matches it OR — on
-// Cursor — the materialized `.cursor/agents/<role>.md` frontmatter pins it. Cursor uses
-// that file's model (not the Task arg), so validating it lets the first spawn through
-// with no `model` param and no deny/retry, while still enforcing the tier (Traffic One
-// wrote the file). Family-aware (modelMatchesExpected) so reasoning/speed variants pass.
-function modelSatisfiesTier(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string): boolean {
-  // Family-aware AND accept-set-aware: on Cursor the tier is satisfied by the
-  // preferred slug OR any same-class alternate (CURSOR_MODEL_ALTERNATES), so a build
-  // that doesn't offer the preferred model can still spawn on one it does offer.
-  const acceptable = acceptableModelsFor(expected, ctx.host);
-  if (modelMatchesAny(passedModel, acceptable)) return true;
-  if (ctx.host === 'cursor') {
-    const fileModel = cursorAgentModel(cwd, role);
-    if (fileModel && modelMatchesAny(fileModel, acceptable)) return true;
-  }
-  return false;
+function isPlanBatchGatedRole(role: string): boolean {
+  return PLAN_BATCH_GATED_ROLES.has(role);
+}
+
+// A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it (family-aware
+// + same-class CURSOR_MODEL_ALTERNATES). The passed arg is authoritative on every host —
+// INCLUDING Cursor: the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
+// live evidence proved Cursor does NOT honor that frontmatter when no `model` arg is passed — it
+// INHERITS THE PARENT (orchestrator) model (captured: a balanced-override frontend with
+// frontmatter `gpt-5.5-medium` ran on the parent's Opus because `subagent_model == parent model`).
+// So the per-role model only takes effect when the orchestrator PASSES it in the Task `model`
+// arg; the gate must therefore require it (the frontmatter is just the source/hint the
+// orchestrator reads, never proof the subagent will run on it).
+function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): boolean {
+  return modelMatchesAny(passedModel, acceptableModelsFor(expected, ctx.host));
 }
 
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
@@ -86,15 +111,146 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
   };
 }
 
-function modelTierDeny(ctx: Ctx, role: string, passedModel: string, expected: string, level: string): HookResult {
+// On Cursor a tier's `expected` is a bare model FAMILY (e.g. claude-opus-4-8). Map it to the
+// CONCRETE build slug the user's runner offers — the first captured model whose family matches
+// the family or a same-tier alternate — so deny/advisory prose names an EXACT slug Cursor
+// accepts. Falls back to the family when nothing is captured (or the build offers nothing in
+// the chain); claude/codex pass `family` straight through (their ids are already concrete).
+function cursorRealSlug(ctx: Ctx, cwd: string, family: string): string {
+  if (ctx.host !== 'cursor' || !family) return family;
+  // Only use a FRESH capture (matches the current plan) — a stale list (plan changed) would
+  // name a slug from the old plan. detectHostPlan is memoized, so this is cheap.
+  const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
+  if (!captured.length) return family;
+  return pickCursorSlug(acceptableModelsFor(family, ctx.host), captured) || family;
+}
+
+function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, opts: { suppressAlternates?: boolean } = {}): HookResult {
   const passedNote = passedModel
     ? `You passed model="${passedModel}". `
     : 'You passed no `model` parameter, so the subagent would inherit the parent model (e.g. opus). ';
-  const altModels = acceptableModelsFor(expected, ctx.host).slice(1);
+  // `expected` + alternates are FAMILY anchors; on Cursor name the concrete build slug for each
+  // (resolved from the captured list) so the orchestrator passes an exact slug Cursor offers,
+  // not a bare family. suppressAlternates: after "enable & retry" we don't advertise fallbacks.
+  const shownExpected = cursorRealSlug(ctx, cwd, expected);
+  const captured = ctx.host === 'cursor' ? freshCursorModels(cwd, detectHostPlan(ctx.host)) : [];
+  const altFamilies = opts.suppressAlternates ? [] : acceptableModelsFor(expected, ctx.host).slice(1);
+  const altModels = altFamilies
+    .map((f) => (captured.length ? pickCursorSlug([f], captured) : f))
+    .filter((s): s is string => typeof s === 'string' && s.length > 0);
   const altNote = altModels.length
-    ? ` If this host's subagent runner does NOT offer "${expected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
+    ? ` If this host's subagent runner does NOT offer "${shownExpected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
     : '';
-  return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote, ALTERNATES: altNote }));
+  return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, PASSED_NOTE: passedNote, ALTERNATES: altNote }));
+}
+
+// The "next eligible" model for a tier: the concrete build slug of the first same-tier
+// alternate FAMILY (resolved from the captured list on Cursor), or the resolved expected
+// when there is no alternate.
+function fallbackModelFor(ctx: Ctx, cwd: string, expected: string): string {
+  const altFamilies = acceptableModelsFor(expected, ctx.host).slice(1);
+  if (ctx.host === 'cursor') {
+    const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
+    if (captured.length) {
+      const offered = pickCursorSlug(altFamilies, captured);
+      if (offered) return offered;
+    }
+  }
+  const altFamily = altFamilies[0];
+  return altFamily ? cursorRealSlug(ctx, cwd, altFamily) : cursorRealSlug(ctx, cwd, expected);
+}
+
+// The recommended-model-unavailable choice deny (the budget/disabled CHOICE for the
+// degraded-to-Composer path). Names both possible causes (budget exhausted / disabled) and the
+// fallback; rides the deny reason on Cursor/Codex and a promptRequest modal on Claude.
+function modelChoiceDeny(ctx: Ctx, role: string, level: string, shownExpected: string, fallback: string): HookResult {
+  const reason = block('model-unavailable-choice', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, FALLBACK: fallback });
+  return deny(reason, { promptRequest: modelUnavailablePromptRequest(shownExpected, fallback, reason) });
+}
+
+function modelEnableRetryDeny(ctx: Ctx, role: string, level: string, passedModel: string, expected: string): HookResult {
+  const passedNote = passedModel
+    ? `You passed model="${passedModel}".`
+    : 'You passed no `model` parameter, so the subagent would inherit the parent model.';
+  return deny(block('model-choice-enable-required', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
+}
+
+function isComposerFamily(model: string): boolean {
+  return /^composer/i.test(model.trim());
+}
+
+function fallbackAlreadyAllowed(cwd: string, runId: string): ModelChoiceStatus | null {
+  return readModelChoice(cwd, runId);
+}
+
+// A spawn whose model SATISFIES the tier (so it would be allowed) but only via the Composer
+// FLOOR while the role's tier wants a stronger family (Opus/Sonnet) = a silent DEGRADATION,
+// usually API-budget exhaustion or a disabled model. Surface the choice ONCE per run (visible
+// deny) instead of letting the team quietly run the architect/implementers on Composer. Returns
+// the deny on the first such spawn, or null to proceed (already asked/answered, free/cheapest
+// tier, or genuinely on the recommended model). Mirrors modelUnsatisfiedDeny's no-deadlock guard.
+function degradedToFloorDeny(ctx: Ctx, cwd: string, runId: string, role: string, passedModel: string, expected: string, level: string): HookResult | null {
+  if (ctx.host !== 'cursor' || !runId) return null;
+  if (isComposerFamily(expected)) return null; // tier legitimately wants Composer (free / tester / quick-fix)
+  // The passed model is authoritative (the gate already required it via modelSatisfiesTier).
+  if (!modelMatchesAny(passedModel, ['composer-2.5'])) return null; // not on the floor → running fine
+  // Honor the answer precisely: fallback proceeds only after an explicit recorded choice.
+  const choice = fallbackAlreadyAllowed(cwd, runId);
+  if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
+  if (choice === 'use-fallback') return null;
+  markModelChoicePrompted(cwd, runId);
+  // The RECOMMENDED model named here is the role's TIER family verbatim (e.g. `claude-4.6-sonnet`)
+  // — NOT `cursorRealSlug(expected)`. cursorRealSlug resolves through the captured/available list,
+  // which by definition EXCLUDES a disabled model, so it would collapse the recommendation to an
+  // available fallback (often the Composer floor) and tell the user to "enable composer" instead
+  // of the actually-disabled model they picked. The user must see the exact model to enable in
+  // Settings → Models. The FALLBACK is the Composer floor the spawn already degraded to (free,
+  // guaranteed available — matches the "no extra cost / available immediately" choice prose).
+  return modelChoiceDeny(ctx, role, level, expected, cursorRealSlug(ctx, cwd, 'composer-2.5'));
+}
+
+// The role's PREFERRED tier model (the exact one the user picked in the wizard, e.g. the
+// balanced `claude-4.6-sonnet`) is NOT in the build's captured/offered model list — it's disabled
+// in Settings → Models or not on the plan. Materialization therefore fell back to a same-tier
+// ALTERNATE (e.g. `gpt-5.5`), which SATISFIES the tier so the spawn would pass silently. That is
+// exactly the "I wasn't asked" gap: degradedToFloorDeny only catches a drop to the Composer FLOOR,
+// not a fallback to a valid alternate. Surface the choice ONCE (enable the recommended model & re-
+// run, or accept the named fallback) so the user is never silently switched off their pick. Shares
+// the model-choice marker with degradedToFloorDeny → at most one model prompt per run (no-deadlock:
+// after one ask, proceed on the fallback). Capture-list-driven, so it fires regardless of which
+// model the orchestrator passed.
+function preferredModelUnavailableDeny(ctx: Ctx, cwd: string, runId: string, role: string, passedModel: string, expected: string, level: string): HookResult | null {
+  if (ctx.host !== 'cursor' || !runId) return null;
+  if (isComposerFamily(expected)) return null; // cheapest tier wants Composer — nothing to enable
+  const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
+  if (!captured.length) return null;                 // no fresh capture to judge against (capture gate covers it)
+  if (pickCursorSlug([expected], captured)) return null; // the recommended model IS offered → no downgrade
+  const choice = fallbackAlreadyAllowed(cwd, runId);
+  if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
+  if (choice === 'use-fallback') return null;
+  markModelChoicePrompted(cwd, runId);
+  return modelChoiceDeny(ctx, role, level, expected, fallbackModelFor(ctx, cwd, expected));
+}
+
+// B2 proactive advisory (Cursor, once per run): a pinned model can SILENTLY fall back to
+// Composer at runtime (budget exhausted / disabled) with no signal the gate can read, so on the
+// FIRST passing spawn name the models the team will use + the budget/enable remedy. Returns a
+// HookResult carrying BOTH the detailed agent-facing context AND a user-visible systemMessage
+// (→ user_message on Cursor) so the user actually SEES it — not just additional_context, which
+// Cursor injects into the agent's context but never shows in chat. null when not applicable.
+function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string, overrides: Rec | null, planCtx: { host: string; plan: string; useOpenCode: boolean }): HookResult | null {
+  if (ctx.host !== 'cursor' || !runId || modelAdvisoryShown(cwd, runId)) return null;
+  const models = new Set<string>();
+  for (const r of AGENT_ROLES) {
+    const fam = modelForRoleHost(level, r, ctx.host, overrides, planCtx);
+    if (fam) models.add(cursorRealSlug(ctx, cwd, fam));
+  }
+  if (models.size === 0) return null;
+  markModelAdvisoryShown(cwd, runId);
+  const list = Array.from(models).join(', ');
+  return context(block('model-availability-advisory', { MODELS: list }), {
+    systemMessage: block('model-availability-banner', { MODELS: list }),
+  });
 }
 
 // NOTE: this gate FIRES and ENFORCES on Cursor — the generic before-tool-use hook
@@ -125,7 +281,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const role = inferTrafficOneSpawnRole(toolInput);
   if (!role) return noop();
 
-  const cwd = ctx.cwd;
+  const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return noop();
 
@@ -136,7 +292,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   ensureRunnerShims();
 
   // Run-id integrity at the spawn boundary. The run-id is `currentRunId` (a
-  // gate-minted epoch-ms number). Models STILL fabricate a `date`/ISO id in the spawn
+  // gate-minted epoch-ms digit string). Models STILL fabricate a `date`/ISO id in the spawn
   // prompt despite the pre-mint + announce + prose (observed: composer-2.5 typing an
   // ISO timestamp it never read from `.one.json`). A wrong id splits run state —
   // assignments under one id, the gate's run-claims/OpenCode markers under another —
@@ -153,7 +309,41 @@ export function agentModelGate(ctx: Ctx): HookResult {
     .join('\n');
   const strayRunId = strayRunIdInText(spawnPromptText, spawnRunId);
   if (strayRunId) {
-    return deny(`traffic-one — run-id gate: this spawn prompt uses run-id \`${strayRunId}\`, but the run-id is \`currentRunId\` = \`${spawnRunId}\` (in .traffic-one/.one.json). Do NOT fabricate a run-id — never \`date\`/ISO/UTC. Rebuild the spawn prompt using \`${spawnRunId}\` everywhere: the "Run ID:" line, \`.traffic-one/runs/${spawnRunId}/\`, and \`.traffic-one/digests/${spawnRunId}/\` — so assignments, run-claims, OpenCode markers, and every digest handoff share one id.`);
+    // SELF-HEALING deny: hand back the spawn prompt with the run-id ALREADY corrected so a weak
+    // orchestrator can copy-paste it verbatim, instead of being told to "rebuild" it (composer-2.5
+    // read "rebuild the prompt" as an impossible task and fell back to an inline single-model build
+    // — observed in 21b). Loop the detector so a SECOND fabricated id can't survive into the echoed
+    // prompt and re-deny the retry. Echo only when the prompt is paste-sized; otherwise give the
+    // exact substitution. This deny has NO once-marker — it is self-correcting, so it can fire as
+    // many times as needed without tripping the no-deadlock budget.
+    let fixed = spawnPromptText;
+    for (let i = 0; i < 8; i++) {
+      const s = strayRunIdInText(fixed, spawnRunId);
+      if (!s) break;
+      fixed = fixed.split(s).join(spawnRunId);
+    }
+    const action = fixed.length <= 2000
+      ? `RE-ISSUE THE SAME Task spawn — same subagent_type, same model — with this exact prompt (run-id already corrected), copied VERBATIM:\n----\n${fixed}\n----`
+      : `RE-ISSUE THE SAME Task spawn — same subagent_type, same model — after replacing EVERY \`${strayRunId}\` with \`${spawnRunId}\` in your prompt (it appears in the "Run ID:" line and the \`.traffic-one/runs/\` and \`digests/\` paths).`;
+    return deny(`traffic-one — run-id gate: your spawn prompt used run-id \`${strayRunId}\`, but the ONLY valid run-id is \`currentRunId\` = \`${spawnRunId}\` (read from .traffic-one/.one.json — never \`date\`/ISO/UTC). ${action}`);
+  }
+
+  // New-project Phase 2 invariant: if the architect queued a Step-0
+  // `opencode_delegate_from_plan` batch, no implementer may start until that
+  // batch has reached a TERMINAL result for every queued role. The older
+  // per-role gate below only covers roles configured to run on OpenCode
+  // (frontend/tester/quick-fix by default), which let backend start while
+  // frontend was blocked. This batch gate catches both implementers first.
+  if (state.mode === 'new-project' && isPlanBatchGatedRole(role)) {
+    const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state);
+    if (pendingPlanRoles.length > 0) {
+      return deny(block('opencode-plan-batch-required', {
+        ROLE: role,
+        RUN_ID: spawnRunId,
+        PROJECT_ROOT: cwd,
+        QUEUED_ROLES: pendingPlanRoles.join(', '),
+      }));
+    }
   }
 
   // OpenCode role delegation (all modes, all hosts): a configured role MUST run
@@ -181,7 +371,9 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (shouldRunRoleOnOpenCode(role, state)) {
     const runId = ensureCurrentRunId(cwd, state);
     if (runId && (roleHasQueuedUnits(cwd, role) || isMaintenancePhase(state))
-      && !openCodeRoleAttempted(cwd, runId, role) && !openCodeGateDenied(cwd, runId, role)) {
+      && !openCodeRoleAttempted(cwd, runId, role)
+      && !openCodePlanRoleCompleted(cwd, runId, role)
+      && !openCodeGateDenied(cwd, runId, role)) {
       markOpenCodeGateDenied(cwd, runId, role);
       return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
     }
@@ -230,8 +422,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (role === 'quick-fix') {
     const expected = resolveModel('cheapest', ctx.host);
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-    if (expected && !modelSatisfiesTier(ctx, cwd, role, passedModel, expected)) {
-      return modelTierDeny(ctx, role, passedModel, expected, 'maintenance');
+    if (expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
+      return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
     }
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
@@ -265,18 +457,53 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
   const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host), useOpenCode: openCodeDelegationActive(state) };
+
+  // Cursor: the build's actual subagent model set — and its reasoning-variant slugs
+  // (`-thinking-max`, `-extra-high`, …) — is plan/build-specific, and only the in-Cursor
+  // orchestrator can enumerate it (no plan-scoped API). Require a FRESH capture (matching the
+  // CURRENT plan) so materialization pins REAL, build-offered slugs in `.cursor/agents/<role>.md`
+  // (else the orchestrator may pass a guessed slug Cursor doesn't offer and silently downgrade). The freshness
+  // check is plan-keyed: an upgrade/downgrade makes the old capture stale → this re-prompts, so
+  // subagent models stay current. NO-DEADLOCK: ask at most once per run; after that, proceed —
+  // the family-aware match below still validates whatever the orchestrator passes.
+  if (ctx.host === 'cursor' && !cursorModelsFresh(cwd, planCtx.plan) && !cursorModelsCapturePrompted(cwd, spawnRunId)) {
+    markCursorModelsCapturePrompted(cwd, spawnRunId);
+    return deny(block('cursor-models-capture', { RUN_ID: spawnRunId, PROJECT_ROOT: cwd }));
+  }
+
   const expected = modelForRoleHost(level, role, ctx.host, overrides, planCtx);
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-  if (!modelSatisfiesTier(ctx, cwd, role, passedModel, expected)) {
-    return modelTierDeny(ctx, role, passedModel, expected, level);
+  if (!modelSatisfiesTier(ctx, passedModel, expected)) {
+    // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
+    // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor
+    // case). This is what unblocks a build that omitted the per-role model.
+    return modelTierDeny(ctx, cwd, role, passedModel, expected, level);
   }
+
+  // The model satisfies the tier — but the recommended model the user PICKED may not actually be
+  // offered by this build (disabled in Settings → Models / not on plan), in which case the team is
+  // about to run on a same-tier FALLBACK. Surface the choice ONCE so the user isn't silently
+  // switched off their pick (the "I wasn't asked" gap — degradedToFloorDeny below only catches a
+  // drop to the Composer floor, not a fallback to a valid alternate like gpt-5.5).
+  const ineligible = preferredModelUnavailableDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level);
+  if (ineligible) return ineligible;
+
+  // …and if a highest/balanced role is satisfied ONLY via the Composer floor, that's a silent
+  // downgrade (API budget exhausted, or the recommended model disabled). Surface the choice ONCE
+  // per run instead of quietly running the architect/implementers on Composer; no-deadlock proceeds.
+  const degraded = degradedToFloorDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level);
+  if (degraded) return degraded;
+
+  // First passing Cursor spawn of the run → one-time, USER-VISIBLE advisory naming the team's
+  // models + the budget/enable remedy (a pinned model can silently fall to Composer at runtime).
+  const advisory = maybeModelAdvisory(ctx, cwd, spawnRunId, level, overrides, planCtx);
 
   ensureRunAgentClaim(cwd, state, role, raw, {
     toolName,
     agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
     model: passedModel,
   });
-  return noop();
+  return advisory ?? noop();
 }

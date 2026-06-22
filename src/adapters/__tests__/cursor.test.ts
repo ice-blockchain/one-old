@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { makeCursorAdapter } from '../cursor';
 import { dispatch } from '../../core/dispatch';
-import { context, deny, noop } from '../../core/result';
+import { askUser, context, deny, noop } from '../../core/result';
 import type { Handler } from '../../core/types';
 
 const cursor = makeCursorAdapter();
@@ -26,6 +26,22 @@ test('cursor: before-shell-execution → PreToolUse/shell; deny → flat permiss
   assert.equal(parsed.permission, 'deny');
   assert.equal(parsed.user_message, 'nope');
   assert.equal(parsed.agent_message, 'nope');
+});
+
+test('cursor: askUser on a PreToolUse (beforeShellExecution) → permission:"ask" (user approve/reject dialog)', async () => {
+  // The only hook-driven user prompt Cursor supports — used for the pre-spawn model-gate.
+  const handlers: Handler[] = [
+    {
+      id: 'ask', event: 'PreToolUse', tools: ['shell'], priority: 0,
+      run: (ctx) => (ctx.input.tool?.command === 'gate'
+        ? askUser('Sonnet not available — approve fallback or reject to enable?', 'on approve proceed; on reject stop')
+        : noop()),
+    },
+  ];
+  const parsed = JSON.parse(await dispatch(cursor, handlers, inv('before-shell-execution', { command: 'gate' })));
+  assert.equal(parsed.permission, 'ask', 'emits permission:ask, not deny');
+  assert.equal(parsed.user_message, 'Sonnet not available — approve fallback or reject to enable?');
+  assert.equal(parsed.agent_message, 'on approve proceed; on reject stop', 'agent_message carries the per-branch instructions');
 });
 
 test('cursor: a PostToolUse deny downgrades to a warning (no permission key — the action already ran)', async () => {

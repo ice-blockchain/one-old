@@ -5,9 +5,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
+  openCodePlanRoleCompleted,
   openCodeRoleAttempted,
+  pendingOpenCodePlanRoles,
   planDelegationQueueRoles,
   roleHasQueuedUnits,
   shouldRunRoleOnOpenCode,
@@ -101,6 +104,29 @@ test('attempt markers: senior-frontend and frontend resolve to the same marker',
   }
 });
 
+test('plan-batch completion markers: queued roles stay pending until terminal marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocplan-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '- role: backend | files: b | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = { openCode: { enabled: true } };
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
+    markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
+    assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['backend']);
+    markOpenCodePlanRoleCompleted(dir, 'run1', 'backend');
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run2', state), ['frontend', 'backend']);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', { openCode: { enabled: false } }), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The unit-kind catalog is the canonical delegation policy — visible, typed,
 // and asserted so prose drift gets caught here.
 test('OPENCODE_DELEGATE_UNIT_KINDS catalog: bounded kinds present, never-list intact, shipper excluded', async () => {
@@ -173,5 +199,19 @@ test('orchestrator + team prose: a denied/"Couldn\'t start" first spawn must RE-
     assert.match(doc, /re-?spawn/i, `${name} must instruct a re-spawn`);
     assert.match(doc, /couldn'?t start|denied/i, `${name} must name the Couldn't-start/denied case`);
     assert.match(doc, /(not|never)[^.\n]*inline/i, `${name} must forbid building the role inline on a first spawn failure`);
+  }
+});
+
+test('Cursor/frontend prompts require demo seed data when Supabase env is missing', () => {
+  const modules = path.join(__dirname, '..', '..', 'modules');
+  const promptTemplates = fs.readFileSync(
+    path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
+  for (const [name, doc] of [['frontend prompt template', promptTemplates], ['team rule', teamRule]] as const) {
+    assert.match(doc, /demo\/seed/i, `${name} must require product-specific demo/seed data`);
+    assert.match(doc, /missing[- ]env|Missing Supabase\/env|missing-config/i, `${name} must name missing-env/config surfaces`);
+    assert.match(doc, /blank panels|sparse UI/i, `${name} must reject sparse missing-config UI`);
   }
 });

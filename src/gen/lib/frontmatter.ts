@@ -121,7 +121,7 @@ export function cursorFrontmatter(description: string, paths: string[], alwaysAp
   const lines = ['---'];
   lines.push(`description: ${jsonString(description)}`);
   if (paths.length > 0) {
-    lines.push(`globs: ${paths.join(', ')}`);
+    lines.push(`globs: ${jsonString(paths.join(', '))}`);
   }
   lines.push(`alwaysApply: ${String(alwaysApply).toLowerCase()}`);
   lines.push('---');

@@ -45,6 +45,32 @@ function writeMaterialized(dir: string): void {
   fs.writeFileSync(path.join(dir, 'CLAUDE.md'), 'see agents', 'utf8');
 }
 
+function writeRequiredScaffold(dir: string): void {
+  fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), 'packages:\n  - "apps/*"\n  - "packages/*"\n', 'utf8');
+  fs.writeFileSync(path.join(dir, 'turbo.json'), '{"tasks":{}}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'tsconfig.base.json'), '{"compilerOptions":{}}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({
+    private: true,
+    packageManager: 'pnpm@10.12.1',
+    workspaces: ['apps/*', 'packages/*'],
+  }), 'utf8');
+  for (const rel of [
+    'apps/web',
+    'packages/ui/src',
+    'packages/tailwind-config',
+    'packages/i18n/src',
+  ]) {
+    fs.mkdirSync(path.join(dir, rel), { recursive: true });
+  }
+  fs.writeFileSync(path.join(dir, 'apps/web/package.json'), '{"name":"web","private":true}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/ui/package.json'), '{"name":"@app/ui","private":true}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/ui/src/index.ts'), '', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/tailwind-config/package.json'), '{"name":"@app/tailwind-config","private":true}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/tailwind-config/tailwind.config.ts'), 'export default {};', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/i18n/package.json'), '{"name":"@app/i18n","private":true}', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/i18n/src/index.ts'), '', 'utf8');
+}
+
 const DEFAULT_STATE = {
   mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
 };
@@ -110,6 +136,46 @@ test('plan-gate: legacy architecture.md does not satisfy readiness', () => {
       state: { ...DEFAULT_STATE, onboardingComplete: false }, writingFeatureSource: true, block: names,
     });
     assert.deepEqual(v, ['plan-gate']);
+  });
+});
+
+test('architect completion gate: PLAN_READY requires the baseline monorepo scaffold', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true };
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['architect-scaffold-gate']);
+
+    const nonTerminal = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'still planning\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(nonTerminal, []);
+  });
+});
+
+test('architect completion gate: PLAN_READY is allowed once scaffold files exist', () => {
+  withProject((dir) => {
+    writeRequiredScaffold(dir);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/digests/R/architect.md',
+      content: 'verdict: PLAN_READY\n',
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
   });
 });
 

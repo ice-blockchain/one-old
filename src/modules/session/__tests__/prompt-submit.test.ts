@@ -13,6 +13,7 @@ import { markOpenCodeGateDenied, markOpenCodeRoleAttempted } from '../../../shar
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
+import { markModelChoicePrompted, readModelChoice } from '../../agent-model/model-choice';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
@@ -183,6 +184,22 @@ test('seeds the user request into new-project state so the wizard can derive the
   });
 });
 
+test('a control/stop command is NEVER seeded as originalPrompt (initialized-but-unseeded project)', () => {
+  // Field bug: state existed without an originalPrompt (the first build prompt wasn't captured —
+  // e.g. reset mid-session), then the user typed "stop all", which became originalPrompt and
+  // mis-drove the wizard/triage. originalPrompt is the project DESCRIPTION → a control command
+  // must never seed it.
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    runUserPromptSubmit(ctx(cwd, 'stop all'));
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.notEqual(String(state.originalPrompt || ''), 'stop all', 'a control command is not seeded as the project description');
+    // A real build prompt afterward IS captured.
+    runUserPromptSubmit(ctx(cwd, 'create a modern learning platform with courses and an admin area'));
+    const after = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(String(after.originalPrompt || '').includes('learning platform'), 'the real build prompt is seeded');
+  });
+});
+
 test('coding-intent gate: authed + no state + a clearly non-coding prompt → noop (Traffic One stays inactive)', () => {
   withAuthedProject(null, (cwd) => {
     assert.equal(runUserPromptSubmit(ctx(cwd, 'hi there, how are you today?')).kind, 'noop');
@@ -328,8 +345,8 @@ test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post l
   // return into runSessionStartAuthed → Flow 3, which previously emitted the URL-less
   // `setup-pending` block in additional_context — so on Cursor the agent saw no link
   // and no instruction to post one (user_message is not rendered on user-prompt-submit).
-  // Flow 3 must now carry the live URL AND the explicit "post the wizard URL FIRST,
-  // before the wait command" instruction in the agent-facing channel for Cursor.
+  // Flow 3 must now carry the live URL AND the explicit "Open the Traffic One setup
+  // wizard: <url>" FIRST, before the wait command instruction in the agent-facing channel.
   withAuthedProject(null, (cwd) => {
     // Seed a live server record so ensureOnboardingServer returns a REAL url under
     // NO_SPAWN (the ':0/' placeholder is intentionally not surfaced).
@@ -338,7 +355,7 @@ test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post l
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('http://127.0.0.1:56858'), 'agent context carries the LIVE wizard URL on the pristine first prompt');
-      assert.ok(/post the wizard URL/i.test(r.context), 'agent context instructs Cursor to post the link');
+      assert.ok(/Open the Traffic One setup wizard:/i.test(r.context), 'agent context instructs Cursor to post the clickable link line');
       assert.ok(/FIRST/.test(r.context) && /wait command/i.test(r.context), 'instruction says post FIRST, before the wait command');
     }
   });
@@ -379,6 +396,19 @@ test('authed + complete, materialized project, local prefs resolved → plain ac
       assert.equal(r.systemMessage, 'traffic-one [default]');
       assert.ok(r.context.includes('[ACTIVE STACK: default]'));
     }
+  });
+});
+
+test('records a pending Cursor model-choice reply before normal prompt handling', () => {
+  withAuthedProject(completeSharedState({ currentRunId: 'run-choice' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    markModelChoicePrompted(cwd, 'run-choice');
+
+    const r = runUserPromptSubmit(ctxHost(cwd, 'fallback', 'cursor'));
+    assert.equal(r.kind, 'context');
+    assert.equal(readModelChoice(cwd, 'run-choice'), 'use-fallback');
+    if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one: model choice recorded');
   });
 });
 

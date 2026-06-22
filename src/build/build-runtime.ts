@@ -36,6 +36,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'onboarding-toolchain-runner.cjs': './runners/onboarding-toolchain/index.js',
   'onboarding-server.cjs': './runners/onboarding-server/index.js',
   'onboarding-wait.cjs': './runners/onboarding-wait/index.js',
+  'model-gate.cjs': './runners/model-gate/index.js',
 };
 
 function shimSource(target: string): string {

@@ -28,6 +28,10 @@ test('writeCursorAgentFiles writes a .cursor/agents/<role>.md per team role with
     const model = cursorAgentModel(dir, 'senior-architect');
     assert.ok(model && model.length > 0, 'cursorAgentModel reads the model');
     assert.ok(body.includes(`model: ${model}`), 'reader matches the written frontmatter');
+
+    const frontend = fs.readFileSync(path.join(agentsDir, 'senior-frontend.md'), 'utf8');
+    assert.match(frontend, /demo\/seed fixtures/, 'Cursor frontend agent carries demo fixture fallback');
+    assert.match(frontend, /blank panels/, 'Cursor frontend agent forbids sparse missing-config UI');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

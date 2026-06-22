@@ -9,9 +9,10 @@ import * as path from 'path';
 
 export const CURSOR_AGENTS_REL = path.join('.cursor', 'agents');
 
-// The model Cursor will use for a role's file-defined subagent — the value the spawn
-// gate validates on Cursor (Cursor honors the frontmatter model, not the Task `model`
-// arg). Returns null when there's no agent file or no `model:` line.
+// The per-role model the orchestrator must read from `.cursor/agents/<role>.md` and pass as the
+// Task `model` parameter. Cursor does NOT reliably auto-apply this frontmatter on spawn; the
+// spawn gate validates the passed tool parameter. Returns null when there's no agent file or no
+// `model:` line.
 export function cursorAgentModel(cwd: string, role: string): string | null {
   if (!role) return null;
   try {

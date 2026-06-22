@@ -9,15 +9,33 @@
 
 import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
-import { noop } from '../../core/result';
+import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { resolveProjectRoot } from '../../shared/hook-paths';
+import { detectHostPlan } from '../../shared/host-plan';
+import { cursorModelsFresh } from '../../shared/materialize/cursor-models';
+import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { captureClaimDebug, claimThreadRole, hookSessionIdentity, inferRoleFromTranscript, readEffectiveState, recordRunAgent, transcriptThreadId } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { modelChoiceReplyPending } from './model-choice';
+import { inferTrafficOneSpawnRole } from './role-infer';
 
 export function subagentStartBind(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
+
+  // Record the PARENT (orchestrator) session as a known MAIN onboarding session. subagentStart
+  // fires in the spawner's context (its session_id / parent_conversation_id IS the orchestrator)
+  // BEFORE the subagent runs, so this is the reliable anchor that lets the onboarding gate treat
+  // the subagent's own (differently-id'd) events as foreign. Done EARLY, before the subagents-mode
+  // guard below — an onboarding-incomplete build has no team prefs yet, but this is exactly when a
+  // prematurely-spawned subagent must NOT be sent to the wizard. Root-resolved to match the gate.
+  const parentSession = asString(raw.parent_conversation_id) || hookSessionIdentity(raw).sessionId;
+  if (parentSession) {
+    recordMainOnboardingSession(resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot }), parentSession);
+  }
+
   const state = readEffectiveState(ctx.cwd);
   const team = obj(obj(state)?.team);
   const stateObj = obj(state);
@@ -34,10 +52,35 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const identity = hookSessionIdentity(raw);
   const transcriptPath = asString(raw.transcript_path ?? raw.transcriptPath);
   // Role: Claude declares it via agent_type, Cursor via subagent_type (both resolved
-  // by hookSessionIdentity.declaredRole); Codex carries no role, so infer from the
-  // child transcript when present.
-  const role = identity.declaredRole || (transcriptPath ? inferRoleFromTranscript(transcriptPath) : '');
+  // by hookSessionIdentity.declaredRole). Cursor may also send a generic
+  // subagent_type and put the real `[t1-role: senior-x]` marker in the task body;
+  // Codex carries no role, so infer from the child transcript when present.
+  const taskText = asString(raw.task ?? raw.prompt ?? raw.message ?? raw.instructions ?? raw.description);
+  const role = identity.declaredRole || inferTrafficOneSpawnRole({
+    subagent_type: raw.subagent_type,
+    subagentType: raw.subagentType,
+    agent: raw.agent,
+    role: raw.role,
+    type: raw.type,
+    prompt: taskText,
+    message: raw.message,
+    instructions: raw.instructions,
+    description: raw.description,
+  }) || (transcriptPath ? inferRoleFromTranscript(transcriptPath) : '');
   if (!role) return noop();
+
+  if (ctx.host === 'cursor' && stateObj) {
+    const captureMissing = stateObj.mode === 'new-project' && !cursorModelsFresh(ctx.cwd, detectHostPlan('cursor'));
+    const choicePending = modelChoiceReplyPending(ctx.cwd, stateObj);
+    if (captureMissing || choicePending) {
+      const reason = captureMissing
+        ? 'traffic-one — STOP: Cursor model capture is required before starting the senior team. Write `.traffic-one/cursor-models.json`, then rerun model-gate. This subagent must stop now and must not write files.'
+        : 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
+      return deny(`${reason}\nBlocked role: ${role}.`, {
+        agentMessage: `${reason} Blocked role: ${role}.`,
+      });
+    }
+  }
 
   // REUSE REGISTRY (Cursor): Cursor surfaces the spawned subagent id on subagent-start
   // as `subagent_id` (= tool_<uuid>) — the PostToolUse(Task) recorder never sees it, so
@@ -57,12 +100,16 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     });
   }
 
-  // Best-effort EARLY claim bind: needs the child's thread id (Cursor: subagent_id via
-  // identity.agentId) AND its transcript to confirm the child. Skipped silently when
-  // either is not available yet — resolveRunAgentContext re-attempts at the child's first
-  // gated call.
-  const threadId = identity.agentId || transcriptThreadId(transcriptPath);
-  if (threadId && transcriptPath) {
+  // Best-effort EARLY claim bind: needs the child's thread id and its own transcript
+  // to confirm the child. Cursor SubagentStart reports `subagent_id=tool_<id>` plus
+  // the PARENT transcript, while later child writes report the real child
+  // conversation id with `transcript_path:null`; binding `tool_<id>` here creates a
+  // duplicate claim the child can never resolve. For Cursor, only bind when the
+  // transcript filename yields a child id distinct from the parent session; otherwise
+  // resolveRunAgentContext will bind from Cursor's child transcript cache on first write.
+  const transcriptThread = transcriptThreadId(transcriptPath);
+  const threadId = ctx.host === 'cursor' ? transcriptThread : (identity.agentId || transcriptThread);
+  if (threadId && transcriptPath && threadId !== identity.sessionId) {
     claimThreadRole(ctx.cwd, state, threadId, role, { parentSessionId: identity.sessionId });
   }
   return noop();

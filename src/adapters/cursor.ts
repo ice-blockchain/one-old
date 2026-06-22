@@ -184,6 +184,17 @@ export function makeCursorAdapter(): HostAdapter {
       // "a Cursor afterFileEdit downgrades deny to a warning". PreToolUse still denies.
       const isPre = input?.event === 'PreToolUse';
       const message = result.reason || (result.systemMessage !== undefined ? String(result.systemMessage) : '');
+      // askUser → a user APPROVE/REJECT dialog instead of a hard block (beforeShellExecution only;
+      // Cursor's only hook-driven user prompt). The question rides user_message; agent_message
+      // carries the per-branch instructions. Falls back to a plain deny on a POST event.
+      if (result.askUser && isPre) {
+        return JSON.stringify({
+          ...(result.context && result.context.trim() ? { additional_context: result.context } : {}),
+          permission: 'ask',
+          ...(message ? { user_message: message } : {}),
+          agent_message: result.agentMessage || message,
+        });
+      }
       return JSON.stringify({
         ...(result.context && result.context.trim() ? { additional_context: result.context } : {}),
         ...(isPre ? { permission: 'deny' } : {}),

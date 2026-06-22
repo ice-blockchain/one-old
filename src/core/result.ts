@@ -28,6 +28,15 @@ export function isDeny(result: HookResult): result is Extract<HookResult, { kind
   return result.kind === 'deny';
 }
 
+// A Cursor user APPROVE/REJECT prompt (the only hook-driven user prompt Cursor supports — via
+// `permission:"ask"` on beforeShellExecution). Reuses the `deny` kind so merge/short-circuit
+// semantics are unchanged (an unanswered ask blocks, like a deny); the Cursor adapter maps
+// `askUser` → `permission:"ask"` on PreToolUse. On Claude/Codex it serializes as a plain deny —
+// inert, because the only command it gates is Cursor-only.
+export function askUser(question: string, agentMessage: string): HookResult {
+  return { kind: 'deny', reason: question, askUser: true, agentMessage };
+}
+
 // Merge results: the first deny wins (short-circuit). Otherwise concatenate
 // context strings and keep the first systemMessage / promptRequest seen.
 export function mergeResults(results: readonly HookResult[]): HookResult {

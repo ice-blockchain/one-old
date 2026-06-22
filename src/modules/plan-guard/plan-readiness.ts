@@ -21,8 +21,58 @@ type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
 
 const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
+const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
+
+function exists(projectRoot: string, relPath: string): boolean {
+  return fs.existsSync(path.join(projectRoot, relPath));
+}
+
+function existsAny(projectRoot: string, relPaths: string[]): boolean {
+  return relPaths.some((relPath) => exists(projectRoot, relPath));
+}
+
+function hasAnyAppPackage(projectRoot: string): boolean {
+  const appsDir = path.join(projectRoot, 'apps');
+  try {
+    return fs.readdirSync(appsDir, { withFileTypes: true })
+      .some((entry) => entry.isDirectory() && fs.existsSync(path.join(appsDir, entry.name, 'package.json')));
+  } catch {
+    return false;
+  }
+}
+
+function rootPackageJsonDeclaresWorkspace(projectRoot: string): boolean {
+  try {
+    const content = fs.readFileSync(path.join(projectRoot, 'package.json'), 'utf8');
+    JSON.parse(content);
+    return packageJsonDeclaresWorkspace(content);
+  } catch {
+    return false;
+  }
+}
+
+function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
+  if (!stateRequiresNewProjectMonorepo(state)) return [];
+  const missing: string[] = [];
+  if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) missing.push('pnpm-workspace.yaml');
+  if (!exists(projectRoot, 'turbo.json')) missing.push('turbo.json');
+  if (!exists(projectRoot, 'tsconfig.base.json')) missing.push('tsconfig.base.json');
+  if (!rootPackageJsonDeclaresWorkspace(projectRoot)) {
+    missing.push('package.json (private + pnpm packageManager + apps/*/packages/* workspaces)');
+  }
+  if (!hasAnyAppPackage(projectRoot)) missing.push('apps/<name>/package.json');
+  if (!exists(projectRoot, 'packages/ui/package.json')) missing.push('packages/ui/package.json');
+  if (!exists(projectRoot, 'packages/ui/src/index.ts')) missing.push('packages/ui/src/index.ts');
+  if (!exists(projectRoot, 'packages/tailwind-config/package.json')) missing.push('packages/tailwind-config/package.json');
+  if (!existsAny(projectRoot, ['packages/tailwind-config/index.ts', 'packages/tailwind-config/tailwind.config.ts'])) {
+    missing.push('packages/tailwind-config/index.ts');
+  }
+  if (!exists(projectRoot, 'packages/i18n/package.json')) missing.push('packages/i18n/package.json');
+  if (!exists(projectRoot, 'packages/i18n/src/index.ts')) missing.push('packages/i18n/src/index.ts');
+  return missing;
+}
 
 export interface ReadinessArgs {
   filePath: string;          // project-relative target path
@@ -48,6 +98,15 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (requiresMonorepoScaffold && ROOT_VITE_RE.test(filePath)) {
     violations.push(block('monorepo-root-vite',
       'New-project monorepo gate: root Vite app files are not allowed for this stack. Use `apps/web/` for the React app and create the required `packages/*` workspaces first; see `rules/modes/new-project.md`.'));
+  }
+
+  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content)) {
+    const missing = missingArchitectScaffold(projectRoot, state);
+    if (missing.length > 0) {
+      violations.push(block('architect-scaffold-gate',
+        `Architect completion gate: do not write \`PLAN_READY\` until the required Traffic One workspace scaffold exists. Missing: ${missing.join(', ')}. Write the missing baseline files, then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
+        { MISSING: missing.join(', ') }));
+    }
   }
 
   const validStateStack = Boolean(state.stack && isKnownStack(state.stack));

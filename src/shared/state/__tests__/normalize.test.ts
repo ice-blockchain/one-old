@@ -40,6 +40,17 @@ test('normalizeState fills bookkeeping + seeds defaults for a stack', () => {
   assert.equal(s.supabaseFunctionsAutoDeploy, 'ask');
 });
 
+test('currentRunId is normalized to the digit string gates expect', () => {
+  withPrefs((dir) => {
+    writeState(dir, { stack: 'default', mode: 'new-project', currentRunId: 1715091785000 });
+    const onDisk = JSON.parse(fs.readFileSync(statePath(dir), 'utf8'));
+    assert.equal(onDisk.currentRunId, '1715091785000');
+
+    fs.writeFileSync(statePath(dir), JSON.stringify({ stack: 'default', currentRunId: 1715091785001 }), 'utf8');
+    assert.equal(readEffectiveState(dir).currentRunId, '1715091785001');
+  });
+});
+
 test('writeState keeps local prefs out of .one.json; readEffectiveState merges them back', () => {
   withPrefs((dir) => {
     writeState(dir, {

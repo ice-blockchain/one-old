@@ -21,7 +21,14 @@ export function strayRunIdInText(text: unknown, currentRunId: unknown): string |
   let match: RegExpExecArray | null;
   while ((match = RUN_ID_PATH_RE.exec(haystack)) !== null) {
     const segment = (match[1] || '').trim();
-    if (segment && segment !== current) return segment;
+    if (!segment || segment === current) continue;
+    // A shell glob/wildcard segment (`runs/*/`, `runs/?`, `runs/[0-9]*`, brace expansion) is an
+    // INSPECTION across every run dir — e.g. `cat .traffic-one/runs/*/agents.json` — NOT a
+    // fabricated run-id. The guard only exists to stop WRITES stranding state under a stray id;
+    // a real run-id (epoch-ms) or even a `date`/ISO string never contains these glob chars, so
+    // skipping them drops the read-glob false positive without weakening real-id detection.
+    if (/[*?[\]{}]/.test(segment)) continue;
+    return segment;
   }
   return null;
 }

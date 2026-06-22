@@ -87,6 +87,59 @@ test('postSetupTriage emits the subagents triage (with OpenCode-first) for the s
   }
 });
 
+// ── preSpawnModelDirective: front-load capture + per-role map + eligibility BEFORE
+// the first spawn, so the team spawns once (no capture/model-tier deny + retry). ──
+
+test('preSpawnModelDirective: Cursor new-project subagents → capture + per-role map + eligibility self-check', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnModelDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    // tests/22 shape: high level, subagents, frontend overridden to highest.
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-frontend': 'highest' } },
+      performance: { level: 'high', source: 'prompted' },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+
+    const d = preSpawnModelDirective(dir, 'cursor');
+    assert.ok(d.includes('cursor-models.json'), 'step 1 front-loads the model capture');
+    assert.ok(d.includes('senior-architect') && d.includes('senior-frontend'), 'per-role map present');
+    assert.ok(d.includes('claude-opus-4-8'), 'frontend override (highest) → opus appears in the map');
+    // Step 2 mandates running the model-gate command, which is what pops the USER prompt
+    // (permission:"ask") when a picked model is unavailable — instead of the agent deciding.
+    assert.ok(d.includes('model-gate.cjs'), 'step 2 runs the model-gate command (the user-prompt trigger)');
+    assert.ok(/prompt|fallback|enable|STOP/i.test(d), 'explains the user must reply before spawning');
+
+    // Non-Cursor hosts print nothing (model-capture is Cursor-specific).
+    assert.equal(preSpawnModelDirective(dir, 'claude'), '', 'claude → no directive');
+    assert.equal(preSpawnModelDirective(dir, 'codex'), '', 'codex → no directive');
+
+    // A main-agent level (no subagents) → silent.
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      performance: { level: 'low', source: 'prompted' },
+    }), 'utf8');
+    assert.equal(preSpawnModelDirective(dir, 'cursor'), '', 'low/main-agent level → no directive');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── announceWizardUrl: the URL reaches the Cursor user via the wait command's OWN
 // stdout (the one channel Cursor renders) — not via user_message (dropped on
 // user-prompt-submit) or the agent reposting additional_context (composer won't). ──
@@ -113,6 +166,7 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
     out = '';
     announceWizardUrl(dir, (s) => { out += s; });
     assert.ok(out.includes('http://127.0.0.1:55174/?t=tok'), 'banner carries the live wizard URL');
+    assert.equal(out.match(/http:\/\/127\.0\.0\.1:55174\/\?t=tok/g)?.length, 2, 'banner repeats the URL near the waiting line for compact terminals');
     assert.match(out, /SETUP WIZARD/i, 'banner is recognizable to the user');
 
     // Placeholder (:0/) → never surfaced.

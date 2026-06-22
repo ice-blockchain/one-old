@@ -6,7 +6,8 @@
   "subscriptions": [
     { "event": "SessionStart", "subcommand": "session-start" },
     { "event": "UserPromptSubmit", "subcommand": "user-prompt-submit" },
-    { "event": "PreToolUse", "subcommand": "check-onboarding-gate", "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent", "search"] }
+    { "event": "PreToolUse", "subcommand": "check-onboarding-gate", "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent", "search"] },
+    { "event": "PreToolUse", "subcommand": "check-model-choice-gate", "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent", "search"] }
   ],
   "gates": [
     { "id": "auth", "event": "PreToolUse", "priority": 0, "tools": ["shell", "file-write", "file-edit", "file-read", "spawn-agent", "search"] }

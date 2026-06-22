@@ -49,7 +49,7 @@ work already started, pause at the next safe point, resolve it, then continue.
 - **A first spawn that is DENIED or "Couldn't start" → RE-SPAWN it once, do NOT build the role inline.** The very first spawn (usually the architect) commonly hits a one-time *readiness* deny: the gate converges materialization on the first gated call and denies-for-retry (deny prose: "rerun the same agent spawn now; materialization is current"). Cursor renders this as a terse "New subagent — Couldn't start". It is NOT a real failure — re-issue the SAME spawn and it succeeds. Treating it as terminal and implementing the role yourself silently breaks subagents mode (the parent must not write feature source). Only after a re-spawn ALSO fails is the spawn tool genuinely broken.
 - If the host requires the setup gate cleared or explicit user consent before spawning, do that first (see "Before you orchestrate" above; `rules/common/setup-gate.md` + `rules/common/onboarding.md`). Simulate the same roles manually (same dependency order, mirrored `00-agent-senior-*` role contexts) ONLY when Low is chosen (`team.mode: "main-agent"`) or the spawn tool genuinely errors at runtime AFTER a re-spawn (per the bullet above) — all three supported hosts (Claude, Codex, Cursor) expose a callable subagent tool, so never simulate merely because you are on Cursor.
 - Role → write-scope mapping (use a writer-capable agent for implementers, scoped to its owned area; a read-only agent for the reviewer). For implementers the AUTHORITATIVE scope is the role's entry in the per-run assignments manifest `.traffic-one/runs/<runId>/assignments.json` (authored by the architect in Phase 1, enforced by the run-team gate). The lines below are the human summary:
-  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, and the per-run `assignments.json` manifest. Writes no feature source.
+  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, the per-run `assignments.json` manifest, and required workspace scaffold files. It may create empty package `src/index.ts` barrels as scaffold only; filling them is implementer-owned.
   - `senior-frontend` — owned write scope = its `assignments.json` entry (UI / routing / i18n / SEO for this project's actual layout).
   - `senior-backend` — owned write scope = its `assignments.json` entry (API / persistence / auth / migrations for this project's actual layout).
   - `senior-reviewer` — read-only.
@@ -96,7 +96,7 @@ How it works:
    `.agentignore`/agent-log/schema.sql + decisions ADRs — the architect writes
    these DIRECTLY before `PLAN_READY`) — those stay on the named senior subagents.
 
-2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }`.
+2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
 
    Fallback if the `opencode-worker` tool is unavailable: on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner:
 
@@ -175,11 +175,11 @@ Read `.traffic-one/.one.json`, `.traffic-one/product.md`, `.traffic-one/stack.md
 `.traffic-one/rules/*.md`, `.traffic-one/known-issues.md`, and
 `.traffic-one/plan.md` when they exist.
 
-- If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan.
+- If `.traffic-one/.one.json` is missing or `mode` / `stack` is unset → complete onboarding (`rules/common/onboarding.md`) first. The user must commit to a stack before architect can plan. **Do NOT spawn ANY subagent (architect included) until onboarding is COMPLETE** (`.one.json` has `stack` + `onboardingComplete: true` and materialization has run). Onboarding runs in THIS main thread — you drive the setup wizard here; a subagent cannot (it can't show the wizard, and would get trapped on the "wait for setup" command). Spawning before onboarding is a protocol violation: finish setup in the main thread, THEN spawn the team.
 - If `.traffic-one/plan.md` exists and is fresh (matches the current request scope) → skip Phase 1.
 
 **Do NOT generate a run-id.** The run-id is `currentRunId` — a plain epoch-**millisecond
-NUMBER** like `1715091785000`, **pre-minted by Traffic One into `.traffic-one/.one.json`
+digit string** like `"1715091785000"`, **pre-minted by Traffic One into `.traffic-one/.one.json`
 before Phase 0** (the onboarding gate announces it the moment the build starts). You and every
 subagent **READ** it from there; you never create it, and NEVER use `date`/`date -u` or an
 ISO/UTC string (e.g. `2026-06-17T10-08-00Z`) — that is the single most damaging mistake (it
@@ -206,6 +206,16 @@ substitute a literal. The full per-phase prompt templates live in
 `resources/prompt-templates.md`; reference them rather than inlining their full text here.
 
 Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
+
+**Cursor only — capture your subagent model list (before the first spawn).** Cursor's offered
+subagent models are plan/build-specific and their reasoning suffixes differ per plan
+(`-thinking-max`, `-extra-high`, `-thinking-max-fast`, …); only you (inside Cursor) can see the
+list. Before spawning the team, list the model ids your `Task` tool offers and write them to
+`.traffic-one/cursor-models.json` as `{ "models": ["<id>", …] }` using the EXACT ids (never
+invent one). Traffic One then materializes `.cursor/agents/<role>.md` with the real slug for each
+role's tier, so the team runs on your plan's models with no silent downgrade. (If you skip this,
+the spawn gate asks for it once, then falls back to family-aware matching — pass any model whose
+family fits the tier.)
 
 ### Subagent token-economy: per-agent run claims
 
@@ -305,7 +315,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 ### Phase 2 — Implement (parallel)
 
-**Step 0 — OpenCode delegation batch (when `openCode.enabled`).** BEFORE spawning any implementer, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal. This is the token-saver the user enabled, and it runs identically on every host. Fallback if the tool is unavailable (on Codex, a one-time restart loads the auto-registered server): run the same engine via the shell runner.
+**Step 0 — OpenCode delegation batch (when `openCode.enabled`).** HARD STOP: before spawning any frontend/backend implementer, inspect `.traffic-one/plan.md`. If it contains an `opencode-delegate` queue, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal. This is the token-saver the user enabled, and it runs identically on every host. Do not emit any implementer `Task` calls in the same assistant message as this Step-0 call. Do not spawn backend first while frontend is gated; that serializes the run and defeats the batch. Fallback if the tool is unavailable (on Codex, a one-time restart loads the auto-registered server): run the same engine via the shell runner.
 
 ```bash
 node ~/.traffic-one/bin/opencode-runner.cjs --run-id "$RUN_ID" --from-plan

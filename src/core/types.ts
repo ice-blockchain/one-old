@@ -58,6 +58,12 @@ export interface HookInput {
 export interface ResultMeta {
   readonly systemMessage?: string;
   readonly promptRequest?: unknown;
+  // Cursor only: on a PreToolUse (beforeShellExecution) deny, emit `permission:"ask"` instead of
+  // `"deny"` — a user approve/reject dialog. This is the ONLY hook-driven user prompt Cursor
+  // supports (preToolUse-tool "ask" is documented-but-not-enforced). `agentMessage` carries the
+  // agent_message branch text. Inert on Claude/Codex (they serialize it as a plain deny).
+  readonly askUser?: boolean;
+  readonly agentMessage?: string;
 }
 
 // The canonical decision. The adapter serialises it to each host's wire shape;

@@ -47,8 +47,13 @@ test('detectHostPlan: TRAFFIC_ONE_USER_PLAN overrides every host (canonicalized 
   assert.equal(detectHostPlan('claude', env({ TRAFFIC_ONE_USER_PLAN: 'pro' })), 'pro');
   assert.equal(detectHostPlan('codex', env({ TRAFFIC_ONE_USER_PLAN: 'plus' })), 'plus');
   assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'business' })), 'business');
-  // max isn't a cursor plan → cursor default
-  assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'max' })), 'free');
+  // Cursor now recognizes its 2026 individual tiers: Ultra → max, Pro+ → plus.
+  assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'max' })), 'max');
+  assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'ultra' })), 'max');
+  assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'pro+' })), 'plus');
+  assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'pro_plus' })), 'plus');
+  // A genuinely unknown string still collapses to the conservative cursor default.
+  assert.equal(detectHostPlan('cursor', env({ TRAFFIC_ONE_USER_PLAN: 'wat' })), 'free');
 });
 
 test('detectHostPlan claude: reads ~/.claude.json oauthAccount (rate-limit tier / org type)', () => {

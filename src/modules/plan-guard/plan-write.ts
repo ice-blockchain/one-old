@@ -19,6 +19,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { modelChoiceReplyPending } from '../agent-model/model-choice';
 import {
   applyPatchTargetPaths,
   commandAppearsToWriteFeatureSource,
@@ -72,11 +73,22 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const state = readEffectiveState(projectRoot);
   const isNative = isNativeState(state);
 
+  if (ctx.host === 'cursor' && state && modelChoiceReplyPending(projectRoot, state as Rec)) {
+    return deny(
+      'traffic-one — model choice required (build paused): reply `fallback` to proceed on the listed fallback model(s), '
+      + 'or `enable` to turn on the picked model(s), re-capture Cursor models, and retry. '
+      + 'Do not spawn subagents, scaffold directly, or edit project files until the user replies.',
+    );
+  }
+
   // Resolve which targets are feature source (direct path + apply_patch targets).
+  const writeTargetPaths: string[] = [];
+  if (filePath) writeTargetPaths.push(filePath);
   const featureTargetPaths: string[] = [];
   if (FEATURE_SOURCE_RE.test(filePath)) featureTargetPaths.push(filePath);
   for (const targetPath of patchTargetPaths) {
     const rel = projectRelativeHookPath(cwd, projectRoot, targetPath);
+    if (rel && !writeTargetPaths.includes(rel)) writeTargetPaths.push(rel);
     if (FEATURE_SOURCE_RE.test(rel) && !featureTargetPaths.includes(rel)) featureTargetPaths.push(rel);
   }
   const writingFeatureSourceViaCommand = isShellToolName(toolName) && commandAppearsToWriteFeatureSource(rawCommand);
@@ -91,7 +103,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const runIdViolation = runIdPathViolation({ state, relTargets: runIdTargets, command: rawCommand, block });
   if (runIdViolation) violations.push(runIdViolation);
   const runTeam = runTeamEnforcementViolation({
-    projectRoot, filePath, state, rawData: raw, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
+    projectRoot, filePath, state, rawData: raw, content, writeTargetPaths, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
   });
   if (runTeam) violations.push(runTeam);
   violations.push(...planStaticViolations(filePath, content, isNative, block));
