@@ -75,6 +75,20 @@ Recorded: you'll use the recommended model. Enable it now in Cursor Settings →
 Recorded: the team will use the next-eligible fallback model when the recommended one isn't available, for the rest of this build. Re-run your request to continue — I won't ask again this build.
 <!-- T1BLOCK:END model-choice-recorded-fallback -->
 
+<!-- T1BLOCK:BEGIN opencode-plan-batch-required -->
+OpenCode plan-batch gate: do NOT spawn `{{ROLE}}` yet. The architect queued Step-0 OpenCode work in `.traffic-one/plan.md`, and the `opencode_delegate_from_plan` batch has not finished for queued role(s): {{QUEUED_ROLES}}.
+
+Run the batch FIRST, before any frontend/backend implementer starts:
+1. Call the `opencode_delegate_from_plan` tool (MCP server `opencode-worker`) with:
+   - `runId`: `{{RUN_ID}}`
+   - `projectRoot`: `{{PROJECT_ROOT}}`
+   Do NOT pass `model` unless the project explicitly pinned one; OpenCode selects its own free model by default.
+2. If it returns `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Repeat until the terminal `{ total, delegated, units }` result appears.
+3. Only after the terminal result, spawn `senior-frontend` and `senior-backend` in parallel. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
+
+Do not work around this by spawning backend first, building inline, or using a whole-role `opencode_delegate` task. The Step-0 plan batch is what prevents serialized paid subagents and satisfies the OpenCode-first contract.
+<!-- T1BLOCK:END opencode-plan-batch-required -->
+
 <!-- T1BLOCK:BEGIN opencode-role-delegate -->
 OpenCode role gate: `{{ROLE}}` is configured to run on OpenCode (it is in `openCode.delegateRoles` and `openCode.enabled` is true), so do NOT spawn it as a paid subagent yet. The user enabled this delegation in the Traffic One setup wizard. First hand its work to the locally-installed OpenCode CLI via the bundled `opencode-worker` MCP tool:
 1. Call the `opencode_delegate` tool (MCP server `opencode-worker`) with:

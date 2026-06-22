@@ -87,8 +87,13 @@ existing translation catalogs instead of creating parallel systems.
 Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json: one entry
 per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
 patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
-directories — not guessed names. This is the machine-readable Module map; the run-team gate
-uses it so the parallel implementers never collide. See "Assignments manifest" in your role
+directories — not guessed names. Do NOT include `senior-architect` in this manifest: the
+architect may create empty scaffold barrels/packages, but those files must remain writable by
+the implementer that fills them. Shared package barrels such as `packages/ui/src/index.ts`,
+`packages/i18n/src/index.ts`, and `packages/types/src/index.ts` belong to the implementer that
+exports real code/types from them; do not exclude them from that role if the role prompt asks it
+to fill/export those contracts. This is the machine-readable Module map; the run-team gate uses
+it so the parallel implementers never collide. See "Assignments manifest" in your role
 instructions for the schema and guarantees. Write it before PLAN_READY.
 
 On finish, write your handoff digest to:

@@ -7,7 +7,7 @@ import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/opencode';
-import { openCodeRoleAttempted } from '../../../shared/opencode-roles';
+import { openCodePlanRoleCompleted, openCodeRoleAttempted } from '../../../shared/opencode-roles';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -547,6 +547,10 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
     assert.equal(r.units.every((u) => u.action === 'delegated'), true);
     // each unit reports the model that delivered it
     assert.equal(r.units.every((u) => u.model === OPENCODE_FREE_MODELS[0]), true);
+    // The Step-0 batch terminal markers are separate from per-role CLI attempts;
+    // the spawn gate uses them to keep implementers blocked while the batch is running.
+    assert.equal(openCodePlanRoleCompleted(dir, 'plan-1', 'backend'), true);
+    assert.equal(openCodePlanRoleCompleted(dir, 'plan-1', 'senior-frontend'), true);
     // both units' disjoint diffs landed in the real working tree
     assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), true);
     assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), true);
@@ -573,6 +577,7 @@ test('delegateFromPlan without opts.runId uses currentRunId from project state',
     assert.equal(r.delegated, 1);
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1782117811109', 'frontend.md')), true);
     assert.equal(openCodeRoleAttempted(dir, '1782117811109', 'frontend'), true);
+    assert.equal(openCodePlanRoleCompleted(dir, '1782117811109', 'senior-frontend'), true);
   });
 });
 

@@ -1,8 +1,9 @@
 // src/shared/opencode-roles.ts
 // Role-based OpenCode delegation: which senior subagent roles run on the free
 // OpenCode agent instead of a paid subagent. Single source of truth for reading
-// the configurable `openCode.delegateRoles` array + the per-run "already tried"
-// marker the spawn gate uses to allow a fallback spawn after OpenCode declines.
+// the configurable `openCode.delegateRoles` array + the per-run markers the
+// spawn gate uses to enforce plan-batch-first and then allow a fallback spawn
+// after OpenCode declines.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -66,6 +67,40 @@ export function planDelegationQueueRoles(cwd: string): string[] {
 export function roleHasQueuedUnits(cwd: string, role: string): boolean {
   if (!role) return false;
   return planDelegationQueueRoles(cwd).includes(normalizeAttemptRole(role));
+}
+
+function planBatchMarkerPath(cwd: string, runId: string, role: string): string {
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-plan-batch', normalizeAttemptRole(role));
+}
+
+// Terminal marker for the Step-0 `opencode_delegate_from_plan` batch. Unlike
+// `opencode-attempts/<role>`, this is written only after the plan-batch runner
+// finishes processing that queued role. That lets the spawn gate block paid
+// implementers while the batch is merely RUNNING, but proceed once the batch is
+// terminal even when a unit was skipped before the OpenCode CLI could be reached.
+export function markOpenCodePlanRoleCompleted(cwd: string, runId: string, role: string): void {
+  if (!runId || !role) return;
+  try {
+    const p = planBatchMarkerPath(cwd, runId, role);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '', 'utf8');
+  } catch {
+    // best-effort; a missing marker only keeps the fail-closed batch gate active
+  }
+}
+
+export function openCodePlanRoleCompleted(cwd: string, runId: string, role: string): boolean {
+  if (!runId || !role) return false;
+  try {
+    return fs.existsSync(planBatchMarkerPath(cwd, runId, role));
+  } catch {
+    return false;
+  }
+}
+
+export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown): string[] {
+  if (!runId || !openCodeEnabled(state)) return [];
+  return planDelegationQueueRoles(cwd).filter((role) => !openCodePlanRoleCompleted(cwd, runId, role));
 }
 
 // Per-run marker that an OpenCode delegation reached the CLI for a role. The

@@ -56,6 +56,10 @@ function isArchitectScaffoldBarrelWrite(role: string | null, targets: string[], 
     && isEmptyBarrelContent(content || '');
 }
 
+function isArchitectScaffoldReservation(role: string | null | undefined, target: string): boolean {
+  return role === 'senior-architect' && isArchitectEmptyPackageBarrelTarget(target);
+}
+
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const { projectRoot, filePath, state, rawData, content, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
@@ -134,7 +138,9 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     const myKey = (mine && (mine.agentKey || mine.role)) || role;
     for (const target of ownershipTargets) {
       if (mine && matchesScope(target, mine.scope)) continue; // inside my scope -> allowed
-      const conflict = manifest.assignments.find((a) => a !== mine && matchesScope(target, a.scope));
+      const conflict = manifest.assignments.find((a) => a !== mine
+        && matchesScope(target, a.scope)
+        && !isArchitectScaffoldReservation(a.role, target));
       if (conflict) {
         return deny(block('run-team-scope-conflict',
           `Run-team enforcement gate: \`${target}\` is in \`${conflict.agentKey || conflict.role}\`'s assigned scope for this run, not \`${myKey}\`'s. Each subagent writes only within its own assignment in \`.traffic-one/runs/<runId>/assignments.json\`. Let the owning role write this file, or split the patch by assignment.`,

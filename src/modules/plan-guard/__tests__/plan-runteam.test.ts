@@ -212,6 +212,18 @@ test('architect empty-barrel exception does not allow package implementation sou
   });
 });
 
+test('manifest mode: invalid architect scaffold reservation does not block implementer package barrels', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-backend', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, [
+      { role: 'senior-architect', scope: { include: ['packages/types/src/index.ts'] } },
+      { role: 'senior-backend', scope: { include: ['packages/types/'], exclude: ['packages/types/src/index.ts'] } },
+    ]);
+    assert.equal(gate(dir, state, 'packages/types/src/index.ts', rawFor(THREAD)), null);
+  });
+});
+
 test('not a subagent session in a subagents project is denied (building phase)', () => {
   withDir((dir) => {
     const state = baseState({ currentRunId: undefined }); // no run state, no claim -> main agent

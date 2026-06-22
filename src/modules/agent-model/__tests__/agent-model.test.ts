@@ -10,7 +10,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
-import { markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
+import { markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
@@ -110,11 +110,15 @@ function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude
 // Queue one bounded OpenCode unit for `role` in plan.md — the OpenCode role gate
 // only forces delegation-first for roles the architect actually QUEUED work for.
 function queueDelegateRole(cwd: string, role: string): void {
+  queueDelegateRoles(cwd, [role]);
+}
+
+function queueDelegateRoles(cwd: string, roles: string[]): void {
   const t1 = path.join(cwd, '.traffic-one');
   fs.mkdirSync(t1, { recursive: true });
   fs.writeFileSync(
     path.join(t1, 'plan.md'),
-    `<!-- opencode-delegate:start -->\n- role: ${role} | files: x.ts | task: one bounded unit. Acceptance: ok.\n<!-- opencode-delegate:end -->\n`,
+    `<!-- opencode-delegate:start -->\n${roles.map((role) => `- role: ${role} | files: x.ts | task: one bounded unit. Acceptance: ok.`).join('\n')}\n<!-- opencode-delegate:end -->\n`,
     'utf8',
   );
 }
@@ -573,7 +577,45 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
   });
 });
 
-test('opencode role gate: a configured role is denied until OpenCode is tried, then allowed (fallback)', () => {
+test('opencode plan-batch gate: queued Step-0 work blocks both implementers until the batch is terminal', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-plan-batch';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRoles(cwd, ['frontend', 'backend']);
+
+    const backend = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' }));
+    assert.equal(backend.kind, 'deny');
+    if (backend.kind === 'deny') {
+      assert.ok(backend.reason.includes('OpenCode plan-batch gate'));
+      assert.ok(backend.reason.includes('opencode_delegate_from_plan'));
+      assert.ok(backend.reason.includes('frontend, backend'));
+    }
+    const frontend = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(frontend.kind, 'deny');
+    if (frontend.kind === 'deny') assert.ok(frontend.reason.includes('OpenCode plan-batch gate'));
+
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', 'run-plan-batch', 'pending');
+    assert.equal(fs.existsSync(pendingDir), false, 'denied implementer spawns must not stake pending claims');
+    const denyDir = path.join(cwd, '.traffic-one', 'runs', 'run-plan-batch', 'opencode-gate-denies');
+    assert.equal(fs.existsSync(denyDir), false, 'plan-batch denies must not consume the per-role deny-once fallback');
+
+    markOpenCodePlanRoleCompleted(cwd, 'run-plan-batch', 'frontend');
+    const stillBackend = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' }));
+    assert.equal(stillBackend.kind, 'deny', 'backend stays blocked until every queued role is terminal');
+    markOpenCodePlanRoleCompleted(cwd, 'run-plan-batch', 'backend');
+
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+  });
+});
+
+test('opencode role gate: a configured non-implementer role is denied until OpenCode is tried, then allowed (fallback)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // Enable OpenCode + set a currentRunId so the gate can scope the attempt marker.
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
@@ -584,18 +626,20 @@ test('opencode role gate: a configured role is denied until OpenCode is tried, t
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-X';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
-    queueDelegateRole(cwd, 'senior-frontend');
+    queueDelegateRole(cwd, 'senior-tester');
 
-    // senior-frontend is in the default delegateRoles → deny until OpenCode tried
-    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    // senior-tester is in the default delegateRoles → deny until OpenCode tried
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
 
     // runner records the attempt → gate falls through to the normal model check → allow
-    markOpenCodeRoleAttempted(cwd, 'run-X', 'senior-frontend');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+    markOpenCodeRoleAttempted(cwd, 'run-X', 'senior-tester');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' })).kind, 'noop');
 
-    // a role NOT in the configured set (senior-backend) is never opencode-gated
+    // Once the plan batch is terminal, a role NOT in the configured set
+    // (senior-backend) is never opencode role-gated.
+    markOpenCodePlanRoleCompleted(cwd, 'run-X', 'senior-tester');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
   });
 });
@@ -663,13 +707,13 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-reviewer-reject';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
-    queueDelegateRole(cwd, 'senior-frontend');
+    queueDelegateRole(cwd, 'senior-tester');
 
     // First spawn → denied (with the delegate instructions), deny recorded.
-    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
     // Second spawn, with NO attempt marker (delegate was rejected externally) → allowed.
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' })).kind, 'noop');
   });
 });
 
@@ -683,9 +727,9 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-clean';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
-    queueDelegateRole(cwd, 'senior-frontend');
+    queueDelegateRole(cwd, 'senior-tester');
 
-    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') {
       assert.ok(denied.reason.includes('OpenCode role gate'));
@@ -705,21 +749,21 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-codex';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
-    queueDelegateRole(cwd, 'senior-frontend');
+    queueDelegateRole(cwd, 'senior-tester');
 
     // A configured role on Codex is delegated to OpenCode first, exactly like Claude/Cursor.
     const denied = agentModelGate(codexSpawnCtx(cwd, {
       agent_type: 'worker',
-      message: 'You are acting as Traffic One `senior-frontend` for this Codex run.',
-      model: 'gpt-5.5',
+      message: 'You are acting as Traffic One `senior-tester` for this Codex run.',
+      model: 'gpt-5.4-mini',
     }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') assert.ok(denied.reason.includes('OpenCode role gate'));
     // Deny-once: a second spawn (no attempt recorded — e.g. tool unavailable) falls through.
     assert.equal(agentModelGate(codexSpawnCtx(cwd, {
       agent_type: 'worker',
-      message: 'You are acting as Traffic One `senior-frontend` for this Codex run.',
-      model: 'gpt-5.5',
+      message: 'You are acting as Traffic One `senior-tester` for this Codex run.',
+      model: 'gpt-5.4-mini',
     })).kind, 'noop');
   });
 });
@@ -734,9 +778,9 @@ test('a pinned openCode.model does not change gating (no per-model branch)', () 
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
     one.currentRunId = 'run-pinned';
     fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
-    queueDelegateRole(cwd, 'senior-frontend');
+    queueDelegateRole(cwd, 'senior-tester');
 
-    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
     assert.equal(denied.kind, 'deny');
     if (denied.kind === 'deny') {
       assert.ok(denied.reason.includes('OpenCode role gate'));

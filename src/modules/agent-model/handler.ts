@@ -33,7 +33,15 @@ import {
   modelChoicePrompted,
   readModelChoice,
 } from './model-choice';
-import { markOpenCodeGateDenied, openCodeGateDenied, openCodeRoleAttempted, roleHasQueuedUnits, shouldRunRoleOnOpenCode } from '../../shared/opencode-roles';
+import {
+  markOpenCodeGateDenied,
+  openCodeGateDenied,
+  openCodePlanRoleCompleted,
+  openCodeRoleAttempted,
+  pendingOpenCodePlanRoles,
+  roleHasQueuedUnits,
+  shouldRunRoleOnOpenCode,
+} from '../../shared/opencode-roles';
 import {
   ensureCurrentRunId,
   ensureRunAgentClaim,
@@ -55,6 +63,11 @@ import { resolveProjectRoot } from '../../shared/hook-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
+const PLAN_BATCH_GATED_ROLES = new Set(['senior-frontend', 'senior-backend']);
+
+function isPlanBatchGatedRole(role: string): boolean {
+  return PLAN_BATCH_GATED_ROLES.has(role);
+}
 
 // A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it (family-aware
 // + same-class CURSOR_MODEL_ALTERNATES). The passed arg is authoritative on every host —
@@ -315,6 +328,24 @@ export function agentModelGate(ctx: Ctx): HookResult {
     return deny(`traffic-one — run-id gate: your spawn prompt used run-id \`${strayRunId}\`, but the ONLY valid run-id is \`currentRunId\` = \`${spawnRunId}\` (read from .traffic-one/.one.json — never \`date\`/ISO/UTC). ${action}`);
   }
 
+  // New-project Phase 2 invariant: if the architect queued a Step-0
+  // `opencode_delegate_from_plan` batch, no implementer may start until that
+  // batch has reached a TERMINAL result for every queued role. The older
+  // per-role gate below only covers roles configured to run on OpenCode
+  // (frontend/tester/quick-fix by default), which let backend start while
+  // frontend was blocked. This batch gate catches both implementers first.
+  if (state.mode === 'new-project' && isPlanBatchGatedRole(role)) {
+    const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state);
+    if (pendingPlanRoles.length > 0) {
+      return deny(block('opencode-plan-batch-required', {
+        ROLE: role,
+        RUN_ID: spawnRunId,
+        PROJECT_ROOT: cwd,
+        QUEUED_ROLES: pendingPlanRoles.join(', '),
+      }));
+    }
+  }
+
   // OpenCode role delegation (all modes, all hosts): a configured role MUST run
   // on OpenCode first when delegation is enabled. Deny its paid spawn until
   // OpenCode has actually reached the CLI for this role in the current run — the
@@ -340,7 +371,9 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (shouldRunRoleOnOpenCode(role, state)) {
     const runId = ensureCurrentRunId(cwd, state);
     if (runId && (roleHasQueuedUnits(cwd, role) || isMaintenancePhase(state))
-      && !openCodeRoleAttempted(cwd, runId, role) && !openCodeGateDenied(cwd, runId, role)) {
+      && !openCodeRoleAttempted(cwd, runId, role)
+      && !openCodePlanRoleCompleted(cwd, runId, role)
+      && !openCodeGateDenied(cwd, runId, role)) {
       markOpenCodeGateDenied(cwd, runId, role);
       return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
     }

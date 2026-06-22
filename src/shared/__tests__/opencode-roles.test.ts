@@ -5,9 +5,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
+  openCodePlanRoleCompleted,
   openCodeRoleAttempted,
+  pendingOpenCodePlanRoles,
   planDelegationQueueRoles,
   roleHasQueuedUnits,
   shouldRunRoleOnOpenCode,
@@ -96,6 +99,29 @@ test('attempt markers: senior-frontend and frontend resolve to the same marker',
     fs.mkdirSync(legacy, { recursive: true });
     fs.writeFileSync(path.join(legacy, 'senior-frontend'), '', 'utf8');
     assert.equal(openCodeRoleAttempted(dir, 'r3', 'senior-frontend'), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('plan-batch completion markers: queued roles stay pending until terminal marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocplan-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '- role: backend | files: b | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = { openCode: { enabled: true } };
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
+    markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
+    assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['backend']);
+    markOpenCodePlanRoleCompleted(dir, 'run1', 'backend');
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run2', state), ['frontend', 'backend']);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', { openCode: { enabled: false } }), []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
