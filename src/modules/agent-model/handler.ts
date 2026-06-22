@@ -88,15 +88,15 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
 // gate stays strict — a wrong-FAMILY model is still denied; only the maintainer-
 // defined accept-set (CURSOR_MODEL_ALTERNATES) widens what satisfies the tier.
 // Host-specific "continue the live agent" recipe for the agent-reuse deny. The
-// continuation primitive differs per host: Cursor RE-INVOKES the Task tool with an
-// `agentId` (cursor.com/docs/subagents — resumes the subagent with context preserved),
-// Codex uses `send_input`, Claude uses `SendMessage`. The agentId is interpolated here
-// so the SKILL block stays a single host-agnostic template.
+// continuation primitive differs per host: Cursor RE-INVOKES the Task tool with
+// `resume` (live Cursor builds surface this field; older docs/models may say
+// `agentId`), Codex uses `send_input`, Claude uses `SendMessage`. The agentId is
+// interpolated here so the SKILL block stays a single host-agnostic template.
 function continuationRecipe(host: string, agentId: string): { call: string; tool: string } {
   if (host === 'cursor') {
     return {
-      call: `Re-invoke the \`Task\` tool with \`agentId: "${agentId}"\` and \`prompt\` = the NEW task only — Cursor resumes the SAME subagent with full context preserved.`,
-      tool: 'the Task `agentId` resume',
+      call: `Re-invoke the \`Task\` tool with \`resume: "${agentId}"\` and \`prompt\` = the NEW task only — Cursor resumes the SAME subagent with full context preserved. If your Cursor build exposes \`agentId\` instead, use the same id there.`,
+      tool: 'the Task `resume` continuation',
     };
   }
   if (host === 'codex') {
@@ -265,9 +265,9 @@ function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string,
 // fallbacks (CURSOR_MODEL_ALTERNATES) that the accept-set in modelSatisfiesTier honors.)
 // The gate also stakes the run-claim here (subagentStart is a different
 // canonical event, so no double-claim), which the subagent-team write gate needs to
-// resolve a role on Cursor. Agent REUSE/continuation is ENABLED on Cursor via the Task
-// tool's `agentId` resume param (subagentContinuationAvailable() returns true there); a
-// resume Task call carries agentId and is allowed straight through the reuse gate.
+// resolve a role on Cursor. Agent REUSE/continuation is ENABLED on Cursor via the
+// Task tool's `resume` continuation field (with `agentId` accepted for older
+// docs/models); a resume Task call is allowed straight through the reuse gate.
 export function agentModelGate(ctx: Ctx): HookResult {
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();
 
@@ -383,7 +383,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // a LIVE agent for the role, a fresh same-role spawn re-loads the entire
   // rules+skills context and re-explores the codebase — measured at 7 frontend
   // spawns in one build where 1 should have served. Deny the duplicate spawn and
-  // point the orchestrator at the recorded agent id to continue via SendMessage.
+  // point the orchestrator at the recorded agent id to continue via the host's
+  // continuation primitive.
   // Escape hatch: a spawn prompt carrying REPLACE_AGENT_MARKER retires the
   // recorded agent (context exhausted / SendMessage errored) and passes through,
   // so the recorder can capture the replacement. Entries from another parent
@@ -392,13 +393,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (subagentContinuationAvailable(process.env, ctx.host)) {
     const runId = typeof state.currentRunId === 'string' && state.currentRunId.trim() ? state.currentRunId.trim() : null;
     if (runId) {
-      // A spawn that ALREADY carries an `agentId` is a RESUME (the sanctioned
-      // continuation on Cursor, where the resume primitive IS the Task tool re-invoked
-      // with agentId) — never deny it, or the gate would block the very continuation it
-      // asks for. On Codex/Claude the continuation is a different tool (send_input /
-      // SendMessage), so spawn_agent/Task never carries agentId there → this is inert.
-      const isResume = typeof (toolInput.agentId ?? toolInput.agent_id) === 'string'
-        && String(toolInput.agentId ?? toolInput.agent_id).trim().length > 0;
+      // A spawn that ALREADY carries a continuation field is a RESUME — never deny
+      // it, or the gate would block the very continuation it asks for. Cursor has
+      // surfaced this as `resume` in live traces, while older docs/prose/models use
+      // `agentId`; accept both. On Codex/Claude the continuation is a different tool
+      // (send_input / SendMessage), so spawn_agent/Task normally never carries these.
+      const resumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
+      const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
         markRunAgentReplaced(cwd, runId, role);
       } else if (!isResume) {

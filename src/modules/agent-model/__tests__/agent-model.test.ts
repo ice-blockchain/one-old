@@ -1162,13 +1162,13 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   assert.equal(subagentContinuationAvailable({ CODEX_PLUGIN_ROOT: '/x', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0' } as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({ CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '1' } as NodeJS.ProcessEnv), true);
-  // Cursor: the Task `agentId` resume primitive enables reuse (CURSOR_PLUGIN_ROOT signal),
+  // Cursor: the Task continuation primitive enables reuse (CURSOR_PLUGIN_ROOT signal),
   // and the explicit off-flag still force-disables everywhere.
   assert.equal(subagentContinuationAvailable({ CURSOR_PLUGIN_ROOT: '/x' } as NodeJS.ProcessEnv), true);
   assert.equal(subagentContinuationAvailable({ CURSOR_PLUGIN_ROOT: '/x', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: 'off' } as NodeJS.ProcessEnv), false);
 });
 
-test('Cursor reuse deny names the Task agentId resume recipe (host-aware continuation)', () => {
+test('Cursor reuse deny names the Task resume recipe and accepts continuation fields', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // First Cursor spawn passes the gate + mints currentRunId + stakes a claim.
     agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
@@ -1179,18 +1179,20 @@ test('Cursor reuse deny names the Task agentId resume recipe (host-aware continu
     fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
       version: 1, agents: { 'senior-frontend': { agentId: 'cursor-agent-xyz', recordedAt: new Date().toISOString(), tasks: 1, replaced: false } },
     }));
-    // Duplicate Cursor spawn → reuse deny with the Task+agentId recipe (NOT SendMessage).
+    // Duplicate Cursor spawn → reuse deny with the Task+resume recipe (NOT SendMessage).
     const d = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
     assert.equal(d.kind, 'deny');
     if (d.kind === 'deny') {
       assert.ok(d.reason.includes('cursor-agent-xyz'), 'names the live agent id');
-      assert.ok(/Task/.test(d.reason) && /agentId/.test(d.reason), 'uses the Cursor Task agentId resume recipe');
+      assert.ok(/Task/.test(d.reason) && /resume/.test(d.reason), 'uses the Cursor Task resume recipe');
       assert.ok(!d.reason.includes('SendMessage'), 'no Claude SendMessage on Cursor');
     }
-    // The RESUME itself (Task carrying agentId) must pass the gate — never block the
+    // The RESUME itself (Task carrying resume) must pass the gate — never block the
     // continuation it just asked for. This makes the deny satisfiable → no soft-loop.
-    const resume = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high', agentId: 'cursor-agent-xyz' }, 'cursor'));
-    assert.equal(resume.kind, 'noop', 'a Task call carrying agentId (resume) passes the reuse gate');
+    const resume = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high', resume: 'cursor-agent-xyz' }, 'cursor'));
+    assert.equal(resume.kind, 'noop', 'a Cursor Task call carrying resume passes the reuse gate');
+    const legacyAgentId = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high', agentId: 'cursor-agent-xyz' }, 'cursor'));
+    assert.equal(legacyAgentId.kind, 'noop', 'legacy agentId continuation remains accepted');
   });
 });
 
