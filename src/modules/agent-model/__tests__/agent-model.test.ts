@@ -99,9 +99,9 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   }
 }
 
-function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' = 'claude'): Ctx {
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
-    event: 'PreToolUse', host, cwd, raw: { tool_name: 'Task', tool_input: toolInput },
+    event: 'PreToolUse', host, cwd, workspaceRoot, raw: { tool_name: 'Task', tool_input: toolInput },
     tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
   };
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
@@ -225,6 +225,23 @@ test('Cursor: the configured same-tier FALLBACK model satisfies the gate when th
     const runId = (JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId as string) || '';
     const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-frontend-'));
     assert.ok(pending.length > 0, 'claim staked on the fallback-model spawn');
+  });
+});
+
+test('Cursor: spawn gate resolves subpackage cwd to the workspace root before writing run state', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const pkg = path.join(cwd, 'packages', 'ui');
+    fs.mkdirSync(pkg, { recursive: true });
+    const r = agentModelGate(spawnCtx(pkg, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor', cwd));
+    assert.notEqual(r.kind, 'deny', 'valid spawn from a package cwd is allowed');
+
+    const rootState = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const runId = String(rootState.currentRunId || '');
+    assert.ok(runId.length > 0, 'currentRunId is minted on the workspace root');
+    assert.equal(fs.existsSync(path.join(pkg, '.traffic-one', '.one.json')), false, 'no stray package .traffic-one state is created');
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', runId, 'pending');
+    const pending = fs.readdirSync(pendingDir).filter((f) => f.startsWith('senior-frontend-'));
+    assert.ok(pending.length > 0, 'run claim is staked under the workspace root');
   });
 });
 

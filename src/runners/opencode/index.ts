@@ -597,7 +597,10 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
 
   const { models, fromChain } = resolveModels(state, opts);
   const role = (opts.role || 'opencode').trim() || 'opencode';
-  const runId = (opts.runId || '').trim() || runStamp();
+  const stateRunId = typeof state.currentRunId === 'string'
+    ? state.currentRunId.trim()
+    : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
+  const runId = (opts.runId || '').trim() || stateRunId || runStamp();
   const startedAt = Date.now();
   let markedAttempt = false;
   const markCliAttempt = (): void => {

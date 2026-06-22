@@ -51,6 +51,7 @@ import { strayRunIdInText } from '../../shared/run-id-paths';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
@@ -267,7 +268,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const role = inferTrafficOneSpawnRole(toolInput);
   if (!role) return noop();
 
-  const cwd = ctx.cwd;
+  const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return noop();
 

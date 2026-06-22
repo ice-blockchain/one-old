@@ -175,3 +175,17 @@ test('orchestrator + team prose: a denied/"Couldn\'t start" first spawn must RE-
     assert.match(doc, /(not|never)[^.\n]*inline/i, `${name} must forbid building the role inline on a first spawn failure`);
   }
 });
+
+test('Cursor/frontend prompts require demo seed data when Supabase env is missing', () => {
+  const modules = path.join(__dirname, '..', '..', 'modules');
+  const promptTemplates = fs.readFileSync(
+    path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
+  for (const [name, doc] of [['frontend prompt template', promptTemplates], ['team rule', teamRule]] as const) {
+    assert.match(doc, /demo\/seed/i, `${name} must require product-specific demo/seed data`);
+    assert.match(doc, /missing[- ]env|Missing Supabase\/env|missing-config/i, `${name} must name missing-env/config surfaces`);
+    assert.match(doc, /blank panels|sparse UI/i, `${name} must reject sparse missing-config UI`);
+  }
+});

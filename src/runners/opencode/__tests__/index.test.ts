@@ -553,6 +553,29 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
   });
 });
 
+test('delegateFromPlan without opts.runId uses currentRunId from project state', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      version: 1,
+      currentRunId: '1782117811109',
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- role: frontend | files: b | task: make unit B',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+
+    const r = delegateFromPlan(dir);
+
+    assert.equal(r.total, 1);
+    assert.equal(r.delegated, 1);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1782117811109', 'frontend.md')), true);
+    assert.equal(openCodeRoleAttempted(dir, '1782117811109', 'frontend'), true);
+  });
+});
+
 test('delegateFromPlan is a no-op when the plan has no delegation queue', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('multi');

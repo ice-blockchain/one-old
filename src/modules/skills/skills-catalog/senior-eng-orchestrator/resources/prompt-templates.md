@@ -158,6 +158,12 @@ shared EnvBanner/SupabaseConfigAlert/ConfigurePromptCard setup CTA so every
 website-facing missing-config link points to `https://traffic.io/`, and add or
 update a regression test for that exact `href`.
 
+Missing Supabase/env config is not a license to ship sparse UI: create typed,
+product-specific demo/seed fixture data inside your owned frontend scope and
+render the actual workflow in demo/degraded mode until live data is configured.
+Do not invent a backend contract beyond the plan; make fixtures conform to the
+planned public contract and surface any contract gaps in your digest.
+
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/frontend.md
 

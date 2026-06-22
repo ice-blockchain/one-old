@@ -29,6 +29,7 @@ export interface RunTeamArgs {
   filePath: string;          // project-relative target path
   state: Rec;
   rawData: unknown;          // raw hook input, for run-claim session identity
+  content?: string;
   writeTargetPaths?: string[];
   featureTargetPaths: string[];
   writingFeatureSource: boolean;
@@ -36,9 +37,28 @@ export interface RunTeamArgs {
   block: Block;
 }
 
+function isArchitectEmptyPackageBarrelTarget(filePath: string): boolean {
+  return /^packages\/[^/]+\/src\/index\.ts$/.test(filePath);
+}
+
+function isEmptyBarrelContent(content: string): boolean {
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n\r]*/g, '')
+    .trim();
+  return stripped === '' || stripped === 'export {}' || stripped === 'export {};';
+}
+
+function isArchitectScaffoldBarrelWrite(role: string | null, targets: string[], content: string | undefined): boolean {
+  return role === 'senior-architect'
+    && targets.length > 0
+    && targets.every(isArchitectEmptyPackageBarrelTarget)
+    && isEmptyBarrelContent(content || '');
+}
+
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
-  const { projectRoot, filePath, state, rawData, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
+  const { projectRoot, filePath, state, rawData, content, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
   const team = obj(state.team);
   if (!team || team.mode !== 'subagents') return null;
 
@@ -94,6 +114,9 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
       `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
       { ROLE: role }));
   }
+
+  const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;
+  if (isArchitectScaffoldBarrelWrite(acRole, scaffoldTargets, content)) return null;
 
   // Preferred path: explicit per-run assignment manifest authored by the architect.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.

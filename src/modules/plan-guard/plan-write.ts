@@ -103,7 +103,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const runIdViolation = runIdPathViolation({ state, relTargets: runIdTargets, command: rawCommand, block });
   if (runIdViolation) violations.push(runIdViolation);
   const runTeam = runTeamEnforcementViolation({
-    projectRoot, filePath, state, rawData: raw, writeTargetPaths, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
+    projectRoot, filePath, state, rawData: raw, content, writeTargetPaths, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
   });
   if (runTeam) violations.push(runTeam);
   violations.push(...planStaticViolations(filePath, content, isNative, block));

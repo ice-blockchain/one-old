@@ -187,6 +187,31 @@ test('shell-command feature write is denied (cannot verify ownership)', () => {
   });
 });
 
+test('architect may create empty package barrel scaffold before assignments exist', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-architect', { parentSessionId: 'orchestrator' }));
+    assert.equal(gate(dir, state, 'packages/ui/src/index.ts', rawFor(THREAD), {
+      content: '// @app/ui scaffold\nexport {};\n',
+    }), null);
+    assert.equal(gate(dir, state, 'packages/i18n/src/index.ts', rawFor(THREAD), {
+      content: '/* filled by senior-frontend */\n',
+    }), null);
+  });
+});
+
+test('architect empty-barrel exception does not allow package implementation source', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-architect', { parentSessionId: 'orchestrator' }));
+    const reason = gate(dir, state, 'packages/ui/src/index.ts', rawFor(THREAD), {
+      content: 'export function Button() { return null; }\n',
+    });
+    assert.ok(reason && reason.includes('does not own'));
+    assert.ok(reason && reason.includes('packages/ui/src/index.ts'));
+  });
+});
+
 test('not a subagent session in a subagents project is denied (building phase)', () => {
   withDir((dir) => {
     const state = baseState({ currentRunId: undefined }); // no run state, no claim -> main agent

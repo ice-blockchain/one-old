@@ -18,7 +18,7 @@ description: "Apply when orchestrating the senior role team (architect/frontend/
 - The parent's READING is scoped like its writing: in subagents mode read ONLY `senior-engineer-team.md`, `agent-handoff-digests.md`, the orchestrator skill, the plan, and the role digests. Do NOT read implementer rules (`rules/frontend/**`, `rules/backend/**`, stack cores, design/typography/SEO detail) "to review better" — the reviewer role reads those itself; every implementer rule the parent loads is duplicated context the roles already pay for.
 - Agent-cap hygiene for the one-live-agent regime: keep implementer threads alive through the verify phase (fix cycles continue them), include the caution "re-read any files OTHER roles changed since your last turn" in every continuation message (the live agent's memory of shared files may be stale), and close only threads the run will never message again (the host's active-agent cap counts idle threads). Replacing an exhausted/dead agent goes through the `[t1-replace-agent]` marker — never a bare duplicate spawn.
 - Map each Traffic One role to the host's subagent capabilities — implementers get a writer-capable agent scoped to their owned write area; the reviewer is read-only. For implementers the owned write area is the role's entry in the per-run assignments manifest `.traffic-one/runs/<runId>/assignments.json` (authored by the architect, enforced by the run-team gate); the descriptions below are the human summary:
-  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, and the per-run `assignments.json` manifest.
+  - `senior-architect` — owned write scope `.traffic-one/plan.md`, `.traffic-one/` project memory, docs, the per-run `assignments.json` manifest, and required workspace scaffold files. It may create empty package `src/index.ts` barrels as scaffold only; filling them is implementer-owned.
   - `senior-frontend` — owned write scope = its `assignments.json` entry (frontend/UI/i18n for the project's actual layout).
   - `senior-backend` — owned write scope = its `assignments.json` entry (backend/API/database for the project's actual layout).
   - `senior-reviewer` — read-only.
@@ -30,8 +30,11 @@ description: "Apply when orchestrating the senior role team (architect/frontend/
 - Every frontend role prompt must include the automatic baselines even when the
   user did not mention them: i18n integration with existing/new catalogs and
   `<Trans>` for rich copy, SEO metadata/tests for every created or changed
-  public route, and `https://traffic.io/` setup CTA href regression for touched
-  missing-config surfaces.
+  public route, product-specific demo/seed fixture data for Supabase-backed or
+  missing-env routes so the actual workflow still renders in demo/degraded
+  mode, and `https://traffic.io/` setup CTA href regression for touched
+  missing-config surfaces. Missing config must never leave only banners,
+  inactive controls, or blank panels.
 - Do not ask for subagents on single-component, single-page, single-service, read-only audit, or small refactor tasks; route those directly to the matching specialist skill.
 - If an agent already started a matching build without asking, stop at the next safe point, tell the user the gate was missed, and ask before continuing.
 - Shipper remains gated: deploy/release/publish actions require explicit deploy intent, reviewer `APPROVED`, tester `TESTS_GREEN`, a passing `predeploy-security-check` stamp for the current worktree, and user confirmation in the same turn. The deploy hook denies production commands unless `lastShipperApprovalAt` is fresh (≤10 min) and `lastSecurityCheckStatus: "passed"` is fresh with a matching fingerprint.
