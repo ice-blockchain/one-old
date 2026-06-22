@@ -183,8 +183,8 @@ test('orchestrator + team prose name Cursor as a first-class subagent host (Task
   assert.match(skill, /first-class subagent host/i, 'skill must affirm Cursor is a first-class subagent host');
   // The misleading phrasing that grouped Cursor under "no subagent" is gone.
   assert.doesNotMatch(skill, /no subagent barrier such as Cursor/i, 'must not group Cursor under "no subagent barrier"');
-  // The team rule names Cursor's Task+agentId continuation primitive.
-  assert.match(teamRule, /Cursor.*`Task` tool.*agentId|agentId.*Cursor/i, 'team rule must name Cursor Task+agentId continuation');
+  // The team rule names Cursor's Task+resume continuation primitive.
+  assert.match(teamRule, /Cursor.*`Task` tool.*resume|resume.*Cursor/i, 'team rule must name Cursor Task+resume continuation');
 });
 
 // The 13b failure: the architect's FIRST spawn hit a one-time materialization

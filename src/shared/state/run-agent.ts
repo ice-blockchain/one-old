@@ -1096,8 +1096,10 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   }
   // Codex: send_input (native to the multi_agent toolset, always present).
   if (host === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
-  // Cursor: the Task tool accepts an `agentId` to RESUME a previous subagent with full
-  // context preserved (cursor.com/docs/subagents) — the analogue of send_input/SendMessage.
+  // Cursor: live Cursor builds surface Task continuation as `resume` to resume a
+  // previous subagent with full context preserved — the analogue of
+  // send_input/SendMessage. Older docs/models may say `agentId`, so the gate
+  // accepts both fields.
   // Without this every Cursor role task re-spawned a fresh subagent, re-loading rules+skills.
   if (host === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.

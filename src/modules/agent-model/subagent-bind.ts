@@ -87,7 +87,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // without recording it here agents.json stays empty and every fix-cycle / follow-up
   // RE-SPAWNS the role fresh (observed 10b: backend ×3, frontend ×3 → 11 unbound pending
   // claims, stalled mid-review-fix-cycle). Record it so the spawn gate finds a live agent
-  // and the orchestrator CONTINUES it (Task agentId resume) instead of re-spawning.
+  // and the orchestrator CONTINUES it (Task resume continuation) instead of re-spawning.
   // Cursor-only (gated on the subagent_id field; Claude/Codex record via the PostToolUse
   // recorder, which sees their agent_id in the tool result).
   const cursorSubagentId = asString(raw.subagent_id);
