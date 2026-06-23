@@ -87,6 +87,93 @@ test('postSetupTriage emits the subagents triage (with OpenCode-first) for the s
   }
 });
 
+test('preSpawnOpenCodeDirective: new-project subagents + OpenCode → Step 0 batch instructions', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnOpenCodeDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-oc-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      performance: { level: 'high', source: 'prompted' },
+      openCode: { enabled: true, source: 'prompted' },
+      toolchain: { opencode: { installedVersion: '1.17.8' } },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+
+    const d = preSpawnOpenCodeDirective(dir);
+    assert.ok(d.includes('OpenCode Step 0'), 'directive is recognizable');
+    assert.ok(d.includes('opencode_delegate_from_plan'), 'names the MCP tool');
+    assert.ok(d.includes('Do NOT spawn implementers in the same assistant message'), 'blocks parallel Step 0 + spawns');
+    assert.ok(d.includes('senior-backend'), 'names implementers');
+    assert.ok(d.includes(dir), 'includes absolute project root');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ── preSpawnRunIdDirective: front-load gate-minted currentRunId BEFORE the first spawn,
+// so the orchestrator never fabricates an ISO run-id in spawn prompts. ──
+
+test('preSpawnRunIdDirective: new-project → mints currentRunId and prints exact paths', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnRunIdDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-runid-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      performance: { level: 'high', source: 'prompted' },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+
+    const d = preSpawnRunIdDirective(dir);
+    assert.ok(d.includes('Build run-id'), 'directive is recognizable');
+    assert.ok(d.includes('never `date`, ISO, or UTC'), 'warns against fabricated ids');
+    const one = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8')) as { currentRunId?: string };
+    assert.ok(one.currentRunId && /^\d+$/.test(one.currentRunId), 'currentRunId minted as epoch-ms digits');
+    assert.ok(d.includes(one.currentRunId!), 'directive carries the minted id');
+    assert.ok(d.includes(`.traffic-one/runs/${one.currentRunId}/assignments.json`), 'assignments path');
+    assert.ok(d.includes(`.traffic-one/digests/${one.currentRunId}/`), 'digests path');
+    assert.ok(d.includes(`Run ID: ${one.currentRunId}`), 'spawn prompt line');
+
+    // Idempotent: reuses existing currentRunId.
+    const d2 = preSpawnRunIdDirective(dir);
+    assert.ok(d2.includes(one.currentRunId!));
+    const one2 = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8')) as { currentRunId?: string };
+    assert.equal(one2.currentRunId, one.currentRunId);
+
+    // Non-new-project → silent.
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'existing-codebase', stack: 'custom-frontend', frontend: 'nextjs', backend: 'other',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+    assert.equal(preSpawnRunIdDirective(dir), '');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── preSpawnModelDirective: front-load capture + per-role map + eligibility BEFORE
 // the first spawn, so the team spawns once (no capture/model-tier deny + retry). ──
 
@@ -117,7 +204,9 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     const d = preSpawnModelDirective(dir, 'cursor');
     assert.ok(d.includes('cursor-models.json'), 'step 1 front-loads the model capture');
     assert.ok(d.includes('senior-architect') && d.includes('senior-frontend'), 'per-role map present');
-    assert.ok(d.includes('claude-opus-4-8'), 'frontend override (highest) → opus appears in the map');
+    assert.ok(d.includes('claude-opus-4-8'), 'tier family appears as eligibility reference');
+    assert.ok(d.includes('never pass the bare family') || d.includes('after step 2'), 'does not advertise bare family as spawn param');
+    assert.ok(d.includes('spawn map'), 'step 3 points at model-gate spawn map output');
     // Step 2 mandates running the model-gate command, which is what pops the USER prompt
     // (permission:"ask") when a picked model is unavailable — instead of the agent deciding.
     assert.ok(d.includes('model-gate.cjs'), 'step 2 runs the model-gate command (the user-prompt trigger)');
@@ -133,6 +222,44 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
       performance: { level: 'low', source: 'prompted' },
     }), 'utf8');
     assert.equal(preSpawnModelDirective(dir, 'cursor'), '', 'low/main-agent level → no directive');
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('preSpawnModelDirective: with capture, lists exact build slugs not bare families', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnModelDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-cap-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      performance: { level: 'high', source: 'prompted' },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
+      models: ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
+      plan: 'pro',
+      capturedAt: new Date().toISOString(),
+    }), 'utf8');
+
+    const d = preSpawnModelDirective(dir, 'cursor');
+    assert.ok(d.includes('senior-architect → claude-opus-4-8-thinking-medium'), 'exact slug in preview');
+    assert.ok(!d.includes('senior-architect → claude-opus-4-8\n'), 'bare family not listed as spawn value');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;

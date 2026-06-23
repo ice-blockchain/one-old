@@ -5,16 +5,22 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  markOpenCodePlanBatchComplete,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
+  parsePlanDelegationBlock,
+  parsePlanDelegationUnits,
   pendingOpenCodePlanRoles,
+  planDelegationUnitCount,
   planDelegationQueueRoles,
   roleHasQueuedUnits,
+  shouldBlockImplementerForPlanBatch,
   shouldRunRoleOnOpenCode,
 } from '../opencode-roles';
+import { buildOpenCodeQueue, openCodeQueuePolicyViolations } from '../opencode-queue';
 
 test('planDelegationQueueRoles + roleHasQueuedUnits: read the plan queue, normalized', () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocqueue-')));
@@ -35,6 +41,101 @@ test('planDelegationQueueRoles + roleHasQueuedUnits: read the plan queue, normal
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('parsePlanDelegationBlock counts only runnable role/files/task units', () => {
+  const plan = [
+    '# Plan',
+    '<!-- opencode-delegate:start -->',
+    '- role: frontend | files: packages/i18n/src/en.json | task: seed copy',
+    '- role: backend | files: supabase/seed.sql',
+    '- role: tester | task: add smoke test',
+    '- role: docs | files: README.md | task: draft usage notes',
+    '- role: senior-frontend | files: packages/i18n/src/ro.json | task: seed translated copy',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n');
+  const parsed = parsePlanDelegationBlock(plan);
+  assert.equal(parsed.unitCount, 3);
+  assert.deepEqual(parsed.roles, ['frontend', 'docs']);
+  assert.equal(planDelegationUnitCount(plan), 3);
+});
+
+test('parsePlanDelegationUnits reads optional id/kind/depends metadata', () => {
+  const plan = [
+    '<!-- opencode-delegate:start -->',
+    '- id: seed-data | role: senior-backend | kind: fixtures-seed-data | files: src/data.ts | task: seed data',
+    '- id: ui-card | role: frontend | kind: ui-stub | files: src/Card.tsx | depends: seed-data | task: render card',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n');
+  const units = parsePlanDelegationUnits(plan);
+  assert.deepEqual(units, [
+    { id: 'seed-data', role: 'backend', files: 'src/data.ts', task: 'seed data', kind: 'fixtures-seed-data' },
+    { id: 'ui-card', role: 'frontend', files: 'src/Card.tsx', task: 'render card', kind: 'ui-stub', dependsOn: ['seed-data'] },
+  ]);
+  const queue = buildOpenCodeQueue('', '', units);
+  assert.deepEqual(queue.units.map((u) => ({ id: u.id, role: u.role, kind: u.kind, dependsOn: u.dependsOn })), [
+    { id: 'seed-data', role: 'backend', kind: 'fixtures-seed-data', dependsOn: [] },
+    { id: 'ui-card', role: 'frontend', kind: 'ui-stub', dependsOn: ['seed-data'] },
+  ]);
+});
+
+test('openCodeQueuePolicyViolations rejects duplicate ids, missing scopes, and unordered overlaps', () => {
+  const missingId = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- role: frontend | files: apps/web/src/a.ts | task: A',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(missingId).some((v) => /stable unique `id`/.test(v)));
+
+  const dup = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: same | role: frontend | files: apps/web/src/a.ts | task: A',
+    '- id: same | role: tester | files: apps/web/src/b.ts | task: B',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(dup).some((v) => /duplicated/.test(v)));
+
+  const overlap = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: ui | role: frontend | files: apps/web/src/** | task: A',
+    '- id: card | role: frontend | files: apps/web/src/components/Card.tsx | task: B',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(overlap).some((v) => /overlapping/.test(v)));
+
+  const ordered = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: ui | role: frontend | files: apps/web/src/** | task: A',
+    '- id: card | role: frontend | files: apps/web/src/components/Card.tsx | depends: ui | task: B',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(ordered), []);
+
+  const unsafe = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: generated | role: frontend | files: dist/** | task: A',
+    '- id: brace | role: frontend | files: apps/{web,admin}/src/** | task: B',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const unsafeViolations = openCodeQueuePolicyViolations(unsafe).join('\n');
+  assert.match(unsafeViolations, /generated\/internal/);
+  assert.match(unsafeViolations, /brace\/glob/);
+});
+
+test('openCodeQueuePolicyViolations rejects test-oriented tasks without explicit test/config allowlists', () => {
+  const helperOnly = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: markdown | role: frontend | files: apps/web/src/lib/markdown.ts | task: Write a pure markdown helper. Acceptance: unit-testable and handles code blocks.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(helperOnly).some((v) => /mentions tests\/testability/.test(v)));
+
+  const helperWithSpec = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: markdown | role: frontend | files: apps/web/src/lib/markdown.ts, apps/web/src/lib/markdown.test.ts | task: Write a pure markdown helper plus unit tests.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(helperWithSpec), []);
 });
 
 test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', () => {
@@ -113,7 +214,7 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
       + '- role: frontend | files: a | task: t\n'
       + '- role: backend | files: b | task: t\n'
       + '<!-- opencode-delegate:end -->\n', 'utf8');
-    const state = { openCode: { enabled: true } };
+    const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
     markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
     assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
@@ -122,6 +223,30 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run2', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', { openCode: { enabled: false } }), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('plan-batch COMPLETE marker clears implementer gate immediately', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-occomplete-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '- role: backend | files: b | task: t\n'
+      + '- role: tester | files: c | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'new-project',
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-complete', state), true);
+    markOpenCodePlanBatchComplete(dir, 'run-complete');
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-complete', state), false);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-complete', state), []);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -154,6 +279,17 @@ test('OPENCODE_DELEGATE_UNIT_KINDS catalog: bounded kinds present, never-list in
 // emitted PLAN_READY anyway, because the memory baseline (unlike the workspace
 // scaffold) had no hard ls-verify gate. Lock the gate into the role doc so it
 // can't silently regress to soft "mandatory" prose again.
+test('senior-architect agent.md enforces Phase order with OpenCode Step 0 before implementers', () => {
+  const doc = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'modules', 'senior-architect', 'agent.md'),
+    'utf8',
+  );
+  assert.match(doc, /## Phase order/);
+  assert.match(doc, /OpenCode batch/);
+  assert.match(doc, /opencode_delegate_from_plan/);
+  assert.match(doc, /backend \+ frontend in parallel/);
+});
+
 test('senior-architect agent.md enforces the full .traffic-one memory baseline before PLAN_READY', () => {
   const doc = fs.readFileSync(
     path.join(__dirname, '..', '..', 'modules', 'senior-architect', 'agent.md'),

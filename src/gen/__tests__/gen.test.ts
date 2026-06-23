@@ -7,6 +7,7 @@ import * as path from 'node:path';
 import { distRoot, runGen, sourceRepoRoot } from '../index';
 import { GenRun } from '../lib/run';
 import { emitManifests, emitMcp } from '../emit/manifests';
+import { emitStaticPluginFiles } from '../emit/static';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
@@ -142,6 +143,20 @@ test('dist AGENTS.md/CLAUDE.md ship the end-user plugin instructions, not the ma
     assert.equal(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8'), source);
     // The maintainer guide (repo root AGENTS.md) must never ship.
     assert.ok(!fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8').includes('Stand Down'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('static emitter recovers when sourceRoot points at dist', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-distroot-'));
+  try {
+    const write = new GenRun({ check: false, root: dir, sourceRoot: path.join(REPO_ROOT, 'dist') });
+    emitStaticPluginFiles(write);
+    assert.ok(write.written.includes('AGENTS.md'));
+    const source = fs.readFileSync(path.join(REPO_ROOT, 'src', 'gen', 'static', 'plugin-instructions.md'), 'utf8');
+    assert.equal(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8'), source);
+    assert.equal(fs.readFileSync(path.join(dir, 'CLAUDE.md'), 'utf8'), source);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

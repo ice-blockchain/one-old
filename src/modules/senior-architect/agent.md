@@ -164,11 +164,23 @@ The 3 things most likely to derail the build. One mitigation each.
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
 
 ## OpenCode delegation queue
-Bounded, low-risk units the orchestrator delegates to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). **When `openCode.enabled` is true, a greenfield plan with an EMPTY queue is almost always a mistake** — every new build has fixtures, source catalogs, helper stubs, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). Leave the block empty only when `openCode.enabled` is false or the work genuinely has no bounded units.
+Bounded, low-risk units the orchestrator delegates to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Use stable `id` values; when two units overlap files/areas, the later one must declare `depends: <earlier-id>`. **When `openCode.enabled` is true, a greenfield plan with an EMPTY queue is almost always a mistake** — every new build has fixtures, source catalogs, helper stubs, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). Leave the block empty only when `openCode.enabled` is false or the work genuinely has no bounded units.
+
+If a unit's task or acceptance mentions tests, testability, Vitest, Playwright, specs, or config/dependency changes, its `files:` allowlist must include the exact test/spec/config/package files it is allowed to touch. Otherwise remove that acceptance from the OpenCode unit and leave verification/config work to the paid implementer/reviewer. Do not queue a helper as "unit-testable" while allowing only the helper source file; OpenCode will naturally add tests/config and the runner will reject the diff.
 
 <!-- opencode-delegate:start -->
-- role: <frontend|backend|tester|docs> | files: <exact path(s)> | task: <self-contained task: acceptance criteria + exact files/area, no external context>
+- id: <stable-id> | role: <frontend|backend|tester|docs> | kind: <queueable-kind> | files: <exact path(s)> | task: <self-contained task: acceptance criteria + exact files/area, no external context>
 <!-- opencode-delegate:end -->
+
+## Phase order
+
+1. architect (this) → scaffold + plan + memory + assignments. **PLAN_READY**
+2. **OpenCode batch** (orchestrator Step 0, when `openCode.enabled`) → `opencode_delegate_from_plan` on the queue above BEFORE any implementer spawn
+3. backend + frontend in parallel (disjoint scopes per `runs/<run-id>/assignments.json`; build ON OpenCode `touched` files)
+4. reviewer + tester in parallel
+5. shipper only on explicit deploy intent (gated)
+
+Queue ordering tips: put seed/fixture units first; defer i18n catalog fills until after frontend routes exist (declare `depends: <frontend-pages-unit-id>` or leave i18n to the paid frontend if keys are not yet known); tester/e2e units may `depends:` on seed units.
 ```
 
 After the plan, write any ADRs to `.traffic-one/decisions/NNNN-<slug>.md`. For new projects,
@@ -185,6 +197,8 @@ Before emitting `PLAN_READY`, write a machine-readable counterpart of the Module
 ```
 
 This is what makes parallel implementers conflict-free across ANY stack. Each implementer role gets one entry with a DISJOINT set of owned path patterns; the run-team write gate lets a role write only inside its own scope. Use `currentRunId` from `.traffic-one/.one.json` (an epoch-ms number, the same id as the run's claim dir) — never invent one, and never a `date`/ISO/UTC string.
+
+Write this manifest **after** the required workspace scaffold, project-memory baseline, plan, and any architect-owned skeleton files exist. Once `assignments.json` is present, the run-team guard treats those paths as implementer-owned; writing it too early can block you from finishing required scaffold barrels. The safe order is: scaffold + memory + plan + ADRs → assignments manifest → architect digest with `PLAN_READY`.
 
 ```jsonc
 {
@@ -242,7 +256,7 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 - On `stack: default` or `frontend: react-vite`, the "Required workspace scaffold" subsection of "What you write" is non-negotiable: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls pnpm-workspace.yaml turbo.json packages/ui/package.json packages/tailwind-config/package.json packages/i18n/package.json` — if any is missing, the run is incomplete. The "least amount of architecture" principle (above) does not override this — workspace skeleton is baseline, not speculative.
 - On `mode: new-project`, the "Required project-memory baseline" subsection of "What you write" is non-negotiable the SAME way: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls .traffic-one/{product,stack,coding,security,known-issues,api,database,deployment,environment-setup,agent-log}.md .traffic-one/.agentignore .traffic-one/schema.sql .traffic-one/decisions/*.md` — if any is missing, the run is incomplete; write it (real content, not an empty stub) before `PLAN_READY`. This is where `auto-documentation-generator` being "mandatory" is enforced: you do NOT skip it, and you do NOT delegate the `.traffic-one/` baseline to OpenCode (`OPENCODE_NEVER_DELEGATE`) — the `docs` delegate may only touch root human docs (`README`/`CONTRIBUTING`/`CHANGELOG`).
 - You do not skip the plan to "save time". The plan-gate hook will deny feature writes until `.traffic-one/plan.md` exists.
-- Before `PLAN_READY` you MUST write `.traffic-one/runs/<run-id>/assignments.json` with a disjoint scope for `senior-frontend` and `senior-backend`, derived from real paths (see "Assignments manifest"). Verify it exists and parses. If the surface can't be partitioned disjointly, report the blocker instead of `PLAN_READY`.
+- Before `PLAN_READY` you MUST write `.traffic-one/runs/<run-id>/assignments.json` with a disjoint scope for `senior-frontend` and `senior-backend`, derived from real paths (see "Assignments manifest"). Write it only after scaffold/memory/plan/ADRs are complete, then verify it exists and parses. If the surface can't be partitioned disjointly, report the blocker instead of `PLAN_READY`.
 - You do not duplicate skill content into the plan; cite skill names so the implementer subagents pull the detail when they need it.
 - The plan stays under ~250 lines. If a section is bigger, link out to the relevant root doc.
 - End your final reply with the literal token `PLAN_READY` on its own line so the orchestrator can detect completion.

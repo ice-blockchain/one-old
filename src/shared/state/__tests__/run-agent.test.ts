@@ -4,7 +4,24 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { anyRunProducedImplementerOutput, anyRunReachedTerminalVerdict, claimThreadRole, ensureRunAgentClaim, inferRoleFromTranscript, readRunAssignments, readRunAssignmentsResilient, resolveRunAgentContext, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, transcriptThreadId } from '../run-agent';
+import {
+  anyRunProducedImplementerOutput,
+  anyRunReachedTerminalVerdict,
+  claimThreadRole,
+  continuationAgentId,
+  ensureRunAgentClaim,
+  inferRoleFromTranscript,
+  readRunAgentRegistry,
+  readRunAssignments,
+  readRunAssignmentsResilient,
+  refreshCursorRunAgentFromTranscriptCache,
+  recordRunAgent,
+  resolveRunAgentContext,
+  runHasOrchestratedArtifacts,
+  runIdNow,
+  runReachedTerminalVerdict,
+  transcriptThreadId,
+} from '../run-agent';
 import { stackFingerprint } from '../materialization';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
@@ -397,14 +414,21 @@ function writeCursorSubagentTranscript(cursorProjectsRoot: string, projectRoot: 
 
 test('resolveRunAgentContext binds Cursor child writes from the local subagent transcript cache', () => {
   withPrefs((dir) => {
-    const prev = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const prevCursorProjects = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const prevCursorPluginRoot = process.env.CURSOR_PLUGIN_ROOT;
     const cursorRoot = path.join(dir, 'cursor-projects');
     process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = cursorRoot;
+    process.env.CURSOR_PLUGIN_ROOT = path.join(dir, 'cursor-plugin');
     try {
       const parentId = '8a93bb38-0503-4c9a-ab15-fec68978ad1b';
       const childId = '8602964e-64f8-4b29-94d6-6836622a27b0';
       const state = { ...materializedState(), currentRunId: 'run-cursor-child' };
       ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: parentId }, { toolName: 'Task' });
+      recordRunAgent(dir, 'run-cursor-child', 'senior-frontend', {
+        agentId: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+        toolCallId: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+        parentSessionId: parentId,
+      });
       writeCursorSubagentTranscript(cursorRoot, dir, parentId, childId,
         'You are senior-frontend for DevLearn. Read .traffic-one/runs/run-cursor-child/assignments.json and write only your scope.');
 
@@ -424,11 +448,160 @@ test('resolveRunAgentContext binds Cursor child writes from the local subagent t
       const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-child', 'pending');
       assert.deepEqual(fs.readdirSync(pending).filter((name) => name.endsWith('.json')), []);
 
+      const entry = readRunAgentRegistry(dir, 'run-cursor-child')['senior-frontend'];
+      assert.ok(entry, 'child bind should mirror the resumable Cursor conversation id into agents.json');
+      assert.equal(entry!.agentId, childId);
+      assert.equal(entry!.resumeId, childId);
+      assert.equal(entry!.toolCallId, 'tool_b1b73265-1c92-4340-a170-d148f8f0dde');
+      assert.equal(continuationAgentId(entry!, 'cursor'), childId);
+
       const again = resolveRunAgentContext(dir, state, { session_id: childId }, { claimPending: false });
       assert.equal(again?.role, 'senior-frontend');
     } finally {
-      if (prev === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
-      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prev;
+      if (prevCursorProjects === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prevCursorProjects;
+      if (prevCursorPluginRoot === undefined) delete process.env.CURSOR_PLUGIN_ROOT;
+      else process.env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
     }
   });
+});
+
+test('Cursor child bind prefers the matching exact-model pending claim and clears stale siblings', () => {
+  withPrefs((dir) => {
+    const prevCursorProjects = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const prevCursorPluginRoot = process.env.CURSOR_PLUGIN_ROOT;
+    const cursorRoot = path.join(dir, 'cursor-projects');
+    process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = cursorRoot;
+    process.env.CURSOR_PLUGIN_ROOT = path.join(dir, 'cursor-plugin');
+    try {
+      const parentId = 'ab2a10f9-9117-4e8d-83c2-b15bebe7b08d';
+      const childId = '91535f31-5c62-4e8b-acce-5ccff7439d22';
+      const state = { ...materializedState(), currentRunId: 'run-cursor-model' };
+      const stale = ensureRunAgentClaim(dir, state, 'senior-architect', { session_id: parentId }, {
+        toolName: 'Task',
+        model: 'claude-opus-4-8',
+      });
+      const exact = ensureRunAgentClaim(dir, state, 'senior-architect', { session_id: parentId }, {
+        toolName: 'Task',
+        model: 'claude-opus-4-8-thinking-medium',
+      });
+      recordRunAgent(dir, 'run-cursor-model', 'senior-architect', {
+        agentId: 'tool_f02c546e-efaa-43d0-a6b5-065439bc41a',
+        toolCallId: 'tool_f02c546e-efaa-43d0-a6b5-065439bc41a',
+        parentSessionId: parentId,
+      });
+      writeCursorSubagentTranscript(cursorRoot, dir, parentId, childId,
+        '[t1-role: senior-architect]\nArchitect learning platform plan.');
+
+      const ctx = resolveRunAgentContext(dir, state, {
+        conversation_id: childId,
+        session_id: childId,
+        workspace_roots: [dir],
+        model: 'claude-opus-4-8-thinking-medium',
+        transcript_path: null,
+        hook_event_name: 'preToolUse',
+        tool_name: 'Write',
+      }, { claimPending: true });
+
+      assert.ok(ctx);
+      assert.equal(ctx!.role, 'senior-architect');
+      assert.equal(ctx!.spawnIndex, 2, 'the successful exact-model retry claim wins over the older family claim');
+      assert.notEqual(stale?.claimId, exact?.claimId);
+      assert.equal(ctx!.claimId, exact?.claimId);
+
+      const claimed = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'run-cursor-model', `${childId}.json`), 'utf8'));
+      assert.equal(claimed.model, 'claude-opus-4-8-thinking-medium');
+      assert.equal(claimed.claimId, exact?.claimId);
+
+      const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-model', 'pending');
+      assert.deepEqual(fs.readdirSync(pending).filter((name) => name.endsWith('.json')), []);
+
+      const entry = readRunAgentRegistry(dir, 'run-cursor-model')['senior-architect'];
+      assert.equal(entry?.agentId, childId);
+      assert.equal(entry?.resumeId, childId);
+      assert.equal(entry?.toolCallId, 'tool_f02c546e-efaa-43d0-a6b5-065439bc41a');
+      assert.equal(entry?.model, 'claude-opus-4-8-thinking-medium');
+    } finally {
+      if (prevCursorProjects === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prevCursorProjects;
+      if (prevCursorPluginRoot === undefined) delete process.env.CURSOR_PLUGIN_ROOT;
+      else process.env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
+    }
+  });
+});
+
+test('refreshCursorRunAgentFromTranscriptCache upgrades read-only Cursor agents before they write', () => {
+  withPrefs((dir) => {
+    const prevCursorProjects = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const prevCursorPluginRoot = process.env.CURSOR_PLUGIN_ROOT;
+    const cursorRoot = path.join(dir, 'cursor-projects');
+    process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = cursorRoot;
+    process.env.CURSOR_PLUGIN_ROOT = path.join(dir, 'cursor-plugin');
+    try {
+      const parentId = '8a93bb38-0503-4c9a-ab15-fec68978ad1b';
+      const childId = 'e391ca30-0b3d-4bba-896d-431c4b49f405';
+      const state = { ...materializedState(), currentRunId: 'run-cursor-reviewer' };
+      ensureRunAgentClaim(dir, state, 'senior-reviewer', { session_id: parentId }, { toolName: 'Task' });
+      recordRunAgent(dir, 'run-cursor-reviewer', 'senior-reviewer', {
+        agentId: 'tool_2401d263-9b87-44db-8e0d-2df7dd7842dd',
+        toolCallId: 'tool_2401d263-9b87-44db-8e0d-2df7dd7842dd',
+        parentSessionId: parentId,
+      });
+      writeCursorSubagentTranscript(cursorRoot, dir, parentId, childId,
+        '[t1-role: senior-reviewer]\nReview the implementation and write only a digest.');
+
+      const upgraded = refreshCursorRunAgentFromTranscriptCache(dir, state, {
+        session_id: parentId,
+        workspace_roots: [dir],
+      }, 'run-cursor-reviewer', 'senior-reviewer', parentId);
+
+      assert.ok(upgraded, 'expected the real Cursor child id to be discovered');
+      assert.equal(upgraded!.agentId, childId);
+      assert.equal(upgraded!.resumeId, childId);
+      assert.equal(upgraded!.toolCallId, 'tool_2401d263-9b87-44db-8e0d-2df7dd7842dd');
+      assert.equal(continuationAgentId(upgraded!, 'cursor'), childId);
+      const pending = path.join(dir, '.traffic-one', 'runs', 'run-cursor-reviewer', 'pending');
+      assert.deepEqual(fs.readdirSync(pending).filter((name) => name.endsWith('.json')), []);
+    } finally {
+      if (prevCursorProjects === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prevCursorProjects;
+      if (prevCursorPluginRoot === undefined) delete process.env.CURSOR_PLUGIN_ROOT;
+      else process.env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
+    }
+  });
+});
+
+test('recordRunAgent: Cursor tool_* id is stored separately from Task resume UUID', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-resume-id-'));
+  try {
+    recordRunAgent(dir, 'run-1', 'senior-frontend', {
+      agentId: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+      toolCallId: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+      model: 'composer-2.5-fast',
+      agentType: 'senior-frontend',
+      parentSessionId: 'parent-1',
+    });
+    let entry = readRunAgentRegistry(dir, 'run-1')['senior-frontend'];
+    assert.ok(entry);
+    assert.equal(entry!.toolCallId, 'tool_b1b73265-1c92-4340-a170-d148f8f0dde');
+    assert.equal(entry!.resumeId, null);
+    assert.equal(continuationAgentId(entry!, 'cursor'), '');
+
+    recordRunAgent(dir, 'run-1', 'senior-frontend', {
+      agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+      resumeId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+      parentSessionId: 'parent-1',
+    });
+    entry = readRunAgentRegistry(dir, 'run-1')['senior-frontend'];
+    assert.equal(entry!.resumeId, 'bff46cd7-3681-4cf0-adcf-263bf55cc301');
+    assert.equal(entry!.agentId, 'bff46cd7-3681-4cf0-adcf-263bf55cc301');
+    assert.equal(entry!.toolCallId, 'tool_b1b73265-1c92-4340-a170-d148f8f0dde');
+    assert.equal(entry!.model, 'composer-2.5-fast');
+    assert.equal(entry!.agentType, 'senior-frontend');
+    assert.equal(entry!.parentSessionId, 'parent-1');
+    assert.equal(entry!.tasks, 2);
+    assert.equal(continuationAgentId(entry!, 'cursor'), 'bff46cd7-3681-4cf0-adcf-263bf55cc301');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

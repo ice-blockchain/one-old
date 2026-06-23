@@ -79,6 +79,9 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource('echo hi > apps/web/src/x.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource('cat <<EOF > src/app.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource('sed -i s/a/b/ packages/ui/src/x.ts'), true);
+  assert.equal(commandAppearsToWriteFeatureSource("find /tmp/project/apps/web/src -name '*.js' -delete"), true);
+  assert.equal(commandAppearsToWriteFeatureSource('rm -f apps/web/src/stale.js'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts 2>&1'), false);
   // write primitive but no feature path
   assert.equal(commandAppearsToWriteFeatureSource('echo hi > README.md'), false);
   // feature path but no write primitive

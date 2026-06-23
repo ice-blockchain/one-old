@@ -95,7 +95,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
 
   const violations: string[] = [];
-  violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, block }));
+  violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, rawData: raw, block }));
   // Run-id write-guard: a stray (e.g. `date` ISO) run-id in a runs/<id> or
   // digests/<id> write path splits run state away from currentRunId. Check the
   // direct target, apply_patch targets, and the shell command.

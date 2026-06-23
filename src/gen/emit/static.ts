@@ -23,17 +23,44 @@ const PLUGIN_INSTRUCTIONS_SOURCE = path.join('src', 'gen', 'static', 'plugin-ins
 // rule (from rules/common/auth-gate.md); no separate static seed — two
 // always-on copies of the same guidance double the per-request cost on Cursor.
 
+function sourceCandidates(run: GenRun): string[] {
+  return [
+    run.sourceRoot,
+    process.cwd(),
+    path.resolve(__dirname, '..', '..', '..'),
+  ];
+}
+
+function sourceRootWith(run: GenRun, relPath: string): string {
+  for (const root of sourceCandidates(run)) {
+    if (fs.existsSync(path.join(root, relPath))) return root;
+  }
+  return run.sourceRoot;
+}
+
+function readSourceText(run: GenRun, relPath: string): string {
+  const candidates = sourceCandidates(run);
+  for (const root of candidates) {
+    try {
+      return fs.readFileSync(path.join(root, relPath), 'utf8');
+    } catch {
+      // try next source root candidate
+    }
+  }
+  return fs.readFileSync(path.join(run.sourceRoot, relPath), 'utf8');
+}
+
 export function emitStaticPluginFiles(run: GenRun): void {
   for (const rel of STATIC_TEXT_FILES) {
-    run.file(rel, fs.readFileSync(path.join(run.sourceRoot, rel), 'utf8'));
+    run.file(rel, readSourceText(run, rel));
   }
-  const pluginInstructions = fs.readFileSync(path.join(run.sourceRoot, PLUGIN_INSTRUCTIONS_SOURCE), 'utf8');
+  const pluginInstructions = readSourceText(run, PLUGIN_INSTRUCTIONS_SOURCE);
   run.file('AGENTS.md', pluginInstructions);
   run.file('CLAUDE.md', pluginInstructions);
   run.file(path.join('skills', '.gitkeep'), '');
   run.json('package.json', {
     name: NAME,
-    version: pluginVersion(run.sourceRoot),
+    version: pluginVersion(sourceRootWith(run, 'package.json')),
     private: true,
     type: 'commonjs',
     description: 'Generated Traffic One plugin runtime.',

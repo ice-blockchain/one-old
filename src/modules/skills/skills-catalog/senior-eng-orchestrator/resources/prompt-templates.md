@@ -64,7 +64,14 @@ delegation queue" section is REQUIRED: list every bounded, low-risk unit
 (boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding,
 mechanical refactors/renames, formatting/codemods) in the machine-readable
 `<!-- opencode-delegate:start -->`…`<!-- opencode-delegate:end -->` block (one
-self-contained `- role: … | files: … | task: …` line each). NEVER queue
+self-contained `- id: … | role: … | kind: … | files: … | task: …` line each;
+add `depends: <earlier-id>` when a later unit overlaps an earlier files/area).
+The `files:` value is an enforced allowlist: list every legitimate source
+path/area the unit may touch, or the runner rejects the diff before apply. If
+the task mentions tests, testability, Vitest, Playwright, specs, or config/deps,
+the allowlist must include the exact test/spec/config/package files it may
+touch; otherwise remove that acceptance and leave verification/config work to
+the paid implementer/reviewer. NEVER queue
 architecture/contracts/security/data-model/migrations/cross-file-invariant work.
 The orchestrator delegates these to OpenCode before the implementers, so a
 thorough queue is what actually saves the user's tokens. See the
@@ -84,7 +91,7 @@ plus the SEO and i18n baseline reconciliation, to create missing memory/docs,
 update existing files in place, fill missing web metadata, and extend any
 existing translation catalogs instead of creating parallel systems.
 
-Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json: one entry
+Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json LAST: one entry
 per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
 patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
 directories — not guessed names. Do NOT include `senior-architect` in this manifest: the
@@ -94,7 +101,8 @@ the implementer that fills them. Shared package barrels such as `packages/ui/src
 exports real code/types from them; do not exclude them from that role if the role prompt asks it
 to fill/export those contracts. This is the machine-readable Module map; the run-team gate uses
 it so the parallel implementers never collide. See "Assignments manifest" in your role
-instructions for the schema and guarantees. Write it before PLAN_READY.
+instructions for the schema and guarantees. Complete scaffold + memory + plan + ADRs first,
+then write this manifest immediately before the architect digest / PLAN_READY.
 
 On finish, write your handoff digest to:
   .traffic-one/digests/<run-id>/architect.md

@@ -161,6 +161,17 @@ test('modelGateShell: every picked model offered → noop (the command runs, no 
   });
 });
 
+test('modelGate runner prints spawn map and pins agent files when all picks are available', () => {
+  withProj({ models: ['claude-opus-4-8-thinking-medium', 'claude-4.6-sonnet-thinking', 'composer-2.5-fast'], overrides: {} }, (cwd) => {
+    const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
+    assert.equal(approved.code, 0);
+    assert.match(approved.out, /spawn map/i);
+    assert.match(approved.out, /senior-architect → claude-opus-4-8-thinking-medium/);
+    const architect = fs.readFileSync(path.join(cwd, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
+    assert.match(architect, /^model: claude-opus-4-8-thinking-medium$/m);
+  });
+});
+
 test('modelGateShell: non-cursor host and non-model-gate commands → noop', () => {
   withProj({ models: ['gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'), 'claude')).kind, 'noop', 'claude → inert');

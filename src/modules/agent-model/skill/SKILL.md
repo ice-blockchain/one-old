@@ -33,6 +33,10 @@ Team gate: spawning subagents needs `team.approved: true`, which the Traffic One
 Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect, and on Cursor the `.cursor/agents/{{ROLE}}.md` frontmatter is NOT auto-applied: without this `model` parameter the subagent INHERITS the parent (orchestrator) model, so you MUST pass `model` per role (the correct value is also pinned in `.cursor/agents/{{ROLE}}.md`).{{ALTERNATES}} Per-role model tiers are defined by the plugin's model-tiers config (`scripts/config/model-tiers.js` in the installed plugin).
 <!-- T1BLOCK:END performance-model-param -->
 
+<!-- T1BLOCK:BEGIN cursor-exact-model-required -->
+Cursor model gate (level={{LEVEL}}): spawning `{{ROLE}}` passed `model: "{{PASSED}}"`, which matches the right Traffic One tier family but is not an exact Cursor Task model id from the fresh captured list. Cursor can create a visible "New subagent / Couldn't start" card when Task receives a family alias, so do NOT attempt the spawn with this value. Re-issue the same Task spawn with `model: "{{EXPECTED}}"` (or another exact captured id from the same tier). Captured ids for this build: {{CAPTURED}}.
+<!-- T1BLOCK:END cursor-exact-model-required -->
+
 <!-- T1BLOCK:BEGIN cursor-models-capture -->
 Cursor model-capture gate (asked once per run, run {{RUN_ID}}). Capture is OPTIONAL and you are NOT blocked.
 **To proceed RIGHT NOW: RE-ISSUE THE SAME `Task` spawn, unchanged.** Traffic One then falls back to family-aware matching and the spawn goes through — pass any model whose family fits the tier (an `claude-opus-4-8…` slug for highest, a `claude-4.6-sonnet…`/`gpt-5.5…` slug for balanced, a `composer-2.5…` slug for cheapest).
@@ -95,6 +99,7 @@ OpenCode role gate: `{{ROLE}}` is configured to run on OpenCode (it is in `openC
    - `role`: `{{ROLE}}`
    - `runId`: `{{RUN_ID}}`
    - `projectRoot`: `{{PROJECT_ROOT}}`  (absolute path — the directory holding `.traffic-one`)
+   - `allowedFiles`: the exact comma-separated repo-relative files/areas this bounded unit may touch. Any diff outside this allowlist is rejected before apply.
    - `task`: ONE bounded unit for this role — 1–2 named files with concrete acceptance criteria. NEVER the entire role implementation: free models deliver a bounded unit in ~2 minutes but produce nothing useful from a whole-role dump (measured live: zero output after minutes of serialized waiting). If the architect's plan queued units for this role, run the Step-0 `opencode_delegate_from_plan` batch instead — completing it marks every queued role as attempted and satisfies this gate.
    Do NOT pass `model` — OpenCode selects its own free model automatically (no account/API key needed).
 2. **If the result has `running:true`** → the run is proceeding in the background; call `opencode_delegate` AGAIN with the SAME arguments to keep waiting. Repeat until you get a terminal `ok`. (This is how a multi-minute run survives the host's ~120s tool-call timeout — do NOT treat `running:true` as a failure and do NOT fall back yet.) Your polls are the keep-alive: a run you stop polling for ~6 minutes is cancelled automatically (the worker is killed BEFORE any diff applies), so if you decide to move on to the paid fallback, simply stop polling — no stale diff can land later.
@@ -107,8 +112,12 @@ To stop routing this role through OpenCode, remove it from `openCode.delegateRol
 
 <!-- T1BLOCK:BEGIN agent-reuse-continue -->
 Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{AGENT_ID}}`. Do NOT spawn a fresh `{{ROLE}}`: every fresh spawn re-loads the full rules+skills context (~20k tokens before any work) and re-explores the codebase. Continue the SAME agent instead:
-1. {{CONTINUE_CALL}} The message carries ONLY what is NEW: the task spec, exact file paths, acceptance criteria, and (for fix cycles) the reviewer/tester findings VERBATIM. The agent keeps everything it already read — rules, skills, plan, digests, prior source — so do not re-paste any of that.
+1. {{CONTINUE_CALL}} The message carries ONLY what is NEW: the task spec, exact file paths, acceptance criteria, and (for fix cycles) the reviewer/tester findings VERBATIM. The agent keeps everything it already read — rules, skills, plan, digests, prior source — so do not re-paste any of that. On Cursor, `{{AGENT_ID}}` is the Task `resume` UUID from the spawn result (`Agent ID: …`), never the `tool_*` subagentStart id.
 2. Treat the reply exactly like a fresh spawn's final report (same digest + verdict-token contract: it must still end with its terminal token and update its digest under `.traffic-one/digests/<runId>/`).
 3. Parallel roles stay parallel: continuations of different roles (e.g. frontend + backend follow-ups) go out together in ONE turn, like parallel spawns.
 4. Only if that agent is genuinely unusable — {{CONTINUE_TOOL}} errors ("agent not found"/unavailable), or its replies show context exhaustion — re-spawn `{{ROLE}}` with the literal marker `{{MARKER}}` anywhere in the spawn prompt. The gate then allows ONE replacement spawn (same model-tier rules) and records the new agent id automatically.
 <!-- T1BLOCK:END agent-reuse-continue -->
+
+<!-- T1BLOCK:BEGIN agent-reuse-await-cursor-id -->
+Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, but Cursor has not exposed a valid Task `resume` UUID for it yet. The recorded `tool_*` id is only the subagentStart tool-call id and cannot resume the agent. Do NOT spawn a replacement and do NOT use `[t1-replace-agent]` unless the existing agent has actually failed or exhausted context. Wait for the current `{{ROLE}}` subagent to finish or produce a child transcript, then retry the same continuation; Traffic One will upgrade the registry to the real Cursor conversation id automatically.
+<!-- T1BLOCK:END agent-reuse-await-cursor-id -->

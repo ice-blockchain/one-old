@@ -84,7 +84,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Shell writes can't be ownership-verified from a command line.
   if (writingFeatureSourceViaCommand) {
     return deny(block('run-team-shell',
-      'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
+      'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
   }
 
   const agentContext = resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true })

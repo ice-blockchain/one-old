@@ -27,13 +27,14 @@ export interface RunnerResult {
   model?: string;
   total?: number;
   delegated?: number;
-  units?: Array<{ role: string; task: string; action: string; touched: string[] }>;
+  units?: Array<{ id?: string; role: string; task: string; action: string; status?: string; touched: string[]; error?: string | null }>;
 }
 
 export interface DelegateArgs {
   role: string;
   task: string;
   runId: string;
+  allowedFiles?: string;
   projectRoot?: string;
   model?: string;
 }
@@ -110,16 +111,18 @@ export async function runDelegate(a: DelegateArgs): Promise<RunnerResult> {
   const role = (a.role || '').trim();
   const task = a.task || '';
   const runId = (a.runId || '').trim();
+  const allowedFiles = (a.allowedFiles || '').trim();
   if (!role) return { ok: false, action: 'skipped', error: 'role is required' };
   if (!task.trim()) return { ok: false, action: 'skipped', error: 'task is required' };
   if (!runId) return { ok: false, action: 'skipped', error: 'runId is required' };
+  if (!allowedFiles) return { ok: false, action: 'skipped', error: 'allowedFiles is required' };
 
   let dir: string | null = null;
   try {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmcp-'));
     const taskFile = path.join(dir, 'task.md');
     fs.writeFileSync(taskFile, task, 'utf8');
-    const args = ['--run-id', runId, '--role', role, '--task-file', taskFile];
+    const args = ['--run-id', runId, '--role', role, '--task-file', taskFile, '--allowed-files', allowedFiles];
     if ((a.model || '').trim()) args.push('--model', (a.model as string).trim());
     return await runRunner(args, projectRoot);
   } catch (err) {
@@ -287,10 +290,12 @@ export async function delegateResumable(a: DelegateArgs, waitMs = RESUME_WAIT_MS
   const projectRoot = (a.projectRoot || '').trim() || process.cwd();
   const role = (a.role || '').trim();
   const runId = (a.runId || '').trim();
+  const allowedFiles = (a.allowedFiles || '').trim();
   if (!role) return { ok: false, action: 'skipped', error: 'role is required' };
   if (!runId) return { ok: false, action: 'skipped', error: 'runId is required' };
   const key = runKey(projectRoot, runId, role);
   if (!runs.has(key) && !(a.task || '').trim()) return { ok: false, action: 'skipped', error: 'task is required to start a delegation' };
+  if (!runs.has(key) && !allowedFiles) return { ok: false, action: 'skipped', error: 'allowedFiles is required to start a delegation' };
 
   const run = getOrStart(key, (onChild) => {
     let dir: string | null = null;
@@ -298,7 +303,7 @@ export async function delegateResumable(a: DelegateArgs, waitMs = RESUME_WAIT_MS
       dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmcp-'));
       const taskFile = path.join(dir, 'task.md');
       fs.writeFileSync(taskFile, a.task || '', 'utf8');
-      const args = ['--run-id', runId, '--role', role, '--task-file', taskFile];
+      const args = ['--run-id', runId, '--role', role, '--task-file', taskFile, '--allowed-files', allowedFiles];
       if ((a.model || '').trim()) args.push('--model', (a.model as string).trim());
       const p = runRunner(args, projectRoot, onChild);
       const cleanup = (): void => { try { fs.rmSync(dir as string, { recursive: true, force: true }); } catch { /* best-effort */ } };

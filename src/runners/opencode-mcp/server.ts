@@ -25,17 +25,18 @@ const TOOLS = [
   {
     name: OPENCODE_MCP_TOOL_DELEGATE,
     description:
-      'Run the locally-installed OpenCode CLI (`opencode run`) to implement ONE bounded, low-risk coding unit in this workspace. The edit happens in an isolated throwaway git worktree and only a clean, error-free diff is applied back; a review digest is written. RESUMABLE: the run executes in the background and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → re-spawn the paid role (fallback); or {running:true} → still running, so call opencode_delegate AGAIN with the SAME arguments to keep waiting. The user enabled this delegation in the Traffic One setup wizard; OpenCode selects its own model (a free model by default), so no `model` argument is needed.',
+      'Run the locally-installed OpenCode CLI (`opencode run`) to implement ONE bounded, low-risk coding unit in this workspace. The edit happens in an isolated throwaway git worktree and only a clean, error-free diff inside `allowedFiles` is applied back; a review digest is written. RESUMABLE: the run executes in the background and this call waits a bounded window, so it survives the host\'s ~120s tool-call timeout. It returns one of: {ok:true, action:"delegated", digest, touched} → proceed to review; {ok:false, action:"skipped"|"failed"|"no-changes"} → re-spawn the paid role (fallback); or {running:true} → still running, so call opencode_delegate AGAIN with the SAME arguments to keep waiting. The user enabled this delegation in the Traffic One setup wizard; OpenCode selects its own model (a free model by default), so no `model` argument is needed.',
     inputSchema: {
       type: 'object',
       properties: {
         role: { type: 'string', description: 'Traffic One role being delegated, e.g. senior-frontend.' },
         task: { type: 'string', description: "The role's self-contained task: its assigned scope + acceptance criteria, with no external context the run cannot see. Required on the first call; ignored on re-calls of a run already in progress." },
         runId: { type: 'string', description: 'The current run id (currentRunId) — scopes the attempt marker, digest, and the background run.' },
+        allowedFiles: { type: 'string', description: 'Required comma/newline-separated repo-relative allowlist for this bounded unit, e.g. apps/web/src/features/courses/**. Any diff outside this scope is rejected.' },
         projectRoot: { type: 'string', description: 'Absolute path to the project root (the directory containing .traffic-one). Must match the gate cwd. Defaults to the server cwd.' },
         model: { type: 'string', description: 'Optional model pin (e.g. a paid `opencode/gpt-5.1-codex`, which requires `opencode auth login`). Omit to let OpenCode use its default free model.' },
       },
-      required: ['role', 'task', 'runId'],
+      required: ['role', 'task', 'runId', 'allowedFiles'],
     },
   },
   {
@@ -90,6 +91,7 @@ async function handleToolCall(id: Id, params: unknown): Promise<object> {
       role: asString(args.role),
       task: asString(args.task),
       runId: asString(args.runId),
+      allowedFiles: asString(args.allowedFiles),
       projectRoot: asString(args.projectRoot),
       model: asString(args.model),
     });

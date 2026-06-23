@@ -36,20 +36,24 @@ import {
 import {
   markOpenCodeGateDenied,
   openCodeGateDenied,
+  openCodePlanBatchComplete,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
   pendingOpenCodePlanRoles,
   roleHasQueuedUnits,
+  shouldBlockImplementerForPlanBatch,
   shouldRunRoleOnOpenCode,
 } from '../../shared/opencode-roles';
 import {
   ensureCurrentRunId,
   ensureRunAgentClaim,
+  continuationAgentId,
   hookSessionIdentity,
   isMaintenancePhase,
   isTeamApproved,
   liveRunAgent,
   markRunAgentReplaced,
+  refreshCursorRunAgentFromTranscriptCache,
   readEffectiveState,
   REPLACE_AGENT_MARKER,
   subagentContinuationAvailable,
@@ -111,6 +115,11 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
   };
 }
 
+function replacementJustified(prompt: string): boolean {
+  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed)\b/i
+    .test(prompt);
+}
+
 // On Cursor a tier's `expected` is a bare model FAMILY (e.g. claude-opus-4-8). Map it to the
 // CONCRETE build slug the user's runner offers — the first captured model whose family matches
 // the family or a same-tier alternate — so deny/advisory prose names an EXACT slug Cursor
@@ -142,6 +151,22 @@ function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string,
     ? ` If this host's subagent runner does NOT offer "${shownExpected}" (it rejects an unavailable slug as invalid), pass instead the FIRST of these same-tier models the runner DOES offer — any of them satisfies the gate: ${altModels.join(', ')}.`
     : '';
   return deny(block('performance-model-param', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: shownExpected, PASSED_NOTE: passedNote, ALTERNATES: altNote }));
+}
+
+function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string): HookResult | null {
+  if (ctx.host !== 'cursor' || !passedModel) return null;
+  const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
+  if (!captured.length || captured.includes(passedModel)) return null;
+  const acceptable = acceptableModelsFor(expected, ctx.host);
+  if (!modelMatchesAny(passedModel, acceptable)) return null;
+  const exact = pickCursorSlug(acceptable, captured) || cursorRealSlug(ctx, cwd, expected);
+  return deny(block('cursor-exact-model-required', {
+    LEVEL: level,
+    ROLE: role,
+    PASSED: passedModel,
+    EXPECTED: exact,
+    CAPTURED: captured.join(', '),
+  }));
 }
 
 // The "next eligible" model for a tier: the concrete build slug of the first same-tier
@@ -334,7 +359,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // per-role gate below only covers roles configured to run on OpenCode
   // (frontend/tester/quick-fix by default), which let backend start while
   // frontend was blocked. This batch gate catches both implementers first.
-  if (state.mode === 'new-project' && isPlanBatchGatedRole(role)) {
+  if (isPlanBatchGatedRole(role) && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state)) {
     const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state);
     if (pendingPlanRoles.length > 0) {
       return deny(block('opencode-plan-batch-required', {
@@ -373,6 +398,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     if (runId && (roleHasQueuedUnits(cwd, role) || isMaintenancePhase(state))
       && !openCodeRoleAttempted(cwd, runId, role)
       && !openCodePlanRoleCompleted(cwd, runId, role)
+      && !openCodePlanBatchComplete(cwd, runId)
       && !openCodeGateDenied(cwd, runId, role)) {
       markOpenCodeGateDenied(cwd, runId, role);
       return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
@@ -400,14 +426,39 @@ export function agentModelGate(ctx: Ctx): HookResult {
       // (send_input / SendMessage), so spawn_agent/Task normally never carries these.
       const resumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
       const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
+      const parentSessionId = hookSessionIdentity(raw).sessionId;
+      const currentLive = (): ReturnType<typeof liveRunAgent> => {
+        const live = liveRunAgent(cwd, runId, role, parentSessionId);
+        if (ctx.host !== 'cursor') return live;
+        const resumeId = live ? continuationAgentId(live, ctx.host) : '';
+        return resumeId
+          ? live
+          : (refreshCursorRunAgentFromTranscriptCache(cwd, state, raw, runId, role, parentSessionId) || live);
+      };
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
+        const live = currentLive();
+        if (live && !replacementJustified(spawnPromptText)) {
+          const resumeTarget = continuationAgentId(live, ctx.host);
+          if (resumeTarget) {
+            const recipe = continuationRecipe(ctx.host, resumeTarget);
+            return deny(block('agent-reuse-continue', {
+              ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
+              CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
+            }));
+          }
+          return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+        }
         markRunAgentReplaced(cwd, runId, role);
       } else if (!isResume) {
-        const live = liveRunAgent(cwd, runId, role, hookSessionIdentity(raw).sessionId);
+        const live = currentLive();
         if (live) {
-          const recipe = continuationRecipe(ctx.host, live.agentId);
+          const resumeTarget = continuationAgentId(live, ctx.host);
+          if (!resumeTarget && ctx.host === 'cursor') {
+            return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+          }
+          const recipe = continuationRecipe(ctx.host, resumeTarget);
           return deny(block('agent-reuse-continue', {
-            ROLE: role, RUN_ID: runId, AGENT_ID: live.agentId, MARKER: REPLACE_AGENT_MARKER,
+            ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
             CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
           }));
         }
@@ -426,6 +477,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
     if (expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
     }
+    const exact = expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
+    if (exact) return exact;
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
       agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
@@ -482,6 +535,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
     // case). This is what unblocks a build that omitted the per-role model.
     return modelTierDeny(ctx, cwd, role, passedModel, expected, level);
   }
+  const exact = cursorExactModelDeny(ctx, cwd, role, passedModel, expected, level);
+  if (exact) return exact;
 
   // The model satisfies the tier — but the recommended model the user PICKED may not actually be
   // offered by this build (disabled in Settings → Models / not on plan), in which case the team is

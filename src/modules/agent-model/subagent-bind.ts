@@ -94,6 +94,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   if (cursorSubagentId && runId) {
     recordRunAgent(ctx.cwd, runId, role, {
       agentId: cursorSubagentId,
+      toolCallId: cursorSubagentId,
       model: asString(raw.subagent_model) || null,
       agentType: asString(raw.subagent_type) || null,
       parentSessionId: identity.sessionId,

@@ -229,6 +229,11 @@ export interface SessionIdentity {
   // Traffic One role; null when absent or not a role. Lets a team worker bind its
   // claim without transcript inference. See project_agent_teams_claim_deadlock.
   declaredRole: string | null;
+  // Best-effort model id from the hook payload. Cursor child writes can arrive
+  // after multiple failed/retried Task spawns for the same role; matching by model
+  // lets the binder consume the successful exact-slug pending claim instead of an
+  // older family-alias claim that produced a visible "Couldn't start" card.
+  model: string | null;
 }
 
 // Map a host `agent_type` (e.g. "traffic-one:senior-frontend" or "senior-frontend")
@@ -278,6 +283,13 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   // recognized as a subagent and its reuse id + role are captured.
   const agentId = firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId, data.subagent_id, payload.subagent_id);
   const declaredRole = roleFromAgentType(firstString(data.agent_type, data.agentType, payload.agent_type, payload.agentType, data.subagent_type, payload.subagent_type));
+  const model = firstString(
+    data.model, payload.model,
+    data.subagent_model, data.subagentModel,
+    payload.subagent_model, payload.subagentModel,
+    nestedValue(data, ['tool_input', 'model']), nestedValue(data, ['toolInput', 'model']),
+    nestedValue(payload, ['tool_input', 'model']), nestedValue(payload, ['toolInput', 'model']),
+  );
   const isSubagent = Boolean(
     threadSource === 'subagent'
     || parentSessionId
@@ -287,7 +299,7 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
     || nestedValue(payload, ['subagent']),
   );
 
-  return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath, agentId, declaredRole };
+  return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath, agentId, declaredRole, model };
 }
 
 // True when the hook is firing inside a SUBAGENT thread (not the parent/main
@@ -361,19 +373,32 @@ function listPendingClaims(cwd: string, runId: string): PendingClaim[] {
   try {
     const dir = pendingDir(cwd, runId);
     if (!fs.existsSync(dir)) return [];
-    return fs.readdirSync(dir, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-      .map((entry): PendingClaim | null => {
-        const filePath = path.join(dir, entry.name);
-        const claim = readClaimFile(filePath);
-        return claim ? { filePath, claim } : null;
-      })
-      .filter((item): item is PendingClaim => item !== null)
-      .filter(({ claim }) => isFreshTimestamp(claim.createdAt, PENDING_AGENT_CLAIM_STALE_MS))
+    const out: PendingClaim[] = [];
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+      const filePath = path.join(dir, entry.name);
+      const claim = readClaimFile(filePath);
+      if (!claim) continue;
+      if (!isFreshTimestamp(claim.createdAt, PENDING_AGENT_CLAIM_STALE_MS)) {
+        removePendingClaim(filePath);
+        continue;
+      }
+      out.push({ filePath, claim });
+    }
+    return out
       .sort((left, right) => String(left.claim.createdAt).localeCompare(String(right.claim.createdAt)));
   } catch {
     return [];
   }
+}
+
+function newestPending(items: PendingClaim[]): PendingClaim | null {
+  if (!items.length) return null;
+  return [...items].sort((left, right) => String(right.claim.createdAt).localeCompare(String(left.claim.createdAt)))[0] || null;
+}
+
+function claimModel(claim: Rec): string | null {
+  return firstString(claim.model);
 }
 
 function matchingPendingClaim(
@@ -382,13 +407,21 @@ function matchingPendingClaim(
   runId: string,
   role: string,
   parentSessionId: string | null,
+  model: string | null = null,
 ): PendingClaim | null {
   const pending = listPendingClaims(cwd, runId)
     .filter(({ claim }) => claimAllowsState(state, claim))
     .filter(({ claim }) => claim.role === role);
-  return pending.find(({ claim }) => (
+  const sameParent = pending.filter(({ claim }) => (
     parentSessionId && claim.parentSessionId && claim.parentSessionId === parentSessionId
-  )) || pending[0] || null;
+  ));
+  const sameModel = (items: PendingClaim[]) => model
+    ? items.filter(({ claim }) => claimModel(claim) === model)
+    : [];
+  return newestPending(sameModel(sameParent))
+    || newestPending(sameModel(pending))
+    || newestPending(sameParent)
+    || newestPending(pending);
 }
 
 function removePendingClaim(filePath: string): void {
@@ -397,6 +430,23 @@ function removePendingClaim(filePath: string): void {
   } catch {
     // a leftover pending file is harmless; freshness expires it
   }
+}
+
+function removeSiblingPendingClaims(
+  cwd: string,
+  state: unknown,
+  runId: string,
+  role: string,
+  parentSessionId: string | null,
+  keepClaimId: string | null,
+): void {
+  if (!parentSessionId) return;
+  const pending = listPendingClaims(cwd, runId)
+    .filter(({ claim }) => claimAllowsState(state, claim))
+    .filter(({ claim }) => claim.role === role)
+    .filter(({ claim }) => claim.parentSessionId === parentSessionId)
+    .filter(({ claim }) => !keepClaimId || claim.claimId !== keepClaimId);
+  for (const item of pending) removePendingClaim(item.filePath);
 }
 
 function cursorProjectsRoot(): string | null {
@@ -458,6 +508,37 @@ function subagentTranscriptCandidates(projectDir: string, sessionId: string): Cu
   return out;
 }
 
+function allSubagentTranscriptCandidates(projectDir: string, parentSessionId?: string | null): CursorTranscriptCandidate[] {
+  const out: CursorTranscriptCandidate[] = [];
+  const agentTranscriptsDir = path.join(projectDir, 'agent-transcripts');
+  try {
+    for (const parent of fs.readdirSync(agentTranscriptsDir, { withFileTypes: true })) {
+      if (!parent.isDirectory()) continue;
+      if (parentSessionId && parent.name !== parentSessionId) continue;
+      const dir = path.join(agentTranscriptsDir, parent.name, 'subagents');
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
+        const filePath = path.join(dir, entry.name);
+        try {
+          const stat = fs.statSync(filePath);
+          if (stat.isFile()) out.push({ filePath, parentSessionId: parent.name, mtimeMs: stat.mtimeMs });
+        } catch {
+          // transcript disappeared mid-scan
+        }
+      }
+    }
+  } catch {
+    // no Cursor transcript cache for this project
+  }
+  return out;
+}
+
 // Cursor child tool events currently report only the child conversation/session id
 // and `transcript_path: null`. The role marker lives in Cursor's local child
 // transcript at:
@@ -501,6 +582,52 @@ function cursorSubagentTranscript(cwd: string, rawInput: unknown, sessionId: str
   if (candidates.length === 0) return null;
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return candidates[0]!;
+}
+
+function cursorSubagentTranscriptsForRole(
+  cwd: string,
+  rawInput: unknown,
+  role: string,
+  parentSessionId?: string | null,
+): CursorTranscriptCandidate[] {
+  if (!VALID_AGENT_ROLES.has(role)) return [];
+  const root = cursorProjectsRoot();
+  if (!root) return [];
+
+  const projectRoots = workspaceRootsForCursorLookup(cwd, rawInput);
+  const projectDirs: string[] = [];
+  for (const projectRoot of projectRoots) {
+    for (const dirName of cursorProjectDirNames(projectRoot)) {
+      projectDirs.push(path.join(root, dirName));
+    }
+  }
+
+  const candidates: CursorTranscriptCandidate[] = [];
+  for (const projectDir of uniqueStrings(projectDirs)) {
+    candidates.push(...allSubagentTranscriptCandidates(projectDir, parentSessionId));
+  }
+
+  if (candidates.length === 0) {
+    const basenames = uniqueStrings(projectRoots.map((projectRoot) => path.basename(projectRoot)).filter(Boolean));
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (!basenames.some((base) => entry.name === base || entry.name.endsWith(`-${base}`))) continue;
+        candidates.push(...allSubagentTranscriptCandidates(path.join(root, entry.name), parentSessionId));
+      }
+    } catch {
+      // no Cursor projects root
+    }
+  }
+
+  return candidates
+    .filter((candidate) => inferRoleFromTranscript(candidate.filePath) === role)
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+}
+
+function candidateThreadId(candidate: CursorTranscriptCandidate): string | null {
+  const base = path.basename(candidate.filePath).replace(/\.jsonl$/i, '');
+  return isResumeCapableAgentId(base) ? base : null;
 }
 
 function listClaimedAgents(cwd: string, runId: string): Rec[] {
@@ -619,7 +746,7 @@ export function resolveRunAgentContext(
   // with the declared role — no inference needed. This is what unblocks team
   // workers' feature-source writes (see project_agent_teams_claim_deadlock).
   if (shouldClaimPending && identity.agentId && identity.declaredRole) {
-    const ctx = claimThreadRole(cwd, state, identity.agentId, identity.declaredRole, { parentSessionId: identity.sessionId });
+    const ctx = claimThreadRole(cwd, state, identity.agentId, identity.declaredRole, { parentSessionId: identity.sessionId, model: identity.model });
     if (ctx) return ctx;
   }
 
@@ -643,7 +770,7 @@ export function resolveRunAgentContext(
       : (identity.parentSessionId || cursorTranscript?.parentSessionId || null);
     const ctx = claimThreadRole(cwd, state, inferredThreadId, inferredRole, {
       parentSessionId,
-      recordAgent: !cursorTranscriptPath,
+      model: identity.model,
     });
     if (ctx) return ctx;
   }
@@ -658,9 +785,16 @@ export function resolveRunAgentContext(
       const pending = listPendingClaims(cwd, runId)
         .filter(({ claim }) => claimAllowsState(state, claim))
         .filter(({ claim }) => !inferredRole || claim.role === inferredRole);
-      const matched = pending.find(({ claim }) => (
+      const sameParent = pending.filter(({ claim }) => (
         identity.parentSessionId && claim.parentSessionId && claim.parentSessionId === identity.parentSessionId
-      )) || pending[0];
+      ));
+      const sameModel = (items: PendingClaim[]) => identity.model
+        ? items.filter(({ claim }) => claimModel(claim) === identity.model)
+        : [];
+      const matched = newestPending(sameModel(sameParent))
+        || newestPending(sameModel(pending))
+        || newestPending(sameParent)
+        || newestPending(pending);
       if (!matched) continue;
 
       // Key the claimed file by the PER-THREAD id when we have one. On Codex,
@@ -682,6 +816,7 @@ export function resolveRunAgentContext(
       } catch {
         // a leftover pending file is harmless; freshness expires it
       }
+      removeSiblingPendingClaims(cwd, state, runId, String(claimed.role || ''), claimed.parentSessionId as string | null, claimed.claimId as string | null);
       return contextFromClaim(claimed, 'run-agent');
     }
   }
@@ -701,7 +836,7 @@ export function claimThreadRole(
   state: unknown,
   threadId: string,
   role: string,
-  options: { parentSessionId?: string | null; recordAgent?: boolean } = {},
+  options: { parentSessionId?: string | null; recordAgent?: boolean; model?: string | null } = {},
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
@@ -709,14 +844,16 @@ export function claimThreadRole(
   const id = threadId.trim();
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
+  const parentSessionId = firstString(options.parentSessionId);
+  const model = firstString(options.model);
 
   const existing = readClaimFile(runAgentFile(cwd, runId, id));
   if (existing && claimAllowsState(state, existing)) {
+    removeSiblingPendingClaims(cwd, source, runId, role, parentSessionId || firstString(existing.parentSessionId), firstString(existing.claimId));
     return contextFromClaim(existing, 'subagent-start');
   }
 
-  const parentSessionId = firstString(options.parentSessionId);
-  const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId);
+  const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
   const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
     ? pending.claim.spawnIndex
     : nextSpawnIndex(cwd, source, runId, role);
@@ -734,10 +871,12 @@ export function claimThreadRole(
     createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
     claimedAt: now,
     stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
+    model: model || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null),
   };
   fs.mkdirSync(runDir(cwd, runId), { recursive: true });
   writeJson(runAgentFile(cwd, runId, id), claim);
   if (pending) removePendingClaim(pending.filePath);
+  removeSiblingPendingClaims(cwd, source, runId, role, claim.parentSessionId as string | null, claim.claimId as string | null);
   // Mirror the bind into the role-keyed reuse registry (agents.json), so the spawn
   // dedup gate sees a LIVE agent for the role and routes the next same-role task to
   // SendMessage/send_input — one agent per role instead of a fresh rule-reloading
@@ -746,7 +885,7 @@ export function claimThreadRole(
   // carry agent_id/agent_type but no separately-recorded spawn result). Gated on
   // continuation (the registry is dead weight without it) and best-effort.
   if (options.recordAgent !== false && subagentContinuationAvailable()) {
-    recordRunAgent(cwd, runId, role, { agentId: id, parentSessionId });
+    recordRunAgent(cwd, runId, role, { agentId: id, parentSessionId, model: claim.model as string | null });
   }
   // Deliberately NOT writeState() here. Parallel subagents self-heal their claims
   // near-simultaneously on their first writes, and writeState does a non-atomic
@@ -1112,6 +1251,10 @@ function agentRegistryFile(cwd: string, runId: string): string {
 
 export interface RunAgentEntry {
   agentId: string;
+  /** Cursor Task `resume` id (UUID from spawn result). Never a `tool_*` tool-call id. */
+  resumeId?: string | null;
+  /** Cursor subagentStart `subagent_id` (= tool_<uuid>) when PostToolUse has not arrived yet. */
+  toolCallId?: string | null;
   role: string;
   model: string | null;
   agentType: string | null;
@@ -1119,6 +1262,25 @@ export interface RunAgentEntry {
   recordedAt: string;
   tasks: number;
   replaced: boolean;
+}
+
+/** Cursor surfaces spawn tool-call ids as `tool_<uuid>` — these do NOT work with Task `resume`. */
+export function isCursorToolSubagentId(id: string): boolean {
+  return /^tool_[0-9a-f-]{8,}$/i.test(id.trim());
+}
+
+/** True when the id can resume/continue the agent on Cursor (UUID/hex agent id, not tool_*). */
+export function isResumeCapableAgentId(id: string): boolean {
+  const t = id.trim();
+  return t.length > 0 && !isCursorToolSubagentId(t);
+}
+
+/** Host-correct id for agent-reuse continuation denies (Cursor → Task `resume`). */
+export function continuationAgentId(entry: RunAgentEntry, host: string): string {
+  if (host !== 'cursor') return entry.agentId;
+  if (entry.resumeId && isResumeCapableAgentId(entry.resumeId)) return entry.resumeId;
+  if (isResumeCapableAgentId(entry.agentId)) return entry.agentId;
+  return '';
 }
 
 export function readRunAgentRegistry(cwd: string, runId: string): Record<string, RunAgentEntry> {
@@ -1131,6 +1293,8 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
     if (!entry || typeof entry.agentId !== 'string' || !entry.agentId) continue;
     out[role] = {
       agentId: entry.agentId,
+      resumeId: typeof entry.resumeId === 'string' ? entry.resumeId : null,
+      toolCallId: typeof entry.toolCallId === 'string' ? entry.toolCallId : null,
       role,
       model: typeof entry.model === 'string' ? entry.model : null,
       agentType: typeof entry.agentType === 'string' ? entry.agentType : null,
@@ -1147,19 +1311,54 @@ export function recordRunAgent(
   cwd: string,
   runId: string,
   role: string,
-  entry: { agentId: string; model?: string | null; agentType?: string | null; parentSessionId?: string | null },
+  entry: {
+    agentId: string;
+    resumeId?: string | null;
+    toolCallId?: string | null;
+    model?: string | null;
+    agentType?: string | null;
+    parentSessionId?: string | null;
+  },
 ): void {
   if (!VALID_AGENT_ROLES.has(role)) return;
   if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
   const agents = readRunAgentRegistry(cwd, runId) as Rec;
   const prior = obj(agents[role]);
+  const incomingId = entry.agentId.trim();
+  const incomingResume = (entry.resumeId && isResumeCapableAgentId(entry.resumeId) ? entry.resumeId.trim() : null)
+    || (isResumeCapableAgentId(incomingId) ? incomingId : null);
+  const incomingTool = (entry.toolCallId && isCursorToolSubagentId(entry.toolCallId) ? entry.toolCallId.trim() : null)
+    || (isCursorToolSubagentId(incomingId) ? incomingId : null);
+  const priorResume = prior && typeof prior.resumeId === 'string' && isResumeCapableAgentId(prior.resumeId)
+    ? (prior.resumeId as string)
+    : (prior && typeof prior.agentId === 'string' && isResumeCapableAgentId(prior.agentId as string) ? (prior.agentId as string) : null);
+  const resumeId = incomingResume || priorResume || null;
+  const toolCallId = incomingTool
+    || (prior && typeof prior.toolCallId === 'string' ? (prior.toolCallId as string) : null);
+  // agentId stays backward-compatible: prefer the resume-capable id when known.
+  const agentId = resumeId || incomingId || (prior && typeof prior.agentId === 'string' ? (prior.agentId as string) : incomingId);
+  const sameAgent = prior
+    && prior.replaced !== true
+    && ((prior.agentId === agentId)
+      || (prior.resumeId && prior.resumeId === resumeId)
+      || (prior.toolCallId && prior.toolCallId === toolCallId)
+      // Cursor records `subagentStart` first with only `tool_<uuid>`, then later
+      // PostToolUse(Task) can add the real resume UUID with no shared id. Duplicate
+      // same-role fresh spawns are denied before they reach here, so treat this as
+      // an upgrade of the same live agent unless the role was explicitly replaced.
+      || (prior.toolCallId && !prior.resumeId && resumeId));
+  const priorModel = prior && typeof prior.model === 'string' && prior.model ? prior.model : null;
+  const priorAgentType = prior && typeof prior.agentType === 'string' && prior.agentType ? prior.agentType : null;
+  const priorParentSessionId = prior && typeof prior.parentSessionId === 'string' && prior.parentSessionId ? prior.parentSessionId : null;
   agents[role] = {
-    agentId: entry.agentId,
-    model: entry.model || null,
-    agentType: entry.agentType || null,
-    parentSessionId: entry.parentSessionId || null,
+    agentId,
+    resumeId,
+    toolCallId,
+    model: firstString(entry.model, sameAgent ? priorModel : null),
+    agentType: firstString(entry.agentType, sameAgent ? priorAgentType : null),
+    parentSessionId: firstString(entry.parentSessionId, sameAgent ? priorParentSessionId : null),
     recordedAt: stateTimestamp(),
-    tasks: prior && prior.agentId === entry.agentId && typeof prior.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
+    tasks: sameAgent && typeof prior?.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
     replaced: false,
   };
   try {
@@ -1168,6 +1367,40 @@ export function recordRunAgent(
   } catch {
     // best-effort registry; reuse falls back to fresh spawns when unwritable
   }
+}
+
+// Cursor sometimes exposes only `subagent_id: tool_<uuid>` at SubagentStart. That
+// id proves a role was started, but it is not a valid Task `resume` target. Before
+// the duplicate-spawn gate asks the orchestrator to continue or replace the role,
+// actively scan Cursor's local subagent transcript cache for the real child
+// conversation UUID and upgrade agents.json. This also covers read-only roles
+// (reviewer) that may not write files, so resolveRunAgentContext never gets a
+// chance to self-heal from a write hook.
+export function refreshCursorRunAgentFromTranscriptCache(
+  cwd: string,
+  state: unknown,
+  rawInput: unknown,
+  runId: string,
+  role: string,
+  parentSessionId: string | null,
+): RunAgentEntry | null {
+  if (!runId || !VALID_AGENT_ROLES.has(role)) return null;
+  const candidates = cursorSubagentTranscriptsForRole(cwd, rawInput, role, parentSessionId);
+  for (const candidate of candidates) {
+    const childId = candidateThreadId(candidate);
+    if (!childId) continue;
+    claimThreadRole(cwd, state, childId, role, {
+      parentSessionId: candidate.parentSessionId || parentSessionId || null,
+    });
+    recordRunAgent(cwd, runId, role, {
+      agentId: childId,
+      resumeId: childId,
+      parentSessionId: candidate.parentSessionId || parentSessionId || null,
+    });
+    const upgraded = readRunAgentRegistry(cwd, runId)[role];
+    if (upgraded) return upgraded;
+  }
+  return null;
 }
 
 // The live (reusable) agent for a role, or null. parentSessionId binding: when

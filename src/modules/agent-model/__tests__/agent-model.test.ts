@@ -10,7 +10,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
-import { markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
+import { markOpenCodePlanBatchComplete, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
@@ -118,7 +118,7 @@ function queueDelegateRoles(cwd: string, roles: string[]): void {
   fs.mkdirSync(t1, { recursive: true });
   fs.writeFileSync(
     path.join(t1, 'plan.md'),
-    `<!-- opencode-delegate:start -->\n${roles.map((role) => `- role: ${role} | files: x.ts | task: one bounded unit. Acceptance: ok.`).join('\n')}\n<!-- opencode-delegate:end -->\n`,
+    `<!-- opencode-delegate:start -->\n${roles.map((role, index) => `- id: ${role.replace(/^senior-/, '')}-${index + 1} | role: ${role} | files: x.ts | task: one bounded unit. Acceptance: ok.`).join('\n')}\n<!-- opencode-delegate:end -->\n`,
     'utf8',
   );
 }
@@ -183,7 +183,7 @@ test('spawn whose prompt fabricates a non-currentRunId run-id is denied, naming 
   });
 });
 
-test('Cursor: model-param enforced FAMILY-AWARE — alias/wrong-tier deny, exact Task-tool slug + sub-variant allow, claim staked', () => {
+test('Cursor: model-param requires an exact captured Task-tool slug before staking a claim', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // high senior-frontend → highest tier → cursor "claude-opus-4-8-thinking-high" (the exact
     // Task-tool slug). The bare Anthropic alias Cursor rejects → deny (the original tester bug).
@@ -203,13 +203,22 @@ test('Cursor: model-param enforced FAMILY-AWARE — alias/wrong-tier deny, exact
     // No model param → deny (would inherit the parent model).
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend' }, 'cursor')).kind, 'deny');
 
-    // The exact highest Task-tool slug passes; a sub-variant of it (family-prefix) also passes.
+    // A family alias or invented sub-variant satisfies the tier but is NOT an exact Cursor Task id.
+    // Deny before Cursor sees the Task call, otherwise it creates a visible "Couldn't start" card.
+    const bareFamily = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8' }, 'cursor'));
+    assert.equal(bareFamily.kind, 'deny');
+    if (bareFamily.kind === 'deny') {
+      assert.ok(bareFamily.reason.includes('Cursor model gate'));
+      assert.ok(bareFamily.reason.includes('claude-opus-4-8-thinking-high'));
+    }
+    const invented = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high-fast' }, 'cursor'));
+    assert.equal(invented.kind, 'deny');
+    if (invented.kind === 'deny') assert.ok(invented.reason.includes('Cursor model gate'));
+
+    // The exact highest Task-tool slug passes.
     // The FIRST passing Cursor spawn of the run also carries the one-time model-availability
-    // advisory (kind 'context'); it is still an ALLOW (not a deny) and stakes the claim. The
-    // second passing spawn (advisory already shown) is a clean 'noop'.
+    // advisory (kind 'context'); it is still an ALLOW (not a deny) and stakes the claim.
     assert.notEqual(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor')).kind, 'deny');
-    const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high-fast' }, 'cursor'));
-    assert.equal(ok.kind, 'noop');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const runId = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
     assert.ok(runId.length > 0, 'currentRunId minted on Cursor spawn');
@@ -492,13 +501,16 @@ test('Cursor proactive advisory: first passing spawn names the models + enable p
   });
 });
 
-test('Cursor quick-fix is pinned to the real cheapest Cursor model (composer-2.5-fast + sub-variants)', () => {
+test('Cursor quick-fix is pinned to the exact captured cheapest Cursor model', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // quick-fix → cheapest tier → cursor "composer-2.5-fast". A pricier/alias model denies;
-    // the exact Task-tool slug and a same-family sub-variant both pass.
+    // the exact Task-tool slug passes. A fabricated same-family sub-variant is denied before
+    // Cursor sees it, because Task requires an id from the captured model list.
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }, 'cursor')).kind, 'deny');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast' }, 'cursor')).kind, 'noop');
-    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast-high' }, 'cursor')).kind, 'noop');
+    const invented = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'composer-2.5-fast-high' }, 'cursor'));
+    assert.equal(invented.kind, 'deny');
+    if (invented.kind === 'deny') assert.ok(invented.reason.includes('Cursor model gate'));
   });
 });
 
@@ -561,6 +573,7 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -582,6 +595,7 @@ test('opencode plan-batch gate: queued Step-0 work blocks both implementers unti
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -615,12 +629,33 @@ test('opencode plan-batch gate: queued Step-0 work blocks both implementers unti
   });
 });
 
+test('opencode plan-batch gate: COMPLETE marker alone clears implementer spawns', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-plan-complete';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRoles(cwd, ['frontend', 'backend', 'tester']);
+
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'deny');
+    markOpenCodePlanBatchComplete(cwd, 'run-plan-complete');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+  });
+});
+
 test('opencode role gate: a configured non-implementer role is denied until OpenCode is tried, then allowed (fallback)', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     // Enable OpenCode + set a currentRunId so the gate can scope the attempt marker.
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -649,6 +684,7 @@ test('opencode role gate: a forced role with NO queued units is NOT trapped (pro
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -667,6 +703,7 @@ test('opencode role gate: mints currentRunId when absent (existing-codebase) so 
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     // The exact gap: existing-codebase + NO currentRunId. ensureRunAgentClaim is
     // never reached for this mode, so before the fix the gate silently skipped.
@@ -702,6 +739,7 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -722,6 +760,7 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -744,6 +783,7 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
     const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
@@ -875,13 +915,13 @@ function setCurrentRunId(cwd: string, runId: string): void {
   fs.writeFileSync(file, JSON.stringify(state), 'utf8');
 }
 
-function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string): Ctx {
+function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' = 'claude'): Ctx {
   const input: HookInput = {
-    event: 'PreToolUse', host: 'claude', cwd,
+    event: 'PreToolUse', host, cwd,
     raw: { tool_name: 'Task', tool_input: toolInput, session_id: sessionId },
     tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
   };
-  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 function postSpawnCtx(cwd: string, toolInput: Record<string, unknown>, toolResponse: unknown, sessionId: string): Ctx {
@@ -902,9 +942,19 @@ test('extractSpawnedAgentId reads the Agent result footer in string and structur
     extractSpawnedAgentId({ content: [{ type: 'text', text: 'done. agentId: a99c9f8a723f92f77 (use SendMessage…)' }] }),
     'a99c9f8a723f92f77',
   );
+  assert.equal(
+    extractSpawnedAgentId('Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 (can be used with the `resume` parameter'),
+    'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+  );
+  assert.equal(
+    extractSpawnedAgentId('[label](9e41b709-ff45-4f20-bcbd-d077f92944b8)'),
+    '9e41b709-ff45-4f20-bcbd-d077f92944b8',
+  );
   // Structured spelling: a payload carrying the id as a JSON field is scanned
   // as serialized JSON ("agentId":"…") and must match too.
   assert.equal(extractSpawnedAgentId({ agentId: 'deadbeef12345678', content: [] }), 'deadbeef12345678');
+  // tool_* spawn ids must NOT be captured as resume ids.
+  assert.equal(extractSpawnedAgentId('agentId: tool_b1b73265-1c92-4340-a170-d148f8f0dde'), null);
   // No labelled id → null (a bare sha in the reply must NOT be captured).
   assert.equal(extractSpawnedAgentId('committed 4e66b2882da9afb9747468b08a253ca2f09c85f3'), null);
   assert.equal(extractSpawnedAgentId(undefined), null);
@@ -945,6 +995,37 @@ test('reuse: recorder persists the agent id, duplicate same-role spawn is denied
   });
 });
 
+test('reuse (Cursor): duplicate spawn deny names Task resume UUID after PostToolUse records it', () => {
+  withMaterialized({ teamApproved: true, cursorModels: [...DEFAULT_CURSOR_MODELS, 'claude-4.6-sonnet-thinking'] }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-cursor-resume');
+      subagentStartBind({
+        input: {
+          event: 'SubagentStart', host: 'cursor', cwd,
+          raw: {
+            subagent_id: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+            subagent_type: 'senior-frontend',
+            session_id: 'parent-1',
+          },
+        },
+        host: 'cursor', cwd, now: () => 'x',
+      } as unknown as Ctx);
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'composer-2.5', prompt: 'build UI' },
+        'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 (can be used with the resume parameter)',
+        'parent-1',
+      ));
+      const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'composer-2.5', prompt: 'fix cycle' }, 'parent-1'));
+      assert.equal(dup.kind, 'deny');
+      if (dup.kind === 'deny') {
+        assert.ok(dup.reason.includes('bff46cd7-3681-4cf0-adcf-263bf55cc301'), 'deny must name Cursor resume UUID, not tool_* id');
+        assert.ok(!dup.reason.includes('tool_b1b73265'), 'deny must not name tool_* id');
+      }
+    });
+  });
+});
+
 test('reuse (Cursor): subagent-start records the spawned subagent_id into the registry (10b re-spawn-pileup fix)', () => {
   withMaterialized({ teamApproved: true, cursorModels: [...DEFAULT_CURSOR_MODELS, 'claude-4.6-sonnet-thinking'] }, (cwd) => {
     setCurrentRunId(cwd, 'run-cursor-1');
@@ -971,16 +1052,23 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
     subagentStartBind(cursorCtx);
     const registry = readRunAgentRegistry(cwd, 'run-cursor-1');
     assert.equal(
-      registry['senior-architect']?.agentId,
+      registry['senior-architect']?.toolCallId,
       'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb',
-      'Cursor subagent_id must be recorded for reuse (else fix-cycles re-spawn)',
+      'Cursor subagent_id must be recorded as toolCallId until PostToolUse supplies resume UUID',
     );
+    assert.equal(registry['senior-architect']?.resumeId, null);
     assert.equal(registry['senior-architect']?.agentType, 'senior-architect');
     assert.equal(
       fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-cursor-1', 'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb.json')),
       false,
       'Cursor subagent-start must not claim tool_<id>; the child conversation claims itself on first write',
     );
+    const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-architect', model: 'composer-2.5-fast', prompt: 'continue architecture' }, 'orchestrator-parent', 'cursor'));
+    assert.equal(dup.kind, 'deny');
+    if (dup.kind === 'deny') {
+      assert.ok(/has not exposed a valid Task `resume` UUID/i.test(dup.reason), dup.reason);
+      assert.ok(!dup.reason.includes('resume: "tool_'), 'never suggests resuming a tool_* id');
+    }
   });
 });
 
@@ -1049,6 +1137,30 @@ test('reuse: the replace marker retires the recorded agent and lets ONE replacem
       // …and a later duplicate (no marker, nothing re-recorded yet) is NOT blocked by the retired entry.
       const after = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-tester', model: 'haiku', prompt: 'rerun' }, 'parent-1'));
       assert.equal(after.kind, 'noop');
+    });
+  });
+});
+
+test('reuse: replace marker without a failure reason is denied while a healthy agent exists', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-reuse-marker-guard');
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'build UI' },
+        'agentId: frontend11aa22bb33',
+        'parent-1',
+      ));
+      const duplicate = agentModelGate(spawnCtxWithSession(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'opus', prompt: 'fresh copy [t1-replace-agent]' },
+        'parent-1',
+      ));
+      assert.equal(duplicate.kind, 'deny');
+      if (duplicate.kind === 'deny') {
+        assert.ok(duplicate.reason.includes('frontend11aa22bb33'), 'still points at the live agent');
+      }
+      assert.equal(readRunAgentRegistry(cwd, 'run-reuse-marker-guard')['senior-frontend']?.replaced, false);
     });
   });
 });

@@ -65,16 +65,18 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
 function writeGraphifyStubPython(binDir: string): void {
   fs.mkdirSync(binDir, { recursive: true });
   fs.writeFileSync(path.join(binDir, 'python3'), `#!/bin/sh
+if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
 if [ "$1" = "-m" ] && [ "$2" = "venv" ]; then
   venv="$3"
   mkdir -p "$venv/bin"
   cat > "$venv/bin/python" <<'PY'
 #!/bin/sh
+if [ "$1" = "-c" ]; then echo "3.12"; exit 0; fi
 if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "install" ]; then
   dir=$(dirname "$0")
   cat > "$dir/graphify" <<'G'
 #!/bin/sh
-if [ "$1" = "update" ]; then mkdir -p graphify-out; printf '# graph\n' > graphify-out/GRAPH_REPORT.md; fi
+if [ "$1" = "update" ]; then mkdir -p graphify-out; printf '# graph\n' > graphify-out/GRAPH_REPORT.md; printf '{"nodes":[{"id":"src/index.ts"}],"links":[]}\n' > graphify-out/graph.json; fi
 exit 0
 G
   chmod +x "$dir/graphify"
@@ -141,7 +143,7 @@ if [ "$1" = "-m" ] && [ "$2" = "pip" ] && [ "$3" = "install" ]; then
   dir=$(dirname "$0")
   cat > "$dir/graphify" <<'G'
 #!/bin/sh
-if [ "$1" = "update" ]; then mkdir -p graphify-out; printf '# graph\n' > graphify-out/GRAPH_REPORT.md; fi
+if [ "$1" = "update" ]; then mkdir -p graphify-out; printf '# graph\n' > graphify-out/GRAPH_REPORT.md; printf '{"nodes":[{"id":"src/index.ts"}],"links":[]}\n' > graphify-out/graph.json; fi
 exit 0
 G
   chmod +x "$dir/graphify"

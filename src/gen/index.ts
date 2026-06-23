@@ -8,6 +8,7 @@
 // rules/ + skills-catalog/ + .cursor/rules + static plugin-root docs.
 
 import * as path from 'path';
+import * as fs from 'fs';
 
 import { emitAgents } from './emit/agents';
 import { emitCursorRules } from './emit/cursor-rules';
@@ -22,6 +23,19 @@ export function sourceRepoRoot(): string {
   // Codegen is authoring tooling, not installed runtime code. Runtime hooks must
   // honor *_PLUGIN_ROOT env vars, but `npm run gen` should always read the source
   // checkout even when a maintainer shell inherited TRAFFIC_ONE_PLUGIN_ROOT=dist.
+  const candidates = [
+    process.env.TRAFFIC_ONE_SOURCE_ROOT,
+    process.cwd(),
+    path.resolve(__dirname, '..', '..'),
+    path.resolve(__dirname, '..', '..', '..'),
+  ].filter((value): value is string => Boolean(value));
+  for (const candidate of candidates) {
+    const root = path.resolve(candidate);
+    if (fs.existsSync(path.join(root, 'src', 'gen', 'static', 'plugin-instructions.md'))
+      && fs.existsSync(path.join(root, 'package.json'))) {
+      return root;
+    }
+  }
   return path.resolve(__dirname, '..', '..');
 }
 

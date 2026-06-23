@@ -34,8 +34,36 @@ Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-arc
 Architect completion gate: do not write `PLAN_READY` until the required Traffic One workspace scaffold exists. Missing: {{MISSING}}. Write the missing baseline files, then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
 <!-- T1BLOCK:END architect-scaffold-gate -->
 
+<!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
+Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
+<!-- T1BLOCK:END architect-opencode-queue-gate -->
+
+<!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
+Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`.
+<!-- T1BLOCK:END plan-opencode-queue-gate -->
+
+<!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->
+Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas before emitting `PLAN_READY`.
+<!-- T1BLOCK:END architect-opencode-queue-policy-gate -->
+
+<!-- T1BLOCK:BEGIN plan-opencode-queue-policy-gate -->
+Plan gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas.
+<!-- T1BLOCK:END plan-opencode-queue-policy-gate -->
+
+<!-- T1BLOCK:BEGIN assignments-shape-gate -->
+Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. See `agents/senior-architect.md` § Assignments manifest.
+<!-- T1BLOCK:END assignments-shape-gate -->
+
+<!-- T1BLOCK:BEGIN assignments-roles-gate -->
+Assignments gate: {{ERRORS}}.
+<!-- T1BLOCK:END assignments-roles-gate -->
+
+<!-- T1BLOCK:BEGIN assignments-owner-gate -->
+Assignments gate: `.traffic-one/runs/<runId>/assignments.json` is architect/orchestrator-owned and must not be changed by `{{ROLE}}` after `PLAN_READY`. Surface the needed scope change in the role digest instead.
+<!-- T1BLOCK:END assignments-owner-gate -->
+
 <!-- T1BLOCK:BEGIN run-team-shell -->
-Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.
+Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.
 <!-- T1BLOCK:END run-team-shell -->
 
 <!-- T1BLOCK:BEGIN run-team-not-subagent -->
