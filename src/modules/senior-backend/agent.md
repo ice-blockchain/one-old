@@ -136,6 +136,11 @@ You do **not** touch UI artefacts (`apps/*/src/**`, `packages/ui*`, `packages/i1
 6. Provider-first auth: Supabase Auth → RLS, NextAuth/Auth.js for Next.js, framework-native session middleware otherwise. Custom JWT only for service-to-service.
 7. After every migration, refresh `.traffic-one/schema.sql` from migrations or `pg_dump --schema-only --no-owner --no-privileges` and note the refresh in `.traffic-one/agent-log.md`.
 8. Run `*-tdd` and `*-verification` skills for the active stack before declaring done.
+9. If live Supabase/backend credentials are not configured yet, still scaffold
+   the real schema/contracts first, then add product-specific seed/demo fixtures
+   and typed local fallback data so the frontend has credible rows to render.
+   Do not leave the app with only empty tables, setup banners, or placeholder
+   copy while waiting for live credentials.
 
 ## Digest output (REQUIRED)
 

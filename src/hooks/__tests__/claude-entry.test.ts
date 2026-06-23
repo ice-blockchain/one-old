@@ -17,16 +17,16 @@ function idsFor(sub: string): string[] {
 test('subcommand routing maps each hook entry point to the right handlers', () => {
   assert.deepEqual(idsFor('session-start'), ['session.session-start']);
   assert.deepEqual(idsFor('user-prompt-submit'), ['session.prompt-submit']);
-  // The four PreToolUse gate subcommands each include the priority-0 auth gate
+  // The PreToolUse gate subcommands each include the priority-0 auth gate
   // (so the pipeline checks auth first, matching the legacy per-gate auth check).
   // The authoring write-guard (priority 5) piggybacks the two write-gate
   // pipelines so model-steered .traffic-one writes into the plugin repo deny.
-  assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth', 'session.authoring-guard']);
-  assert.deepEqual(idsFor('check-agent-model'), ['agent-model.spawn', 'session.auth']);
-  assert.deepEqual(idsFor('check-plan-write'), ['plan-guard.write', 'session.auth', 'session.authoring-guard']);
+  assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
+  assert.deepEqual(idsFor('check-agent-model'), ['agent-model.spawn', 'session.auth', 'session.workspace-boundary']);
+  assert.deepEqual(idsFor('check-plan-write'), ['plan-guard.write', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
   // check-library-allowlist runs the deploy gate (25) + the install allowlist (30)
   // after auth (0) — the legacy "deploy gate runs first" ordering inside the gate.
-  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'session.auth']);
+  assert.deepEqual(idsFor('check-library-allowlist'), ['plan-guard.deploy', 'plan-guard.library', 'session.auth', 'session.workspace-boundary']);
   // Hints + post-build handlers route to exactly one handler (no cross-fire —
   // critical so the two PostToolUse entries don't double-emit context).
   assert.deepEqual(idsFor('pre-graphify-hint'), ['graphify.hint']);

@@ -29,10 +29,22 @@ import { ensureInitialCommit } from '../../shared/git-init';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   markOpenCodePlanRoleCompleted,
+  markOpenCodePlanBatchComplete,
   markOpenCodeRoleAttempted,
+  type PlanDelegationUnit,
   parsePlanDelegationUnits,
   recordOpenCodeAttemptOutcome,
 } from '../../shared/opencode-roles';
+import {
+  buildOpenCodeQueue,
+  normalizeOpenCodeRole,
+  opencodeAssignmentHash,
+  openCodeQueuePolicyViolations,
+  parseAllowedFiles,
+  recordOpenCodeUnitStatus,
+  statusFromDelegateAction,
+  writeOpenCodeQueue,
+} from '../../shared/opencode-queue';
 import { roleDigestName } from '../../shared/packing';
 import { readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
 import { nowIso } from '../../shared/text';
@@ -78,6 +90,8 @@ export interface DelegateOpts {
   runId?: string;
   model?: string;
   allowedFiles?: string;
+  unitId?: string;
+  expectedAssignmentHash?: string | null;
 }
 
 export interface DelegateResult {
@@ -478,11 +492,13 @@ function restoreApplyTargets(backups: ApplyTargetBackup[]): string | null {
 }
 
 interface DelegatedDiffPolicy {
+  cwd: string;
   role: string;
   runId: string;
   allowedPatterns: string[];
   assignmentScopes: AssignedScope[];
   assignmentRequired: boolean;
+  expectedAssignmentHash: string | null;
 }
 
 const GENERATED_DIFF_PATTERNS = [
@@ -511,20 +527,12 @@ const GENERATED_DIFF_PATTERNS = [
   '.traffic-one/**',
 ];
 
-function parseAllowedFiles(value: unknown): string[] {
-  if (typeof value !== 'string' || !value.trim()) return [];
-  return value
-    .split(/[,;\n]+/)
-    .map((part) => part.trim().replace(/^`+|`+$/g, ''))
-    .filter(Boolean);
-}
-
 function roleNeedsAssignment(role: string): boolean {
   const normalized = normalizePlanRole(role);
   return normalized === 'frontend' || normalized === 'backend';
 }
 
-function buildDelegatedDiffPolicy(cwd: string, runId: string, role: string, allowedFiles: unknown): DelegatedDiffPolicy {
+function buildDelegatedDiffPolicy(cwd: string, runId: string, role: string, allowedFiles: unknown, expectedAssignmentHash?: string | null): DelegatedDiffPolicy {
   const normalizedRole = normalizePlanRole(role);
   const manifest = readRunAssignmentsResilient(cwd, runId);
   const assignmentScopes = manifest
@@ -533,11 +541,13 @@ function buildDelegatedDiffPolicy(cwd: string, runId: string, role: string, allo
       .map((assignment) => assignment.scope)
     : [];
   return {
+    cwd,
     role,
     runId,
     allowedPatterns: parseAllowedFiles(allowedFiles),
     assignmentScopes,
     assignmentRequired: Boolean(manifest && roleNeedsAssignment(role)),
+    expectedAssignmentHash: expectedAssignmentHash === undefined ? opencodeAssignmentHash(cwd, runId) : expectedAssignmentHash,
   };
 }
 
@@ -547,6 +557,13 @@ function pathList(paths: string[]): string {
 
 function validateDelegatedDiff(paths: string[], policy: DelegatedDiffPolicy): string | null {
   const targets = uniquePaths(paths.map((p) => normalizeRelPath(p)).filter(Boolean));
+  if (policy.expectedAssignmentHash) {
+    const current = opencodeAssignmentHash(policy.cwd, policy.runId);
+    if (current !== policy.expectedAssignmentHash) {
+      return `assignment scope changed while OpenCode was running for ${policy.role}; delegated diff is stale`;
+    }
+  }
+
   const generated = targets.filter((target) => GENERATED_DIFF_PATTERNS.some((pattern) => matchesPattern(target, pattern)));
   if (generated.length > 0) {
     return `delegated diff contains generated/internal artifact path(s): ${pathList(generated)}`;
@@ -741,7 +758,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     ? state.currentRunId.trim()
     : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
   const runId = (opts.runId || '').trim() || stateRunId || runStamp();
-  const policy = buildDelegatedDiffPolicy(cwd, runId, role, opts.allowedFiles);
+  const policy = buildDelegatedDiffPolicy(cwd, runId, role, opts.allowedFiles, opts.expectedAssignmentHash);
   const startedAt = Date.now();
   let markedAttempt = false;
   const markCliAttempt = (): void => {
@@ -760,6 +777,19 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       durationMs: Date.now() - startedAt,
       touched: result.touched.length,
     });
+    if (opts.unitId) {
+      recordOpenCodeUnitStatus(cwd, runId, {
+        id: opts.unitId,
+        role: normalizePlanRole(role),
+        status: statusFromDelegateAction(result.action, result.error),
+        action: result.action,
+        model: result.model ?? null,
+        error: result.error,
+        touched: result.touched,
+        allowedFiles: policy.allowedPatterns,
+        assignmentHash: policy.expectedAssignmentHash,
+      });
+    }
     return result;
   };
 
@@ -807,7 +837,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
 export interface PlanDelegationResult {
   total: number;
   delegated: number;
-  units: Array<{ role: string; task: string; action: DelegateResult['action']; touched: string[]; model?: string }>;
+  units: Array<{ id?: string; role: string; task: string; action: DelegateResult['action']; status?: string; touched: string[]; model?: string; error?: string | null }>;
 }
 
 // Parse the architect's plan.md delegation queue. The architect emits a
@@ -817,7 +847,7 @@ export interface PlanDelegationResult {
 //   <!-- opencode-delegate:start -->
 //   - role: backend | files: src/lib/seed.ts | task: <self-contained task>
 //   <!-- opencode-delegate:end -->
-export function parsePlanDelegationQueue(planText: string): Array<{ role: string; files: string; task: string }> {
+export function parsePlanDelegationQueue(planText: string): PlanDelegationUnit[] {
   return parsePlanDelegationUnits(planText);
 }
 
@@ -829,8 +859,7 @@ export function parsePlanDelegationQueue(planText: string): Array<{ role: string
 // spawns a normal subagent for it. Never throws.
 // Normalize role labels for comparisons ("senior-frontend" ≡ "frontend").
 export function normalizePlanRole(role: string): string {
-  const m = /^senior-(.+)$/.exec(role.trim().toLowerCase());
-  return m && m[1] ? m[1] : role.trim().toLowerCase();
+  return normalizeOpenCodeRole(role);
 }
 
 export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string; roles?: readonly string[] } = {}): PlanDelegationResult {
@@ -841,28 +870,101 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
-  let queue = parsePlanDelegationQueue(planText);
+  const queue = parsePlanDelegationQueue(planText);
+  const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
+  writeOpenCodeQueue(cwd, formalQueue);
+  let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));
   // Role shard filter: the MCP layer parallelizes the batch ACROSS roles (units
   // within one role stay sequential — they share a digest file).
   if (opts.roles && opts.roles.length > 0) {
     const allowed = new Set(opts.roles.map((r) => normalizePlanRole(r)));
-    queue = queue.filter((u) => allowed.has(normalizePlanRole(u.role)));
+    entries = entries.filter((entry) => allowed.has(normalizePlanRole(entry.unit.role)));
   }
   const units: PlanDelegationResult['units'] = [];
   let delegated = 0;
   const totalByRole = new Map<string, number>();
   const processedByRole = new Map<string, number>();
-  for (const u of queue) {
-    const normalizedRole = normalizePlanRole(u.role);
+  for (const entry of entries) {
+    const normalizedRole = normalizePlanRole(entry.unit.role);
     totalByRole.set(normalizedRole, (totalByRole.get(normalizedRole) || 0) + 1);
   }
   try {
-    for (const u of queue) {
+    const policyViolations = openCodeQueuePolicyViolations(queue);
+    if (policyViolations.length > 0) {
+      const error = policyViolations.join('; ');
+      for (const entry of entries) {
+        const normalizedRole = normalizePlanRole(entry.unit.role);
+        const formal = entry.formal;
+        if (runId) {
+          recordOpenCodeUnitStatus(cwd, runId, {
+            id: formal.id,
+            role: formal.role,
+            status: 'rejected_policy',
+            action: 'failed',
+            error,
+            touched: [],
+            allowedFiles: formal.allowedFiles,
+            assignmentHash: formalQueue.assignmentHash,
+          });
+        }
+        units.push({ id: formal.id, role: entry.unit.role, task: entry.unit.task, action: 'failed', status: 'rejected_policy', touched: [], error });
+        processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
+      }
+      return { total: entries.length, delegated: 0, units };
+    }
+
+    for (const entry of entries) {
+      const u = entry.unit;
+      const formal = entry.formal;
       const normalizedRole = normalizePlanRole(u.role);
+      if (runId) {
+        recordOpenCodeUnitStatus(cwd, runId, {
+          id: formal.id,
+          role: formal.role,
+          status: 'running',
+          action: 'running',
+          touched: [],
+          allowedFiles: formal.allowedFiles,
+          assignmentHash: formalQueue.assignmentHash,
+        });
+      }
       const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
-      const r = delegate(cwd, { role: u.role, task, runId, model: opts.model, allowedFiles: u.files });
+      let r: DelegateResult;
+      try {
+        r = delegate(cwd, {
+          role: u.role,
+          task,
+          runId,
+          model: opts.model,
+          allowedFiles: u.files,
+          unitId: formal.id,
+          expectedAssignmentHash: formalQueue.assignmentHash,
+        });
+      } catch (err) {
+        r = {
+          ok: false,
+          action: 'failed',
+          digest: null,
+          touched: [],
+          error: err instanceof Error ? err.message : String(err),
+        };
+      }
+      const status = statusFromDelegateAction(r.action, r.error);
+      if (runId) {
+        recordOpenCodeUnitStatus(cwd, runId, {
+          id: formal.id,
+          role: formal.role,
+          status,
+          action: r.action,
+          model: r.model ?? null,
+          error: r.error,
+          touched: r.touched,
+          allowedFiles: formal.allowedFiles,
+          assignmentHash: formalQueue.assignmentHash,
+        });
+      }
       if (r.ok) delegated += 1;
-      units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched, model: r.model });
+      units.push({ id: formal.id, role: u.role, task: u.task, action: r.action, status, touched: r.touched, ...(r.model ? { model: r.model } : {}), error: r.error });
       processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
     }
   } finally {
@@ -870,9 +972,10 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
       for (const [role, total] of totalByRole) {
         if ((processedByRole.get(role) || 0) >= total) markOpenCodePlanRoleCompleted(cwd, runId, role);
       }
+      markOpenCodePlanBatchComplete(cwd, runId);
     }
   }
-  return { total: queue.length, delegated, units };
+  return { total: entries.length, delegated, units };
 }
 
 // CLI entry. Either:
@@ -901,7 +1004,15 @@ export function main(): number {
   let task = get('--task');
   if (!task && taskFile && fs.existsSync(taskFile)) task = fs.readFileSync(taskFile, 'utf8');
 
-  const result = delegate(process.cwd(), { role: get('--role'), task, runId: get('--run-id'), model: get('--model') });
+  const result = delegate(process.cwd(), {
+    role: get('--role'),
+    task,
+    runId: get('--run-id'),
+    model: get('--model'),
+    allowedFiles: get('--allowed-files'),
+    unitId: get('--unit-id'),
+    expectedAssignmentHash: get('--expected-assignment-hash'),
+  });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   return result.ok ? 0 : 1;
 }

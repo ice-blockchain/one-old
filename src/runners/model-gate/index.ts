@@ -9,6 +9,7 @@
 import { markModelGatePrompted, readModelChoice } from '../../modules/agent-model/model-choice';
 import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { hasFreshCursorModels } from '../../shared/materialize/cursor-models';
+import { buildCursorSpawnModelMap, formatCursorSpawnMapBlock, syncCursorSpawnAgentFiles } from '../../shared/materialize/cursor-spawn-map';
 import { detectHostPlan } from '../../shared/host-plan';
 import { obj } from '../../shared/obj';
 import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
@@ -30,6 +31,14 @@ function modelGateFailedStop(): string {
   );
 }
 
+function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: string): void {
+  syncCursorSpawnAgentFiles(cwd, state);
+  const map = buildCursorSpawnModelMap(cwd, state);
+  process.stdout.write(`${headline}\n`);
+  const block = formatCursorSpawnMapBlock(map);
+  if (block) process.stdout.write(`${block}\n`);
+}
+
 export function runModelGate(argv: readonly string[] = process.argv.slice(2)): number {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   try {
@@ -47,7 +56,7 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
 
     const picks = state ? cursorUnavailablePicks(cwd, state) : [];
     if (!picks.length) {
-      process.stdout.write('traffic-one model-gate: all picked models are available — spawn the team now.\n');
+      writeSpawnReady(cwd, state, 'traffic-one model-gate: all picked models are available — spawn the team now.');
       return 0;
     }
 
@@ -56,7 +65,11 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
 
     if (choice === 'use-fallback') {
       const list = picks.map((p) => `${p.role} → ${p.fallback}`).join(', ');
-      process.stdout.write(`traffic-one model-gate: fallback confirmed — ${list}. Spawn the team now (pass each role's .cursor/agents/<role>.md model).\n`);
+      writeSpawnReady(
+        cwd,
+        state,
+        `traffic-one model-gate: fallback confirmed — ${list}. Spawn the team now (use the spawn map below).`,
+      );
       return 0;
     }
 

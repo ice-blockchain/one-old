@@ -33,6 +33,15 @@ const GENERATED_NOTE =
   "project's performance tier; do not hand-edit (regenerated on materialize). -->";
 
 function roleSpecificLines(role: string): string[] {
+  if (role === 'senior-backend') {
+    return [
+      'Cursor backend baseline: when Supabase credentials are not configured yet,',
+      'still create useful product-specific seed/demo fixtures, local mock data,',
+      'and typed API fallback helpers after the real schema/contracts are scaffolded.',
+      'The generated app must have credible data to render before live credentials exist.',
+      '',
+    ];
+  }
   if (role !== 'senior-frontend') return [];
   return [
     'Cursor frontend baseline: for Supabase-backed or missing-env web/Ionic routes,',

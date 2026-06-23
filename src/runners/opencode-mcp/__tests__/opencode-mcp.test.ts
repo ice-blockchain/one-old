@@ -30,7 +30,7 @@ test('tools/list advertises the delegation + status tools with their schemas', a
   const names = resp.result.tools.map((t: Any) => t.name).sort();
   assert.deepEqual(names, ['opencode_delegate', 'opencode_delegate_from_plan', 'opencode_status']);
   const del = resp.result.tools.find((t: Any) => t.name === 'opencode_delegate');
-  assert.deepEqual(del.inputSchema.required, ['role', 'task', 'runId']);
+  assert.deepEqual(del.inputSchema.required, ['role', 'task', 'runId', 'allowedFiles']);
   const batch = resp.result.tools.find((t: Any) => t.name === 'opencode_delegate_from_plan');
   assert.deepEqual(batch.inputSchema.required, ['runId']);
 });
@@ -74,7 +74,7 @@ const ECHO_STUB = [
   'const fs = require("fs");',
   'const tf = get("--task-file");',
   'const task = tf && fs.existsSync(tf) ? fs.readFileSync(tf, "utf8") : null;',
-  'console.log(JSON.stringify({ ok: true, action: "delegated", role: get("--role"), runId: get("--run-id"), task, cwd: process.cwd(), fromPlan: a.includes("--from-plan"), digest: null, touched: [] }));',
+  'console.log(JSON.stringify({ ok: true, action: "delegated", role: get("--role"), runId: get("--run-id"), allowedFiles: get("--allowed-files"), task, cwd: process.cwd(), fromPlan: a.includes("--from-plan"), digest: null, touched: [] }));',
 ].join('\n');
 
 function withStubRunner(stub: string, fn: (projectRoot: string) => Promise<void>): Promise<void> {
@@ -110,10 +110,11 @@ function waitFor(pred: () => boolean, timeoutMs: number): Promise<void> {
 
 test('runDelegate plumbs role/runId/task-file and runs in projectRoot', async () => {
   await withStubRunner(ECHO_STUB, async (projectRoot) => {
-    const r = (await runDelegate({ role: 'senior-frontend', task: 'build the card', runId: 'run-123', projectRoot })) as Any;
+    const r = (await runDelegate({ role: 'senior-frontend', task: 'build the card', runId: 'run-123', allowedFiles: 'apps/web/src/Card.tsx', projectRoot })) as Any;
     assert.equal(r.ok, true);
     assert.equal(r.role, 'senior-frontend');
     assert.equal(r.runId, 'run-123');
+    assert.equal(r.allowedFiles, 'apps/web/src/Card.tsx');
     assert.equal(r.task, 'build the card');
     assert.equal(r.cwd, fs.realpathSync(projectRoot)); // child cwd === projectRoot (realpath: macOS /var → /private/var)
   });
@@ -125,6 +126,8 @@ test('runDelegate rejects missing required args without spawning', async () => {
   assert.match(noRole.error, /role is required/);
   const noTask = (await runDelegate({ role: 'r', task: '   ', runId: '1' })) as Any;
   assert.match(noTask.error, /task is required/);
+  const noAllowed = (await runDelegate({ role: 'r', task: 'x', runId: '1' })) as Any;
+  assert.match(noAllowed.error, /allowedFiles is required/);
 });
 
 test('runDelegateFromPlan passes --from-plan + run-id', async () => {
@@ -142,9 +145,9 @@ test('runDelegateFromPlan passes --from-plan + run-id', async () => {
 const PLAN_TWO_ROLES = [
   '# Plan', '',
   '<!-- opencode-delegate:start -->',
-  '- role: senior-frontend | files: a.txt | task: unit A',
-  '- role: frontend | files: a2.txt | task: unit A2',
-  '- role: tester | files: b.txt | task: unit B',
+  '- id: fe-a | role: senior-frontend | files: a.txt | task: unit A',
+  '- id: fe-a2 | role: frontend | files: a2.txt | task: unit A2',
+  '- id: tester-b | role: tester | files: b.txt | task: unit B',
   '<!-- opencode-delegate:end -->', '',
 ].join('\n');
 
@@ -192,7 +195,7 @@ test('runDelegateFromPlan runs a multi-role queue as per-role shards (sequential
 test('runDelegateFromPlan stays single-runner for a single-role queue', async () => {
   await withStubRunner(SHARD_STUB, async (projectRoot) => {
     fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
-    const plan = ['<!-- opencode-delegate:start -->', '- role: frontend | files: a | task: A', '- role: senior-frontend | files: b | task: B', '<!-- opencode-delegate:end -->'].join('\n');
+    const plan = ['<!-- opencode-delegate:start -->', '- id: fe-a | role: frontend | files: a | task: A', '- id: fe-b | role: senior-frontend | files: b | task: B', '<!-- opencode-delegate:end -->'].join('\n');
     fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), plan, 'utf8');
     await runDelegateFromPlan({ runId: 'rp-single', projectRoot });
     const marker = path.join(path.dirname(process.env[OPENCODE_RUNNER_OVERRIDE_ENV] as string), 'shard-calls');
@@ -213,7 +216,7 @@ const SLOW_STUB = [
 
 test('delegateResumable returns {running} within the wait window, then the result on re-call (idempotent)', async () => {
   await withStubRunner(SLOW_STUB, async (projectRoot) => {
-    const args = { role: 'senior-frontend', task: 'slow unit', runId: 'res-1', projectRoot };
+    const args = { role: 'senior-frontend', task: 'slow unit', runId: 'res-1', allowedFiles: 'apps/web/src/**', projectRoot };
     const first = (await delegateResumable(args, 200)) as Any; // run sleeps 1200ms > 200ms window
     assert.equal(first.running, true);
     assert.equal(first.runId, 'res-1');
@@ -230,7 +233,7 @@ test('delegateResumable returns {running} within the wait window, then the resul
 
 test('delegateResumable re-call without a task keeps waiting on the in-flight run', async () => {
   await withStubRunner(SLOW_STUB, async (projectRoot) => {
-    const start = (await delegateResumable({ role: 'senior-tester', task: 'slow', runId: 'res-3', projectRoot }, 100)) as Any;
+    const start = (await delegateResumable({ role: 'senior-tester', task: 'slow', runId: 'res-3', allowedFiles: 'apps/web/e2e/**', projectRoot }, 100)) as Any;
     assert.equal(start.running, true);
     // re-call omits task — must NOT error ("task is required") since the run exists
     const again = (await delegateResumable({ role: 'senior-tester', runId: 'res-3', projectRoot, task: '' } as any, 1500)) as Any;
@@ -240,7 +243,7 @@ test('delegateResumable re-call without a task keeps waiting on the in-flight ru
 
 test('delegateStatus reports running → done', async () => {
   await withStubRunner(SLOW_STUB, async (projectRoot) => {
-    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-2', projectRoot };
+    const args = { role: 'senior-frontend', task: 'slow', runId: 'res-2', allowedFiles: 'apps/web/src/**', projectRoot };
     await delegateResumable(args, 100); // start (returns running)
     assert.equal((delegateStatus({ runId: 'res-2', role: 'senior-frontend', projectRoot }) as Any).status, 'running');
     await delegateResumable(args, 2000); // wait for completion
@@ -273,7 +276,7 @@ test('attach: initialize + notification + tools/call round-trip over stdio frami
 
     input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })}\n`);
     input.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`);
-    input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'opencode_delegate', arguments: { role: 'senior-tester', task: 't', runId: 'r9', projectRoot } } })}\n`);
+    input.write(`${JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'opencode_delegate', arguments: { role: 'senior-tester', task: 't', runId: 'r9', allowedFiles: 'tests/**', projectRoot } } })}\n`);
 
     await waitFor(() => frames.some((f) => f.id === 2), 8000);
 
@@ -340,7 +343,7 @@ test('attach: a final frame without a trailing newline is flushed on end', async
 
 test('tools/call maps a runner ok:false to isError:true', async () => {
   await withStubRunner('console.log(JSON.stringify({ ok: false, action: "no-changes", error: "nope" }))', async (projectRoot) => {
-    const resp = (await dispatch({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'opencode_delegate', arguments: { role: 'r', task: 't', runId: '1', projectRoot } } })) as Any;
+    const resp = (await dispatch({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'opencode_delegate', arguments: { role: 'r', task: 't', runId: '1', allowedFiles: 'src/**', projectRoot } } })) as Any;
     assert.equal(resp.result.isError, true);
     assert.equal(JSON.parse(resp.result.content[0].text).ok, false);
   });
@@ -366,7 +369,7 @@ test('an unpolled background delegation is cancelled by the watchdog (action: ab
   process.env.T1_OC_WATCHDOG_TICK_MS = '100';
   try {
     await withStubRunner(NEVER_ENDING_STUB, async (projectRoot) => {
-      const args = { role: 'senior-frontend', task: 'will be abandoned', runId: 'aband-1', projectRoot };
+      const args = { role: 'senior-frontend', task: 'will be abandoned', runId: 'aband-1', allowedFiles: 'apps/web/src/**', projectRoot };
       const first = (await delegateResumable(args, 100)) as Any;
       assert.equal(first.running, true);
       // No further polls: the watchdog should cancel after ~300ms + a tick.
@@ -391,7 +394,7 @@ test('active polling keeps a slow delegation alive past the abandon threshold', 
   process.env.T1_OC_WATCHDOG_TICK_MS = '100';
   try {
     await withStubRunner(SLOW_STUB, async (projectRoot) => { // stub finishes after 1200ms > abandon 400ms
-      const args = { role: 'senior-backend', task: 'slow but polled', runId: 'alive-1', projectRoot };
+      const args = { role: 'senior-backend', task: 'slow but polled', runId: 'alive-1', allowedFiles: 'services/api/src/**', projectRoot };
       let res = (await delegateResumable(args, 150)) as Any;
       // Poll repeatedly (each poll refreshes the keep-alive) until terminal.
       for (let i = 0; i < 20 && res.running; i++) {

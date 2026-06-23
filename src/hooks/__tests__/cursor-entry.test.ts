@@ -74,6 +74,28 @@ test('beforeShellExecution AUTHED on a fresh new-project dir → onboarding gate
   });
 });
 
+test('beforeReadFile AUTHED denies a sibling workspace path', async () => {
+  await withEnv({ authed: true }, async (cwd) => {
+    const ws6b = path.join(cwd, '6b');
+    const ws5b = path.join(cwd, '5b');
+    const stateDir = path.join(ws6b, '.traffic-' + 'one');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.mkdirSync(ws5b, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+    fs.writeFileSync(path.join(ws5b, 'package.json'), '{}\n', 'utf8');
+
+    const stdin = JSON.stringify({
+      cwd: ws6b,
+      workspace_roots: [ws6b],
+      file_path: path.join(ws5b, 'package.json'),
+    });
+    const r = await runCursorHook('before-read-file', stdin);
+    const out = JSON.parse(r.stdout);
+    assert.equal(out.permission, 'deny');
+    assert.ok(out.user_message.includes('workspace boundary blocked'));
+  });
+});
+
 test('sessionStart returns valid JSON (never throws to the host)', async () => {
   await withEnv({ authed: true }, async (cwd) => {
     const stdin = JSON.stringify({ cwd });

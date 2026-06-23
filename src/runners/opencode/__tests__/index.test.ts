@@ -53,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'editts';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -112,6 +112,23 @@ fs.mkdirSync(path.join(dir, 'apps', 'web', 'src'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx'), 'export function App() { return null; }\\n');
 fs.mkdirSync(path.join(dir, 'packages', 'api-client', 'src'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'packages', 'api-client', 'src', 'index.ts'), 'export const leaked = true;\\n');
+`,
+    // writes a valid in-scope file, then changes the real run assignment manifest
+    // before delegate() validates the patch. The stale diff must be rejected.
+    assignmentchange: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'frontend file while assignments changed' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'apps', 'web', 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx'), 'export function App() { return null; }\\n');
+const real = process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO;
+if (real) {
+  const t1 = '.traffic' + '-one';
+  const runDir = path.join(real, t1, 'runs', 'r-stale');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'assignments.json'), JSON.stringify({ version: 1, runId: 'r-stale', assignments: [{ role: 'senior-frontend', scope: { include: ['apps/web/src/other/**'] } }] }));
+}
 `,
     // writes a TS source file so the post-apply typecheck path engages.
     editts: `#!/usr/bin/env node
@@ -556,7 +573,7 @@ test('parsePlanDelegationQueue extracts only runnable units from the marked queu
   const plan = [
     '# Plan', 'prose',
     '<!-- opencode-delegate:start -->',
-    '- role: backend | files: src/seed.ts | task: Create dummy seed data',
+    '- id: seed | role: backend | files: src/seed.ts | task: Create dummy seed data',
     '- role: frontend | task: Boilerplate card component',
     '- not a unit line (ignored)',
     '<!-- opencode-delegate:end -->',
@@ -575,8 +592,8 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
       '<!-- opencode-delegate:start -->',
-      '- role: backend | files: unit-1.txt | task: make unit A',
-      '- role: frontend | files: unit-2.txt | task: make unit B',
+      '- id: backend-a | role: backend | files: unit-1.txt | task: make unit A',
+      '- id: frontend-b | role: frontend | files: unit-2.txt | task: make unit B',
       '<!-- opencode-delegate:end -->',
     ].join('\n'), 'utf8');
     const r = delegateFromPlan(dir, { runId: 'plan-1' });
@@ -592,6 +609,14 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
     // both units' disjoint diffs landed in the real working tree
     assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), true);
     assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), true);
+    const memoryDir = ['.traffic', '-one'].join('');
+    const runDir = path.join(dir, memoryDir, 'runs', 'plan-1');
+    const queue = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-queue.json'), 'utf8')) as any;
+    assert.equal(queue.version, 1);
+    assert.deepEqual(queue.units.map((u: any) => u.role), ['backend', 'frontend']);
+    assert.ok(queue.units.every((u: any) => typeof u.id === 'string' && u.id.length > 0));
+    const statuses = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-units.json'), 'utf8')) as any[];
+    assert.deepEqual(statuses.map((s) => s.status), ['delegated', 'delegated']);
   });
 });
 
@@ -605,7 +630,7 @@ test('delegateFromPlan without opts.runId uses currentRunId from project state',
     }), 'utf8');
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
       '<!-- opencode-delegate:start -->',
-      '- role: frontend | files: unit-1.txt | task: make unit B',
+      '- id: frontend-b | role: frontend | files: unit-1.txt | task: make unit B',
       '<!-- opencode-delegate:end -->',
     ].join('\n'), 'utf8');
 
@@ -818,13 +843,44 @@ test('delegated diff fails closed when a role touches outside its assignment sco
   });
 });
 
+test('delegate enforces ad-hoc allowedFiles before applying', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('scopeleak');
+    const r = delegate(dir, { role: 'frontend', task: 'create only frontend file', runId: 'r-adhoc-scope', allowedFiles: 'apps/web/src/**' });
+    assert.equal(r.action, 'failed');
+    assert.match(r.error || '', /outside the plan files\/area allowlist/);
+    assert.ok(!fs.existsSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx')));
+    assert.ok(!fs.existsSync(path.join(dir, 'packages', 'api-client', 'src', 'index.ts')));
+  });
+});
+
+test('delegated diff fails closed when assignments changed while OpenCode was running', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    writeAssignments(dir, 'r-stale', [
+      { role: 'senior-frontend', include: ['apps/web/src/**'] },
+    ]);
+    const saved = process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO;
+    process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO = dir;
+    try {
+      stubOpencode('assignmentchange');
+      const r = delegate(dir, { role: 'frontend', task: 'create App', runId: 'r-stale', allowedFiles: 'apps/web/src/**' });
+      assert.equal(r.action, 'failed');
+      assert.match(r.error || '', /assignment scope changed/);
+      assert.ok(!fs.existsSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx')));
+    } finally {
+      if (saved === undefined) delete process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO;
+      else process.env.TRAFFIC_ONE_OPENCODE_TEST_REAL_REPO = saved;
+    }
+  });
+});
+
 test('delegateFromPlan enforces the files/area allowlist before applying', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('multi');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
       '<!-- opencode-delegate:start -->',
-      '- role: frontend | files: apps/web/src/** | task: make unit A',
+      '- id: frontend-allowlist | role: frontend | files: apps/web/src/** | task: make unit A',
       '<!-- opencode-delegate:end -->',
     ].join('\n'), 'utf8');
     const r = delegateFromPlan(dir, { runId: 'r-allowlist' });
@@ -835,6 +891,27 @@ test('delegateFromPlan enforces the files/area allowlist before applying', () =>
     assert.equal(openCodePlanRoleCompleted(dir, 'r-allowlist', 'frontend'), true, 'failed unit still releases the plan-batch gate');
     const log = fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'r-allowlist', 'opencode-attempts', 'frontend.log'), 'utf8');
     assert.match(log, /outside the plan files\/area allowlist/);
+  });
+});
+
+test('delegateFromPlan rejects unsafe overlapping queue policy before running OpenCode', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: all-ui | role: frontend | files: apps/web/src/** | task: prep UI',
+      '- id: card | role: frontend | files: apps/web/src/components/Card.tsx | task: prep card',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-policy' });
+    assert.equal(r.total, 2);
+    assert.equal(r.delegated, 0);
+    assert.equal(r.units.every((u) => u.status === 'rejected_policy'), true);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), false);
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-policy', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.every((s) => s.status === 'rejected_policy'), true);
   });
 });
 
@@ -915,8 +992,8 @@ test('delegateFromPlan honors opts.roles with senior- prefix normalization', () 
     const plan = [
       '# Plan', '',
       '<!-- opencode-delegate:start -->',
-      '- role: frontend | files: unit-1.txt | task: unit A',
-      '- role: tester | files: b.txt | task: unit B',
+      '- id: frontend-a | role: frontend | files: unit-1.txt | task: unit A',
+      '- id: tester-b | role: tester | files: b.txt | task: unit B',
       '<!-- opencode-delegate:end -->', '',
     ].join('\n');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });

@@ -269,9 +269,9 @@ test('plan-opencode-queue-gate: passes when opencode-delegate block has units', 
       content: [
         '# Plan',
         '<!-- opencode-delegate:start -->',
-        '- role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
-        '- role: backend | files: supabase/seed.sql | task: seed demo rows',
-        '- role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+        '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+        '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
+        '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
         '<!-- opencode-delegate:end -->',
       ].join('\n'),
       projectRoot: dir,
@@ -311,6 +311,90 @@ test('plan-opencode-queue-gate: ignores incomplete delegate rows the runner cann
   });
 });
 
+test('plan-opencode-queue-policy-gate: rejects overlapping OpenCode units without depends edge', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const v = planReadinessViolations({
+      filePath: ['.traffic', '-one/plan.md'].join(''),
+      content: [
+        '# Plan',
+        '<!-- opencode-delegate:start -->',
+        '- id: all-ui | role: frontend | files: apps/web/src/** | task: prep UI fixtures',
+        '- id: card | role: frontend | files: apps/web/src/components/Card.tsx | task: build card stub',
+        '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['plan-opencode-queue-policy-gate']);
+  });
+});
+
+test('plan-opencode-queue-policy-gate: allows overlapping OpenCode units with explicit depends edge', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const v = planReadinessViolations({
+      filePath: ['.traffic', '-one/plan.md'].join(''),
+      content: [
+        '# Plan',
+        '<!-- opencode-delegate:start -->',
+        '- id: all-ui | role: frontend | files: apps/web/src/** | task: prep UI fixtures',
+        '- id: card | role: frontend | files: apps/web/src/components/Card.tsx | depends: all-ui | task: build card stub',
+        '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
+  });
+});
+
+test('plan-opencode-queue-policy-gate: rejects testable unit without exact test/config allowlist', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/plan.md',
+      content: [
+        '# Plan',
+        '<!-- opencode-delegate:start -->',
+        '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+        '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
+        '- id: markdown | role: frontend | files: apps/web/src/lib/markdown.ts | task: pure markdown helper, unit-testable',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['plan-opencode-queue-policy-gate']);
+  });
+});
+
 test('assignments-shape-gate: rejects non-canonical roles-object assignments.json', () => {
   withProject((dir) => {
     const v = planReadinessViolations({
@@ -322,5 +406,49 @@ test('assignments-shape-gate: rejects non-canonical roles-object assignments.jso
       block: names,
     });
     assert.deepEqual(v, ['assignments-shape-gate']);
+  });
+});
+
+test('assignments-roles-gate: assignments manifest is limited to implementer roles', () => {
+  withProject((dir) => {
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/assignments.json',
+      content: JSON.stringify({
+        version: 1,
+        runId: 'R',
+        assignments: [
+          { role: 'senior-frontend', scope: { include: ['apps/web/**'] } },
+          { role: 'senior-tester', scope: { include: ['tests/**'] } },
+        ],
+      }),
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['assignments-roles-gate']);
+  });
+});
+
+test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY', () => {
+  withProject((dir) => {
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R', 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/assignments.json',
+      content: JSON.stringify({
+        version: 1,
+        runId: 'R',
+        assignments: [
+          { role: 'senior-frontend', scope: { include: ['apps/web/**'] } },
+          { role: 'senior-backend', scope: { include: ['supabase/**'] } },
+        ],
+      }),
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R', activeAgentRole: 'senior-tester' },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['assignments-owner-gate']);
   });
 });

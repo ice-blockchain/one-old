@@ -9,15 +9,19 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode';
+import { openCodeDelegationActive } from './performance';
 import { obj } from './obj';
 
 type Rec = Record<string, unknown>;
 export const OPENCODE_PLAN_MIN_UNITS = 3;
 
 export interface PlanDelegationUnit {
+  id?: string;
   role: string;
   files: string;
   task: string;
+  kind?: string;
+  dependsOn?: string[];
 }
 
 // The configured roles, sanitized. Falls back to the default array when unset or
@@ -69,7 +73,21 @@ export function parsePlanDelegationUnits(plan: string): PlanDelegationUnit[] {
     const roleRaw = fields.role || '';
     const role = /^[a-z][a-z-]*$/i.test(roleRaw) ? normalizeAttemptRole(roleRaw.toLowerCase()) : '';
     if (!role || !fields.files || !fields.task) continue;
-    units.push({ role, files: fields.files, task: fields.task });
+    const id = /^[a-zA-Z0-9._-]+$/.test(fields.id || '') ? fields.id : '';
+    const kind = /^[a-zA-Z0-9._-]+$/.test(fields.kind || '') ? fields.kind : '';
+    const dependsRaw = fields.depends || fields.dependson || fields.depends_on || '';
+    const dependsOn = dependsRaw
+      .split(/[, ]+/)
+      .map((v) => v.trim())
+      .filter((v) => /^[a-zA-Z0-9._-]+$/.test(v));
+    units.push({
+      ...(id ? { id } : {}),
+      role,
+      files: fields.files,
+      task: fields.task,
+      ...(kind ? { kind } : {}),
+      ...(dependsOn.length ? { dependsOn } : {}),
+    });
   }
   return units;
 }
@@ -105,8 +123,51 @@ export function roleHasQueuedUnits(cwd: string, role: string): boolean {
   return planDelegationQueueRoles(cwd).includes(normalizeAttemptRole(role));
 }
 
+function planBatchDir(cwd: string, runId: string): string {
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-plan-batch');
+}
+
+function planBatchCompletePath(cwd: string, runId: string): string {
+  return path.join(planBatchDir(cwd, runId), 'COMPLETE');
+}
+
 function planBatchMarkerPath(cwd: string, runId: string, role: string): string {
-  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-plan-batch', normalizeAttemptRole(role));
+  return path.join(planBatchDir(cwd, runId), normalizeAttemptRole(role));
+}
+
+// Run-level terminal marker for the entire Step-0 from-plan batch. The spawn gate
+// treats this as authoritative so a single check clears implementers after the
+// orchestrator (or runner) finishes the batch — even when per-role markers lag.
+export function markOpenCodePlanBatchComplete(cwd: string, runId: string): void {
+  if (!runId) return;
+  try {
+    const p = planBatchCompletePath(cwd, runId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, '', 'utf8');
+  } catch {
+    // best-effort; per-role markers remain the fallback
+  }
+}
+
+export function openCodePlanBatchComplete(cwd: string, runId: string): boolean {
+  if (!runId) return false;
+  try {
+    if (fs.existsSync(planBatchCompletePath(cwd, runId))) return true;
+    const roles = planDelegationQueueRoles(cwd);
+    if (roles.length === 0) return false;
+    return roles.every((role) => openCodePlanRoleCompleted(cwd, runId, role));
+  } catch {
+    return false;
+  }
+}
+
+// True when a new-project implementer spawn must wait for Step-0 from-plan.
+export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, state: unknown): boolean {
+  if (!runId || !openCodeDelegationActive(state)) return false;
+  const mode = obj(state)?.mode;
+  if (mode !== 'new-project') return false;
+  if (planDelegationQueueRoles(cwd).length === 0) return false;
+  return !openCodePlanBatchComplete(cwd, runId);
 }
 
 // Terminal marker for the Step-0 `opencode_delegate_from_plan` batch. Unlike
@@ -135,7 +196,8 @@ export function openCodePlanRoleCompleted(cwd: string, runId: string, role: stri
 }
 
 export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown): string[] {
-  if (!runId || !openCodeEnabled(state)) return [];
+  if (!runId || !openCodeDelegationActive(state)) return [];
+  if (openCodePlanBatchComplete(cwd, runId)) return [];
   return planDelegationQueueRoles(cwd).filter((role) => !openCodePlanRoleCompleted(cwd, runId, role));
 }
 

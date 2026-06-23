@@ -18,18 +18,21 @@
 import { execFileSync } from 'child_process';
 
 import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
+import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan-directive';
 import { AGENT_ROLES } from '../../config/performance';
 import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host-plan';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
+import { buildCursorSpawnModelMap, isBareCursorTierFamily } from '../../shared/materialize/cursor-spawn-map';
+import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../shared/model-gate-command';
 import { acceptableModelsFor } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
-import { normalizeState, readEffectiveState } from '../../shared/state';
+import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
@@ -107,6 +110,35 @@ export function postSetupTriage(cwd: string): string {
   }
 }
 
+export function preSpawnOpenCodeDirective(cwd: string, host: string = detectHost()): string {
+  return buildPreSpawnOpenCodeDirective(cwd, host);
+}
+
+// Host-agnostic PRE-SPAWN run-id directive, emitted at SETUP_COMPLETE on the main thread (the
+// same stdout channel that reliably reaches the Cursor user/agent). Models STILL fabricate a
+// `date`/ISO run-id in spawn prompts despite the PreToolUse announce (observed: composer-2.5
+// typing `2026-06-23T10-30-00Z` instead of the gate-minted epoch-ms `currentRunId`). Mint/persist
+// here so the orchestrator reads the exact value BEFORE building the first spawn prompt. The
+// spawn gate's run-id deny + self-healing echo remains the backstop. Returns '' for non-new-project.
+export function preSpawnRunIdDirective(cwd: string): string {
+  try {
+    const state = readEffectiveState(cwd) as Record<string, unknown>;
+    if (!state || state.mode !== 'new-project') return '';
+    const runId = ensureCurrentRunId(cwd, state);
+    if (!runId) return '';
+    return [
+      '[traffic-one] Build run-id — use EXACTLY this value in every spawn prompt (never `date`, ISO, or UTC):',
+      `- currentRunId in .traffic-one/.one.json: \`${runId}\``,
+      `- Assignments: \`.traffic-one/runs/${runId}/assignments.json\``,
+      `- Digests: \`.traffic-one/digests/${runId}/<role>.md\``,
+      `- Spawn prompt line: \`Run ID: ${runId}\``,
+      'Wrong run-id in a spawn prompt is denied; copy the paths above verbatim.',
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
 // Cursor-only PRE-SPAWN model directive, emitted at SETUP_COMPLETE on the main thread (the same
 // stdout channel that reliably reaches the Cursor user/agent). It front-loads everything the spawn
 // gate would otherwise deny-and-retry: (1) capture the build's model list, (2) check the chosen
@@ -127,12 +159,20 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
     const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
 
+    const plan = detectHostPlan(host);
+    const captured = freshCursorModels(cwd, plan);
+    const spawnMap = captured.length ? buildCursorSpawnModelMap(cwd, state) : {};
+
     const rows: string[] = [];
     const tierFallback = new Map<string, string>(); // tier family → next-eligible fallback family
     for (const role of AGENT_ROLES) {
       const fam = modelForRoleHost(level, role, host, overrides, planCtx);
       if (!fam) continue;
-      rows.push(`   - ${role} → ${fam}`);
+      const slug = spawnMap[role] || fam;
+      const spawnValue = captured.length && !isBareCursorTierFamily(slug, fam)
+        ? slug
+        : `(after step 2 — exact slug for tier \`${fam}\`; never pass the bare family)`;
+      rows.push(`   - ${role} → ${spawnValue}`);
       if (!tierFallback.has(fam)) tierFallback.set(fam, acceptableModelsFor(fam, host).slice(1)[0] || fam);
     }
     if (!rows.length) return '';
@@ -147,8 +187,9 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       `2. Run this command (it checks whether your picked tier models — ${eligibility} — are actually offered):`,
       `   ${gateCmd}`,
       '   If a picked model is NOT offered, STOP — show the user the unavailable-model table in chat and wait for them to reply **fallback** or **enable** before spawning. The model-gate command and spawn gate both fail closed until that reply is recorded. Re-run after they enable a model.',
-      '3. Read each `.cursor/agents/<role>.md` `model:` value (refreshed by step 1) and spawn each role passing that EXACT value in the Task `model` parameter — per-role models:',
+      '3. Spawn using the **spawn map** printed by step 2 (or read each `.cursor/agents/<role>.md` `model:` refreshed by step 2). Pass each EXACT slug in the Task `model` parameter — per-role models (preview; step 2 is authoritative once capture exists):',
       ...rows,
+      '   Never pass bare tier family aliases (e.g. `claude-opus-4-8` without a reasoning suffix) — Cursor rejects them and the spawn gate denies the first attempt.',
       '   Spawn the team only after steps 1–2. Passing the correct `model` per role on the FIRST spawn is what avoids the model-tier deny + retry.',
     ].join('\n');
   } catch {
@@ -207,11 +248,20 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     if (triage) {
       process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);
     }
+    // Front-load the gate-minted run-id so the orchestrator never fabricates an ISO id in spawn prompts.
+    const runIdDirective = preSpawnRunIdDirective(cwd);
+    if (runIdDirective) {
+      process.stdout.write(`\n${runIdDirective}\n`);
+    }
     // Cursor: front-load model capture + eligibility + the per-role model map so the team spawns
     // ONCE (no capture/model-tier deny + retry). Backed by the PreToolUse gates if not followed.
     const modelDirective = preSpawnModelDirective(cwd);
     if (modelDirective) {
       process.stdout.write(`\n${modelDirective}\n`);
+    }
+    const openCodeDirective = preSpawnOpenCodeDirective(cwd);
+    if (openCodeDirective) {
+      process.stdout.write(`\n${openCodeDirective}\n`);
     }
     process.exit(0);
   }

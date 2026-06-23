@@ -9,6 +9,7 @@ import { authoringWriteGuard } from './authoring-guard';
 import { authPreToolGate } from './auth-gate';
 import { runSessionStart } from './session-start';
 import { runUserPromptSubmit } from './prompt-submit';
+import { workspaceBoundaryGuard } from './workspace-boundary-guard';
 
 export const handlers: Handler[] = [
   {
@@ -40,6 +41,17 @@ export const handlers: Handler[] = [
     subcommands: ['check-onboarding-gate', 'check-model-choice-gate', 'check-agent-model', 'check-plan-write', 'check-library-allowlist'],
     priority: 0,
     run: (ctx) => authPreToolGate(ctx),
+  },
+  {
+    // Cursor supplies workspace_roots as the authoritative project boundary.
+    // Keep model-facing path tools inside that boundary so a run in tests/6b
+    // cannot read/search/write a sibling tests/5b workspace through stale paths.
+    id: 'session.workspace-boundary',
+    event: 'PreToolUse',
+    tools: ['shell', 'file-write', 'file-edit', 'file-read', 'spawn-agent', 'search'],
+    subcommands: ['check-onboarding-gate', 'check-model-choice-gate', 'check-agent-model', 'check-plan-write', 'check-library-allowlist'],
+    priority: 1,
+    run: (ctx) => workspaceBoundaryGuard(ctx),
   },
   {
     id: 'session.prompt-submit',
