@@ -14,6 +14,8 @@ import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import {
   hookSessionIdentity,
+  isCursorToolSubagentId,
+  isResumeCapableAgentId,
   readEffectiveState,
   recordRunAgent,
   subagentContinuationAvailable,
@@ -29,7 +31,29 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 // duplicate-spawn gate exactly where send_input continuation is native.
 // Leading `\b` so `subagent_id`/`subagentId` (a spawn-INPUT key Cursor may echo in the
 // post payload) cannot match via the `agent_id` substring and capture the wrong id.
-const AGENT_ID_RE = /\bagent_?id['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/i;
+const AGENT_ID_RE = /\bagent[_ ]?id['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/i;
+const CURSOR_AGENT_UUID_RE = /\bAgent ID:\s*([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i;
+const CURSOR_LINK_UUID_RE = /\]\(([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\)/i;
+
+function collectResponseText(response: unknown): string {
+  if (typeof response === 'string') return response;
+  const direct = obj(response);
+  if (!direct) {
+    if (response == null) return '';
+    try { return JSON.stringify(response); } catch { return ''; }
+  }
+  const chunks: string[] = [];
+  if (typeof direct.text === 'string') chunks.push(direct.text);
+  const content = direct.content;
+  if (Array.isArray(content)) {
+    for (const block of content) {
+      const b = obj(block);
+      if (b && typeof b.text === 'string') chunks.push(b.text);
+    }
+  }
+  try { chunks.push(JSON.stringify(direct)); } catch { /* ignore */ }
+  return chunks.join('\n');
+}
 
 export function extractSpawnedAgentId(response: unknown): string | null {
   // Claude's PostToolUse payload carries the id as a STRUCTURED field:
@@ -38,21 +62,22 @@ export function extractSpawnedAgentId(response: unknown): string | null {
   // hosts that only surface the `agentId: <id>` footer as text.
   const direct = obj(response);
   if (direct && typeof direct.agentId === 'string' && direct.agentId.trim()) {
-    return direct.agentId.trim();
+    const id = direct.agentId.trim();
+    return isCursorToolSubagentId(id) ? null : id;
   }
   // Codex spawn_agent returns snake_case: { agent_id, nickname }.
   if (direct && typeof direct.agent_id === 'string' && direct.agent_id.trim()) {
     return direct.agent_id.trim();
   }
-  let text = '';
-  if (typeof response === 'string') {
-    text = response;
-  } else if (response != null) {
-    try { text = JSON.stringify(response); } catch { return null; }
-  }
+  const text = collectResponseText(response);
   if (!text) return null;
+  const cursorUuid = CURSOR_AGENT_UUID_RE.exec(text)?.[1]
+    || CURSOR_LINK_UUID_RE.exec(text)?.[1];
+  if (cursorUuid) return cursorUuid;
   const match = AGENT_ID_RE.exec(text);
-  return match ? (match[1] as string) : null;
+  if (!match?.[1]) return null;
+  const id = match[1];
+  return isCursorToolSubagentId(id) ? null : id;
 }
 
 export function recordSpawnedAgent(ctx: Ctx): HookResult {
@@ -74,7 +99,7 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   // text cannot false-positive unless it literally quotes a labelled id.
   const response = raw.tool_response ?? raw.toolResponse ?? raw.tool_result ?? raw.toolResult;
   const agentId = extractSpawnedAgentId(response) ?? (response === undefined ? extractSpawnedAgentId(raw) : null);
-  if (!agentId) return noop();
+  if (!agentId || !isResumeCapableAgentId(agentId)) return noop();
 
   const state = readEffectiveState(ctx.cwd);
   const runId = state && typeof state.currentRunId === 'string' && state.currentRunId.trim() ? state.currentRunId.trim() : null;
@@ -82,6 +107,7 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
 
   recordRunAgent(ctx.cwd, runId, role, {
     agentId,
+    resumeId: agentId,
     model: asString(toolInput.model) || null,
     agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || null,
     parentSessionId: hookSessionIdentity(raw).sessionId,

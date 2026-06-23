@@ -78,6 +78,12 @@ How it works:
    <!-- opencode-delegate:end -->
    ```
 
+   The `files:` field is an enforced allowlist, not prose: OpenCode output is
+   rejected before apply if it touches any path outside those file/area patterns,
+   outside the role assignment, or inside generated/cache/internal output
+   (`dist`, `.turbo`, `.next`, `*.tsbuildinfo`, `.traffic-one`, etc.). List every
+   legitimate source path the unit may touch.
+
    The canonical catalog of queueable unit kinds lives in the plugin config
    (`config/opencode.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`); when this prose and
    the config disagree, the config wins. In short: fixtures/seed data, pure
@@ -96,7 +102,7 @@ How it works:
    `.agentignore`/agent-log/schema.sql + decisions ADRs — the architect writes
    these DIRECTLY before `PLAN_READY`) — those stay on the named senior subagents.
 
-2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
+2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free, assignment-scoped, source-only diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ role, task, action, touched }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
 
    Fallback if the `opencode-worker` tool is unavailable: on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner:
 

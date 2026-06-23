@@ -64,7 +64,9 @@ delegation queue" section is REQUIRED: list every bounded, low-risk unit
 (boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding,
 mechanical refactors/renames, formatting/codemods) in the machine-readable
 `<!-- opencode-delegate:start -->`…`<!-- opencode-delegate:end -->` block (one
-self-contained `- role: … | files: … | task: …` line each). NEVER queue
+self-contained `- role: … | files: … | task: …` line each). The `files:` value
+is an enforced allowlist: list every legitimate source path/area the unit may
+touch, or the runner rejects the diff before apply. NEVER queue
 architecture/contracts/security/data-model/migrations/cross-file-invariant work.
 The orchestrator delegates these to OpenCode before the implementers, so a
 thorough queue is what actually saves the user's tokens. See the

@@ -902,9 +902,19 @@ test('extractSpawnedAgentId reads the Agent result footer in string and structur
     extractSpawnedAgentId({ content: [{ type: 'text', text: 'done. agentId: a99c9f8a723f92f77 (use SendMessage…)' }] }),
     'a99c9f8a723f92f77',
   );
+  assert.equal(
+    extractSpawnedAgentId('Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 (can be used with the `resume` parameter'),
+    'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+  );
+  assert.equal(
+    extractSpawnedAgentId('[label](9e41b709-ff45-4f20-bcbd-d077f92944b8)'),
+    '9e41b709-ff45-4f20-bcbd-d077f92944b8',
+  );
   // Structured spelling: a payload carrying the id as a JSON field is scanned
   // as serialized JSON ("agentId":"…") and must match too.
   assert.equal(extractSpawnedAgentId({ agentId: 'deadbeef12345678', content: [] }), 'deadbeef12345678');
+  // tool_* spawn ids must NOT be captured as resume ids.
+  assert.equal(extractSpawnedAgentId('agentId: tool_b1b73265-1c92-4340-a170-d148f8f0dde'), null);
   // No labelled id → null (a bare sha in the reply must NOT be captured).
   assert.equal(extractSpawnedAgentId('committed 4e66b2882da9afb9747468b08a253ca2f09c85f3'), null);
   assert.equal(extractSpawnedAgentId(undefined), null);
@@ -945,6 +955,37 @@ test('reuse: recorder persists the agent id, duplicate same-role spawn is denied
   });
 });
 
+test('reuse (Cursor): duplicate spawn deny names Task resume UUID after PostToolUse records it', () => {
+  withMaterialized({ teamApproved: true, cursorModels: [...DEFAULT_CURSOR_MODELS, 'claude-4.6-sonnet-thinking'] }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-cursor-resume');
+      subagentStartBind({
+        input: {
+          event: 'SubagentStart', host: 'cursor', cwd,
+          raw: {
+            subagent_id: 'tool_b1b73265-1c92-4340-a170-d148f8f0dde',
+            subagent_type: 'senior-frontend',
+            session_id: 'parent-1',
+          },
+        },
+        host: 'cursor', cwd, now: () => 'x',
+      } as unknown as Ctx);
+      recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'composer-2.5', prompt: 'build UI' },
+        'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 (can be used with the resume parameter)',
+        'parent-1',
+      ));
+      const dup = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'composer-2.5', prompt: 'fix cycle' }, 'parent-1'));
+      assert.equal(dup.kind, 'deny');
+      if (dup.kind === 'deny') {
+        assert.ok(dup.reason.includes('bff46cd7-3681-4cf0-adcf-263bf55cc301'), 'deny must name Cursor resume UUID, not tool_* id');
+        assert.ok(!dup.reason.includes('tool_b1b73265'), 'deny must not name tool_* id');
+      }
+    });
+  });
+});
+
 test('reuse (Cursor): subagent-start records the spawned subagent_id into the registry (10b re-spawn-pileup fix)', () => {
   withMaterialized({ teamApproved: true, cursorModels: [...DEFAULT_CURSOR_MODELS, 'claude-4.6-sonnet-thinking'] }, (cwd) => {
     setCurrentRunId(cwd, 'run-cursor-1');
@@ -971,10 +1012,11 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
     subagentStartBind(cursorCtx);
     const registry = readRunAgentRegistry(cwd, 'run-cursor-1');
     assert.equal(
-      registry['senior-architect']?.agentId,
+      registry['senior-architect']?.toolCallId,
       'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb',
-      'Cursor subagent_id must be recorded for reuse (else fix-cycles re-spawn)',
+      'Cursor subagent_id must be recorded as toolCallId until PostToolUse supplies resume UUID',
     );
+    assert.equal(registry['senior-architect']?.resumeId, null);
     assert.equal(registry['senior-architect']?.agentType, 'senior-architect');
     assert.equal(
       fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-cursor-1', 'tool_f90f3399-a93f-4d3e-9d95-fc7dc37f8bb.json')),

@@ -233,3 +233,94 @@ test('a fully materialized project with a plan emits no readiness violations', (
     assert.deepEqual(v, []);
   });
 });
+
+test('plan-opencode-queue-gate: OpenCode-enabled new projects require machine-readable delegate block in plan.md', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/plan.md',
+      content: '## OpenCode Delegation Queue\n1. i18n catalog\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['plan-opencode-queue-gate']);
+  });
+});
+
+test('plan-opencode-queue-gate: passes when opencode-delegate block has units', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/plan.md',
+      content: [
+        '# Plan',
+        '<!-- opencode-delegate:start -->',
+        '- role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+        '- role: backend | files: supabase/seed.sql | task: seed demo rows',
+        '- role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, []);
+  });
+});
+
+test('plan-opencode-queue-gate: ignores incomplete delegate rows the runner cannot execute', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/plan.md',
+      content: [
+        '# Plan',
+        '<!-- opencode-delegate:start -->',
+        '- role: frontend | files: packages/i18n/src/locales/en/common.json',
+        '- role: backend | task: seed demo rows',
+        '- role: tester | files: apps/web/e2e/smoke.spec.ts',
+        '<!-- opencode-delegate:end -->',
+      ].join('\n'),
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['plan-opencode-queue-gate']);
+  });
+});
+
+test('assignments-shape-gate: rejects non-canonical roles-object assignments.json', () => {
+  withProject((dir) => {
+    const v = planReadinessViolations({
+      filePath: '.traffic-one/runs/R/assignments.json',
+      content: JSON.stringify({ roles: { 'senior-frontend': { ownedPaths: ['apps/web/**'] } } }),
+      projectRoot: dir,
+      state: { ...DEFAULT_STATE, onboardingComplete: true },
+      writingFeatureSource: false,
+      block: names,
+    });
+    assert.deepEqual(v, ['assignments-shape-gate']);
+  });
+});

@@ -53,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'editts';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'editts';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -85,6 +85,33 @@ fs.writeFileSync(path.join(dir, 'helper.txt'), 'real work\\n');
 fs.mkdirSync(path.join(dir, 'pkg', 'node_modules', 'left-pad'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'pkg', 'node_modules', 'left-pad', 'index.js'), 'junk\\n');
 fs.writeFileSync(path.join(dir, 'package-lock.json'), '{}\\n');
+`,
+    // writes legitimate source plus common build/test cache artifacts. Source should
+    // apply; generated artifacts must be filtered before diff capture.
+    artifacts: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'source plus generated artifacts' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'apps', 'web', 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx'), 'export function App() { return null; }\\n');
+fs.mkdirSync(path.join(dir, 'apps', 'web', 'dist', 'assets'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'apps', 'web', 'dist', 'assets', 'app.js'), 'bundle\\n');
+fs.mkdirSync(path.join(dir, 'apps', 'web', '.turbo'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'apps', 'web', '.turbo', 'cache.json'), '{}\\n');
+fs.writeFileSync(path.join(dir, 'apps', 'web', 'tsconfig.tsbuildinfo'), '{}\\n');
+`,
+    // writes one in-scope frontend file and one backend/API file. The whole patch
+    // must be rejected before apply, leaving even the valid file untouched.
+    scopeleak: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const i = process.argv.indexOf('--dir');
+const dir = i >= 0 ? process.argv[i + 1] : process.env.PWD;
+process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'frontend plus backend leak' } }) + '\\n');
+fs.mkdirSync(path.join(dir, 'apps', 'web', 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx'), 'export function App() { return null; }\\n');
+fs.mkdirSync(path.join(dir, 'packages', 'api-client', 'src'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'packages', 'api-client', 'src', 'index.ts'), 'export const leaked = true;\\n');
 `,
     // writes a TS source file so the post-apply typecheck path engages.
     editts: `#!/usr/bin/env node
@@ -236,6 +263,19 @@ execSync('git add -A && git commit -q -m delegated', { cwd: dir, stdio: 'ignore'
 function modelsSeen(bin: string): string[] {
   const p = path.join(bin, 'models-seen');
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8').split('\n').filter(Boolean) : [];
+}
+
+function writeAssignments(dir: string, runId: string, assignments: Array<{ role: string; include: string[]; exclude?: string[] }>): void {
+  const runDir = path.join(dir, '.traffic-one', 'runs', runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'assignments.json'), JSON.stringify({
+    version: 1,
+    runId,
+    assignments: assignments.map((a) => ({
+      role: a.role,
+      scope: a.exclude && a.exclude.length > 0 ? { include: a.include, exclude: a.exclude } : { include: a.include },
+    })),
+  }), 'utf8');
 }
 
 function failWorktreeAddViaPath(dir: string): () => void {
@@ -512,7 +552,7 @@ test('delegate retries once on a no-op and applies the second attempt (free mode
   });
 });
 
-test('parsePlanDelegationQueue extracts only the marked queue block', () => {
+test('parsePlanDelegationQueue extracts only runnable units from the marked queue block', () => {
   const plan = [
     '# Plan', 'prose',
     '<!-- opencode-delegate:start -->',
@@ -523,11 +563,9 @@ test('parsePlanDelegationQueue extracts only the marked queue block', () => {
     '- role: architect | task: outside the block — must be ignored',
   ].join('\n');
   const q = parsePlanDelegationQueue(plan);
-  assert.equal(q.length, 2);
+  assert.equal(q.length, 1);
   assert.equal(q[0]?.role, 'backend');
   assert.equal(q[0]?.files, 'src/seed.ts');
-  assert.equal(q[1]?.role, 'frontend');
-  assert.equal(q[1]?.task, 'Boilerplate card component');
   assert.deepEqual(parsePlanDelegationQueue('# plan with no queue'), []);
 });
 
@@ -537,8 +575,8 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
       '<!-- opencode-delegate:start -->',
-      '- role: backend | files: a | task: make unit A',
-      '- role: frontend | files: b | task: make unit B',
+      '- role: backend | files: unit-1.txt | task: make unit A',
+      '- role: frontend | files: unit-2.txt | task: make unit B',
       '<!-- opencode-delegate:end -->',
     ].join('\n'), 'utf8');
     const r = delegateFromPlan(dir, { runId: 'plan-1' });
@@ -567,7 +605,7 @@ test('delegateFromPlan without opts.runId uses currentRunId from project state',
     }), 'utf8');
     fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
       '<!-- opencode-delegate:start -->',
-      '- role: frontend | files: b | task: make unit B',
+      '- role: frontend | files: unit-1.txt | task: make unit B',
       '<!-- opencode-delegate:end -->',
     ].join('\n'), 'utf8');
 
@@ -751,11 +789,62 @@ test('delegated diff excludes node_modules and wrong-pm lockfiles (pnpm project)
   });
 });
 
-test('stageExcludePathspecs: pm-aware lockfile excludes, none when pm unknown', () => {
+test('delegated diff excludes common build/cache artifacts', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('artifacts');
+    const r = delegate(dir, { role: 'frontend', task: 'create app source', runId: 'r-artifacts' });
+    assert.equal(r.action, 'delegated');
+    assert.deepEqual(r.touched, ['apps/web/src/App.tsx']);
+    assert.ok(fs.existsSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx')));
+    assert.ok(!fs.existsSync(path.join(dir, 'apps', 'web', 'dist')), 'dist must not apply');
+    assert.ok(!fs.existsSync(path.join(dir, 'apps', 'web', '.turbo')), '.turbo must not apply');
+    assert.ok(!fs.existsSync(path.join(dir, 'apps', 'web', 'tsconfig.tsbuildinfo')), 'tsbuildinfo must not apply');
+  });
+});
+
+test('delegated diff fails closed when a role touches outside its assignment scope', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    writeAssignments(dir, 'r-scope', [
+      { role: 'senior-frontend', include: ['apps/web/src/**'] },
+      { role: 'senior-backend', include: ['packages/api-client/src/**'] },
+    ]);
+    stubOpencode('scopeleak');
+    const r = delegate(dir, { role: 'frontend', task: 'create frontend file only', runId: 'r-scope' });
+    assert.equal(r.action, 'failed');
+    assert.match(r.error || '', /outside frontend's assignment scope/);
+    assert.ok(!fs.existsSync(path.join(dir, 'apps', 'web', 'src', 'App.tsx')), 'valid file must roll back with the invalid patch');
+    assert.ok(!fs.existsSync(path.join(dir, 'packages', 'api-client', 'src', 'index.ts')));
+    assert.ok(!fs.existsSync(path.join(dir, '.traffic-one', 'digests', 'r-scope')), 'no digest for rejected diff');
+  });
+});
+
+test('delegateFromPlan enforces the files/area allowlist before applying', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- role: frontend | files: apps/web/src/** | task: make unit A',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-allowlist' });
+    assert.equal(r.total, 1);
+    assert.equal(r.delegated, 0);
+    assert.equal(r.units[0]?.action, 'failed');
+    assert.ok(!fs.existsSync(path.join(dir, 'unit-1.txt')));
+    assert.equal(openCodePlanRoleCompleted(dir, 'r-allowlist', 'frontend'), true, 'failed unit still releases the plan-batch gate');
+    const log = fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'r-allowlist', 'opencode-attempts', 'frontend.log'), 'utf8');
+    assert.match(log, /outside the plan files\/area allowlist/);
+  });
+});
+
+test('stageExcludePathspecs: generated artifacts and pm-aware lockfile excludes', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocspec-'));
   try {
-    // No package.json → only node_modules excluded.
-    assert.ok(stageExcludePathspecs(dir).every((s) => s.includes('node_modules')));
+    const baseSpecs = stageExcludePathspecs(dir);
+    assert.ok(baseSpecs.some((s) => s.includes('node_modules')));
+    assert.ok(baseSpecs.some((s) => s.includes('dist')));
+    assert.ok(baseSpecs.some((s) => s.includes('tsbuildinfo')));
     fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'npm@11.0.0' }), 'utf8');
     const specs = stageExcludePathspecs(dir);
     assert.ok(specs.some((s) => s.includes('pnpm-lock.yaml')));
@@ -826,7 +915,7 @@ test('delegateFromPlan honors opts.roles with senior- prefix normalization', () 
     const plan = [
       '# Plan', '',
       '<!-- opencode-delegate:start -->',
-      '- role: frontend | files: a.txt | task: unit A',
+      '- role: frontend | files: unit-1.txt | task: unit A',
       '- role: tester | files: b.txt | task: unit B',
       '<!-- opencode-delegate:end -->', '',
     ].join('\n');

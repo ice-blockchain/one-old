@@ -56,8 +56,14 @@ export function subagentMayWriteFeatureSource(
 
 export function commandAppearsToWriteFeatureSource(command: unknown): boolean {
   if (typeof command !== 'string' || !command.trim()) return false;
-  const hasWritePrimitive = /(?:>|>>|\btee\b|\bcat\b[\s\S]*<<|\bpython3?\b|\bnode\b|\bperl\b|\bsed\b[\s\S]*-i)/.test(command);
-  const mentionsFeaturePath = /(?:^|[\s'"`])(?:apps\/[^/\s'"`]+\/(?:src|app)\/|packages\/[^/\s'"`]+\/src\/|src\/|services\/[^/\s'"`]+\/src\/)/.test(command);
+  const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(command);
+  const hasWritePrimitive = hasOutputRedirect
+    || /\btee\b/.test(command)
+    || /\bcat\b[\s\S]*<</.test(command)
+    || /\bpython3?\b|\bnode\b|\bperl\b|\bsed\b[\s\S]*-i/.test(command)
+    || /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|truncate)\b/.test(command)
+    || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(command);
+  const mentionsFeaturePath = /(?:^|[\s'"`/])(?:apps\/[^/\s'"`]+\/(?:src|app)(?:\/|(?=$|[\s'"`]))|packages\/[^/\s'"`]+\/src(?:\/|(?=$|[\s'"`]))|src(?:\/|(?=$|[\s'"`]))|services\/[^/\s'"`]+\/src(?:\/|(?=$|[\s'"`])))/.test(command);
   return hasWritePrimitive && mentionsFeaturePath;
 }
 

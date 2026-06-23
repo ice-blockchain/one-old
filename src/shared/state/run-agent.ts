@@ -643,7 +643,6 @@ export function resolveRunAgentContext(
       : (identity.parentSessionId || cursorTranscript?.parentSessionId || null);
     const ctx = claimThreadRole(cwd, state, inferredThreadId, inferredRole, {
       parentSessionId,
-      recordAgent: !cursorTranscriptPath,
     });
     if (ctx) return ctx;
   }
@@ -1112,6 +1111,10 @@ function agentRegistryFile(cwd: string, runId: string): string {
 
 export interface RunAgentEntry {
   agentId: string;
+  /** Cursor Task `resume` id (UUID from spawn result). Never a `tool_*` tool-call id. */
+  resumeId?: string | null;
+  /** Cursor subagentStart `subagent_id` (= tool_<uuid>) when PostToolUse has not arrived yet. */
+  toolCallId?: string | null;
   role: string;
   model: string | null;
   agentType: string | null;
@@ -1119,6 +1122,25 @@ export interface RunAgentEntry {
   recordedAt: string;
   tasks: number;
   replaced: boolean;
+}
+
+/** Cursor surfaces spawn tool-call ids as `tool_<uuid>` — these do NOT work with Task `resume`. */
+export function isCursorToolSubagentId(id: string): boolean {
+  return /^tool_[0-9a-f-]{8,}$/i.test(id.trim());
+}
+
+/** True when the id can resume/continue the agent on Cursor (UUID/hex agent id, not tool_*). */
+export function isResumeCapableAgentId(id: string): boolean {
+  const t = id.trim();
+  return t.length > 0 && !isCursorToolSubagentId(t);
+}
+
+/** Host-correct id for agent-reuse continuation denies (Cursor → Task `resume`). */
+export function continuationAgentId(entry: RunAgentEntry, host: string): string {
+  if (host !== 'cursor') return entry.agentId;
+  if (entry.resumeId && isResumeCapableAgentId(entry.resumeId)) return entry.resumeId;
+  if (isResumeCapableAgentId(entry.agentId)) return entry.agentId;
+  return entry.agentId;
 }
 
 export function readRunAgentRegistry(cwd: string, runId: string): Record<string, RunAgentEntry> {
@@ -1131,6 +1153,8 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
     if (!entry || typeof entry.agentId !== 'string' || !entry.agentId) continue;
     out[role] = {
       agentId: entry.agentId,
+      resumeId: typeof entry.resumeId === 'string' ? entry.resumeId : null,
+      toolCallId: typeof entry.toolCallId === 'string' ? entry.toolCallId : null,
       role,
       model: typeof entry.model === 'string' ? entry.model : null,
       agentType: typeof entry.agentType === 'string' ? entry.agentType : null,
@@ -1147,19 +1171,54 @@ export function recordRunAgent(
   cwd: string,
   runId: string,
   role: string,
-  entry: { agentId: string; model?: string | null; agentType?: string | null; parentSessionId?: string | null },
+  entry: {
+    agentId: string;
+    resumeId?: string | null;
+    toolCallId?: string | null;
+    model?: string | null;
+    agentType?: string | null;
+    parentSessionId?: string | null;
+  },
 ): void {
   if (!VALID_AGENT_ROLES.has(role)) return;
   if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
   const agents = readRunAgentRegistry(cwd, runId) as Rec;
   const prior = obj(agents[role]);
+  const incomingId = entry.agentId.trim();
+  const incomingResume = (entry.resumeId && isResumeCapableAgentId(entry.resumeId) ? entry.resumeId.trim() : null)
+    || (isResumeCapableAgentId(incomingId) ? incomingId : null);
+  const incomingTool = (entry.toolCallId && isCursorToolSubagentId(entry.toolCallId) ? entry.toolCallId.trim() : null)
+    || (isCursorToolSubagentId(incomingId) ? incomingId : null);
+  const priorResume = prior && typeof prior.resumeId === 'string' && isResumeCapableAgentId(prior.resumeId)
+    ? (prior.resumeId as string)
+    : (prior && typeof prior.agentId === 'string' && isResumeCapableAgentId(prior.agentId as string) ? (prior.agentId as string) : null);
+  const resumeId = incomingResume || priorResume || null;
+  const toolCallId = incomingTool
+    || (prior && typeof prior.toolCallId === 'string' ? (prior.toolCallId as string) : null);
+  // agentId stays backward-compatible: prefer the resume-capable id when known.
+  const agentId = resumeId || incomingId || (prior && typeof prior.agentId === 'string' ? (prior.agentId as string) : incomingId);
+  const sameAgent = prior
+    && prior.replaced !== true
+    && ((prior.agentId === agentId)
+      || (prior.resumeId && prior.resumeId === resumeId)
+      || (prior.toolCallId && prior.toolCallId === toolCallId)
+      // Cursor records `subagentStart` first with only `tool_<uuid>`, then later
+      // PostToolUse(Task) can add the real resume UUID with no shared id. Duplicate
+      // same-role fresh spawns are denied before they reach here, so treat this as
+      // an upgrade of the same live agent unless the role was explicitly replaced.
+      || (prior.toolCallId && !prior.resumeId && resumeId));
+  const priorModel = prior && typeof prior.model === 'string' && prior.model ? prior.model : null;
+  const priorAgentType = prior && typeof prior.agentType === 'string' && prior.agentType ? prior.agentType : null;
+  const priorParentSessionId = prior && typeof prior.parentSessionId === 'string' && prior.parentSessionId ? prior.parentSessionId : null;
   agents[role] = {
-    agentId: entry.agentId,
-    model: entry.model || null,
-    agentType: entry.agentType || null,
-    parentSessionId: entry.parentSessionId || null,
+    agentId,
+    resumeId,
+    toolCallId,
+    model: firstString(entry.model, sameAgent ? priorModel : null),
+    agentType: firstString(entry.agentType, sameAgent ? priorAgentType : null),
+    parentSessionId: firstString(entry.parentSessionId, sameAgent ? priorParentSessionId : null),
     recordedAt: stateTimestamp(),
-    tasks: prior && prior.agentId === entry.agentId && typeof prior.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
+    tasks: sameAgent && typeof prior?.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
     replaced: false,
   };
   try {

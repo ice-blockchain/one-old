@@ -10,7 +10,9 @@ import {
   openCodeDelegateRoles,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
+  parsePlanDelegationBlock,
   pendingOpenCodePlanRoles,
+  planDelegationUnitCount,
   planDelegationQueueRoles,
   roleHasQueuedUnits,
   shouldRunRoleOnOpenCode,
@@ -35,6 +37,23 @@ test('planDelegationQueueRoles + roleHasQueuedUnits: read the plan queue, normal
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('parsePlanDelegationBlock counts only runnable role/files/task units', () => {
+  const plan = [
+    '# Plan',
+    '<!-- opencode-delegate:start -->',
+    '- role: frontend | files: packages/i18n/src/en.json | task: seed copy',
+    '- role: backend | files: supabase/seed.sql',
+    '- role: tester | task: add smoke test',
+    '- role: docs | files: README.md | task: draft usage notes',
+    '- role: senior-frontend | files: packages/i18n/src/ro.json | task: seed translated copy',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n');
+  const parsed = parsePlanDelegationBlock(plan);
+  assert.equal(parsed.unitCount, 3);
+  assert.deepEqual(parsed.roles, ['frontend', 'docs']);
+  assert.equal(planDelegationUnitCount(plan), 3);
 });
 
 test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', () => {

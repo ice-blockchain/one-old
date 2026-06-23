@@ -14,6 +14,9 @@ import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
 import { packageJsonDeclaresWorkspace, stateRequiresNewProjectMonorepo } from '../../shared/hook-paths';
 import { hasMaterializedProjectAssets } from '../../shared/materialize';
+import { openCodeDelegationActive } from '../../shared/performance';
+import { OPENCODE_PLAN_MIN_UNITS, planDelegationUnitCount } from '../../shared/opencode-roles';
+import { obj } from '../../shared/obj';
 import { isMaterialized, legacyStatePath, stackFingerprint, statePath } from '../../shared/state';
 
 type Rec = Record<string, unknown>;
@@ -21,6 +24,7 @@ type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
 
 const PLAN_FILE_RE = /(^|\/)\.traffic-one\/plan\.md$/;
+const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json$/;
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
@@ -85,6 +89,28 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   return missing;
 }
 
+function missingOpenCodeDelegateBlock(content: string): boolean {
+  return planDelegationUnitCount(content) < OPENCODE_PLAN_MIN_UNITS;
+}
+
+function planOnDiskMissingOpenCodeBlock(projectRoot: string): boolean {
+  try {
+    const plan = fs.readFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), 'utf8');
+    return missingOpenCodeDelegateBlock(plan);
+  } catch {
+    return true;
+  }
+}
+
+function assignmentsUsesCanonicalShape(content: string): boolean {
+  try {
+    const parsed = JSON.parse(content) as unknown;
+    return Array.isArray(obj(parsed)?.assignments);
+  } catch {
+    return false;
+  }
+}
+
 export interface ReadinessArgs {
   filePath: string;          // project-relative target path
   content: string;           // write content (Write.content / Edit.new_string)
@@ -118,6 +144,20 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architect completion gate: do not write \`PLAN_READY\` until the required Traffic One workspace scaffold exists. Missing: ${missing.join(', ')}. Write the missing baseline files, then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missing.join(', ') }));
     }
+    if (state.mode === 'new-project' && openCodeDelegationActive(state) && planOnDiskMissingOpenCodeBlock(projectRoot)) {
+      violations.push(block('architect-opencode-queue-gate',
+        `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
+    }
+  }
+
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state) && missingOpenCodeDelegateBlock(content)) {
+    violations.push(block('plan-opencode-queue-gate',
+      `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
+  }
+
+  if (ASSIGNMENTS_FILE_RE.test(filePath) && state.mode === 'new-project' && !assignmentsUsesCanonicalShape(content)) {
+    violations.push(block('assignments-shape-gate',
+      'Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. See `agents/senior-architect.md` § Assignments manifest.'));
   }
 
   const validStateStack = Boolean(state.stack && isKnownStack(state.stack));

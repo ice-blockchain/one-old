@@ -26,9 +26,15 @@ import { OPENCODE_FREE_MODELS } from '../../config/opencode';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
-import { markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted, recordOpenCodeAttemptOutcome } from '../../shared/opencode-roles';
+import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
+import {
+  markOpenCodePlanRoleCompleted,
+  markOpenCodeRoleAttempted,
+  parsePlanDelegationUnits,
+  recordOpenCodeAttemptOutcome,
+} from '../../shared/opencode-roles';
 import { roleDigestName } from '../../shared/packing';
-import { readEffectiveState } from '../../shared/state';
+import { readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 
@@ -71,6 +77,7 @@ export interface DelegateOpts {
   task?: string;
   runId?: string;
   model?: string;
+  allowedFiles?: string;
 }
 
 export interface DelegateResult {
@@ -140,7 +147,42 @@ export function snapshotWorkingTree(cwd: string, headSha: string): string {
 // root packageManager (the project's own lockfile remains a legitimate
 // install side-effect). Exported for tests.
 export function stageExcludePathspecs(wt: string): string[] {
-  const excludes = [':(exclude,glob)**/node_modules/**', ':(exclude)node_modules'];
+  const excludes = [
+    ':(exclude,glob)**/node_modules/**',
+    ':(exclude)node_modules',
+    // Build/cache/test-output artifacts are never legitimate delegated source.
+    // A model may run installs/builds/tests inside the throwaway worktree; those
+    // outputs must not ride the patch back to the real project.
+    ':(exclude,glob)**/dist/**',
+    ':(exclude,glob)dist/**',
+    ':(exclude)dist',
+    ':(exclude,glob)**/build/**',
+    ':(exclude,glob)build/**',
+    ':(exclude)build',
+    ':(exclude,glob)**/.turbo/**',
+    ':(exclude,glob).turbo/**',
+    ':(exclude).turbo',
+    ':(exclude,glob)**/.next/**',
+    ':(exclude,glob).next/**',
+    ':(exclude).next',
+    ':(exclude,glob)**/.vite/**',
+    ':(exclude,glob).vite/**',
+    ':(exclude).vite',
+    ':(exclude,glob)**/.cache/**',
+    ':(exclude,glob).cache/**',
+    ':(exclude).cache',
+    ':(exclude,glob)**/coverage/**',
+    ':(exclude,glob)coverage/**',
+    ':(exclude)coverage',
+    ':(exclude,glob)**/playwright-report/**',
+    ':(exclude,glob)playwright-report/**',
+    ':(exclude)playwright-report',
+    ':(exclude,glob)**/test-results/**',
+    ':(exclude,glob)test-results/**',
+    ':(exclude)test-results',
+    ':(exclude,glob)**/*.tsbuildinfo',
+    ':(exclude,glob)*.tsbuildinfo',
+  ];
   let pm = '';
   try {
     const pkg = JSON.parse(fs.readFileSync(path.join(wt, 'package.json'), 'utf8')) as Rec;
@@ -435,6 +477,100 @@ function restoreApplyTargets(backups: ApplyTargetBackup[]): string | null {
   return errors.length ? errors.join('; ') : null;
 }
 
+interface DelegatedDiffPolicy {
+  role: string;
+  runId: string;
+  allowedPatterns: string[];
+  assignmentScopes: AssignedScope[];
+  assignmentRequired: boolean;
+}
+
+const GENERATED_DIFF_PATTERNS = [
+  '**/node_modules/**',
+  'node_modules/**',
+  '**/dist/**',
+  'dist/**',
+  '**/build/**',
+  'build/**',
+  '**/.turbo/**',
+  '.turbo/**',
+  '**/.next/**',
+  '.next/**',
+  '**/.vite/**',
+  '.vite/**',
+  '**/.cache/**',
+  '.cache/**',
+  '**/coverage/**',
+  'coverage/**',
+  '**/playwright-report/**',
+  'playwright-report/**',
+  '**/test-results/**',
+  'test-results/**',
+  '**/*.tsbuildinfo',
+  '*.tsbuildinfo',
+  '.traffic-one/**',
+];
+
+function parseAllowedFiles(value: unknown): string[] {
+  if (typeof value !== 'string' || !value.trim()) return [];
+  return value
+    .split(/[,;\n]+/)
+    .map((part) => part.trim().replace(/^`+|`+$/g, ''))
+    .filter(Boolean);
+}
+
+function roleNeedsAssignment(role: string): boolean {
+  const normalized = normalizePlanRole(role);
+  return normalized === 'frontend' || normalized === 'backend';
+}
+
+function buildDelegatedDiffPolicy(cwd: string, runId: string, role: string, allowedFiles: unknown): DelegatedDiffPolicy {
+  const normalizedRole = normalizePlanRole(role);
+  const manifest = readRunAssignmentsResilient(cwd, runId);
+  const assignmentScopes = manifest
+    ? manifest.assignments
+      .filter((assignment) => normalizePlanRole(assignment.role) === normalizedRole)
+      .map((assignment) => assignment.scope)
+    : [];
+  return {
+    role,
+    runId,
+    allowedPatterns: parseAllowedFiles(allowedFiles),
+    assignmentScopes,
+    assignmentRequired: Boolean(manifest && roleNeedsAssignment(role)),
+  };
+}
+
+function pathList(paths: string[]): string {
+  return paths.slice(0, 8).join(', ') + (paths.length > 8 ? `, ... +${paths.length - 8} more` : '');
+}
+
+function validateDelegatedDiff(paths: string[], policy: DelegatedDiffPolicy): string | null {
+  const targets = uniquePaths(paths.map((p) => normalizeRelPath(p)).filter(Boolean));
+  const generated = targets.filter((target) => GENERATED_DIFF_PATTERNS.some((pattern) => matchesPattern(target, pattern)));
+  if (generated.length > 0) {
+    return `delegated diff contains generated/internal artifact path(s): ${pathList(generated)}`;
+  }
+
+  if (policy.allowedPatterns.length > 0) {
+    const outsideAllowlist = targets.filter((target) => !policy.allowedPatterns.some((pattern) => matchesPattern(target, pattern)));
+    if (outsideAllowlist.length > 0) {
+      return `delegated diff touched file(s) outside the plan files/area allowlist (${policy.allowedPatterns.join(', ')}): ${pathList(outsideAllowlist)}`;
+    }
+  }
+
+  if (policy.assignmentScopes.length > 0) {
+    const outsideScope = targets.filter((target) => !policy.assignmentScopes.some((scope) => matchesScope(target, scope)));
+    if (outsideScope.length > 0) {
+      return `delegated diff touched file(s) outside ${policy.role}'s assignment scope: ${pathList(outsideScope)}`;
+    }
+  } else if (policy.assignmentRequired) {
+    return `no assignment scope found for delegated ${policy.role} work in run ${policy.runId}`;
+  }
+
+  return null;
+}
+
 // Outcome of trying ONE model in its own fresh worktree.
 type ModelRunOutcome =
   | { kind: 'delegated'; touched: string[]; summary: string }
@@ -447,7 +583,7 @@ type ModelRunOutcome =
 // every residue class at once: commits the model may have made, gitignored
 // build output, lockfiles. On success the staged diff (vs baseSha) is applied
 // to the real working tree before returning.
-function runModel(cwd: string, bin: string, baseSha: string, model: string, task: string, onCliAttempt?: () => void): ModelRunOutcome {
+function runModel(cwd: string, bin: string, baseSha: string, model: string, task: string, policy: DelegatedDiffPolicy, onCliAttempt?: () => void): ModelRunOutcome {
   const parent = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-'));
   const wt = path.join(parent, 'wt');
   const added = git(cwd, ['worktree', 'add', '--detach', wt, baseSha], 60_000);
@@ -514,6 +650,10 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
       ...touched,
       ...parseNameStatusZ(git(wt, ['diff', '--cached', '--name-status', '-z', baseSha]).stdout),
     ]);
+    const validationError = validateDelegatedDiff(applyTargets, policy);
+    if (validationError) {
+      return { kind: 'failed', error: validationError };
+    }
     const patch = git(wt, ['diff', '--cached', '--binary', baseSha]).stdout;
     const patchPath = path.join(parent, 'delegated.patch');
     fs.writeFileSync(patchPath, patch, 'utf8');
@@ -601,6 +741,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     ? state.currentRunId.trim()
     : (typeof state.currentRunId === 'number' && Number.isFinite(state.currentRunId) ? String(Math.trunc(state.currentRunId)) : '');
   const runId = (opts.runId || '').trim() || stateRunId || runStamp();
+  const policy = buildDelegatedDiffPolicy(cwd, runId, role, opts.allowedFiles);
   const startedAt = Date.now();
   let markedAttempt = false;
   const markCliAttempt = (): void => {
@@ -628,7 +769,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   let lastModel = models[models.length - 1] as string;
   for (const model of models) {
     lastModel = model;
-    const outcome = runModel(cwd, bin, baseSha, model, task, markCliAttempt);
+    const outcome = runModel(cwd, bin, baseSha, model, task, policy, markCliAttempt);
     if (outcome.kind === 'delegated') {
       if (fromChain) {
         const idx = OPENCODE_FREE_MODELS.indexOf(model);
@@ -677,23 +818,7 @@ export interface PlanDelegationResult {
 //   - role: backend | files: src/lib/seed.ts | task: <self-contained task>
 //   <!-- opencode-delegate:end -->
 export function parsePlanDelegationQueue(planText: string): Array<{ role: string; files: string; task: string }> {
-  const start = planText.indexOf('opencode-delegate:start');
-  const end = planText.indexOf('opencode-delegate:end');
-  if (start < 0 || end < 0 || end < start) return [];
-  const units: Array<{ role: string; files: string; task: string }> = [];
-  for (const raw of planText.slice(start, end).split('\n')) {
-    const line = raw.trim();
-    if (!line.startsWith('- ')) continue;
-    const fields: Record<string, string> = {};
-    for (const part of line.slice(2).split('|')) {
-      const idx = part.indexOf(':');
-      if (idx < 0) continue;
-      const key = part.slice(0, idx).trim().toLowerCase();
-      if (key) fields[key] = part.slice(idx + 1).trim();
-    }
-    if (fields.task) units.push({ role: fields.role || 'opencode', files: fields.files || '', task: fields.task });
-  }
-  return units;
+  return parsePlanDelegationUnits(planText);
 }
 
 // Deterministically delegate EVERY queued bounded unit to OpenCode. Reuses
@@ -735,7 +860,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     for (const u of queue) {
       const normalizedRole = normalizePlanRole(u.role);
       const task = u.files ? `${u.task}\n\nFiles/area: ${u.files}` : u.task;
-      const r = delegate(cwd, { role: u.role, task, runId, model: opts.model });
+      const r = delegate(cwd, { role: u.role, task, runId, model: opts.model, allowedFiles: u.files });
       if (r.ok) delegated += 1;
       units.push({ role: u.role, task: u.task, action: r.action, touched: r.touched, model: r.model });
       processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);

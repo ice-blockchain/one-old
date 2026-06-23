@@ -45,6 +45,7 @@ import {
 import {
   ensureCurrentRunId,
   ensureRunAgentClaim,
+  continuationAgentId,
   hookSessionIdentity,
   isMaintenancePhase,
   isTeamApproved,
@@ -405,9 +406,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
       } else if (!isResume) {
         const live = liveRunAgent(cwd, runId, role, hookSessionIdentity(raw).sessionId);
         if (live) {
-          const recipe = continuationRecipe(ctx.host, live.agentId);
+          const resumeTarget = continuationAgentId(live, ctx.host);
+          const recipe = continuationRecipe(ctx.host, resumeTarget);
           return deny(block('agent-reuse-continue', {
-            ROLE: role, RUN_ID: runId, AGENT_ID: live.agentId, MARKER: REPLACE_AGENT_MARKER,
+            ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
             CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
           }));
         }

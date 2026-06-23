@@ -12,6 +12,13 @@ import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode';
 import { obj } from './obj';
 
 type Rec = Record<string, unknown>;
+export const OPENCODE_PLAN_MIN_UNITS = 3;
+
+export interface PlanDelegationUnit {
+  role: string;
+  files: string;
+  task: string;
+}
 
 // The configured roles, sanitized. Falls back to the default array when unset or
 // malformed, so a typo can't silently disable delegation.
@@ -43,20 +50,49 @@ export function shouldRunRoleOnOpenCode(role: string, state: unknown): boolean {
 // `opencode-delegate` block — normalized (senior- stripped, deduped, first-seen
 // order), empty on any read/parse problem. Single source shared by the from-plan
 // runner (which delegates these) and the spawn gate (roleHasQueuedUnits below).
-export function planDelegationQueueRoles(cwd: string): string[] {
-  let plan = '';
-  try { plan = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { return []; }
+export function parsePlanDelegationUnits(plan: string): PlanDelegationUnit[] {
   const start = plan.indexOf('opencode-delegate:start');
   const end = plan.indexOf('opencode-delegate:end');
   if (start < 0 || end < 0 || end < start) return [];
-  const roles: string[] = [];
+  const units: PlanDelegationUnit[] = [];
   for (const line of plan.slice(start, end).split('\n')) {
-    const m = /^\s*-\s*role:\s*([a-z][a-z-]*)/i.exec(line);
-    if (!m || !m[1]) continue;
-    const role = normalizeAttemptRole(m[1].toLowerCase());
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('- ')) continue;
+    const fields: Record<string, string> = {};
+    for (const part of trimmed.slice(2).split('|')) {
+      const idx = part.indexOf(':');
+      if (idx < 0) continue;
+      const key = part.slice(0, idx).trim().toLowerCase();
+      const value = part.slice(idx + 1).trim();
+      if (key) fields[key] = value;
+    }
+    const roleRaw = fields.role || '';
+    const role = /^[a-z][a-z-]*$/i.test(roleRaw) ? normalizeAttemptRole(roleRaw.toLowerCase()) : '';
+    if (!role || !fields.files || !fields.task) continue;
+    units.push({ role, files: fields.files, task: fields.task });
+  }
+  return units;
+}
+
+export function parsePlanDelegationBlock(plan: string): { roles: string[]; unitCount: number } {
+  const units = parsePlanDelegationUnits(plan);
+  const roles: string[] = [];
+  for (const unit of units) {
+    const role = unit.role;
     if (role && !roles.includes(role)) roles.push(role);
   }
-  return roles;
+  return { roles, unitCount: units.length };
+}
+
+export function planDelegationQueueRoles(cwd: string): string[] {
+  let plan = '';
+  try { plan = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { return []; }
+  return parsePlanDelegationBlock(plan).roles;
+}
+
+/** Count bounded OpenCode units in a plan body (for plan-write gates). */
+export function planDelegationUnitCount(planText: string): number {
+  return parsePlanDelegationBlock(planText).unitCount;
 }
 
 // True when the architect queued at least one bounded OpenCode unit for `role`. The
