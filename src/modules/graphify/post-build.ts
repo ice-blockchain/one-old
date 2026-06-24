@@ -94,7 +94,7 @@ export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
   const lastHinted = typeof state.graphifyLastHintedAt === 'string'
     ? Date.parse(state.graphifyLastHintedAt)
     : 0;
-  if (lastHinted > 0 && (Date.now() - lastHinted) < GRAPHIFY_COOLDOWN_MS) return noop();
+  if (!artefactEmpty && !artefactStale && lastHinted > 0 && (Date.now() - lastHinted) < GRAPHIFY_COOLDOWN_MS) return noop();
 
   // Stamp the cooldown immediately so a flurry of builds doesn't re-enter the
   // bootstrap (which can take ~30–60s). The runner itself stamps

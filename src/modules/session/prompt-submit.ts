@@ -27,6 +27,7 @@ import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState,
 import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { maintenanceTriageDirective } from './triage-directive';
+import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
 import {
   authApiKeyPromptHookResult,
   authChoiceHookResult,
@@ -241,18 +242,21 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
 
   // ── Post-build maintenance triage (appended to whatever context we return) ──
   const openCodeReadiness = ensureOpenCodeDelegationReady(cwd, normalizedState);
+  const planBatchReminder = buildOpenCodePlanBatchPendingDirective(cwd, normalizedState);
   const triage = maintenanceTriageDirective(cwd, normalizedState, promptText, raw, ctx.host);
+
+  const prefixOpenCode = [openCodeReadiness, planBatchReminder].filter(Boolean).join('\n');
 
   // ── Generic convergence ──
   const materialized = materializeProjectIfNeeded(cwd, { trigger: 'generic user-prompt convergence' });
   if (materialized) {
-    const readiness = openCodeReadiness ? `${openCodeReadiness}\n` : '';
+    const readiness = prefixOpenCode ? `${prefixOpenCode}\n` : '';
     const body = triage ? `${readiness}${materialized.context}\n\n${triage}` : `${readiness}${materialized.context}`;
     return context(body, { systemMessage: materialized.systemMessage });
   }
 
   if (triage) {
-    return context(`${openCodeReadiness}[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
+    return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]\n\n${triage}`, { systemMessage: `traffic-one [${stack}] maintenance` });
   }
-  return context(`${openCodeReadiness}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
+  return context(`${prefixOpenCode}[ACTIVE STACK: ${stack}]`, { systemMessage: `traffic-one [${stack}]` });
 }

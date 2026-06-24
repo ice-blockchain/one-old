@@ -30,6 +30,13 @@ function writeDigest(dir: string, runId: string, name: string, verdict: string):
   fs.writeFileSync(path.join(d, name), `# ${name}\nverdict: ${verdict}\n`, 'utf8');
 }
 
+function writeMaintenanceMarker(dir: string, runId: string, outcome: string): void {
+  const memoryDir = ['.traffic', '-one'].join('');
+  const d = path.join(dir, memoryDir, 'runs', runId);
+  fs.mkdirSync(d, { recursive: true });
+  fs.writeFileSync(path.join(d, 'maintenance.json'), JSON.stringify({ version: 1, outcome }), 'utf8');
+}
+
 test('runReachedTerminalVerdict requires terminal verdict tokens, not mere digest existence', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verdict-'));
   try {
@@ -60,6 +67,19 @@ test('runReachedTerminalVerdict requires terminal verdict tokens, not mere diges
     // anyRunReachedTerminalVerdict scans every run dir.
     assert.equal(anyRunReachedTerminalVerdict(dir), true);
     assert.equal(anyRunReachedTerminalVerdict(path.join(dir, 'nope')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('runReachedTerminalVerdict treats terminal maintenance markers as settled runs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-maint-verdict-'));
+  try {
+    assert.equal(runReachedTerminalVerdict(dir, 'quick-1'), false);
+    writeMaintenanceMarker(dir, 'quick-1', 'failed');
+    assert.equal(runReachedTerminalVerdict(dir, 'quick-1'), true);
+    writeMaintenanceMarker(dir, 'quick-2', 'running');
+    assert.equal(runReachedTerminalVerdict(dir, 'quick-2'), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

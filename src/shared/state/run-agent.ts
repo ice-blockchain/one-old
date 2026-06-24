@@ -1088,12 +1088,25 @@ function readDigest(cwd: string, runId: string, name: string): string {
 // merely mentions the other token.
 export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean {
   if (typeof runId !== 'string' || !runId) return false;
+  if (maintenanceRunReachedTerminal(cwd, runId)) return true;
   if (readDigest(cwd, runId, 'shipper.md').trim()) return true;
   const reviewer = readDigest(cwd, runId, 'reviewer.md');
   const tester = readDigest(cwd, runId, 'tester.md');
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
   const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
   return reviewerApproved && testerPassed;
+}
+
+function maintenanceRunReachedTerminal(cwd: string, runId: string): boolean {
+  try {
+    const parsed = readJson(path.join(runDir(cwd, runId), 'maintenance.json'), null);
+    const rec = obj(parsed);
+    if (!rec || rec.version !== 1) return false;
+    const outcome = typeof rec.outcome === 'string' ? rec.outcome : '';
+    return outcome === 'success' || outcome === 'failed' || outcome === 'skipped' || outcome === 'fallback-paid';
+  } catch {
+    return false;
+  }
 }
 
 // Schema-agnostic "an orchestrated run exists under <runId>" check — raw artifact

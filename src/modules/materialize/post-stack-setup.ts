@@ -31,6 +31,7 @@ import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
 import { maybeFlipToMaintenance } from './build-complete';
+import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan-directive';
 import { ONE_UID_FIELD } from '../../config/reporting';
 import {
   type MaterializeOutcome,
@@ -151,8 +152,22 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     return result ? context(result) : noop();
   }
 
-  // 2. Soft digest-size warning (never blocks the write).
+  // 2. Architect PLAN_READY → re-inject OpenCode Step-0 while batch is pending.
   const digestMatch = fp.match(DIGEST_PATH_RE);
+  if (digestMatch && digestMatch[1] === 'architect' && targetPath && fs.existsSync(targetPath)) {
+    let content = '';
+    try { content = fs.readFileSync(targetPath, 'utf8'); } catch { content = ''; }
+    if (/\bPLAN_READY\b/.test(content)) {
+      const planReadyDirective = buildPostPlanReadyOpenCodeDirective(reportRoot);
+      if (planReadyDirective) {
+        return context(planReadyDirective, {
+          systemMessage: 'traffic-one — run OpenCode Step 0 before spawning implementers',
+        });
+      }
+    }
+  }
+
+  // 3. Soft digest-size warning (never blocks the write).
   if (digestMatch && targetPath && fs.existsSync(targetPath)) {
     let bytes = 0;
     try { bytes = fs.statSync(targetPath).size; } catch { bytes = 0; }
@@ -164,7 +179,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     return noop();
   }
 
-  // 3. Non-state-file write → write-triggered convergence.
+  // 4. Non-state-file write → write-triggered convergence.
   if (!isStateFilePath(filePath)) {
     const mem = materializeFromProjectMemoryWrite(cwd, targetPath || filePath, { workspaceRoot: ctx.input.workspaceRoot });
     if (mem) return outcomeToResult(mem);
@@ -174,7 +189,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
     return outcomeToResult(materializeProjectIfNeeded(reportRoot, { trigger: 'generic post-tool convergence' }));
   }
 
-  // 4. State-file write → validate + materialize (writeState strips local prefs).
+  // 5. State-file write → validate + materialize (writeState strips local prefs).
   // The one-mcp report is NOT fired here — only the single onboarding-finalized
   // gate above reports.
   if (!targetPath || !fs.existsSync(targetPath)) return noop();

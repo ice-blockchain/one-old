@@ -666,6 +666,29 @@ test('delegate is skipped when OpenCode is not enabled (→ fallback)', () => {
   });
 });
 
+test('maintenance ad-hoc delegation writes a terminal maintenance marker with failureKind', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('error');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      version: 1,
+      mode: 'new-project',
+      currentRunId: 'maint-1',
+      lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-01-01T00:00:00Z' },
+    }), 'utf8');
+
+    const r = delegate(dir, { role: 'quick-fix', task: 'try small fix', runId: 'maint-1' });
+
+    assert.equal(r.action, 'failed');
+    assert.equal(r.failureKind, 'opencode-error');
+    const marker = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-1', 'maintenance.json'), 'utf8')) as any;
+    assert.equal(marker.outcome, 'failed');
+    assert.equal(marker.fallbackAllowed, true);
+    assert.equal(marker.failureKind, 'opencode-error');
+  });
+});
+
 test('delegate defaults to the head of the hosted free-model chain when host policy allows it', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('model');
@@ -942,6 +965,20 @@ function stubTsc(dir: string, script: string): void {
   fs.chmodSync(tsc, 0o755);
 }
 
+function withFakePathBin(dir: string, name: string, script: string, fn: () => void): void {
+  const savedPath = process.env.PATH;
+  const fakeBin = path.join(dir, 'fake-path-bin');
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(path.join(fakeBin, name), script, { mode: 0o755 });
+  process.env.PATH = `${fakeBin}${path.delimiter}${savedPath || ''}`;
+  try {
+    fn();
+  } finally {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+  }
+}
+
 test('post-apply typecheck failure naming a touched file reverts the delegated diff', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     fs.writeFileSync(path.join(dir, 'tsconfig.json'), '{}', 'utf8');
@@ -981,6 +1018,35 @@ test('post-apply typecheck skips on pre-existing breakage (errors only in untouc
     assert.equal(r.action, 'delegated');
     // And the pure helper: no tsc on disk → verification skipped entirely.
     assert.equal(postApplyTypecheck(fs.mkdtempSync(path.join(os.tmpdir(), 't1-notsc-')), ['src/foo.ts']), null);
+  });
+});
+
+test('post-apply verifier prefers nearest package typecheck script over raw tsconfig fallback', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ packageManager: 'pnpm@9.0.0' }), 'utf8');
+    const appDir = path.join(dir, 'apps', 'web');
+    fs.mkdirSync(path.join(appDir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(appDir, 'package.json'), JSON.stringify({
+      name: '@app/web',
+      scripts: { typecheck: 'node verify.js' },
+    }), 'utf8');
+    fs.writeFileSync(path.join(appDir, 'tsconfig.json'), '{}', 'utf8');
+    stubTsc(dir, '#!/bin/sh\necho "apps/web/src/course-card.tsx(1,1): error TS6305: raw tsconfig should not run"\nexit 1\n');
+    const marker = path.join(dir, 'pnpm-args.txt');
+    withFakePathBin(dir, 'pnpm', `#!/bin/sh\necho "$@" > ${JSON.stringify(marker)}\nexit 0\n`, () => {
+      const r = postApplyTypecheck(dir, ['apps/web/src/course-card.tsx']);
+      assert.equal(r, null);
+    });
+    assert.equal(fs.readFileSync(marker, 'utf8').trim(), '--filter @app/web typecheck');
+  });
+});
+
+test('post-apply verifier reports configured verifyCommand failures against touched files', () => {
+  withRepo({ openCode: { enabled: true, verifyCommand: 'node verify.js' } }, (dir) => {
+    fs.writeFileSync(path.join(dir, 'verify.js'), 'process.stderr.write("src/foo.ts(1,1): error TS2304: bad\\n"); process.exit(1);\n', 'utf8');
+    const r = postApplyTypecheck(dir, ['src/foo.ts']);
+    assert.match(r || '', /openCode\.verifyCommand/);
+    assert.match(r || '', /src\/foo\.ts/);
   });
 });
 

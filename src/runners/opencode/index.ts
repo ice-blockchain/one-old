@@ -23,13 +23,13 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { OPENCODE_FREE_MODELS } from '../../config/opencode';
+import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   markOpenCodePlanRoleCompleted,
-  markOpenCodePlanBatchComplete,
   markOpenCodeRoleAttempted,
   type PlanDelegationUnit,
   parsePlanDelegationUnits,
@@ -42,16 +42,18 @@ import {
   openCodeQueuePolicyViolations,
   parseAllowedFiles,
   recordOpenCodeUnitStatus,
+  reconcileStaleRunningUnits,
   statusFromDelegateAction,
   writeOpenCodeQueue,
 } from '../../shared/opencode-queue';
 import { roleDigestName } from '../../shared/packing';
-import { readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
+import { isMaintenancePhase, readEffectiveState, readRunAssignmentsResilient } from '../../shared/state';
 import { nowIso } from '../../shared/text';
 import { managedNpmBin, reconcileManagedToolStamp } from '../toolchain';
 
 type Rec = Record<string, unknown>;
 const which = exec.which;
+const T1_DIR = '.traffic' + '-one';
 
 // Absolute backstop only — NOT the routine bound. Bounded units finish in
 // ~2 min; long-but-alive runs keep going while the orchestrator keeps polling,
@@ -94,6 +96,15 @@ export interface DelegateOpts {
   expectedAssignmentHash?: string | null;
 }
 
+export type FailureKind =
+  | 'provider-timeout'
+  | 'verification-failed'
+  | 'no-changes'
+  | 'diff-rejected'
+  | 'opencode-error'
+  | 'environment'
+  | 'skipped';
+
 export interface DelegateResult {
   ok: boolean;
   // delegated = applied to the tree; skipped = precondition not met (fall back);
@@ -103,6 +114,7 @@ export interface DelegateResult {
   touched: string[];
   error: string | null;
   model?: string;
+  failureKind?: FailureKind;
 }
 
 function git(cwd: string, args: string[], timeout = 60_000, env?: NodeJS.ProcessEnv): { status: number; stdout: string; stderr: string } {
@@ -212,38 +224,243 @@ export function stageExcludePathspecs(wt: string): string[] {
   return excludes;
 }
 
-// Best-effort post-apply verification: a delegated diff that APPLIED but broke
-// the build is worse than a declined unit (the paid roles inherit silent
-// breakage). When the project has a usable tsc and the unit touched TS files,
-// typecheck the nearest tsconfig package(s); revert on failures that mention a
-// touched file. Pre-existing breakage elsewhere (errors only in untouched
-// files), missing tooling (Step-0 runs before any install), and tsc
-// crashes/timeouts all SKIP verification — absence of verification is the
-// status quo, never a reason to reject good work. Exported for tests.
-export function postApplyTypecheck(cwd: string, touched: string[]): string | null {
-  const tsTouched = touched.filter((f) => /\.(ts|tsx|mts|cts)$/.test(f) && !/\.d\.ts$/.test(f));
-  if (tsTouched.length === 0) return null;
-  const tsc = path.join(cwd, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
-  if (!fs.existsSync(tsc)) return null;
-  const projDirs = new Set<string>();
-  for (const rel of tsTouched) {
+type VerifyCommand = {
+  label: string;
+  command: string;
+  args: string[];
+  cwd: string;
+};
+
+function readJsonObject(file: string): Rec | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Rec : null;
+  } catch {
+    return null;
+  }
+}
+
+function parseCommandLine(value: string): string[] {
+  const tokens: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (const ch of value.trim()) {
+    if (escaped) {
+      cur += ch;
+      escaped = false;
+      continue;
+    }
+    if (ch === '\\') {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) {
+        tokens.push(cur);
+        cur = '';
+      }
+      continue;
+    }
+    if (';&|<>'.includes(ch)) return [];
+    cur += ch;
+  }
+  if (escaped || quote) return [];
+  if (cur) tokens.push(cur);
+  return tokens;
+}
+
+function rootPackageManager(cwd: string): string {
+  const pkg = readJsonObject(path.join(cwd, 'package.json'));
+  const raw = typeof pkg?.packageManager === 'string' ? pkg.packageManager : '';
+  const pm = raw.split('@')[0];
+  return pm === 'pnpm' || pm === 'yarn' || pm === 'bun' || pm === 'npm' ? pm : 'npm';
+}
+
+function scriptArgs(pm: string, script: string): string[] {
+  if (pm === 'npm') return ['run', script];
+  if (pm === 'bun') return ['run', script];
+  return [script];
+}
+
+function packageScriptCommand(cwd: string, packageDir: string, pkg: Rec, pm: string): VerifyCommand | null {
+  const scripts = pkg.scripts && typeof pkg.scripts === 'object' ? pkg.scripts as Rec : null;
+  if (typeof scripts?.typecheck !== 'string') return null;
+  const name = typeof pkg.name === 'string' && pkg.name.trim() ? pkg.name.trim() : '';
+  if (pm === 'pnpm' && name && packageDir !== cwd) {
+    return {
+      label: `pnpm --filter ${name} typecheck`,
+      command: 'pnpm',
+      args: ['--filter', name, 'typecheck'],
+      cwd,
+    };
+  }
+  return {
+    label: `${pm} ${scriptArgs(pm, 'typecheck').join(' ')}${packageDir === cwd ? '' : ` (${path.relative(cwd, packageDir)})`}`,
+    command: pm,
+    args: scriptArgs(pm, 'typecheck'),
+    cwd: packageDir,
+  };
+}
+
+function findNearestPackageDirs(cwd: string, touched: string[]): string[] {
+  const root = path.resolve(cwd);
+  const dirs: string[] = [];
+  for (const rel of touched) {
     let dir = path.dirname(path.resolve(cwd, rel));
-    while (dir.startsWith(path.resolve(cwd))) {
-      if (fs.existsSync(path.join(dir, 'tsconfig.json'))) { projDirs.add(dir); break; }
-      if (dir === path.resolve(cwd)) break;
+    while (dir.startsWith(root)) {
+      if (fs.existsSync(path.join(dir, 'package.json'))) {
+        if (!dirs.includes(dir)) dirs.push(dir);
+        break;
+      }
+      if (dir === root) break;
       dir = path.dirname(dir);
     }
   }
-  for (const dir of [...projDirs].slice(0, 3)) {
-    const r = spawnTool(tsc, ['--noEmit', '-p', dir], { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
-    if (r.error || r.status === null || r.status === 0) continue;
+  return dirs;
+}
+
+function findNearestTsconfigFiles(cwd: string, touched: string[]): string[] {
+  const root = path.resolve(cwd);
+  const files: string[] = [];
+  for (const rel of touched) {
+    let dir = path.dirname(path.resolve(cwd, rel));
+    while (dir.startsWith(root)) {
+      const typecheck = path.join(dir, 'tsconfig.typecheck.json');
+      const standard = path.join(dir, 'tsconfig.json');
+      const file = fs.existsSync(typecheck) ? typecheck : (fs.existsSync(standard) ? standard : '');
+      if (file) {
+        if (!files.includes(file)) files.push(file);
+        break;
+      }
+      if (dir === root) break;
+      dir = path.dirname(dir);
+    }
+  }
+  return files;
+}
+
+function verificationCommands(cwd: string, tsTouched: string[]): VerifyCommand[] {
+  const commands: VerifyCommand[] = [];
+  const state = readEffectiveState(cwd) as Rec;
+  const openCode = state.openCode && typeof state.openCode === 'object' ? state.openCode as Rec : null;
+  const configured = typeof openCode?.verifyCommand === 'string' ? openCode.verifyCommand.trim() : '';
+  if (configured) {
+    const argv = parseCommandLine(configured);
+    if (argv.length > 0) {
+      commands.push({ label: 'openCode.verifyCommand', command: argv[0] as string, args: argv.slice(1), cwd });
+    }
+  }
+
+  const pm = rootPackageManager(cwd);
+  for (const dir of findNearestPackageDirs(cwd, tsTouched)) {
+    const pkg = readJsonObject(path.join(dir, 'package.json'));
+    if (!pkg) continue;
+    const command = packageScriptCommand(cwd, dir, pkg, pm);
+    if (command) commands.push(command);
+  }
+
+  const rootPkg = readJsonObject(path.join(cwd, 'package.json'));
+  const rootCommand = rootPkg ? packageScriptCommand(cwd, cwd, rootPkg, pm) : null;
+  if (rootCommand && !commands.some((c) => c.label === rootCommand.label && c.cwd === rootCommand.cwd)) {
+    commands.push(rootCommand);
+  }
+
+  const tsc = path.join(cwd, 'node_modules', '.bin', process.platform === 'win32' ? 'tsc.cmd' : 'tsc');
+  if (fs.existsSync(tsc)) {
+    for (const config of findNearestTsconfigFiles(cwd, tsTouched).slice(0, 3)) {
+      commands.push({
+        label: `tsc -p ${path.relative(cwd, config) || '.'}`,
+        command: tsc,
+        args: ['--noEmit', '-p', config],
+        cwd,
+      });
+    }
+  }
+
+  const seen = new Set<string>();
+  return commands.filter((command) => {
+    const key = `${command.cwd}\0${command.command}\0${command.args.join('\0')}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function outputMentionsTouched(out: string, cwd: string, tsTouched: string[]): boolean {
+  const normalized = out.replace(/\\/g, '/');
+  return tsTouched.some((f) => {
+    const rel = f.replace(/\\/g, '/');
+    const abs = path.resolve(cwd, f).replace(/\\/g, '/');
+    return normalized.includes(rel) || normalized.includes(abs) || normalized.includes(path.basename(f));
+  });
+}
+
+// Best-effort post-apply verification: a delegated diff that APPLIED but broke
+// the build is worse than a declined unit (the paid roles inherit silent
+// breakage). Prefer the project's own verification contract: configured
+// `openCode.verifyCommand`, nearest package/root `typecheck` scripts, then a
+// tsconfig fallback. Pre-existing breakage elsewhere, missing tooling, and
+// verifier crashes/timeouts all SKIP verification; absence of verification is
+// the status quo, never a reason to reject good work. Exported for tests.
+export function postApplyTypecheck(cwd: string, touched: string[]): string | null {
+  const tsTouched = touched.filter((f) => /\.(ts|tsx|mts|cts)$/.test(f) && !/\.d\.ts$/.test(f));
+  if (tsTouched.length === 0) return null;
+  for (const command of verificationCommands(cwd, tsTouched)) {
+    const r = spawnTool(command.command, command.args, { cwd: command.cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 120_000 });
+    if (r.status === 0) return null;
+    if (r.error || r.status === null) continue;
     const out = `${r.stdout || ''}\n${r.stderr || ''}`;
-    const mentionsTouched = tsTouched.some((f) => out.includes(f.replace(/\\/g, '/')) || out.includes(path.basename(f)));
-    if (!mentionsTouched) continue; // pre-existing breakage elsewhere — not this unit's fault
+    if (!outputMentionsTouched(out, cwd, tsTouched)) continue; // pre-existing breakage elsewhere — not this unit's fault
     const firstLines = out.trim().split('\n').filter(Boolean).slice(0, 4).join(' | ').slice(0, 400);
-    return `tsc -p ${path.relative(cwd, dir) || '.'}: ${firstLines}`;
+    return `${command.label}: ${firstLines}`;
   }
   return null;
+}
+
+function classifyFailureKind(action: DelegateResult['action'], error: string | null): FailureKind | undefined {
+  if (action === 'delegated') return undefined;
+  if (action === 'skipped') return 'skipped';
+  if (action === 'no-changes') return 'no-changes';
+  const msg = error || '';
+  if (/\bETIMEDOUT\b|timed out/i.test(msg)) return 'provider-timeout';
+  if (/typecheck failed/i.test(msg)) return 'verification-failed';
+  if (/outside|apply|delegated diff|assignment scope|generated\/internal/i.test(msg)) return 'diff-rejected';
+  if (/opencode/i.test(msg)) return 'opencode-error';
+  return 'environment';
+}
+
+function recordMaintenanceDelegationOutcome(cwd: string, state: Rec, runId: string, role: string, result: DelegateResult, startedAt: number): void {
+  if (!runId || !isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)) return;
+  try {
+    const file = path.join(cwd, T1_DIR, 'runs', runId, 'maintenance.json');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify({
+      version: 1,
+      kind: 'opencode-delegation',
+      role,
+      outcome: result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed'),
+      fallbackAllowed: result.ok !== true,
+      action: result.action,
+      failureKind: result.failureKind ?? null,
+      model: result.model ?? null,
+      error: result.error ? String(result.error).slice(0, 500) : null,
+      touched: result.touched,
+      startedAt: new Date(startedAt).toISOString(),
+      finishedAt: new Date().toISOString(),
+    }, null, 2)}\n`, 'utf8');
+  } catch {
+    // best-effort diagnostics; never change delegation behavior
+  }
 }
 
 function resolveBin(): string | null {
@@ -630,7 +847,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
         cwd: wt,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: RUN_TIMEOUT_MS,
+        timeout: Math.min(opencodeUnitTimeoutMs(), RUN_TIMEOUT_MS),
         env: { ...process.env, ...OPENCODE_RUN_ENV, PWD: wt },
       });
       if (run.error || run.status === null) {
@@ -770,27 +987,32 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
   // the spawn gate only checks existence). Failed delegations were undiagnosable
   // from the 0-byte flag alone.
   const record = (result: DelegateResult): DelegateResult => {
+    const failureKind = result.failureKind ?? classifyFailureKind(result.action, result.error);
+    const enriched: DelegateResult = failureKind ? { ...result, failureKind } : result;
     recordOpenCodeAttemptOutcome(cwd, runId, role, {
-      action: result.action,
-      model: result.model ?? null,
-      error: result.error,
+      action: enriched.action,
+      model: enriched.model ?? null,
+      error: enriched.error,
+      failureKind: enriched.failureKind ?? null,
       durationMs: Date.now() - startedAt,
-      touched: result.touched.length,
+      touched: enriched.touched.length,
     });
     if (opts.unitId) {
       recordOpenCodeUnitStatus(cwd, runId, {
         id: opts.unitId,
         role: normalizePlanRole(role),
-        status: statusFromDelegateAction(result.action, result.error),
-        action: result.action,
-        model: result.model ?? null,
-        error: result.error,
-        touched: result.touched,
+        status: statusFromDelegateAction(enriched.action, enriched.error),
+        action: enriched.action,
+        model: enriched.model ?? null,
+        error: enriched.error,
+        failureKind: enriched.failureKind ?? null,
+        touched: enriched.touched,
         allowedFiles: policy.allowedPatterns,
         assignmentHash: policy.expectedAssignmentHash,
       });
     }
-    return result;
+    recordMaintenanceDelegationOutcome(cwd, state, runId, role, enriched, startedAt);
+    return enriched;
   };
 
   // Walk the models: a fresh worktree per model; advance on server/model-side
@@ -837,7 +1059,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
 export interface PlanDelegationResult {
   total: number;
   delegated: number;
-  units: Array<{ id?: string; role: string; task: string; action: DelegateResult['action']; status?: string; touched: string[]; model?: string; error?: string | null }>;
+  units: Array<{ id?: string; role: string; task: string; action: DelegateResult['action']; status?: string; touched: string[]; model?: string; failureKind?: FailureKind | null; error?: string | null }>;
 }
 
 // Parse the architect's plan.md delegation queue. The architect emits a
@@ -901,13 +1123,14 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
             role: formal.role,
             status: 'rejected_policy',
             action: 'failed',
+            failureKind: 'diff-rejected',
             error,
             touched: [],
             allowedFiles: formal.allowedFiles,
             assignmentHash: formalQueue.assignmentHash,
           });
         }
-        units.push({ id: formal.id, role: entry.unit.role, task: entry.unit.task, action: 'failed', status: 'rejected_policy', touched: [], error });
+        units.push({ id: formal.id, role: entry.unit.role, task: entry.unit.task, action: 'failed', status: 'rejected_policy', touched: [], failureKind: 'diff-rejected', error });
         processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
       }
       return { total: entries.length, delegated: 0, units };
@@ -949,6 +1172,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
           error: err instanceof Error ? err.message : String(err),
         };
       }
+      const failureKind = r.failureKind ?? classifyFailureKind(r.action, r.error);
       const status = statusFromDelegateAction(r.action, r.error);
       if (runId) {
         recordOpenCodeUnitStatus(cwd, runId, {
@@ -957,6 +1181,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
           status,
           action: r.action,
           model: r.model ?? null,
+          failureKind: failureKind ?? null,
           error: r.error,
           touched: r.touched,
           allowedFiles: formal.allowedFiles,
@@ -964,15 +1189,15 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
         });
       }
       if (r.ok) delegated += 1;
-      units.push({ id: formal.id, role: u.role, task: u.task, action: r.action, status, touched: r.touched, ...(r.model ? { model: r.model } : {}), error: r.error });
+      units.push({ id: formal.id, role: u.role, task: u.task, action: r.action, status, touched: r.touched, ...(r.model ? { model: r.model } : {}), ...(failureKind ? { failureKind } : {}), error: r.error });
       processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
     }
   } finally {
     if (runId) {
+      reconcileStaleRunningUnits(cwd, runId);
       for (const [role, total] of totalByRole) {
         if ((processedByRole.get(role) || 0) >= total) markOpenCodePlanRoleCompleted(cwd, runId, role);
       }
-      markOpenCodePlanBatchComplete(cwd, runId);
     }
   }
   return { total: entries.length, delegated, units };

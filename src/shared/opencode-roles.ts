@@ -15,6 +15,19 @@ import { obj } from './obj';
 type Rec = Record<string, unknown>;
 export const OPENCODE_PLAN_MIN_UNITS = 3;
 
+export type OpenCodePlanBatchOutcome = 'running' | 'success' | 'failed' | 'partial' | 'abandoned';
+
+export interface OpenCodePlanBatchState {
+  version: 1;
+  outcome: OpenCodePlanBatchOutcome;
+  startedAt: string;
+  finishedAt?: string;
+  rolesCompleted: string[];
+  error?: string | null;
+}
+
+const TERMINAL_BATCH_OUTCOMES = new Set<OpenCodePlanBatchOutcome>(['success', 'failed', 'partial', 'abandoned']);
+
 export interface PlanDelegationUnit {
   id?: string;
   role: string;
@@ -131,31 +144,136 @@ function planBatchCompletePath(cwd: string, runId: string): string {
   return path.join(planBatchDir(cwd, runId), 'COMPLETE');
 }
 
+function planBatchJsonPath(cwd: string, runId: string): string {
+  return path.join(planBatchDir(cwd, runId), 'batch.json');
+}
+
 function planBatchMarkerPath(cwd: string, runId: string, role: string): string {
   return path.join(planBatchDir(cwd, runId), normalizeAttemptRole(role));
+}
+
+function atomicWriteJson(filePath: string, data: unknown): void {
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = path.join(dir, `.${path.basename(filePath)}.${process.pid}.${Date.now()}.tmp`);
+  fs.writeFileSync(tmp, `${JSON.stringify(data, null, 2)}\n`, 'utf8');
+  fs.renameSync(tmp, filePath);
+}
+
+function writeLegacyBatchComplete(cwd: string, runId: string): void {
+  const p = planBatchCompletePath(cwd, runId);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, '', 'utf8');
+}
+
+export function readOpenCodePlanBatchState(cwd: string, runId: string): OpenCodePlanBatchState | null {
+  if (!runId) return null;
+  try {
+    const raw = fs.readFileSync(planBatchJsonPath(cwd, runId), 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rec = parsed as Rec;
+    const outcome = rec.outcome;
+    if (outcome !== 'running' && outcome !== 'success' && outcome !== 'failed' && outcome !== 'partial' && outcome !== 'abandoned') return null;
+    const startedAt = typeof rec.startedAt === 'string' ? rec.startedAt : '';
+    if (!startedAt) return null;
+    const rolesCompleted = Array.isArray(rec.rolesCompleted)
+      ? rec.rolesCompleted.filter((r): r is string => typeof r === 'string')
+      : [];
+    return {
+      version: 1,
+      outcome,
+      startedAt,
+      ...(typeof rec.finishedAt === 'string' ? { finishedAt: rec.finishedAt } : {}),
+      rolesCompleted,
+      ...(rec.error != null ? { error: String(rec.error) } : {}),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Idempotent: marks the Step-0 batch as running without clobbering a terminal state. */
+export function markOpenCodePlanBatchRunning(cwd: string, runId: string): void {
+  if (!runId) return;
+  try {
+    const existing = readOpenCodePlanBatchState(cwd, runId);
+    if (existing && TERMINAL_BATCH_OUTCOMES.has(existing.outcome)) return;
+    if (existing?.outcome === 'running') return;
+    atomicWriteJson(planBatchJsonPath(cwd, runId), {
+      version: 1,
+      outcome: 'running',
+      startedAt: existing?.startedAt ?? new Date().toISOString(),
+      rolesCompleted: existing?.rolesCompleted ?? [],
+    } satisfies OpenCodePlanBatchState);
+  } catch {
+    // best-effort
+  }
+}
+
+const TERMINAL_FAILURE_ACTIONS = new Set(['failed', 'skipped', 'no-changes', 'no_changes', 'rejected_policy']);
+
+function unitIsDelegated(u: { action?: string; status?: string }): boolean {
+  return u.action === 'delegated' || u.status === 'delegated';
+}
+
+function unitIsTerminalFailure(u: { action?: string; status?: string }): boolean {
+  return TERMINAL_FAILURE_ACTIONS.has(u.action || u.status || '');
+}
+
+export function deriveBatchOutcomeFromUnits(
+  units: ReadonlyArray<{ action?: string; status?: string }>,
+  error?: string | null,
+): OpenCodePlanBatchOutcome {
+  if (/stopped polling|abandoned/i.test(error || '')) return 'abandoned';
+  if (units.some((u) => u.action === 'abandoned' || u.status === 'abandoned')) return 'abandoned';
+  if (units.length === 0) return 'failed';
+  const hasDelegated = units.some(unitIsDelegated);
+  if (!hasDelegated) return 'failed';
+  const hasFailure = units.some(unitIsTerminalFailure);
+  if (hasFailure) return 'partial';
+  return 'success';
+}
+
+/** Sole terminal writer for batch.json; also writes the legacy COMPLETE marker (fail-open gate). */
+export function markOpenCodePlanBatchTerminal(
+  cwd: string,
+  runId: string,
+  outcome: OpenCodePlanBatchOutcome,
+  error?: string | null,
+): void {
+  if (!runId || outcome === 'running') return;
+  try {
+    const existing = readOpenCodePlanBatchState(cwd, runId);
+    if (existing && TERMINAL_BATCH_OUTCOMES.has(existing.outcome)) return;
+    atomicWriteJson(planBatchJsonPath(cwd, runId), {
+      version: 1,
+      outcome,
+      startedAt: existing?.startedAt ?? new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      rolesCompleted: existing?.rolesCompleted ?? [],
+      ...(error ? { error: String(error).slice(0, 500) } : {}),
+    } satisfies OpenCodePlanBatchState);
+    writeLegacyBatchComplete(cwd, runId);
+  } catch {
+    // best-effort; legacy markers remain the fallback
+  }
 }
 
 // Run-level terminal marker for the entire Step-0 from-plan batch. The spawn gate
 // treats this as authoritative so a single check clears implementers after the
 // orchestrator (or runner) finishes the batch — even when per-role markers lag.
 export function markOpenCodePlanBatchComplete(cwd: string, runId: string): void {
-  if (!runId) return;
-  try {
-    const p = planBatchCompletePath(cwd, runId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, '', 'utf8');
-  } catch {
-    // best-effort; per-role markers remain the fallback
-  }
+  markOpenCodePlanBatchTerminal(cwd, runId, 'success');
 }
 
 export function openCodePlanBatchComplete(cwd: string, runId: string): boolean {
   if (!runId) return false;
   try {
+    const state = readOpenCodePlanBatchState(cwd, runId);
+    if (state && TERMINAL_BATCH_OUTCOMES.has(state.outcome)) return true;
     if (fs.existsSync(planBatchCompletePath(cwd, runId))) return true;
-    const roles = planDelegationQueueRoles(cwd);
-    if (roles.length === 0) return false;
-    return roles.every((role) => openCodePlanRoleCompleted(cwd, runId, role));
+    return false;
   } catch {
     return false;
   }
@@ -177,10 +295,21 @@ export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, s
 // terminal even when a unit was skipped before the OpenCode CLI could be reached.
 export function markOpenCodePlanRoleCompleted(cwd: string, runId: string, role: string): void {
   if (!runId || !role) return;
+  const normalized = normalizeAttemptRole(role);
   try {
     const p = planBatchMarkerPath(cwd, runId, role);
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, '', 'utf8');
+    const existing = readOpenCodePlanBatchState(cwd, runId);
+    if (existing && !TERMINAL_BATCH_OUTCOMES.has(existing.outcome)) {
+      const rolesCompleted = existing.rolesCompleted.includes(normalized)
+        ? existing.rolesCompleted
+        : [...existing.rolesCompleted, normalized];
+      atomicWriteJson(planBatchJsonPath(cwd, runId), {
+        ...existing,
+        rolesCompleted,
+      } satisfies OpenCodePlanBatchState);
+    }
   } catch {
     // best-effort; a missing marker only keeps the fail-closed batch gate active
   }
@@ -198,7 +327,7 @@ export function openCodePlanRoleCompleted(cwd: string, runId: string, role: stri
 export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown): string[] {
   if (!runId || !openCodeDelegationActive(state)) return [];
   if (openCodePlanBatchComplete(cwd, runId)) return [];
-  return planDelegationQueueRoles(cwd).filter((role) => !openCodePlanRoleCompleted(cwd, runId, role));
+  return planDelegationQueueRoles(cwd);
 }
 
 // Per-run marker that an OpenCode delegation reached the CLI for a role. The
@@ -261,7 +390,7 @@ export function recordOpenCodeAttemptOutcome(
   cwd: string,
   runId: string,
   role: string,
-  outcome: { action: string; model?: string | null; error?: string | null; durationMs?: number; touched?: number },
+  outcome: { action: string; model?: string | null; failureKind?: string | null; error?: string | null; durationMs?: number; touched?: number },
 ): void {
   if (!runId || !role) return;
   try {
@@ -271,6 +400,7 @@ export function recordOpenCodeAttemptOutcome(
       at: new Date().toISOString(),
       action: outcome.action,
       model: outcome.model ?? null,
+      failureKind: outcome.failureKind ?? null,
       error: outcome.error ? String(outcome.error).slice(0, 500) : null,
       durationMs: typeof outcome.durationMs === 'number' ? Math.round(outcome.durationMs) : undefined,
       touched: typeof outcome.touched === 'number' ? outcome.touched : undefined,

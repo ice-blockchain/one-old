@@ -164,6 +164,39 @@ test('noop in the plugin authoring root for a write inside cwd', () => {
   }
 });
 
+test('architect PLAN_READY digest re-injects OpenCode Step 0 while batch pending', () => {
+  withAuthedProject(true, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    fs.writeFileSync(prefsPath, JSON.stringify({
+      performance: { level: 'high' },
+      team: { mode: 'subagents', approved: true },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.17.8' } },
+    }), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    fs.writeFileSync(onePath, JSON.stringify({
+      mode: 'new-project',
+      stack: 'default',
+      onboardingComplete: true,
+      currentRunId: 'run-plan-ready',
+    }), 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n- id: fe-1 | role: senior-frontend | files: x.ts | task: unit\n<!-- opencode-delegate:end -->\n',
+      'utf8');
+    const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run-plan-ready');
+    fs.mkdirSync(digestDir, { recursive: true });
+    const digestFile = path.join(digestDir, 'architect.md');
+    fs.writeFileSync(digestFile, '# Architect\n\nPLAN_READY\n', 'utf8');
+    const r = runPostStackSetup(ctx(cwd, { file_path: digestFile }));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('PLAN_READY received'));
+      assert.ok(r.context.includes('opencode_delegate_from_plan'));
+      assert.equal(r.systemMessage, 'traffic-one — run OpenCode Step 0 before spawning implementers');
+    }
+  });
+});
+
 test('oversized handoff digest → trim warning', () => {
   withAuthedProject(false, (cwd) => {
     const digestDir = path.join(cwd, '.traffic-one', 'digests', 'run1');
