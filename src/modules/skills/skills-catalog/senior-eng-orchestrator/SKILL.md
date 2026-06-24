@@ -86,6 +86,11 @@ How it works:
    testability, Vitest, Playwright, specs, or config/dependency changes, include
    the exact test/spec/config/package files it may touch; otherwise remove that
    acceptance and leave verification/config work to the paid implementer/reviewer.
+   Dependency/package-manager work is paid-agent work unless the policy can prove
+   safe lockfile handling: OpenCode must not install packages, update lockfiles,
+   or apply package-manager side effects. If a delegated diff contains install
+   churn, strip those side effects and route the dependency decision to the
+   relevant paid role.
 
    Queue rows should include stable `id` values. If two units touch overlapping
    files/areas, the later unit must declare `depends: <earlier-id>`; otherwise
@@ -111,7 +116,7 @@ How it works:
    `.agentignore`/agent-log/schema.sql + decisions ADRs — the architect writes
    these DIRECTLY before `PLAN_READY`) — those stay on the named senior subagents.
 
-2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free, assignment-scoped, source-only diffs applied to the tree; a digest written per unit). It returns `{ total, delegated, units: [{ id, role, task, action, status, touched, error }] }`. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args until you get the terminal `{ total, delegated, units }` — do NOT use any shell fallback while `running:true`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
+2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI, identically on every host. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free, assignment-scoped, source-only diffs applied to the tree; install/lockfile side effects stripped; a digest written per unit). It returns `{ total, delegated, units: [{ id, role, task, action, status, attempts, touched, error }] }`. Status is immutable-attempt aware: summary status precedence is `delegated > no_changes > failed`, and each retry appends to `attempts[]` instead of overwriting history. A zero-unit batch is explicit (`total: 0` plus a skipped/no-units status) and still satisfies the "attempted" marker without pretending work ran. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args after the returned `pollAfterMs` (or a short delay if absent) until you get the terminal `{ total, delegated, units }` — do NOT use any shell fallback while `running:true`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
 
    Fallback (MCP unavailable ONLY — never while `running:true`): on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner:
 
@@ -130,13 +135,13 @@ How it works:
 
 (A single ad-hoc unit can be delegated with the `opencode_delegate` tool — `{ role, task, runId, projectRoot, allowedFiles }` — or the runner's `--role <r> --task-file <path> --allowed-files <patterns>` mode.) OpenCode picks its own free model by default; only non-sensitive bounded units are queued. Pin a specific model per project via `openCode.model` if needed.
 
-**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled`, on every host. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, allowedFiles, task }` where `allowedFiles` is the exact repo-relative files/areas the unit may touch and `task` is ONE bounded unit per the rule above — NEVER the entire role implementation. While a delegation runs, your re-polls are its keep-alive — stopping polls for ~15+ minutes cancels the worker (your re-polls keep the child alive while the runner is alive); falling back to a paid worker is always safe after abandon. (No `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — Traffic One pre-mints it before Phase 0; you only read it.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
+**Forced role delegation (enforced by the spawn gate).** Roles listed in `openCode.delegateRoles` (default: `senior-tester`, `senior-frontend`, `quick-fix` — `senior-shipper` is deliberately excluded: deploys/credentials never ride the free tier) MUST run on OpenCode when `openCode.enabled`, on every host. The PreToolUse spawn gate **denies** a paid spawn of such a role until you have delegated it for this run. **The Step-0 plan batch is the preferred way to satisfy it** — completing `opencode_delegate_from_plan` marks every queued role as attempted. For a role with no queued units, call the `opencode_delegate` tool (server `opencode-worker`) with `{ role, runId: "$RUN_ID", projectRoot, allowedFiles, task }` where `allowedFiles` is the exact repo-relative files/areas the unit may touch and `task` is ONE bounded unit per the rule above — NEVER the entire role implementation. While a delegation runs, your re-polls are its keep-alive — stopping polls for ~15+ minutes cancels the worker (your re-polls keep the child alive while the runner is alive); falling back to a paid worker is always safe after abandon. (No `model` — OpenCode picks its own free model). If it returns `running:true`, call again with the same args after `pollAfterMs` until terminal. On `ok:true` the work is applied (no paid spawn needed); on `ok:false` OpenCode declined or could not run, so spawn the paid subagent as the internal fallback. **If the host's safety reviewer rejects the call and offers a user-approval path** (e.g. Codex: "proceed only if the user explicitly approves"), ask the user once — naming the risk that it sends the task + relevant code to OpenCode's hosted model — and on explicit approval re-call with the same args (the reviewer sanctions this; treat the approval as covering the rest of this run); on decline, use the paid fallback. The gate denies each role at most once per run to prevent deadlocks, so if the tool is unavailable or its call could not complete, the fallback spawn still goes through. (Requires `currentRunId` set — Traffic One pre-mints it before Phase 0; you only read it.) The gate's deny message carries the exact tool arguments (including `projectRoot`). Adjust the set by editing `openCode.delegateRoles` in local preferences.
 
 ## When you fire
 
 Auto-trigger keywords: "build me", "make me", "create me", "scaffold a", "ship a", "end to end", "I want an app", "I need a site for", "turn this into", "habit tracker", "dashboard", "SaaS", "mobile app", "MVP", "landing page that does X".
 
-On all hosts these triggers mean: clear the setup gate (per `rules/common/setup-gate.md` + `rules/common/onboarding.md`), then run the Traffic One workflow at the approved performance level. The onboarding prompts are blocking — do not implement, write final `.traffic-one/.one.json`, or spawn while an answer is pending.
+On all hosts these triggers mean: clear the setup gate (per `rules/common/setup-gate.md` + `rules/common/onboarding.md`), then run the Traffic One workflow at the approved performance level. The onboarding prompts are blocking — do not implement, write final `.traffic-one/.one.json`, or spawn while an answer is pending. A custom frontend/backend stack choice does not itself force subagents: Low/main-agent mode and genuinely small solo builds remain valid when the team/performance decision or maintenance triage chooses solo, but the QA/report/digest state must still be coherent.
 
 Skip if:
 - The request is for a single component, page, or service ("add a logout button"). Route to the matching specialist skill (`create-component`, `create-page`, `create-service`) directly and do not ask for subagents.
@@ -222,7 +227,7 @@ for its `.traffic-one/runs/<runId>/…` and `.traffic-one/digests/<runId>/…` p
 substitute a literal. The full per-phase prompt templates live in
 `resources/prompt-templates.md`; reference them rather than inlining their full text here.
 
-Cleanup at the end (Phase 5): keep the last 3 run folders under `.traffic-one/digests/`, remove older ones. (Note: the SessionStart hook also sweeps to the last 5 automatically.)
+Cleanup at the end (Phase 5): use the retention runner (`traffic-one-cleanup.cjs`) so runs, digests, reports, fix cycles, OpenCode state, backups, `.once`, stale locks, and debug logs are pruned together while durable project memory stays whitelisted.
 
 **Cursor only — capture your subagent model list (before the first spawn).** Cursor's offered
 subagent models are plan/build-specific and their reasoning suffixes differ per plan
@@ -262,8 +267,13 @@ race through a shared `activeAgentRole`; each worker gets its own role claim.
 If a host bypasses the spawn preflight hook, create the pending claim manually
 before spawning with at least `runId`, `claimId`, `role`, `spawnIndex`,
 `status: "pending"`, `parentSessionId`, `createdAt`, and `stackFingerprint`.
-After the orchestrator run finishes (Phase 5), clear `currentRunId` or leave it;
-the hook ignores stale runs after 30 minutes.
+`currentRunId` means the active or planned run id. When Traffic One pre-mints a
+run for maintenance/OpenCode it may write only `.traffic-one/runs/<runId>/run.json`
+with `status: "planned"`; do not create stub `assignments.json` or digest files.
+That ledger alone is not an orchestrated artifact. After Phase 5 you may leave
+`currentRunId` pointing at the completed/planned run until the next maintenance
+prompt rotates it; `lastCompletedRunId` is optional correlation metadata, not a
+requirement for solo builds.
 
 ### Agent reuse — ONE live agent per role (continuation-first)
 
@@ -277,7 +287,8 @@ Mechanics on hosts with agent continuation: Claude uses `SendMessage` when `CLAU
 4. **Parallel roles stay parallel**: frontend ∥ backend follow-ups are two continuation calls in ONE message, exactly like parallel spawns.
 5. **Big roles split into sequential parts on purpose**: each continuation turn gets a fresh tool/turn budget, so "foundation, then admin" runs as message 1, then message 2 to the SAME agent — splitting no longer costs a context reload per part.
 6. **Replacement (rare)**: only when the continuation call errors ("agent not found") or the agent's replies show context exhaustion, re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id.
-7. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below.
+7. **Keep role threads open after MVP/maintenance** unless the user explicitly archives them, the agent is dead/replaced, or host active-agent caps require cleanup. A finished first MVP is often the start of the next feature, and the live role context is valuable.
+8. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below.
 
 ### Fix-cycle follow-up (CHANGES_REQUESTED loop)
 
@@ -378,7 +389,13 @@ the index is now empty or stale vs the new source.
 
 Run `senior-reviewer` and `senior-tester` **concurrently**, using the same host concurrency mechanic as Phase 2 (on Codex: issue both `spawn_agent` calls before any `wait_agent`, then `wait_agent` on each). Pass the `model` param on both: reviewer follows the level (`balanced` tier for Balanced, `highest` tier for High); tester is always the `cheapest` tier in both levels. Use a read-only agent for the reviewer, and a writer-capable agent for the tester restricted to test files and test infrastructure.
 
-Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Both templates instruct the verifier to read the implementer digests first (`.traffic-one/digests/<run-id>/{frontend,backend}.md`), then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool); tester writes `tester.md` directly.
+Before E2E/visual QA, require fresh build metadata. The tester must prove the
+running preview is backed by a build newer than the last changed source file
+(`dist/`, `.next/BUILD_ID`, Vite manifest, Expo/native bundle stamp, or a fresh
+preview start after a successful build). A stale build blocks QA; it is not a
+green pass.
+
+Synthetic prompts — use the **Phase 3 — Reviewer** and **Phase 3 — Tester** templates from `resources/prompt-templates.md`. Both templates instruct the verifier to read the implementer digests first (`.traffic-one/digests/<run-id>/{frontend,backend}.md`), then scoped `git diff` *only for files those digests flagged*, then graph neighbors, full file Reads only as last resort. Reviewer writes `reviewer.md` digest via Bash heredoc (no Write tool) on every review and re-review pass; tester writes `tester.md` directly on every test and re-test pass.
 
 If reviewer returns `CHANGES_REQUESTED` → Phase 3a (loop, max 2 cycles).
 If tester returns `TESTS_FAILING` → Phase 3b (loop, max 2 cycles).
@@ -386,13 +403,13 @@ If both green → proceed.
 
 ### Phase 3a — Reviewer fix loop (capped at 2 cycles)
 
-Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way.
+Send the numbered fix list to the relevant implementer (`senior-frontend` or `senior-backend` based on which file paths the reviewer flagged) — continuation-first: the host-specific continuation call to that role's live agent (see "Agent reuse"); re-spawn only when no live agent exists. After their reply, send the re-review to the live `senior-reviewer` the same way and require an updated `reviewer.md` digest. Repeat until `APPROVED` or the 2-cycle cap.
 
 After 2 cycles, escalate to the user with both diffs and the latest review.
 
 ### Phase 3b — Tester fix loop (capped at 2 cycles)
 
-Send the failing-test list to the relevant implementer (continuation-first, as above). After their reply, send the re-test to the live `senior-tester`.
+Send the failing-test list to the relevant implementer (continuation-first, as above). After their reply, send the re-test to the live `senior-tester` and require an updated `tester.md` digest. Repeat until `TESTS_GREEN` or the 2-cycle cap. Structured blocked outcomes (`blocked:sandbox`, `blocked:usage-limit`) are not green; surface them like failing verification with the command/error and next repair step.
 
 After 2 cycles, escalate to the user.
 
@@ -526,14 +543,18 @@ structured result and the orchestrator notes the outcome in one line of the
 summary, including the PolyForm Noncommercial license reminder when the
 provider is gitnexus.
 
-**Then rotate.** Keep the last 3 run folders under `.traffic-one/digests/`,
-remove older ones:
+**Then run correlated retention.** Use the cleanup runner rather than ad-hoc
+`rm`: it preserves the current/planned run and durable project memory, then
+prunes old runs, digests, reports, fix cycles, OpenCode state, backups, `.once`,
+stale locks, and debug logs by count/age policy. First dry-run if the summary
+needs to show what would change; use `--apply` only for actual cleanup.
 
 ```bash
-ls -t .traffic-one/digests | tail -n +4 | xargs -I{} rm -rf ".traffic-one/digests/{}"
+node ~/.traffic-one/bin/traffic-one-cleanup.cjs --dry-run
+node ~/.traffic-one/bin/traffic-one-cleanup.cjs --apply
 ```
 
-The whole `.traffic-one/digests/` tree is gitignored.
+Projects may override retention counts with `.traffic-one/retention.json`.
 
 ## In-session bookkeeping
 
@@ -565,7 +586,7 @@ Next steps:
 ## Hard rules
 
 - The architect runs first on any new project (`mode === "new-project"`) or whenever `.traffic-one/plan.md` is missing.
-- On every host, do not silently skip the Traffic One team for matching end-to-end tasks. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. Where the host requires explicit user intent before spawning, always ask for subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined or subagents are unavailable, simulate the same phases manually and state why.
+- On every host, do not silently skip the Traffic One team for matching end-to-end tasks when `team.mode="subagents"` is approved. Auto-spawn the role agents when the runtime exposes an agent adapter and the host permits it. Where the host requires explicit user intent before spawning, always ask for subagent confirmation first for matching multi-layer builds and stop until the user answers; never write plans/files/code or simulate before asking. If confirmation is declined, the user chose Low/main-agent mode, or subagents are unavailable, simulate the same phases manually and state why.
 - Frontend ∥ backend in parallel — single message, two subagent calls.
 - Reviewer ∥ tester in parallel — single message, two subagent calls.
 - ONE agent per role per run: after a role's first spawn, its later tasks are host-specific continuations of that agent (the spawn gate denies duplicates). Never spawn `senior-frontend` twice for parts/fixes — same agent, next message.

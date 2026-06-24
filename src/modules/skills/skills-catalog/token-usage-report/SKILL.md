@@ -1,6 +1,6 @@
 ---
 name: token-usage-report
-description: Use when the user asks about token usage, cost, billing, "how many tokens did we use", "show token report", "where are tokens going", "token breakdown by subagent", "which phase spent most tokens", or wants an analysis of cache hit rate, subagent costs, or per-tool tokens. Produces an exact breakdown from Claude Code or Codex Desktop on-disk transcripts. Also covers the opt-in TRAFFIC_ONE_TOKEN_LOG=1 env var for in-flight per-tool logging.
+description: Use when the user asks about token usage, cost, billing, "how many tokens did we use", "show token report", "where are tokens going", "token breakdown by subagent", "which phase spent most tokens", or wants an analysis of cache hit rate, subagent costs, or per-tool tokens. Produces an exact breakdown from Claude Code or Codex Desktop on-disk transcripts, plus Cursor SQLite estimate-only support where available. Also covers the opt-in TRAFFIC_ONE_TOKEN_LOG=1 env var for in-flight per-tool logging.
 metadata:
   type: skill
   source: traffic-one
@@ -9,10 +9,13 @@ metadata:
 # Token usage report
 
 Generates an exact token-usage breakdown for the current Claude Code or Codex
-Desktop session. Claude Code reports parse authoritative transcripts under
+Desktop session, and an estimate-only Cursor report when Cursor SQLite state is
+available. Claude Code reports parse authoritative transcripts under
 `~/.claude/projects/<slug>/`; Codex Desktop reports parse
-`~/.codex/sessions/**` token-count events. Reports cache hit rate and, where
-available, role/tool/model breakdowns.
+`~/.codex/sessions/**` token-count events. Cursor reports sample
+`state.vscdb` text rows and cannot claim billed tokens, cache reads, or
+per-model usage. Reports cache hit rate and, where available, role/tool/model
+breakdowns.
 
 ## When to invoke
 
@@ -37,6 +40,9 @@ node ~/.traffic-one/bin/token-report.cjs --codex
 
 # Force Claude Code transcript parsing
 node ~/.traffic-one/bin/token-report.cjs --claude
+
+# Cursor SQLite estimate-only report
+node ~/.traffic-one/bin/token-report.cjs --cursor
 
 # Specific session
 node ~/.traffic-one/bin/token-report.cjs --session <session-id>

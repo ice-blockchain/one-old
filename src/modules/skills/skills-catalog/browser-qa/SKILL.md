@@ -85,8 +85,8 @@ the current UI, then state the assumption.
 
 ### Preferred Lighthouse Runner
 
-For React/Vite and Ionic web routes, use the Traffic One Lighthouse runner before
-declaring page-speed work complete:
+For React/Vite, Next.js, and Ionic web routes, use the Traffic One Lighthouse
+runner before declaring page-speed work complete:
 
 ```bash
 node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
@@ -98,10 +98,11 @@ When working from the plugin source checkout, run it from the app/repo root with
 node ~/.traffic-one/bin/lighthouse-runner.cjs --route /
 ```
 
-The runner builds the project, starts a production preview on a free local port,
-runs Lighthouse mobile Performance, writes JSON and HTML reports to
-`.traffic-one/reports/lighthouse/`, extracts FCP/LCP/TBT/CLS, and fails when
-the route misses the default Traffic One thresholds:
+The runner builds the project, starts a production preview on a free local port
+(`vite preview`, `next start`, or static `out/` serving for Next
+`output: "export"`), runs Lighthouse mobile Performance, writes JSON and HTML
+reports to `.traffic-one/reports/lighthouse/`, extracts FCP/LCP/TBT/CLS, and
+fails when the route misses the default Traffic One thresholds:
 
 - Lighthouse Performance ≥ 90, with 100 as the ideal
 - FCP ≤ 1.5 s

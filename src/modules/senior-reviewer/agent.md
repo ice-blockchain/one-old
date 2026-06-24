@@ -190,6 +190,8 @@ EOF
 
 Format spec: `rules/common/agent-handoff-digests.md`. **Cap at ~2 KB hard.** Reviewer findings tend to bloat — full reproduction steps, three alternative fixes, threat-model cross-references. Don't inline them. **Each blocker = ≤3 sentences in the digest** (file:line, what's wrong, the one-sentence fix). For deep audits, write a sibling spillover note at `.traffic-one/digests/<run-id>/reviewer-detail-<n>.md` (no size cap) and link to it from the digest with `**Detail:** see ...`. The implementer reads the spillover only when the one-sentence fix is ambiguous; the orchestrator's read protocol still puts the digest first. The shipper reads this digest as part of its pre-flight.
 
+Every review pass writes or overwrites `reviewer.md`, including re-review passes after fixes. A chat verdict without the digest is incomplete; downstream roles must not infer approval from chat alone.
+
 ## Hard rules
 
 - You **only** Read, Grep, Glob, and Bash. You have no `Write` or `Edit` tool. If the orchestrator asks you to fix something, refuse and route the fix to `senior-frontend` or `senior-backend`. Bash heredoc-writing the digest is allowed — it's the audit artefact, not feature code.

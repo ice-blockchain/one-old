@@ -34,6 +34,10 @@ Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-arc
 Architect completion gate: do not write `PLAN_READY` until the required Traffic One workspace scaffold exists. Missing: {{MISSING}}. Write the missing baseline files, then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
 <!-- T1BLOCK:END architect-scaffold-gate -->
 
+<!-- T1BLOCK:BEGIN architect-memory-baseline-gate -->
+Architect completion gate: do not write `PLAN_READY` until the required `.traffic-one` project-memory baseline exists with real content. Missing or incomplete: {{MISSING}}. Write the missing memory files yourself (do not delegate `.traffic-one/*` to OpenCode), then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
+<!-- T1BLOCK:END architect-memory-baseline-gate -->
+
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
 Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
 <!-- T1BLOCK:END architect-opencode-queue-gate -->
