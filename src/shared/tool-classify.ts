@@ -122,7 +122,8 @@ export function isStateFileOnlyPatch(toolName: unknown, toolInput: unknown): boo
 // incomplete window is harmless, a MISSED write is the bypass this guards against.
 // Covers file ops, dependency/package installs, build-installs, and working-tree-
 // mutating git subcommands.
-const MUTATING_SHELL_COMMAND = /(^|[\s;&|])(mkdir|rmdir|touch|rm|mv|cp|ln|dd|tee|truncate|chmod|chown|chgrp|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|pip3?\s+install|cargo\s+(install|add)|go\s+install|gem\s+install|composer\s+(require|install)|make\s+install|git\s+(init|add|commit|rm|mv|checkout|restore|reset|clean|stash|apply|push|merge|rebase)|(sed|perl)\s+-i)\b/;
+const MUTATING_SHELL_COMMAND = /(^|[\s;&|])(mkdir|rmdir|touch|rm|mv|cp|ln|dd|tee|truncate|chmod|chown|chgrp|xargs|npm\s+(install|i|add|create)|pnpm\s+(install|add|create)|yarn\s+(install|add|create)|bun\s+(install|add|create)|npx|pip3?\s+install|cargo\s+(install|add)|go\s+install|gem\s+install|composer\s+(require|install)|make\s+install|git\s+(init|add|commit|rm|mv|checkout|restore|reset|clean|stash|apply|push|merge|rebase)|(sed|perl)\s+-i)\b/;
+const MUTATING_FIND_COMMAND = /(^|[\s;&|])find\b[^\n;&|]*(?:\s-(?:delete|exec|execdir)\b)/;
 // Inline interpreter eval can write files with no visible redirection — e.g.
 // `python -c "open('x','w')"`, `node -e "fs.writeFileSync(...)"`. Anchored to the
 // eval flag so running a script file (`python build.py`) is not flagged here.
@@ -137,7 +138,9 @@ export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boo
   const command = commandFromToolInput(toolInput);
   // Output redirection (truncate `>` or append `>>`) is an unconditional write.
   if (/>{1,2}/.test(command)) return true;
-  return MUTATING_SHELL_COMMAND.test(command) || INTERPRETER_EVAL.test(command);
+  // Command substitution can hide a mutating command from the top-level regex.
+  if (/`|\$\(/.test(command)) return true;
+  return MUTATING_SHELL_COMMAND.test(command) || MUTATING_FIND_COMMAND.test(command) || INTERPRETER_EVAL.test(command);
 }
 
 // The blocking "wait for setup" command (node …/onboarding-wait.cjs <cwd>) the agent

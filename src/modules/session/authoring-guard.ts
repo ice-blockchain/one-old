@@ -17,7 +17,7 @@ import { GENERATED_MARKER } from '../../shared/materialize/generated';
 import { obj, type Rec } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { parsedToolInput, patchTextFromToolInput, patchTouchedFiles } from '../../shared/tool-classify';
+import { isMutatingPreToolUse, parsedToolInput, patchTextFromToolInput, patchTouchedFiles } from '../../shared/tool-classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 
@@ -50,6 +50,7 @@ export function authoringWriteGuard(ctx: Ctx): HookResult {
   // parsedToolInput supplies content/patch text on Cursor (no raw.tool_input) so the
   // GENERATED_MARKER content check can see what's being written.
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
   const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
   const pathBase = workdir
     ? (path.isAbsolute(workdir) ? path.resolve(workdir) : path.resolve(ctx.cwd, workdir))
@@ -59,8 +60,10 @@ export function authoringWriteGuard(ctx: Ctx): HookResult {
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
   if (filePath) candidates.push(filePath);
   candidates.push(...patchTouchedFiles(patchTextFromToolInput(toolInput)));
-  const command = ctx.input.tool?.command || asString(toolInput.command ?? toolInput.cmd);
+  let command = ctx.input.tool?.command || asString(toolInput.command ?? toolInput.cmd);
+  if (!/^(Bash|Shell|Terminal|exec_command)$/i.test(String(toolName || ''))) command = '';
   if (command && command.includes('.traffic-one')) {
+    if (!isMutatingPreToolUse(toolName, toolInput)) return noop();
     for (const token of command.split(/\s+/)) {
       if (token.includes('.traffic-one')) candidates.push(token.replace(/^["'`]+|["'`,;]+$/g, ''));
     }

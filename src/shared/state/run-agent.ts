@@ -1169,8 +1169,79 @@ function readDigest(cwd: string, runId: string, name: string): string {
   try {
     return fs.readFileSync(path.join(digestDir(cwd, runId), name), 'utf8');
   } catch {
-    return '';
+    if (name.startsWith('senior-')) return '';
+    try {
+      return fs.readFileSync(path.join(digestDir(cwd, runId), `senior-${name}`), 'utf8');
+    } catch {
+      return '';
+    }
   }
+}
+
+function frontendQaRequired(cwd: string): boolean {
+  const memoryDir = '.traffic' + '-one';
+  const state = obj(readJson(path.join(cwd, memoryDir, '.one.json'), null));
+  if (!state) return false;
+  const frontend = typeof state.frontend === 'string' ? state.frontend.trim().toLowerCase() : '';
+  const stack = typeof state.stack === 'string' ? state.stack.trim().toLowerCase() : '';
+  if (frontend && frontend !== 'none') return true;
+  return stack === 'default' || stack.includes('react') || stack.includes('vite') || fs.existsSync(path.join(cwd, 'apps', 'web'));
+}
+
+function testerDigestHasQaNotApplicable(tester: string): boolean {
+  return /\b(?:qa|visual|browser|e2e)\b[\s\S]{0,160}\bnot applicable\b/i.test(tester)
+    && /\b(?:reason|because|backend-only|api-only|no frontend|no browser surface)\b/i.test(tester);
+}
+
+function dirHasAnyFile(dir: string, suffixes: readonly string[]): boolean {
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory() && dirHasAnyFile(p, suffixes)) return true;
+      if (entry.isFile() && suffixes.some((suffix) => entry.name.endsWith(suffix))) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function runCreatedAtMs(cwd: string, runId: string): number {
+  const rec = obj(readJson(runLedgerFile(cwd, runId), null));
+  const raw = rec && typeof rec.createdAt === 'string' ? rec.createdAt : '';
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function dirHasFreshFile(dir: string, suffixes: readonly string[], minMtimeMs: number): boolean {
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory() && dirHasFreshFile(p, suffixes, minMtimeMs)) return true;
+      if (entry.isFile() && suffixes.some((suffix) => entry.name.endsWith(suffix))) {
+        if (minMtimeMs <= 0) return true;
+        try {
+          if (fs.statSync(p).mtimeMs + 1000 >= minMtimeMs) return true;
+        } catch {
+          // ignore unreadable candidates
+        }
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function runHasQaEvidence(cwd: string, runId: string, tester: string): boolean {
+  if (!frontendQaRequired(cwd)) return true;
+  const memoryDir = '.traffic' + '-one';
+  const qaDir = path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId));
+  if (fs.existsSync(path.join(qaDir, 'report.json'))) return true;
+  if (dirHasAnyFile(qaDir, ['.png', '.jpg', '.jpeg', '.webp', '.json'])) return true;
+  const lighthouseDir = path.join(cwd, memoryDir, 'reports', 'lighthouse');
+  if (dirHasFreshFile(lighthouseDir, ['.json', '.html'], runCreatedAtMs(cwd, runId))) return true;
+  return testerDigestHasQaNotApplicable(tester);
 }
 
 // True when run <runId>'s verification has TERMINALLY settled: a shipper digest
@@ -1191,7 +1262,7 @@ export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean 
   const tester = readDigest(cwd, runId, 'tester.md');
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
   const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
-  return reviewerApproved && testerPassed;
+  return reviewerApproved && testerPassed && runHasQaEvidence(cwd, runId, tester);
 }
 
 function maintenanceRunReachedTerminal(cwd: string, runId: string): boolean {
@@ -1199,8 +1270,10 @@ function maintenanceRunReachedTerminal(cwd: string, runId: string): boolean {
     const parsed = readJson(path.join(runDir(cwd, runId), 'maintenance.json'), null);
     const rec = obj(parsed);
     if (!rec || rec.version !== 1) return false;
-    const outcome = typeof rec.outcome === 'string' ? rec.outcome : '';
-    return outcome === 'success' || outcome === 'failed' || outcome === 'skipped' || outcome === 'fallback-paid';
+    const overall = typeof rec.overallOutcome === 'string' ? rec.overallOutcome : '';
+    const outcome = overall || (typeof rec.outcome === 'string' ? rec.outcome : '');
+    return outcome === 'success' || outcome === 'completed' || outcome === 'blocked'
+      || outcome === 'failed' || outcome === 'skipped' || outcome === 'fallback-paid';
   } catch {
     return false;
   }
@@ -1216,7 +1289,9 @@ export function runHasOrchestratedArtifacts(cwd: string, runId: unknown): boolea
   try {
     if (fs.existsSync(assignmentsFile(cwd, runId))) return true;
     const dd = digestDir(cwd, runId);
-    return ['architect.md', 'frontend.md', 'backend.md', 'reviewer.md', 'tester.md'].some((n) => fs.existsSync(path.join(dd, n)));
+    return ['architect.md', 'frontend.md', 'backend.md', 'reviewer.md', 'tester.md',
+      'senior-architect.md', 'senior-frontend.md', 'senior-backend.md', 'senior-reviewer.md', 'senior-tester.md']
+      .some((n) => fs.existsSync(path.join(dd, n)));
   } catch {
     return false;
   }
@@ -1374,6 +1449,48 @@ export interface RunAgentEntry {
   replaced: boolean;
 }
 
+const VERDICT_AGENT_ROLES = new Set(['senior-reviewer', 'senior-tester']);
+
+export interface VerdictAgentConflict {
+  role: string;
+  agentId: string;
+  matchedId: string;
+}
+
+function idsForRunAgent(entry: RunAgentEntry | Rec | null | undefined): string[] {
+  const e = obj(entry);
+  if (!e) return [];
+  return [e.agentId, e.resumeId, e.toolCallId]
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    .map((id) => id.trim());
+}
+
+function verdictConflictFromAgents(agents: Rec, role: string, ids: readonly string[]): VerdictAgentConflict | null {
+  if (!VERDICT_AGENT_ROLES.has(role)) return null;
+  const wanted = new Set(ids.map((id) => id.trim()).filter(Boolean));
+  if (wanted.size === 0) return null;
+  for (const [otherRole, value] of Object.entries(agents)) {
+    if (otherRole === role) continue;
+    const entry = obj(value);
+    if (!entry || entry.replaced === true) continue;
+    for (const id of idsForRunAgent(entry)) {
+      if (wanted.has(id)) {
+        return {
+          role: otherRole,
+          agentId: typeof entry.agentId === 'string' ? entry.agentId : id,
+          matchedId: id,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+export function verdictAgentConflict(cwd: string, runId: string, role: string, agentId: unknown): VerdictAgentConflict | null {
+  if (typeof agentId !== 'string' || !agentId.trim()) return null;
+  return verdictConflictFromAgents(readRunAgentRegistry(cwd, runId), role, [agentId.trim()]);
+}
+
 /** Cursor surfaces spawn tool-call ids as `tool_<uuid>` — these do NOT work with Task `resume`. */
 export function isCursorToolSubagentId(id: string): boolean {
   return /^tool_[0-9a-f-]{8,}$/i.test(id.trim());
@@ -1449,6 +1566,28 @@ export function recordRunAgent(
     || (prior && typeof prior.toolCallId === 'string' ? (prior.toolCallId as string) : null);
   // agentId stays backward-compatible: prefer the resume-capable id when known.
   const agentId = resumeId || incomingId || (prior && typeof prior.agentId === 'string' ? (prior.agentId as string) : incomingId);
+  const conflict = verdictConflictFromAgents(agents, role, [agentId, resumeId || '', toolCallId || '']);
+  if (conflict) {
+    const conflicts = Array.isArray(registry.conflicts) ? registry.conflicts.filter((item) => item && typeof item === 'object') : [];
+    conflicts.push({
+      role,
+      rejectedAgentId: agentId,
+      rejectedResumeId: resumeId,
+      rejectedToolCallId: toolCallId,
+      conflictingRole: conflict.role,
+      conflictingAgentId: conflict.agentId,
+      matchedId: conflict.matchedId,
+      recordedAt: stateTimestamp(),
+      reason: 'verdict-role-cannot-reuse-another-role-agent',
+    });
+    try {
+      fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents, history, conflicts: conflicts.slice(-50) });
+    } catch {
+      // best-effort diagnostic; never bind the unsafe cross-role agent
+    }
+    return;
+  }
   const sameAgent = prior
     && prior.replaced !== true
     && ((prior.agentId === agentId)

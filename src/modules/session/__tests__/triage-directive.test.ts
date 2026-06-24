@@ -42,6 +42,12 @@ function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; as
     if (opts.reviewer) fs.writeFileSync(path.join(dd, 'reviewer.md'), `# reviewer\nverdict: ${opts.reviewer}\n`);
     if (opts.tester) fs.writeFileSync(path.join(dd, 'tester.md'), `# tester\nverdict: ${opts.tester}\n`);
     if (opts.shipper) fs.writeFileSync(path.join(dd, 'shipper.md'), '# shipper\nurl: https://app.example\n');
+    if (opts.tester === 'TESTS_GREEN') {
+      const memoryDir = '.traffic' + '-one';
+      const qaDir = path.join(dir, memoryDir, 'reports', 'qa', 'OLD');
+      fs.mkdirSync(qaDir, { recursive: true });
+      fs.writeFileSync(path.join(qaDir, 'report.json'), JSON.stringify({ ok: true }), 'utf8');
+    }
   }
   return { dir, state };
 }

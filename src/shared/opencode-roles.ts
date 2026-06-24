@@ -121,6 +121,32 @@ export function planDelegationQueueRoles(cwd: string): string[] {
   return parsePlanDelegationBlock(plan).roles;
 }
 
+function runScopedQueueRoles(cwd: string, runId: string): string[] | null {
+  if (!runId) return null;
+  const trafficDir = '.traffic' + '-one';
+  const file = path.join(cwd, trafficDir, 'runs', runId, 'opencode-queue.json');
+  if (!fs.existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as Rec;
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.units)) return [];
+    if (typeof parsed.runId === 'string' && parsed.runId && parsed.runId !== runId) return [];
+    const roles: string[] = [];
+    for (const unit of parsed.units) {
+      const rec = obj(unit);
+      const role = typeof rec?.role === 'string' ? normalizeAttemptRole(rec.role) : '';
+      if (role && !roles.includes(role)) roles.push(role);
+    }
+    return roles;
+  } catch {
+    return [];
+  }
+}
+
+export function planDelegationQueueRolesForRun(cwd: string, runId: string): string[] {
+  const scoped = runScopedQueueRoles(cwd, runId);
+  return scoped ?? planDelegationQueueRoles(cwd);
+}
+
 /** Count bounded OpenCode units in a plan body (for plan-write gates). */
 export function planDelegationUnitCount(planText: string): number {
   return parsePlanDelegationBlock(planText).unitCount;
@@ -131,9 +157,10 @@ export function planDelegationUnitCount(planText: string): number {
 // from-plan can't deliver work that was never queued, so denying its paid spawn would
 // stall the role forever. Roles WITH queued units stay gated (deny until from-plan
 // delivers → marks attempted → the gate clears and the paid implementer proceeds).
-export function roleHasQueuedUnits(cwd: string, role: string): boolean {
+export function roleHasQueuedUnits(cwd: string, role: string, runId = ''): boolean {
   if (!role) return false;
-  return planDelegationQueueRoles(cwd).includes(normalizeAttemptRole(role));
+  const roles = runId ? planDelegationQueueRolesForRun(cwd, runId) : planDelegationQueueRoles(cwd);
+  return roles.includes(normalizeAttemptRole(role));
 }
 
 function planBatchDir(cwd: string, runId: string): string {
@@ -284,7 +311,7 @@ export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, s
   if (!runId || !openCodeDelegationActive(state)) return false;
   const mode = obj(state)?.mode;
   if (mode !== 'new-project') return false;
-  if (planDelegationQueueRoles(cwd).length === 0) return false;
+  if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
   return !openCodePlanBatchComplete(cwd, runId);
 }
 
@@ -327,7 +354,7 @@ export function openCodePlanRoleCompleted(cwd: string, runId: string, role: stri
 export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown): string[] {
   if (!runId || !openCodeDelegationActive(state)) return [];
   if (openCodePlanBatchComplete(cwd, runId)) return [];
-  return planDelegationQueueRoles(cwd);
+  return planDelegationQueueRolesForRun(cwd, runId);
 }
 
 // Per-run marker that an OpenCode delegation reached the CLI for a role. The

@@ -109,6 +109,32 @@ test('runSessionStart is a noop in the plugin authoring root (before any auth pr
   assert.equal(runSessionStart(ctx(process.cwd())).kind, 'noop');
 });
 
+test('runSessionStartAuthed from a workspace package resolves to the ancestor project root', () => {
+  withProject({
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    onboardingComplete: true,
+    confirmed: true,
+    materializedStack: 'default|react-vite|supabase|none',
+    openCode: { enabled: false },
+    performance: { level: 'high' },
+    team: { mode: 'subagents', approved: true },
+    codeGraphProvider: 'gitnexus',
+    toolchain: initializeToolchainState(),
+  }, (cwd) => {
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ private: true, packageManager: 'pnpm@9.0.0', workspaces: ['apps/*'] }), 'utf8');
+    const app = path.join(cwd, 'apps', 'web');
+    fs.mkdirSync(app, { recursive: true });
+    const result = runSessionStartAuthed(ctx(app));
+    assert.equal(result.kind, 'context');
+    const memoryDir = '.traffic' + '-one';
+    assert.equal(fs.existsSync(path.join(cwd, memoryDir, 'manifest.json')), true);
+    assert.equal(fs.existsSync(path.join(app, memoryDir)), false);
+  });
+});
+
 test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-coding prompt stays dormant', () => {
   withProject(null, (cwd) => {
     // SessionStart fires before any prompt; on a fresh dir it must NOT activate

@@ -669,6 +669,35 @@ test('delegate is skipped when OpenCode is not enabled (→ fallback)', () => {
   });
 });
 
+test('delegateFromPlan ignores stale plan queues in maintenance runs', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = '.traffic' + '-one';
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      onboardingComplete: true,
+      lifecycle: { phase: 'maintenance' },
+      currentRunId: 'maint-queue',
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: stale-ui | role: frontend | files: unit-1.txt | task: stale build unit',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+
+    const r = delegateFromPlan(dir);
+
+    assert.equal(r.total, 0);
+    assert.equal(r.units[0]?.status, 'skipped_no_units');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-queue', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses[0]?.id, '__no_units__');
+  });
+});
+
 test('maintenance ad-hoc delegation writes a terminal maintenance marker with failureKind', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('error');

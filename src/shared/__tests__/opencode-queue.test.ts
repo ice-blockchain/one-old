@@ -12,6 +12,7 @@ import {
   readOpenCodeUnitStatuses,
   reconcileAllRunningUnits,
   reconcileStaleRunningUnits,
+  recordOpenCodeFallback,
   recordOpenCodeUnitStatus,
 } from '../opencode-queue';
 import { parsePlanDelegationUnits } from '../opencode-roles';
@@ -75,6 +76,26 @@ test('recordOpenCodeUnitStatus keeps best status and appends attempts', () => {
     assert.deepEqual(status?.touched, ['src/Card.tsx']);
     assert.equal(status?.attempts?.length, 2);
     assert.equal(status?.attempts?.[1]?.status, 'no_changes');
+  });
+});
+
+test('recordOpenCodeFallback annotates units without appending attempts', () => {
+  withRunDir((cwd, runId) => {
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'ui-card',
+      role: 'frontend',
+      status: 'failed',
+      action: 'failed',
+      touched: [],
+    });
+    const before = readOpenCodeUnitStatuses(cwd, runId)[0];
+    assert.equal(before?.attempts?.length, 1);
+    recordOpenCodeFallback(cwd, runId, 'senior-frontend', { status: 'paid_spawned', agentId: 'agent-1' });
+    const after = readOpenCodeUnitStatuses(cwd, runId)[0];
+    assert.equal(after?.status, 'fallback_required');
+    assert.equal(after?.fallback?.status, 'paid_spawned');
+    assert.equal(after?.fallback?.agentId, 'agent-1');
+    assert.equal(after?.attempts?.length, 1);
   });
 });
 

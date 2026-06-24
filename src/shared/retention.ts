@@ -69,6 +69,30 @@ function listFiles(root: string): string[] {
   }
 }
 
+function listNestedTrafficOneDirs(cwd: string): string[] {
+  const out: string[] = [];
+  const root = path.resolve(cwd);
+  const trafficDir = '.traffic' + '-one';
+  const skip = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.pnpm-store']);
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 6 || out.length >= 50) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (skip.has(entry.name)) continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.name === trafficDir) {
+        if (path.dirname(abs) !== root && fs.existsSync(path.join(abs, '.one.json'))) out.push(abs);
+        continue;
+      }
+      walk(abs, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+
 function numericDesc(a: string, b: string): number {
   return b.localeCompare(a, undefined, { numeric: true, sensitivity: 'base' });
 }
@@ -169,6 +193,10 @@ function collectActions(cwd: string, policy: RetentionPolicy, nowMs: number): { 
         maybeAction(actions, target, `stale ${rel} artefact older than ${policy.orphanTtlDays} days`);
       }
     }
+  }
+
+  for (const nested of listNestedTrafficOneDirs(cwd)) {
+    maybeAction(actions, nested, 'leaked nested Traffic One state root inside ancestor workspace');
   }
 
   return { keep, actions };

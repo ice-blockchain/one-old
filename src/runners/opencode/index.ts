@@ -27,6 +27,7 @@ import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   markOpenCodePlanRoleCompleted,
@@ -440,11 +441,15 @@ function recordMaintenanceDelegationOutcome(cwd: string, state: Rec, runId: stri
   try {
     const file = path.join(cwd, T1_DIR, 'runs', runId, 'maintenance.json');
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    const opencodeOutcome = result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed');
+    const overallOutcome = result.ok ? 'success' : 'fallback-pending';
     fs.writeFileSync(file, `${JSON.stringify({
       version: 1,
       kind: 'opencode-delegation',
       role,
-      outcome: result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed'),
+      outcome: opencodeOutcome,
+      opencodeOutcome,
+      overallOutcome,
       fallbackAllowed: result.ok !== true,
       action: result.action,
       failureKind: result.failureKind ?? null,
@@ -925,6 +930,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
 }
 
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
+  cwd = resolveProjectRoot(cwd);
   const state = readEffectiveState(cwd);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   if (openCode?.enabled !== true) {
@@ -1081,6 +1087,7 @@ export function normalizePlanRole(role: string): string {
 }
 
 export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string; roles?: readonly string[] } = {}): PlanDelegationResult {
+  cwd = resolveProjectRoot(cwd);
   const state = (readEffectiveState(cwd) || {}) as Rec;
   const stateRunId = typeof state.currentRunId === 'string'
     ? state.currentRunId.trim()
@@ -1088,7 +1095,9 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
-  const queue = parsePlanDelegationQueue(planText);
+  const queue = isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)
+    ? []
+    : parsePlanDelegationQueue(planText);
   const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
   writeOpenCodeQueue(cwd, formalQueue);
   let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));

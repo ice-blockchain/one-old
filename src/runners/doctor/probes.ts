@@ -101,6 +101,12 @@ export interface RunIdProbe {
   runJsonExists: boolean;
   runJsonStatus: string | null;
   hasOrchestratedArtifacts: boolean;
+  maintenanceJsonExists: boolean;
+  maintenanceOutcome: string | null;
+  maintenanceOverallOutcome: string | null;
+  maintenanceOpencodeOutcome: string | null;
+  maintenanceFallbackAllowed: boolean;
+  maintenanceTerminalOrFallbackPending: boolean;
 }
 
 function runHasArtifacts(cwd: string, runId: string): boolean {
@@ -117,10 +123,23 @@ function runHasArtifacts(cwd: string, runId: string): boolean {
 function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
   const raw = state && typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   if (!raw) {
-    return { currentRunId: null, runDirExists: false, runJsonExists: false, runJsonStatus: null, hasOrchestratedArtifacts: false };
+    return {
+      currentRunId: null,
+      runDirExists: false,
+      runJsonExists: false,
+      runJsonStatus: null,
+      hasOrchestratedArtifacts: false,
+      maintenanceJsonExists: false,
+      maintenanceOutcome: null,
+      maintenanceOverallOutcome: null,
+      maintenanceOpencodeOutcome: null,
+      maintenanceFallbackAllowed: false,
+      maintenanceTerminalOrFallbackPending: false,
+    };
   }
   const runDir = path.join(cwd, '.traffic-one', 'runs', raw);
   const runJson = path.join(runDir, 'run.json');
+  const maintenanceJson = path.join(runDir, 'maintenance.json');
   let status: string | null = null;
   if (fs.existsSync(runJson)) {
     try {
@@ -130,12 +149,36 @@ function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
       status = null;
     }
   }
+  let maintenanceOutcome: string | null = null;
+  let maintenanceOverallOutcome: string | null = null;
+  let maintenanceOpencodeOutcome: string | null = null;
+  let maintenanceFallbackAllowed = false;
+  if (fs.existsSync(maintenanceJson)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(maintenanceJson, 'utf8')) as Rec;
+      maintenanceOutcome = typeof parsed.outcome === 'string' ? parsed.outcome : null;
+      maintenanceOverallOutcome = typeof parsed.overallOutcome === 'string' ? parsed.overallOutcome : null;
+      maintenanceOpencodeOutcome = typeof parsed.opencodeOutcome === 'string' ? parsed.opencodeOutcome : null;
+      maintenanceFallbackAllowed = parsed.fallbackAllowed === true;
+    } catch {
+      maintenanceOutcome = null;
+    }
+  }
+  const terminalMaintenance = new Set(['success', 'completed', 'failed', 'blocked', 'skipped', 'fallback-paid']);
+  const maintenanceTerminalOrFallbackPending = fs.existsSync(maintenanceJson)
+    && (maintenanceFallbackAllowed || terminalMaintenance.has(maintenanceOverallOutcome || maintenanceOutcome || ''));
   return {
     currentRunId: raw,
     runDirExists: fs.existsSync(runDir),
     runJsonExists: fs.existsSync(runJson),
     runJsonStatus: status,
     hasOrchestratedArtifacts: runHasArtifacts(cwd, raw),
+    maintenanceJsonExists: fs.existsSync(maintenanceJson),
+    maintenanceOutcome,
+    maintenanceOverallOutcome,
+    maintenanceOpencodeOutcome,
+    maintenanceFallbackAllowed,
+    maintenanceTerminalOrFallbackPending,
   };
 }
 
@@ -151,10 +194,37 @@ export interface ProjectProbe {
   hasGit: boolean;
   artefacts: { gitnexus: { mtimeMs: number } | null; graphify: { mtimeMs: number } | null };
   runState: RunIdProbe;
+  nestedTrafficOneRoots: string[];
   // How a delegation run would resolve the OpenCode CLI right now: the managed
   // install, a PATH binary (unpinned version), or nothing.
   openCodeCli: 'managed' | 'path' | 'missing';
 }
+
+function listNestedTrafficOneRoots(cwd: string): string[] {
+  const out: string[] = [];
+  const root = path.resolve(cwd);
+  const trafficDir = '.traffic' + '-one';
+  const skip = new Set(['.git', 'node_modules', 'dist', 'build', '.next', '.turbo', '.pnpm-store']);
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 6 || out.length >= 50) return;
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (skip.has(entry.name)) continue;
+      const abs = path.join(dir, entry.name);
+      if (entry.name === trafficDir) {
+        const owner = path.dirname(abs);
+        if (owner !== root && fs.existsSync(path.join(abs, '.one.json'))) out.push(owner);
+        continue;
+      }
+      walk(abs, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return out;
+}
+
 export function probeProject(cwd: string): ProjectProbe {
   const trafficOne = safeRead(path.join(cwd, '.traffic-one', '.one.json'));
   let state: Rec | null = null;
@@ -189,6 +259,7 @@ export function probeProject(cwd: string): ProjectProbe {
       graphify: graphifyOut ? { mtimeMs: graphifyOut.mtimeMs } : null,
     },
     runState: probeRunId(cwd, normalizedState || state),
+    nestedTrafficOneRoots: listNestedTrafficOneRoots(cwd),
     openCodeCli: fs.existsSync(managedNpmBin('opencode', 'opencode'))
       ? 'managed'
       : (which('opencode') ? 'path' : 'missing'),

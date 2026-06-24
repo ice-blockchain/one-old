@@ -16,6 +16,7 @@ import * as path from 'path';
 
 import { CODE_GRAPH_SCAN_EXCLUDES, GRAPHIFY_OUT_REL, GRAPHIFY_OUT_ROOT_DIRNAME, GRAPHIFY_REPORT_REL, applyCodeGraphScanIgnore, codeGraphIndexIsStale, graphifyGraphIsEmpty, relocateProviderSkills, relocateUnderTrafficOne } from '../../shared/codegraph';
 import { exec } from '../../shared/exec';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { writeGraphPreview } from '../../shared/materialize';
 import { ensureManagedRuntime } from '../../shared/managed-runtime';
 import { spawnTool } from '../../shared/spawn-tool';
@@ -436,7 +437,7 @@ export { graphifyGraphIsEmpty };
 export function main(): void {
   // --force mirrors the gitnexus runner: the phase-3 pre-step rebuilds right
   // after implementers land code, when an mtime-fresh index still predates it.
-  const result = bootstrap(process.cwd(), { force: process.argv.includes('--force') });
+  const result = bootstrap(resolveProjectRoot(process.cwd()), { force: process.argv.includes('--force') });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = 0;
 }

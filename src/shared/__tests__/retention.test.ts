@@ -50,3 +50,20 @@ test('sweepTrafficOneRetention dry-run preserves current run and durable memory'
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'product.md')), true);
   });
 });
+
+test('sweepTrafficOneRetention lists leaked nested roots only as explicit cleanup candidates', () => {
+  withProject((dir) => {
+    const memoryDir = '.traffic' + '-one';
+    const nested = path.join(dir, 'apps', 'web', memoryDir);
+    fs.mkdirSync(nested, { recursive: true });
+    fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
+
+    const dry = sweepTrafficOneRetention(dir, { dryRun: true });
+    assert.ok(dry.actions.some((a) => a.path === nested));
+    assert.equal(fs.existsSync(nested), true, 'dry-run preserves leaked root');
+
+    const applied = sweepTrafficOneRetention(dir, { dryRun: false });
+    assert.ok(applied.actions.some((a) => a.path === nested));
+    assert.equal(fs.existsSync(nested), false);
+  });
+});

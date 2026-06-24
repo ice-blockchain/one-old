@@ -2,6 +2,7 @@
 // CLI wrapper for the conservative .traffic-one retention sweep.
 
 import { sweepTrafficOneRetention } from '../../shared/retention';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 
 function usage(): string {
   return [
@@ -39,7 +40,7 @@ export function main(): number {
     process.stdout.write(`${usage()}\n`);
     return 0;
   }
-  const result = sweepTrafficOneRetention(args.cwd, { dryRun: args.dryRun });
+  const result = sweepTrafficOneRetention(resolveProjectRoot(args.cwd), { dryRun: args.dryRun });
   if (args.json) {
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     return 0;

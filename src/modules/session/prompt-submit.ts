@@ -11,6 +11,7 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
 import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
@@ -96,8 +97,8 @@ function prependContext(prefix: string, result: HookResult): HookResult {
 // that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
-  const cwd = ctx.cwd;
-  if (isPluginAuthoringRoot(cwd)) return noop();
+  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
+  const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
 
   const raw = ctx.input.raw;
   const promptText = ctx.input.prompt || promptTextFromSubmit(raw);

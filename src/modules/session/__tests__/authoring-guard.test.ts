@@ -50,6 +50,15 @@ test('denies .traffic-one writes into the repo — from repo cwd AND parent-work
   });
 });
 
+test('allows read-only shell inspection mentioning state paths, denies mutating find', () => {
+  withRepoInParent((_parent, repo) => {
+    const memoryDir = '.traffic' + '-one';
+    const target = path.join(repo, memoryDir);
+    assert.equal(authoringWriteGuard(ctxFor(repo, 'Bash', { command: `find ${target} -maxdepth 2 -type f` })).kind, 'noop');
+    assert.equal(authoringWriteGuard(ctxFor(repo, 'Bash', { command: `find ${target} -name old -delete` })).kind, 'deny');
+  });
+});
+
 test('denies apply_patch adding .traffic-one files and shell commands targeting .traffic-one', () => {
   withRepoInParent((parent, repo) => {
     const patch = `*** Begin Patch\n*** Add File: ${path.join(repo, '.traffic-one', 'manifest.json')}\n+{}\n*** End Patch`;

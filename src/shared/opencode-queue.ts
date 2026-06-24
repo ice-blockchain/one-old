@@ -80,6 +80,13 @@ export interface OpenCodeUnitStatusEntry {
   touched?: string[];
   allowedFiles?: string[];
   assignmentHash?: string | null;
+  fallback?: {
+    status: 'paid_spawned' | 'paid_completed';
+    role: string;
+    agentId?: string | null;
+    digest?: string | null;
+    recordedAt: string;
+  };
   updatedAt: string;
   attempts?: Array<{
     status: OpenCodeUnitStatus;
@@ -246,6 +253,47 @@ export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit
     fs.writeFileSync(file, `${JSON.stringify(statuses, null, 2)}\n`, 'utf8');
   } catch {
     // best-effort diagnostics; never block delegation
+  }
+}
+
+export function recordOpenCodeFallback(
+  cwd: string,
+  runId: string,
+  role: string,
+  fallback: { status: 'paid_spawned' | 'paid_completed'; agentId?: string | null; digest?: string | null },
+): void {
+  if (!runId || !role) return;
+  try {
+    const file = path.join(runDir(cwd, runId), 'opencode-units.json');
+    const statuses = readStatuses(cwd, runId);
+    if (statuses.length === 0) return;
+    const normalizedRole = normalizeOpenCodeRole(role);
+    const recordedAt = new Date().toISOString();
+    let changed = false;
+    const next = statuses.map((status) => {
+      if (status.role !== normalizedRole || status.status === 'delegated') return status;
+      changed = true;
+      const nextStatus = statusPrecedence(status.status) < statusPrecedence('fallback_required')
+        ? 'fallback_required'
+        : status.status;
+      return {
+        ...status,
+        status: nextStatus,
+        fallback: {
+          status: fallback.status,
+          role,
+          agentId: fallback.agentId ?? status.fallback?.agentId ?? null,
+          digest: fallback.digest ?? status.fallback?.digest ?? null,
+          recordedAt,
+        },
+        updatedAt: recordedAt,
+      } satisfies OpenCodeUnitStatusEntry;
+    });
+    if (!changed) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  } catch {
+    // best-effort diagnostics; never block fallback
   }
 }
 
