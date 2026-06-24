@@ -15,7 +15,7 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { isKnownStack } from '../../shared/config';
-import { detectMode, detectStackFromCodebase } from '../../shared/detection';
+import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { autoDetectedAnnouncement } from '../../shared/directives';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
@@ -34,6 +34,7 @@ import {
   legacyStatePath,
   maintenanceLifecycle,
   normalizeState,
+  pruneExpiredPendingClaims,
   readEffectiveState,
   resolveRunAgentContext,
   type RunAgentContext,
@@ -48,6 +49,7 @@ import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
+import { sweepTrafficOneRetention } from '../../shared/retention';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -205,6 +207,8 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   // project's set. Digest retention sweep. Best-effort session materialization.
   cleanActiveSkills();
   sweepOldDigests(cwd, 5);
+  pruneExpiredPendingClaims(cwd);
+  sweepTrafficOneRetention(cwd, { dryRun: false });
   try {
     ensureSessionMaterialization(cwd, state);
   } catch {
@@ -222,6 +226,16 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const mode = (state.mode as string) || detectMode(cwd);
   state.mode = mode;
   let stackId = state.stack as string | undefined;
+  if (mode === 'new-project' && reconcileStackFromArtifacts(cwd, state)) {
+    normalizeState(state, mode);
+    writeState(cwd, state);
+    try {
+      ensureSessionMaterialization(cwd, state);
+    } catch {
+      // best-effort; the normal materialization branch below still provides context
+    }
+    stackId = state.stack as string | undefined;
+  }
   if (stackId && isKnownStack(stackId)) {
     normalizeState(state, mode);
     stackId = state.stack as string;

@@ -12,7 +12,7 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   // the deploy gate reference the runner CLIs.
   for (const name of [
     'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'traffic-one-auth.cjs', 'doctor.cjs',
-    'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs',
+    'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'traffic-one-cleanup.cjs',
     'gitnexus-runner.cjs', 'graphify-runner.cjs',
   ]) {
     assert.ok(name in SHIMS, `missing shim for ${name}`);

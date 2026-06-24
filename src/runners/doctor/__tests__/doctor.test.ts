@@ -206,7 +206,10 @@ function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
   return {
     cwd: '/repo', hasState: false, state: null, localPreferences: {}, localPreferencesPath: null,
     hasLocalPreferences: false, normalizedState: null, nvmrc: null, hasGit: true,
-    artefacts: { gitnexus: null, graphify: null }, openCodeCli: 'managed', ...over,
+    artefacts: { gitnexus: null, graphify: null },
+    runState: { currentRunId: null, runDirExists: false, runJsonExists: false, runJsonStatus: null, hasOrchestratedArtifacts: false },
+    openCodeCli: 'managed',
+    ...over,
   };
 }
 const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, ...over });
@@ -279,4 +282,23 @@ test('buildFindings: opencode findings are silent when delegation is not enabled
     codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false },
   });
   assert.ok(!f.some((x) => x.code === 'OPENCODE_CLI_MISSING' || x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED' || x.code === 'OPENCODE_CLI_UNMANAGED'));
+});
+
+test('buildFindings: ghost currentRunId is report-only and planned ledgers are info', () => {
+  const ghost = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      runState: { currentRunId: 'run-ghost', runDirExists: false, runJsonExists: false, runJsonStatus: null, hasOrchestratedArtifacts: false },
+    }),
+  });
+  assert.equal(ghost.find((x) => x.code === 'GHOST_CURRENT_RUN_ID')?.severity, 'fix-needed');
+
+  const planned = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      runState: { currentRunId: 'run-planned', runDirExists: true, runJsonExists: true, runJsonStatus: 'planned', hasOrchestratedArtifacts: false },
+    }),
+  });
+  assert.equal(planned.find((x) => x.code === 'PLANNED_RUN_LEDGER_ONLY')?.severity, 'info');
+  assert.ok(!planned.some((x) => x.code === 'GHOST_CURRENT_RUN_ID'));
 });

@@ -152,6 +152,29 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     });
   }
 
+  const runState = project.runState;
+  if (runState?.currentRunId) {
+    if (!runState.runDirExists) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'GHOST_CURRENT_RUN_ID',
+        message: `\`.traffic-one/.one.json\` currentRunId=${JSON.stringify(runState.currentRunId)} points to no \`.traffic-one/runs/${runState.currentRunId}/\` directory. Doctor is report-only: after confirming no live agents are using it, clear or rotate the run id explicitly.`,
+      });
+    } else if (!runState.hasOrchestratedArtifacts && runState.runJsonStatus !== 'planned') {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'GHOST_CURRENT_RUN_ID',
+        message: `\`.traffic-one/.one.json\` currentRunId=${JSON.stringify(runState.currentRunId)} has no orchestrated artifacts (no assignments/digests) and is not a planned run ledger. Doctor will not rewrite it automatically; inspect the run directory, then clear or rotate the id if no live work depends on it.`,
+      });
+    } else if (runState.runJsonStatus === 'planned' && !runState.hasOrchestratedArtifacts) {
+      findings.push({
+        severity: 'info',
+        code: 'PLANNED_RUN_LEDGER_ONLY',
+        message: `currentRunId=${JSON.stringify(runState.currentRunId)} is a planned run ledger only. This is valid pre-orchestration state; \`run.json\` alone does not count as assignments or digests.`,
+      });
+    }
+  }
+
   if (node.runningMajor !== null && node.runningMajor < node.requiredMajor && provider === 'gitnexus') {
     if (nvm.installed && nvm.hasV22) {
       findings.push({

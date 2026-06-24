@@ -176,6 +176,60 @@ test('finalize derives the stack from the seeded original prompt (not minimal)',
   });
 });
 
+test('finalize persists 16b React + Go prompt as custom-backend/go immediately', () => {
+  withProject(null, (cwd) => {
+    const prompt = 'create a modern learning platform in react with go as backend with courses for web development. use latest tech, make it responsive. no admin area for now.';
+    writeState(cwd, { mode: 'new-project', originalPrompt: prompt });
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.equal(computeOnboarding(cwd).step, 'finalize');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-backend');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'go');
+  });
+});
+
+test('finalize reconciles early Go artifacts before first SessionStart', () => {
+  withProject(null, (cwd) => {
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'create a SaaS platform with auth and a dashboard' });
+    fs.writeFileSync(path.join(cwd, 'go.mod'), 'module example.com/app\n', 'utf8');
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'custom-backend');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'go');
+    assert.ok(String((asRec(s).evidence as unknown[] | undefined)?.[0] || '').includes('Go backend artifacts'));
+  });
+});
+
+test('finalize does not flip Supabase state for a stray .go file without a module marker', () => {
+  withProject(null, (cwd) => {
+    writeState(cwd, { mode: 'new-project', originalPrompt: 'create a SaaS platform with auth and a dashboard' });
+    fs.mkdirSync(path.join(cwd, 'services', 'api'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'services', 'api', 'scratch.go'), 'package scratch\n', 'utf8');
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { summary: '', answers: {} });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    assert.ok(applyAnswer(cwd, 'finalize', null).ok);
+    const s = readState(cwd);
+    assert.equal(s.stack, 'default');
+    assert.equal(s.frontend, 'react-vite');
+    assert.equal(s.backend, 'supabase');
+  });
+});
+
 test('finalize: NO captured prompt + blank form does NOT collapse to minimal (the 9b regression)', () => {
   withProject(null, (cwd) => {
     // 9b reproduction: the Cursor user-prompt-submit hook no-op'd (no prompt text in the

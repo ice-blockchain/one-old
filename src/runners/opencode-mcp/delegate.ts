@@ -16,6 +16,7 @@ import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../config/opencode-mcp';
 import {
   abandonAfterMs,
   childKeepAliveEnabled,
+  pollAfterMs,
   RESUME_WAIT_MS,
   watchdogTickMs,
 } from '../../config/opencode-timeouts';
@@ -274,6 +275,7 @@ export interface ResumableResult extends RunnerResult {
   runId?: string;
   role?: string;
   message?: string;
+  pollAfterMs?: number;
 }
 
 interface TrackedChild {
@@ -391,6 +393,7 @@ function waitBounded(run: BgRun, waitMs: number): Promise<RunnerResult | null> {
 function stillRunning(runId: string, role: string, tool: string): ResumableResult {
   return {
     running: true, runId, role, action: 'running', error: null,
+    pollAfterMs: pollAfterMs(),
     message: `OpenCode is still running for ${role} (run ${runId}). Call ${tool} again with the SAME arguments to keep waiting; it returns ok:true (delegated → review) or ok:false (declined → fall back) once finished.`,
   };
 }

@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
-import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIsEmpty } from '../../shared/codegraph';
+import { GITNEXUS_REL, GRAPHIFY_REPORT_REL, codeGraphIndexIsStale, codeGraphIsEmpty } from '../../shared/codegraph';
 import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
@@ -149,8 +149,13 @@ export function shouldBuildCodeGraph(cwd: string, state: Rec, nowMs: number): bo
   const artefactExists = provider === 'graphify'
     ? fs.existsSync(path.join(cwd, GRAPHIFY_REPORT_REL))
     : fs.existsSync(path.join(cwd, GITNEXUS_REL));
+  let artefactMtime = 0;
+  if (artefactExists) {
+    const artefactPath = provider === 'graphify' ? path.join(cwd, GRAPHIFY_REPORT_REL) : path.join(cwd, GITNEXUS_REL);
+    try { artefactMtime = fs.statSync(artefactPath).mtimeMs; } catch { artefactMtime = 0; }
+  }
   const hasGraph = artefactExists && !codeGraphIsEmpty(cwd, provider);
-  if (hasGraph) return false;
+  if (hasGraph && !codeGraphIndexIsStale(cwd, artefactMtime)) return false;
   const lockMs = codeGraphBuildLockMs(cwd);
   if (lockMs && (nowMs - lockMs) < CODE_GRAPH_SELF_HEAL_COOLDOWN_MS) return false;
   return true;

@@ -83,6 +83,18 @@ function detectFrontendFromText(text: string): string | null {
   return null;
 }
 
+function hasBackendLanguagePhrase(text: string, terms: readonly string[]): boolean {
+  const backendNoun = '(?:backend|api|server|service)';
+  return terms.some((term) => {
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\\ /g, '\\s+');
+    return [
+      new RegExp(`\\b${escaped}\\s+(?:as\\s+)?${backendNoun}\\b`),
+      new RegExp(`\\b${backendNoun}\\s+(?:in|with|using|as)\\s+${escaped}\\b`),
+      new RegExp(`\\b${backendNoun}\\s+(?:(?:is|was|should\\s+be|to\\s+be)\\s+)?(?:written|built|implemented)\\s+in\\s+${escaped}\\b`),
+    ].some((pattern) => pattern.test(text));
+  });
+}
+
 function detectBackendFromText(text: string): string | null {
   if (/\bsupabase\b/.test(text)) return 'supabase';
   if (/\bfirebase\b|\bfirestore\b/.test(text)) return 'firebase';
@@ -90,15 +102,15 @@ function detectBackendFromText(text: string): string | null {
   if (/\bnest(js)?\b/.test(text)) return 'nestjs';
   if (/\bfastapi\b/.test(text)) return 'fastapi';
   if (/\bdjango\b/.test(text)) return 'django';
-  if (/\bpython\b/.test(text)) return 'python';
-  if (/\bgolang\b|\bgo backend\b|\bgo api\b/.test(text)) return 'go';
-  if (/\brust\b/.test(text)) return 'rust';
-  if (/\bspring\b|\bspring boot\b/.test(text)) return 'java';
-  if (/\bkotlin\b|\bktor\b/.test(text)) return 'kotlin';
+  if (hasBackendLanguagePhrase(text, ['python']) || /\bpython backend\b/.test(text)) return 'python';
+  if (/\bgolang\b/.test(text) || hasBackendLanguagePhrase(text, ['go'])) return 'go';
+  if (hasBackendLanguagePhrase(text, ['rust'])) return 'rust';
+  if (/\bspring\b|\bspring boot\b/.test(text) || hasBackendLanguagePhrase(text, ['java'])) return 'java';
+  if (/\bktor\b/.test(text) || hasBackendLanguagePhrase(text, ['kotlin'])) return 'kotlin';
   if (/\blaravel\b/.test(text)) return 'laravel';
-  if (/\bphp\b/.test(text)) return 'php';
-  if (/\b\.net\b|\bdotnet\b|\bc#\b/.test(text)) return 'dotnet';
-  if (/\bnode\b|\bexpress\b|\btypescript backend\b/.test(text)) return 'node';
+  if (hasBackendLanguagePhrase(text, ['php'])) return 'php';
+  if (/\b\.net\b|\bdotnet\b|\bc#\b/.test(text) || hasBackendLanguagePhrase(text, ['dotnet', '.net', 'c#'])) return 'dotnet';
+  if (/\bexpress\b|\btypescript backend\b/.test(text) || hasBackendLanguagePhrase(text, ['node', 'node.js', 'nodejs', 'typescript'])) return 'node';
   if (/\bown api\b|\bexisting api\b|\bexternal api\b/.test(text)) return 'external-api';
   if (/\bno backend\b|\bfrontend[- ]only\b|\bstatic only\b/.test(text)) return 'none';
   return null;
@@ -136,11 +148,11 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
   const out: StackDetection = { stack: null, backend: null, frontend: null, realtime: null, evidence: [] };
 
   const deps = dependenciesFromPackage(loadPackageJson(cwd));
-  if (fs.existsSync(path.join(cwd, 'go.mod'))) {
+  if (detectGoBackendArtifacts(cwd)) {
     out.stack = 'custom-backend';
     out.backend = 'go';
-    out.frontend = 'none';
-    out.evidence.push('go.mod detected → apply Go backend skills');
+    out.frontend = deps.react || deps.vite ? 'react-vite' : 'none';
+    out.evidence.push('Go backend artifacts detected → apply Go backend skills');
   }
 
   if (Object.keys(deps).length === 0) return out;
@@ -199,6 +211,31 @@ export function detectStackFromCodebase(cwd: string): StackDetection {
   }
 
   return out;
+}
+
+export function detectGoBackendArtifacts(cwd: string): boolean {
+  const candidates = [
+    cwd,
+    path.join(cwd, 'services', 'api'),
+    path.join(cwd, 'apps', 'api'),
+    path.join(cwd, 'backend'),
+  ];
+  return candidates.some((dir) => fs.existsSync(path.join(dir, 'go.mod')) || fs.existsSync(path.join(dir, 'go.work')));
+}
+
+export function reconcileStackFromArtifacts(cwd: string, state: unknown): boolean {
+  const s = state && typeof state === 'object' ? (state as Rec) : null;
+  if (!s) return false;
+  if (!detectGoBackendArtifacts(cwd)) return false;
+  const staleSupabase = s.stack === 'default' || s.backend === 'supabase';
+  if (!staleSupabase && s.backend === 'go' && s.stack === 'custom-backend') return false;
+  s.stack = 'custom-backend';
+  if (!s.frontend || s.frontend === 'none') s.frontend = 'react-vite';
+  s.backend = 'go';
+  const evidence = Array.isArray(s.evidence) ? s.evidence.filter((item): item is string => typeof item === 'string') : [];
+  const note = 'Go backend artifacts detected after scaffold → reconciled state to custom-backend/go';
+  if (!evidence.includes(note)) s.evidence = [...evidence, note];
+  return true;
 }
 
 export interface PromptClassification {

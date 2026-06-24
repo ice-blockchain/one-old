@@ -95,6 +95,50 @@ export function probeGitnexus(): GitnexusProbe {
   };
 }
 
+export interface RunIdProbe {
+  currentRunId: string | null;
+  runDirExists: boolean;
+  runJsonExists: boolean;
+  runJsonStatus: string | null;
+  hasOrchestratedArtifacts: boolean;
+}
+
+function runHasArtifacts(cwd: string, runId: string): boolean {
+  if (!runId) return false;
+  if (fs.existsSync(path.join(cwd, '.traffic-one', 'runs', runId, 'assignments.json'))) return true;
+  const digestDir = path.join(cwd, '.traffic-one', 'digests', runId);
+  try {
+    return fs.readdirSync(digestDir).some((name) => name.endsWith('.md') || name.endsWith('.json'));
+  } catch {
+    return false;
+  }
+}
+
+function probeRunId(cwd: string, state: Rec | null): RunIdProbe {
+  const raw = state && typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (!raw) {
+    return { currentRunId: null, runDirExists: false, runJsonExists: false, runJsonStatus: null, hasOrchestratedArtifacts: false };
+  }
+  const runDir = path.join(cwd, '.traffic-one', 'runs', raw);
+  const runJson = path.join(runDir, 'run.json');
+  let status: string | null = null;
+  if (fs.existsSync(runJson)) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(runJson, 'utf8')) as Rec;
+      status = typeof parsed.status === 'string' ? parsed.status : null;
+    } catch {
+      status = null;
+    }
+  }
+  return {
+    currentRunId: raw,
+    runDirExists: fs.existsSync(runDir),
+    runJsonExists: fs.existsSync(runJson),
+    runJsonStatus: status,
+    hasOrchestratedArtifacts: runHasArtifacts(cwd, raw),
+  };
+}
+
 export interface ProjectProbe {
   cwd: string;
   hasState: boolean;
@@ -106,6 +150,7 @@ export interface ProjectProbe {
   nvmrc: string | null;
   hasGit: boolean;
   artefacts: { gitnexus: { mtimeMs: number } | null; graphify: { mtimeMs: number } | null };
+  runState: RunIdProbe;
   // How a delegation run would resolve the OpenCode CLI right now: the managed
   // install, a PATH binary (unpinned version), or nothing.
   openCodeCli: 'managed' | 'path' | 'missing';
@@ -143,6 +188,7 @@ export function probeProject(cwd: string): ProjectProbe {
       gitnexus: gitnexusOut ? { mtimeMs: gitnexusOut.mtimeMs } : null,
       graphify: graphifyOut ? { mtimeMs: graphifyOut.mtimeMs } : null,
     },
+    runState: probeRunId(cwd, normalizedState || state),
     openCodeCli: fs.existsSync(managedNpmBin('opencode', 'opencode'))
       ? 'managed'
       : (which('opencode') ? 'path' : 'missing'),

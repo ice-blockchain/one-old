@@ -19,7 +19,7 @@ import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readState, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, writeState } from '../../shared/state';
+import { ensureRunLedger, hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readState, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, stackFingerprint, writeState } from '../../shared/state';
 import { classifyPromptComplexity } from '../../shared/triage/classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -43,6 +43,7 @@ function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
   const runId = runIdNow();
   const sharedState = readState(cwd);
   writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });
+  ensureRunLedger(cwd, runId, { status: 'planned', kind: 'maintenance-triage', stackFingerprint: stackFingerprint({ ...sharedState, currentRunId: runId }) });
   state.currentRunId = runId;
   state.spawnIndex = {};
 }

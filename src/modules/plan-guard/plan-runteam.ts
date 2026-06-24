@@ -99,6 +99,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Does NOT affect the decision below.
   captureClaimDebug(projectRoot, typeof state.currentRunId === 'string' ? state.currentRunId : null, 'runteam-write', rawData, {
     filePath,
+    filePaths: writeTargetPaths,
     resolved: Boolean(agentContext),
     role,
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,

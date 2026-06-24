@@ -151,6 +151,33 @@ test('Flow 1: an onboarded existing project with local prefs gets the packed rul
   });
 });
 
+test('runSessionStartAuthed prunes stale pending run claims during startup hygiene', () => {
+  withProject(existingState({ currentRunId: 'run-prune' }), (cwd) => {
+    writeLocalPrefs();
+    const pending = path.join(cwd, '.traffic-one', 'runs', 'run-prune', 'pending');
+    fs.mkdirSync(pending, { recursive: true });
+    fs.writeFileSync(path.join(pending, 'old.json'), JSON.stringify({
+      version: 1,
+      runId: 'run-prune',
+      claimId: 'old',
+      role: 'senior-backend',
+      status: 'pending',
+      createdAt: '1970-01-01T00:00:00Z',
+    }), 'utf8');
+    fs.writeFileSync(path.join(pending, 'fresh.json'), JSON.stringify({
+      version: 1,
+      runId: 'run-prune',
+      claimId: 'fresh',
+      role: 'senior-frontend',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const remaining = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
+    assert.deepEqual(remaining, ['fresh.json']);
+  });
+});
+
 test('Flow 1: an onboarded existing project without local prefs asks only local-pref steps', () => {
   withProject(existingState(), (cwd) => {
     const r = runSessionStartAuthed(ctx(cwd));
@@ -177,6 +204,19 @@ test('Flow 1: an onboarded new project with shared state + local prefs runs norm
       assert.equal('team' in onDisk, false);
       assert.equal('codeGraphProvider' in onDisk, false);
     }
+  });
+});
+
+test('SessionStart does not flip Supabase state for a stray .go file without a module marker', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    fs.mkdirSync(path.join(cwd, 'services', 'api'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'services', 'api', 'scratch.go'), 'package scratch\n', 'utf8');
+    writeLocalPrefs();
+    assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(onDisk.stack, 'default');
+    assert.equal(onDisk.frontend, 'react-vite');
+    assert.equal(onDisk.backend, 'supabase');
   });
 });
 

@@ -58,6 +58,29 @@ function renderCodexMarkdown(agg: Rec): string {
   return `${lines.join('\n')}\n`;
 }
 
+function renderCursorMarkdown(agg: Rec): string {
+  const lines: string[] = [];
+  const session = (agg.session as Rec) || {};
+  const total = agg.parent as Stats;
+  const estimate = (agg.cursorEstimate as Rec) || {};
+  const warnings = Array.isArray(estimate.warnings) ? estimate.warnings.filter((w): w is string => typeof w === 'string') : [];
+
+  lines.push('# Token usage report', '', '- Source: Cursor SQLite estimate', `- Session: \`${session.id || 'cursor-sqlite-estimate'}\``);
+  if (session.cwd) lines.push(`- Cwd: \`${session.cwd}\``);
+  if (estimate.dbPath) lines.push(`- SQLite DB: \`${estimate.dbPath}\``);
+  lines.push('', '## Estimate', '', '| Metric | Value |', '|--------|-------|');
+  lines.push(`| Estimated tokens | ${fmtNum(totalTokens(total))} |`);
+  lines.push(`| Rows scanned | ${fmtNum(Number(estimate.rowsScanned) || 0)} |`);
+  lines.push(`| Project-matching rows | ${fmtNum(Number(estimate.matchedRows) || 0)} |`);
+  lines.push(`| Estimated text chars | ${fmtNum(Number(estimate.estimatedTextChars) || 0)} |`);
+  lines.push('');
+  lines.push('## Notes', '');
+  for (const warning of warnings) lines.push(`- ${warning}`);
+  lines.push('- This is not billed-token data. Cursor state does not expose stable per-model, cache, or final billing fields to Traffic One.');
+  lines.push('- Use this only to compare rough session text volume and spot repeated context loading.');
+  return `${lines.join('\n')}\n`;
+}
+
 interface TotalStats {
   messages: number; toolUses: number; inputTokens: number; cacheCreationInputTokens: number;
   cacheReadInputTokens: number; outputTokens: number; reasoningOutputTokens: number;
@@ -66,6 +89,7 @@ interface TotalStats {
 
 export function renderMarkdown(agg: Rec): string {
   if (agg && agg.source === 'codex') return renderCodexMarkdown(agg);
+  if (agg && agg.source === 'cursor') return renderCursorMarkdown(agg);
 
   const lines: string[] = [];
   const session = (agg.session as Rec) || {};

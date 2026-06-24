@@ -36,8 +36,8 @@ function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cw
   }
 }
 
-function ctxFor(cwd: string, command: string): Ctx {
-  const input: HookInput = { event: 'PostToolUse', host: 'claude', cwd, raw: {}, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command } };
+function ctxFor(cwd: string, command: string, raw: Record<string, unknown> = {}): Ctx {
+  const input: HookInput = { event: 'PostToolUse', host: 'claude', cwd, raw, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command } };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
@@ -48,6 +48,30 @@ test('page-speed fires after a web production build (authed)', () => {
     if (r.kind === 'context') {
       assert.ok(r.context.includes('Lighthouse'));
       assert.equal(r.systemMessage, 'traffic-one page-speed gate pending after build');
+    }
+  });
+});
+
+test('page-speed surfaces structured Lighthouse blocked statuses after runner calls', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    const runnerOutput = [
+      'BUILD_ID_PRESENT',
+      JSON.stringify({
+        status: 'blocked:sandbox',
+        error: 'listen EPERM: operation not permitted "127.0.0.1"',
+      }, null, 2),
+    ].join('\n');
+    const r = postBuildPageSpeed(ctxFor(
+      cwd,
+      'node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
+      { tool_response: { stdout: `${runnerOutput}\n` } },
+    ));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('blocked:sandbox'));
+      assert.ok(r.context.includes('"127.0.0.1"'));
+      assert.ok(r.context.includes('unverified'));
+      assert.equal(r.systemMessage, 'traffic-one page-speed blocked:sandbox');
     }
   });
 });

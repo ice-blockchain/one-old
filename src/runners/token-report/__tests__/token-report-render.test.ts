@@ -9,6 +9,7 @@ import { emptyTrafficOneEstimate } from '../emptyTrafficOneEstimate';
 import { renderMarkdown } from '../render';
 import { parseArgs, selectTargetSessions } from '../index';
 import { discoverSubagents, readCodexSessionMeta, walkCodexSessionFiles } from '../discovery';
+import { aggregateCursorSqliteEstimate } from '../aggregateCursorSqliteEstimate';
 
 function statsWith(over: Partial<ReturnType<typeof emptyStats>>): ReturnType<typeof emptyStats> {
   return { ...emptyStats(), ...over };
@@ -37,6 +38,35 @@ test('renderMarkdown (codex) renders the codex report with traffic-one estimate'
   assert.ok(md.includes('| Traffic One instruction approx. | 1,200 |'));
 });
 
+test('renderMarkdown (cursor) renders estimate-only limitation', () => {
+  const parent = statsWith({ messages: 2, inputTokens: 123 });
+  const md = renderMarkdown({
+    source: 'cursor',
+    session: { id: 'cursor-sqlite:state.vscdb', cwd: '/proj' },
+    parent,
+    subagents: [],
+    cursorEstimate: {
+      dbPath: '/tmp/state.vscdb',
+      rowsScanned: 10,
+      matchedRows: 2,
+      estimatedTextChars: 492,
+      estimatedTokens: 123,
+      warnings: ['estimate-only warning'],
+    },
+  });
+  assert.ok(md.includes('Source: Cursor SQLite estimate'));
+  assert.ok(md.includes('not billed-token data'));
+  assert.ok(md.includes('| Estimated tokens | 123 |'));
+});
+
+test('aggregateCursorSqliteEstimate reports missing DB as estimate-only warning', () => {
+  const agg = aggregateCursorSqliteEstimate({ id: 'cursor', cwd: '/proj', dbPath: '/no/such/state.vscdb', exists: false, mtimeMs: 0 });
+  assert.equal(agg.source, 'cursor');
+  assert.equal(agg.parent.inputTokens, 0);
+  assert.ok(agg.cursorEstimate.warnings.some((w) => w.includes('estimate-only')));
+  assert.ok(agg.cursorEstimate.warnings.some((w) => w.includes('not found')));
+});
+
 test('parseArgs reads flags + valued options', () => {
   const a = parseArgs(['--json', '--all', '--codex', '--session', 'abc', '--out', '/tmp/r.md']);
   assert.equal(a.json, true);
@@ -45,6 +75,8 @@ test('parseArgs reads flags + valued options', () => {
   assert.equal(a.session, 'abc');
   assert.equal(a.out, '/tmp/r.md');
   assert.equal(parseArgs([]).source, 'auto');
+  assert.equal(parseArgs(['--cursor']).source, 'cursor');
+  assert.equal(parseArgs(['--source', 'cursor']).source, 'cursor');
 });
 
 test('selectTargetSessions: --all → all, default → first, --session → match', () => {
