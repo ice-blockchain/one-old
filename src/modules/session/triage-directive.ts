@@ -19,7 +19,7 @@ import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { ensureRunLedger, hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readState, runHasOrchestratedArtifacts, runIdNow, runReachedTerminalVerdict, stackFingerprint, writeState } from '../../shared/state';
+import { ensureRunLedger, hasActiveRunClaims, hookSessionIdentity, isMaintenancePhase, lifecycleCompletedAt, readState, runHasOrchestratedArtifacts, runIdNow, runSettledForRotation, stackFingerprint, writeState } from '../../shared/state';
 import { classifyPromptComplexity } from '../../shared/triage/classify';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -39,7 +39,12 @@ function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
   // is SCHEMA-AGNOSTIC (raw existence) so a non-conforming manifest can't defeat it. A plain
   // maintenance edit with no orchestrated run still rotates (the common per-prompt case).
   const current = typeof state.currentRunId === 'string' ? state.currentRunId : '';
-  if (current && runHasOrchestratedArtifacts(cwd, current) && !runReachedTerminalVerdict(cwd, current)) return;
+  // Rotate away from a SETTLED run (reviewer APPROVED + tester passed, or shipper/maintenance
+  // terminal) — runSettledForRotation, NOT the strict runReachedTerminalVerdict: at a prompt
+  // boundary a finished run with both green verdicts must rotate even if the QA-evidence gate
+  // didn't pass, or it pins currentRunId forever (the rotation-deadlock class). A LIVE
+  // (still-verifying) run lacks both green verdicts → not settled → does not rotate.
+  if (current && runHasOrchestratedArtifacts(cwd, current) && !runSettledForRotation(cwd, current)) return;
   const runId = runIdNow();
   const sharedState = readState(cwd);
   writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });

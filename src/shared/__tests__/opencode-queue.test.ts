@@ -118,6 +118,24 @@ test('openCodeQueuePolicyViolations allows package manifests for non-dependency 
   assert.deepEqual(openCodeQueuePolicyViolations(units), []);
 });
 
+test('openCodeQueuePolicyViolations allows "add a build script" to package.json (not dependency work)', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: build-script | role: frontend | files: package.json | task: add a build script to package.json',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(units), []);
+});
+
+test('openCodeQueuePolicyViolations still routes adding a package to package.json to paid', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: add-dep | role: backend | files: package.json | task: add lodash to package.json',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(units).some((e) => /dependency\/package-manager work/.test(e)));
+});
+
 test('openCodeQueuePolicyViolations allows negated dependency wording in safe fixture units', () => {
   const units = parsePlanDelegationUnits([
     '<!-- opencode-delegate:start -->',

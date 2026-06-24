@@ -81,7 +81,7 @@ export interface OpenCodeUnitStatusEntry {
   allowedFiles?: string[];
   assignmentHash?: string | null;
   fallback?: {
-    status: 'paid_spawned' | 'paid_completed';
+    status: 'paid_spawned';
     role: string;
     agentId?: string | null;
     digest?: string | null;
@@ -260,7 +260,7 @@ export function recordOpenCodeFallback(
   cwd: string,
   runId: string,
   role: string,
-  fallback: { status: 'paid_spawned' | 'paid_completed'; agentId?: string | null; digest?: string | null },
+  fallback: { status: 'paid_spawned'; agentId?: string | null; digest?: string | null },
 ): void {
   if (!runId || !role) return;
   try {
@@ -438,7 +438,7 @@ function mentionsDependencyWork(unit: OpenCodeQueueUnit): boolean {
   if (/\b(?:package[- ]manager\s+files?|lockfiles?)\s+(?:changes?|updates?|writes?|edits?|work)\b/i.test(task)) return true;
   if (unit.allowedFiles.some((allowed) => /(^|\/)package\.json$/i.test(allowed))) {
     if (/\b(?:install|upgrade)\b/i.test(task)) return true;
-    if (/\b(?:add|remove)\s+(?!scripts?\b|metadata\b|config\b|field\b)\S+/i.test(task)) return true;
+    if (/\b(?:add|remove)\s+(?!(?:a\s+|the\s+|an\s+)?(?:scripts?|metadata|config|field|build|exports?|engines?|workspaces?)\b)\S+/i.test(task)) return true;
   }
   return false;
 }

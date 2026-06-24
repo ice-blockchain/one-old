@@ -1235,6 +1235,13 @@ function dirHasFreshFile(dir: string, suffixes: readonly string[], minMtimeMs: n
 
 function runHasQaEvidence(cwd: string, runId: string, tester: string): boolean {
   if (!frontendQaRequired(cwd)) return true;
+  // Per-RUN gate: QA evidence is only required when THIS run actually touched the frontend
+  // (produced a frontend implementer digest; readDigest falls back to senior-frontend.md).
+  // A backend-only run in a frontend project legitimately has no screenshots/Lighthouse —
+  // gating it on project-level frontend config would leave runReachedTerminalVerdict false
+  // forever and pin currentRunId against rotation (the rotation-deadlock class). A genuine
+  // frontend run still requires real evidence (or the explicit N/A escape) below.
+  if (!readDigest(cwd, runId, 'frontend.md').trim()) return true;
   const memoryDir = '.traffic' + '-one';
   const qaDir = path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId));
   if (fs.existsSync(path.join(qaDir, 'report.json'))) return true;
@@ -1263,6 +1270,27 @@ export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean 
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
   const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
   return reviewerApproved && testerPassed && runHasQaEvidence(cwd, runId, tester);
+}
+
+// Prompt-boundary "settled enough to rotate the run id" — used ONLY by the maintenance
+// run-id rotation guard (triage-directive.beginFreshMaintenanceRun), NEVER by the mid-turn
+// maintenance flip. A run that produced implementer output AND earned reviewer APPROVED +
+// tester TESTS_GREEN is finished; rotating away from it at a prompt boundary is safe even if
+// the QA-evidence gate didn't pass — otherwise a frontend build that skipped QA artifacts
+// (and omitted the N/A escape) pins currentRunId forever while the project still flips to
+// maintenance via anyRunProducedImplementerOutput, and the next feature reuses the stale run
+// id + spawnIndex. The STRICT bar (runReachedTerminalVerdict, incl. the QA gate) is kept
+// everywhere else. Both green verdicts co-occur only after the run is done, so this never
+// rotates a genuinely in-flight (still-verifying) run.
+export function runSettledForRotation(cwd: string, runId: unknown): boolean {
+  if (runReachedTerminalVerdict(cwd, runId)) return true;
+  if (typeof runId !== 'string' || !runId) return false;
+  if (!readDigest(cwd, runId, 'frontend.md').trim() && !readDigest(cwd, runId, 'backend.md').trim()) return false;
+  const reviewer = readDigest(cwd, runId, 'reviewer.md');
+  const tester = readDigest(cwd, runId, 'tester.md');
+  const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
+  const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
+  return reviewerApproved && testerPassed;
 }
 
 function maintenanceRunReachedTerminal(cwd: string, runId: string): boolean {
@@ -1327,7 +1355,12 @@ export function anyRunProducedImplementerOutput(cwd: string): boolean {
     for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const dd = digestDir(cwd, entry.name);
-      if (['frontend.md', 'backend.md'].some((n) => fs.existsSync(path.join(dd, n)))) return true;
+      // Accept both bare and senior-* implementer digest names. Cursor's write path can
+      // emit senior-frontend.md / senior-backend.md; checking only the bare forms here
+      // (while runHasOrchestratedArtifacts/readDigest accept both) would leave a
+      // senior-*-only build wedged in 'building' at the prompt boundary.
+      if (['frontend.md', 'backend.md', 'senior-frontend.md', 'senior-backend.md']
+        .some((n) => fs.existsSync(path.join(dd, n)))) return true;
     }
   } catch {
     // best-effort — no digests dir means nothing has been implemented yet

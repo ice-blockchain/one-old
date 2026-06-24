@@ -209,12 +209,9 @@ export function stageExcludePathspecs(wt: string): string[] {
     ':(exclude,glob)**/*.tsbuildinfo',
     ':(exclude,glob)*.tsbuildinfo',
   ];
-  let pm = '';
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(wt, 'package.json'), 'utf8')) as Rec;
-    pm = typeof pkg.packageManager === 'string' ? pkg.packageManager.split('@')[0] as string : '';
-  } catch { /* no root package.json → keep lockfiles untouched */ }
-  void pm; // package-manager detection is kept for future diagnostics; all lockfiles are install side effects.
+  // ALL lockfiles are excluded unconditionally regardless of package manager — OpenCode
+  // is never trusted to mutate dependency state, so a regenerated lockfile must never
+  // ride a delegated diff back into the real project.
   for (const lock of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'bun.lock']) {
     excludes.push(`:(exclude,glob)**/${lock}`, `:(exclude)${lock}`);
   }

@@ -128,6 +128,11 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    green. If model/tool limits prevent continuing, record `blocked:usage-limit`.
    The scripted sweep is a bounded unit — when OpenCode delegation is enabled,
    it may run there (free) and you verify its report.
+   **Backend-only run:** when THIS run touched no frontend (no `frontend.md`/`senior-frontend.md`
+   implementer digest, no `apps/web` changes), there is nothing to sweep — write the exact line
+   `Visual QA not applicable — backend-only run, no frontend changes` in your digest so the run
+   still settles. Do NOT use this escape when the run touched the UI; a real frontend change
+   without QA evidence is a `TESTS_FAILING`/blocked finding, not "not applicable".
 9. Placeholder hygiene: a package whose `test` script is a no-op ("no tests
    yet", `exit 0`) inflates a green root run. Either write one real minimal
    test for it (within your scope) or list the package as a numbered finding —

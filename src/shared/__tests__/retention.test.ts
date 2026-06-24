@@ -54,6 +54,11 @@ test('sweepTrafficOneRetention dry-run preserves current run and durable memory'
 test('sweepTrafficOneRetention lists leaked nested roots only as explicit cleanup candidates', () => {
   withProject((dir) => {
     const memoryDir = '.traffic' + '-one';
+    // The root must genuinely declare a workspace, so apps/web is a real sub-package
+    // whose stray .one.json is a leak: resolveProjectRoot anchors it at the workspace
+    // root, not at apps/web itself. Without this declaration apps/web would be an
+    // independent project and must NOT be swept (see the next test).
+    fs.writeFileSync(path.join(dir, 'pnpm-workspace.yaml'), "packages:\n  - 'apps/*'\n", 'utf8');
     const nested = path.join(dir, 'apps', 'web', memoryDir);
     fs.mkdirSync(nested, { recursive: true });
     fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');
@@ -65,5 +70,27 @@ test('sweepTrafficOneRetention lists leaked nested roots only as explicit cleanu
     const applied = sweepTrafficOneRetention(dir, { dryRun: false });
     assert.ok(applied.actions.some((a) => a.path === nested));
     assert.equal(fs.existsSync(nested), false);
+  });
+});
+
+test('sweepTrafficOneRetention never deletes an independent nested onboarded project (no workspace ancestor)', () => {
+  withProject((dir) => {
+    const memoryDir = '.traffic' + '-one';
+    // Parent is NOT a workspace (no pnpm-workspace.yaml / package.json workspaces), so
+    // the nested project is its OWN independent root — resolveProjectRoot(sub) === sub.
+    // It must never become a cleanup candidate (the data-loss case this guards).
+    const nested = path.join(dir, 'sub', memoryDir);
+    fs.mkdirSync(path.join(nested, 'runs', '9001'), { recursive: true });
+    fs.writeFileSync(path.join(nested, '.one.json'), JSON.stringify({ mode: 'new-project', currentRunId: '9001' }), 'utf8');
+    fs.writeFileSync(path.join(nested, 'product.md'), '# independent project memory', 'utf8');
+
+    const dry = sweepTrafficOneRetention(dir, { dryRun: true });
+    assert.ok(!dry.actions.some((a) => a.path === nested), 'independent nested project must not be a candidate');
+
+    const applied = sweepTrafficOneRetention(dir, { dryRun: false });
+    assert.ok(!applied.actions.some((a) => a.path === nested));
+    assert.equal(fs.existsSync(path.join(nested, '.one.json')), true, 'independent nested .one.json preserved');
+    assert.equal(fs.existsSync(path.join(nested, 'runs', '9001')), true, 'its runs preserved');
+    assert.equal(fs.existsSync(path.join(nested, 'product.md')), true, 'its durable memory preserved');
   });
 });

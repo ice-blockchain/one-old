@@ -26,6 +26,7 @@ import {
   runHasOrchestratedArtifacts,
   runIdNow,
   runReachedTerminalVerdict,
+  runSettledForRotation,
   transcriptThreadId,
 } from '../run-agent';
 import { stackFingerprint } from '../materialization';
@@ -42,6 +43,36 @@ function writeMaintenanceMarker(dir: string, runId: string, outcome: string): vo
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, 'maintenance.json'), JSON.stringify({ version: 1, outcome }), 'utf8');
 }
+
+test('QA-evidence gate is per-run: backend-only run is terminal; frontend run still needs QA but can rotate', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-perrun-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    // Frontend project → QA is required project-wide (the old project-level gate).
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'),
+      JSON.stringify({ mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase' }));
+    // BACKEND-ONLY run: green verdicts + backend.md, but NO frontend.md and NO QA artifacts.
+    // Must be terminal — gating it on project-level frontend config pinned currentRunId forever.
+    writeDigest(dir, 'rb', 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'rb', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'rb', 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, 'rb'), true, 'backend-only run does not require QA evidence');
+    // FRONTEND run (frontend.md present), green, but no QA artifacts → still NOT terminal
+    // (the QA enforcement for genuine frontend runs is preserved)...
+    writeDigest(dir, 'rf', 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'rf', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'rf', 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, 'rf'), false, 'frontend run still requires QA evidence');
+    // ...but it is "settled enough to rotate" at a prompt boundary, so currentRunId is never
+    // pinned forever (the rotation-deadlock class). An in-flight run (no green verdicts) is not.
+    assert.equal(runSettledForRotation(dir, 'rf'), true, 'finished frontend run rotates even without QA');
+    writeDigest(dir, 'rx', 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'rx', 'reviewer.md', 'CHANGES_REQUESTED');
+    assert.equal(runSettledForRotation(dir, 'rx'), false, 'a still-verifying run does not rotate');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('runReachedTerminalVerdict requires terminal verdict tokens, not mere digest existence', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verdict-'));
@@ -86,6 +117,19 @@ test('runReachedTerminalVerdict treats terminal maintenance markers as settled r
     assert.equal(runReachedTerminalVerdict(dir, 'quick-1'), true);
     writeMaintenanceMarker(dir, 'quick-2', 'running');
     assert.equal(runReachedTerminalVerdict(dir, 'quick-2'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('anyRunProducedImplementerOutput detects senior-* implementer digests (Cursor double-emit)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-impl-senior-'));
+  try {
+    assert.equal(anyRunProducedImplementerOutput(dir), false);
+    // Cursor's write path can emit only the senior-prefixed digest. It must still count as
+    // implementer output, or a finished build wedges in 'building' at the prompt boundary.
+    writeDigest(dir, 'r1', 'senior-frontend.md', 'BUILD_COMPLETE');
+    assert.equal(anyRunProducedImplementerOutput(dir), true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

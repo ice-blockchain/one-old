@@ -1,10 +1,14 @@
 // src/config/opencode-timeouts.ts
 // Centralized OpenCode delegation timeouts and keep-alive policy.
 
-/** Per-unit OpenCode CLI ceiling (env: T1_OC_UNIT_TIMEOUT_MS). */
+/** Per-attempt OpenCode CLI ceiling (env: T1_OC_UNIT_TIMEOUT_MS). Bounded to 90s so a
+ *  stalling free model (the repeated 300s ETIMEDOUT that wedged tests/3c) yields to the
+ *  next model / paid fallback fast instead of burning 300s per attempt. A unit's scope is
+ *  one bounded area, so a working free model completes well inside this; raise the env var
+ *  for an explicitly-pinned slow model. */
 export function opencodeUnitTimeoutMs(): number {
   const v = Number(process.env.T1_OC_UNIT_TIMEOUT_MS || '');
-  return Number.isFinite(v) && v > 0 ? v : 300_000;
+  return Number.isFinite(v) && v > 0 ? v : 90_000;
 }
 
 /** Cancel background delegation when orchestrator stops polling (env: T1_OC_ABANDON_MS). */

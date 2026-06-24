@@ -121,13 +121,16 @@ test('no flip when the codebase has not produced real output yet', () => {
 });
 
 test('no flip for frontend TESTS_GREEN without QA artifacts', () => {
-  const dir = mkproject({ files: 30, digest: true, verified: true, qa: false });
+  // A genuine frontend run (implementer wrote frontend.md) that is green but produced NO QA
+  // artifacts must stay non-terminal — the per-run QA gate still applies because the run
+  // touched the frontend. (A backend-only run with no frontend.md is exempt; covered below.)
+  const dir = mkproject({ files: 30, digest: true, implementer: true, verified: true, qa: false });
   assert.equal(run(dir), false);
   assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
 });
 
 test('no flip for stale shared Lighthouse output from an earlier run', () => {
-  const dir = mkproject({ files: 30, digest: true, verified: true, qa: false });
+  const dir = mkproject({ files: 30, digest: true, implementer: true, verified: true, qa: false });
   const memoryDir = '.traffic' + '-one';
   const runDir = path.join(dir, memoryDir, 'runs', '123');
   const lighthouseDir = path.join(dir, memoryDir, 'reports', 'lighthouse');

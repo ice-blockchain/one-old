@@ -7,6 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { readJson } from './fsjson';
+import { resolveProjectRoot } from './hook-paths';
 import { obj } from './obj';
 
 export interface RetentionPolicy {
@@ -69,6 +70,24 @@ function listFiles(root: string): string[] {
   }
 }
 
+// A nested `.traffic-one/.one.json` is a LEAK (safe to remove) ONLY when it does not
+// belong to its OWN independent project. We delegate that judgement to
+// resolveProjectRoot — the single source of truth the write-side and every gate use —
+// so cleanup can never disagree with the resolver. A genuine independent onboarded
+// project (a mode-bearing `.one.json` with NO workspace ancestor) resolves to ITSELF
+// and is kept; a monorepo sub-package's stray/leaked state (the packages/ui incident)
+// resolves UP to the enclosing workspace root, so it differs from its own dir and is a
+// deletion candidate. This mirrors nearestWorkspaceRoot/dirDeclaresWorkspace — the same
+// gate isUnclaimedWorkspaceSubPackage uses on the write side.
+function isLeakedNestedRoot(projectDir: string): boolean {
+  const dir = path.resolve(projectDir);
+  try {
+    return resolveProjectRoot(dir) !== dir;
+  } catch {
+    return false; // never delete on an indeterminate resolution
+  }
+}
+
 function listNestedTrafficOneDirs(cwd: string): string[] {
   const out: string[] = [];
   const root = path.resolve(cwd);
@@ -83,7 +102,11 @@ function listNestedTrafficOneDirs(cwd: string): string[] {
       if (skip.has(entry.name)) continue;
       const abs = path.join(dir, entry.name);
       if (entry.name === trafficDir) {
-        if (path.dirname(abs) !== root && fs.existsSync(path.join(abs, '.one.json'))) out.push(abs);
+        if (path.dirname(abs) !== root
+          && fs.existsSync(path.join(abs, '.one.json'))
+          && isLeakedNestedRoot(path.dirname(abs))) {
+          out.push(abs);
+        }
         continue;
       }
       walk(abs, depth + 1);
