@@ -7,6 +7,7 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { opencodeUnitTimeoutMs } from '../config/opencode-timeouts';
 import type { PlanDelegationUnit } from './opencode-roles';
 import { matchesPattern, normalizeRelPath } from './scope';
 
@@ -187,6 +188,23 @@ function readStatuses(cwd: string, runId: string): OpenCodeUnitStatusEntry[] {
   }
 }
 
+export function readOpenCodeUnitStatuses(cwd: string, runId: string): OpenCodeUnitStatusEntry[] {
+  return readStatuses(cwd, runId);
+}
+
+export function readOpenCodeQueue(cwd: string, runId: string): OpenCodeQueue | null {
+  if (!runId) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(runDir(cwd, runId), 'opencode-queue.json'), 'utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object') return null;
+    const rec = parsed as OpenCodeQueue;
+    if (rec.version !== 1 || !Array.isArray(rec.units)) return null;
+    return rec;
+  } catch {
+    return null;
+  }
+}
+
 export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit<OpenCodeUnitStatusEntry, 'updatedAt'> & { updatedAt?: string }): void {
   if (!runId || !entry.id || !entry.role) return;
   try {
@@ -201,6 +219,82 @@ export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit
   } catch {
     // best-effort diagnostics; never block delegation
   }
+}
+
+export function reconcileStaleRunningUnits(
+  cwd: string,
+  runId: string,
+  staleAfterMs: number = opencodeUnitTimeoutMs(),
+): OpenCodeUnitStatusEntry[] {
+  if (!runId) return [];
+  const now = Date.now();
+  const reconciled: OpenCodeUnitStatusEntry[] = [];
+  for (const entry of readStatuses(cwd, runId)) {
+    if (entry.status !== 'running') continue;
+    const updated = Date.parse(entry.updatedAt);
+    if (!Number.isFinite(updated) || now - updated < staleAfterMs) continue;
+    const next: OpenCodeUnitStatusEntry = {
+      ...entry,
+      status: 'failed',
+      action: 'failed',
+      error: `OpenCode unit timed out after ${Math.round(staleAfterMs / 60_000)}+ minutes (stale running status reconciled)`,
+      updatedAt: new Date().toISOString(),
+    };
+    recordOpenCodeUnitStatus(cwd, runId, next);
+    reconciled.push(next);
+  }
+  return reconciled;
+}
+
+export function reconcileAllRunningUnits(
+  cwd: string,
+  runId: string,
+  reason: string,
+): OpenCodeUnitStatusEntry[] {
+  if (!runId) return [];
+  const reconciled: OpenCodeUnitStatusEntry[] = [];
+  for (const entry of readStatuses(cwd, runId)) {
+    if (entry.status !== 'running') continue;
+    const next: OpenCodeUnitStatusEntry = {
+      ...entry,
+      status: 'failed',
+      action: 'failed',
+      error: reason,
+      updatedAt: new Date().toISOString(),
+    };
+    recordOpenCodeUnitStatus(cwd, runId, next);
+    reconciled.push(next);
+  }
+  return reconciled;
+}
+
+export function finalizeOpenCodeUnitsForBatch(cwd: string, runId: string, reason: string): void {
+  reconcileStaleRunningUnits(cwd, runId);
+  reconcileAllRunningUnits(cwd, runId, reason);
+}
+
+export function persistBatchUnitsToStatus(
+  cwd: string,
+  runId: string,
+  units: ReadonlyArray<{ id?: string; role: string; action?: string; status?: string; touched?: string[]; error?: string | null }>,
+): void {
+  if (!runId) return;
+  for (const unit of units) {
+    if (!unit.id || !unit.role) continue;
+    const action = unit.action || unit.status || 'failed';
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: unit.id,
+      role: unit.role,
+      status: statusFromDelegateAction(action, unit.error),
+      action,
+      error: unit.error ?? null,
+      ...(Array.isArray(unit.touched) ? { touched: unit.touched } : {}),
+    });
+  }
+}
+
+export function hasRunningOpenCodeUnits(cwd: string, runId: string): boolean {
+  return readOpenCodeUnitStatuses(cwd, runId).some((s) => s.status === 'running');
 }
 
 function literalStem(pattern: string): string {

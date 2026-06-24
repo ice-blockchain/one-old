@@ -63,6 +63,7 @@ import { strayRunIdInText } from '../../shared/run-id-paths';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
+import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan-directive';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -362,12 +363,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (isPlanBatchGatedRole(role) && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state)) {
     const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state);
     if (pendingPlanRoles.length > 0) {
+      const denyContext = buildOpenCodePlanBatchDenyContext(cwd, spawnRunId, pendingPlanRoles);
       return deny(block('opencode-plan-batch-required', {
         ROLE: role,
         RUN_ID: spawnRunId,
         PROJECT_ROOT: cwd,
         QUEUED_ROLES: pendingPlanRoles.join(', '),
-      }));
+      }), denyContext ? { context: denyContext } : {});
     }
   }
 

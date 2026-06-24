@@ -5,10 +5,20 @@ import * as os from 'node:os';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-import { attach, delegateResumable, delegateStatus, dispatch, parseRunnerResult, planQueueRoles, runDelegate, runDelegateFromPlan } from '../index';
+import { attach, delegateFromPlanResumable, delegateResumable, delegateStatus, dispatch, parseRunnerResult, planQueueRoles, runDelegate, runDelegateFromPlan } from '../index';
+import { parsePlanDelegationUnits, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { buildOpenCodeQueue, readOpenCodeUnitStatuses } from '../../../shared/opencode-queue';
 import { OPENCODE_RUNNER_OVERRIDE_ENV } from '../../../config/opencode-mcp';
 
 type Any = Record<string, any>;
+
+function writePlanQueue(projectRoot: string, runId: string, planMarkdown: string): void {
+  const units = parsePlanDelegationUnits(planMarkdown);
+  const queue = buildOpenCodeQueue(projectRoot, runId, units);
+  const runDir = path.join(projectRoot, '.traffic-one', 'runs', runId);
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'opencode-queue.json'), `${JSON.stringify(queue, null, 2)}\n`, 'utf8');
+}
 
 // ── dispatch(): the MCP protocol surface (pure, no subprocess) ───────────────
 
@@ -163,6 +173,16 @@ const SHARD_STUB = [
   'console.log(JSON.stringify({ total: roles.length || 1, delegated: roles.length || 1, units: roles.map((r) => ({ role: r, task: "t", action: "delegated", touched: [] })) }));',
 ].join('\n');
 
+// Returns JSON for the frontend shard only; the tester shard exits without JSON.
+const PARTIAL_SHARD_STUB = [
+  'const a = process.argv.slice(2);',
+  'const get = (f) => { const i = a.indexOf(f); return i >= 0 ? a[i + 1] : null; };',
+  'const role = get("--roles") || "all";',
+  'if (role === "frontend" || !get("--roles")) {',
+  '  console.log(JSON.stringify({ total: 1, delegated: 1, units: [{ id: "fe-a", role: "frontend", task: "unit A", action: "delegated", touched: [] }] }));',
+  '} else { process.exit(0); }',
+].join('\n');
+
 test('planQueueRoles: distinct normalized roles in order; empty without a plan', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmcp-plan-'));
   try {
@@ -189,6 +209,23 @@ test('runDelegateFromPlan runs a multi-role queue as per-role shards (sequential
     const calls = fs.readFileSync(marker, 'utf8').trim().split('\n');
     assert.equal(calls.length, 2, 'one runner per role shard');
     assert.ok(calls.every((c) => c !== '(all)'), 'shards must carry --roles');
+  });
+});
+
+test('multi-role partial failure synthesizes missing role units from queue', async () => {
+  await withStubRunner(PARTIAL_SHARD_STUB, async (projectRoot) => {
+    fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
+    writePlanQueue(projectRoot, 'rp-partial', PLAN_TWO_ROLES);
+    const r = (await runDelegateFromPlan({ runId: 'rp-partial', projectRoot })) as Any;
+    assert.equal(r.units.length, 3);
+    assert.equal(r.units.filter((u: Any) => u.role === 'frontend').length, 2);
+    assert.equal(r.units.filter((u: Any) => u.role === 'tester').length, 1);
+    assert.equal(r.units.find((u: Any) => u.id === 'fe-a')?.action, 'delegated');
+    assert.equal(r.units.find((u: Any) => u.id === 'tester-b')?.action, 'failed');
+    assert.equal(r.units.find((u: Any) => u.id === 'fe-a2')?.action, 'failed');
+    const batch = readOpenCodePlanBatchState(projectRoot, 'rp-partial');
+    assert.equal(batch?.outcome, 'partial');
   });
 });
 
@@ -365,8 +402,10 @@ test('an unpolled background delegation is cancelled by the watchdog (action: ab
   ].join('\n');
   const savedAbandon = process.env.T1_OC_ABANDON_MS;
   const savedTick = process.env.T1_OC_WATCHDOG_TICK_MS;
+  const savedKeepAlive = process.env.T1_OC_CHILD_KEEPALIVE;
   process.env.T1_OC_ABANDON_MS = '300';
   process.env.T1_OC_WATCHDOG_TICK_MS = '100';
+  process.env.T1_OC_CHILD_KEEPALIVE = 'false';
   try {
     await withStubRunner(NEVER_ENDING_STUB, async (projectRoot) => {
       const args = { role: 'senior-frontend', task: 'will be abandoned', runId: 'aband-1', allowedFiles: 'apps/web/src/**', projectRoot };
@@ -384,6 +423,8 @@ test('an unpolled background delegation is cancelled by the watchdog (action: ab
     else process.env.T1_OC_ABANDON_MS = savedAbandon;
     if (savedTick === undefined) delete process.env.T1_OC_WATCHDOG_TICK_MS;
     else process.env.T1_OC_WATCHDOG_TICK_MS = savedTick;
+    if (savedKeepAlive === undefined) delete process.env.T1_OC_CHILD_KEEPALIVE;
+    else process.env.T1_OC_CHILD_KEEPALIVE = savedKeepAlive;
   }
 });
 
@@ -408,5 +449,45 @@ test('active polling keeps a slow delegation alive past the abandon threshold', 
     else process.env.T1_OC_ABANDON_MS = savedAbandon;
     if (savedTick === undefined) delete process.env.T1_OC_WATCHDOG_TICK_MS;
     else process.env.T1_OC_WATCHDOG_TICK_MS = savedTick;
+  }
+});
+
+test('plan batch watchdog abandon writes terminal batch.json (fail-open gate)', async () => {
+  const NEVER_ENDING_STUB = [
+    'setTimeout(() => { console.log(JSON.stringify({ total: 1, delegated: 0, units: [{ role: "frontend", task: "t", action: "failed", touched: [] }] })); }, 60000);',
+  ].join('\n');
+  const savedAbandon = process.env.T1_OC_ABANDON_MS;
+  const savedTick = process.env.T1_OC_WATCHDOG_TICK_MS;
+  const savedKeepAlive = process.env.T1_OC_CHILD_KEEPALIVE;
+  process.env.T1_OC_ABANDON_MS = '300';
+  process.env.T1_OC_WATCHDOG_TICK_MS = '100';
+  process.env.T1_OC_CHILD_KEEPALIVE = 'false';
+  try {
+    await withStubRunner(NEVER_ENDING_STUB, async (projectRoot) => {
+      fs.mkdirSync(path.join(projectRoot, '.traffic-one'), { recursive: true });
+      fs.writeFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), PLAN_TWO_ROLES, 'utf8');
+      writePlanQueue(projectRoot, 'aband-plan-1', PLAN_TWO_ROLES);
+      const args = { runId: 'aband-plan-1', projectRoot };
+      const first = (await delegateFromPlanResumable(args, 100)) as Any;
+      assert.equal(first.running, true);
+      await new Promise((r) => setTimeout(r, 900));
+      const status = delegateStatus({ projectRoot, runId: 'aband-plan-1' }) as Any;
+      assert.equal(status.status, 'done');
+      assert.equal(status.result?.action, 'abandoned');
+      assert.ok(Array.isArray(status.result?.units));
+      assert.equal(status.result?.units?.length, 3);
+      const batch = readOpenCodePlanBatchState(projectRoot, 'aband-plan-1');
+      assert.equal(batch?.outcome, 'abandoned');
+      const statuses = readOpenCodeUnitStatuses(projectRoot, 'aband-plan-1');
+      assert.equal(statuses.length, 3);
+      assert.ok(statuses.every((s) => s.status === 'failed'));
+    });
+  } finally {
+    if (savedAbandon === undefined) delete process.env.T1_OC_ABANDON_MS;
+    else process.env.T1_OC_ABANDON_MS = savedAbandon;
+    if (savedTick === undefined) delete process.env.T1_OC_WATCHDOG_TICK_MS;
+    else process.env.T1_OC_WATCHDOG_TICK_MS = savedTick;
+    if (savedKeepAlive === undefined) delete process.env.T1_OC_CHILD_KEEPALIVE;
+    else process.env.T1_OC_CHILD_KEEPALIVE = savedKeepAlive;
   }
 });

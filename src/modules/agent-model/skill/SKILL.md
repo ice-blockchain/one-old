@@ -82,13 +82,17 @@ Recorded: the team will use the next-eligible fallback model when the recommende
 <!-- T1BLOCK:BEGIN opencode-plan-batch-required -->
 OpenCode plan-batch gate: do NOT spawn `{{ROLE}}` yet. The architect queued Step-0 OpenCode work in `.traffic-one/plan.md`, and the `opencode_delegate_from_plan` batch has not finished for queued role(s): {{QUEUED_ROLES}}.
 
+Do NOT retry Task/spawn_agent for `senior-frontend` or `senior-backend` in this turn — run OpenCode Step 0 first instead.
+
 Run the batch FIRST, before any frontend/backend implementer starts:
 1. Call the `opencode_delegate_from_plan` tool (MCP server `opencode-worker`) with:
    - `runId`: `{{RUN_ID}}`
    - `projectRoot`: `{{PROJECT_ROOT}}`
    Do NOT pass `model` unless the project explicitly pinned one; OpenCode selects its own free model by default.
-2. If it returns `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Repeat until the terminal `{ total, delegated, units }` result appears.
-3. Only after the terminal result, spawn `senior-frontend` and `senior-backend` in parallel. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
+2. If it returns `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Repeat until the terminal `{ total, delegated, units }` result appears — do NOT use any shell fallback while `running:true`.
+3. Only after the terminal result, spawn `senior-frontend` and `senior-backend` in parallel in the NEXT assistant message. Pass each implementer the batch `units` summary, including `touched` files and any unit whose `action !== "delegated"` so the paid role finishes only what OpenCode skipped/failed/no-changed.
+4. Fail-open: if the batch returns a terminal failure (`ok:false`, `action: "abandoned"`, or every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — do NOT block the build on OpenCode.
+Fallback (MCP unavailable ONLY — never while `running:true`): `node ~/.traffic-one/bin/opencode-runner.cjs --run-id "{{RUN_ID}}" --from-plan` from `{{PROJECT_ROOT}}`.
 
 Do not work around this by spawning backend first, building inline, or using a whole-role `opencode_delegate` task. The Step-0 plan batch is what prevents serialized paid subagents and satisfies the OpenCode-first contract.
 <!-- T1BLOCK:END opencode-plan-batch-required -->

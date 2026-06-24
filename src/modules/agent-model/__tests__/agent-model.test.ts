@@ -10,7 +10,7 @@ import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
-import { markOpenCodePlanBatchComplete, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
+import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
@@ -609,6 +609,9 @@ test('opencode plan-batch gate: queued Step-0 work blocks both implementers unti
       assert.ok(backend.reason.includes('OpenCode plan-batch gate'));
       assert.ok(backend.reason.includes('opencode_delegate_from_plan'));
       assert.ok(backend.reason.includes('frontend, backend'));
+      assert.ok(backend.reason.includes('Do NOT retry Task/spawn_agent'));
+      assert.ok(backend.context?.includes('do NOT retry Task spawns'));
+      assert.ok(backend.context?.includes('opencode_delegate_from_plan'));
     }
     const frontend = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(frontend.kind, 'deny');
@@ -621,9 +624,12 @@ test('opencode plan-batch gate: queued Step-0 work blocks both implementers unti
 
     markOpenCodePlanRoleCompleted(cwd, 'run-plan-batch', 'frontend');
     const stillBackend = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' }));
-    assert.equal(stillBackend.kind, 'deny', 'backend stays blocked until every queued role is terminal');
+    assert.equal(stillBackend.kind, 'deny', 'backend stays blocked until batch is terminal');
     markOpenCodePlanRoleCompleted(cwd, 'run-plan-batch', 'backend');
+    const stillBoth = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' }));
+    assert.equal(stillBoth.kind, 'deny', 'per-role markers alone do not clear the batch gate');
 
+    markOpenCodePlanBatchTerminal(cwd, 'run-plan-batch', 'success');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
   });
@@ -644,6 +650,26 @@ test('opencode plan-batch gate: COMPLETE marker alone clears implementer spawns'
 
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'deny');
     markOpenCodePlanBatchComplete(cwd, 'run-plan-complete');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
+  });
+});
+
+test('opencode plan-batch gate: failed terminal batch.json clears implementers (fail-open)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+    const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+    prefs.openCode = { enabled: true };
+    prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
+    fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = 'run-plan-failed';
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    queueDelegateRoles(cwd, ['frontend', 'backend']);
+
+    assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'deny');
+    markOpenCodePlanBatchTerminal(cwd, 'run-plan-failed', 'failed', 'every unit failed');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' })).kind, 'noop');
   });
@@ -674,7 +700,7 @@ test('opencode role gate: a configured non-implementer role is denied until Open
 
     // Once the plan batch is terminal, a role NOT in the configured set
     // (senior-backend) is never opencode role-gated.
-    markOpenCodePlanRoleCompleted(cwd, 'run-X', 'senior-tester');
+    markOpenCodePlanBatchTerminal(cwd, 'run-X', 'success');
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'noop');
   });
 });

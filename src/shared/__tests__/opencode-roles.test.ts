@@ -5,10 +5,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  deriveBatchOutcomeFromUnits,
   markOpenCodePlanBatchComplete,
+  markOpenCodePlanBatchRunning,
+  markOpenCodePlanBatchTerminal,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
+  openCodePlanBatchComplete,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
   parsePlanDelegationBlock,
@@ -16,6 +20,7 @@ import {
   pendingOpenCodePlanRoles,
   planDelegationUnitCount,
   planDelegationQueueRoles,
+  readOpenCodePlanBatchState,
   roleHasQueuedUnits,
   shouldBlockImplementerForPlanBatch,
   shouldRunRoleOnOpenCode,
@@ -218,11 +223,38 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
     markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
     assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
-    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['backend']);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend'],
+      'per-role markers are diagnostic only; gate stays until terminal batch');
     markOpenCodePlanRoleCompleted(dir, 'run1', 'backend');
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
+    markOpenCodePlanBatchTerminal(dir, 'run1', 'success');
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run2', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', { openCode: { enabled: false } }), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('plan-batch per-role markers alone do not clear gate without terminal batch.json', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocrole-only-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '- role: backend | files: b | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'new-project',
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    markOpenCodePlanRoleCompleted(dir, 'run-role-only', 'frontend');
+    markOpenCodePlanRoleCompleted(dir, 'run-role-only', 'backend');
+    assert.equal(openCodePlanBatchComplete(dir, 'run-role-only'), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state), true);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-role-only', state), ['frontend', 'backend']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -254,6 +286,48 @@ test('plan-batch COMPLETE marker clears implementer gate immediately', () => {
 
 // The unit-kind catalog is the canonical delegation policy — visible, typed,
 // and asserted so prose drift gets caught here.
+test('plan-batch batch.json lifecycle: running is idempotent, terminal is single-writer, fail-open clears gate', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocbatch-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- id: fe-1 | role: frontend | files: a.ts | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'new-project',
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    assert.equal(readOpenCodePlanBatchState(dir, 'run-batch'), null);
+    markOpenCodePlanBatchRunning(dir, 'run-batch');
+    markOpenCodePlanBatchRunning(dir, 'run-batch');
+    const running = readOpenCodePlanBatchState(dir, 'run-batch');
+    assert.equal(running?.outcome, 'running');
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-batch', state), true);
+    markOpenCodePlanBatchTerminal(dir, 'run-batch', 'failed', 'every unit failed');
+    markOpenCodePlanBatchTerminal(dir, 'run-batch', 'success');
+    const terminal = readOpenCodePlanBatchState(dir, 'run-batch');
+    assert.equal(terminal?.outcome, 'failed');
+    assert.equal(openCodePlanBatchComplete(dir, 'run-batch'), true);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-batch', state), false);
+    markOpenCodePlanBatchComplete(dir, 'run-batch-2');
+    assert.equal(readOpenCodePlanBatchState(dir, 'run-batch-2')?.outcome, 'success');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('deriveBatchOutcomeFromUnits classifies delegated, failed, partial, and abandoned batches', () => {
+  assert.equal(deriveBatchOutcomeFromUnits([{ action: 'delegated' }]), 'success');
+  assert.equal(deriveBatchOutcomeFromUnits([{ action: 'delegated' }, { action: 'delegated' }]), 'success');
+  assert.equal(deriveBatchOutcomeFromUnits([{ action: 'failed' }, { action: 'skipped' }]), 'failed');
+  assert.equal(deriveBatchOutcomeFromUnits([{ action: 'delegated' }, { action: 'failed' }]), 'partial');
+  assert.equal(deriveBatchOutcomeFromUnits([{ action: 'delegated' }, { action: 'skipped' }]), 'partial');
+  assert.equal(deriveBatchOutcomeFromUnits([{ action: 'abandoned' }], 'stopped polling'), 'abandoned');
+  assert.equal(deriveBatchOutcomeFromUnits([]), 'failed');
+});
+
 test('OPENCODE_DELEGATE_UNIT_KINDS catalog: bounded kinds present, never-list intact, shipper excluded', async () => {
   const { OPENCODE_DELEGATE_UNIT_KINDS, OPENCODE_NEVER_DELEGATE, DEFAULT_OPENCODE_DELEGATE_ROLES } = await import('../../config/opencode');
   const ids = OPENCODE_DELEGATE_UNIT_KINDS.map((k) => k.id);

@@ -23,13 +23,13 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { OPENCODE_FREE_MODELS } from '../../config/opencode';
+import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   markOpenCodePlanRoleCompleted,
-  markOpenCodePlanBatchComplete,
   markOpenCodeRoleAttempted,
   type PlanDelegationUnit,
   parsePlanDelegationUnits,
@@ -42,6 +42,7 @@ import {
   openCodeQueuePolicyViolations,
   parseAllowedFiles,
   recordOpenCodeUnitStatus,
+  reconcileStaleRunningUnits,
   statusFromDelegateAction,
   writeOpenCodeQueue,
 } from '../../shared/opencode-queue';
@@ -630,7 +631,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
         cwd: wt,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: RUN_TIMEOUT_MS,
+        timeout: Math.min(opencodeUnitTimeoutMs(), RUN_TIMEOUT_MS),
         env: { ...process.env, ...OPENCODE_RUN_ENV, PWD: wt },
       });
       if (run.error || run.status === null) {
@@ -969,10 +970,10 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     }
   } finally {
     if (runId) {
+      reconcileStaleRunningUnits(cwd, runId);
       for (const [role, total] of totalByRole) {
         if ((processedByRole.get(role) || 0) >= total) markOpenCodePlanRoleCompleted(cwd, runId, role);
       }
-      markOpenCodePlanBatchComplete(cwd, runId);
     }
   }
   return { total: entries.length, delegated, units };
