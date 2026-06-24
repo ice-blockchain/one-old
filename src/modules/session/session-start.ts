@@ -39,6 +39,7 @@ import {
   readEffectiveState,
   resolveRunAgentContext,
   type RunAgentContext,
+  scrubProjectStateLocalPrefs,
   stackFingerprint,
   statePath,
   stateVersion,
@@ -214,6 +215,10 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   sweepOldDigests(cwd, 5);
   pruneExpiredPendingClaims(cwd);
   sweepTrafficOneRetention(cwd, { dryRun: false });
+  // Deterministic self-heal: strip any machine-local preference fields (team, toolchain
+  // with absolute binPaths, performance, …) a stale runner may have left in the committed
+  // .one.json, routing them to the per-user preferences.json. .one.json is not gitignored.
+  scrubProjectStateLocalPrefs(cwd);
   try {
     ensureSessionMaterialization(cwd, state);
   } catch {
