@@ -390,7 +390,7 @@ export function recordOpenCodeAttemptOutcome(
   cwd: string,
   runId: string,
   role: string,
-  outcome: { action: string; model?: string | null; error?: string | null; durationMs?: number; touched?: number },
+  outcome: { action: string; model?: string | null; failureKind?: string | null; error?: string | null; durationMs?: number; touched?: number },
 ): void {
   if (!runId || !role) return;
   try {
@@ -400,6 +400,7 @@ export function recordOpenCodeAttemptOutcome(
       at: new Date().toISOString(),
       action: outcome.action,
       model: outcome.model ?? null,
+      failureKind: outcome.failureKind ?? null,
       error: outcome.error ? String(outcome.error).slice(0, 500) : null,
       durationMs: typeof outcome.durationMs === 'number' ? Math.round(outcome.durationMs) : undefined,
       touched: typeof outcome.touched === 'number' ? outcome.touched : undefined,

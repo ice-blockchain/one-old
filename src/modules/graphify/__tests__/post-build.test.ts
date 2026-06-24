@@ -160,6 +160,26 @@ test('post-build code-graph hint stamps the cooldown so a second build is thrott
   });
 });
 
+test('post-build code-graph hint bypasses cooldown when source is newer than the graph', () => {
+  withProject({ provider: 'gitnexus', freshArtefact: true }, (cwd) => {
+    const memoryDir = ['.traffic', '-one'].join('');
+    const graphDir = path.join(cwd, memoryDir, '.gitnexus');
+    fs.writeFileSync(path.join(graphDir, 'meta.json'), JSON.stringify({ stats: { files: 12, nodes: 40 } }), 'utf8');
+    const old = new Date(Date.now() - 60_000);
+    fs.utimesSync(graphDir, old, old);
+    fs.mkdirSync(path.join(cwd, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src', 'late-fix.ts'), 'export const late = true;\n', 'utf8');
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH || '', JSON.stringify({ graphifyLastHintedAt: new Date().toISOString() }), 'utf8');
+
+    let called = 0;
+    __setCodeGraphBootstraps({ gitnexus: () => { called += 1; return { ok: true, action: 'used-managed', durationMs: 5 }; } });
+
+    const r = postBuildCodeGraphHint(ctxFor(cwd, 'npm run build'));
+    assert.equal(called, 1);
+    assert.equal(r.kind, 'context');
+  });
+});
+
 test('post-build rebuilds a fresh-but-EMPTY gitnexus graph (files:0) — reindex after scaffold', () => {
   withProject({ provider: 'gitnexus', freshArtefact: true }, (cwd) => {
     // graph built pre-scaffold on the empty project: fresh mtime, but 0 files.

@@ -89,7 +89,9 @@ How it works:
 
    Queue rows should include stable `id` values. If two units touch overlapping
    files/areas, the later unit must declare `depends: <earlier-id>`; otherwise
-   the plan gate rejects the queue before `PLAN_READY`.
+   the plan gate rejects the queue before `PLAN_READY`. `depends_on:` or
+   `depends:` text inside the `task:` field is invalid; dependencies must be
+   pipe-delimited fields so the runner can order them.
 
    The canonical catalog of queueable unit kinds lives in the plugin config
    (`config/opencode.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`); when this prose and

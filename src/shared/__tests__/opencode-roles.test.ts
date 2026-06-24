@@ -143,6 +143,23 @@ test('openCodeQueuePolicyViolations rejects test-oriented tasks without explicit
   assert.deepEqual(openCodeQueuePolicyViolations(helperWithSpec), []);
 });
 
+test('openCodeQueuePolicyViolations rejects dependency markers hidden inside task text', () => {
+  const hiddenDependency = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: seed | role: backend | files: apps/web/src/fixtures.ts | task: Create fixtures. depends_on: frontend',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(hiddenDependency).some((v) => /dependency marker inside task text/.test(v)));
+
+  const structuredDependency = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: seed | role: backend | files: apps/web/src/fixtures.ts | task: Create fixtures.',
+    '- id: card | role: frontend | files: apps/web/src/card.tsx | depends: seed | task: Render fixtures.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(structuredDependency), []);
+});
+
 test('openCodeDelegateRoles: default when unset, verbatim when set, sanitized', () => {
   // senior-shipper deliberately absent: deploys/credentials never ride the free tier.
   assert.deepEqual(openCodeDelegateRoles({}), ['senior-tester', 'senior-frontend', 'quick-fix']);

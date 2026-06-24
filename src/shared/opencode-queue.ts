@@ -74,6 +74,7 @@ export interface OpenCodeUnitStatusEntry {
   status: OpenCodeUnitStatus;
   action?: string;
   model?: string | null;
+  failureKind?: string | null;
   error?: string | null;
   touched?: string[];
   allowedFiles?: string[];
@@ -324,6 +325,10 @@ function mentionsTestWork(task: string): boolean {
   return /\b(unit[- ]?test(?:able|s)?|testable|testability|tests?|testing|vitest|playwright|specs?)\b/i.test(task);
 }
 
+function mentionsInlineDependencyField(task: string): boolean {
+  return /(^|\s)(depends|depends_on|dependson):/i.test(task);
+}
+
 function allowsTestOrConfigPath(allowedFiles: string[]): boolean {
   return allowedFiles.some((allowed) => (
     /(^|\/)(tests?|e2e)\//i.test(allowed)
@@ -350,6 +355,9 @@ export function openCodeQueuePolicyViolations(units: PlanDelegationUnit[]): stri
     }
     if (unit.allowedFiles.length === 0) {
       violations.push(`OpenCode unit \`${unit.id}\` has no parseable files allowlist`);
+    }
+    if (mentionsInlineDependencyField(unit.task)) {
+      violations.push(`OpenCode unit \`${unit.id}\` puts a dependency marker inside task text; add it as a pipe-delimited \`depends:\` field instead`);
     }
     if (mentionsTestWork(unit.task) && !allowsTestOrConfigPath(unit.allowedFiles)) {
       violations.push(`OpenCode unit \`${unit.id}\` mentions tests/testability but its files allowlist does not include exact test/spec/config paths; either add those paths explicitly or remove the test acceptance criteria`);
