@@ -7,6 +7,7 @@ import {
   cleanActiveSkills,
   copyActiveSkills,
   pruneSkillsDirective,
+  roleAgentBody,
 } from '../index';
 
 test('activeSkillsFor(default state) unions common + react-vite + supabase', () => {
@@ -76,4 +77,20 @@ test('roleSkillsDirective falls back to the stack directive for unknown roles', 
   const state = { stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' }, onboardingComplete: true };
   const fallback = roleSkillsDirective(state, 'not-a-real-role', []);
   assert.ok(fallback.includes('[ACTIVE SKILLS for stack=default]'));
+});
+
+test('roleAgentBody returns the role contract with frontmatter stripped (the body Cursor inlines)', () => {
+  const body = roleAgentBody('senior-architect');
+  assert.ok(body && body.length > 0, 'architect body resolved from the shipped/source agent doc');
+  // Frontmatter is stripped — the body starts with prose, not a YAML block.
+  assert.doesNotMatch(body as string, /^---\s*\nname:\s*senior-architect/, 'leading YAML frontmatter removed');
+  // The body carries the host-only gate that must now reach Cursor.
+  assert.match(body as string, /Required project-memory baseline/);
+  assert.match(body as string, /ls \.traffic-one/);
+});
+
+test('roleAgentBody is null for malformed / unknown roles', () => {
+  assert.equal(roleAgentBody('Not A Role'), null); // fails the [a-z0-9-] guard
+  assert.equal(roleAgentBody(''), null);
+  assert.equal(roleAgentBody('definitely-not-a-shipped-role'), null); // valid shape, no doc
 });
