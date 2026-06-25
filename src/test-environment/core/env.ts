@@ -1,0 +1,72 @@
+// src/test-environment/core/env.ts
+// Per-case environment. The harness reuses real src/ state functions that read
+// process.env (writeState has no env param), so to isolate a case we apply its
+// env to process.env around in-process state ops and restore afterwards. With
+// the default concurrency of 1 this is safe; raising concurrency requires care.
+
+import * as path from 'path';
+
+import type { HostId, RootTestConfig } from './types';
+
+export interface CaseEnv {
+  [key: string]: string;
+}
+
+// Build the env block for one case run. `caseFolder` holds the isolated prefs +
+// machine state alongside the live project and captured logs.
+export function buildCaseEnv(
+  config: RootTestConfig,
+  caseFolder: string,
+  distRoot: string,
+  host: HostId | 'pure-node',
+): CaseEnv {
+  const env: CaseEnv = {
+    // Per-case prefs isolation — never writes ~/.traffic-one/projects/<hash>.
+    TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(caseFolder, 'state', 'preferences.json'),
+    // Never pop the onboarding HTTP wizard during a headless/seeded run.
+    TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
+  };
+
+  // Force runtime scripts to resolve to the freshly built dist tree (e2e only;
+  // empty for pure-node, where an empty value is correctly ignored by pluginRoot()).
+  if (distRoot) env.TRAFFIC_ONE_PLUGIN_ROOT = distRoot;
+
+  if (config.isolateStateHome) {
+    // Redirects ~/.traffic-one (machine settings incl. codeGraphProvider, one-uid)
+    // to a per-case dir so global state never bleeds between cases or pollutes
+    // the maintainer's real machine.
+    env.XDG_STATE_HOME = path.join(caseFolder, 'xdg-state');
+  }
+
+  if (config.auth === 'on') {
+    env.TRAFFIC_ONE_AUTH = 'on';
+    env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp'; // dead port
+  }
+
+  if (host !== 'pure-node') {
+    // Honoured by the host runner subprocesses for model-tier host selection.
+    env.TRAFFIC_ONE_HOST = host;
+  }
+
+  for (const [k, v] of Object.entries(config.envOverrides)) env[k] = v;
+
+  return env;
+}
+
+// Temporarily apply `env` to process.env, run `fn`, then restore. Used around
+// every in-process call into src/ state functions and around assertions.
+export function withCaseEnv<T>(env: CaseEnv, fn: () => T): T {
+  const saved = new Map<string, string | undefined>();
+  for (const key of Object.keys(env)) {
+    saved.set(key, process.env[key]);
+    process.env[key] = env[key];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const [key, prev] of saved) {
+      if (prev === undefined) delete process.env[key];
+      else process.env[key] = prev;
+    }
+  }
+}
