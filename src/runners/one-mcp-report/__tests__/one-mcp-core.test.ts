@@ -11,6 +11,7 @@ import { collectTechnologies } from '../collectTechnologies';
 import { hasRealCodebase } from '../hasRealCodebase';
 import { FAILED_RETRY_MS } from '../../../config/reporting';
 import { detectInfrastructureVendor } from '../lib';
+import { createReportId } from '../report-id-mint';
 import { readReportIdState } from '../readReportIdState';
 import { shouldAttempt } from '../shouldAttempt';
 import { uuidV7 } from '../uuidV7';
@@ -20,6 +21,27 @@ function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-'));
   try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
+
+test('createReportId strips local-prefs from the committed .one.json (Codex onboarding-complete leak)', () => {
+  withTmp((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    // The 6c-shape leak: a RAW .one.json still carrying merged local-prefs at the moment
+    // one-uid is minted on the Codex onboarding-complete path.
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', currentRunId: '1',
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', overrides: { 'senior-frontend': 'highest' } },
+      toolchain: { gitnexus: { installedVersion: '1.6.7', binPath: '/Users/x/.traffic-one/toolchains/gitnexus/bin/gitnexus' } },
+    }), 'utf8');
+
+    const minted = createReportId(cwd);
+    assert.equal(minted.created, true, 'mints + writes a report id');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.equal(onDisk.currentRunId, '1', 'durable project fields preserved');
+    assert.ok(!('performance' in onDisk) && !('team' in onDisk) && !('toolchain' in onDisk),
+      'local-prefs stripped from committed .one.json on the one-mcp write');
+  });
+});
 
 test('uuidV7 produces a valid v7 UUID (version 7, RFC variant)', () => {
   const id = uuidV7(new Date('2026-01-01T00:00:00Z'));

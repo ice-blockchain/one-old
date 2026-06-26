@@ -25,7 +25,7 @@ import {
 } from './canonicalize';
 import { KNOWN_ADDONS } from '../../config/state';
 import { stateTimestamp, stateVersion } from './io';
-import { splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
+import { hasLocalPreferenceFields, splitLocalPreferences, stripLocalPreferenceFields } from './local-prefs';
 import { initializeToolchainState } from './toolchain';
 
 function defaultMobileState(): Rec {
@@ -134,6 +134,23 @@ export function writeState(cwd: string, state: unknown): void {
   const split = splitLocalPreferences(cwd, source);
   source = split.state;
   writeJson(statePath(cwd), { ...source, version: stateVersion() });
+}
+
+// Deterministic self-heal for machine-local preference fields that leaked into the
+// COMMITTED project state file. writeState strips LOCAL_PREF_KEYS and routes them to the
+// per-user preferences.json, but a stale long-lived runner (started before the prefs split
+// was wired into its writer) can still write the merged state raw — leaving `team`,
+// `toolchain` (with a machine-absolute binPath), `performance`, etc. in `.one.json`, which
+// is NOT gitignored. Run this at SessionStart: it reads the RAW on-disk file (NOT readState,
+// which strips on read and would hide the leak); if any local-pref field is present it
+// rewrites through writeState — stripping them and merging them into preferences.json. No-op
+// when the file is absent, already clean, or in the plugin authoring repo (writeState guards
+// that). Returns true when it scrubbed.
+export function scrubProjectStateLocalPrefs(cwd: string): boolean {
+  const raw = readJson<Rec>(statePath(cwd), null as unknown as Rec);
+  if (!raw || typeof raw !== 'object' || !hasLocalPreferenceFields(raw)) return false;
+  writeState(cwd, raw);
+  return true;
 }
 
 export function normalizeState(state: unknown, defaultMode?: string): boolean {

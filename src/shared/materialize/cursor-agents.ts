@@ -11,7 +11,13 @@
 // gate enforces) — it is NOT a substitute for passing the arg. The agent-model gate validates
 // the PASSED `model` only; the orchestrator prose (resources/prompt-templates.md) tells it to
 // read this `model:` and pass it. Claude/Codex set the per-role model via the spawn arg and need
-// no agent files; the file body still gives the role its identity/scope on Cursor.
+// no agent files because the host delivers the role's FULL `agent.md` body as the spawned subagent
+// doc. Cursor does NOT — it loads `.cursor/agents/<role>.md` as the subagent definition. So this
+// file inlines that SAME full role contract (via `roleAgentBody`), not just a short identity/scope
+// stub: otherwise host-only gates that live in `agent.md` (e.g. the architect's "Required
+// project-memory baseline" ls-verify) reach Claude/Codex but are invisible to Cursor's weaker
+// composer model. A stub fallback is kept for the rare case the doc is unreadable so
+// materialization never fails.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -21,6 +27,7 @@ import { detectHostPlan } from '../host-plan';
 import { acceptableModelsFor } from '../model-tiers';
 import { buildTeamLineup } from '../onboarding-server/flow';
 import { openCodeDelegationActive } from '../performance';
+import { roleAgentBody } from '../skill-filters';
 import { CURSOR_AGENTS_REL } from './cursor-agent-model';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
@@ -54,7 +61,7 @@ function roleSpecificLines(role: string): string[] {
 }
 
 function agentFile(role: string, label: string, blurb: string, model: string): string {
-  return [
+  const out = [
     '---',
     `name: ${role}`,
     `description: ${(blurb || label).replace(/\n+/g, ' ').trim()}`,
@@ -65,16 +72,45 @@ function agentFile(role: string, label: string, blurb: string, model: string): s
     '',
     `You are the Traffic One **${label}** (\`${role}\`) for this project.`,
     '',
-    'Follow the task prompt you are handed and the project\'s `.traffic-one` rules and',
-    'handoff-digest protocol (`.traffic-one/rules/common/agent-handoff-digests.md`). Write',
-    'ONLY within the file scope assigned to your role in',
-    '`.traffic-one/runs/<runId>/assignments.json` — the run-team gate blocks out-of-scope',
-    'writes.',
-    '',
-    ...roleSpecificLines(role),
+    'Follow the task prompt the orchestrator hands you and the project\'s `.traffic-one` rules',
+    'and handoff-digest protocol (`.traffic-one/rules/common/agent-handoff-digests.md`).',
+    // The implementer/reviewer/tester roles are confined to their assignments.json scope. The
+    // architect is NOT — it creates the scaffold + memory baseline + assignments.json itself
+    // (before that file exists) and must never list itself in it; its full contract below governs
+    // its writes, so stating the scope rule here would contradict it for that one role.
+    ...(role === 'senior-architect'
+      ? []
+      : [
+        'Write ONLY within the file scope assigned to your role in',
+        '`.traffic-one/runs/<runId>/assignments.json` — the run-team gate blocks out-of-scope writes.',
+      ]),
     'Do not spawn further subagents; report your result to the orchestrator.',
     '',
-  ].join('\n');
+    ...roleSpecificLines(role),
+  ];
+  // Inline the SAME full role contract Claude/Codex receive as the spawned subagent doc, so every
+  // MUST / Hard-rule / ls-verify gate (e.g. the architect's project-memory baseline) binds Cursor
+  // too — not just identity/scope. Fall back to the deferring stub only if the doc is unreadable.
+  const contract = roleAgentBody(role);
+  if (contract) {
+    out.push(
+      'The full role contract below is the SAME one the Claude/Codex subagent for this role runs',
+      'under. Honor every MUST, Hard rule, and `ls`-verify-or-incomplete gate in it before you',
+      'report completion — they are not optional on Cursor.',
+      '',
+      '---',
+      '',
+      contract,
+      '',
+    );
+  } else {
+    out.push(
+      'Follow the project\'s `.traffic-one` rules and the role contract you are handed; complete',
+      'every required artifact before reporting completion.',
+      '',
+    );
+  }
+  return out.join('\n');
 }
 
 // Materialize `.cursor/agents/<role>.md` for every subagent-team role, with the model

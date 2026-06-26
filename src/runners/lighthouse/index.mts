@@ -8,9 +8,10 @@
 // scripts/lighthouse-runner.mjs.
 
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync } from 'node:fs';
-import { createServer } from 'node:net';
-import { join, resolve } from 'node:path';
+import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
+import { createServer as createHttpServer, type Server } from 'node:http';
+import { createServer as createNetServer } from 'node:net';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
 import {
@@ -22,8 +23,8 @@ import {
   execArgs,
   findReportHtml,
   findReportJson,
+  findFrontendApp,
   findUp,
-  findViteAppDir,
   localLighthouseBin,
   parseArgs,
   parseSummary,
@@ -34,6 +35,7 @@ import {
 } from './lib.js';
 
 interface RunOptions { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: 'pipe' | Array<'ignore' | 'pipe'>; forwardOutput?: boolean }
+type PreviewHandle = ChildProcess | Server;
 
 function runCommand(command: string, args: string[], options: RunOptions = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolvePromise, rejectPromise) => {
@@ -66,7 +68,7 @@ function runCommand(command: string, args: string[], options: RunOptions = {}): 
 
 async function freePort(): Promise<number> {
   return new Promise((resolvePromise, rejectPromise) => {
-    const server = createServer();
+    const server = createNetServer();
     server.listen(0, DEFAULTS.host, () => {
       const address = server.address();
       const port = typeof address === 'object' && address ? address.port : 4173;
@@ -76,15 +78,95 @@ async function freePort(): Promise<number> {
   });
 }
 
-function startPreview(packageManager: PackageManager, appDir: string, port: number): ChildProcess {
-  const args = execArgs(packageManager, 'vite', [
-    'preview',
-    '--host',
-    DEFAULTS.host,
-    '--port',
-    String(port),
-    '--strictPort',
-  ]);
+function ensurePreviewBuildArtifacts(appDir: string, kind: 'vite' | 'next' | 'static', staticDir?: string): void {
+  if (kind === 'next' && !existsSync(join(appDir, '.next', 'BUILD_ID'))) {
+    throw new Error(`Next production build metadata is missing at ${join(appDir, '.next', 'BUILD_ID')}; run the build before Lighthouse preview.`);
+  }
+  if (kind === 'static') {
+    const outDir = staticDir || join(appDir, 'out');
+    if (!existsSync(outDir)) {
+      throw new Error(`Next static export output is missing at ${outDir}; run the build before Lighthouse preview.`);
+    }
+  }
+}
+
+function contentType(filePath: string): string {
+  switch (extname(filePath).toLowerCase()) {
+    case '.html': return 'text/html; charset=utf-8';
+    case '.js': return 'text/javascript; charset=utf-8';
+    case '.css': return 'text/css; charset=utf-8';
+    case '.json': return 'application/json; charset=utf-8';
+    case '.svg': return 'image/svg+xml';
+    case '.png': return 'image/png';
+    case '.jpg':
+    case '.jpeg': return 'image/jpeg';
+    case '.webp': return 'image/webp';
+    case '.ico': return 'image/x-icon';
+    default: return 'application/octet-stream';
+  }
+}
+
+function resolveStaticFile(rootDir: string, requestPath: string): string | null {
+  const pathname = decodeURIComponent(requestPath.split('?')[0] || '/');
+  const normalized = normalize(pathname).replace(/^(\.\.(\/|\\|$))+/, '');
+  const requested = resolve(rootDir, `.${normalized.startsWith('/') ? normalized : `/${normalized}`}`);
+  if (requested !== rootDir && !requested.startsWith(`${rootDir}${sep}`)) return null;
+  const candidates = [requested];
+  try {
+    if (statSync(requested).isDirectory()) candidates.unshift(join(requested, 'index.html'));
+  } catch {
+    if (!extname(requested)) {
+      candidates.push(`${requested}.html`, join(requested, 'index.html'));
+    }
+  }
+  for (const candidate of candidates) {
+    try {
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // try next candidate
+    }
+  }
+  return null;
+}
+
+async function startStaticPreview(staticDir: string, port: number): Promise<Server> {
+  const rootDir = resolve(staticDir);
+  const server = createHttpServer((req, res) => {
+    try {
+      const filePath = resolveStaticFile(rootDir, req.url || '/');
+      if (!filePath) {
+        res.statusCode = 404;
+        res.end('Not found');
+        return;
+      }
+      res.setHeader('content-type', contentType(filePath));
+      createReadStream(filePath).pipe(res);
+    } catch (err) {
+      res.statusCode = 500;
+      res.end(err instanceof Error ? err.message : String(err));
+    }
+  });
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.once('error', rejectPromise);
+    server.listen(port, DEFAULTS.host, () => {
+      server.off('error', rejectPromise);
+      resolvePromise(server);
+    });
+  });
+}
+
+async function startPreview(packageManager: PackageManager, appDir: string, port: number, kind: 'vite' | 'next' | 'static', staticDir?: string): Promise<PreviewHandle> {
+  if (kind === 'static') return startStaticPreview(staticDir || join(appDir, 'out'), port);
+  const args = kind === 'next'
+    ? execArgs(packageManager, 'next', ['start', '-H', DEFAULTS.host, '-p', String(port)])
+    : execArgs(packageManager, 'vite', [
+      'preview',
+      '--host',
+      DEFAULTS.host,
+      '--port',
+      String(port),
+      '--strictPort',
+    ]);
   const child = spawn(packageManager, args, {
     cwd: appDir,
     env: { ...process.env },
@@ -147,12 +229,16 @@ async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lig
   return { jsonPath, htmlPath };
 }
 
-function killPreview(child: ChildProcess | null): void {
-  if (!child || child.killed) {
+function closePreview(preview: PreviewHandle | null): void {
+  if (!preview) {
     return;
   }
   try {
-    child.kill('SIGTERM');
+    if ('kill' in preview) {
+      if (!preview.killed) preview.kill('SIGTERM');
+    } else {
+      preview.close();
+    }
   } catch {
     // The parent environment may own the process; best-effort cleanup.
   }
@@ -170,9 +256,10 @@ async function main(): Promise<void> {
 
   const rootPackage = findUp('package.json', process.cwd());
   const rootDir = rootPackage ? resolve(rootPackage, '..') : process.cwd();
-  const appDir = findViteAppDir(rootDir);
+  const frontendApp = findFrontendApp(rootDir);
+  const appDir = frontendApp.appDir;
   const packageManager = detectPackageManager(rootDir);
-  let previewProcess: ChildProcess | null = null;
+  let previewProcess: PreviewHandle | null = null;
 
   try {
     if (args.build) {
@@ -184,11 +271,13 @@ async function main(): Promise<void> {
 
     let auditUrl = args.url;
     if (!auditUrl && args.preview) {
+      ensurePreviewBuildArtifacts(appDir, frontendApp.previewKind, frontendApp.staticDir);
       const port = await freePort();
-      previewProcess = startPreview(packageManager, appDir, port);
+      previewProcess = await startPreview(packageManager, appDir, port, frontendApp.previewKind, frontendApp.staticDir);
       const baseUrl = `http://${DEFAULTS.host}:${port}/`;
       auditUrl = createAuditUrl(baseUrl, args.route);
-      await waitForHttp(auditUrl, args.timeoutMs);
+      const timeoutMs = frontendApp.previewKind === 'next' && args.timeoutMs === DEFAULTS.timeoutMs ? 90_000 : args.timeoutMs;
+      await waitForHttp(auditUrl, timeoutMs);
     }
 
     if (!auditUrl) {
@@ -212,6 +301,7 @@ async function main(): Promise<void> {
     const output = {
       url: auditUrl,
       buildMode: 'production-preview',
+      previewKind: frontendApp.previewKind,
       appDir: appDir === rootDir ? '.' : appDir.slice(rootDir.length + 1),
       reports: {
         json: reportPaths.jsonPath,
@@ -224,11 +314,18 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
-    killPreview(previewProcess);
+    closePreview(previewProcess);
   }
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`[traffic-one lighthouse] ${error instanceof Error ? error.message : String(error)}\n`);
+  const message = error instanceof Error ? error.message : String(error);
+  const status = /listen EPERM|EACCES|operation not permitted|Chrome.*(failed|sandbox)|No usable sandbox|ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(message)
+    ? 'blocked:sandbox'
+    : (/usage limit|rate limit|quota/i.test(message) ? 'blocked:usage-limit' : null);
+  if (status) {
+    process.stdout.write(`${JSON.stringify({ status, error: message }, null, 2)}\n`);
+  }
+  process.stderr.write(`[traffic-one lighthouse] ${message}\n`);
   process.exitCode = 1;
 });

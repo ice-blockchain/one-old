@@ -29,7 +29,7 @@
 //   • the codebase has real output (source-file count well past the new-project bar)
 
 import { countSourceFiles } from '../../shared/detection';
-import { anyRunProducedImplementerOutput, anyRunReachedTerminalVerdict, hasActiveRunClaims, isMaintenancePhase, markMaintenance } from '../../shared/state';
+import { anyRunProducedImplementerOutput, anyRunReachedTerminalVerdict, hasActiveRunClaims, isMaintenancePhase, markMaintenance, pruneExpiredPendingClaims } from '../../shared/state';
 
 // Floor only — the terminal-verdict + no-active-claims guards already prove the
 // orchestrator ran through review and settled. Comfortably above detectMode's
@@ -69,7 +69,9 @@ export function maybeFlipToMaintenance(root: string, state: unknown, opts: { atP
     if (!buildSettled(root, !!opts.atPromptBoundary)) return false;
     if (!opts.atPromptBoundary && hasActiveRunClaims(root, state)) return false;
     if (countSourceFiles(root) <= MAINTENANCE_FILE_THRESHOLD) return false;
-    return markMaintenance(root, opts.atPromptBoundary ? 'prompt-boundary' : 'heuristic');
+    const flipped = markMaintenance(root, opts.atPromptBoundary ? 'prompt-boundary' : 'heuristic');
+    if (flipped) pruneExpiredPendingClaims(root);
+    return flipped;
   } catch {
     return false;
   }

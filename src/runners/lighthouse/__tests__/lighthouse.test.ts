@@ -9,9 +9,11 @@ import {
   detectPackageManager,
   dlxArgs,
   execArgs,
+  findFrontendApp,
   findReportHtml,
   findReportJson,
   findViteAppDir,
+  nextConfigOutputExport,
   normalizeRoute,
   packageHasDependency,
   parseArgs,
@@ -26,9 +28,10 @@ function tmp(): string {
 }
 
 test('parseArgs reads flags, valued options, and a positional http url', () => {
-  const a = parseArgs(['--route', '/pricing', '--performance-min', '80', '--skip-build', '--skip-preview']);
+  const a = parseArgs(['--route', '/pricing', '--performance-min', '80', '--timeout', '90000', '--skip-build', '--skip-preview']);
   assert.equal(a.route, '/pricing');
   assert.equal(a.performanceMin, 80);
+  assert.equal(a.timeoutMs, 90000);
   assert.equal(a.build, false);
   assert.equal(a.preview, false);
   assert.equal(parseArgs(['http://127.0.0.1:4173/']).url, 'http://127.0.0.1:4173/');
@@ -94,6 +97,45 @@ test('packageHasDependency + findViteAppDir (root and monorepo app)', () => {
     fs.rmSync(mono, { recursive: true, force: true });
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('findFrontendApp detects Next.js before Vite fallbacks', () => {
+  const mono = tmp();
+  try {
+    fs.writeFileSync(path.join(mono, 'package.json'), JSON.stringify({ name: 'root', devDependencies: { vite: '5' } }), 'utf8');
+    const web = path.join(mono, 'apps', 'web');
+    fs.mkdirSync(web, { recursive: true });
+    fs.writeFileSync(path.join(web, 'package.json'), JSON.stringify({
+      dependencies: { next: '15', react: '19' },
+      scripts: { build: 'next build', start: 'next start' },
+    }), 'utf8');
+    const found = findFrontendApp(mono);
+    assert.equal(found.appDir, web);
+    assert.equal(found.previewKind, 'next');
+  } finally {
+    fs.rmSync(mono, { recursive: true, force: true });
+  }
+});
+
+test('findFrontendApp detects Next static export output mode', () => {
+  const mono = tmp();
+  try {
+    fs.writeFileSync(path.join(mono, 'package.json'), JSON.stringify({ name: 'root' }), 'utf8');
+    const web = path.join(mono, 'apps', 'web');
+    fs.mkdirSync(web, { recursive: true });
+    fs.writeFileSync(path.join(web, 'package.json'), JSON.stringify({
+      dependencies: { next: '15', react: '19' },
+      scripts: { build: 'next build' },
+    }), 'utf8');
+    fs.writeFileSync(path.join(web, 'next.config.mjs'), 'export default { output: "export" };\n', 'utf8');
+    assert.equal(nextConfigOutputExport(web), true);
+    const found = findFrontendApp(mono);
+    assert.equal(found.appDir, web);
+    assert.equal(found.previewKind, 'static');
+    assert.equal(found.staticDir, path.join(web, 'out'));
+  } finally {
+    fs.rmSync(mono, { recursive: true, force: true });
   }
 });
 

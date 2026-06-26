@@ -11,7 +11,7 @@ import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, resolveRunAgentContext } from '../../../shared/state';
+import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', () => {
@@ -19,6 +19,54 @@ test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', 
   assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'traffic-one:senior-backend' }), 'senior-backend');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'You are the Traffic One senior-tester role.' }), 'senior-tester');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'just do something' }), null);
+});
+
+test('verifier roles cannot resume or bind an implementer agent id', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high' }, 'cursor'));
+    const memoryDir = '.traffic' + '-one';
+    const runId = JSON.parse(fs.readFileSync(path.join(cwd, memoryDir, '.one.json'), 'utf8')).currentRunId as string;
+    recordRunAgent(cwd, runId, 'senior-frontend', {
+      agentId: 'frontend-agent-1',
+      resumeId: 'frontend-agent-1',
+      parentSessionId: null,
+    });
+
+    const reviewerResume = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-reviewer',
+      model: 'claude-sonnet-4-5',
+      resume: 'frontend-agent-1',
+    }, 'cursor'));
+    assert.equal(reviewerResume.kind, 'deny');
+    if (reviewerResume.kind === 'deny') assert.match(reviewerResume.reason, /verifier independence gate/);
+
+    const testerResume = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-tester',
+      model: 'composer-2.5-fast',
+      resume: 'frontend-agent-1',
+    }, 'cursor'));
+    assert.equal(testerResume.kind, 'deny');
+
+    recordRunAgent(cwd, runId, 'senior-reviewer', {
+      agentId: 'frontend-agent-1',
+      resumeId: 'frontend-agent-1',
+      parentSessionId: null,
+    });
+    const registry = readRunAgentRegistry(cwd, runId);
+    assert.equal(registry['senior-reviewer'], undefined, 'recorder must not bind reviewer to implementer id');
+
+    recordRunAgent(cwd, runId, 'senior-reviewer', {
+      agentId: 'reviewer-agent-1',
+      resumeId: 'reviewer-agent-1',
+      parentSessionId: null,
+    });
+    const sameReviewer = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-reviewer',
+      model: 'claude-opus-4-8-thinking-high',
+      resume: 'reviewer-agent-1',
+    }, 'cursor'));
+    assert.equal(sameReviewer.kind, 'noop', 'same-role reviewer continuation remains allowed');
+  });
 });
 
 test('inferTrafficOneSpawnRole anchors on the declared role despite sibling mentions (Codex parallel spawn)', () => {

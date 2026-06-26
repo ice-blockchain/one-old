@@ -91,6 +91,77 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   return missing;
 }
 
+function readTrimmed(projectRoot: string, relPath: string): string | null {
+  try {
+    return fs.readFileSync(path.join(projectRoot, relPath), 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+function hasRealContent(projectRoot: string, relPath: string, minBytes = 16): boolean {
+  const content = readTrimmed(projectRoot, relPath);
+  return Boolean(content && content.length >= minBytes);
+}
+
+function hasNotApplicableReason(projectRoot: string, relPath: string): boolean {
+  const content = readTrimmed(projectRoot, relPath);
+  if (!content) return false;
+  if (!/\b(not applicable|n\/a|not-applicable)\b/i.test(content)) return false;
+  return content.length >= 32 && /\b(because|reason|no |without|none|external|static|frontend[- ]only)\b/i.test(content);
+}
+
+function hasDecisionRecordWhenNeeded(projectRoot: string, state: Rec): boolean {
+  const mobile = obj(state.mobile);
+  const hasNonDefaultChoice = state.stack !== 'default'
+    || state.frontend !== 'react-vite'
+    || state.backend !== 'supabase'
+    || Boolean(mobile?.enabled);
+  if (!hasNonDefaultChoice) return true;
+  const dir = path.join(projectRoot, T1_MEMORY_DIR, 'decisions');
+  try {
+    return fs.readdirSync(dir, { withFileTypes: true }).some((entry) => {
+      if (!entry.isFile() || !/\.md$/i.test(entry.name)) return false;
+      return hasRealContent(projectRoot, path.join(T1_MEMORY_DIR, 'decisions', entry.name), 32);
+    });
+  } catch {
+    return false;
+  }
+}
+
+function missingProjectMemoryBaseline(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  const missing: string[] = [];
+  for (const relPath of [
+    '.traffic-one/product.md',
+    '.traffic-one/stack.md',
+    '.traffic-one/coding.md',
+    '.traffic-one/security.md',
+    '.traffic-one/known-issues.md',
+    '.traffic-one/deployment.md',
+    '.traffic-one/environment-setup.md',
+    '.traffic-one/agent-log.md',
+    '.traffic-one/.agentignore',
+  ]) {
+    if (!hasRealContent(projectRoot, relPath, relPath.endsWith('.agentignore') ? 1 : 16)) missing.push(relPath);
+  }
+
+  const backend = typeof state.backend === 'string' ? state.backend : '';
+  const hasOwnedBackend = backend !== '' && backend !== 'none' && backend !== 'external-api';
+  const backendDocs = ['.traffic-one/api.md', '.traffic-one/database.md', '.traffic-one/schema.sql'];
+  for (const relPath of backendDocs) {
+    const ok = hasOwnedBackend
+      ? (hasRealContent(projectRoot, relPath, 16) || hasNotApplicableReason(projectRoot, relPath))
+      : hasNotApplicableReason(projectRoot, relPath);
+    if (!ok) missing.push(hasOwnedBackend ? relPath : `${relPath} (Not applicable + reason)`);
+  }
+
+  if (!hasDecisionRecordWhenNeeded(projectRoot, state)) {
+    missing.push('.traffic-one/decisions/*.md (ADR for non-default stack choice)');
+  }
+  return missing;
+}
+
 function missingOpenCodeDelegateBlock(content: string): boolean {
   return planDelegationUnitCount(content) < OPENCODE_PLAN_MIN_UNITS;
 }
@@ -199,6 +270,12 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('architect-scaffold-gate',
         `Architect completion gate: do not write \`PLAN_READY\` until the required Traffic One workspace scaffold exists. Missing: ${missing.join(', ')}. Write the missing baseline files, then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missing.join(', ') }));
+    }
+    const missingMemory = missingProjectMemoryBaseline(projectRoot, state);
+    if (missingMemory.length > 0) {
+      violations.push(block('architect-memory-baseline-gate',
+        `Architect completion gate: do not write \`PLAN_READY\` until the required .traffic-one project-memory baseline exists with real content. Missing or incomplete: ${missingMemory.join(', ')}. Write the missing memory files yourself (do not delegate .traffic-one/* to OpenCode), then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
+        { MISSING: missingMemory.join(', ') }));
     }
     if (state.mode === 'new-project' && openCodeDelegationActive(state) && planOnDiskMissingOpenCodeBlock(projectRoot)) {
       violations.push(block('architect-opencode-queue-gate',

@@ -15,9 +15,10 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { isKnownStack } from '../../shared/config';
-import { detectMode, detectStackFromCodebase } from '../../shared/detection';
+import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { autoDetectedAnnouncement } from '../../shared/directives';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
 import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
@@ -34,9 +35,11 @@ import {
   legacyStatePath,
   maintenanceLifecycle,
   normalizeState,
+  pruneExpiredPendingClaims,
   readEffectiveState,
   resolveRunAgentContext,
   type RunAgentContext,
+  scrubProjectStateLocalPrefs,
   stackFingerprint,
   statePath,
   stateVersion,
@@ -48,6 +51,7 @@ import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
 import { authGateForHook, authRequiredHookResult } from './auth-gate';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
+import { sweepTrafficOneRetention } from '../../shared/retention';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -89,11 +93,15 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
+function sessionProjectRoot(ctx: Ctx): string {
+  return resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+}
+
 // Build the role-scoped (or fix-cycle) rule context for a subagent whose run claim
 // resolved and whose project is already materialized. Shared by the subagent
 // SessionStart path and the legacy run-agent fast path.
 function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext, root: string): HookResult {
-  const cwd = ctx.cwd;
+  const cwd = sessionProjectRoot(ctx);
   const role = typeof agentContext.role === 'string' ? agentContext.role : '';
   const runId = String(agentContext.runId ?? '');
   const spawnIndex = agentContext.spawnIndex || 0;
@@ -127,7 +135,7 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
 // materialized. This path conditionally materializes and returns the role context —
 // so a subagent can never re-trigger auth or onboarding mid-build.
 export function runSubagentSessionStart(ctx: Ctx): HookResult {
-  const cwd = ctx.cwd;
+  const cwd = sessionProjectRoot(ctx);
   const root = pluginRoot();
   const raw = ctx.input.raw;
   const state = readEffectiveState(cwd);
@@ -158,8 +166,8 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
 }
 
 function runSessionStartInner(ctx: Ctx): HookResult {
-  const cwd = ctx.cwd;
-  if (isPluginAuthoringRoot(cwd)) return noop();
+  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
+  const cwd = sessionProjectRoot(ctx);
 
   // A subagent must never run the full session-start hook (auth gate + onboarding +
   // mode routing). Onboarding belongs to the parent/main agent; the subagent only
@@ -195,7 +203,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
 // materialization → subagent fast path → mode-routed rule bundle / directive.
 // Exported so it can be tested without the forced remote auth probe.
 export function runSessionStartAuthed(ctx: Ctx): HookResult {
-  const cwd = ctx.cwd;
+  const cwd = sessionProjectRoot(ctx);
   const root = pluginRoot();
   const raw = ctx.input.raw;
 
@@ -205,6 +213,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   // project's set. Digest retention sweep. Best-effort session materialization.
   cleanActiveSkills();
   sweepOldDigests(cwd, 5);
+  pruneExpiredPendingClaims(cwd);
+  sweepTrafficOneRetention(cwd, { dryRun: false });
+  // Deterministic self-heal: strip any machine-local preference fields (team, toolchain
+  // with absolute binPaths, performance, …) a stale runner may have left in the committed
+  // .one.json, routing them to the per-user preferences.json. .one.json is not gitignored.
+  scrubProjectStateLocalPrefs(cwd);
   try {
     ensureSessionMaterialization(cwd, state);
   } catch {
@@ -222,6 +236,16 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const mode = (state.mode as string) || detectMode(cwd);
   state.mode = mode;
   let stackId = state.stack as string | undefined;
+  if (mode === 'new-project' && reconcileStackFromArtifacts(cwd, state)) {
+    normalizeState(state, mode);
+    writeState(cwd, state);
+    try {
+      ensureSessionMaterialization(cwd, state);
+    } catch {
+      // best-effort; the normal materialization branch below still provides context
+    }
+    stackId = state.stack as string | undefined;
+  }
   if (stackId && isKnownStack(stackId)) {
     normalizeState(state, mode);
     stackId = state.stack as string;

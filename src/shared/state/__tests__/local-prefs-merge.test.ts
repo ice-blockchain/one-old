@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { mergeProjectPrefs, readProjectPrefs } from '../local-prefs';
+import { scrubProjectStateLocalPrefs } from '../normalize';
 
 function withPrefs(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-'));
@@ -59,5 +60,29 @@ test('toolchain merge: null patches on never-stamped tools stay null', () => {
     mergeProjectPrefs(cwd, { toolchain: { graphify: { installedVersion: null, installedAt: null } } });
     const prefs = readProjectPrefs(cwd);
     assert.equal(stamp(prefs, 'graphify').installedVersion, null);
+  });
+});
+
+test('scrubProjectStateLocalPrefs strips machine-local prefs a stale runner left in committed .one.json', () => {
+  withPrefs((cwd) => {
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    const stateFile = path.join(cwd, '.traffic-one', '.one.json');
+    // The 6c-shape leak: a RAW .one.json carrying team / toolchain (machine binPath) / performance.
+    fs.writeFileSync(stateFile, JSON.stringify({
+      mode: 'new-project', stack: 'default', currentRunId: '1',
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', overrides: { 'senior-frontend': 'highest' } },
+      toolchain: { gitnexus: { installedVersion: '1.6.7', binPath: '/Users/x/.traffic-one/toolchains/gitnexus/bin/gitnexus' } },
+    }), 'utf8');
+
+    assert.equal(scrubProjectStateLocalPrefs(cwd), true, 'scrubs when local-prefs are present');
+    const onDisk = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    assert.ok(!('performance' in onDisk) && !('team' in onDisk) && !('toolchain' in onDisk), '.one.json no longer carries local-prefs');
+    assert.equal(onDisk.currentRunId, '1', 'durable project fields are preserved');
+    // The stripped fields were routed to the per-user preferences.json (not lost).
+    const prefs = readProjectPrefs(cwd);
+    assert.ok('team' in prefs && 'toolchain' in prefs && 'performance' in prefs, 'local-prefs routed to preferences.json');
+    // Idempotent: a clean .one.json is a no-op.
+    assert.equal(scrubProjectStateLocalPrefs(cwd), false, 'no-op on an already-clean state file');
   });
 });

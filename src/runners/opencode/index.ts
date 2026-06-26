@@ -27,6 +27,7 @@ import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
   markOpenCodePlanRoleCompleted,
@@ -39,7 +40,7 @@ import {
   buildOpenCodeQueue,
   normalizeOpenCodeRole,
   opencodeAssignmentHash,
-  openCodeQueuePolicyViolations,
+  openCodeQueuePolicyReport,
   parseAllowedFiles,
   recordOpenCodeUnitStatus,
   reconcileStaleRunningUnits,
@@ -168,10 +169,9 @@ export function snapshotWorkingTree(cwd: string, headSha: string): string {
 // Pathspecs for staging the worktree diff: install artifacts must never ride a
 // delegated diff (observed live: a free-model unit ran `npm install` in the
 // sandbox and its diff carried a package-local node_modules/ plus a
-// package-lock.json into a pnpm workspace). node_modules is always excluded;
-// lockfiles of the WRONG package manager are excluded based on the snapshot's
-// root packageManager (the project's own lockfile remains a legitimate
-// install side-effect). Exported for tests.
+// package-lock.json into a pnpm workspace). node_modules is always excluded; all
+// lockfiles are excluded because OpenCode is not trusted to mutate dependency
+// state. Exported for tests.
 export function stageExcludePathspecs(wt: string): string[] {
   const excludes = [
     ':(exclude,glob)**/node_modules/**',
@@ -209,18 +209,12 @@ export function stageExcludePathspecs(wt: string): string[] {
     ':(exclude,glob)**/*.tsbuildinfo',
     ':(exclude,glob)*.tsbuildinfo',
   ];
-  let pm = '';
-  try {
-    const pkg = JSON.parse(fs.readFileSync(path.join(wt, 'package.json'), 'utf8')) as Rec;
-    pm = typeof pkg.packageManager === 'string' ? pkg.packageManager.split('@')[0] as string : '';
-  } catch { /* no root package.json → keep lockfiles untouched */ }
-  const lockByPm: Record<string, string[]> = {
-    pnpm: ['package-lock.json', 'yarn.lock', 'bun.lockb', 'bun.lock'],
-    npm: ['pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'bun.lock'],
-    yarn: ['package-lock.json', 'pnpm-lock.yaml', 'bun.lockb', 'bun.lock'],
-    bun: ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock'],
-  };
-  for (const lock of lockByPm[pm] || []) excludes.push(`:(exclude,glob)**/${lock}`, `:(exclude)${lock}`);
+  // ALL lockfiles are excluded unconditionally regardless of package manager — OpenCode
+  // is never trusted to mutate dependency state, so a regenerated lockfile must never
+  // ride a delegated diff back into the real project.
+  for (const lock of ['package-lock.json', 'pnpm-lock.yaml', 'yarn.lock', 'bun.lockb', 'bun.lock']) {
+    excludes.push(`:(exclude,glob)**/${lock}`, `:(exclude)${lock}`);
+  }
   return excludes;
 }
 
@@ -444,11 +438,15 @@ function recordMaintenanceDelegationOutcome(cwd: string, state: Rec, runId: stri
   try {
     const file = path.join(cwd, T1_DIR, 'runs', runId, 'maintenance.json');
     fs.mkdirSync(path.dirname(file), { recursive: true });
+    const opencodeOutcome = result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed');
+    const overallOutcome = result.ok ? 'success' : 'fallback-pending';
     fs.writeFileSync(file, `${JSON.stringify({
       version: 1,
       kind: 'opencode-delegation',
       role,
-      outcome: result.ok ? 'success' : (result.action === 'skipped' ? 'skipped' : 'failed'),
+      outcome: opencodeOutcome,
+      opencodeOutcome,
+      overallOutcome,
       fallbackAllowed: result.ok !== true,
       action: result.action,
       failureKind: result.failureKind ?? null,
@@ -929,6 +927,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
 }
 
 export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): DelegateResult {
+  cwd = resolveProjectRoot(cwd);
   const state = readEffectiveState(cwd);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
   if (openCode?.enabled !== true) {
@@ -1085,6 +1084,7 @@ export function normalizePlanRole(role: string): string {
 }
 
 export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: string; model?: string; roles?: readonly string[] } = {}): PlanDelegationResult {
+  cwd = resolveProjectRoot(cwd);
   const state = (readEffectiveState(cwd) || {}) as Rec;
   const stateRunId = typeof state.currentRunId === 'string'
     ? state.currentRunId.trim()
@@ -1092,7 +1092,9 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
-  const queue = parsePlanDelegationQueue(planText);
+  const queue = isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)
+    ? []
+    : parsePlanDelegationQueue(planText);
   const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
   writeOpenCodeQueue(cwd, formalQueue);
   let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));
@@ -1110,13 +1112,40 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     const normalizedRole = normalizePlanRole(entry.unit.role);
     totalByRole.set(normalizedRole, (totalByRole.get(normalizedRole) || 0) + 1);
   }
+  if (entries.length === 0) {
+    const unit = {
+      id: '__no_units__',
+      role: 'batch',
+      task: 'No runnable OpenCode units were queued for this batch.',
+      action: 'skipped' as const,
+      status: 'skipped_no_units',
+      touched: [] as string[],
+      error: 'No runnable OpenCode units were queued for this batch or role shard.',
+    };
+    if (runId) {
+      recordOpenCodeUnitStatus(cwd, runId, {
+        id: unit.id,
+        role: unit.role,
+        status: 'skipped_no_units',
+        action: 'skipped-no-units',
+        error: unit.error,
+        touched: [],
+        assignmentHash: formalQueue.assignmentHash,
+      });
+    }
+    return { total: 0, delegated: 0, units: [unit] };
+  }
   try {
-    const policyViolations = openCodeQueuePolicyViolations(queue);
-    if (policyViolations.length > 0) {
-      const error = policyViolations.join('; ');
-      for (const entry of entries) {
-        const normalizedRole = normalizePlanRole(entry.unit.role);
-        const formal = entry.formal;
+    const policyReport = openCodeQueuePolicyReport(queue);
+    const rejectAll = policyReport.violations.length > 0 && policyReport.byUnitId.size === 0;
+
+    for (const entry of entries) {
+      const u = entry.unit;
+      const formal = entry.formal;
+      const normalizedRole = normalizePlanRole(u.role);
+      const unitPolicyViolations = rejectAll ? policyReport.violations : (policyReport.byUnitId.get(formal.id) || []);
+      if (unitPolicyViolations.length > 0) {
+        const error = unitPolicyViolations.join('; ');
         if (runId) {
           recordOpenCodeUnitStatus(cwd, runId, {
             id: formal.id,
@@ -1130,16 +1159,10 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
             assignmentHash: formalQueue.assignmentHash,
           });
         }
-        units.push({ id: formal.id, role: entry.unit.role, task: entry.unit.task, action: 'failed', status: 'rejected_policy', touched: [], failureKind: 'diff-rejected', error });
+        units.push({ id: formal.id, role: u.role, task: u.task, action: 'failed', status: 'rejected_policy', touched: [], failureKind: 'diff-rejected', error });
         processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
+        continue;
       }
-      return { total: entries.length, delegated: 0, units };
-    }
-
-    for (const entry of entries) {
-      const u = entry.unit;
-      const formal = entry.formal;
-      const normalizedRole = normalizePlanRole(u.role);
       if (runId) {
         recordOpenCodeUnitStatus(cwd, runId, {
           id: formal.id,

@@ -20,12 +20,13 @@ import {
   pendingOpenCodePlanRoles,
   planDelegationUnitCount,
   planDelegationQueueRoles,
+  planDelegationQueueRolesForRun,
   readOpenCodePlanBatchState,
   roleHasQueuedUnits,
   shouldBlockImplementerForPlanBatch,
   shouldRunRoleOnOpenCode,
 } from '../opencode-roles';
-import { buildOpenCodeQueue, openCodeQueuePolicyViolations } from '../opencode-queue';
+import { buildOpenCodeQueue, openCodeQueuePolicyViolations, writeOpenCodeQueue } from '../opencode-queue';
 
 test('planDelegationQueueRoles + roleHasQueuedUnits: read the plan queue, normalized', () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocqueue-')));
@@ -43,6 +44,33 @@ test('planDelegationQueueRoles + roleHasQueuedUnits: read the plan queue, normal
     assert.equal(roleHasQueuedUnits(dir, 'senior-frontend'), true);  // role id normalizes to a queued label
     assert.equal(roleHasQueuedUnits(dir, 'senior-tester'), true);
     assert.equal(roleHasQueuedUnits(dir, 'senior-backend'), false);  // not queued → not gated
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('run-scoped OpenCode queue wins over stale plan.md roles', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocqueue-run-')));
+  try {
+    const memoryDir = '.traffic' + '-one';
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- id: stale-fe | role: frontend | files: a.ts | task: stale\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    writeOpenCodeQueue(dir, buildOpenCodeQueue(dir, 'run-current', [
+      { id: 'current-be', role: 'backend', files: 'api.ts', task: 'current' },
+    ]));
+    const state = {
+      mode: 'new-project',
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    assert.deepEqual(planDelegationQueueRolesForRun(dir, 'run-current'), ['backend']);
+    assert.equal(roleHasQueuedUnits(dir, 'senior-frontend', 'run-current'), false);
+    assert.equal(roleHasQueuedUnits(dir, 'senior-backend', 'run-current'), true);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-current', state), ['backend']);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-current', state), true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

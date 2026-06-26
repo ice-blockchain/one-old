@@ -12,6 +12,7 @@
 
 import { buildFindings } from './findings';
 import { parseArgs } from './lib';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import {
   probeCodexHooks,
   probeGitnexus,
@@ -39,7 +40,7 @@ export {
 
 export function main(): void {
   const args = parseArgs();
-  const cwd = process.cwd();
+  const cwd = resolveProjectRoot(process.cwd());
   const node = probeNode();
   const nvm = probeNvm();
   const gitnexus = probeGitnexus();

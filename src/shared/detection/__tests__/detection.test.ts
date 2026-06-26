@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { classifyPromptForStack, dependenciesFromPackage, detectMode, detectStackFromCodebase } from '../index';
+import { classifyPromptForStack, dependenciesFromPackage, detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../index';
 
 function tmpProject(files: Record<string, string>): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-detect-'));
@@ -36,6 +36,22 @@ test('classifyPromptForStack: django api → custom-backend', () => {
   assert.equal(c.stack, 'custom-backend');
 });
 
+test('classifyPromptForStack: React with Go as backend → custom-backend/go', () => {
+  const prompts = [
+    'build a web development academy in react with go as backend',
+    'make a React app with backend in Go',
+    'React frontend and a Go server for the API',
+    'React/Vite app with API written in Go',
+    'React app where the backend is written in Go',
+  ];
+  for (const prompt of prompts) {
+    const c = classifyPromptForStack(prompt);
+    assert.equal(c.frontend, 'react-vite', prompt);
+    assert.equal(c.backend, 'go', prompt);
+    assert.equal(c.stack, 'custom-backend', prompt);
+  }
+});
+
 test('classifyPromptForStack: expo app (no react word) → custom-frontend, RN, no web frontend', () => {
   const c = classifyPromptForStack('an expo mobile app');
   assert.equal(c.mobile.enabled, true);
@@ -62,6 +78,85 @@ test('detectStackFromCodebase: react + supabase → default', () => {
     assert.equal(d.stack, 'default');
     assert.equal(d.frontend, 'react-vite');
     assert.equal(d.backend, 'supabase');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectStackFromCodebase: Supabase project with a stray .go file stays default/supabase', () => {
+  const dir = tmpProject({
+    'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5', '@supabase/supabase-js': '2' } }),
+    'services/api/scratch.go': 'package scratch\n',
+  });
+  try {
+    const d = detectStackFromCodebase(dir);
+    assert.equal(d.stack, 'default');
+    assert.equal(d.frontend, 'react-vite');
+    assert.equal(d.backend, 'supabase');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectStackFromCodebase: Go workspace with React package → custom-backend/go', () => {
+  const dir = tmpProject({
+    'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5' } }),
+    'go.work': 'go 1.23\nuse ./services/api\n',
+    'services/api/main.go': 'package main\nfunc main() {}\n',
+  });
+  try {
+    const d = detectStackFromCodebase(dir);
+    assert.equal(d.stack, 'custom-backend');
+    assert.equal(d.frontend, 'react-vite');
+    assert.equal(d.backend, 'go');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('detectStackFromCodebase: backend-local Go module with React package → custom-backend/go', () => {
+  const dir = tmpProject({
+    'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5' } }),
+    'services/api/go.mod': 'module example.com/api\n',
+    'services/api/cmd/main.go': 'package main\nfunc main() {}\n',
+  });
+  try {
+    const d = detectStackFromCodebase(dir);
+    assert.equal(d.stack, 'custom-backend');
+    assert.equal(d.frontend, 'react-vite');
+    assert.equal(d.backend, 'go');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reconcileStackFromArtifacts repairs stale default/supabase state when Go backend exists', () => {
+  const dir = tmpProject({
+    'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5' } }),
+    'go.work': 'go 1.23\nuse ./services/api\n',
+  });
+  try {
+    const state: Record<string, unknown> = { mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase' };
+    assert.equal(reconcileStackFromArtifacts(dir, state), true);
+    assert.equal(state.stack, 'custom-backend');
+    assert.equal(state.frontend, 'react-vite');
+    assert.equal(state.backend, 'go');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('reconcileStackFromArtifacts ignores stray .go files without Go module markers', () => {
+  const dir = tmpProject({
+    'package.json': JSON.stringify({ dependencies: { react: '18', vite: '5', '@supabase/supabase-js': '2' } }),
+    'services/api/scratch.go': 'package scratch\n',
+  });
+  try {
+    const state: Record<string, unknown> = { mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase' };
+    assert.equal(reconcileStackFromArtifacts(dir, state), false);
+    assert.equal(state.stack, 'default');
+    assert.equal(state.frontend, 'react-vite');
+    assert.equal(state.backend, 'supabase');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

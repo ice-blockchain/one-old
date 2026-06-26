@@ -202,11 +202,32 @@ test('resolveCodexSession finds the rollout by filename + probeSessionDiagnostic
 });
 
 // ── buildFindings: crafted probe objects (no FS) ──────────────────────────────
+function runState(over: Partial<ProjectProbe['runState']> = {}): ProjectProbe['runState'] {
+  return {
+    currentRunId: null,
+    runDirExists: false,
+    runJsonExists: false,
+    runJsonStatus: null,
+    hasOrchestratedArtifacts: false,
+    maintenanceJsonExists: false,
+    maintenanceOutcome: null,
+    maintenanceOverallOutcome: null,
+    maintenanceOpencodeOutcome: null,
+    maintenanceFallbackAllowed: false,
+    maintenanceTerminalOrFallbackPending: false,
+    ...over,
+  };
+}
+
 function baseProject(over: Partial<ProjectProbe> = {}): ProjectProbe {
   return {
     cwd: '/repo', hasState: false, state: null, localPreferences: {}, localPreferencesPath: null,
     hasLocalPreferences: false, normalizedState: null, nvmrc: null, hasGit: true,
-    artefacts: { gitnexus: null, graphify: null }, openCodeCli: 'managed', ...over,
+    artefacts: { gitnexus: null, graphify: null },
+    runState: runState(),
+    nestedTrafficOneRoots: [],
+    openCodeCli: 'managed',
+    ...over,
   };
 }
 const node = (over: Partial<NodeProbe> = {}): NodeProbe => ({ runningMajor: 22, runningVersion: '22.0.0', onPath: '/usr/bin/node', requiredMajor: 22, ...over });
@@ -221,6 +242,25 @@ test('buildFindings: session-not-found', () => {
 test('buildFindings: codex plugin disabled', () => {
   const f = buildFindings({ node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(), codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: false } });
   assert.ok(f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_PLUGIN_DISABLED'));
+});
+
+test('buildFindings: Codex trusted hashes do not require enabled hook counters', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(), project: baseProject(),
+    codexHooks: {
+      host: 'codex',
+      configPath: '/c',
+      configExists: true,
+      cwd: '/repo',
+      pluginEnabled: true,
+      hookStateEntryCount: 13,
+      hookStateEnabledCount: 0,
+      hookStateTrustedHashCount: 13,
+      missingHookEvents: [],
+      trustCovered: true,
+    },
+  });
+  assert.ok(!f.some((x) => x.code === 'CODEX_TRAFFIC_ONE_HOOKS_NOT_TRUSTED'));
 });
 
 test('buildFindings: legacy state shape + local prefs in project state', () => {
@@ -279,4 +319,51 @@ test('buildFindings: opencode findings are silent when delegation is not enabled
     codexHooks: { host: 'codex', configPath: '/c', configExists: true, cwd: '/repo', pluginEnabled: true, opencodeMcpRegistered: false },
   });
   assert.ok(!f.some((x) => x.code === 'OPENCODE_CLI_MISSING' || x.code === 'CODEX_OPENCODE_MCP_NOT_REGISTERED' || x.code === 'OPENCODE_CLI_UNMANAGED'));
+});
+
+test('buildFindings: ghost currentRunId is report-only and planned ledgers are info', () => {
+  const ghost = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      runState: runState({ currentRunId: 'run-ghost', runDirExists: false }),
+    }),
+  });
+  assert.equal(ghost.find((x) => x.code === 'GHOST_CURRENT_RUN_ID')?.severity, 'fix-needed');
+
+  const planned = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      runState: runState({ currentRunId: 'run-planned', runDirExists: true, runJsonExists: true, runJsonStatus: 'planned' }),
+    }),
+  });
+  assert.equal(planned.find((x) => x.code === 'PLANNED_RUN_LEDGER_ONLY')?.severity, 'info');
+  assert.ok(!planned.some((x) => x.code === 'GHOST_CURRENT_RUN_ID'));
+});
+
+test('buildFindings: maintenance fallback metadata is not a ghost run', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({
+      runState: runState({
+        currentRunId: 'run-maint',
+        runDirExists: true,
+        maintenanceJsonExists: true,
+        maintenanceOutcome: 'failed',
+        maintenanceOverallOutcome: 'fallback-pending',
+        maintenanceOpencodeOutcome: 'failed',
+        maintenanceFallbackAllowed: true,
+        maintenanceTerminalOrFallbackPending: true,
+      }),
+    }),
+  });
+  assert.equal(f.find((x) => x.code === 'MAINTENANCE_FALLBACK_PENDING')?.severity, 'info');
+  assert.ok(!f.some((x) => x.code === 'GHOST_CURRENT_RUN_ID'));
+});
+
+test('buildFindings: nested roots are reported non-destructively', () => {
+  const f = buildFindings({
+    node: node(), nvm: nvm(), gitnexus: gn(),
+    project: baseProject({ nestedTrafficOneRoots: ['/repo/apps/web'] }),
+  });
+  assert.equal(f.find((x) => x.code === 'NESTED_TRAFFIC_ONE_ROOTS')?.severity, 'fix-needed');
 });

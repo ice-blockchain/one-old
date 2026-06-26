@@ -12,6 +12,7 @@ import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
+import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import { buildMcpPayload } from './buildMcpPayload';
 
 type Rec = Record<string, unknown>;
@@ -55,7 +56,12 @@ export function readProjectState(cwd: string): Rec {
 }
 
 export function writeProjectState(cwd: string, state: unknown): void {
-  writeJson(statePath(cwd), state && typeof state === 'object' ? state : {});
+  // RAW writer (NOT the stripping writeState). It runs during onboarding to mint one-uid, so
+  // without stripping it re-persists machine-local preference fields (team / toolchain with an
+  // absolute binPath / performance / …) into the COMMITTED .one.json — the Codex
+  // onboarding-complete leak, where this write lands while the effective state is still merged.
+  // Those fields live in the per-user preferences.json; strip them from project state on write.
+  writeJson(statePath(cwd), stripLocalPreferenceFields(state && typeof state === 'object' ? state : {}));
 }
 
 export function shouldSkipFile(relPath: string, fileName: string): boolean {

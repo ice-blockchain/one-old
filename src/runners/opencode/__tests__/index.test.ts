@@ -652,6 +652,9 @@ test('delegateFromPlan is a no-op when the plan has no delegation queue', () => 
     const r = delegateFromPlan(dir, { runId: 'plan-2' });
     assert.equal(r.total, 0);
     assert.equal(r.delegated, 0);
+    assert.equal(r.units[0]?.status, 'skipped_no_units');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'plan-2', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses[0]?.status, 'skipped_no_units');
   });
 });
 
@@ -663,6 +666,35 @@ test('delegate is skipped when OpenCode is not enabled (→ fallback)', () => {
     assert.equal(r.action, 'skipped');
     assert.match(r.error || '', /not enabled/);
     assert.equal(fs.existsSync(path.join(dir, 'foo.txt')), false);
+  });
+});
+
+test('delegateFromPlan ignores stale plan queues in maintenance runs', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = '.traffic' + '-one';
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      onboardingComplete: true,
+      lifecycle: { phase: 'maintenance' },
+      currentRunId: 'maint-queue',
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: stale-ui | role: frontend | files: unit-1.txt | task: stale build unit',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+
+    const r = delegateFromPlan(dir);
+
+    assert.equal(r.total, 0);
+    assert.equal(r.units[0]?.status, 'skipped_no_units');
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'maint-queue', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses[0]?.id, '__no_units__');
   });
 });
 
@@ -938,7 +970,31 @@ test('delegateFromPlan rejects unsafe overlapping queue policy before running Op
   });
 });
 
-test('stageExcludePathspecs: generated artifacts and pm-aware lockfile excludes', () => {
+test('delegateFromPlan rejects only unsafe dependency units and still runs safe siblings', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = ['.traffic', '-one'].join('');
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: ui-copy | role: frontend | files: unit-1.txt | task: create the first unit file',
+      '- id: deps | role: backend | files: package.json, pnpm-lock.yaml | task: install zod',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    const r = delegateFromPlan(dir, { runId: 'r-selective-policy' });
+    assert.equal(r.total, 2);
+    assert.equal(r.delegated, 1);
+    assert.equal(r.units.find((u) => u.id === 'ui-copy')?.status, 'delegated');
+    assert.equal(r.units.find((u) => u.id === 'deps')?.status, 'rejected_policy');
+    assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), true);
+    assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), false);
+    const statuses = JSON.parse(fs.readFileSync(path.join(dir, memoryDir, 'runs', 'r-selective-policy', 'opencode-units.json'), 'utf8')) as any[];
+    assert.equal(statuses.find((s) => s.id === 'ui-copy')?.status, 'delegated');
+    assert.equal(statuses.find((s) => s.id === 'deps')?.status, 'rejected_policy');
+  });
+});
+
+test('stageExcludePathspecs: generated artifacts and all lockfile install side effects are excluded', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocspec-'));
   try {
     const baseSpecs = stageExcludePathspecs(dir);
@@ -949,7 +1005,7 @@ test('stageExcludePathspecs: generated artifacts and pm-aware lockfile excludes'
     const specs = stageExcludePathspecs(dir);
     assert.ok(specs.some((s) => s.includes('pnpm-lock.yaml')));
     assert.ok(specs.some((s) => s.includes('yarn.lock')));
-    assert.ok(!specs.some((s) => s.includes('package-lock.json')), 'own lockfile must stay stageable');
+    assert.ok(specs.some((s) => s.includes('package-lock.json')), 'own lockfile is still an install side effect');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

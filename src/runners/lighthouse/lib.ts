@@ -83,6 +83,13 @@ export function parseArgs(argv: string[]): LighthouseArgs {
         args.lighthouseVersion = next || DEFAULTS.lighthouseVersion;
         index += 1;
         break;
+      case '--timeout':
+        {
+          const parsed = Number(next);
+          args.timeoutMs = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULTS.timeoutMs;
+        }
+        index += 1;
+        break;
       case '--skip-build':
         args.build = false;
         break;
@@ -123,6 +130,7 @@ export function usage(): string {
     '  --lcp-max <ms>              Maximum LCP in ms (default 2500)',
     '  --tbt-max <ms>              Maximum TBT in ms (default 200)',
     '  --cls-max <value>           Maximum CLS (default 0.1)',
+    '  --timeout <ms>              Preview readiness timeout (default 30000; Next uses at least 90000)',
     '  --skip-build                Do not run the build script',
     '  --skip-preview              Do not start preview; requires --url',
   ].join('\n');
@@ -170,9 +178,41 @@ export function packageHasDependency(pkg: Rec | null, name: string): boolean {
 }
 
 const VITE_CONFIG_NAMES = ['vite.config.ts', 'vite.config.js', 'vite.config.mts', 'vite.config.mjs'] as const;
+const NEXT_CONFIG_NAMES = ['next.config.ts', 'next.config.js', 'next.config.mjs', 'next.config.cjs'] as const;
 
 export function hasViteConfig(dir: string): boolean {
   return VITE_CONFIG_NAMES.some((name) => existsSync(join(dir, name)));
+}
+
+export function hasNextConfig(dir: string): boolean {
+  return NEXT_CONFIG_NAMES.some((name) => existsSync(join(dir, name)));
+}
+
+export function nextConfigOutputExport(dir: string): boolean {
+  for (const name of NEXT_CONFIG_NAMES) {
+    const file = join(dir, name);
+    if (!existsSync(file)) continue;
+    try {
+      const raw = readFileSync(file, 'utf8');
+      if (/\boutput\s*:\s*['"]export['"]/i.test(raw)) return true;
+    } catch {
+      // unreadable config: fall through to normal next start handling
+    }
+  }
+  return false;
+}
+
+export type PreviewKind = 'vite' | 'next' | 'static';
+
+export interface FrontendApp {
+  appDir: string;
+  previewKind: PreviewKind;
+  staticDir?: string;
+}
+
+function nextFrontendApp(appDir: string): FrontendApp {
+  if (nextConfigOutputExport(appDir)) return { appDir, previewKind: 'static', staticDir: join(appDir, 'out') };
+  return { appDir, previewKind: 'next' };
 }
 
 // The buildable app dir, from the root the runner was invoked in. A real vite
@@ -203,6 +243,35 @@ export function findViteAppDir(rootDir: string): string {
   const rootPkg = readJson(join(rootDir, 'package.json'));
   if (packageHasDependency(rootPkg, 'vite')) return rootDir;
   return rootDir;
+}
+
+export function findFrontendApp(rootDir: string): FrontendApp {
+  if (hasNextConfig(rootDir)) return nextFrontendApp(rootDir);
+  if (hasViteConfig(rootDir)) return { appDir: rootDir, previewKind: 'vite' };
+
+  const appsDir = join(rootDir, 'apps');
+  if (existsSync(appsDir)) {
+    let viteFallback = '';
+    let nextFallback = '';
+    for (const entry of readdirSync(appsDir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const appDir = join(appsDir, entry.name);
+      if (hasNextConfig(appDir)) return nextFrontendApp(appDir);
+      if (hasViteConfig(appDir)) return { appDir, previewKind: 'vite' };
+      const pkg = readJson(join(appDir, 'package.json'));
+      const scripts = pkg && typeof pkg.scripts === 'object' ? pkg.scripts as Rec : {};
+      const preview = typeof scripts.preview === 'string' ? scripts.preview : '';
+      const start = typeof scripts.start === 'string' ? scripts.start : '';
+      if (!nextFallback && (packageHasDependency(pkg, 'next') || start.includes('next start'))) nextFallback = appDir;
+      if (!viteFallback && (packageHasDependency(pkg, 'vite') || preview.includes('vite preview'))) viteFallback = appDir;
+    }
+    if (nextFallback) return nextFrontendApp(nextFallback);
+    if (viteFallback) return { appDir: viteFallback, previewKind: 'vite' };
+  }
+
+  const rootPkg = readJson(join(rootDir, 'package.json'));
+  if (packageHasDependency(rootPkg, 'next')) return nextFrontendApp(rootDir);
+  return { appDir: findViteAppDir(rootDir), previewKind: 'vite' };
 }
 
 export function runScriptArgs(packageManager: PackageManager, scriptName: string): string[] {

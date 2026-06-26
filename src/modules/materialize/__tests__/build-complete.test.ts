@@ -33,6 +33,7 @@ interface ProjectOpts {
   reviewerVerdict?: string;
   testerVerdict?: string;
   shipper?: boolean;
+  qa?: boolean;
 }
 
 function mkproject(opts: ProjectOpts): string {
@@ -65,6 +66,13 @@ function mkproject(opts: ProjectOpts): string {
     if (reviewerVerdict) fs.writeFileSync(path.join(dd, 'reviewer.md'), `# reviewer\nverdict: ${reviewerVerdict}\n`);
     if (testerVerdict) fs.writeFileSync(path.join(dd, 'tester.md'), `# tester\nverdict: ${testerVerdict}\n`);
     if (opts.shipper) fs.writeFileSync(path.join(dd, 'shipper.md'), '# shipper\nurl: https://app.example\n');
+    const shouldWriteQa = opts.qa ?? Boolean(testerVerdict && /\b(TESTS_GREEN|APPROVED)\b/.test(testerVerdict));
+    if (shouldWriteQa) {
+      const memoryDir = '.traffic' + '-one';
+      const qaDir = path.join(dir, memoryDir, 'reports', 'qa', '123');
+      fs.mkdirSync(qaDir, { recursive: true });
+      fs.writeFileSync(path.join(qaDir, 'report.json'), JSON.stringify({ ok: true }));
+    }
   }
   if (opts.claimFresh) {
     const rd = path.join(dir, '.traffic-one', 'runs', '123');
@@ -110,6 +118,32 @@ test('no flip while a subagent claim is still active (never mid-orchestration)',
 test('no flip when the codebase has not produced real output yet', () => {
   const dir = mkproject({ files: 4, verified: true });
   assert.equal(run(dir), false);
+});
+
+test('no flip for frontend TESTS_GREEN without QA artifacts', () => {
+  // A genuine frontend run (implementer wrote frontend.md) that is green but produced NO QA
+  // artifacts must stay non-terminal — the per-run QA gate still applies because the run
+  // touched the frontend. (A backend-only run with no frontend.md is exempt; covered below.)
+  const dir = mkproject({ files: 30, digest: true, implementer: true, verified: true, qa: false });
+  assert.equal(run(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
+});
+
+test('no flip for stale shared Lighthouse output from an earlier run', () => {
+  const dir = mkproject({ files: 30, digest: true, implementer: true, verified: true, qa: false });
+  const memoryDir = '.traffic' + '-one';
+  const runDir = path.join(dir, memoryDir, 'runs', '123');
+  const lighthouseDir = path.join(dir, memoryDir, 'reports', 'lighthouse');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.mkdirSync(lighthouseDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'run.json'), JSON.stringify({
+    version: 1,
+    runId: '123',
+    createdAt: '2099-01-01T00:00:00Z',
+  }));
+  fs.writeFileSync(path.join(lighthouseDir, 'report.html'), '<html></html>');
+  assert.equal(run(dir), false);
+  assert.equal(projectPhase(readState(dir), 'new-project'), 'building');
 });
 
 test('flips to maintenance when the build reached verification and every guard holds; idempotent', () => {

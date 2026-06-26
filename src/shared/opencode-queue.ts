@@ -63,6 +63,7 @@ export type OpenCodeUnitStatus =
   | 'delegated'
   | 'failed'
   | 'no_changes'
+  | 'skipped_no_units'
   | 'skipped'
   | 'rejected_policy'
   | 'abandoned'
@@ -79,7 +80,23 @@ export interface OpenCodeUnitStatusEntry {
   touched?: string[];
   allowedFiles?: string[];
   assignmentHash?: string | null;
+  fallback?: {
+    status: 'paid_spawned';
+    role: string;
+    agentId?: string | null;
+    digest?: string | null;
+    recordedAt: string;
+  };
   updatedAt: string;
+  attempts?: Array<{
+    status: OpenCodeUnitStatus;
+    action?: string;
+    model?: string | null;
+    failureKind?: string | null;
+    error?: string | null;
+    touched?: string[];
+    updatedAt: string;
+  }>;
 }
 
 function safePathSegment(value: string): string {
@@ -213,12 +230,86 @@ export function recordOpenCodeUnitStatus(cwd: string, runId: string, entry: Omit
     const statuses = readStatuses(cwd, runId);
     const next: OpenCodeUnitStatusEntry = { ...entry, updatedAt: entry.updatedAt || new Date().toISOString() };
     const idx = statuses.findIndex((s) => s.id === next.id);
-    if (idx >= 0) statuses[idx] = next;
-    else statuses.push(next);
+    const attempt = {
+      status: next.status,
+      action: next.action,
+      model: next.model ?? null,
+      failureKind: next.failureKind ?? null,
+      error: next.error ?? null,
+      touched: next.touched,
+      updatedAt: next.updatedAt,
+    };
+    if (idx >= 0) {
+      const prior = statuses[idx] as OpenCodeUnitStatusEntry;
+      const attempts = [...(Array.isArray(prior.attempts) ? prior.attempts : []), attempt];
+      const keepPriorSummary = statusPrecedence(prior.status) > statusPrecedence(next.status);
+      statuses[idx] = keepPriorSummary
+        ? { ...prior, attempts, updatedAt: next.updatedAt }
+        : { ...prior, ...next, attempts };
+    } else {
+      statuses.push({ ...next, attempts: [attempt] });
+    }
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, `${JSON.stringify(statuses, null, 2)}\n`, 'utf8');
   } catch {
     // best-effort diagnostics; never block delegation
+  }
+}
+
+export function recordOpenCodeFallback(
+  cwd: string,
+  runId: string,
+  role: string,
+  fallback: { status: 'paid_spawned'; agentId?: string | null; digest?: string | null },
+): void {
+  if (!runId || !role) return;
+  try {
+    const file = path.join(runDir(cwd, runId), 'opencode-units.json');
+    const statuses = readStatuses(cwd, runId);
+    if (statuses.length === 0) return;
+    const normalizedRole = normalizeOpenCodeRole(role);
+    const recordedAt = new Date().toISOString();
+    let changed = false;
+    const next = statuses.map((status) => {
+      if (status.role !== normalizedRole || status.status === 'delegated') return status;
+      changed = true;
+      const nextStatus = statusPrecedence(status.status) < statusPrecedence('fallback_required')
+        ? 'fallback_required'
+        : status.status;
+      return {
+        ...status,
+        status: nextStatus,
+        fallback: {
+          status: fallback.status,
+          role,
+          agentId: fallback.agentId ?? status.fallback?.agentId ?? null,
+          digest: fallback.digest ?? status.fallback?.digest ?? null,
+          recordedAt,
+        },
+        updatedAt: recordedAt,
+      } satisfies OpenCodeUnitStatusEntry;
+    });
+    if (!changed) return;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`, 'utf8');
+  } catch {
+    // best-effort diagnostics; never block fallback
+  }
+}
+
+function statusPrecedence(status: OpenCodeUnitStatus): number {
+  switch (status) {
+    case 'delegated': return 50;
+    case 'no_changes': return 40;
+    case 'fallback_required': return 35;
+    case 'rejected_policy': return 30;
+    case 'failed':
+    case 'abandoned': return 25;
+    case 'skipped':
+    case 'skipped_no_units': return 20;
+    case 'running': return 10;
+    case 'queued': return 0;
+    default: return 0;
   }
 }
 
@@ -329,6 +420,29 @@ function mentionsInlineDependencyField(task: string): boolean {
   return /(^|\s)(depends|depends_on|dependson):/i.test(task);
 }
 
+function stripNegatedDependencyPhrases(task: string): string {
+  return task
+    .replace(/\b(?:no|without)\s+(?:external\s+)?(?:dependency|dependencies|deps?)\b/gi, '')
+    .replace(/\b(?:no|without)\s+(?:dependency|dependencies|deps?)\/version\s+(?:changes?|updates?|work|edits?)\b/gi, '')
+    .replace(/\b(?:no|without)\s+(?:dependency|dependencies|deps?|package[- ]manager|lockfiles?)\s+(?:changes?|updates?|work|edits?|writes?)\b/gi, '');
+}
+
+function mentionsDependencyWork(unit: OpenCodeQueueUnit): boolean {
+  const kind = unit.kind || '';
+  const task = stripNegatedDependencyPhrases(unit.task || '');
+  if (/\b(deps?|dependencies|package[- ]?manager|lockfiles?)\b/i.test(kind)) return true;
+  if (unit.allowedFiles.some((allowed) => /(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|npm-shrinkwrap\.json)$/i.test(allowed))) return true;
+  if (/\b(?:npm|pnpm|yarn|bun)\s+(?:install|add|remove|update|upgrade|dedupe|import|ci)\b/i.test(task)) return true;
+  if (/\b(?:install|add|remove|upgrade|update|bump)\s+(?:a\s+|the\s+)?(?:dependency|dependencies|deps?|packages?)\b/i.test(task)) return true;
+  if (/\b(?:write|modify|touch|regenerate|refresh|update|change)\s+(?:a\s+|the\s+)?(?:package[- ]manager\s+files?|lockfiles?)\b/i.test(task)) return true;
+  if (/\b(?:package[- ]manager\s+files?|lockfiles?)\s+(?:changes?|updates?|writes?|edits?|work)\b/i.test(task)) return true;
+  if (unit.allowedFiles.some((allowed) => /(^|\/)package\.json$/i.test(allowed))) {
+    if (/\b(?:install|upgrade)\b/i.test(task)) return true;
+    if (/\b(?:add|remove)\s+(?!(?:a\s+|the\s+|an\s+)?(?:scripts?|metadata|config|field|build|exports?|engines?|workspaces?)\b)\S+/i.test(task)) return true;
+  }
+  return false;
+}
+
 function allowsTestOrConfigPath(allowedFiles: string[]): boolean {
   return allowedFiles.some((allowed) => (
     /(^|\/)(tests?|e2e)\//i.test(allowed)
@@ -338,39 +452,61 @@ function allowsTestOrConfigPath(allowedFiles: string[]): boolean {
 }
 
 export function openCodeQueuePolicyViolations(units: PlanDelegationUnit[]): string[] {
+  return openCodeQueuePolicyReport(units).violations;
+}
+
+export interface OpenCodeQueuePolicyReport {
+  violations: string[];
+  byUnitId: Map<string, string[]>;
+}
+
+export function openCodeQueuePolicyReport(units: PlanDelegationUnit[]): OpenCodeQueuePolicyReport {
   const queue = buildOpenCodeQueue('', '', units);
   const violations: string[] = [];
+  const byUnitId = new Map<string, string[]>();
   const idToIndex = new Map<string, number>();
+  const add = (message: string, ...ids: Array<string | null | undefined>): void => {
+    violations.push(message);
+    for (const id of ids) {
+      if (!id) continue;
+      const existing = byUnitId.get(id) || [];
+      existing.push(message);
+      byUnitId.set(id, existing);
+    }
+  };
 
   for (let i = 0; i < queue.units.length; i++) {
     const unit = queue.units[i] as OpenCodeQueueUnit;
     const original = units[i] as PlanDelegationUnit | undefined;
     if (!original?.id || !UNIT_ID_RE.test(original.id)) {
-      violations.push(`OpenCode unit at position ${i + 1} needs a stable unique \`id\``);
+      add(`OpenCode unit at position ${i + 1} needs a stable unique \`id\``, unit.id);
     }
     if (idToIndex.has(unit.id)) {
-      violations.push(`OpenCode unit id \`${unit.id}\` is duplicated; every queued unit needs a stable unique id`);
+      add(`OpenCode unit id \`${unit.id}\` is duplicated; every queued unit needs a stable unique id`, unit.id);
     } else {
       idToIndex.set(unit.id, i);
     }
     if (unit.allowedFiles.length === 0) {
-      violations.push(`OpenCode unit \`${unit.id}\` has no parseable files allowlist`);
+      add(`OpenCode unit \`${unit.id}\` has no parseable files allowlist`, unit.id);
+    }
+    if (mentionsDependencyWork(unit)) {
+      add(`OpenCode unit \`${unit.id}\` appears to require dependency/package-manager work; route it to a paid subagent instead of OpenCode`, unit.id);
     }
     if (mentionsInlineDependencyField(unit.task)) {
-      violations.push(`OpenCode unit \`${unit.id}\` puts a dependency marker inside task text; add it as a pipe-delimited \`depends:\` field instead`);
+      add(`OpenCode unit \`${unit.id}\` puts a dependency marker inside task text; add it as a pipe-delimited \`depends:\` field instead`, unit.id);
     }
     if (mentionsTestWork(unit.task) && !allowsTestOrConfigPath(unit.allowedFiles)) {
-      violations.push(`OpenCode unit \`${unit.id}\` mentions tests/testability but its files allowlist does not include exact test/spec/config paths; either add those paths explicitly or remove the test acceptance criteria`);
+      add(`OpenCode unit \`${unit.id}\` mentions tests/testability but its files allowlist does not include exact test/spec/config paths; either add those paths explicitly or remove the test acceptance criteria`, unit.id);
     }
     for (const allowed of unit.allowedFiles) {
       if (/[{}]/.test(allowed)) {
-        violations.push(`OpenCode unit \`${unit.id}\` uses ambiguous brace/glob syntax in files allowlist \`${allowed}\`; list explicit paths/areas instead`);
+        add(`OpenCode unit \`${unit.id}\` uses ambiguous brace/glob syntax in files allowlist \`${allowed}\`; list explicit paths/areas instead`, unit.id);
       }
       if (allowed === '*' || allowed === '**' || allowed === '**/*') {
-        violations.push(`OpenCode unit \`${unit.id}\` uses an overbroad files allowlist \`${allowed}\`; list explicit source paths/areas instead`);
+        add(`OpenCode unit \`${unit.id}\` uses an overbroad files allowlist \`${allowed}\`; list explicit source paths/areas instead`, unit.id);
       }
       if (UNSAFE_ALLOWED_FILE_PATTERNS.some((pattern) => matchesPattern(allowed, pattern) || matchesPattern(literalStem(allowed) || allowed, pattern))) {
-        violations.push(`OpenCode unit \`${unit.id}\` allowlist includes generated/internal path \`${allowed}\``);
+        add(`OpenCode unit \`${unit.id}\` allowlist includes generated/internal path \`${allowed}\``, unit.id);
       }
     }
   }
@@ -380,9 +516,9 @@ export function openCodeQueuePolicyViolations(units: PlanDelegationUnit[]): stri
     for (const dep of unit.dependsOn) {
       const depIndex = idToIndex.get(dep);
       if (depIndex === undefined) {
-        violations.push(`OpenCode unit \`${unit.id}\` depends on unknown unit \`${dep}\``);
+        add(`OpenCode unit \`${unit.id}\` depends on unknown unit \`${dep}\``, unit.id);
       } else if (depIndex >= i) {
-        violations.push(`OpenCode unit \`${unit.id}\` depends on \`${dep}\`, but dependencies must appear earlier in the queue`);
+        add(`OpenCode unit \`${unit.id}\` depends on \`${dep}\`, but dependencies must appear earlier in the queue`, unit.id);
       }
     }
   }
@@ -394,17 +530,18 @@ export function openCodeQueuePolicyViolations(units: PlanDelegationUnit[]): stri
       if (!unitsOverlap(a, b)) continue;
       const ordered = b.dependsOn.includes(a.id) || a.dependsOn.includes(b.id);
       if (!ordered) {
-        violations.push(`OpenCode units \`${a.id}\` and \`${b.id}\` have overlapping files/areas; add an explicit \`depends:\` edge or split the files`);
+        add(`OpenCode units \`${a.id}\` and \`${b.id}\` have overlapping files/areas; add an explicit \`depends:\` edge or split the files`, a.id, b.id);
       }
     }
   }
 
-  return violations;
+  return { violations, byUnitId };
 }
 
 export function statusFromDelegateAction(action: string, error?: string | null): OpenCodeUnitStatus {
   if (action === 'delegated') return 'delegated';
   if (action === 'no-changes') return 'no_changes';
+  if (action === 'skipped-no-units') return 'skipped_no_units';
   if (action === 'skipped') return 'skipped';
   if (action === 'abandoned') return 'abandoned';
   if (/outside .*allowlist|outside .*assignment scope|generated\/internal artifact|assignment scope changed/i.test(error || '')) {

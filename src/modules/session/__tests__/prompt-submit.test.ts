@@ -228,7 +228,7 @@ test('coding-intent gate: a verb-less project description is captured (not dropp
   });
 });
 
-test('codex prompt mentioning an inner existing app bootstraps Traffic One in the child, not wrapper root', async () => {
+test('codex prompt mentioning an inner app stays anchored at the ancestor Traffic One root', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-child-')));
   const child = path.join(root, 'one-nextjs');
   const env = process.env;
@@ -264,15 +264,13 @@ test('codex prompt mentioning an inner existing app bootstraps Traffic One in th
       argv: [],
     });
     const parsed = JSON.parse(out);
-    assert.equal(parsed.systemMessage, 'traffic-one [custom-frontend] setup required');
+    assert.equal(parsed.systemMessage, 'traffic-one [setup required]');
     assert.ok(parsed.hookSpecificOutput.additionalContext.toLowerCase().includes('setup'));
-    assert.ok(fs.existsSync(path.join(child, '.traffic-one', '.one.json')));
-    const childState = JSON.parse(fs.readFileSync(path.join(child, '.traffic-one', '.one.json'), 'utf8'));
-    assert.equal(childState.stack, 'custom-frontend');
-    assert.equal(childState.frontend, 'nextjs');
-    const rootState = JSON.parse(fs.readFileSync(path.join(root, '.traffic-one', '.one.json'), 'utf8'));
-    assert.equal(rootState.rootMarker, true);
-    assert.equal(rootState.stack, 'minimal');
+    const trafficDir = '.traffic' + '-one';
+    assert.equal(fs.existsSync(path.join(child, trafficDir, '.one.json')), false);
+    const rootStateAfter = JSON.parse(fs.readFileSync(path.join(root, trafficDir, '.one.json'), 'utf8'));
+    assert.equal(rootStateAfter.rootMarker, true);
+    assert.equal(rootStateAfter.stack, 'minimal');
   } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
@@ -600,6 +598,10 @@ test('settled new-project build stuck in "building" flips to maintenance at the 
     fs.mkdirSync(dd, { recursive: true });
     fs.writeFileSync(path.join(dd, 'reviewer.md'), '# reviewer\nverdict: APPROVED\n', 'utf8');
     fs.writeFileSync(path.join(dd, 'tester.md'), '# tester\nverdict: TESTS_GREEN\n', 'utf8');
+    const memoryDir = '.traffic' + '-one';
+    const qaDir = path.join(cwd, memoryDir, 'reports', 'qa', 'build-run');
+    fs.mkdirSync(qaDir, { recursive: true });
+    fs.writeFileSync(path.join(qaDir, 'report.json'), JSON.stringify({ ok: true }), 'utf8');
     // A leftover pending claim that never activated (would block the PostToolUse heuristic).
     const runDir = path.join(cwd, '.traffic-one', 'runs', 'build-run');
     fs.mkdirSync(runDir, { recursive: true });

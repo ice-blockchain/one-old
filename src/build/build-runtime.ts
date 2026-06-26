@@ -29,6 +29,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'security-check-runner.cjs': './runners/security-check/index.js',
   'token-report.cjs': './runners/token-report/index.js',
   'one-mcp-report.cjs': './runners/one-mcp-report/index.js',
+  'traffic-one-cleanup.cjs': './runners/traffic-one-cleanup/index.js',
   'gitnexus-runner.cjs': './runners/gitnexus/index.js',
   'graphify-runner.cjs': './runners/graphify/index.js',
   'opencode-runner.cjs': './runners/opencode/index.js',

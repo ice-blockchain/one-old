@@ -5,6 +5,7 @@
 // the orchestrator's Phase 5). Ported 1:1 from scripts/gitnexus-runner.cjs.
 
 import { exec } from '../../shared/exec';
+import { resolveProjectRoot } from '../../shared/hook-paths';
 import { nowIso } from '../../shared/text';
 import { bootstrap } from './bootstrap';
 
@@ -29,7 +30,7 @@ export function main(): void {
   // moment the index is recent AND non-empty (the onboarding scan saw a couple
   // of files) yet covers none of the new code, so the mtime freshness check
   // wrongly answers "fresh" (observed live: 2 files indexed vs ~60 on disk).
-  const result = bootstrap(process.cwd(), { force: process.argv.includes('--force') });
+  const result = bootstrap(resolveProjectRoot(process.cwd()), { force: process.argv.includes('--force') });
   process.stdout.write(`${JSON.stringify(result)}\n`);
   process.exitCode = 0;
 }

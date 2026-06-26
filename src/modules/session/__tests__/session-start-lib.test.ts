@@ -100,7 +100,12 @@ test('shouldBuildCodeGraph: builds for existing project missing a graph; guards 
     // gitnexus keys on .gitnexus/
     assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase', codeGraphProvider: 'gitnexus' }, NOW), true);
     fs.mkdirSync(path.join(cwd, '.traffic-one', '.gitnexus'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.gitnexus', 'meta.json'), JSON.stringify({ stats: { files: 3, nodes: 9 } }), 'utf8');
     assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase', codeGraphProvider: 'gitnexus' }, NOW), false);
+    const old = new Date(NOW - 60_000);
+    fs.utimesSync(path.join(cwd, '.traffic-one', '.gitnexus'), old, old);
+    fs.writeFileSync(path.join(cwd, 'src.ts'), 'export const newer = true;', 'utf8');
+    assert.equal(shouldBuildCodeGraph(cwd, { mode: 'existing-codebase', codeGraphProvider: 'gitnexus' }, NOW), true);
   });
 });
 

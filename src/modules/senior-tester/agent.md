@@ -99,7 +99,13 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    the uncovered files), not a silent omission — never claim the target without
    the measurement; if coverage tooling is unavailable, say so explicitly.
 6. Run the active-stack test command. Capture the output.
-7. **Visual regression sweep** (projects with a UI): start the app/preview
+7. **Fresh build metadata gate** (projects with a UI): before E2E or visual QA,
+   prove the preview is backed by a build newer than the last changed source
+   file. Use the stack's production build, a fresh preview start timestamp, or
+   framework metadata (`dist/`, `.next/BUILD_ID`, Vite manifest, Expo/Native
+   bundle stamp) and record that evidence in the QA report. A stale `dist/` or
+   `.next/` directory is a blocker, not a green test.
+8. **Visual regression sweep** (projects with a UI): start the app/preview
    yourself (tear it down when done), then run the OBJECTIVE browser checks via
    local Playwright per the `browser-qa` skill — key routes render, zero
    console errors (filtered for dev noise), no horizontal overflow at THREE
@@ -114,15 +120,27 @@ You do **not** modify feature source code under `apps/*/src/`, `packages/*/src/`
    per route×width in your digest with the screenshot paths. You report facts — SUBJECTIVE design
    judgment (hierarchy, polish, intent) is the reviewer's/orchestrator's call
    on your screenshots, not yours; never stream screenshots into chat, only
-   paths. The scripted sweep is a bounded unit — when OpenCode delegation is
-   enabled, it may run there (free) and you verify its report.
-8. Placeholder hygiene: a package whose `test` script is a no-op ("no tests
+   paths. The structured QA report must include `status: "passed"`,
+   `status: "failed"`, `status: "blocked:sandbox"`, or
+   `status: "blocked:usage-limit"` per route/sweep. If local previewing or
+   browser launch is blocked by sandbox/network policy, record
+   `blocked:sandbox` with the exact command/error and do not claim visual QA is
+   green. If model/tool limits prevent continuing, record `blocked:usage-limit`.
+   The scripted sweep is a bounded unit — when OpenCode delegation is enabled,
+   it may run there (free) and you verify its report.
+   **Backend-only run:** when THIS run touched no frontend (no `frontend.md`/`senior-frontend.md`
+   implementer digest, no `apps/web` changes), there is nothing to sweep — write the exact line
+   `Visual QA not applicable — backend-only run, no frontend changes` in your digest so the run
+   still settles. Do NOT use this escape when the run touched the UI; a real frontend change
+   without QA evidence is a `TESTS_FAILING`/blocked finding, not "not applicable".
+9. Placeholder hygiene: a package whose `test` script is a no-op ("no tests
    yet", `exit 0`) inflates a green root run. Either write one real minimal
    test for it (within your scope) or list the package as a numbered finding —
    a `TESTS_GREEN` that includes no-op packages must say so.
-9. End with `TESTS_GREEN` if every test passed AND the visual sweep found no
-   objective failures, or `TESTS_FAILING — <one-line summary>` followed by a
-   numbered list of failures (visual findings included, with screenshot paths).
+10. End with `TESTS_GREEN` if every test passed AND the visual sweep found no
+   objective failures or blocked outcomes. Use `TESTS_FAILING — <one-line
+   summary>` followed by a numbered list for failing or blocked verification
+   (`blocked:sandbox` / `blocked:usage-limit` count as not green).
 
 ## Your verdict format
 

@@ -97,20 +97,46 @@ export function pruneSkillsDirective(stackOrState: unknown, allSkills: Iterable<
   return directive;
 }
 
+// The shipped agent doc for a role, across every layout: installed plugin
+// (`agents/<role>.md`), the source repo's built tree (`dist/agents/<role>.md`),
+// and the un-built source (`src/modules/<role>/agent.md`, used by tests). Empty
+// for a malformed role name.
+function roleAgentDocCandidates(role: string): string[] {
+  if (!/^[a-z0-9-]+$/.test(role)) return [];
+  const root = pluginRoot();
+  return [
+    path.join(root, 'agents', `${role}.md`),
+    path.join(root, 'dist', 'agents', `${role}.md`),
+    path.join(root, 'src', 'modules', role, 'agent.md'),
+  ];
+}
+
+// The role's full agent-doc BODY (everything after the YAML frontmatter), or null
+// when the doc is missing/empty. This is the SAME contract Claude/Codex receive as
+// the spawned subagent doc; the Cursor materializer inlines it so Cursor's per-role
+// agent file carries every MUST/gate, not just identity/scope.
+export function roleAgentBody(role: string): string | null {
+  for (const candidate of roleAgentDocCandidates(role)) {
+    let text = '';
+    try {
+      text = fs.readFileSync(candidate, 'utf8');
+    } catch {
+      continue;
+    }
+    if (!text.trim()) continue;
+    const body = text.replace(/^---\n[\s\S]*?\n---\n?/, '').trim();
+    if (body) return body;
+  }
+  return null;
+}
+
 // Skills a role's agent doc declares in its `skills:` frontmatter. The agent doc
 // is the single source of truth for a role's skill set — parsing it here (instead
 // of mirroring a TS map) means the subagent directive can never drift from what
 // the role document ships. Returns null when the doc/frontmatter is missing so
 // callers can fall back to the stack-wide directive.
 export function roleDeclaredSkills(role: string): Set<string> | null {
-  if (!/^[a-z0-9-]+$/.test(role)) return null;
-  const root = pluginRoot();
-  const candidates = [
-    path.join(root, 'agents', `${role}.md`),
-    path.join(root, 'dist', 'agents', `${role}.md`),
-    path.join(root, 'src', 'modules', role, 'agent.md'),
-  ];
-  for (const candidate of candidates) {
+  for (const candidate of roleAgentDocCandidates(role)) {
     let text = '';
     try {
       text = fs.readFileSync(candidate, 'utf8');

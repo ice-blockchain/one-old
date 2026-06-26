@@ -51,6 +51,11 @@ test('isMutatingPreToolUse flags writes/edits/mutating shell, allows read-only',
   assert.equal(isMutatingPreToolUse('Bash', { command: 'git restore .' }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'pip install requests' }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'cargo add serde' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'find . -name x -delete' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'find . -type f -exec rm {} ;' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'find . -type f -execdir sh {} ;' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'rg stale | xargs rm' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'echo $(rm -rf x)' }), true);
   // Inline interpreter eval (the named bypass): writes without a visible redirect.
   assert.equal(isMutatingPreToolUse('Bash', { command: `python -c "open('x','w').write('y')"` }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: `node -e "require('fs').writeFileSync('x','y')"` }), true);

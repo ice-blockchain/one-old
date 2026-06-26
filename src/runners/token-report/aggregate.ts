@@ -3,6 +3,7 @@
 // Ported 1:1 from token-report/aggregateSession.cjs + aggregateBySource.
 
 import { aggregateCodexSession } from './aggregateCodexSession';
+import { aggregateCursorSqliteEstimate } from './aggregateCursorSqliteEstimate';
 import { discoverSubagents } from './discovery';
 import { parseJsonlFile } from './parseJsonlFile';
 import type { Stats } from './lib';
@@ -22,7 +23,8 @@ export function aggregateSession(session: { parentJsonl: string; dir: string; [k
   return { source: 'claude', session, parent, subagents };
 }
 
-export function aggregateBySource(session: Rec): ClaudeAggregate | ReturnType<typeof aggregateCodexSession> {
+export function aggregateBySource(session: Rec): ClaudeAggregate | ReturnType<typeof aggregateCodexSession> | ReturnType<typeof aggregateCursorSqliteEstimate> {
+  if (session.sourceType === 'cursor') return aggregateCursorSqliteEstimate(session as unknown as Parameters<typeof aggregateCursorSqliteEstimate>[0]);
   return session.sourceType === 'codex'
     ? aggregateCodexSession(session as { jsonl: string })
     : aggregateSession(session as { parentJsonl: string; dir: string });

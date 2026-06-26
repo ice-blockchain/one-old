@@ -7,14 +7,18 @@
 import { obj, type Rec } from '../../shared/obj';
 import { roleCanWriteFeatureSource } from '../../shared/feature-source';
 import { matchesScope } from '../../shared/scope';
+import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import {
   activeAgentRole,
   assignmentForContext,
   captureClaimDebug,
+  claimThreadRole,
   hasRunAgentState,
+  hookSessionIdentity,
   isMaintenancePhase,
   isSubagentSession,
   legacyRunAgentContext,
+  type RunManifest,
   readRunAssignmentsResilient,
   resolveRunAgentContext,
   tryFallbackClaim,
@@ -60,6 +64,44 @@ function isArchitectScaffoldReservation(role: string | null | undefined, target:
   return role === 'senior-architect' && isArchitectEmptyPackageBarrelTarget(target);
 }
 
+// Cursor scope-attribution fallback. A spawned worker's write can carry NO role/parent/
+// transcript linkage (`transcript_path: null`, no parent_session_id, no subagent_type) — so
+// resolveRunAgentContext can't attribute it and it would be hard-denied (the tests/3c
+// deadlock: frontend BLOCKED → respawn spin → dead build). When the write comes from a
+// FOREIGN session (not the recorded orchestrator) and ALL its targets fall under a SINGLE
+// role's assigned scope, attribute it to that role and stake the claim. Disjoint assignment
+// scopes make this deterministic and disambiguate parallel frontend+backend spawns. Strictly
+// guarded so it never grants a write the gate should deny:
+//   - needs an authored assignment manifest (no manifest → null);
+//   - needs a session id that is a known FOREIGN thread — the orchestrator's own session is a
+//     recorded MAIN session, so a parent feature-source write is NOT attributed (deny stands);
+//   - every target must resolve to exactly ONE owning role; an unowned or scope-spanning write
+//     is ambiguous → null (deny stands).
+// Host parity: this only runs after transcript/agentId resolution fails, so Codex/Claude (which
+// always have a worker transcript or agent_id) resolve earlier and never reach it.
+function attributeForeignWriteBySpawnScope(
+  projectRoot: string,
+  state: Rec,
+  rawData: unknown,
+  manifest: RunManifest | null,
+  targets: string[],
+): RunAgentContext | null {
+  if (!manifest || targets.length === 0) return null;
+  const identity = hookSessionIdentity(rawData);
+  const sessionId = identity.sessionId;
+  if (!sessionId || !isForeignOnboardingThread(projectRoot, sessionId)) return null;
+  const roles = new Set<string>();
+  for (const target of targets) {
+    const owners = manifest.assignments.filter((a) => matchesScope(target, a.scope));
+    if (owners.length === 0) return null;            // a target nobody owns → don't attribute
+    for (const a of owners) roles.add(a.role);
+    if (roles.size > 1) return null;                 // targets span multiple roles → ambiguous
+  }
+  const role = [...roles][0];
+  if (!role) return null;
+  return claimThreadRole(projectRoot, state, sessionId, role, { parentSessionId: identity.parentSessionId || null });
+}
+
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const { projectRoot, filePath, state, rawData, content, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
@@ -88,7 +130,12 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   }
 
   const agentContext = resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true })
-    || (!hasRunAgentState(projectRoot, state) ? legacyRunAgentContext(state) : null);
+    || (!hasRunAgentState(projectRoot, state) ? legacyRunAgentContext(state) : null)
+    // Last resort for a Cursor worker whose write carries no role/parent/transcript linkage:
+    // attribute by assigned scope (see attributeForeignWriteBySpawnScope). Uses the same
+    // writeTargetPaths the scope checks below enforce on, so an attributed write is, by
+    // construction, inside its role's scope.
+    || attributeForeignWriteBySpawnScope(projectRoot, state, rawData, preManifest, writeTargetPaths);
   const acRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
   const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, state) && isSubagentSession(state));
   const role = acRole || activeAgentRole(state) || 'main agent';
@@ -99,6 +146,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Does NOT affect the decision below.
   captureClaimDebug(projectRoot, typeof state.currentRunId === 'string' ? state.currentRunId : null, 'runteam-write', rawData, {
     filePath,
+    filePaths: writeTargetPaths,
     resolved: Boolean(agentContext),
     role,
     runId: agentContext && agentContext.runId != null ? String(agentContext.runId) : null,

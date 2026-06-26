@@ -90,7 +90,6 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
     }
     if (
       codexHooks.hookStateEntryCount === 0
-      || codexHooks.hookStateEnabledCount !== codexHooks.hookStateEntryCount
       || codexHooks.hookStateTrustedHashCount !== codexHooks.hookStateEntryCount
       || (Array.isArray(codexHooks.missingHookEvents) && codexHooks.missingHookEvents.length > 0)
     ) {
@@ -149,6 +148,43 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
       severity: 'fix-needed',
       code: 'INCOMPLETE_ONBOARDING_STATE',
       message: `Traffic One new-project onboarding state is incomplete or noncanonical: missing/invalid ${stateIssues.join(', ')}. Re-run onboarding and do not continue until Agent Mode, Team Confirmation, project context, Mobile, and Code Graph are resolved.`,
+    });
+  }
+
+  const runState = project.runState;
+  if (runState?.currentRunId) {
+    if (!runState.runDirExists) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'GHOST_CURRENT_RUN_ID',
+        message: `\`.traffic-one/.one.json\` currentRunId=${JSON.stringify(runState.currentRunId)} points to no \`.traffic-one/runs/${runState.currentRunId}/\` directory. Doctor is report-only: after confirming no live agents are using it, clear or rotate the run id explicitly.`,
+      });
+    } else if (!runState.hasOrchestratedArtifacts && runState.maintenanceTerminalOrFallbackPending) {
+      findings.push({
+        severity: 'info',
+        code: runState.maintenanceFallbackAllowed ? 'MAINTENANCE_FALLBACK_PENDING' : 'MAINTENANCE_RUN_TERMINAL',
+        message: `currentRunId=${JSON.stringify(runState.currentRunId)} has maintenance metadata (${runState.maintenanceOverallOutcome || runState.maintenanceOutcome || runState.maintenanceOpencodeOutcome || 'unknown'}). This is not a ghost run; Doctor will not rewrite it automatically.`,
+      });
+    } else if (!runState.hasOrchestratedArtifacts && runState.runJsonStatus !== 'planned') {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'GHOST_CURRENT_RUN_ID',
+        message: `\`.traffic-one/.one.json\` currentRunId=${JSON.stringify(runState.currentRunId)} has no orchestrated artifacts (no assignments/digests) and is not a planned run ledger. Doctor will not rewrite it automatically; inspect the run directory, then clear or rotate the id if no live work depends on it.`,
+      });
+    } else if (runState.runJsonStatus === 'planned' && !runState.hasOrchestratedArtifacts) {
+      findings.push({
+        severity: 'info',
+        code: 'PLANNED_RUN_LEDGER_ONLY',
+        message: `currentRunId=${JSON.stringify(runState.currentRunId)} is a planned run ledger only. This is valid pre-orchestration state; \`run.json\` alone does not count as assignments or digests.`,
+      });
+    }
+  }
+
+  if (Array.isArray(project.nestedTrafficOneRoots) && project.nestedTrafficOneRoots.length > 0) {
+    findings.push({
+      severity: 'fix-needed',
+      code: 'NESTED_TRAFFIC_ONE_ROOTS',
+      message: `Nested Traffic One state roots were found inside this workspace: ${project.nestedTrafficOneRoots.join(', ')}. Hooks will not delete them automatically; inspect them, then use the cleanup runner in apply mode only after confirming the ancestor workspace root is the real project.`,
     });
   }
 

@@ -43,6 +43,7 @@ export function ensureCurrentRunId(cwd: string, state: unknown): string {
   const runId = runIdNow();
   source.currentRunId = runId;
   writeState(cwd, source);
+  ensureRunLedger(cwd, runId, { status: 'planned', kind: 'spawn-gate', stackFingerprint: stackFingerprint(source) });
   // Keep the caller's in-memory `state` in sync so a later ensureRunAgentClaim (which
   // reads currentRunId off the SAME state object) reuses THIS id instead of minting a
   // second one. Without this the spawn's run markers (OpenCode attempts, model
@@ -62,6 +63,9 @@ function runsRoot(cwd: string): string {
 function runDir(cwd: string, runId: string): string {
   return path.join(runsRoot(cwd), safePathSegment(runId));
 }
+function runLedgerFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'run.json');
+}
 function pendingDir(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'pending');
 }
@@ -76,6 +80,31 @@ function fallbackClaimsDir(cwd: string, runId: string): string {
 }
 function fallbackClaimFile(cwd: string, runId: string, target: string): string {
   return path.join(fallbackClaimsDir(cwd, runId), `${safePathSegment(target)}.json`);
+}
+
+export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
+  if (isPluginAuthoringRoot(cwd)) return null;
+  if (typeof runId !== 'string' || !runId.trim()) return null;
+  const id = runId.trim();
+  const now = stateTimestamp();
+  const existing = obj(readJson(runLedgerFile(cwd, id), null)) || {};
+  const next: Rec = {
+    version: typeof existing.version === 'number' ? existing.version : 1,
+    runId: typeof existing.runId === 'string' && existing.runId ? existing.runId : id,
+    status: typeof existing.status === 'string' && existing.status ? existing.status : 'planned',
+    kind: typeof existing.kind === 'string' && existing.kind ? existing.kind : 'planned',
+    createdAt: typeof existing.createdAt === 'string' && existing.createdAt ? existing.createdAt : now,
+    ...existing,
+    ...patch,
+    updatedAt: now,
+  };
+  try {
+    fs.mkdirSync(runDir(cwd, id), { recursive: true });
+    writeJson(runLedgerFile(cwd, id), next);
+    return next;
+  } catch {
+    return null;
+  }
 }
 
 function firstString(...values: unknown[]): string | null {
@@ -392,6 +421,38 @@ function listPendingClaims(cwd: string, runId: string): PendingClaim[] {
   }
 }
 
+export function pruneExpiredPendingClaims(cwd: string, runId?: string): number {
+  const runIds = typeof runId === 'string' && runId.trim()
+    ? [runId.trim()]
+    : (() => {
+      try {
+        return fs.readdirSync(runsRoot(cwd), { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name);
+      } catch {
+        return [];
+      }
+    })();
+  let removed = 0;
+  for (const id of runIds) {
+    const dir = pendingDir(cwd, id);
+    let before = 0;
+    try {
+      before = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith('.json')).length;
+    } catch {
+      continue;
+    }
+    listPendingClaims(cwd, id);
+    try {
+      const after = fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isFile() && entry.name.endsWith('.json')).length;
+      removed += Math.max(0, before - after);
+    } catch {
+      removed += before;
+    }
+  }
+  return removed;
+}
+
 function newestPending(items: PendingClaim[]): PendingClaim | null {
   if (!items.length) return null;
   return [...items].sort((left, right) => String(right.claim.createdAt).localeCompare(String(left.claim.createdAt)))[0] || null;
@@ -637,7 +698,11 @@ function listClaimedAgents(cwd: string, runId: string): Rec[] {
     return fs.readdirSync(dir, { withFileTypes: true })
       .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
       .map((entry) => readClaimFile(path.join(dir, entry.name)))
-      .filter((claim): claim is Rec => claim !== null);
+      .filter((claim): claim is Rec => (
+        claim !== null
+        && typeof claim.role === 'string'
+        && VALID_AGENT_ROLES.has(claim.role)
+      ));
   } catch {
     return [];
   }
@@ -685,6 +750,7 @@ export function ensureRunAgentClaim(
   };
 
   fs.mkdirSync(pendingDir(cwd, runId), { recursive: true });
+  ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
   writeJson(path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`), claim);
 
   source.currentRunId = runId;
@@ -810,6 +876,7 @@ export function resolveRunAgentContext(
         claimedAt: stateTimestamp(),
       };
       fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+      ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(state) });
       writeJson(runAgentFile(cwd, runId, sessionId), claimed);
       try {
         fs.rmSync(matched.filePath, { force: true });
@@ -874,6 +941,7 @@ export function claimThreadRole(
     model: model || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null),
   };
   fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+  ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
   writeJson(runAgentFile(cwd, runId, id), claim);
   if (pending) removePendingClaim(pending.filePath);
   removeSiblingPendingClaims(cwd, source, runId, role, claim.parentSessionId as string | null, claim.claimId as string | null);
@@ -901,7 +969,12 @@ export function hasRunAgentState(cwd: string, state: unknown): boolean {
   const s = obj(state);
   const runId = s && typeof s.currentRunId === 'string' ? s.currentRunId : null;
   if (!runId) return false;
-  return fs.existsSync(runDir(cwd, runId));
+  if (listPendingClaims(cwd, runId).length > 0) return true;
+  if (listClaimedAgents(cwd, runId).length > 0) return true;
+  if (fs.existsSync(assignmentsFile(cwd, runId))) return true;
+  const registry = obj(readJson(agentRegistryFile(cwd, runId), null));
+  const agents = registry ? obj(registry.agents) : null;
+  return Boolean(agents && Object.keys(agents).length > 0);
 }
 
 // True when any subagent is currently in flight across all runs: a fresh pending
@@ -979,14 +1052,38 @@ function stringArray(value: unknown): string[] {
 // readOnlyPaths→scope.exclude (the role must not write another role's read-only paths).
 function rawAssignmentEntries(raw: Rec): unknown[] {
   if (Array.isArray(raw.assignments)) return raw.assignments;
+  const assignmentObject = obj(raw.assignments);
+  if (assignmentObject) {
+    const entries: unknown[] = [];
+    for (const [role, value] of Object.entries(assignmentObject)) {
+      const v = obj(value);
+      if (!v) continue;
+      const scope = obj(v.scope);
+      const include = stringArray(scope?.include).length
+        ? stringArray(scope?.include)
+        : (stringArray(v.writeScope).length ? stringArray(v.writeScope) : stringArray(v.include));
+      const exclude = stringArray(scope?.exclude).length ? stringArray(scope?.exclude) : stringArray(v.exclude);
+      entries.push({
+        role,
+        summary: typeof v.description === 'string' ? v.description : (typeof v.summary === 'string' ? v.summary : undefined),
+        scope: exclude.length ? { include, exclude } : { include },
+      });
+    }
+    return entries;
+  }
   const roles = obj(raw.roles);
   if (!roles) return [];
   const entries: unknown[] = [];
   for (const [role, value] of Object.entries(roles)) {
     const v = obj(value);
     if (!v) continue;
-    const include = stringArray(v.ownedPaths).length ? stringArray(v.ownedPaths) : stringArray(v.include);
-    const exclude = stringArray(v.readOnlyPaths).length ? stringArray(v.readOnlyPaths) : stringArray(v.exclude);
+    const scope = obj(v.scope);
+    const include = stringArray(v.ownedPaths).length
+      ? stringArray(v.ownedPaths)
+      : (stringArray(scope?.include).length ? stringArray(scope?.include) : stringArray(v.include));
+    const exclude = stringArray(v.readOnlyPaths).length
+      ? stringArray(v.readOnlyPaths)
+      : (stringArray(scope?.exclude).length ? stringArray(scope?.exclude) : stringArray(v.exclude));
     entries.push({ role, scope: exclude.length ? { include, exclude } : { include } });
   }
   return entries;
@@ -1072,8 +1169,86 @@ function readDigest(cwd: string, runId: string, name: string): string {
   try {
     return fs.readFileSync(path.join(digestDir(cwd, runId), name), 'utf8');
   } catch {
-    return '';
+    if (name.startsWith('senior-')) return '';
+    try {
+      return fs.readFileSync(path.join(digestDir(cwd, runId), `senior-${name}`), 'utf8');
+    } catch {
+      return '';
+    }
   }
+}
+
+function frontendQaRequired(cwd: string): boolean {
+  const memoryDir = '.traffic' + '-one';
+  const state = obj(readJson(path.join(cwd, memoryDir, '.one.json'), null));
+  if (!state) return false;
+  const frontend = typeof state.frontend === 'string' ? state.frontend.trim().toLowerCase() : '';
+  const stack = typeof state.stack === 'string' ? state.stack.trim().toLowerCase() : '';
+  if (frontend && frontend !== 'none') return true;
+  return stack === 'default' || stack.includes('react') || stack.includes('vite') || fs.existsSync(path.join(cwd, 'apps', 'web'));
+}
+
+function testerDigestHasQaNotApplicable(tester: string): boolean {
+  return /\b(?:qa|visual|browser|e2e)\b[\s\S]{0,160}\bnot applicable\b/i.test(tester)
+    && /\b(?:reason|because|backend-only|api-only|no frontend|no browser surface)\b/i.test(tester);
+}
+
+function dirHasAnyFile(dir: string, suffixes: readonly string[]): boolean {
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory() && dirHasAnyFile(p, suffixes)) return true;
+      if (entry.isFile() && suffixes.some((suffix) => entry.name.endsWith(suffix))) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function runCreatedAtMs(cwd: string, runId: string): number {
+  const rec = obj(readJson(runLedgerFile(cwd, runId), null));
+  const raw = rec && typeof rec.createdAt === 'string' ? rec.createdAt : '';
+  const parsed = raw ? Date.parse(raw) : NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function dirHasFreshFile(dir: string, suffixes: readonly string[], minMtimeMs: number): boolean {
+  try {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory() && dirHasFreshFile(p, suffixes, minMtimeMs)) return true;
+      if (entry.isFile() && suffixes.some((suffix) => entry.name.endsWith(suffix))) {
+        if (minMtimeMs <= 0) return true;
+        try {
+          if (fs.statSync(p).mtimeMs + 1000 >= minMtimeMs) return true;
+        } catch {
+          // ignore unreadable candidates
+        }
+      }
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+function runHasQaEvidence(cwd: string, runId: string, tester: string): boolean {
+  if (!frontendQaRequired(cwd)) return true;
+  // Per-RUN gate: QA evidence is only required when THIS run actually touched the frontend
+  // (produced a frontend implementer digest; readDigest falls back to senior-frontend.md).
+  // A backend-only run in a frontend project legitimately has no screenshots/Lighthouse —
+  // gating it on project-level frontend config would leave runReachedTerminalVerdict false
+  // forever and pin currentRunId against rotation (the rotation-deadlock class). A genuine
+  // frontend run still requires real evidence (or the explicit N/A escape) below.
+  if (!readDigest(cwd, runId, 'frontend.md').trim()) return true;
+  const memoryDir = '.traffic' + '-one';
+  const qaDir = path.join(cwd, memoryDir, 'reports', 'qa', safePathSegment(runId));
+  if (fs.existsSync(path.join(qaDir, 'report.json'))) return true;
+  if (dirHasAnyFile(qaDir, ['.png', '.jpg', '.jpeg', '.webp', '.json'])) return true;
+  const lighthouseDir = path.join(cwd, memoryDir, 'reports', 'lighthouse');
+  if (dirHasFreshFile(lighthouseDir, ['.json', '.html'], runCreatedAtMs(cwd, runId))) return true;
+  return testerDigestHasQaNotApplicable(tester);
 }
 
 // True when run <runId>'s verification has TERMINALLY settled: a shipper digest
@@ -1094,6 +1269,27 @@ export function runReachedTerminalVerdict(cwd: string, runId: unknown): boolean 
   const tester = readDigest(cwd, runId, 'tester.md');
   const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
   const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
+  return reviewerApproved && testerPassed && runHasQaEvidence(cwd, runId, tester);
+}
+
+// Prompt-boundary "settled enough to rotate the run id" — used ONLY by the maintenance
+// run-id rotation guard (triage-directive.beginFreshMaintenanceRun), NEVER by the mid-turn
+// maintenance flip. A run that produced implementer output AND earned reviewer APPROVED +
+// tester TESTS_GREEN is finished; rotating away from it at a prompt boundary is safe even if
+// the QA-evidence gate didn't pass — otherwise a frontend build that skipped QA artifacts
+// (and omitted the N/A escape) pins currentRunId forever while the project still flips to
+// maintenance via anyRunProducedImplementerOutput, and the next feature reuses the stale run
+// id + spawnIndex. The STRICT bar (runReachedTerminalVerdict, incl. the QA gate) is kept
+// everywhere else. Both green verdicts co-occur only after the run is done, so this never
+// rotates a genuinely in-flight (still-verifying) run.
+export function runSettledForRotation(cwd: string, runId: unknown): boolean {
+  if (runReachedTerminalVerdict(cwd, runId)) return true;
+  if (typeof runId !== 'string' || !runId) return false;
+  if (!readDigest(cwd, runId, 'frontend.md').trim() && !readDigest(cwd, runId, 'backend.md').trim()) return false;
+  const reviewer = readDigest(cwd, runId, 'reviewer.md');
+  const tester = readDigest(cwd, runId, 'tester.md');
+  const reviewerApproved = /\bAPPROVED\b/.test(reviewer) && !/\bCHANGES_REQUESTED\b/.test(reviewer);
+  const testerPassed = /\b(TESTS_GREEN|APPROVED)\b/.test(tester) && !/\b(TESTS_FAILING|DELEGATED_OK)\b/.test(tester);
   return reviewerApproved && testerPassed;
 }
 
@@ -1102,8 +1298,10 @@ function maintenanceRunReachedTerminal(cwd: string, runId: string): boolean {
     const parsed = readJson(path.join(runDir(cwd, runId), 'maintenance.json'), null);
     const rec = obj(parsed);
     if (!rec || rec.version !== 1) return false;
-    const outcome = typeof rec.outcome === 'string' ? rec.outcome : '';
-    return outcome === 'success' || outcome === 'failed' || outcome === 'skipped' || outcome === 'fallback-paid';
+    const overall = typeof rec.overallOutcome === 'string' ? rec.overallOutcome : '';
+    const outcome = overall || (typeof rec.outcome === 'string' ? rec.outcome : '');
+    return outcome === 'success' || outcome === 'completed' || outcome === 'blocked'
+      || outcome === 'failed' || outcome === 'skipped' || outcome === 'fallback-paid';
   } catch {
     return false;
   }
@@ -1119,7 +1317,9 @@ export function runHasOrchestratedArtifacts(cwd: string, runId: unknown): boolea
   try {
     if (fs.existsSync(assignmentsFile(cwd, runId))) return true;
     const dd = digestDir(cwd, runId);
-    return ['architect.md', 'frontend.md', 'backend.md', 'reviewer.md', 'tester.md'].some((n) => fs.existsSync(path.join(dd, n)));
+    return ['architect.md', 'frontend.md', 'backend.md', 'reviewer.md', 'tester.md',
+      'senior-architect.md', 'senior-frontend.md', 'senior-backend.md', 'senior-reviewer.md', 'senior-tester.md']
+      .some((n) => fs.existsSync(path.join(dd, n)));
   } catch {
     return false;
   }
@@ -1155,7 +1355,12 @@ export function anyRunProducedImplementerOutput(cwd: string): boolean {
     for (const entry of fs.readdirSync(base, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
       const dd = digestDir(cwd, entry.name);
-      if (['frontend.md', 'backend.md'].some((n) => fs.existsSync(path.join(dd, n)))) return true;
+      // Accept both bare and senior-* implementer digest names. Cursor's write path can
+      // emit senior-frontend.md / senior-backend.md; checking only the bare forms here
+      // (while runHasOrchestratedArtifacts/readDigest accept both) would leave a
+      // senior-*-only build wedged in 'building' at the prompt boundary.
+      if (['frontend.md', 'backend.md', 'senior-frontend.md', 'senior-backend.md']
+        .some((n) => fs.existsSync(path.join(dd, n)))) return true;
     }
   } catch {
     // best-effort — no digests dir means nothing has been implemented yet
@@ -1277,6 +1482,48 @@ export interface RunAgentEntry {
   replaced: boolean;
 }
 
+const VERDICT_AGENT_ROLES = new Set(['senior-reviewer', 'senior-tester']);
+
+export interface VerdictAgentConflict {
+  role: string;
+  agentId: string;
+  matchedId: string;
+}
+
+function idsForRunAgent(entry: RunAgentEntry | Rec | null | undefined): string[] {
+  const e = obj(entry);
+  if (!e) return [];
+  return [e.agentId, e.resumeId, e.toolCallId]
+    .filter((id): id is string => typeof id === 'string' && id.trim().length > 0)
+    .map((id) => id.trim());
+}
+
+function verdictConflictFromAgents(agents: Rec, role: string, ids: readonly string[]): VerdictAgentConflict | null {
+  if (!VERDICT_AGENT_ROLES.has(role)) return null;
+  const wanted = new Set(ids.map((id) => id.trim()).filter(Boolean));
+  if (wanted.size === 0) return null;
+  for (const [otherRole, value] of Object.entries(agents)) {
+    if (otherRole === role) continue;
+    const entry = obj(value);
+    if (!entry || entry.replaced === true) continue;
+    for (const id of idsForRunAgent(entry)) {
+      if (wanted.has(id)) {
+        return {
+          role: otherRole,
+          agentId: typeof entry.agentId === 'string' ? entry.agentId : id,
+          matchedId: id,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+export function verdictAgentConflict(cwd: string, runId: string, role: string, agentId: unknown): VerdictAgentConflict | null {
+  if (typeof agentId !== 'string' || !agentId.trim()) return null;
+  return verdictConflictFromAgents(readRunAgentRegistry(cwd, runId), role, [agentId.trim()]);
+}
+
 /** Cursor surfaces spawn tool-call ids as `tool_<uuid>` — these do NOT work with Task `resume`. */
 export function isCursorToolSubagentId(id: string): boolean {
   return /^tool_[0-9a-f-]{8,}$/i.test(id.trim());
@@ -1335,7 +1582,9 @@ export function recordRunAgent(
 ): void {
   if (!VALID_AGENT_ROLES.has(role)) return;
   if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
-  const agents = readRunAgentRegistry(cwd, runId) as Rec;
+  const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+  const agents = obj(registry.agents) || {};
+  const history = Array.isArray(registry.history) ? registry.history.filter((item) => item && typeof item === 'object') : [];
   const prior = obj(agents[role]);
   const incomingId = entry.agentId.trim();
   const incomingResume = (entry.resumeId && isResumeCapableAgentId(entry.resumeId) ? entry.resumeId.trim() : null)
@@ -1350,6 +1599,28 @@ export function recordRunAgent(
     || (prior && typeof prior.toolCallId === 'string' ? (prior.toolCallId as string) : null);
   // agentId stays backward-compatible: prefer the resume-capable id when known.
   const agentId = resumeId || incomingId || (prior && typeof prior.agentId === 'string' ? (prior.agentId as string) : incomingId);
+  const conflict = verdictConflictFromAgents(agents, role, [agentId, resumeId || '', toolCallId || '']);
+  if (conflict) {
+    const conflicts = Array.isArray(registry.conflicts) ? registry.conflicts.filter((item) => item && typeof item === 'object') : [];
+    conflicts.push({
+      role,
+      rejectedAgentId: agentId,
+      rejectedResumeId: resumeId,
+      rejectedToolCallId: toolCallId,
+      conflictingRole: conflict.role,
+      conflictingAgentId: conflict.agentId,
+      matchedId: conflict.matchedId,
+      recordedAt: stateTimestamp(),
+      reason: 'verdict-role-cannot-reuse-another-role-agent',
+    });
+    try {
+      fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents, history, conflicts: conflicts.slice(-50) });
+    } catch {
+      // best-effort diagnostic; never bind the unsafe cross-role agent
+    }
+    return;
+  }
   const sameAgent = prior
     && prior.replaced !== true
     && ((prior.agentId === agentId)
@@ -1363,6 +1634,20 @@ export function recordRunAgent(
   const priorModel = prior && typeof prior.model === 'string' && prior.model ? prior.model : null;
   const priorAgentType = prior && typeof prior.agentType === 'string' && prior.agentType ? prior.agentType : null;
   const priorParentSessionId = prior && typeof prior.parentSessionId === 'string' && prior.parentSessionId ? prior.parentSessionId : null;
+  const recordedAt = stateTimestamp();
+  const nextHistory = history.slice(-99);
+  if (prior && !sameAgent) {
+    nextHistory.push({
+      role,
+      replacedAt: typeof prior.replacedAt === 'string' ? prior.replacedAt : recordedAt,
+      replacementReason: typeof prior.replacementReason === 'string' ? prior.replacementReason : 'new-agent-recorded',
+      oldAgentId: typeof prior.agentId === 'string' ? prior.agentId : null,
+      oldResumeId: typeof prior.resumeId === 'string' ? prior.resumeId : null,
+      oldToolCallId: typeof prior.toolCallId === 'string' ? prior.toolCallId : null,
+      newAgentId: agentId,
+      parentSessionId: priorParentSessionId,
+    });
+  }
   agents[role] = {
     agentId,
     resumeId,
@@ -1370,13 +1655,13 @@ export function recordRunAgent(
     model: firstString(entry.model, sameAgent ? priorModel : null),
     agentType: firstString(entry.agentType, sameAgent ? priorAgentType : null),
     parentSessionId: firstString(entry.parentSessionId, sameAgent ? priorParentSessionId : null),
-    recordedAt: stateTimestamp(),
+    recordedAt,
     tasks: sameAgent && typeof prior?.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
     replaced: false,
   };
   try {
     fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents });
+    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents, history: nextHistory });
   } catch {
     // best-effort registry; reuse falls back to fresh spawns when unwritable
   }
@@ -1439,12 +1724,15 @@ export function liveRunAgent(
 // for the role is allowed and the recorder overwrites the entry.
 export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
   if (isPluginAuthoringRoot(cwd)) return;
-  const agents = readRunAgentRegistry(cwd, runId) as Rec;
+  const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+  const agents = obj(registry.agents) || {};
   const entry = obj(agents[role]);
   if (!entry) return;
   entry.replaced = true;
+  entry.replacedAt = stateTimestamp();
+  entry.replacementReason = 'explicit-replace-agent-marker';
   try {
-    writeJson(agentRegistryFile(cwd, runId), { version: 1, agents });
+    writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
   } catch {
     // best-effort
   }

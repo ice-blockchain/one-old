@@ -9,8 +9,14 @@ import {
   anyRunReachedTerminalVerdict,
   claimThreadRole,
   continuationAgentId,
+  ensureCurrentRunId,
   ensureRunAgentClaim,
+  ensureRunLedger,
+  hasActiveRunClaims,
+  hasRunAgentState,
   inferRoleFromTranscript,
+  markRunAgentReplaced,
+  pruneExpiredPendingClaims,
   readRunAgentRegistry,
   readRunAssignments,
   readRunAssignmentsResilient,
@@ -20,6 +26,7 @@ import {
   runHasOrchestratedArtifacts,
   runIdNow,
   runReachedTerminalVerdict,
+  runSettledForRotation,
   transcriptThreadId,
 } from '../run-agent';
 import { stackFingerprint } from '../materialization';
@@ -36,6 +43,36 @@ function writeMaintenanceMarker(dir: string, runId: string, outcome: string): vo
   fs.mkdirSync(d, { recursive: true });
   fs.writeFileSync(path.join(d, 'maintenance.json'), JSON.stringify({ version: 1, outcome }), 'utf8');
 }
+
+test('QA-evidence gate is per-run: backend-only run is terminal; frontend run still needs QA but can rotate', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-qa-perrun-'));
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    // Frontend project → QA is required project-wide (the old project-level gate).
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'),
+      JSON.stringify({ mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase' }));
+    // BACKEND-ONLY run: green verdicts + backend.md, but NO frontend.md and NO QA artifacts.
+    // Must be terminal — gating it on project-level frontend config pinned currentRunId forever.
+    writeDigest(dir, 'rb', 'backend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'rb', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'rb', 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, 'rb'), true, 'backend-only run does not require QA evidence');
+    // FRONTEND run (frontend.md present), green, but no QA artifacts → still NOT terminal
+    // (the QA enforcement for genuine frontend runs is preserved)...
+    writeDigest(dir, 'rf', 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'rf', 'reviewer.md', 'APPROVED');
+    writeDigest(dir, 'rf', 'tester.md', 'TESTS_GREEN');
+    assert.equal(runReachedTerminalVerdict(dir, 'rf'), false, 'frontend run still requires QA evidence');
+    // ...but it is "settled enough to rotate" at a prompt boundary, so currentRunId is never
+    // pinned forever (the rotation-deadlock class). An in-flight run (no green verdicts) is not.
+    assert.equal(runSettledForRotation(dir, 'rf'), true, 'finished frontend run rotates even without QA');
+    writeDigest(dir, 'rx', 'frontend.md', 'BUILD_COMPLETE');
+    writeDigest(dir, 'rx', 'reviewer.md', 'CHANGES_REQUESTED');
+    assert.equal(runSettledForRotation(dir, 'rx'), false, 'a still-verifying run does not rotate');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('runReachedTerminalVerdict requires terminal verdict tokens, not mere digest existence', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-verdict-'));
@@ -80,6 +117,19 @@ test('runReachedTerminalVerdict treats terminal maintenance markers as settled r
     assert.equal(runReachedTerminalVerdict(dir, 'quick-1'), true);
     writeMaintenanceMarker(dir, 'quick-2', 'running');
     assert.equal(runReachedTerminalVerdict(dir, 'quick-2'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('anyRunProducedImplementerOutput detects senior-* implementer digests (Cursor double-emit)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-impl-senior-'));
+  try {
+    assert.equal(anyRunProducedImplementerOutput(dir), false);
+    // Cursor's write path can emit only the senior-prefixed digest. It must still count as
+    // implementer output, or a finished build wedges in 'building' at the prompt boundary.
+    writeDigest(dir, 'r1', 'senior-frontend.md', 'BUILD_COMPLETE');
+    assert.equal(anyRunProducedImplementerOutput(dir), true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -140,6 +190,8 @@ test('runHasOrchestratedArtifacts: schema-agnostic raw-existence of assignments 
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-artifacts-'));
   try {
     assert.equal(runHasOrchestratedArtifacts(dir, 'R'), false); // nothing yet
+    ensureRunLedger(dir, 'R', { status: 'planned', kind: 'maintenance-triage' });
+    assert.equal(runHasOrchestratedArtifacts(dir, 'R'), false, 'run.json alone is not an orchestrated run');
     // A non-conforming assignments.json (would NOT parse) still counts — raw existence.
     const rd = path.join(dir, '.traffic-one', 'runs', 'R');
     fs.mkdirSync(rd, { recursive: true });
@@ -169,6 +221,39 @@ function withPrefs<T>(fn: (dir: string) => T): T {
 
 test('runIdNow returns a unix epoch millisecond string', () => {
   assert.match(runIdNow(), /^\d{13}$/);
+});
+
+test('ensureCurrentRunId writes a minimal planned run ledger', () => {
+  withPrefs((dir) => {
+    const state = { mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
+    const runId = ensureCurrentRunId(dir, state);
+    assert.match(runId, /^\d{13}$/);
+    const ledger = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'run.json'), 'utf8'));
+    assert.equal(ledger.status, 'planned');
+    assert.equal(ledger.kind, 'spawn-gate');
+    assert.equal(ledger.runId, runId);
+    assert.equal(runHasOrchestratedArtifacts(dir, runId), false);
+  });
+});
+
+test('hasActiveRunClaims ignores run.json planned ledgers without agent claims', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    assert.equal(hasActiveRunClaims(dir, state), false);
+    assert.equal(hasRunAgentState(dir, state), false);
+    assert.ok(fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, 'run.json')));
+  });
+});
+
+test('hasRunAgentState counts real run-agent artifacts, not planned ledger directories', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const runId = ensureCurrentRunId(dir, state);
+    assert.equal(hasRunAgentState(dir, state), false);
+    writeAssignments(dir, runId, 'senior-frontend');
+    assert.equal(hasRunAgentState(dir, state), true);
+  });
 });
 
 function writeAssignments(dir: string, runId: string, role: string): void {
@@ -205,6 +290,37 @@ test('readRunAssignmentsResilient prefers the exact runId over the fallback', ()
   }
 });
 
+test('readRunAssignments tolerates scope.include and object-shaped writeScope assignments', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-assign-shapes-'));
+  try {
+    const d1 = path.join(dir, '.traffic-one', 'runs', 'roles-scope');
+    fs.mkdirSync(d1, { recursive: true });
+    fs.writeFileSync(path.join(d1, 'assignments.json'), JSON.stringify({
+      roles: {
+        'senior-frontend': { scope: { include: ['apps/web/**'], exclude: ['services/**'] } },
+      },
+    }), 'utf8');
+    assert.deepEqual(readRunAssignments(dir, 'roles-scope')?.assignments[0]?.scope, {
+      include: ['apps/web/**'],
+      exclude: ['services/**'],
+    });
+
+    const d2 = path.join(dir, '.traffic-one', 'runs', 'object-shape');
+    fs.mkdirSync(d2, { recursive: true });
+    fs.writeFileSync(path.join(d2, 'assignments.json'), JSON.stringify({
+      assignments: {
+        'senior-backend': { description: 'API', writeScope: ['services/api/**'] },
+      },
+    }), 'utf8');
+    const m = readRunAssignments(dir, 'object-shape');
+    assert.equal(m?.assignments[0]?.role, 'senior-backend');
+    assert.equal(m?.assignments[0]?.summary, 'API');
+    assert.deepEqual(m?.assignments[0]?.scope.include, ['services/api/**']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('ensureRunAgentClaim writes a pending claim and stamps run state', () => {
   withPrefs((dir) => {
     const claim = ensureRunAgentClaim(dir, { stack: 'default' }, 'senior-frontend', {}, { toolName: 'Task' });
@@ -217,6 +333,9 @@ test('ensureRunAgentClaim writes a pending claim and stamps run state', () => {
     const pending = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
     assert.equal(fs.existsSync(pending), true);
     assert.equal(fs.readdirSync(pending).filter((f) => f.endsWith('.json')).length, 1);
+    const ledger = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'run.json'), 'utf8'));
+    assert.equal(ledger.status, 'active');
+    assert.equal(ledger.kind, 'agent-claim');
 
     const onDisk = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(onDisk.currentRunId, runId);
@@ -227,6 +346,34 @@ test('ensureRunAgentClaim writes a pending claim and stamps run state', () => {
 test('ensureRunAgentClaim rejects unknown roles', () => {
   withPrefs((dir) => {
     assert.equal(ensureRunAgentClaim(dir, {}, 'bogus-role', {}, {}), null);
+  });
+});
+
+test('pruneExpiredPendingClaims removes stale pending claims and keeps fresh ones', () => {
+  withPrefs((dir) => {
+    const runId = 'run-prune';
+    const pending = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    fs.mkdirSync(pending, { recursive: true });
+    fs.writeFileSync(path.join(pending, 'old.json'), JSON.stringify({
+      version: 1,
+      runId,
+      claimId: 'old',
+      role: 'senior-backend',
+      status: 'pending',
+      createdAt: '1970-01-01T00:00:00Z',
+    }), 'utf8');
+    fs.writeFileSync(path.join(pending, 'fresh.json'), JSON.stringify({
+      version: 1,
+      runId,
+      claimId: 'fresh',
+      role: 'senior-frontend',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+    assert.equal(pruneExpiredPendingClaims(dir, runId), 1);
+    const remaining = fs.readdirSync(pending).filter((name) => name.endsWith('.json'));
+    assert.equal(remaining.length, 1);
+    assert.ok(!remaining.includes('old.json'));
   });
 });
 
@@ -621,6 +768,37 @@ test('recordRunAgent: Cursor tool_* id is stored separately from Task resume UUI
     assert.equal(entry!.parentSessionId, 'parent-1');
     assert.equal(entry!.tasks, 2);
     assert.equal(continuationAgentId(entry!, 'cursor'), 'bff46cd7-3681-4cf0-adcf-263bf55cc301');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recordRunAgent preserves replacement history while keeping the live role slot', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agent-history-'));
+  try {
+    recordRunAgent(dir, 'run-1', 'senior-frontend', {
+      agentId: 'agent-old',
+      parentSessionId: 'parent-1',
+      model: 'old-model',
+    });
+    markRunAgentReplaced(dir, 'run-1', 'senior-frontend');
+    recordRunAgent(dir, 'run-1', 'senior-frontend', {
+      agentId: 'agent-new',
+      parentSessionId: 'parent-1',
+      model: 'new-model',
+    });
+
+    const live = readRunAgentRegistry(dir, 'run-1')['senior-frontend'];
+    assert.equal(live?.agentId, 'agent-new');
+    assert.equal(live?.replaced, false);
+    assert.equal(live?.tasks, 1);
+
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', 'run-1', 'agents.json'), 'utf8'));
+    assert.equal(raw.history.length, 1);
+    assert.equal(raw.history[0].role, 'senior-frontend');
+    assert.equal(raw.history[0].oldAgentId, 'agent-old');
+    assert.equal(raw.history[0].newAgentId, 'agent-new');
+    assert.equal(raw.history[0].replacementReason, 'explicit-replace-agent-marker');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -21,6 +21,7 @@ import {
   pickCursorSlug,
 } from '../../shared/materialize/cursor-models';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
+import { recordOpenCodeFallback } from '../../shared/opencode-queue';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { AGENT_ROLES } from '../../config/performance';
 import { makeSkillBlock } from '../../shared/skill-block';
@@ -57,6 +58,7 @@ import {
   readEffectiveState,
   REPLACE_AGENT_MARKER,
   subagentContinuationAvailable,
+  verdictAgentConflict,
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { strayRunIdInText } from '../../shared/run-id-paths';
@@ -397,7 +399,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // batch can never mark it attempted) — let it proceed to the paid implementer.
   if (shouldRunRoleOnOpenCode(role, state)) {
     const runId = ensureCurrentRunId(cwd, state);
-    if (runId && (roleHasQueuedUnits(cwd, role) || isMaintenancePhase(state))
+    if (runId && (roleHasQueuedUnits(cwd, role, runId) || isMaintenancePhase(state))
       && !openCodeRoleAttempted(cwd, runId, role)
       && !openCodePlanRoleCompleted(cwd, runId, role)
       && !openCodePlanBatchComplete(cwd, runId)
@@ -405,6 +407,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
       markOpenCodeGateDenied(cwd, runId, role);
       return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
     }
+  }
+  if (shouldRunRoleOnOpenCode(role, state) && spawnRunId
+    && (openCodeGateDenied(cwd, spawnRunId, role)
+      || openCodeRoleAttempted(cwd, spawnRunId, role)
+      || openCodePlanRoleCompleted(cwd, spawnRunId, role)
+      || openCodePlanBatchComplete(cwd, spawnRunId))) {
+    recordOpenCodeFallback(cwd, spawnRunId, role, { status: 'paid_spawned' });
   }
 
   // Subagent reuse (hosts with agent continuation): when this run already holds
@@ -428,6 +437,12 @@ export function agentModelGate(ctx: Ctx): HookResult {
       // (send_input / SendMessage), so spawn_agent/Task normally never carries these.
       const resumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
       const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
+      if (isResume) {
+        const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
+        if (conflict) {
+          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`);
+        }
+      }
       const parentSessionId = hookSessionIdentity(raw).sessionId;
       const currentLive = (): ReturnType<typeof liveRunAgent> => {
         const live = liveRunAgent(cwd, runId, role, parentSessionId);

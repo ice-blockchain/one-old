@@ -7,10 +7,12 @@ import * as path from 'path';
 import {
   buildOpenCodeQueue,
   hasRunningOpenCodeUnits,
+  openCodeQueuePolicyViolations,
   readOpenCodeQueue,
   readOpenCodeUnitStatuses,
   reconcileAllRunningUnits,
   reconcileStaleRunningUnits,
+  recordOpenCodeFallback,
   recordOpenCodeUnitStatus,
 } from '../opencode-queue';
 import { parsePlanDelegationUnits } from '../opencode-roles';
@@ -50,6 +52,98 @@ test('readOpenCodeQueue + readOpenCodeUnitStatuses round-trip queue and status f
     assert.equal(statuses[0]?.status, 'running');
     assert.equal(hasRunningOpenCodeUnits(cwd, runId), true);
   });
+});
+
+test('recordOpenCodeUnitStatus keeps best status and appends attempts', () => {
+  withRunDir((cwd, runId) => {
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'ui-card',
+      role: 'frontend',
+      status: 'delegated',
+      action: 'delegated',
+      touched: ['src/Card.tsx'],
+    });
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'ui-card',
+      role: 'frontend',
+      status: 'no_changes',
+      action: 'no-changes',
+      touched: [],
+    });
+    const [status] = readOpenCodeUnitStatuses(cwd, runId);
+    assert.equal(status?.status, 'delegated');
+    assert.equal(status?.action, 'delegated');
+    assert.deepEqual(status?.touched, ['src/Card.tsx']);
+    assert.equal(status?.attempts?.length, 2);
+    assert.equal(status?.attempts?.[1]?.status, 'no_changes');
+  });
+});
+
+test('recordOpenCodeFallback annotates units without appending attempts', () => {
+  withRunDir((cwd, runId) => {
+    recordOpenCodeUnitStatus(cwd, runId, {
+      id: 'ui-card',
+      role: 'frontend',
+      status: 'failed',
+      action: 'failed',
+      touched: [],
+    });
+    const before = readOpenCodeUnitStatuses(cwd, runId)[0];
+    assert.equal(before?.attempts?.length, 1);
+    recordOpenCodeFallback(cwd, runId, 'senior-frontend', { status: 'paid_spawned', agentId: 'agent-1' });
+    const after = readOpenCodeUnitStatuses(cwd, runId)[0];
+    assert.equal(after?.status, 'fallback_required');
+    assert.equal(after?.fallback?.status, 'paid_spawned');
+    assert.equal(after?.fallback?.agentId, 'agent-1');
+    assert.equal(after?.attempts?.length, 1);
+  });
+});
+
+test('openCodeQueuePolicyViolations routes dependency/package-manager units away from OpenCode', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: deps | role: backend | kind: dependencies | files: package.json, pnpm-lock.yaml | task: install zod and update package manager files',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  const errors = openCodeQueuePolicyViolations(units);
+  assert.ok(errors.some((error) => /dependency\/package-manager work/.test(error)));
+});
+
+test('openCodeQueuePolicyViolations allows package manifests for non-dependency config work', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: scripts | role: frontend | files: package.json, vite.config.ts | task: adjust package metadata and Vite aliases only',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(units), []);
+});
+
+test('openCodeQueuePolicyViolations allows "add a build script" to package.json (not dependency work)', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: build-script | role: frontend | files: package.json | task: add a build script to package.json',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(units), []);
+});
+
+test('openCodeQueuePolicyViolations still routes adding a package to package.json to paid', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: add-dep | role: backend | files: package.json | task: add lodash to package.json',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(units).some((e) => /dependency\/package-manager work/.test(e)));
+});
+
+test('openCodeQueuePolicyViolations allows negated dependency wording in safe fixture units', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: i18n-catalog-seed | role: frontend | kind: seed-data | files: packages/i18n/src/index.ts,packages/i18n/src/locales/en/common.json,packages/i18n/package.json,packages/i18n/tsconfig.json | task: Create a typed English catalog skeleton for learner navigation, course cards, filters, empty states, and route metadata keys; no app wiring and no dependency/version changes.',
+    '- id: go-course-seed | role: backend | kind: seed-data | files: services/api/internal/course/types.go,services/api/internal/course/seed.go | task: Create Go course DTO structs and embedded seed data matching the planned public course fields; no HTTP handlers, no persistence, no external dependencies.',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(units), []);
 });
 
 test('reconcileAllRunningUnits flips fresh running units to failed', () => {

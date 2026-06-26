@@ -12,6 +12,7 @@ import {
   readRunAssignments,
   type RunAgentContext,
 } from '../../../shared/state';
+import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
 
 const STACK = 'default|react-vite|supabase|none';
 const RUN = 'run-1';
@@ -176,6 +177,50 @@ test('manifest mode: a stale fallback claim is reclaimable', () => {
     const target = 'scripts/seed-data.ts';
     seedFallbackClaim(dir, target, 'abandoned-thread', '2000-01-01T00:00:00.000Z');
     assert.equal(gate(dir, state, target, rawFor(THREAD)), null); // stale -> reclaimed, allowed
+  });
+});
+
+// --- Cursor scope-attribution: a worker write with NO transcript/parent/role linkage
+// (transcript_path:null) is attributed by assigned scope (the tests/3c build-fatal fix). ---
+
+test('cursor scope-attribution: a foreign worker write with no linkage is attributed by assigned scope', () => {
+  withDir((dir) => {
+    const state = baseState();
+    recordMainOnboardingSession(dir, 'orchestrator'); // SubagentStart records the parent as MAIN
+    writeManifest(dir, FE_BE_MANIFEST);
+    // A Cursor child worker write: only its own session_id — no transcript_path, no
+    // parent_session_id, no subagent_type, no [t1-role] marker (the real 3c shape).
+    const childRaw = { session_id: 'cursor-child-fe', tool_name: 'Write' };
+    // src/app/... is in senior-frontend's scope → attributed → allowed (was hard-denied).
+    assert.equal(gate(dir, state, 'src/app/(public)/news/page.tsx', childRaw), null);
+    const claimFile = path.join(dir, '.traffic-one', 'runs', RUN, 'cursor-child-fe.json');
+    assert.ok(fs.existsSync(claimFile), 'a claim is staked for the worker session');
+    assert.equal(JSON.parse(fs.readFileSync(claimFile, 'utf8')).role, 'senior-frontend');
+    // A parallel backend worker writing the api carve-out is attributed to senior-backend.
+    assert.equal(gate(dir, state, 'src/app/api/route.ts', { session_id: 'cursor-child-be', tool_name: 'Write' }), null);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', RUN, 'cursor-child-be.json'), 'utf8')).role, 'senior-backend');
+  });
+});
+
+test('cursor scope-attribution: the orchestrator (recorded main) session is NOT attributed — parent feature write stays denied', () => {
+  withDir((dir) => {
+    const state = baseState();
+    recordMainOnboardingSession(dir, 'orchestrator');
+    writeManifest(dir, FE_BE_MANIFEST);
+    // The orchestrator's OWN write — its session is a recorded MAIN session, not foreign.
+    const reason = gate(dir, state, 'src/app/(public)/news/page.tsx', { session_id: 'orchestrator', tool_name: 'Write' });
+    assert.ok(reason && reason.includes('team.mode'), 'parent feature-source write is still denied');
+  });
+});
+
+test('cursor scope-attribution: a foreign worker write to an unowned path is not attributed (denied)', () => {
+  withDir((dir) => {
+    const state = baseState();
+    recordMainOnboardingSession(dir, 'orchestrator');
+    writeManifest(dir, FE_BE_MANIFEST);
+    // scripts/seed.ts is outside every assignment scope → no unique owner → not attributed.
+    const reason = gate(dir, state, 'scripts/seed.ts', { session_id: 'cursor-child-x', tool_name: 'Write' });
+    assert.ok(reason && reason.includes('team.mode'), 'an unowned foreign write is not silently attributed');
   });
 });
 

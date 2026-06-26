@@ -34,6 +34,7 @@ export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
   { shim: 'security-check-runner.cjs', rel: 'scripts/security-check-runner.cjs' },
   { shim: 'token-report.cjs', rel: 'scripts/token-report.cjs' },
   { shim: 'one-mcp-report.cjs', rel: 'scripts/one-mcp-report.cjs' },
+  { shim: 'traffic-one-cleanup.cjs', rel: 'scripts/traffic-one-cleanup.cjs' },
   { shim: 'doctor.cjs', rel: 'scripts/doctor.cjs' },
 ];
 
