@@ -102,7 +102,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // shell boundary, then allow the retry so setup can block normally.
     if (isOnboardingWaitCommand(toolName, toolInput)) {
       if (ctx.host === 'cursor') {
-        const server = ensureOnboardingServer(root);
+        const server = ensureOnboardingServer(root, { host: ctx.host });
         const id = hookSessionIdentity(raw).sessionId;
         if (server.url && !server.url.includes(':0/')
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
@@ -114,7 +114,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
       }
       return noop();
     }
-    const server = ensureOnboardingServer(root);
+    const server = ensureOnboardingServer(root, { host: ctx.host });
     const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(root, ctx.host) };
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse

@@ -139,3 +139,13 @@ test('detectHostPlan cursor: reads cursorAuth/stripeMembershipType from state.vs
 test('detectHostPlan cursor: no DB and no override → default (free)', () => {
   assert.equal(detectHostPlan('cursor', env({ HOME: tmpHome() })), 'free');
 });
+
+test('detectHostPlan opencode: auth.json provider key → plus (opencode-go) / free (none)', () => {
+  const go = tmpHome();
+  const dir = path.join(go, '.local', 'share', 'opencode');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { type: 'api', key: 'x' } }), 'utf8');
+  assert.equal(detectHostPlan('opencode', env({ HOME: go })), 'plus');
+  // no auth file (a fresh home) → the free zero-auth gateway
+  assert.equal(detectHostPlan('opencode', env({ HOME: tmpHome() })), 'free');
+});

@@ -5,8 +5,8 @@ Generated on 2026-05-12 from the checked-in plugin source.
 This file maps the Traffic One plugin surface to the rules, skills, agents,
 hooks, generated artifacts, and external inspiration/source links used to build
 it. It intentionally lists source files, not generated file bodies. Generated
-Cursor mirrors are listed separately because their source of truth is `rules/`
-and `agents/`.
+Cursor mirrors and OpenCode project-local assets are listed separately because
+their source of truth is `rules/`, `agents/`, and `skills-catalog/`.
 
 ## External References
 
@@ -33,7 +33,8 @@ line-verifiable source files.
 - Skill support files: `skills/security-review/cloud-infrastructure-security.md` and `skills/senior-eng-orchestrator/resources/prompt-templates.md`.
 - Senior-agent role files: 6 files under `agents/`.
 - Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `npm run gen`.
-- Hook/runtime scripts: 15 files under `scripts/` excluding `__pycache__`.
+- Generated OpenCode project assets: `.opencode/agents/<role>.md` and `.opencode/skills/<skill>/SKILL.md` are materialized per onboarded project when OpenCode is the host.
+- Hook/runtime script entrypoints plus compiled modules under `scripts/` after `npm run build`.
 - Harness manifests: `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`.
 - Hook configs: `settings.json`, `hooks/hooks.json`, `.githooks/pre-commit`, `.githooks/prepare-commit-msg`.
 - CI workflows: `.github/workflows/cursor-sync.yml`, `.github/workflows/traffic-one-security-check.yml`.
@@ -294,7 +295,7 @@ Catalog conventions normalized by the audit: the activation heading is
 
 ## Harness Manifests And Entrypoints
 
-- `AGENTS.md` - Codex CLI entrypoint and full rule mirror.
+- `AGENTS.md` - Codex CLI and OpenCode rule entrypoint and full rule mirror.
 - `CLAUDE.md` - Claude Code entrypoint.
 - `README.md` - human overview and plugin map.
 - `.codex-plugin/plugin.json` - Codex plugin manifest.
@@ -302,6 +303,8 @@ Catalog conventions normalized by the audit: the activation heading is
 - `.cursor-plugin/plugin.json` - Cursor plugin manifest.
 - `.claude-plugin/marketplace.json` - Claude marketplace registration.
 - `.agents/plugins/marketplace.json` - local plugin marketplace registration.
+- `.config/opencode/plugins/traffic-one.js` - consented user-level OpenCode wrapper installed by `scripts/opencode-host.cjs`.
+- `.opencode/traffic-one.json` - optional project-level OpenCode marker for explicit enable/disable overrides; no marker is required for normal auto-run behavior.
 
 ## Hooks, Scripts, And CI
 
@@ -309,11 +312,14 @@ Catalog conventions normalized by the audit: the activation heading is
 | --- | --- |
 | `settings.json` | Claude hook config for session start, prompt submit, write/edit checks, bash library allowlist, and post-write stack loading. |
 | `hooks/hooks.json` | Codex hook config for session start, prompt submit, write/edit checks, bash library allowlist, graphify hints, page-speed gate, and stack loading. |
+| `~/.config/opencode/plugins/traffic-one.js` | OpenCode in-process JS plugin wrapper for session start and tool execute hooks; it invokes the shared Traffic One runtime for the OpenCode workspace root, stays silent for exact home sessions and explicit opt-outs, and does not expose OpenCode delegation tools. |
 | `.githooks/pre-commit` | Regenerates and stages generated plugin files. |
 | `.githooks/prepare-commit-msg` | Adds `Integrated-With: Traffic One plugin <noreply@traffic.io>` commit trailer. |
 | `.github/workflows/cursor-sync.yml` | CI check for generated Cursor artifacts, stack recommendation fixtures, and security runner fixtures. |
 | `.github/workflows/traffic-one-security-check.yml` | CI pre-deployment security scanner with pinned `gitleaks` and `trufflehog`. |
 | `scripts/hook-runtime.cjs` | Dependency-free hook runtime entrypoint. |
+| `scripts/opencode-hook-runtime.cjs` | OpenCode host runtime shim; wrapper invocations stamp `--host=opencode`. |
+| `scripts/opencode-host.cjs` | OpenCode wrapper installer, project enable/disable marker manager, uninstaller, and doctor. |
 | `scripts/hook-runtime/config.cjs` | Hook runtime config constants. |
 | `scripts/hook-runtime/detection/detection.cjs` | Project mode/stack detection helpers (one-file-per-function folder). |
 | `scripts/hook-runtime/directives/directives.cjs` | Hook-time instruction/directive rendering (one-file-per-function folder). |

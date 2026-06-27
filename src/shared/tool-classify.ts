@@ -38,6 +38,33 @@ function nameForClass(cls: ToolClass): string {
   }
 }
 
+function canonicalKnownToolName(rawName: string): string {
+  const normalized = normalizedToolName(rawName);
+  if (KNOWN_TOOL_NAME.test(normalized)) return rawName;
+  switch (normalized.toLowerCase()) {
+    case 'bash':
+      return 'Bash';
+    case 'write':
+      return 'Write';
+    case 'edit':
+      return 'Edit';
+    case 'patch':
+      return 'apply_patch';
+    case 'read':
+      return 'Read';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    case 'list':
+      return 'LS';
+    case 'task':
+      return 'Task';
+    default:
+      return '';
+  }
+}
+
 // A host-agnostic tool name the classifiers understand. The adapter-parsed
 // ToolInput is canonical on every host — but Cursor sets rawName to a coarse
 // subcommand, so when rawName isn't a recognized tool name, map the canonical
@@ -45,7 +72,8 @@ function nameForClass(cls: ToolClass): string {
 // byte-identical while making Cursor's gate checks actually classify.
 export function canonicalToolName(tool: ToolInput | undefined): string {
   if (!tool) return '';
-  if (tool.rawName && KNOWN_TOOL_NAME.test(normalizedToolName(tool.rawName))) return tool.rawName;
+  const known = canonicalKnownToolName(tool.rawName || '');
+  if (known) return known;
   return nameForClass(tool.class) || tool.rawName || '';
 }
 

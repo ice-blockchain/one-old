@@ -19,7 +19,7 @@ export function detectHost(
   for (const a of argv) {
     if (typeof a === 'string' && a.startsWith('--host=')) {
       const h = a.slice('--host='.length).trim();
-      if (h === 'cursor' || h === 'codex' || h === 'claude') return h;
+      if (h === 'cursor' || h === 'codex' || h === 'claude' || h === 'opencode') return h;
     }
   }
   if (env.CURSOR_PLUGIN_ROOT) return 'cursor';

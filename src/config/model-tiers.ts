@@ -5,6 +5,8 @@
 // plan falls back to, edit DEFAULT_HOST_PLAN. The functions that interpret this
 // data live in shared/model-tiers.ts; plan detection lives in shared/host-plan.ts.
 
+import { OPENCODE_FREE_MODELS } from './opencode-delegation';
+
 export const TIER_IDS = ['highest', 'balanced', 'cheapest'] as const;
 export type TierId = (typeof TIER_IDS)[number];
 
@@ -15,7 +17,7 @@ export const TIER_ALIASES: Readonly<Record<string, TierId>> = {
   low: 'cheapest', min: 'cheapest', minimal: 'cheapest', cheap: 'cheapest', fast: 'cheapest', lite: 'cheapest',
 };
 
-export const HOST_IDS = ['claude', 'codex', 'cursor'] as const;
+export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode'] as const;
 export type HostModelKey = (typeof HOST_IDS)[number];
 
 export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>> = {
@@ -34,6 +36,11 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
   // family generation bumps (opus-4-8 → opus-5), update it here (see the model-tier-sync skill).
   cursor: { highest: 'claude-opus-4-8', balanced: 'claude-4.6-sonnet', cheapest: 'composer-2.5' },
   codex: { highest: 'gpt-5.5', balanced: 'gpt-5.4', cheapest: 'gpt-5.4-mini' },
+  opencode: {
+    highest: OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
+    balanced: OPENCODE_FREE_MODELS[1] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
+    cheapest: OPENCODE_FREE_MODELS[2] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
+  },
 };
 
 // Same-tier FALLBACK FAMILIES per preferred family — the orchestrator falls back to one of
@@ -70,6 +77,33 @@ export const CURSOR_MODEL_ALTERNATES: Readonly<Record<string, readonly string[]>
 // paid overlay is the source of truth — re-confirm via the model-tier-sync skill.
 export const CURSOR_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
   free: { highest: 'composer-2.5', balanced: 'composer-2.5' },
+};
+
+// Per-plan model OVERLAY for OpenCode (consumed by resolveModel/tierModelTable when a
+// plan is threaded through). The free zero-auth gateway uses the base HOST_MODELS.opencode
+// row (the `opencode/*-free` chain). The paid "Go" subscription (`plus`) exposes the
+// open-weight `opencode-go/*` catalog — recommended primaries below; OPENCODE_MODEL_ALTERNATES
+// supplies the fallback chain (other Go models, then the always-free chain) for when a primary
+// is unavailable. The frontier `opencode/*` Zen models (claude/gpt/gemini) are pay-per-use and
+// NOT part of Go, so they are intentionally not offered here. Re-confirm Go's catalog against
+// `~/.cache/opencode/models.json` (the `opencode-go` provider) via the model-tier-sync skill.
+export const OPENCODE_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
+  plus: {
+    highest: 'opencode-go/qwen3.7-max',
+    balanced: 'opencode-go/glm-5.2',
+    cheapest: 'opencode-go/deepseek-v4-flash',
+  },
+};
+
+// Same-tier FALLBACK chain per preferred Go model — the gate accepts any of these (and a
+// dropdown can offer them) when the preferred model is unavailable. Each chain degrades
+// within the Go open-weight catalog, then to OPENCODE_FREE_MODELS (always reachable on the
+// zero-auth gateway), so a paid build never has nothing to fall back to — the owner's note:
+// "I have Go and don't have access to Zen models", so no `opencode/*` frontier ids appear here.
+export const OPENCODE_MODEL_ALTERNATES: Readonly<Record<string, readonly string[]>> = {
+  'opencode-go/qwen3.7-max': ['opencode-go/minimax-m3', 'opencode-go/kimi-k2.7-code', 'opencode-go/deepseek-v4-pro', ...OPENCODE_FREE_MODELS],
+  'opencode-go/glm-5.2': ['opencode-go/qwen3.7-plus', 'opencode-go/minimax-m2.7', 'opencode-go/glm-5.1', ...OPENCODE_FREE_MODELS],
+  'opencode-go/deepseek-v4-flash': ['opencode-go/glm-5', 'opencode-go/qwen3.5-plus', ...OPENCODE_FREE_MODELS],
 };
 
 // ── User subscription plans (per host) ──────────────────────────────────────
@@ -114,12 +148,15 @@ export const HOST_PLAN_IDS: Readonly<Record<HostModelKey, ReadonlySet<UserPlan>>
   // {free,pro,business} → any ultra/pro+/teams membership string collapsed to the
   // DEFAULT_HOST_PLAN.cursor='free' fallback, silently downgrading paying users.
   cursor: new Set<UserPlan>(['free', 'pro', 'plus', 'max', 'business', 'team', 'enterprise']),
+  // OpenCode: free zero-auth gateway, or a paid "Go" subscription (auth provider
+  // `opencode-go`) mapped to `plus` (PLAN_ALIASES `go`→`plus` + detectOpenCodePlan).
+  opencode: new Set<UserPlan>(['free', 'plus']),
 };
 
 // Plan assumed when the host exposes no detectable signal. Generous on purpose so
 // undetected paying users are not silently downgraded (Claude stays at its top tier).
 export const DEFAULT_HOST_PLAN: Readonly<Record<HostModelKey, UserPlan>> = {
-  claude: 'free', codex: 'free', cursor: 'free',
+  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free',
 };
 
 // One plan's tier choice: `base` when OpenCode delegation is off, `withOpenCode`
@@ -155,5 +192,12 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
     business: { base: 'highest', withOpenCode: 'highest' },
     team: { base: 'highest', withOpenCode: 'highest' },
     enterprise: { base: 'highest', withOpenCode: 'highest' },
+  },
+  opencode: {
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
+    // "Go" subscription (auth `opencode-go` → plus): paid open-weight models, so recommend
+    // a real working tier instead of cheapest. Delegation is inert on the opencode host,
+    // so base == withOpenCode.
+    plus: { base: 'balanced', withOpenCode: 'balanced' },
   },
 };

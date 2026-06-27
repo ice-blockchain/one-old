@@ -7,6 +7,7 @@
 // moved into the local wizard (shared/onboarding-server).
 
 import { obj } from '../obj';
+import { canonicalHost } from '../model-tiers';
 import { teamModeForLevel } from '../performance';
 import {
   hasResolvedOpenCodeState,
@@ -18,10 +19,10 @@ import type { OnboardingStep } from './prompts';
 
 export type LocalPreferenceStep = Extract<OnboardingStep, 'open-code' | 'performance' | 'team-confirmation' | 'code-graph'>;
 
-export function nextLocalPreferenceStep(state: unknown): LocalPreferenceStep | null {
+export function nextLocalPreferenceStep(state: unknown, host?: unknown): LocalPreferenceStep | null {
   const s = obj(state);
   if (!s || !s.stack) return null;
-  if (!hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  if (canonicalHost(host) !== 'opencode' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
   if (!hasValidPerformanceState(s.performance)) return 'performance';
 
   const performance = obj(s.performance);

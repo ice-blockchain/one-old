@@ -24,19 +24,20 @@ rollback path. Docker is only for self-hosted, BYOC, or server-runtime targets.
 - Implementing health checks and readiness probes
 - Preparing for a production release
 - Configuring environment-specific settings
-- Generating Vercel/Netlify/Cloudflare Pages + Supabase deployment artifacts
+- Generating the Traffic One `/deploy` build artifacts (a host-agnostic static `dist/` output) + Supabase deployment artifacts
 - Preparing Capacitor/Ionic app-store build and submission artifacts
 
 ## Traffic One Deployment Artifact Default
 
 Generate deployment artifacts in this order:
 
-1. **Static host manifest first for SPA + Supabase.** A Vite React SPA backed by
-   Supabase ships as static assets plus Supabase services. Create exactly one
-   host manifest for the selected target (`vercel.json`, `netlify.toml`,
-   Cloudflare Pages `_redirects` / `_headers` / `wrangler.toml`). Do not add a
-   Dockerfile unless the plan chooses self-hosting, BYOC, SSR/server runtime, or
-   another container-only path.
+1. **Static build output first for SPA + Supabase.** A Vite React SPA backed by
+   Supabase ships as static assets (a `dist/` build) plus Supabase services.
+   Produce a host-agnostic static build — Traffic One owns web deploy via its own
+   `/deploy`, which ships that `dist/` to our infra; do NOT add a third-party web
+   host or its manifest (`vercel.json`, `netlify.toml`, Cloudflare `wrangler.toml`,
+   etc.). Do not add a Dockerfile unless the plan chooses self-hosting, BYOC,
+   SSR/server runtime, or another container-only path.
 2. **Environment map.** Keep `.env.example` committed and secrets in encrypted
    host/CI variables. Use separate Supabase projects for development, preview,
    staging, and production when those environments exist; never point PR
@@ -45,8 +46,10 @@ Generate deployment artifacts in this order:
    `supabase/migrations/*.sql` and are applied through CI or Supabase Branching.
    Do not instruct production operators to click changes in the dashboard.
 4. **CI/CD by default.** GitHub Actions is the baseline: install -> typecheck ->
-   test -> build -> preview deploy on PR -> production deploy on `main`/release
-   merge. Use `supabase/setup-cli` for migration/function jobs.
+   test -> build (produce the static `dist/`). Deployment is Traffic One's own:
+   the gated `senior-shipper` pre-flight runs Traffic One `/deploy` (preview on
+   PR, production on `main`/release merge) — do not wire a third-party host's
+   deploy action into CI. Use `supabase/setup-cli` for migration/function jobs.
 5. **Pinned runtime.** Check in `engines`, `packageManager`, `.nvmrc`, and the
    package-manager lockfile. CI uses frozen lockfile install and fails on drift.
 6. **Health/status.** For static SPAs, add a `/health` route through a Supabase
@@ -63,53 +66,27 @@ Generate deployment artifacts in this order:
 9. **Rollback.** Frontend rollback means redeploying the previous immutable
    build/deployment. Database rollback is a forward-only undo migration, not
    `pg_restore` and not editing an already-applied migration.
-10. **Domain hardening.** Configure the custom domain, automatic TLS, security
-   headers, and an HSTS preload readiness check before calling production done.
+10. **Domain hardening.** Custom domain, automatic TLS, security headers, and an
+   HSTS preload readiness check are part of the Traffic One `/deploy` configuration —
+   verify them before calling production done.
 
-### Static Host SPA Manifests
+### Static Build Output (host-agnostic)
 
-Pick one target and create only that target's files.
+Web deployment is Traffic One's own (`/deploy`) — do NOT generate a third-party
+host manifest (`vercel.json`, `netlify.toml`, `wrangler.toml`, `_redirects`/`_headers`).
+Produce a clean static build and let Traffic One `/deploy` ship it:
 
-**Vercel (`apps/web/vercel.json` or root `vercel.json`):**
-
-```json
-{
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
-  "headers": [
-    {
-      "source": "/(.*)",
-      "headers": [
-        { "key": "X-Content-Type-Options", "value": "nosniff" },
-        { "key": "Referrer-Policy", "value": "strict-origin-when-cross-origin" },
-        { "key": "Permissions-Policy", "value": "camera=(), microphone=(), geolocation=()" }
-      ]
-    }
-  ]
-}
-```
-
-**Netlify (`netlify.toml`):**
-
-```toml
-[build]
-command = "pnpm build"
-publish = "dist"
-
-[[redirects]]
-from = "/*"
-to = "/index.html"
-status = 200
-```
-
-**Cloudflare Pages (`public/_redirects` plus `_headers`, or `wrangler.toml` when selected):**
-
-```text
-/* /index.html 200
-```
-
-```toml
-pages_build_output_dir = "dist"
-```
+- **Build to `dist/`.** `pnpm build` emits the static assets; that `dist/` IS the
+  deploy artifact Traffic One ships.
+- **SPA fallback.** A client-routed SPA needs every unknown path served
+  `index.html` (HTTP 200). Traffic One `/deploy` applies this fallback; do not
+  hand-roll a host-specific rewrite file.
+- **Security headers.** The deploy must set, at minimum, these response headers
+  (Traffic One `/deploy` applies them; they are also the values a security review
+  expects):
+  - `X-Content-Type-Options: nosniff`
+  - `Referrer-Policy: strict-origin-when-cross-origin`
+  - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
 
 ### Supabase Environment + Migration Workflow
 
@@ -166,9 +143,10 @@ jobs:
       - run: supabase db push
 ```
 
-Let the chosen static host handle the actual preview/production deploy when its
-GitHub integration is enabled. Add CLI deploy steps only when the host requires
-them or the project deliberately avoids provider Git integrations.
+Traffic One `/deploy` performs the actual preview/production deploy of the built
+`dist/` to our infra, after the gated `senior-shipper` pre-flight. Do not wire a
+third-party host's Git integration or CLI deploy step into CI — web deploy is
+Traffic One's own.
 
 ### Capacitor / Ionic Release Artifacts
 
@@ -395,10 +373,10 @@ jobs:
     steps:
       - name: Deploy to production
         run: |
-          # Platform-specific deployment command
-          # Railway: railway up
-          # Vercel: vercel --prod
-          # K8s: kubectl set image deployment/app app=ghcr.io/${{ github.repository }}:${{ github.sha }}
+          # Web app: Traffic One owns deploy — the gated senior-shipper pre-flight
+          #          runs `/deploy`, which ships the built dist/ to our infra.
+          #          Do NOT call a third-party web host CLI here.
+          # Self-hosted / container (BYOC only): kubectl set image deployment/app app=ghcr.io/${{ github.repository }}:${{ github.sha }}
           echo "Deploying ${{ github.sha }}"
 ```
 
@@ -519,14 +497,11 @@ export const env = envSchema.parse(process.env);
 ### Instant Rollback
 
 ```bash
-# Docker/Kubernetes: point to previous image
+# Web (Traffic One owns deploy): re-ship the previous immutable /deploy build
+#   (the senior-shipper rollback step promotes the prior deploy on our infra)
+
+# Self-hosted / container (BYOC only): point to previous image
 kubectl rollout undo deployment/app
-
-# Vercel: promote previous deployment
-vercel rollback
-
-# Railway: redeploy previous commit
-railway up --commit <previous-sha>
 
 # Database: apply a new forward-only undo migration
 pnpm db:push

@@ -124,7 +124,7 @@ export function writeCursorAgentFiles(cwd: string, state: Rec): number {
   if (mode !== 'subagents' || !level) return 0;
 
   const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
-  const planCtx = { host: 'cursor', plan: detectHostPlan('cursor'), useOpenCode: openCodeDelegationActive(state) };
+  const planCtx = { host: 'cursor', plan: detectHostPlan('cursor'), useOpenCode: openCodeDelegationActive(state, 'cursor') };
   let lineup;
   try {
     lineup = buildTeamLineup(level, 'cursor', overrides, planCtx);

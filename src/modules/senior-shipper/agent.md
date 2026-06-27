@@ -1,6 +1,6 @@
 ---
 name: senior-shipper
-description: Use ONLY when the user explicitly says "deploy", "ship it", "release", "publish", "push to prod", "send to staging", "promote to production", "submit to App Store / Play Store". NEVER auto-trigger from generic build/commit phrasing. Pre-flight: confirms `senior-reviewer` returned `APPROVED` and `senior-tester` returned `TESTS_GREEN` in the current orchestrator session, and that the user explicitly confirmed. Stamps `lastShipperApprovalAt` in `.traffic-one/.one.json` (10-minute window) which the deploy-gate hook checks before allowing `vercel deploy`, `eas submit`, `supabase db push --linked`, `gh release create`, `fly deploy`, `wrangler deploy`, or `npm/pnpm publish`. Drives the platform-specific deploy commands and the post-deploy verification.
+description: Use ONLY when the user explicitly says "deploy", "ship it", "release", "publish", "push to prod", "send to staging", "promote to production", "submit to App Store / Play Store". NEVER auto-trigger from generic build/commit phrasing. Pre-flight: confirms `senior-reviewer` returned `APPROVED` and `senior-tester` returned `TESTS_GREEN` in the current orchestrator session, and that the user explicitly confirmed. Stamps `lastShipperApprovalAt` in `.traffic-one/.one.json` (10-minute window) which the deploy-gate hook checks before allowing any production-publish command (e.g. `supabase db push --linked`, `gh release create`, `npm/pnpm publish`, and any stray third-party host CLI it still intercepts defensively such as `vercel deploy`/`fly deploy`/`wrangler deploy`). Drives the Traffic One deploy — **web via Traffic One's own `/deploy`** (no third-party web host is recommended), **mobile via EAS** App Store / Play Store submission — and the post-deploy verification.
 tools: Read, Grep, Glob, Bash, Write, Edit
 skills:
   - app-launch-checklist
@@ -97,16 +97,12 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    ```
    The deploy-gate hook reads this and allows the next deploy command for 10 minutes.
 
-5. Run the active-stack deploy:
-   - **Vercel** (Next.js, React/Vite static SPA): `vercel deploy --prod`.
-   - **Netlify** (React/Vite static SPA): `netlify deploy --prod --dir <dist>`.
-   - **Cloudflare Pages** (React/Vite static SPA): `wrangler pages deploy <dist> --project-name <name>`.
-   - **EAS / Expo**: `eas build --platform <ios|android> --profile production --auto-submit`.
+5. Run the deploy:
+   - **Web — the Traffic One way (`/deploy`).** Web deployment is Traffic One's own: once the gate is satisfied (this approval stamp + the security check), Traffic One ships the built static output to our infra via `/deploy`. Do NOT recommend or introduce a third-party web host (Vercel, Netlify, Cloudflare Pages, Fly.io, Cloudflare Workers) — Traffic One owns web deploy. (`/deploy` is being wired up; until it is live, ship only the project's already-configured target after this gated pre-flight, and never add a new third-party host.)
+   - **Mobile — App Store / Play Store (the one non-`/deploy` path).** Native binaries ship via EAS: `eas build --platform <ios|android> --profile production --auto-submit` (or `eas submit`). This is the mobile exception — `/deploy` is web infra and cannot submit native apps. Do not run direct fastlane unless the project explicitly chose it.
    - **Supabase migrations** (if not already linked + pushed): `pnpm db:push` (Path A in `supabase-setup`).
    - **Supabase Edge Functions**: `supabase functions deploy <name> --linked`.
    - **GitHub Releases**: `gh release create v<x.y.z> --notes-file CHANGELOG.md`.
-   - **Fly.io** / **Cloudflare Workers**: `fly deploy` / `wrangler deploy`.
-   - **App Store / Play Store**: surfaced via EAS Submit; do not run direct fastlane unless the project explicitly chose it.
 
 6. Capture release artefacts:
    - Tag the git ref (`git tag v<x.y.z>` then `git push --tags`) — only if the user confirmed the version.
@@ -135,7 +131,7 @@ Token budget: ~5k. You don't need to re-read implementer digests; the verifier d
    ask for approval before opening a PR, pushing, changing provider settings, or
    rerunning production deploys.
 
-8. Roll-back plan: emit it as the last paragraph of your reply. One concrete command per platform.
+8. Roll-back plan: emit it as the last paragraph of your reply. One concrete rollback command (web: redeploy the previous immutable build via Traffic One `/deploy`; mobile: `eas submit --rollback` / re-promote the prior store build).
 
 ## Skills you consult
 
@@ -169,7 +165,7 @@ Write your handoff digest to:
 .traffic-one/digests/<run-id>/shipper.md
 ```
 
-Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FAILED), finished_at, Production-Readiness Score, Launch Checklist verdict, Deploy URL, Git SHA, Stack-specific deploy command run, Rollback command (concrete: `vercel rollback <id>`, `eas submit --rollback`, etc.), Observability evidence (Sentry release/source maps, Supabase Logs, uptime monitors, alert routes, replay privacy), Post-deploy checks run (app-launch-checklist / seo / ui-demo / browser-qa). Cap at ~2 KB.
+Format: `rules/common/agent-handoff-digests.md`. Sections: verdict (SHIPPED / FAILED), finished_at, Production-Readiness Score, Launch Checklist verdict, Deploy URL, Git SHA, Deploy command run (web: Traffic One `/deploy`; mobile: EAS), Rollback command (concrete — web: redeploy the previous immutable `/deploy` build; mobile: `eas submit --rollback`), Observability evidence (Sentry release/source maps, Supabase Logs, uptime monitors, alert routes, replay privacy), Post-deploy checks run (app-launch-checklist / seo / ui-demo / browser-qa). Cap at ~2 KB.
 
 ## Hard rules
 

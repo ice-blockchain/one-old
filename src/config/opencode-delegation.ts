@@ -1,4 +1,4 @@
-// src/config/opencode.ts
+// src/config/opencode-delegation.ts
 // OpenCode delegation config.
 //
 // `delegateRoles` is the configurable set of senior roles that MUST run on
@@ -56,7 +56,7 @@ export const OPENCODE_NEVER_DELEGATE: readonly string[] = [
 // setup: with no API key configured, the OpenCode CLI auto-enables its
 // `opencode` provider with only the cost-0 models and a public key, so a fresh
 // managed install can run them with no account, no sign-in, and no env vars —
-// identically on every host (Claude, Cursor, Codex). OpenCode is a local CLI
+// identically on paid hosts (Claude, Cursor, Codex). OpenCode is a local CLI
 // invoked the same way everywhere; the model choice is its internal concern.
 //
 // They are PROMOTIONAL and rotate: the runner walks this chain in order,
@@ -78,7 +78,7 @@ export const OPENCODE_NEVER_DELEGATE: readonly string[] = [
 // model and DISABLES the fallback chain (an explicit choice is never silently
 // swapped) — e.g. a paid gateway model like `opencode/gpt-5.1-codex`, which
 // additionally requires `opencode auth login`. This is a generic escape hatch,
-// not a host requirement: the free chain above is the default on all hosts.
+// not a host requirement: the free chain above is the default for paid-host delegation.
 export const OPENCODE_FREE_MODELS: readonly string[] = [
   'opencode/deepseek-v4-flash-free',
   'opencode/north-mini-code-free',

@@ -130,20 +130,21 @@ export function effectiveOnboardingState(cwd: string): { state: Rec; mode: strin
 export function computeOnboarding(cwd: string): OnboardingView {
   const { state, mode } = effectiveOnboardingState(cwd);
   const originalPrompt = projectContextOriginalPrompt(state);
+  const host = detectHost();
   let step: WizardStep;
   let done: boolean;
 
   if (mode === 'new-project') {
-    if (!isNewProjectOnboardingIncomplete(state)) {
+    if (!isNewProjectOnboardingIncomplete(state, host)) {
       step = null;
       done = true;
     } else {
-      const raw = nextOnboardingStep(state);
+      const raw = nextOnboardingStep(state, host);
       step = raw === 'state' ? 'finalize' : (raw as WizardStep);
       done = false;
     }
   } else {
-    const raw = nextLocalPreferenceStep(state);
+    const raw = nextLocalPreferenceStep(state, host);
     step = (raw as WizardStep) ?? null;
     done = raw == null;
   }
@@ -170,7 +171,7 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
   const host = detectHost();
-  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
+  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
   meta.team = buildTeamLineup(level, host, overrides, planCtx);
   meta.performanceLevel = level;
   meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
@@ -187,7 +188,7 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
 function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
   const host = detectHost();
   const plan = detectHostPlan(host);
-  const useOpenCode = openCodeDelegationActive(state);
+  const useOpenCode = openCodeDelegationActive(state, host);
   const recommended = recommendLevelForPlan(host, plan, useOpenCode);
   const options = (meta.options || []).map((o) => ({ ...o }));
   for (const o of options) {
@@ -244,13 +245,13 @@ function deriveStack(originalPrompt: string, mobileFramework: string): { stack: 
 // the terminal-answer install-task fallback below — the stamp lives in this
 // project's prefs, so a machine-wide provider choice from an earlier project
 // does NOT mean this project's toolchain is ready.
-function toolchainInstallPending(state: Rec): boolean {
+function toolchainInstallPending(state: Rec, host: string): boolean {
   const tc = obj(state.toolchain);
   const stamped = (tool: string): boolean => {
     const entry = tc ? obj(tc[tool]) : null;
     return typeof entry?.installedVersion === 'string' && entry.installedVersion.length > 0;
   };
-  if (obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
+  if (host !== 'opencode' && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
   const provider = state.codeGraphProvider;
   if ((provider === 'gitnexus' || provider === 'graphify') && !stamped(provider)) return true;
   return false;
@@ -266,14 +267,15 @@ function toolchainInstallPending(state: Rec): boolean {
 function attachPendingInstallTask(cwd: string, step: string, outcome: AnswerOutcome): AnswerOutcome {
   if (!outcome.ok || outcome.task) return outcome;
   const state = readEffectiveState(cwd);
+  const host = detectHost();
   // Terminal = 'finalize' (new project; it just committed the stack) or, for an
   // already-onboarded project (stack present), the answer that resolved the last
   // local preference. Mid-wizard answers in a NEW project have no stack yet and
   // must never fire the install — it would block the wizard's next question on a
   // potentially minutes-long managed install.
   const hasStack = typeof state.stack === 'string' && state.stack.trim() !== '';
-  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(state) == null);
-  if (!terminal || !toolchainInstallPending(state)) return outcome;
+  const terminal = step === 'finalize' || (hasStack && nextLocalPreferenceStep(state, host) == null);
+  if (!terminal || !toolchainInstallPending(state, host)) return outcome;
   return { ...outcome, task: { kind: 'onboarding-toolchain' } };
 }
 

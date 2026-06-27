@@ -211,14 +211,17 @@ test('shouldRunRoleOnOpenCode: requires enabled + role in the configured set', (
   assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, delegateRoles: ['senior-backend'] } }), false);
 });
 
-test('shouldRunRoleOnOpenCode is host-agnostic (same on Codex, Claude, Cursor)', () => {
+test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode host', () => {
   const enabled = { openCode: { enabled: true } };
-  // OpenCode is a local CLI invoked identically on every host — no per-host gate.
+  // OpenCode delegation is a paid-host feature; the OpenCode host itself is inert.
   for (const role of ['senior-frontend', 'senior-tester', 'quick-fix']) {
-    assert.equal(shouldRunRoleOnOpenCode(role, enabled), true);
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'claude'), true);
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'codex'), true);
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'cursor'), true);
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'opencode'), false);
   }
   // a pinned model does not change eligibility — only enabled + role-in-set do
-  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.1-codex' } }), true);
+  assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.1-codex' } }, 'codex'), true);
 });
 
 test('opencode role attempt marker: write then detect (per run + role)', () => {
@@ -266,6 +269,7 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
       + '<!-- opencode-delegate:end -->\n', 'utf8');
     const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'opencode'), []);
     markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
     assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend'],
@@ -299,6 +303,7 @@ test('plan-batch per-role markers alone do not clear gate without terminal batch
     markOpenCodePlanRoleCompleted(dir, 'run-role-only', 'backend');
     assert.equal(openCodePlanBatchComplete(dir, 'run-role-only'), false);
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state), true);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state, 'opencode'), false);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-role-only', state), ['frontend', 'backend']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -374,7 +379,7 @@ test('deriveBatchOutcomeFromUnits classifies delegated, failed, partial, and aba
 });
 
 test('OPENCODE_DELEGATE_UNIT_KINDS catalog: bounded kinds present, never-list intact, shipper excluded', async () => {
-  const { OPENCODE_DELEGATE_UNIT_KINDS, OPENCODE_NEVER_DELEGATE, DEFAULT_OPENCODE_DELEGATE_ROLES } = await import('../../config/opencode');
+  const { OPENCODE_DELEGATE_UNIT_KINDS, OPENCODE_NEVER_DELEGATE, DEFAULT_OPENCODE_DELEGATE_ROLES } = await import('../../config/opencode-delegation');
   const ids = OPENCODE_DELEGATE_UNIT_KINDS.map((k) => k.id);
   for (const required of ['fixtures-seed-data', 'pure-helpers', 'i18n-catalogs', 'test-scaffolding', 'qa-report-sweep', 'reviewer-input-sweeps', 'docs-draft', 'mechanical-refactor']) {
     assert.ok(ids.includes(required), `missing unit kind: ${required}`);

@@ -155,6 +155,22 @@ function detectCursorPlan(env: NodeJS.ProcessEnv): string | null {
   return raw ? raw.replace(/^"|"$/g, '') : null; // strip optional JSON quotes
 }
 
+// OpenCode persists provider auth at $XDG_DATA_HOME|~/.local/share/opencode/auth.json.
+// A PAID subscription appears as a provider key like "opencode-go" (the free zero-auth
+// gateway is the keyless "opencode" provider, or no key at all). Any "opencode-<tier>"
+// key ⇒ paid; we return "go" → canonicalPlan maps it to `plus` (the only paid plan
+// HOST_PLAN_IDS.opencode exposes). Best-effort; never throws (absent/unreadable → free).
+function detectOpenCodePlan(env: NodeJS.ProcessEnv): string | null {
+  const dataHome = env.XDG_DATA_HOME || path.join(homeDir(env), '.local', 'share');
+  try {
+    const auth = JSON.parse(fs.readFileSync(path.join(dataHome, 'opencode', 'auth.json'), 'utf8'));
+    if (auth && typeof auth === 'object' && Object.keys(auth).some((k) => /^opencode-\w/.test(k))) return 'go';
+  } catch {
+    // auth.json absent / unreadable / not JSON → no detectable paid plan
+  }
+  return null;
+}
+
 function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
   const override = env.TRAFFIC_ONE_USER_PLAN;
   if (typeof override === 'string' && override.trim()) return canonicalPlan(host, override);
@@ -163,6 +179,7 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
     if (host === 'claude') raw = detectClaudePlan(env);
     else if (host === 'codex') raw = detectCodexPlan(env);
     else if (host === 'cursor') raw = detectCursorPlan(env);
+    else if (host === 'opencode') raw = detectOpenCodePlan(env);
   } catch {
     raw = null;
   }

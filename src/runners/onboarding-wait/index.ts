@@ -157,7 +157,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
     if (!level || teamModeForLevel(level) !== 'subagents') return '';
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
-    const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
+    const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
 
     const plan = detectHostPlan(host);
     const captured = freshCursorModels(cwd, plan);

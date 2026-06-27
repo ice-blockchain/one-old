@@ -65,7 +65,7 @@ const block = (name: string, vars: Record<string, string | number | null | undef
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   if (ctx.host !== 'cursor') return banner;
   try {
-    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd).url, banner);
+    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd, { host: ctx.host }).url, banner);
   } catch {
     return banner;
   }
@@ -84,7 +84,7 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
   if (ctx.host !== 'cursor') return block('setup-pending');
   try {
-    const server = ensureOnboardingServer(cwd);
+    const server = ensureOnboardingServer(cwd, { host: ctx.host });
     if (!server.url || server.url.includes(':0/')) return block('setup-pending');
     return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
   } catch {
@@ -254,12 +254,12 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const onboardingComplete = Boolean(state.onboardingComplete);
   const onboardingReady = onboardingComplete
     && typeof stackId === 'string' && STACK_IDS.has(stackId)
-    && (mode !== 'new-project' || !isNewProjectOnboardingIncomplete(state));
+    && (mode !== 'new-project' || !isNewProjectOnboardingIncomplete(state, ctx.host));
 
   // ── Flow 1 — already onboarded → pack the rule bundle ──
   if (onboardingReady) {
     const activeStackId = String(stackId);
-    if (nextLocalPreferenceStep(state)) {
+    if (nextLocalPreferenceStep(state, ctx.host)) {
       return context(`[ACTIVE STACK: ${activeStackId}]\n\n${block('setup-pending')}`, {
         systemMessage: `traffic-one [${activeStackId}] setup required`,
       });
@@ -341,7 +341,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
-    if (nextLocalPreferenceStep(state)) {
+    if (nextLocalPreferenceStep(state, ctx.host)) {
       return context(`${banner}\n\n${setupPendingDirective(ctx, cwd)}`, {
         systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${state.stack || mode}] setup required`),
       });
@@ -349,7 +349,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     return context(`${banner}\n\n${header}${graphPreview}\n${body}`);
   }
 
-  if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state)) {
+  if (mode === 'new-project' && stackId && isNewProjectOnboardingIncomplete(state, ctx.host)) {
     return context(`[ACTIVE STACK: ${stackId}]\n\n${setupPendingDirective(ctx, cwd)}`, {
       systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
     });

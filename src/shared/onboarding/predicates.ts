@@ -6,6 +6,7 @@
 
 import { obj, type Rec } from '../obj';
 import { isKnownStack } from '../config';
+import { canonicalHost } from '../model-tiers';
 import { teamModeForLevel } from '../performance';
 import {
   BACKEND_IDS,
@@ -22,7 +23,7 @@ import {
 
 // True when mode==="new-project" and any required shared-state or local-pref
 // onboarding field is still missing/invalid (blocks scaffolding/tool use).
-export function isNewProjectOnboardingIncomplete(state: unknown): boolean {
+export function isNewProjectOnboardingIncomplete(state: unknown, host?: unknown): boolean {
   const s = obj(state);
   if (!s) return false;
   if (s.mode !== 'new-project') return false;
@@ -31,7 +32,7 @@ export function isNewProjectOnboardingIncomplete(state: unknown): boolean {
   const team = obj(s.team);
 
   const hasValidStack = typeof s.stack === 'string' && isKnownStack(s.stack);
-  const hasOpenCode = hasResolvedOpenCodeState(s.openCode);
+  const hasOpenCode = canonicalHost(host) === 'opencode' || hasResolvedOpenCodeState(s.openCode);
   const hasGraphProvider = s.codeGraphProvider === 'gitnexus' || s.codeGraphProvider === 'graphify';
   const hasFrontend = typeof s.frontend === 'string' && FRONTEND_IDS.has(s.frontend);
   const hasBackend = typeof s.backend === 'string' && BACKEND_IDS.has(s.backend);
@@ -66,7 +67,7 @@ export function isNewProjectOnboardingIncomplete(state: unknown): boolean {
 // subagent role/model line-up in the wizard's team step (team.mode="subagents" but
 // team.approved !== true). This is the SINGLE confirmation — the agent never
 // re-asks after onboarding (see senior-engineer-team rules).
-export function needsTeamConfirmation(state: unknown): boolean {
+export function needsTeamConfirmation(state: unknown, _host?: unknown): boolean {
   const s = obj(state);
   if (!s) return false;
   if (s.mode !== 'new-project') return false;

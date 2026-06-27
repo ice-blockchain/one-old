@@ -10,6 +10,8 @@ import {
   HOST_IDS,
   HOST_MODELS,
   HOST_PLAN_IDS,
+  OPENCODE_MODEL_ALTERNATES,
+  OPENCODE_PLAN_MODELS,
   PLAN_ALIASES,
   PLAN_IDS,
   PLAN_TIER_RECOMMENDATIONS,
@@ -44,6 +46,13 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
   // Apply the per-plan overlay ONLY when a plan was explicitly supplied. A plan-agnostic
   // caller (no plan arg) keeps the generous base row — canonicalPlan(undefined) would
   // otherwise default to 'free' and silently downgrade every plan-less lookup to Composer.
+  if (h === 'opencode' && plan !== undefined && plan !== null && plan !== '') {
+    // OpenCode "Go" (plus) overlays the paid `opencode-go/*` catalog; free inherits the
+    // base HOST_MODELS.opencode row (the `opencode/*-free` chain).
+    const overlay = OPENCODE_PLAN_MODELS[canonicalPlan('opencode', plan)];
+    const planned = overlay ? overlay[canonical] : undefined;
+    if (planned) return planned;
+  }
   if (h === 'cursor' && plan !== undefined && plan !== null && plan !== '') {
     const overlay = CURSOR_PLAN_MODELS[canonicalPlan('cursor', plan)];
     const planned = overlay ? overlay[canonical] : undefined;
@@ -75,8 +84,13 @@ export function modelMatchesExpected(passed: unknown, expected: unknown): boolea
 export function acceptableModelsFor(expected: unknown, host: unknown): string[] {
   const e = typeof expected === 'string' ? expected.trim() : '';
   if (!e) return [];
-  if (canonicalHost(host) !== 'cursor') return [e];
-  const alternates = CURSOR_MODEL_ALTERNATES[e] ?? [];
+  const h = canonicalHost(host);
+  // OpenCode "Go" primaries carry a fallback chain (other Go models → free chain) so a
+  // build never stalls on an unavailable paid model. claude/codex stay strict `[expected]`.
+  const alternates = h === 'opencode'
+    ? (OPENCODE_MODEL_ALTERNATES[e] ?? null)
+    : (h === 'cursor' ? (CURSOR_MODEL_ALTERNATES[e] ?? []) : null);
+  if (alternates === null) return [e];
   return [e, ...alternates.filter((m) => m && m !== e)];
 }
 
@@ -90,7 +104,7 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
 export function tierModelTable(
   tier: unknown,
   plan?: unknown,
-): { tier: TierId; claude: string; codex: string; cursor: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string } | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
   return {
@@ -98,6 +112,7 @@ export function tierModelTable(
     claude: HOST_MODELS.claude[canonical],
     codex: HOST_MODELS.codex[canonical],
     cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor[canonical],
+    opencode: resolveModel(canonical, 'opencode', plan) ?? HOST_MODELS.opencode[canonical],
   };
 }
 

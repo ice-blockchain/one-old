@@ -1,0 +1,80 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+
+import { makeOpenCodeAdapter } from '../opencode';
+import { dispatch } from '../../core/dispatch';
+import { context, deny, noop } from '../../core/result';
+import type { Handler } from '../../core/types';
+
+const opencode = makeOpenCodeAdapter();
+
+function inv(sub: string, payload: object) {
+  return { stdin: JSON.stringify(payload), argv: ['node', 'opencode-hook-runtime', sub, '--host=opencode'] };
+}
+
+test('opencode: maps pinned raw tool names to canonical tool classes', () => {
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'bash', tool_input: { command: 'npm test' } })).tool?.class, 'shell');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'write', tool_input: { file_path: 'a.ts', content: 'x' } })).tool?.class, 'file-write');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'apply_patch', tool_input: { patch: '*** Begin Patch' } })).tool?.class, 'file-edit');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'apply_patch', tool_input: { file_path: 'a.ts', content: 'x' } })).tool?.class, 'file-write');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'edit', tool_input: { old_string: 'a', new_string: 'b' } })).tool?.class, 'file-edit');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'read', tool_input: { path: 'a.ts' } })).tool?.class, 'file-read');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'grep', tool_input: { pattern: 'x' } })).tool?.class, 'search');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'glob', tool_input: { pattern: '*.ts' } })).tool?.class, 'search');
+  assert.equal(opencode.parse(inv('before-tool-use', { tool_name: 'task', tool_input: { prompt: 'go' } })).tool?.class, 'spawn-agent');
+});
+
+test('opencode: parses documented tool hook payload shape', () => {
+  const parsed = opencode.parse(inv('before-tool-use', {
+    event: 'tool.execute.before',
+    cwd: '/repo',
+    tool: 'bash',
+    output: { args: { command: 'npm test' } },
+  }));
+  assert.equal(parsed.event, 'PreToolUse');
+  assert.equal(parsed.tool?.rawName, 'bash');
+  assert.equal(parsed.tool?.class, 'shell');
+  assert.equal(parsed.tool?.command, 'npm test');
+
+  // The real apply_patch payload (string `tool`, args under `output.args`) must
+  // classify as a file write/edit — not fall through to `other` and escape gates.
+  const patched = opencode.parse(inv('before-tool-use', {
+    event: 'tool.execute.before',
+    cwd: '/repo',
+    tool: 'apply_patch',
+    output: { args: { file_path: 'a.ts', patch: '*** Begin Patch' } },
+  }));
+  assert.equal(patched.tool?.rawName, 'apply_patch');
+  assert.equal(patched.tool?.class, 'file-edit');
+});
+
+test('opencode: maps chat.message and system transform hook events', () => {
+  assert.equal(opencode.parse(inv('user-prompt-submit', { event: 'chat.message', prompt: 'build it' })).event, 'UserPromptSubmit');
+  assert.equal(opencode.parse(inv('system-transform', { event: 'experimental.chat.system.transform', cwd: '/repo' })).event, 'SessionStart');
+});
+
+test('opencode: before-tool deny serializes as deny for wrapper throw', async () => {
+  const handlers: Handler[] = [
+    { id: 'd', event: 'PreToolUse', tools: ['shell'], priority: 0, run: () => deny('blocked') },
+  ];
+  const out = JSON.parse(await dispatch(opencode, handlers, inv('before-tool-use', { tool_name: 'bash', tool_input: { command: 'rm -rf x' } })));
+  assert.deepEqual(out, { kind: 'deny', reason: 'blocked' });
+});
+
+test('opencode: after-tool deny downgrades to context warning', async () => {
+  const handlers: Handler[] = [
+    { id: 'd', event: 'PostToolUse', tools: ['file-write'], priority: 0, run: () => deny('too late') },
+  ];
+  const out = JSON.parse(await dispatch(opencode, handlers, inv('after-tool-use', { tool_name: 'write', tool_input: { file_path: 'a.ts' } })));
+  assert.equal(out.kind, 'context');
+  assert.equal(out.warning, true);
+  assert.match(out.context, /too late/);
+});
+
+test('opencode: context and noop use wrapper JSON protocol', async () => {
+  const handlers: Handler[] = [
+    { id: 'c', event: 'SessionStart', priority: 0, run: () => context('hello') },
+  ];
+  assert.deepEqual(JSON.parse(await dispatch(opencode, handlers, inv('session-start', { cwd: '/x' }))), { kind: 'context', context: 'hello' });
+  assert.deepEqual(JSON.parse(await dispatch(opencode, [{ id: 'n', event: 'SessionStart', priority: 0, run: () => noop() }], inv('session-start', {}))), { kind: 'noop' });
+});

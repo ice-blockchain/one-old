@@ -6,6 +6,7 @@ import { nextLocalPreferenceStep } from '../local-prefs';
 test('nextLocalPreferenceStep walks only the per-user Traffic One preference steps', () => {
   const state: Record<string, unknown> = { mode: 'existing-codebase', stack: 'custom-frontend' };
   assert.equal(nextLocalPreferenceStep(state), 'open-code');
+  assert.equal(nextLocalPreferenceStep(state, 'opencode'), 'performance');
 
   state.openCode = { enabled: false, source: 'prompted' };
   assert.equal(nextLocalPreferenceStep(state), 'performance');

@@ -209,7 +209,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       if (id.sessionId && isForeignOnboardingThread(cwd, id.sessionId)) return noop();
     }
     seedOriginalPrompt(cwd, promptText);
-    const server = ensureOnboardingServer(cwd);
+    const server = ensureOnboardingServer(cwd, { host: ctx.host });
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
     // repeat prompts get the short URL + wait-command essentials.
     const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId)

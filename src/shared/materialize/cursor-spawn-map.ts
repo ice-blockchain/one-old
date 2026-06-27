@@ -33,7 +33,7 @@ export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string
   if (!level || team?.mode !== 'subagents') return {};
 
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
-  const planCtx = { host: 'cursor' as const, plan: detectHostPlan('cursor'), useOpenCode: openCodeDelegationActive(state) };
+  const planCtx = { host: 'cursor' as const, plan: detectHostPlan('cursor'), useOpenCode: openCodeDelegationActive(state, 'cursor') };
   let lineup;
   try {
     lineup = buildTeamLineup(level, 'cursor', overrides, planCtx);

@@ -25,11 +25,11 @@ function orchestratorSubagentsBuild(state: unknown): boolean {
   return Boolean(level && teamModeForLevel(level) === 'subagents');
 }
 
-function planBatchContext(cwd: string, state: unknown): { runId: string; pendingRoles: string[] } | null {
-  if (!orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state)) return null;
+function planBatchContext(cwd: string, state: unknown, host: string = detectHost()): { runId: string; pendingRoles: string[] } | null {
+  if (!orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state, host)) return null;
   const runId = ensureCurrentRunId(cwd, state);
-  if (!runId || !shouldBlockImplementerForPlanBatch(cwd, runId, state)) return null;
-  const pendingRoles = pendingOpenCodePlanRoles(cwd, runId, state);
+  if (!runId || !shouldBlockImplementerForPlanBatch(cwd, runId, state, host)) return null;
+  const pendingRoles = pendingOpenCodePlanRoles(cwd, runId, state, host);
   if (pendingRoles.length === 0) return null;
   return { runId, pendingRoles };
 }
@@ -53,8 +53,9 @@ function buildPlanBatchDirective(
   state: unknown,
   headline: string,
   extraLines: string[] = [],
+  host: string = detectHost(),
 ): string {
-  const ctx = planBatchContext(cwd, state);
+  const ctx = planBatchContext(cwd, state, host);
   if (!ctx) return '';
   const { runId, pendingRoles } = ctx;
   return [
@@ -70,9 +71,8 @@ function buildPlanBatchDirective(
 /** SETUP_COMPLETE channel — proactive contract when OpenCode delegation is active. */
 export function buildPreSpawnOpenCodeDirective(cwd: string, host: string = detectHost()): string {
   try {
-    void host;
     const state = readEffectiveState(cwd);
-    if (!state || !orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state)) return '';
+    if (!state || !orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state, host)) return '';
     const runId = ensureCurrentRunId(cwd, state);
     if (!runId) return '';
     return [
@@ -101,6 +101,7 @@ export function buildPostPlanReadyOpenCodeDirective(cwd: string): string {
         'The architect finished; the plan includes a bounded OpenCode queue.',
         'Your NEXT action is ONLY the Step-0 batch — not parallel senior-frontend/senior-backend spawns.',
       ],
+      detectHost(),
     );
   } catch {
     return '';
@@ -117,6 +118,7 @@ export function buildOpenCodePlanBatchPendingDirective(cwd: string, state?: unkn
       s,
       '[traffic-one] OpenCode Step 0 still pending — finish the plan batch before implementer spawns:',
       ['OpenCode delegation is active; implementer spawns stay gated until the batch is terminal.'],
+      detectHost(),
     );
   } catch {
     return '';
@@ -127,8 +129,9 @@ export function buildOpenCodePlanBatchPendingDirective(cwd: string, state?: unkn
 export function buildOpenCodePlanBatchDenyContext(cwd: string, runId: string, queuedRoles: string[]): string {
   try {
     const state = readEffectiveState(cwd);
-    if (!state || !openCodeDelegationActive(state)) return '';
-    const pending = queuedRoles.length > 0 ? queuedRoles : pendingOpenCodePlanRoles(cwd, runId, state);
+    const host = detectHost();
+    if (!state || !openCodeDelegationActive(state, host)) return '';
+    const pending = queuedRoles.length > 0 ? queuedRoles : pendingOpenCodePlanRoles(cwd, runId, state, host);
     if (pending.length === 0) return '';
     return [
       'NEXT (this turn): run OpenCode Step 0 only — do NOT retry Task spawns for senior-frontend/senior-backend yet.',

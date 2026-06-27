@@ -90,6 +90,26 @@ test('ensure: relaunches when no record exists', () => {
   });
 });
 
+test('ensure: forwards the active host to launch so the wizard server detects it (--host stamp)', () => {
+  withProject((cwd, env) => {
+    // Without this, the detached server runs detectHost() with no --host arg and no
+    // env marker → defaults to claude → shows host-specific steps (e.g. the OpenCode
+    // delegation opt-in) on the opencode host.
+    let capturedHost: string | undefined = 'UNSET';
+    ensureOnboardingServer(cwd, {
+      env,
+      isAlive: () => false,
+      host: 'opencode',
+      launch: (c, e, h) => {
+        capturedHost = h;
+        writeServerRecord(c, rec({ pid: 999, port: 52000, token: 'z', url: 'http://127.0.0.1:52000/?t=z' }), e);
+        return 999;
+      },
+    });
+    assert.equal(capturedHost, 'opencode');
+  });
+});
+
 test('ensure: clears a stale (dead-pid) record and relaunches', () => {
   withProject((cwd, env) => {
     writeServerRecord(cwd, rec(), env);

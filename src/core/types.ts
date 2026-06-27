@@ -3,7 +3,7 @@
 // The whole point of this file: feature code speaks ONLY these types and never
 // branches on host. Adapters translate each host's raw shape to/from here.
 
-export type HostId = 'claude' | 'codex' | 'cursor';
+export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode';
 
 export type CanonicalEvent =
   | 'SessionStart'

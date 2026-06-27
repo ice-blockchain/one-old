@@ -4,9 +4,10 @@
 // (The popup/chat PROSE lands in the agent-model module's skill.)
 
 import { type TierId } from '../config/model-tiers';
-import { canonicalTier, resolveModel, tierModelTable } from './model-tiers';
+import { canonicalHost, canonicalTier, resolveModel, tierModelTable } from './model-tiers';
 import { agentTierForPlan } from './performance-config';
 import { PERFORMANCE_CONFIG } from '../config/performance';
+import { detectHost } from './host';
 import { obj } from './obj';
 
 // Optional plan context. When present, the per-role tier becomes plan-aware (see
@@ -19,7 +20,8 @@ export interface PlanCtx { readonly host: string; readonly plan: string; readonl
 // (stamped under `toolchain.opencode`). Otherwise the team would move to pricier
 // models / a higher level for an offload that never happens. Derive `useOpenCode`
 // through this everywhere so the wizard line-up and the spawn gate stay in sync.
-export function openCodeDelegationActive(state: unknown): boolean {
+export function openCodeDelegationActive(state: unknown, host: unknown = detectHost()): boolean {
+  if (canonicalHost(host) === 'opencode') return false;
   const s = obj(state);
   if (!s) return false;
   if (obj(s.openCode)?.enabled !== true) return false;
@@ -65,7 +67,7 @@ export function modelForRole(
   role: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
-): { tier: TierId; claude: string; codex: string; cursor: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string } | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
   return tier ? tierModelTable(tier, planCtx?.plan) : null;
 }

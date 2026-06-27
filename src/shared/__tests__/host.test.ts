@@ -19,6 +19,7 @@ test('--host=<id> is authoritative for every host (how a spawned runner learns t
   // win OVER a conflicting env marker (the command stamps the real host the hook detected).
   assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=cursor']), 'cursor');
   assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=codex']), 'codex');
+  assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=opencode']), 'opencode');
   assert.equal(detectHost(E({ CURSOR_PLUGIN_ROOT: '/x' }), ['--host=codex']), 'codex');
   // An unknown --host value is ignored (falls through to env/default).
   assert.equal(detectHost(E(), ['--host=bogus']), 'claude');

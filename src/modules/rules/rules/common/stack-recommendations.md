@@ -43,13 +43,16 @@ Traffic One's active stack core remains authoritative.
 
 ## Deployment Artifact Defaults
 
-- Generate one static-host manifest for React SPA + Supabase deployments before
-  considering containers. Vercel, Netlify, or Cloudflare Pages config is enough
-  for the SPA; Docker is reserved for self-hosted, BYOC, SSR/server-runtime, or
-  container-only plans.
+- Produce a host-agnostic static build (`dist/`) for the React SPA + Supabase
+  before considering containers — web deploy is Traffic One's own (`/deploy`
+  ships that `dist/` to our infra). Do NOT add a third-party web-host manifest
+  (`vercel.json`/`netlify.toml`/`wrangler.toml`); Docker is reserved for
+  self-hosted, BYOC, SSR/server-runtime, or container-only plans.
 - Check in `.env.example`, `.nvmrc`, `packageManager`/`engines`, lockfile, and
-  a GitHub Actions workflow that runs install -> typecheck -> test -> build ->
-  preview deploy on PR -> production deploy on `main`/release merge.
+  a GitHub Actions workflow that runs install -> typecheck -> test -> build;
+  deployment is Traffic One `/deploy` via the gated senior-shipper pre-flight
+  (preview on PR, production on `main`/release merge) — not a third-party host's
+  deploy action.
 - Real secrets live only in `.env.local`, encrypted host variables, or GitHub
   Actions secrets. CI uses frozen lockfile install and fails on lockfile drift.
 - Add a monitorable `/health` path via Supabase Edge Function, host function, or
@@ -60,11 +63,12 @@ Traffic One's active stack core remains authoritative.
 - Add synthetic uptime checks for `/` and `/health` at a 1-5 minute interval
   with email plus one chat destination. Alert on SLO burn rate, not raw error
   counts, and suppress known-flaky third-party noise.
-- Rollback plan = previous immutable frontend deployment plus a forward-only
-  undo migration for DB changes; do not rely on `pg_restore` as the normal
-  rollback path.
-- Configure custom domain, automatic TLS, security headers, and HSTS preload
-  readiness before calling production complete.
+- Rollback plan = re-ship the previous immutable Traffic One `/deploy` build plus
+  a forward-only undo migration for DB changes; do not rely on `pg_restore` as the
+  normal rollback path.
+- Custom domain, automatic TLS, security headers, and HSTS preload readiness are
+  part of the Traffic One `/deploy` configuration — verify them before calling
+  production complete.
 
 ## Launch Readiness And Post-Deploy Observability
 
@@ -128,11 +132,12 @@ and CrUX/RUM field data; mark field data `UNVERIFIED` when unavailable.
   explicitly asks for Next.js, accepts it after a pitch, or the repo already has
   `next`, use NextAuth/Auth.js for auth unless the project already has Supabase
   Auth, Clerk, Auth0, or another real provider. Prefer App Router route handlers
-  or server actions for server code, Next.js Cache for framework caching, Vercel
-  for deployment, Vercel Blob for app file storage, and Drizzle + PostgreSQL
-  when adding a new SQL layer.
-- Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway, Redis
-  for shared cache, and Celery for durable jobs. Do not default to hand-rolled
+  or server actions for server code, Next.js Cache for framework caching,
+  Traffic One `/deploy` for deployment, Supabase Storage for app file storage,
+  and Drizzle + PostgreSQL when adding a new SQL layer.
+- Python/FastAPI: prefer FastAPI, PostgreSQL, SQLModel, pytest, Redis
+  for shared cache, and Celery for durable jobs; deploy via Traffic One `/deploy`.
+  Do not default to hand-rolled
   JWT/password auth; prefer a framework/provider auth integration first.
 - Other stacks: prefer official framework auth/session middleware, managed auth,
   and maintained SDKs over custom crypto, JWT parsing, session stores, email,

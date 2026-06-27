@@ -362,8 +362,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // per-role gate below only covers roles configured to run on OpenCode
   // (frontend/tester/quick-fix by default), which let backend start while
   // frontend was blocked. This batch gate catches both implementers first.
-  if (isPlanBatchGatedRole(role) && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state)) {
-    const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state);
+  if (isPlanBatchGatedRole(role) && shouldBlockImplementerForPlanBatch(cwd, spawnRunId, state, ctx.host)) {
+    const pendingPlanRoles = pendingOpenCodePlanRoles(cwd, spawnRunId, state, ctx.host);
     if (pendingPlanRoles.length > 0) {
       const denyContext = buildOpenCodePlanBatchDenyContext(cwd, spawnRunId, pendingPlanRoles);
       return deny(block('opencode-plan-batch-required', {
@@ -375,7 +375,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     }
   }
 
-  // OpenCode role delegation (all modes, all hosts): a configured role MUST run
+  // OpenCode role delegation (all modes, paid hosts only): a configured role MUST run
   // on OpenCode first when delegation is enabled. Deny its paid spawn until
   // OpenCode has actually reached the CLI for this role in the current run — the
   // runner writes a per-run attempt marker at that point, after which the
@@ -397,7 +397,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // but small single-role fixes are delegated ad hoc). A BUILD-phase forced role with
   // NOTHING queued has no batch work, so denying its paid spawn would TRAP it (the
   // batch can never mark it attempted) — let it proceed to the paid implementer.
-  if (shouldRunRoleOnOpenCode(role, state)) {
+  if (shouldRunRoleOnOpenCode(role, state, ctx.host)) {
     const runId = ensureCurrentRunId(cwd, state);
     if (runId && (roleHasQueuedUnits(cwd, role, runId) || isMaintenancePhase(state))
       && !openCodeRoleAttempted(cwd, runId, role)
@@ -408,7 +408,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       return deny(block('opencode-role-delegate', { ROLE: role, RUN_ID: runId, PROJECT_ROOT: cwd }));
     }
   }
-  if (shouldRunRoleOnOpenCode(role, state) && spawnRunId
+  if (shouldRunRoleOnOpenCode(role, state, ctx.host) && spawnRunId
     && (openCodeGateDenied(cwd, spawnRunId, role)
       || openCodeRoleAttempted(cwd, spawnRunId, role)
       || openCodePlanRoleCompleted(cwd, spawnRunId, role)
@@ -491,10 +491,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (role === 'quick-fix') {
     const expected = resolveModel('cheapest', ctx.host);
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-    if (expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
+    if (ctx.host !== 'opencode' && expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
     }
-    const exact = expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
+    const exact = ctx.host !== 'opencode' && expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
     if (exact) return exact;
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
@@ -527,7 +527,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
-  const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host), useOpenCode: openCodeDelegationActive(state) };
+  const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host), useOpenCode: openCodeDelegationActive(state, ctx.host) };
 
   // Cursor: the build's actual subagent model set — and its reasoning-variant slugs
   // (`-thinking-max`, `-extra-high`, …) — is plan/build-specific, and only the in-Cursor
@@ -546,13 +546,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-  if (!modelSatisfiesTier(ctx, passedModel, expected)) {
+  if (ctx.host !== 'opencode' && !modelSatisfiesTier(ctx, passedModel, expected)) {
     // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
     // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor
     // case). This is what unblocks a build that omitted the per-role model.
     return modelTierDeny(ctx, cwd, role, passedModel, expected, level);
   }
-  const exact = cursorExactModelDeny(ctx, cwd, role, passedModel, expected, level);
+  const exact = ctx.host !== 'opencode' ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, level) : null;
   if (exact) return exact;
 
   // The model satisfies the tier — but the recommended model the user PICKED may not actually be
@@ -560,13 +560,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // about to run on a same-tier FALLBACK. Surface the choice ONCE so the user isn't silently
   // switched off their pick (the "I wasn't asked" gap — degradedToFloorDeny below only catches a
   // drop to the Composer floor, not a fallback to a valid alternate like gpt-5.5).
-  const ineligible = preferredModelUnavailableDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level);
+  const ineligible = ctx.host !== 'opencode' ? preferredModelUnavailableDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level) : null;
   if (ineligible) return ineligible;
 
   // …and if a highest/balanced role is satisfied ONLY via the Composer floor, that's a silent
   // downgrade (API budget exhausted, or the recommended model disabled). Surface the choice ONCE
   // per run instead of quietly running the architect/implementers on Composer; no-deadlock proceeds.
-  const degraded = degradedToFloorDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level);
+  const degraded = ctx.host !== 'opencode' ? degradedToFloorDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level) : null;
   if (degraded) return degraded;
 
   // First passing Cursor spawn of the run → one-time, USER-VISIBLE advisory naming the team's

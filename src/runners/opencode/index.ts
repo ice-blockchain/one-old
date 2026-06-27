@@ -22,7 +22,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { OPENCODE_FREE_MODELS } from '../../config/opencode';
+import { OPENCODE_FREE_MODELS } from '../../config/opencode-delegation';
 import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';

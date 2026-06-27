@@ -8,7 +8,9 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode';
+import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode-delegation';
+import { detectHost } from './host';
+import { canonicalHost } from './model-tiers';
 import { openCodeDelegationActive } from './performance';
 import { obj } from './obj';
 
@@ -55,10 +57,11 @@ export function openCodeEnabled(state: unknown): boolean {
   return obj(obj(state)?.openCode)?.enabled === true;
 }
 
-// Should this role run on OpenCode rather than a paid subagent? Host-agnostic:
-// OpenCode is a locally-installed CLI invoked the same way on every host, so the
-// only gate is the user's opt-in plus the role being in the configured set.
-export function shouldRunRoleOnOpenCode(role: string, state: unknown): boolean {
+// Should this role run on OpenCode rather than a paid subagent? Delegation is a
+// paid-host feature: Claude/Codex/Cursor may offload to OpenCode, but an OpenCode
+// host must not self-delegate or spawn the worker recursively.
+export function shouldRunRoleOnOpenCode(role: string, state: unknown, host: unknown = detectHost()): boolean {
+  if (canonicalHost(host) === 'opencode') return false;
   if (!role || !openCodeEnabled(state)) return false;
   return openCodeDelegateRoles(state).includes(role);
 }
@@ -307,8 +310,8 @@ export function openCodePlanBatchComplete(cwd: string, runId: string): boolean {
 }
 
 // True when a new-project implementer spawn must wait for Step-0 from-plan.
-export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, state: unknown): boolean {
-  if (!runId || !openCodeDelegationActive(state)) return false;
+export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, state: unknown, host: unknown = detectHost()): boolean {
+  if (!runId || !openCodeDelegationActive(state, host)) return false;
   const mode = obj(state)?.mode;
   if (mode !== 'new-project') return false;
   if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
@@ -351,8 +354,8 @@ export function openCodePlanRoleCompleted(cwd: string, runId: string, role: stri
   }
 }
 
-export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown): string[] {
-  if (!runId || !openCodeDelegationActive(state)) return [];
+export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown, host: unknown = detectHost()): string[] {
+  if (!runId || !openCodeDelegationActive(state, host)) return [];
   if (openCodePlanBatchComplete(cwd, runId)) return [];
   return planDelegationQueueRolesForRun(cwd, runId);
 }
