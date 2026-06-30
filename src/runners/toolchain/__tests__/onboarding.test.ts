@@ -72,6 +72,45 @@ exit 0
   });
 });
 
+test('ensureOpenCodeTool hardens npm lifecycle PATH when Cursor omits /bin', () => {
+  withTemp((cwd) => {
+    const bin = path.join(cwd, 'bin');
+    const log = path.join(cwd, 'npm-path.log');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'npm'), `#!/bin/sh
+echo "$PATH" > "${log}"
+if ! command -v sh >/dev/null 2>&1; then
+  echo "spawn sh ENOENT" >&2
+  exit 127
+fi
+prefix=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--prefix" ]; then
+    shift
+    prefix="$1"
+  fi
+  shift
+done
+if [ -z "$prefix" ]; then
+  exit 1
+fi
+/bin/mkdir -p "$prefix/bin"
+/bin/cat > "$prefix/bin/opencode" <<'OPENCODE'
+#!/bin/sh
+exit 0
+OPENCODE
+/bin/chmod +x "$prefix/bin/opencode"
+exit 0
+`, { mode: 0o755 });
+    process.env.PATH = bin;
+
+    const r = ensureOpenCodeTool(cwd);
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'installed-managed-npm');
+    assert.match(fs.readFileSync(log, 'utf8'), /(?:^|:)\/bin(?::|$)/);
+  });
+});
+
 test('reconcileManagedToolStamp backfills the pinned version for a present managed bin (no spawn, no install)', () => {
   withTemp((cwd) => {
     // Managed opencode present on disk, but state has no stamp — the real-world

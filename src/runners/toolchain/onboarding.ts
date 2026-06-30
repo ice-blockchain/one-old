@@ -98,6 +98,20 @@ function npmBackingNodeMajor(npm: string): number | null {
   }
 }
 
+function withNpmLifecyclePath(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  if (process.platform === 'win32') return { ...baseEnv };
+  const env: NodeJS.ProcessEnv = { ...baseEnv };
+  const parts = (env.PATH || '').split(path.delimiter).filter(Boolean);
+  for (const dir of ['/bin', '/usr/bin']) {
+    if (!parts.includes(dir)) parts.push(dir);
+  }
+  env.PATH = parts.join(path.delimiter);
+  if (!env.npm_config_script_shell && fs.existsSync('/bin/sh')) {
+    env.npm_config_script_shell = '/bin/sh';
+  }
+  return env;
+}
+
 export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolResult {
   const managedBin = managedNpmBin('opencode', 'opencode');
   const candidates = [
@@ -164,6 +178,7 @@ export function ensureOpenCodeTool(cwd: string = process.cwd()): OnboardingToolR
   const ocPrefix = managedNpmPrefix('opencode');
   const result = spawnTool(npm, ['install', '-g', '--prefix', ocPrefix, ...managedNpmConfigFlags(ocPrefix), opencodePackageSpec()], {
     encoding: 'utf8',
+    env: withNpmLifecyclePath(),
     stdio: ['ignore', 'pipe', 'pipe'],
     timeout: 180 * 1000,
   });
