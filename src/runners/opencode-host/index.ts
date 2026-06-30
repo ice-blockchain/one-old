@@ -352,8 +352,12 @@ const TRAFFIC_ONE_WRAPPER_OWNER = ${JSON.stringify(owner)};
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, appendFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+
+const __require = createRequire(import.meta.url);
 
 const TRAFFIC_ONE_PLUGIN_ROOT = ${jsString(pluginRoot)};
 const TRAFFIC_ONE_RUNTIME = path.join(TRAFFIC_ONE_PLUGIN_ROOT, 'scripts', 'opencode-hook-runtime.cjs');
@@ -532,6 +536,25 @@ function debugLog(event, data) {
   } catch {}
 }
 
+function trafficOneHookEnv(projectRoot) {
+  const base = {
+    ...process.env,
+    ELECTRON_RUN_AS_NODE: '1',
+    TRAFFIC_ONE_PLUGIN_ROOT,
+  };
+  try {
+    const mod = __require(path.join(TRAFFIC_ONE_PLUGIN_ROOT, 'scripts', 'shared', 'state', 'traffic-one-paths.js'));
+    return {
+      ...mod.resolveTrafficOneEnv(projectRoot, 'opencode', base),
+      ELECTRON_RUN_AS_NODE: '1',
+      TRAFFIC_ONE_PLUGIN_ROOT,
+    };
+  } catch (err) {
+    debugLog('hook-env-fallback', { err: String(err && err.message || err) });
+    return { ...base, HOME: os.homedir() };
+  }
+}
+
 function runTrafficOne(subcommand, payload) {
   const projectRoot = trafficOneRootFor(payload.cwd || process.cwd());
   if (!projectRoot) { debugLog('skip-no-root', { subcommand, cwd: payload.cwd || null }); return { kind: 'noop' }; }
@@ -543,7 +566,7 @@ function runTrafficOne(subcommand, payload) {
     input,
     encoding: 'utf8',
     timeout: 30000,
-    env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', TRAFFIC_ONE_PLUGIN_ROOT },
+    env: trafficOneHookEnv(projectRoot),
   });
   if (result.error || result.status !== 0) {
     debugLog('spawn-fail', { subcommand, projectRoot, execPath: process.execPath, status: result.status, error: result.error ? String(result.error.message || result.error) : null, stderr: String(result.stderr || '').slice(0, 500) });

@@ -7,6 +7,7 @@ export * from './toolchain';
 export * from './validate';
 export * from './canonicalize';
 export * from './local-prefs';
+export * from './traffic-one-paths';
 export * from './normalize';
 export * from './lifecycle';
 export * from './materialization';

@@ -11,7 +11,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../authoring-root';
+import type { HostId } from '../../core/types';
+import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
+import { resolveTrafficOneEnv } from '../state/traffic-one-paths';
 import { writeLaunchConfig } from './launch-config';
 import { clearServerRecord, readServerRecord, serverLockPath } from './registry';
 
@@ -131,7 +134,9 @@ function defaultLaunch(cwd: string, env: NodeJS.ProcessEnv, host?: string): numb
 }
 
 export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {}): EnsureResult {
-  const env = options.env || process.env;
+  const baseEnv = options.env || process.env;
+  const host = (options.host || detectHost(baseEnv)) as HostId;
+  const env = resolveTrafficOneEnv(cwd, host, baseEnv);
   const isAlive = options.isAlive || processAlive;
   const launch = options.launch || defaultLaunch;
 
@@ -203,7 +208,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
     const stale = readServerRecord(cwd, env);
     if (stale) clearServerRecord(cwd, env);
 
-    const childPid = launch(cwd, env, options.host);
+    const childPid = launch(cwd, env, options.host || host);
     for (;;) {
       const rec = readServerRecord(cwd, env);
       if (rec && (childPid <= 0 || rec.pid === childPid)) {

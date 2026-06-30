@@ -180,8 +180,18 @@ export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): 
   if (!isShellToolName(toolName)) return false;
   const command = commandFromToolInput(toolInput).trim();
   if (!command || command.includes('\n')) return false;
-  if (/[;&|`$<>(){}]/.test(command)) return false;
-  return /(^|\s)node(\s|$)/.test(command) && command.includes('onboarding-wait.cjs');
+  let rest = command;
+  const singleQuoted = String.raw`'(?:[^']*)'(?:\\''(?:[^']*)')*`;
+  const unquoted = String.raw`[A-Za-z0-9_./:@%+=,-]+`;
+  const envAssignment = new RegExp(`^(?:TRAFFIC_ONE_[A-Z0-9_]+|HOME|XDG_STATE_HOME)=(?:${singleQuoted}|${unquoted})\\s+`);
+  for (;;) {
+    const match = rest.match(envAssignment);
+    if (!match) break;
+    rest = rest.slice(match[0].length);
+  }
+  if (/^(?:TRAFFIC_ONE_[A-Z0-9_]+|HOME|XDG_STATE_HOME)=/.test(command) && rest === command) return false;
+  if (/[;&|`$<>(){}]/.test(rest)) return false;
+  return /(^|\s)node(\s|$)/.test(rest) && rest.includes('onboarding-wait.cjs');
 }
 
 // The pre-spawn model-gate command (node …/model-gate.cjs <cwd>) the Cursor orchestrator runs

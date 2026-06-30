@@ -10,6 +10,8 @@ import { makeOpenCodeAdapter } from '../adapters/opencode';
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { authRequiredMessage } from '../shared/auth';
+import { obj } from '../shared/obj';
+import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -27,12 +29,30 @@ function subcommandFromArgs(args: readonly string[]): string | undefined {
   return args.find((arg) => typeof arg === 'string' && arg.length > 0 && !arg.startsWith('--'));
 }
 
+function cwdFromStdin(stdin: string): string {
+  try {
+    const payload = obj(JSON.parse(stdin)) || {};
+    return firstString(payload.cwd, payload.projectRoot, payload.workspaceRoot);
+  } catch {
+    return '';
+  }
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
 export async function runOpenCodeHook(
   subcommand: string | undefined,
   stdin: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: OPENCODE_NOOP, exitCode: 0 };
+  const cwd = cwdFromStdin(stdin);
+  if (cwd) applyTrafficOneEnv(cwd, 'opencode', env);
   const adapter = makeOpenCodeAdapter();
   try {
     const handlers = collectHandlers(loadModules(defaultModulesDir()));

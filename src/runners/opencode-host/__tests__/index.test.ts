@@ -251,4 +251,7 @@ test('wrapper source uses host-stamped runtime hooks and throws only on before-t
   assert.match(source, /server: TrafficOne/);
   assert.ok(!source.includes('tui.'));
   assert.ok(source.includes('opencode.jsonc'));
+  assert.match(source, /trafficOneHookEnv/);
+  assert.match(source, /resolveTrafficOneEnv/);
+  assert.match(source, /traffic-one-paths\.js/);
 });

@@ -6,6 +6,8 @@
 
 import * as http from 'http';
 
+import { detectHost } from '../../shared/host';
+import { applyTrafficOneEnv } from '../../shared/state/traffic-one-paths';
 import { startOnboardingServer } from './server';
 
 export { startOnboardingServer } from './server';
@@ -44,6 +46,8 @@ function keepAliveWhileUp(port: number): Promise<void> {
 export async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const cwd = args.find((a) => !a.startsWith('--')) || process.cwd();
+  const host = detectHost(process.env, args);
+  applyTrafficOneEnv(cwd, host);
   // `--port <n>` lets Claude Code's preview_start launch on the port recorded in
   // .claude/launch.json; default 0 (kernel-assigned ephemeral).
   const portFlag = args.indexOf('--port');

@@ -623,3 +623,94 @@ test('existing project: skipped code-graph fires the install task on the last pr
     assert.equal(computeOnboarding(cwd).done, true);
   });
 });
+
+test('computeOnboarding: shared onboardingComplete without a prefs file is not done', () => {
+  const committed = {
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    projectContext: { source: 'prompted', summary: 'x', answers: {}, collectedAt: '2026-01-01T00:00:00Z' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(committed, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    fs.rmSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, { force: true });
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, false);
+    assert.equal(view.step, 'open-code');
+    assert.equal(view.meta.step, 'open-code');
+  });
+});
+
+test('computeOnboarding: fail-closed durable check keeps step metadata in sync', () => {
+  const committed = {
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    projectContext: { source: 'prompted', summary: 'x', answers: {}, collectedAt: '2026-01-01T00:00:00Z' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+    performance: { level: 'low', source: 'prompted' },
+    team: { mode: 'main-agent', source: 'prompted' },
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(committed, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    fs.rmSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, { force: true });
+    process.argv.push('--host=opencode');
+    try {
+      const view = computeOnboarding(cwd);
+      assert.equal(view.done, false);
+      assert.ok(view.step, 'durable recovery selects a setup step');
+      assert.equal(view.meta.step, view.step);
+      assert.notEqual(view.meta.kind, 'done');
+    } finally {
+      process.argv.pop();
+    }
+  });
+});
+
+test('new-project: project-local prefs path when global home is blocked', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-local-'));
+  const blockedHome = path.join(dir, 'blocked-home');
+  fs.writeFileSync(blockedHome, 'not-a-directory', 'utf8');
+  const cwd = path.join(dir, 'project');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  const prevHome = process.env.HOME;
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  process.env.HOME = blockedHome;
+  delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  delete process.env.TRAFFIC_ONE_STATE_PATH;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  try {
+    const { resolveTrafficOneEnv } = require('../../state/traffic-one-paths');
+    const resolved = resolveTrafficOneEnv(cwd, 'claude', process.env);
+    process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = resolved.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    process.env.TRAFFIC_ONE_STATE_PATH = resolved.TRAFFIC_ONE_STATE_PATH;
+
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { answers: {}, summary: 'a web app' });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    applyAnswer(cwd, 'finalize', null);
+
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')));
+    assert.equal(computeOnboarding(cwd).done, true);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH; else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

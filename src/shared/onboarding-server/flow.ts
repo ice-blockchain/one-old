@@ -8,6 +8,7 @@
 // install is returned as a `task` signal for the HTTP layer to run out-of-band.
 
 import { classifyPromptForStack, detectMode, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
+import * as fs from 'fs';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
@@ -26,8 +27,12 @@ import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamM
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
 import {
+  applyGlobalCodeGraphProvider,
+  effectiveState,
   mergeProjectPrefs,
+  projectPrefsPath,
   readEffectiveState,
+  readGlobalCodeGraphProvider,
   readProjectPrefs,
   readState,
   writeGlobalCodeGraphProvider,
@@ -127,6 +132,46 @@ export function effectiveOnboardingState(cwd: string): { state: Rec; mode: strin
   return { state: { ...state, mode }, mode };
 }
 
+// Fail closed: shared .one.json can show onboardingComplete while per-user prefs
+// never landed on disk (observed on OpenCode/Electron when ~/.traffic-one is not
+// writable). Require the prefs file + effective fields before reporting done.
+function lacksDurableOnboardingState(cwd: string, state: Rec, host: string): boolean {
+  // Sparse existing projects may have no stack yet — local prefs are not required then.
+  if (typeof state.stack !== 'string' || !state.stack.trim()) return false;
+  let prefsFileExists = false;
+  try {
+    prefsFileExists = fs.existsSync(projectPrefsPath(cwd));
+  } catch {
+    prefsFileExists = false;
+  }
+  const prefs = readProjectPrefs(cwd);
+  if (!prefsFileExists && Object.keys(prefs).length === 0) return true;
+  const effective = applyGlobalCodeGraphProvider(effectiveState(state, prefs), process.env, cwd);
+  if (isNewProjectOnboardingIncomplete(effective, host)) return true;
+  if (nextLocalPreferenceStep(effective, host) != null) return true;
+  const provider = readGlobalCodeGraphProvider() || (typeof effective.codeGraphProvider === 'string' ? effective.codeGraphProvider : null);
+  return provider !== 'gitnexus' && provider !== 'graphify';
+}
+
+function stepWhenDurablePrefsMissing(cwd: string, state: Rec, mode: string, host: string): WizardStep {
+  if (mode === 'new-project') {
+    if (isNewProjectOnboardingIncomplete(state, host)) {
+      const raw = nextOnboardingStep(state, host);
+      return raw === 'state' ? 'finalize' : (raw as WizardStep);
+    }
+    const raw = nextLocalPreferenceStep(state, host);
+    return (raw as WizardStep) ?? 'performance';
+  }
+  const raw = nextLocalPreferenceStep(state, host);
+  return (raw as WizardStep) ?? 'performance';
+}
+
+function enrichStepMeta(meta: StepMeta, step: WizardStep, state: Rec): StepMeta {
+  if (step === 'team-confirmation') enrichTeamMeta(meta, state);
+  if (step === 'performance') enrichPerformanceMeta(meta, state);
+  return meta;
+}
+
 export function computeOnboarding(cwd: string): OnboardingView {
   const { state, mode } = effectiveOnboardingState(cwd);
   const originalPrompt = projectContextOriginalPrompt(state);
@@ -150,9 +195,11 @@ export function computeOnboarding(cwd: string): OnboardingView {
     done = raw == null;
   }
 
-  const meta = metaForStep(step, originalPrompt);
-  if (step === 'team-confirmation') enrichTeamMeta(meta, state);
-  if (step === 'performance') enrichPerformanceMeta(meta, state);
+  if (done && lacksDurableOnboardingState(cwd, state, host)) {
+    done = false;
+    step = stepWhenDurablePrefsMissing(cwd, state, mode, host);
+  }
+  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state);
 
   return {
     mode,
