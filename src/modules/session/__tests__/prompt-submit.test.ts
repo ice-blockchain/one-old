@@ -53,6 +53,17 @@ function assertSetupRequired(r: HookResult): void {
   }
 }
 
+function assertOpenCodeSetupTextIsSanitized(text: string): void {
+  assert.ok(text.includes('http://127.0.0.1'), 'OpenCode setup text still carries the wizard URL');
+  assert.ok(text.includes('immediately run the wait command'), 'OpenCode setup text tells the agent not to pause after the link');
+  assert.ok(text.includes('TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED'), 'OpenCode setup text tells the agent to stop for restart');
+  assert.ok(text.includes('type "continue" or "resume"'), 'OpenCode setup text tells the user how to resume after restart');
+  assert.ok(!text.includes('Continue the original request after TRAFFIC_ONE_SETUP_COMPLETE'), 'OpenCode setup must not auto-continue');
+  for (const unsafe of ['.claude/launch.json', 'preview_start', 'node_repl', 'const fs', 'do NOT', 'Do NOT']) {
+    assert.ok(!text.includes(unsafe), `OpenCode setup text must not include ${unsafe}`);
+  }
+}
+
 // Fresh local auth → authGateForHook authenticated WITHOUT spawning the CLI.
 function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-'));
@@ -283,6 +294,17 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
 test('authed + incomplete new project → setup required + wizard URL (no popup)', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     assertSetupRequired(runUserPromptSubmit(ctx(cwd, 'build a shop with checkout')));
+  });
+});
+
+test('opencode: incomplete onboarding prompt uses sanitized setup text', () => {
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'opencode'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.equal(r.systemMessage, 'traffic-one [setup required]');
+      assertOpenCodeSetupTextIsSanitized(r.context);
+    }
   });
 });
 

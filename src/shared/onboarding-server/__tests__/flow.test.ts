@@ -147,6 +147,46 @@ test('existing project: only the local-preference steps are asked, then done', (
   });
 });
 
+test('new project: complete shared state without local prefs still asks local-preference steps', () => {
+  const committed = {
+    mode: 'new-project',
+    version: '2.9.226',
+    originalPrompt: 'create a modern learning platform',
+    projectContext: {
+      source: 'prompted',
+      originalPrompt: 'create a modern learning platform',
+      summary: 'create a modern learning platform',
+      answers: {},
+      collectedAt: '2026-01-01T00:00:00Z',
+    },
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+    realtime: 'none',
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    supabaseFunctionsAutoDeploy: 'ask',
+    supabaseAddons: {},
+  };
+  withProject(committed, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    assert.deepEqual(readProjectPrefs(cwd), {});
+    assert.equal(computeOnboarding(cwd).done, false);
+    assert.equal(computeOnboarding(cwd).step, 'open-code');
+
+    process.argv.push('--host=opencode');
+    try {
+      assert.equal(computeOnboarding(cwd).done, false);
+      assert.equal(computeOnboarding(cwd).step, 'performance');
+    } finally {
+      process.argv.pop();
+    }
+  });
+});
+
 test('invalid answers are rejected', () => {
   withProject(null, (cwd) => {
     assert.equal(applyAnswer(cwd, 'performance', 'turbo').ok, false);

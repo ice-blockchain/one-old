@@ -135,13 +135,14 @@ export function computeOnboarding(cwd: string): OnboardingView {
   let done: boolean;
 
   if (mode === 'new-project') {
-    if (!isNewProjectOnboardingIncomplete(state, host)) {
-      step = null;
-      done = true;
-    } else {
+    if (isNewProjectOnboardingIncomplete(state, host)) {
       const raw = nextOnboardingStep(state, host);
       step = raw === 'state' ? 'finalize' : (raw as WizardStep);
       done = false;
+    } else {
+      const raw = nextLocalPreferenceStep(state, host);
+      step = (raw as WizardStep) ?? null;
+      done = raw == null;
     }
   } else {
     const raw = nextLocalPreferenceStep(state, host);

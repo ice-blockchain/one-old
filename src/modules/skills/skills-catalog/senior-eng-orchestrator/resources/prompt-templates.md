@@ -55,11 +55,15 @@ rules/common/codebase-graph.md): `.traffic-one/.gitnexus/` when codeGraphProvide
 "gitnexus", `.traffic-one/graphify-out/GRAPH_REPORT.md` when "graphify". Skip silently if
 missing.
 
-Produce .traffic-one/plan.md (≤250 lines, seven sections: Goal, Stack & rationale,
-Module map, Public contracts, Risks, Cut-list, OpenCode delegation queue). Cite
-skills by name; do not inline their content.
+Produce .traffic-one/plan.md (≤250 lines, sections: Goal, Stack & rationale,
+Module map, Public contracts, Risks, Cut-list, plus OpenCode delegation queue only
+when delegation is active on a non-OpenCode host). Cite skills by name; do not
+inline their content.
 
-When `openCode.enabled`, the "OpenCode
+When the current host is OpenCode, do not include an "OpenCode delegation queue"
+section and do not write `<!-- opencode-delegate:start -->` markers; OpenCode
+cannot delegate to itself, so implementer work runs directly on the OpenCode host.
+When `openCode.enabled` is active on a non-OpenCode host, the "OpenCode
 delegation queue" section is REQUIRED: list every bounded, low-risk unit
 (boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding,
 mechanical refactors/renames, formatting/codemods) in the machine-readable

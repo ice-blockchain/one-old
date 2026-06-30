@@ -105,6 +105,13 @@ function writeExistingNextCodebase(cwd: string): void {
   }
 }
 
+function assertOpenCodeSetupTextIsSanitized(text: string): void {
+  assert.ok(text.toLowerCase().includes('setup'), 'OpenCode setup text still explains setup is required');
+  for (const unsafe of ['.claude/launch.json', 'preview_start', 'node_repl', 'const fs', 'do NOT', 'Do NOT']) {
+    assert.ok(!text.includes(unsafe), `OpenCode setup text must not include ${unsafe}`);
+  }
+}
+
 test('runSessionStart is a noop in the plugin authoring root (before any auth probe)', () => {
   assert.equal(runSessionStart(ctx(process.cwd())).kind, 'noop');
 });
@@ -216,6 +223,17 @@ test('Flow 1: an onboarded existing project without local prefs asks only local-
   });
 });
 
+test('opencode: onboarded existing project without local prefs uses sanitized setup text', () => {
+  withProject(existingState(), (cwd) => {
+    const r = runSessionStartAuthed(ctxHost(cwd, 'opencode'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.equal(r.systemMessage, 'traffic-one [minimal] setup required');
+      assertOpenCodeSetupTextIsSanitized(r.context);
+    }
+  });
+});
+
 test('Flow 1: an onboarded new project with shared state + local prefs runs normally', () => {
   withProject(newProjectSharedState(), (cwd) => {
     writeLocalPrefs();
@@ -254,6 +272,17 @@ test('Flow 1: an onboarded new project without local prefs asks local-pref steps
       assert.equal(r.systemMessage, 'traffic-one [setup required]');
       assert.ok(r.context.toLowerCase().includes('setup'));
       assert.equal(r.promptRequest, undefined);
+    }
+  });
+});
+
+test('opencode: onboarded new project without local prefs uses sanitized setup text', () => {
+  withProject(newProjectSharedState(), (cwd) => {
+    const r = runSessionStartAuthed(ctxHost(cwd, 'opencode'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.equal(r.systemMessage, 'traffic-one [setup required]');
+      assertOpenCodeSetupTextIsSanitized(r.context);
     }
   });
 });

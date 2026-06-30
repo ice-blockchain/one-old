@@ -42,9 +42,17 @@ Architect completion gate: do not write `PLAN_READY` until the required `.traffi
 Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
 <!-- T1BLOCK:END architect-opencode-queue-gate -->
 
+<!-- T1BLOCK:BEGIN architect-opencode-self-delegation-gate -->
+Architect completion gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the OpenCode host.
+<!-- T1BLOCK:END architect-opencode-self-delegation-gate -->
+
 <!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
 Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`.
 <!-- T1BLOCK:END plan-opencode-queue-gate -->
+
+<!-- T1BLOCK:BEGIN plan-opencode-self-delegation-gate -->
+Plan gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the OpenCode host.
+<!-- T1BLOCK:END plan-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->
 Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas before emitting `PLAN_READY`.

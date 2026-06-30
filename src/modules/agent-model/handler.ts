@@ -491,10 +491,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (role === 'quick-fix') {
     const expected = resolveModel('cheapest', ctx.host);
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-    if (ctx.host !== 'opencode' && expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
+    if (expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
     }
-    const exact = ctx.host !== 'opencode' && expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
+    const exact = expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
     if (exact) return exact;
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
@@ -546,13 +546,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-  if (ctx.host !== 'opencode' && !modelSatisfiesTier(ctx, passedModel, expected)) {
+  if (!modelSatisfiesTier(ctx, passedModel, expected)) {
     // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
     // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor
     // case). This is what unblocks a build that omitted the per-role model.
     return modelTierDeny(ctx, cwd, role, passedModel, expected, level);
   }
-  const exact = ctx.host !== 'opencode' ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, level) : null;
+  const exact = cursorExactModelDeny(ctx, cwd, role, passedModel, expected, level);
   if (exact) return exact;
 
   // The model satisfies the tier — but the recommended model the user PICKED may not actually be
@@ -560,13 +560,13 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // about to run on a same-tier FALLBACK. Surface the choice ONCE so the user isn't silently
   // switched off their pick (the "I wasn't asked" gap — degradedToFloorDeny below only catches a
   // drop to the Composer floor, not a fallback to a valid alternate like gpt-5.5).
-  const ineligible = ctx.host !== 'opencode' ? preferredModelUnavailableDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level) : null;
+  const ineligible = preferredModelUnavailableDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level);
   if (ineligible) return ineligible;
 
   // …and if a highest/balanced role is satisfied ONLY via the Composer floor, that's a silent
   // downgrade (API budget exhausted, or the recommended model disabled). Surface the choice ONCE
   // per run instead of quietly running the architect/implementers on Composer; no-deadlock proceeds.
-  const degraded = ctx.host !== 'opencode' ? degradedToFloorDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level) : null;
+  const degraded = degradedToFloorDeny(ctx, cwd, spawnRunId, role, passedModel, expected, level);
   if (degraded) return degraded;
 
   // First passing Cursor spawn of the run → one-time, USER-VISIBLE advisory naming the team's

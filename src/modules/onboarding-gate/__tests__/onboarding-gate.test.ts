@@ -17,6 +17,11 @@ function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<str
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function ctxOpenCode(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
+  const input: HookInput = { event: 'PreToolUse', host: 'opencode', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
+  return { input, host: 'opencode', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 // A subagent thread: its own session_id plus a parent_session_id (the Claude shape;
 // hookSessionIdentity flags isSubagent from parent_session_id alone).
 function ctxSub(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
@@ -121,6 +126,21 @@ test('new project with no Traffic One state: a mutating feature write is denied 
       assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
       assert.ok(/setup/i.test(r.reason));
       assert.equal(r.promptRequest, undefined); // no per-step popup any more — the wizard owns the questions
+    }
+  });
+});
+
+test('OpenCode setup deny stops after onboarding and asks the user to restart before resuming', () => {
+  withProject(null, (cwd) => {
+    const r = onboardingGate(ctxOpenCode(cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
+      assert.ok(r.reason.includes('immediately run this wait command'), 'agent must run wait without another user prompt');
+      assert.ok(r.reason.includes('TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED'), 'restart sentinel is named');
+      assert.ok(r.reason.includes('type "continue" or "resume"'), 'resume instruction is user-visible');
+      assert.ok(!r.reason.includes('continue the user\'s original request'), 'must not instruct same-process auto-continuation');
+      assert.ok(!r.reason.includes('Ctrl+C'), 'no terminal interrupt workaround');
     }
   });
 });

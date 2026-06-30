@@ -82,6 +82,12 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
 // Best-effort: a server-spawn failure falls back to the plain note (the PreToolUse deny
 // still carries the URL). Single source for every SessionStart/Flow-3 setup-pending path.
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
+  // OpenCode: the full setup-pending block (with "do NOT…" behavioral overrides)
+  // can trigger the model's prompt-injection safety training when injected via
+  // system prompt. Use a minimal, factual message instead.
+  if (ctx.host === 'opencode') {
+    return 'Traffic One project setup is required. A setup wizard will open — share the link with the user when available. Building is blocked until setup completes.';
+  }
   if (ctx.host !== 'cursor') return block('setup-pending');
   try {
     const server = ensureOnboardingServer(cwd, { host: ctx.host });
@@ -260,8 +266,8 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   if (onboardingReady) {
     const activeStackId = String(stackId);
     if (nextLocalPreferenceStep(state, ctx.host)) {
-      return context(`[ACTIVE STACK: ${activeStackId}]\n\n${block('setup-pending')}`, {
-        systemMessage: `traffic-one [${activeStackId}] setup required`,
+      return context(`[ACTIVE STACK: ${activeStackId}]\n\n${setupPendingDirective(ctx, cwd)}`, {
+        systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${activeStackId}] setup required`),
       });
     }
 
