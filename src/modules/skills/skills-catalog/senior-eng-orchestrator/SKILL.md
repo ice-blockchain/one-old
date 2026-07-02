@@ -119,11 +119,18 @@ How it works:
 
 2. **The orchestrator runs the batch FIRST in Phase 2** (before spawning implementers), exactly once, by calling the bundled `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. This is run by the orchestrator (NOT a subagent spawn, NOT subject to the spawn `model` param). The tool runs the locally-installed OpenCode CLI from paid hosts (Claude/Codex/Cursor), not from the OpenCode host itself. It reads the queue and delegates EVERY listed unit to OpenCode (each in an isolated worktree; only clean, error-free, assignment-scoped, source-only diffs applied to the tree; install/lockfile side effects stripped; a digest written per unit). It returns `{ total, delegated, units: [{ id, role, task, action, status, attempts, touched, error }] }`. Status is immutable-attempt aware: summary status precedence is `delegated > no_changes > failed`, and each retry appends to `attempts[]` instead of overwriting history. A zero-unit batch is explicit (`total: 0` plus a skipped/no-units status) and still satisfies the "attempted" marker without pretending work ran. It never throws and never fails the build. **Resumable:** if a call returns `running:true`, call `opencode_delegate_from_plan` again with the same args after the returned `pollAfterMs` (or a short delay if absent) until you get the terminal `{ total, delegated, units }` — do NOT use any shell fallback while `running:true`. Do not spawn backend, frontend, or any other implementer while the batch is merely running.
 
-   Fallback (MCP unavailable ONLY — never while `running:true`): on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner:
+   Fallback (MCP unavailable ONLY — never while `running:true`): on Codex this usually means the auto-registered MCP server has not been loaded yet, so tell the user a one-time Codex restart enables it. Otherwise run the same engine via the shell runner (it writes the same terminal batch markers as the MCP tool — `batch.json` + `COMPLETE` under `.traffic-one/runs/<runId>/opencode-plan-batch/`). A bare JSON stdout line alone does not clear the spawn gate. For a stuck run with terminal unit rows but no `batch.json`, use `--finalize-only` instead of re-delegating:
 
    ```bash
    node ~/.traffic-one/bin/opencode-runner.cjs \
      --run-id "$RUN_ID" --from-plan
+   ```
+
+   Recovery when units are already terminal but `batch.json` is missing:
+
+   ```bash
+   node ~/.traffic-one/bin/opencode-runner.cjs \
+     --run-id "$RUN_ID" --finalize-only
    ```
 
    If the shell runner cannot run (e.g. `.git` is read-only or worktree metadata cannot be written), treat the queued units as not delegated and continue with the internal senior subagents.
@@ -344,7 +351,7 @@ Architect must end its reply with the literal token `PLAN_READY`. If it doesn't,
 
 ### Phase 2 — Implement (parallel)
 
-**Step 0 — OpenCode delegation batch (when `openCode.enabled` on a paid host).** HARD STOP: before spawning any frontend/backend implementer, inspect `.traffic-one/plan.md`. If it contains an `opencode-delegate` queue, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal — do NOT use any shell fallback while `running:true`. This is the token-saver the user enabled, and it runs from Claude/Codex/Cursor only. Do not emit any implementer `Task` calls in the same assistant message as this Step-0 call. Do not spawn backend first while frontend is gated; that serializes the run and defeats the batch. Fallback (MCP unavailable ONLY — never while `running:true`): on Codex, a one-time restart loads the auto-registered server; otherwise run the same engine via the shell runner.
+**Step 0 — OpenCode delegation batch (when `openCode.enabled` on a paid host).** HARD STOP: before spawning any frontend/backend implementer, inspect `.traffic-one/plan.md`. If it contains an `opencode-delegate` queue, run the plan delegation batch ONCE (see "OpenCode delegation") by calling the `opencode_delegate_from_plan` MCP tool (server `opencode-worker`) with `{ runId: "$RUN_ID", projectRoot: "<absolute project root>" }`. It delegates every bounded unit the architect queued in `.traffic-one/plan.md` to OpenCode and returns `{ total, delegated, units }`; if it returns `running:true`, call again with the same args until terminal — do NOT use any shell fallback while `running:true`. This is the token-saver the user enabled, and it runs from Claude/Codex/Cursor only. Do not emit any implementer `Task` calls in the same assistant message as this Step-0 call. Do not spawn backend first while frontend is gated; that serializes the run and defeats the batch. Fallback (MCP unavailable ONLY — never while `running:true`): on Codex, a one-time restart loads the auto-registered server; otherwise run the shell runner (writes terminal `batch.json` + `COMPLETE`; JSON stdout alone is insufficient). Use `--finalize-only` to unblock a stuck run without re-delegating.
 
 ```bash
 node ~/.traffic-one/bin/opencode-runner.cjs --run-id "$RUN_ID" --from-plan

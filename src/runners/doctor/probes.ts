@@ -8,7 +8,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
-import { OPENCODE_MCP_SERVER_KEY } from '../../config/opencode-mcp';
+import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
+import { stableBinDir } from '../../shared/runner-shims';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
 import { managedNpmBin } from '../../shared/toolchain-paths';
 import {
@@ -473,4 +474,28 @@ export function probeSessionDiagnostics(sessionId: string | null, env: NodeJS.Pr
   const analyzed = analyzeCodexSessionFile(filePath, env);
   if (!analyzed) return { id: sessionId, found: false, sessionsDir: codexSessionsDir(env) };
   return { found: true, ...analyzed };
+}
+
+export interface OpenCodeMcpProbe {
+  binShimPath: string;
+  binShimExists: boolean;
+  pluginShimPath: string | null;
+  pluginShimExists: boolean;
+}
+
+export function probeOpenCodeMcp(env: NodeJS.ProcessEnv = process.env): OpenCodeMcpProbe {
+  const binShimPath = path.join(stableBinDir(), 'opencode-mcp.cjs');
+  const pluginRoot = [
+    env.TRAFFIC_ONE_PLUGIN_ROOT,
+    env.CURSOR_PLUGIN_ROOT,
+    env.CODEX_PLUGIN_ROOT,
+    env.CLAUDE_PLUGIN_ROOT,
+  ].map((v) => (v || '').trim()).find(Boolean) || null;
+  const pluginShimPath = pluginRoot ? path.join(pluginRoot, OPENCODE_MCP_SHIM_PATH) : null;
+  return {
+    binShimPath,
+    binShimExists: fs.existsSync(binShimPath),
+    pluginShimPath,
+    pluginShimExists: pluginShimPath ? fs.existsSync(pluginShimPath) : false,
+  };
 }

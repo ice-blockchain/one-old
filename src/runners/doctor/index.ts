@@ -19,6 +19,7 @@ import {
   probeMcpAuth,
   probeNode,
   probeNvm,
+  probeOpenCodeMcp,
   probeProject,
   probeSessionDiagnostics,
 } from './probes';
@@ -33,6 +34,7 @@ export {
   probeMcpAuth,
   probeNode,
   probeNvm,
+  probeOpenCodeMcp,
   probeProject,
   probeSessionDiagnostics,
   resolveCodexSession,
@@ -47,8 +49,9 @@ export function main(): void {
   const project = probeProject(cwd);
   const codexHooks = probeCodexHooks(cwd);
   const mcpAuth = probeMcpAuth();
+  const openCodeMcp = probeOpenCodeMcp();
   const sessionDiagnostics = probeSessionDiagnostics(args.session);
-  const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, mcpAuth, sessionDiagnostics });
+  const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, mcpAuth, openCodeMcp, sessionDiagnostics });
   const summary = findings.some((f) => f.severity === 'fix-needed')
     ? 'ACTION_NEEDED'
     : (findings.length > 0 ? 'INFO_ONLY' : 'HEALTHY');
@@ -57,7 +60,7 @@ export function main(): void {
   process.stdout.write(`${JSON.stringify({
     summary,
     findings,
-    probes: { node, nvm, gitnexus, project, codexHooks, mcpAuth, sessionDiagnostics },
+    probes: { node, nvm, gitnexus, project, codexHooks, mcpAuth, openCodeMcp, sessionDiagnostics },
     version,
   }, null, 2)}\n`);
 }

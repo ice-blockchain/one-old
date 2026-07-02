@@ -4,7 +4,6 @@
 
 import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
@@ -13,6 +12,7 @@ import { readOneSettings, writeOneSection } from '../one-settings';
 import { sha256 } from '../text';
 import {
   ensureProjectLocalTrafficOneGitignore,
+  globalTrafficOneDir,
   projectLocalMachinePath,
   projectLocalPrefsPath,
 } from './traffic-one-paths';
@@ -58,12 +58,13 @@ export function projectRootHash(cwd: string): string {
   return sha256(root);
 }
 
+export function defaultProjectPrefsPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(globalTrafficOneDir(env), 'projects', projectRootHash(cwd), 'preferences.json');
+}
+
 export function projectPrefsPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
   if (env.TRAFFIC_ONE_PROJECT_PREFS_PATH) return path.resolve(env.TRAFFIC_ONE_PROJECT_PREFS_PATH);
-  const base = env.XDG_STATE_HOME
-    ? path.join(env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(env.HOME || os.homedir(), '.traffic-one');
-  return path.join(base, 'projects', projectRootHash(cwd), 'preferences.json');
+  return defaultProjectPrefsPath(cwd, env);
 }
 
 export function normalizeProjectPrefs(prefs: unknown): Rec {
@@ -177,6 +178,16 @@ export function readProjectPrefs(cwd: string, env: NodeJS.ProcessEnv = process.e
       return normalizeProjectPrefs(legacyRaw);
     }
   }
+  // Compatibility for the host-env migration: a newer host may force
+  // project-local prefs while a just-completed wizard or older install wrote the
+  // previous hashed per-project prefs under ~/.traffic-one/projects/<hash>.
+  const hashed = defaultProjectPrefsPath(cwd, env);
+  if (hashed !== prefsPath && hashed !== legacy) {
+    const hashedRaw = readJson(hashed, null);
+    if (hashedRaw && typeof hashedRaw === 'object' && Object.keys(obj(hashedRaw) || {}).length > 0) {
+      return normalizeProjectPrefs(hashedRaw);
+    }
+  }
   return normalizeProjectPrefs({});
 }
 
@@ -272,6 +283,16 @@ export function extractProjectPrefs(value: unknown): Rec {
   for (const key of LOCAL_PREF_KEYS) {
     if (Object.prototype.hasOwnProperty.call(source, key)) prefs[key] = source[key];
   }
+  const delegation = obj(source.openCodeDelegation);
+  if (!prefs.openCode && typeof delegation?.approved === 'boolean') {
+    prefs.openCode = {
+      enabled: delegation.approved,
+      source: 'prompted',
+      ...(typeof delegation.decidedAt === 'string' && delegation.decidedAt.trim()
+        ? { decidedAt: delegation.decidedAt }
+        : {}),
+    };
+  }
   // codeGraphProvider is no longer extracted into per-project prefs — it is a
   // machine-wide setting (one.json) injected by applyGlobalCodeGraphProvider.
   if (!prefs.team && source.subagentTeam !== undefined) prefs.team = source.subagentTeam;
@@ -320,6 +341,13 @@ export function readGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env
   return codeGraphProviderFromValue(readOneSettings(env).codeGraphProvider);
 }
 
+function readDefaultGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env): string | null {
+  const fallbackEnv = { ...env };
+  delete fallbackEnv.TRAFFIC_ONE_STATE_PATH;
+  delete fallbackEnv.TRAFFIC_ONE_AUTH_STATE_PATH;
+  return codeGraphProviderFromValue(readOneSettings(fallbackEnv).codeGraphProvider);
+}
+
 export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const canonical = codeGraphProviderFromValue(provider);
   if (!canonical) return null;
@@ -342,6 +370,10 @@ export function applyGlobalCodeGraphProvider(
     if (legacyRaw && typeof legacyRaw === 'object') {
       provider = codeGraphProviderFromValue((legacyRaw as Rec).codeGraphProvider);
     }
+  }
+  if (!provider && cwd && env.TRAFFIC_ONE_STATE_PATH
+    && path.resolve(env.TRAFFIC_ONE_STATE_PATH) === projectLocalMachinePath(cwd)) {
+    provider = readDefaultGlobalCodeGraphProvider(env);
   }
   if (provider) state.codeGraphProvider = provider;
   else delete state.codeGraphProvider;

@@ -11,6 +11,7 @@ import type {
   McpAuthProbe,
   NodeProbe,
   NvmProbe,
+  OpenCodeMcpProbe,
   ProjectProbe,
   SessionDiagnosticsResult,
 } from './probes';
@@ -32,10 +33,11 @@ export interface BuildFindingsInput {
   project: ProjectProbe;
   codexHooks?: CodexHooksProbe | null;
   mcpAuth?: McpAuthProbe | null;
+  openCodeMcp?: OpenCodeMcpProbe | null;
   sessionDiagnostics?: SessionDiagnosticsResult;
 }
 
-export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, sessionDiagnostics = null }: BuildFindingsInput): Finding[] {
+export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null, openCodeMcp = null, sessionDiagnostics = null }: BuildFindingsInput): Finding[] {
   const findings: Finding[] = [];
   const rawState = project.state && typeof project.state === 'object' ? project.state : null;
   const state = normalizedProjectState(project as unknown as Rec);
@@ -295,6 +297,20 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
         severity: 'fix-needed',
         code: 'CODEX_OPENCODE_MCP_NOT_REGISTERED',
         message: 'The opencode-worker MCP server is not registered in ~/.codex/config.toml, so the opencode_delegate tool is unavailable in Codex. The next session start registers it automatically; restart Codex once afterwards to load it.',
+      });
+    }
+    if (openCodeMcp && !openCodeMcp.binShimExists) {
+      findings.push({
+        severity: 'fix-needed',
+        code: 'CURSOR_OPENCODE_MCP_UNHEALTHY',
+        message: `The version-stable opencode-worker MCP shim is missing at ${openCodeMcp.binShimPath}. Cursor launches MCP with CWD=$HOME and no plugin root — without this shim the server dies on startup (toolCount:0). Reload the window after sessionStart or run onboarding so Traffic One writes ~/.traffic-one/bin shims.`,
+        recommendedCommand: 'node "${TRAFFIC_ONE_PLUGIN_ROOT:-.}/scripts/hook-runtime.cjs" session-start',
+      });
+    } else if (openCodeMcp && !openCodeMcp.pluginShimExists && openCodeMcp.pluginShimPath) {
+      findings.push({
+        severity: 'info',
+        code: 'CURSOR_OPENCODE_MCP_UNHEALTHY',
+        message: `opencode-worker plugin shim not found at ${openCodeMcp.pluginShimPath}; the bin fallback at ${openCodeMcp.binShimPath} should still work when present.`,
       });
     }
   }

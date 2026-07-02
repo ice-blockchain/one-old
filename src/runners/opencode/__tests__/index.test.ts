@@ -7,7 +7,7 @@ import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/opencode-delegation';
-import { openCodePlanRoleCompleted, openCodeRoleAttempted } from '../../../shared/opencode-roles';
+import { openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -606,11 +606,15 @@ test('delegateFromPlan deterministically delegates every queued bounded unit', (
     // the spawn gate uses them to keep implementers blocked while the batch is running.
     assert.equal(openCodePlanRoleCompleted(dir, 'plan-1', 'backend'), true);
     assert.equal(openCodePlanRoleCompleted(dir, 'plan-1', 'senior-frontend'), true);
+    const memoryDir = ['.traffic', '-one'].join('');
+    const runDir = path.join(dir, memoryDir, 'runs', 'plan-1');
+    const batch = readOpenCodePlanBatchState(dir, 'plan-1');
+    assert.ok(batch && batch.outcome !== 'running');
+    assert.equal(openCodePlanBatchComplete(dir, 'plan-1'), true);
+    assert.equal(fs.existsSync(path.join(runDir, 'opencode-plan-batch', 'COMPLETE')), true);
     // both units' disjoint diffs landed in the real working tree
     assert.equal(fs.existsSync(path.join(dir, 'unit-1.txt')), true);
     assert.equal(fs.existsSync(path.join(dir, 'unit-2.txt')), true);
-    const memoryDir = ['.traffic', '-one'].join('');
-    const runDir = path.join(dir, memoryDir, 'runs', 'plan-1');
     const queue = JSON.parse(fs.readFileSync(path.join(runDir, 'opencode-queue.json'), 'utf8')) as any;
     assert.equal(queue.version, 1);
     assert.deepEqual(queue.units.map((u: any) => u.role), ['backend', 'frontend']);
@@ -638,7 +642,7 @@ test('delegateFromPlan without opts.runId uses currentRunId from project state',
 
     assert.equal(r.total, 1);
     assert.equal(r.delegated, 1);
-    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1782117811109', 'frontend.md')), true);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'digests', '1782117811109', 'opencode-frontend.md')), true);
     assert.equal(openCodeRoleAttempted(dir, '1782117811109', 'frontend'), true);
     assert.equal(openCodePlanRoleCompleted(dir, '1782117811109', 'senior-frontend'), true);
   });

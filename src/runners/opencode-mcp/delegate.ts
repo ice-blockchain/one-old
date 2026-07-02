@@ -20,13 +20,13 @@ import {
   RESUME_WAIT_MS,
   watchdogTickMs,
 } from '../../config/opencode-timeouts';
+import { planDelegationQueueRoles } from '../../shared/opencode-roles';
 import {
-  deriveBatchOutcomeFromUnits,
-  markOpenCodePlanBatchRunning,
-  markOpenCodePlanBatchTerminal,
-  markOpenCodePlanRoleCompleted,
-  planDelegationQueueRoles,
-} from '../../shared/opencode-roles';
+  finalizePlanBatch,
+  markPlanBatchRunningIfNeeded,
+  mergeMissingQueueUnits,
+  type PlanBatchResult,
+} from '../../shared/opencode-plan-batch';
 import {
   finalizeOpenCodeUnitsForBatch,
   hasRunningOpenCodeUnits,
@@ -35,6 +35,7 @@ import {
   readOpenCodeQueue,
   reconcileAllRunningUnits,
 } from '../../shared/opencode-queue';
+import { markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted } from '../../shared/opencode-roles';
 
 // The runner prints one JSON line. delegate() → {ok, action, digest, touched,
 // error, model}; delegateFromPlan() → {total, delegated, units}. We keep the
@@ -191,51 +192,18 @@ function synthesizeFailedUnitsForRole(
     }));
 }
 
-export function mergeMissingQueueUnits(projectRoot: string, runId: string, merged: RunnerResult): void {
-  const queue = readOpenCodeQueue(projectRoot, runId);
-  if (!queue) return;
-  if (!Array.isArray(merged.units)) merged.units = [];
-  const seen = new Set(merged.units.map((u) => u.id).filter(Boolean));
-  const error = merged.error || 'runner produced no JSON result';
-  for (const q of queue.units) {
-    if (seen.has(q.id)) continue;
-    merged.units.push({
-      id: q.id,
-      role: q.role,
-      task: q.task,
-      action: 'failed',
-      status: 'failed',
-      touched: [],
-      error,
-    });
-  }
-  merged.total = queue.units.length;
-  merged.delegated = merged.units.filter((u) => u.action === 'delegated' || u.status === 'delegated').length;
-}
-
-function finalizePlanBatch(projectRoot: string, runId: string, merged: RunnerResult): RunnerResult {
-  mergeMissingQueueUnits(projectRoot, runId, merged);
-  finalizeOpenCodeUnitsForBatch(projectRoot, runId, merged.error || 'batch finalized');
-  if (hasRunningOpenCodeUnits(projectRoot, runId)) {
-    reconcileAllRunningUnits(projectRoot, runId, 'running units remain after batch reconcile');
-  }
-  persistBatchUnitsToStatus(projectRoot, runId, merged.units || []);
-  const outcome = deriveBatchOutcomeFromUnits(merged.units || [], merged.error);
-  markOpenCodePlanBatchTerminal(projectRoot, runId, outcome, merged.error ?? null);
-  for (const role of planQueueRoles(projectRoot)) {
-    markOpenCodePlanRoleCompleted(projectRoot, runId, role);
-  }
-  return merged;
+function finalizePlanBatchResult(projectRoot: string, runId: string, merged: RunnerResult): RunnerResult {
+  return finalizePlanBatch(projectRoot, runId, merged as PlanBatchResult) as RunnerResult;
 }
 
 // Run the plan's queued roles as ONE runner each, SEQUENTIALLY — never concurrently.
 async function startFromPlan(projectRoot: string, runId: string, model: string | undefined, onChild?: (child: ReturnType<typeof spawn>) => void): Promise<RunnerResult> {
-  markOpenCodePlanBatchRunning(projectRoot, runId);
+  markPlanBatchRunningIfNeeded(projectRoot, runId);
   const modelArgs = (model || '').trim() ? ['--model', (model as string).trim()] : [];
   const roles = planQueueRoles(projectRoot);
   if (roles.length <= 1) {
     const r = await runRunner(['--run-id', runId, '--from-plan', ...modelArgs], projectRoot, onChild);
-    return finalizePlanBatch(projectRoot, runId, r);
+    return finalizePlanBatchResult(projectRoot, runId, r);
   }
   const merged: RunnerResult = { total: 0, delegated: 0, units: [] };
   const errors: string[] = [];
@@ -255,7 +223,7 @@ async function startFromPlan(projectRoot: string, runId: string, model: string |
     if (r.error && Array.isArray(r.units) && r.units.length > 0) errors.push(r.error);
   }
   if (errors.length) merged.error = errors.join('; ');
-  return finalizePlanBatch(projectRoot, runId, merged);
+  return finalizePlanBatchResult(projectRoot, runId, merged);
 }
 
 // The batch path: opencode-runner.cjs --run-id <id> --from-plan [--roles csv].

@@ -43,8 +43,8 @@ function planBatchSteps(cwd: string, runId: string): string[] {
     '2. If the result has `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Keep polling in the SAME turn until you get a terminal `{ total, delegated, units }` — do NOT use any shell fallback while `running:true`. Stopping polls for ~15+ minutes cancels the worker.',
     '3. Only after the terminal result, spawn `senior-backend` and `senior-frontend` in parallel in the NEXT assistant message. Pass each implementer the batch `units` summary (`touched` files; units whose `action !== "delegated"`).',
     '4. Do not re-implement files OpenCode already touched unless that unit was skipped/failed/no-changes.',
-    '5. Fail-open: if the batch returns a terminal failure (`ok:false`, `action: "abandoned"`, or every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — do NOT block the build on OpenCode.',
-    `Fallback (MCP unavailable ONLY — never while \`running:true\`): \`node ~/.traffic-one/bin/opencode-runner.cjs --run-id "${runId}" --from-plan\` from the project root.`,
+    '5. Fail-open: when the batch reaches a terminal outcome (`ok:false`, `action: "abandoned"`, every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — but only after terminal batch markers exist (`batch.json` with outcome other than `running`, or legacy `COMPLETE`). A bare shell JSON line alone does not clear the spawn gate.',
+    `Fallback (MCP unavailable ONLY — never while \`running:true\`): \`node ~/.traffic-one/bin/opencode-runner.cjs --run-id "${runId}" --from-plan\` from the project root (writes the same terminal batch markers as the MCP tool). For a stuck run with terminal unit rows but no batch.json, use \`--finalize-only\` instead of re-delegating.`,
   ];
 }
 

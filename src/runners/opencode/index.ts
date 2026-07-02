@@ -37,6 +37,11 @@ import {
   recordOpenCodeAttemptOutcome,
 } from '../../shared/opencode-roles';
 import {
+  finalizePlanBatch,
+  finalizePlanBatchOnly,
+  markPlanBatchRunningIfNeeded,
+} from '../../shared/opencode-plan-batch';
+import {
   buildOpenCodeQueue,
   normalizeOpenCodeRole,
   opencodeAssignmentHash,
@@ -545,7 +550,7 @@ function runStamp(): string {
   return new Date().toISOString().replace(/[:.]/g, '-').replace(/-\d{3}Z$/, 'Z');
 }
 
-function writeDigest(cwd: string, runId: string, role: string, model: string, touched: string[], summary: string): string {
+function writeDigest(cwd: string, runId: string, role: string, model: string, touched: string[], summary: string, opts?: { planUnit?: boolean }): string {
   const dir = path.join(cwd, '.traffic-one', 'digests', runId);
   fs.mkdirSync(dir, { recursive: true });
   const touchedLines = touched.slice(0, 20).map((f) => `- ${f}        # delegated edit`).join('\n')
@@ -557,6 +562,7 @@ function writeDigest(cwd: string, runId: string, role: string, model: string, to
   // verification passes (observed live: without the hint it spawned a whole
   // paid agent just to rewrite this line).
   const canonical = roleDigestName(role) === 'tester' ? 'TESTS_GREEN' : 'IMPLEMENTED';
+  const digestRole = opts?.planUnit ? `opencode-${roleDigestName(role)}` : roleDigestName(role);
   const body = [
     `# ${role} digest — run ${runId}`,
     '',
@@ -578,7 +584,7 @@ function writeDigest(cwd: string, runId: string, role: string, model: string, to
   // Same filename rule as every other digest writer/reader (senior-frontend →
   // frontend.md): successor roles and the build-complete verification heuristic
   // look for the stripped name, so the full role string would hide the digest.
-  const p = path.join(dir, `${roleDigestName(role)}.md`);
+  const p = path.join(dir, `${digestRole}.md`);
   fs.writeFileSync(p, body.slice(0, DIGEST_HARD_BYTES), 'utf8');
   return p;
 }
@@ -1026,7 +1032,7 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
         const idx = OPENCODE_FREE_MODELS.indexOf(model);
         if (idx >= 0) freeChainStart = idx;
       }
-      const digest = writeDigest(cwd, runId, role, model, outcome.touched, outcome.summary);
+      const digest = writeDigest(cwd, runId, role, model, outcome.touched, outcome.summary, { planUnit: Boolean(opts.unitId) });
       return record({ ok: true, action: 'delegated', digest, touched: outcome.touched, error: null, model });
     }
     if (outcome.kind === 'try-next') {
@@ -1068,6 +1074,8 @@ export interface PlanDelegationResult {
 //   <!-- opencode-delegate:start -->
 //   - role: backend | files: src/lib/seed.ts | task: <self-contained task>
 //   <!-- opencode-delegate:end -->
+export { finalizePlanBatchOnly } from '../../shared/opencode-plan-batch';
+
 export function parsePlanDelegationQueue(planText: string): PlanDelegationUnit[] {
   return parsePlanDelegationUnits(planText);
 }
@@ -1135,6 +1143,7 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
     }
     return { total: 0, delegated: 0, units: [unit] };
   }
+  if (runId) markPlanBatchRunningIfNeeded(cwd, runId);
   try {
     const policyReport = openCodeQueuePolicyReport(queue);
     const rejectAll = policyReport.violations.length > 0 && policyReport.byUnitId.size === 0;
@@ -1216,14 +1225,21 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
       processedByRole.set(normalizedRole, (processedByRole.get(normalizedRole) || 0) + 1);
     }
   } finally {
-    if (runId) {
-      reconcileStaleRunningUnits(cwd, runId);
+    if (runId) reconcileStaleRunningUnits(cwd, runId);
+  }
+  const summary = { total: entries.length, delegated, units };
+  if (runId) {
+    // Role shards (--roles) are merged and finalized by the MCP wrapper; only the
+    // full-batch shell path writes terminal batch.json here.
+    if (opts.roles && opts.roles.length > 0) {
       for (const [role, total] of totalByRole) {
         if ((processedByRole.get(role) || 0) >= total) markOpenCodePlanRoleCompleted(cwd, runId, role);
       }
+    } else {
+      finalizePlanBatch(cwd, runId, summary);
     }
   }
-  return { total: entries.length, delegated, units };
+  return summary;
 }
 
 // CLI entry. Either:
@@ -1236,6 +1252,17 @@ export function main(): number {
     const i = args.indexOf(flag);
     return i >= 0 && i + 1 < args.length ? args[i + 1] : undefined;
   };
+
+  if (args.includes('--finalize-only')) {
+    const runId = (get('--run-id') || '').trim();
+    if (!runId) {
+      process.stderr.write('opencode-runner: --finalize-only requires --run-id\n');
+      return 1;
+    }
+    const summary = finalizePlanBatchOnly(process.cwd(), runId);
+    process.stdout.write(`${JSON.stringify(summary)}\n`);
+    return 0;
+  }
 
   if (args.includes('--from-plan')) {
     const rolesCsv = get('--roles');

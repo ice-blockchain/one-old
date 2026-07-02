@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { mergeProjectPrefs, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
   'CURSOR_PLUGIN_ROOT',
@@ -645,6 +645,78 @@ test('computeOnboarding: shared onboardingComplete without a prefs file is not d
     assert.equal(view.step, 'open-code');
     assert.equal(view.meta.step, 'open-code');
   });
+});
+
+test('computeOnboarding: project-local env still accepts completed onboarding from legacy hashed prefs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-legacy-prefs-'));
+  const cwd = path.join(dir, 'project');
+  const home = path.join(dir, 'home');
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  const prevHome = process.env.HOME;
+  const prevXdg = process.env.XDG_STATE_HOME;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, '.traffic-one', 'preferences.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, '.traffic-one', 'machine.json');
+  process.env.HOME = home;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  delete process.env.XDG_STATE_HOME;
+  try {
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      projectContext: {
+        source: 'prompted',
+        originalPrompt: 'Build responsive learning platform',
+        summary: 'responsive learning platform',
+        answers: {},
+        collectedAt: '2026-01-01T00:00:00Z',
+      },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-01-01T00:00:00Z',
+    }), 'utf8');
+    const hashedPrefs = path.join(home, '.traffic-one', 'projects', projectRootHash(cwd), 'preferences.json');
+    fs.mkdirSync(path.dirname(hashedPrefs), { recursive: true });
+    fs.writeFileSync(hashedPrefs, JSON.stringify({
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      toolchain: {
+        gitnexus: { installedVersion: '1.6.8', installedAt: '2026-07-01T12:25:50Z' },
+        graphify: { installedVersion: null, installedAt: null },
+        opencode: { installedVersion: '1.17.12', installedAt: '2026-07-01T12:25:50Z' },
+        gitleaks: { installedVersion: null, installedAt: null },
+        trufflehog: { installedVersion: null, installedAt: null },
+      },
+    }), 'utf8');
+    fs.mkdirSync(path.join(home, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.traffic-one', 'one.json'), JSON.stringify({
+      version: 1,
+      codeGraphProvider: 'gitnexus',
+    }), 'utf8');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, true);
+    assert.equal(view.step, null);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prevXdg;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('computeOnboarding: fail-closed durable check keeps step metadata in sync', () => {

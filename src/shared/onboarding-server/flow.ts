@@ -147,6 +147,7 @@ function lacksDurableOnboardingState(cwd: string, state: Rec, host: string): boo
   const prefs = readProjectPrefs(cwd);
   if (!prefsFileExists && Object.keys(prefs).length === 0) return true;
   const effective = applyGlobalCodeGraphProvider(effectiveState(state, prefs), process.env, cwd);
+  if (!effective.openCode && state.openCode) effective.openCode = state.openCode;
   if (isNewProjectOnboardingIncomplete(effective, host)) return true;
   if (nextLocalPreferenceStep(effective, host) != null) return true;
   const provider = readGlobalCodeGraphProvider() || (typeof effective.codeGraphProvider === 'string' ? effective.codeGraphProvider : null);

@@ -310,6 +310,18 @@ test('plan-batch per-role markers alone do not clear gate without terminal batch
   }
 });
 
+test('plan-batch zero-byte legacy role markers do not count as completed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-oczero-'));
+  try {
+    const batchDir = path.join(dir, '.traffic-one', 'runs', 'run-zero', 'opencode-plan-batch');
+    fs.mkdirSync(batchDir, { recursive: true });
+    fs.writeFileSync(path.join(batchDir, 'frontend'), '');
+    assert.equal(openCodePlanRoleCompleted(dir, 'run-zero', 'frontend'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('plan-batch COMPLETE marker clears implementer gate immediately', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-occomplete-'));
   try {
