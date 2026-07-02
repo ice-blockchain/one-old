@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { waitForOnboarding } from '../index';
+import { openCodeRestartWarning, waitForOnboarding } from '../index';
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
 // sleep — so the polling loop is exercised without a real timer or state IO.
@@ -37,6 +37,14 @@ test('waitForOnboarding: returns "complete" when setup finishes mid-wait (after 
   });
   assert.equal(r, 'complete');
   assert.equal(polls, 3);
+});
+
+test('openCodeRestartWarning tells the user to restart before continuing development', () => {
+  const warning = openCodeRestartWarning();
+  assert.match(warning, /TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED/);
+  assert.match(warning, /restart OpenCode/i);
+  assert.match(warning, /type "continue" or "resume"/i);
+  assert.doesNotMatch(warning, /Ctrl\+C/i);
 });
 
 // ── postSetupTriage: the SETUP-COMPLETE continuation gets the routing rubric ──

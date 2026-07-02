@@ -18,6 +18,7 @@ import { cleanupPrevious, loadPreviousManifest, modeRulesForState } from './clea
 import { writeCursorAgentFiles } from './cursor-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
+import { writeOpenCodeHostAssets } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
 
 type Rec = Record<string, unknown>;
@@ -105,6 +106,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // orchestrator to read and pass as the Task `model` parameter; Cursor does not reliably
   // auto-apply it, so the spawn gate still enforces the passed model arg.
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
+  if (detectHost() === 'opencode') written += writeOpenCodeHostAssets(cwd, state, skills);
 
   const mobile = state.mobile as Rec | undefined;
   const manifest = {

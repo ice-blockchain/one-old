@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { acceptableModelsFor, canonicalHost, canonicalPlan, canonicalTier, modelMatchesAny, modelMatchesExpected, planIsRecognized, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
+import { OPENCODE_FREE_MODELS } from '../../config/opencode-delegation';
 
 test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
   assert.equal(canonicalTier('highest'), 'highest');
@@ -21,6 +22,9 @@ test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'cursor'), 'claude-opus-4-8');
   assert.equal(resolveModel('balanced', 'cursor'), 'claude-4.6-sonnet');
   assert.equal(resolveModel('cheapest', 'cursor'), 'composer-2.5');
+  assert.equal(resolveModel('highest', 'opencode'), OPENCODE_FREE_MODELS[0]);
+  assert.equal(resolveModel('balanced', 'opencode'), OPENCODE_FREE_MODELS[1]);
+  assert.equal(resolveModel('cheapest', 'opencode'), OPENCODE_FREE_MODELS[2]);
   assert.equal(resolveModel('bad', 'claude'), null);
 });
 
@@ -61,7 +65,7 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
 
 test('tierModelTable: Cursor cell is plan-aware (Free → Composer family), other hosts plan-agnostic', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5' });
+  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0] });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-opus-4-8');
   // No plan → base cursor family.
@@ -112,14 +116,36 @@ test('modelMatchesExpected accepts exact + same-family variants, rejects other f
 
 test('canonicalHost defaults to claude for unknowns', () => {
   assert.equal(canonicalHost('codex'), 'codex');
+  assert.equal(canonicalHost('opencode'), 'opencode');
   assert.equal(canonicalHost('weird'), 'claude');
 });
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8',
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0],
   });
   assert.equal(tierModelTable('bad'), null);
+});
+
+test('opencode Go (plus) plan: paid opencode-go overlay + fallback chain; free inherits the free chain', () => {
+  // free plan → base free chain (unchanged)
+  assert.equal(resolveModel('highest', 'opencode', 'free'), OPENCODE_FREE_MODELS[0]);
+  // Go (auth `opencode-go` → canonical `plus`) → the paid open-weight catalog
+  assert.equal(canonicalPlan('opencode', 'go'), 'plus');
+  assert.equal(resolveModel('highest', 'opencode', 'plus'), 'opencode-go/qwen3.7-max');
+  assert.equal(resolveModel('balanced', 'opencode', 'plus'), 'opencode-go/glm-5.2');
+  assert.equal(resolveModel('cheapest', 'opencode', 'plus'), 'opencode-go/deepseek-v4-flash');
+  // Go recommends a real working tier, not cheapest
+  assert.equal(recommendTierForPlan('opencode', 'plus'), 'balanced');
+  // tierModelTable threads the plan through for opencode too
+  assert.equal(tierModelTable('highest', 'plus')?.opencode, 'opencode-go/qwen3.7-max');
+  // Fallback chain stays within Go, then degrades to the always-free chain — and never
+  // offers pay-per-use `opencode/*` Zen frontier models (owner has Go, not Zen).
+  const accept = acceptableModelsFor('opencode-go/qwen3.7-max', 'opencode');
+  assert.equal(accept[0], 'opencode-go/qwen3.7-max');
+  assert.ok(accept.includes('opencode-go/minimax-m3'));
+  assert.ok(OPENCODE_FREE_MODELS.every((m) => accept.includes(m)), 'free chain is the ultimate fallback');
+  assert.ok(!accept.some((m) => /^opencode\/(claude|gpt|gemini)/.test(m)), 'no Zen frontier models offered on Go');
 });
 
 test('canonicalPlan resolves ids/aliases per host and falls back to the host default', () => {
@@ -131,6 +157,8 @@ test('canonicalPlan resolves ids/aliases per host and falls back to the host def
   assert.equal(canonicalPlan('codex', 'prolite'), 'plus'); // ChatGPT Go / Pro-Lite → Plus
   assert.equal(canonicalPlan('codex', 'Pro-Lite'), 'plus'); // separators + case normalized
   assert.equal(canonicalPlan('cursor', 'business'), 'business');
+  assert.equal(canonicalPlan('opencode', 'free'), 'free');
+  assert.equal(canonicalPlan('opencode', 'pro'), 'free');
   // cross-host / unknown / non-string → host default
   assert.equal(canonicalPlan('claude', 'plus'), 'free'); // plus isn't a claude plan → claude default
   assert.equal(canonicalPlan('codex', 'max'), 'free'); // max isn't a codex plan → codex default
@@ -179,4 +207,6 @@ test('recommendTierForPlan maps plan → tier, bumps one step with OpenCode, cla
   assert.equal(recommendTierForPlan('codex', 'business', true), 'highest');
   // unknown plan → the host default plan's tier (codex default = free)
   assert.equal(recommendTierForPlan('codex', 'mystery'), 'cheapest');
+  assert.equal(recommendTierForPlan('opencode', 'free'), 'cheapest');
+  assert.equal(recommendTierForPlan('opencode', 'free', true), 'cheapest');
 });

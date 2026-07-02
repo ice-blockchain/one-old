@@ -212,7 +212,7 @@ GitHub Actions baseline:
     restore-keys: turbo-
 ```
 
-Remote cache (Vercel Remote Cache or self-hosted) is opt-in: set `TURBO_TOKEN` + `TURBO_TEAM` in CI secrets, never commit them.
+Remote cache (Turborepo Remote Cache or self-hosted) is opt-in: set `TURBO_TOKEN` + `TURBO_TEAM` in CI secrets, never commit them.
 
 ## Anti-Patterns
 

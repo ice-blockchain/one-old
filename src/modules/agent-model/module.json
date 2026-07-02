@@ -8,7 +8,8 @@
     { "event": "PreToolUse", "subcommand": "check-model-gate", "tools": ["shell"] },
     { "event": "PostToolUse", "subcommand": "after-shell-execution", "tools": ["shell"] },
     { "event": "PostToolUse", "subcommand": "post-agent-spawned", "tools": ["spawn-agent"] },
-    { "event": "SubagentStart", "subcommand": "subagent-start" }
+    { "event": "SubagentStart", "subcommand": "subagent-start" },
+    { "event": "UserPromptSubmit", "subcommand": "user-prompt-submit" }
   ],
   "gates": [
     { "id": "agent-model", "event": "PreToolUse", "priority": 40, "tools": ["spawn-agent"] },

@@ -6,6 +6,7 @@ export * from './has-assets';
 export * from './render-agents';
 export * from './cleanup';
 export * from './materialize';
+export * from './opencode-assets';
 export * from './converge';
 export * from './graph-preview';
 export * from './plan-migration';

@@ -24,9 +24,8 @@ tree and package boundaries the setup checklist scaffolds.
 │   │                              inventory in rules/common/project-memory.md
 ├── .gitignore                     dist, node_modules, .turbo, coverage, playwright-report
 ├── .github/
-│   └── workflows/                 CI/CD: verify, preview deploy, production deploy
-├── vercel.json | netlify.toml | wrangler.toml
-│                                    exactly one static-host manifest when deploying
+│   └── workflows/                 CI/CD: verify + build the static dist/
+│                                    (web deploy is Traffic One `/deploy`, not a CI host action)
 ├── supabase/
 │   └── migrations/                SQL schema + RLS policies for Supabase-backed apps
 │

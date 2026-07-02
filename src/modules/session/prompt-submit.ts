@@ -53,6 +53,16 @@ const block = (name: string, vars: Record<string, string | number | null | undef
   skillBlock('onboarding-gate', name, vars);
 const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
 
+function opencodeSetupDirective(url: string, waitCommand: string): string {
+  return [
+    'Traffic One project setup is required before building.',
+    `Setup link: ${url}`,
+    `Wait command: ${waitCommand}`,
+    'Show the setup link, then immediately run the wait command in the current turn; do not wait for another user message first.',
+    'If the wait command prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, then type "continue" or "resume" after restart.',
+  ].join('\n\n');
+}
+
 // Persist the user's first request into the new-project state so the wizard can
 // tailor its questions AND derive the right stack (without it, an empty prompt
 // derives to `minimal`). Idempotent: only on a new project, and never overwrites
@@ -209,7 +219,14 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       if (id.sessionId && isForeignOnboardingThread(cwd, id.sessionId)) return noop();
     }
     seedOriginalPrompt(cwd, promptText);
-    const server = ensureOnboardingServer(cwd);
+    const server = ensureOnboardingServer(cwd, { host: ctx.host });
+    const waitCommand = onboardingWaitCommand(cwd, ctx.host);
+    if (ctx.host === 'opencode') {
+      const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
+      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.url, waitCommand)}`, {
+        systemMessage,
+      });
+    }
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
     // repeat prompts get the short URL + wait-command essentials.
     const wizardBlock = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId)
@@ -222,7 +239,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
     // in its preview pane and Codex via its own recipe, so they keep the plain banner.
     const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) })}`, {
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: waitCommand })}`, {
       systemMessage,
     });
   }

@@ -66,6 +66,21 @@ test('clean write in a materialized main-agent project → noop', () => {
   });
 });
 
+test('OpenCode write (camelCase filePath) of a root Vite file is gated — was blind on opencode', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    // OpenCode's write tool sends `filePath` (camelCase); the snake_case-only read
+    // missed it, so the monorepo-root-vite / plan / feature-source gates all went
+    // blind on the opencode host (the orchestrator scaffolded a root Vite app + ran
+    // npm install before the architect/plan). Reading the canonical/camelCase field
+    // restores the gate.
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'vite.config.ts', content: 'export default {};',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(/root Vite app files are not allowed|monorepo/i.test(r.reason));
+  });
+});
+
 test('subagents project: a feature write outside any role session is denied (run-team)', () => {
   withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {

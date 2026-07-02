@@ -56,6 +56,16 @@ test('server: serves the wizard page on the BARE url (no token) so the preview p
   });
 });
 
+test('wizard: completion page has no OpenCode restart button or Ctrl+C instructions', () => {
+  const html = fs.readFileSync(path.join(process.cwd(), 'src', 'runners', 'onboarding-server', 'wizard.html'), 'utf8');
+  assert.ok(html.includes('Setup complete'));
+  assert.ok(!html.includes('Restart OpenCode'));
+  assert.ok(!html.includes('/restart-host'));
+  assert.ok(!html.includes('terminal where opencode is running'));
+  assert.ok(!html.includes('Ctrl+C'));
+  assert.ok(!html.includes('Press Ctrl+C and relaunch opencode to apply changes.'));
+});
+
 test('server: standalone:false does not write a registry record', async () => {
   await withServer(async (server) => {
     assert.ok(server.url.includes(`:${server.port}`));

@@ -30,7 +30,7 @@ export function cursorUnavailablePicks(cwd: string, state: Record<string, unknow
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
     const plan = detectHostPlan('cursor');
-    const planCtx = { host: 'cursor', plan, useOpenCode: openCodeDelegationActive(state) };
+    const planCtx = { host: 'cursor', plan, useOpenCode: openCodeDelegationActive(state, 'cursor') };
     const captured = freshCursorModels(cwd, plan);
     if (!captured.length) return [];
     const out: UnavailablePick[] = [];

@@ -11,7 +11,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isPluginAuthoringRoot } from '../authoring-root';
+import type { HostId } from '../../core/types';
+import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
+import { resolveTrafficOneEnv } from '../state/traffic-one-paths';
 import { writeLaunchConfig } from './launch-config';
 import { clearServerRecord, readServerRecord, serverLockPath } from './registry';
 
@@ -30,8 +33,13 @@ export interface EnsureResult {
 export interface EnsureOptions {
   env?: NodeJS.ProcessEnv;
   isAlive?: (pid: number) => boolean;
-  launch?: (cwd: string, env: NodeJS.ProcessEnv) => number;
+  launch?: (cwd: string, env: NodeJS.ProcessEnv, host?: string) => number;
   readyTimeoutMs?: number;
+  // Active host, stamped as `--host=<id>` on the spawned server so its flow's
+  // detectHost() is authoritative (env markers aren't set for this subprocess).
+  // Without it the wizard defaults to 'claude' and shows host-specific steps that
+  // should be hidden — e.g. the OpenCode-delegation opt-in on the OpenCode host.
+  host?: string;
 }
 
 // Append the live wizard URL to a setup banner ONLY where the recipe otherwise
@@ -109,10 +117,13 @@ function releaseLaunchLock(lockPath: string): void {
   try { fs.unlinkSync(lockPath); } catch { /* already released */ }
 }
 
-function defaultLaunch(cwd: string, env: NodeJS.ProcessEnv): number {
+function defaultLaunch(cwd: string, env: NodeJS.ProcessEnv, host?: string): number {
   const entry = env.TRAFFIC_ONE_ONBOARDING_SERVER_ENTRY
     || path.join(pluginRoot(), 'scripts', 'onboarding-server.cjs');
-  const child = spawn(process.execPath, [entry, cwd], {
+  // Stamp the host so the server's flow detectHost() resolves it (env markers
+  // like CURSOR_PLUGIN_ROOT/CODEX_* aren't set for this detached subprocess).
+  const args = host ? [entry, cwd, `--host=${host}`] : [entry, cwd];
+  const child = spawn(process.execPath, args, {
     cwd,
     detached: true,
     stdio: 'ignore',
@@ -123,7 +134,9 @@ function defaultLaunch(cwd: string, env: NodeJS.ProcessEnv): number {
 }
 
 export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {}): EnsureResult {
-  const env = options.env || process.env;
+  const baseEnv = options.env || process.env;
+  const host = (options.host || detectHost(baseEnv)) as HostId;
+  const env = resolveTrafficOneEnv(cwd, host, baseEnv);
   const isAlive = options.isAlive || processAlive;
   const launch = options.launch || defaultLaunch;
 
@@ -195,7 +208,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
     const stale = readServerRecord(cwd, env);
     if (stale) clearServerRecord(cwd, env);
 
-    const childPid = launch(cwd, env);
+    const childPid = launch(cwd, env, options.host || host);
     for (;;) {
       const rec = readServerRecord(cwd, env);
       if (rec && (childPid <= 0 || rec.pid === childPid)) {

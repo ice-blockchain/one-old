@@ -64,6 +64,6 @@ export function openCodeMcpServerEntry(pluginRootExpr: string): McpStdioServerEn
   const binFallback = '${S:-$HOME/.traffic-one}/bin/opencode-mcp.cjs';
   return {
     command: 'sh',
-    args: ['-c', `P="${direct}"; [ -f "$P" ] && exec node "$P"; S="${stateHome}"; exec node "${binFallback}"`],
+    args: ['-c', `P="${direct}"; if [ -f "$P" ]; then exec node "$P"; fi; S="${stateHome}"; B="${binFallback}"; if [ -f "$B" ]; then exec node "$B"; fi; echo "traffic-one opencode-worker MCP: server script not found at $P or $B. Run Traffic One onboarding or reload the window after sessionStart so ~/.traffic-one/bin shims exist." >&2; exit 1`],
   };
 }

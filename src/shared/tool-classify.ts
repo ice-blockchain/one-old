@@ -38,6 +38,33 @@ function nameForClass(cls: ToolClass): string {
   }
 }
 
+function canonicalKnownToolName(rawName: string): string {
+  const normalized = normalizedToolName(rawName);
+  if (KNOWN_TOOL_NAME.test(normalized)) return rawName;
+  switch (normalized.toLowerCase()) {
+    case 'bash':
+      return 'Bash';
+    case 'write':
+      return 'Write';
+    case 'edit':
+      return 'Edit';
+    case 'patch':
+      return 'apply_patch';
+    case 'read':
+      return 'Read';
+    case 'grep':
+      return 'Grep';
+    case 'glob':
+      return 'Glob';
+    case 'list':
+      return 'LS';
+    case 'task':
+      return 'Task';
+    default:
+      return '';
+  }
+}
+
 // A host-agnostic tool name the classifiers understand. The adapter-parsed
 // ToolInput is canonical on every host — but Cursor sets rawName to a coarse
 // subcommand, so when rawName isn't a recognized tool name, map the canonical
@@ -45,7 +72,8 @@ function nameForClass(cls: ToolClass): string {
 // byte-identical while making Cursor's gate checks actually classify.
 export function canonicalToolName(tool: ToolInput | undefined): string {
   if (!tool) return '';
-  if (tool.rawName && KNOWN_TOOL_NAME.test(normalizedToolName(tool.rawName))) return tool.rawName;
+  const known = canonicalKnownToolName(tool.rawName || '');
+  if (known) return known;
   return nameForClass(tool.class) || tool.rawName || '';
 }
 
@@ -152,8 +180,18 @@ export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): 
   if (!isShellToolName(toolName)) return false;
   const command = commandFromToolInput(toolInput).trim();
   if (!command || command.includes('\n')) return false;
-  if (/[;&|`$<>(){}]/.test(command)) return false;
-  return /(^|\s)node(\s|$)/.test(command) && command.includes('onboarding-wait.cjs');
+  let rest = command;
+  const singleQuoted = String.raw`'(?:[^']*)'(?:\\''(?:[^']*)')*`;
+  const unquoted = String.raw`[A-Za-z0-9_./:@%+=,-]+`;
+  const envAssignment = new RegExp(`^(?:TRAFFIC_ONE_[A-Z0-9_]+|HOME|XDG_STATE_HOME)=(?:${singleQuoted}|${unquoted})\\s+`);
+  for (;;) {
+    const match = rest.match(envAssignment);
+    if (!match) break;
+    rest = rest.slice(match[0].length);
+  }
+  if (/^(?:TRAFFIC_ONE_[A-Z0-9_]+|HOME|XDG_STATE_HOME)=/.test(command) && rest === command) return false;
+  if (/[;&|`$<>(){}]/.test(rest)) return false;
+  return /(^|\s)node(\s|$)/.test(rest) && rest.includes('onboarding-wait.cjs');
 }
 
 // The pre-spawn model-gate command (node …/model-gate.cjs <cwd>) the Cursor orchestrator runs

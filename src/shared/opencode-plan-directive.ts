@@ -25,11 +25,11 @@ function orchestratorSubagentsBuild(state: unknown): boolean {
   return Boolean(level && teamModeForLevel(level) === 'subagents');
 }
 
-function planBatchContext(cwd: string, state: unknown): { runId: string; pendingRoles: string[] } | null {
-  if (!orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state)) return null;
+function planBatchContext(cwd: string, state: unknown, host: string = detectHost()): { runId: string; pendingRoles: string[] } | null {
+  if (!orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state, host)) return null;
   const runId = ensureCurrentRunId(cwd, state);
-  if (!runId || !shouldBlockImplementerForPlanBatch(cwd, runId, state)) return null;
-  const pendingRoles = pendingOpenCodePlanRoles(cwd, runId, state);
+  if (!runId || !shouldBlockImplementerForPlanBatch(cwd, runId, state, host)) return null;
+  const pendingRoles = pendingOpenCodePlanRoles(cwd, runId, state, host);
   if (pendingRoles.length === 0) return null;
   return { runId, pendingRoles };
 }
@@ -43,8 +43,8 @@ function planBatchSteps(cwd: string, runId: string): string[] {
     '2. If the result has `running:true`, call `opencode_delegate_from_plan` AGAIN with the SAME arguments. Keep polling in the SAME turn until you get a terminal `{ total, delegated, units }` — do NOT use any shell fallback while `running:true`. Stopping polls for ~15+ minutes cancels the worker.',
     '3. Only after the terminal result, spawn `senior-backend` and `senior-frontend` in parallel in the NEXT assistant message. Pass each implementer the batch `units` summary (`touched` files; units whose `action !== "delegated"`).',
     '4. Do not re-implement files OpenCode already touched unless that unit was skipped/failed/no-changes.',
-    '5. Fail-open: if the batch returns a terminal failure (`ok:false`, `action: "abandoned"`, or every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — do NOT block the build on OpenCode.',
-    `Fallback (MCP unavailable ONLY — never while \`running:true\`): \`node ~/.traffic-one/bin/opencode-runner.cjs --run-id "${runId}" --from-plan\` from the project root.`,
+    '5. Fail-open: when the batch reaches a terminal outcome (`ok:false`, `action: "abandoned"`, every unit failed/skipped/no-changes) OR the MCP tool is unavailable, proceed with paid implementer spawns — but only after terminal batch markers exist (`batch.json` with outcome other than `running`, or legacy `COMPLETE`). A bare shell JSON line alone does not clear the spawn gate.',
+    `Fallback (MCP unavailable ONLY — never while \`running:true\`): \`node ~/.traffic-one/bin/opencode-runner.cjs --run-id "${runId}" --from-plan\` from the project root (writes the same terminal batch markers as the MCP tool). For a stuck run with terminal unit rows but no batch.json, use \`--finalize-only\` instead of re-delegating.`,
   ];
 }
 
@@ -53,8 +53,9 @@ function buildPlanBatchDirective(
   state: unknown,
   headline: string,
   extraLines: string[] = [],
+  host: string = detectHost(),
 ): string {
-  const ctx = planBatchContext(cwd, state);
+  const ctx = planBatchContext(cwd, state, host);
   if (!ctx) return '';
   const { runId, pendingRoles } = ctx;
   return [
@@ -70,9 +71,8 @@ function buildPlanBatchDirective(
 /** SETUP_COMPLETE channel — proactive contract when OpenCode delegation is active. */
 export function buildPreSpawnOpenCodeDirective(cwd: string, host: string = detectHost()): string {
   try {
-    void host;
     const state = readEffectiveState(cwd);
-    if (!state || !orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state)) return '';
+    if (!state || !orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state, host)) return '';
     const runId = ensureCurrentRunId(cwd, state);
     if (!runId) return '';
     return [
@@ -101,6 +101,7 @@ export function buildPostPlanReadyOpenCodeDirective(cwd: string): string {
         'The architect finished; the plan includes a bounded OpenCode queue.',
         'Your NEXT action is ONLY the Step-0 batch — not parallel senior-frontend/senior-backend spawns.',
       ],
+      detectHost(),
     );
   } catch {
     return '';
@@ -117,6 +118,7 @@ export function buildOpenCodePlanBatchPendingDirective(cwd: string, state?: unkn
       s,
       '[traffic-one] OpenCode Step 0 still pending — finish the plan batch before implementer spawns:',
       ['OpenCode delegation is active; implementer spawns stay gated until the batch is terminal.'],
+      detectHost(),
     );
   } catch {
     return '';
@@ -127,8 +129,9 @@ export function buildOpenCodePlanBatchPendingDirective(cwd: string, state?: unkn
 export function buildOpenCodePlanBatchDenyContext(cwd: string, runId: string, queuedRoles: string[]): string {
   try {
     const state = readEffectiveState(cwd);
-    if (!state || !openCodeDelegationActive(state)) return '';
-    const pending = queuedRoles.length > 0 ? queuedRoles : pendingOpenCodePlanRoles(cwd, runId, state);
+    const host = detectHost();
+    if (!state || !openCodeDelegationActive(state, host)) return '';
+    const pending = queuedRoles.length > 0 ? queuedRoles : pendingOpenCodePlanRoles(cwd, runId, state, host);
     if (pending.length === 0) return '';
     return [
       'NEXT (this turn): run OpenCode Step 0 only — do NOT retry Task spawns for senior-frontend/senior-backend yet.',

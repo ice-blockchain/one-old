@@ -9,23 +9,32 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   // shell
   Bash: 'shell',
   exec_command: 'shell',
+  bash: 'shell',
   // write (create / bulk)
   Write: 'file-write',
   MultiEdit: 'file-write',
   apply_patch: 'file-write',
+  write: 'file-write',
   // edit (modify existing)
   Edit: 'file-edit',
+  edit: 'file-edit',
+  patch: 'file-edit',
   // read
   Read: 'file-read',
+  read: 'file-read',
   // subagents
   Task: 'spawn-agent',
   Agent: 'spawn-agent',
   spawn_agent: 'spawn-agent',
   send_input: 'spawn-agent',
   wait_agent: 'spawn-agent',
+  task: 'spawn-agent',
   // search
   Glob: 'search',
   Grep: 'search',
+  glob: 'search',
+  grep: 'search',
+  list: 'search',
 };
 
 // Strip a host tool namespace: Codex may present a tool as `multi_agent_v1.spawn_agent`

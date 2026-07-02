@@ -102,7 +102,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // shell boundary, then allow the retry so setup can block normally.
     if (isOnboardingWaitCommand(toolName, toolInput)) {
       if (ctx.host === 'cursor') {
-        const server = ensureOnboardingServer(root);
+        const server = ensureOnboardingServer(root, { host: ctx.host });
         const id = hookSessionIdentity(raw).sessionId;
         if (server.url && !server.url.includes(':0/')
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
@@ -114,8 +114,22 @@ export function onboardingGate(ctx: Ctx): HookResult {
       }
       return noop();
     }
-    const server = ensureOnboardingServer(root);
+    const server = ensureOnboardingServer(root, { host: ctx.host });
     const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(root, ctx.host) };
+    // OpenCode: the full multi-host deny block (URLs + shell commands + JavaScript
+    // code blocks + "do NOT…" behavioral overrides) triggers the model's prompt-
+    // injection safety training — it reads as a third-party hijack attempt and
+    // refuses to follow the instructions. Use a minimal, factual message instead:
+    // just the wizard URL and wait command, no behavioral overrides or code blocks.
+    if (ctx.host === 'opencode') {
+      return deny(
+        `Traffic One project setup is required before building. `
+        + `Show this setup link to the user: ${vars.URL}\n\n`
+        + `Then immediately run this wait command in the current turn (timeout ~9 minutes); do not wait for another user message first:\n${vars.WAIT_CMD}\n\n`
+        + `If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, `
+        + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.`,
+      );
+    }
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
     // DENY REASON is the ONLY output surfaced to the model: PreToolUse

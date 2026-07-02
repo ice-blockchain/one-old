@@ -12,6 +12,7 @@ import {
   hasValidProjectContext,
   hasValidTeamState,
 } from '../state';
+import { canonicalHost } from '../model-tiers';
 import { needsTeamConfirmation } from './predicates';
 
 export type OnboardingStep =
@@ -27,12 +28,12 @@ export type OnboardingStep =
 // The next unresolved onboarding step for a new project, in canonical order, or
 // null when mode !== "new-project". 'state' means all prompts answered but the
 // canonical state file still needs writing (the wizard's finalize step).
-export function nextOnboardingStep(state: unknown): OnboardingStep | null {
+export function nextOnboardingStep(state: unknown, host?: unknown): OnboardingStep | null {
   const s = obj(state);
   if (!s || s.mode !== 'new-project') return null;
-  if (!hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  if (canonicalHost(host) !== 'opencode' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
   if (!hasValidPerformanceState(s.performance)) return 'performance';
-  if (needsTeamConfirmation(s)) return 'team-confirmation';
+  if (needsTeamConfirmation(s, host)) return 'team-confirmation';
   if (!hasValidTeamState(s.team)) return 'team';
   if (!hasValidProjectContext(s.projectContext)) return 'project-context';
   if (!hasResolvedNewProjectMobileState(s.mobile)) return 'mobile';

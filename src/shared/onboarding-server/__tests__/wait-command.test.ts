@@ -28,6 +28,29 @@ test('onboardingWaitCommand: stamps --host so the spawned runner detects the hos
   assert.equal(onboardingWaitCommand('/proj').includes('--host='), false);
 });
 
+test('onboardingWaitCommand: OpenCode may prefix HOME when sandboxed (still allow-listed)', () => {
+  const cwd = '/some/opencode/project';
+  const prevHome = process.env.HOME;
+  process.env.HOME = '/sandbox/home';
+  try {
+    const cmd = onboardingWaitCommand(cwd, 'opencode');
+    if (cmd.includes('HOME=')) {
+      assert.match(cmd, /^HOME=/);
+      assert.match(cmd, /'/, 'env prefix uses single-quoted shell escaping');
+    }
+    assert.ok(cmd.includes('"--host=opencode"'));
+    assert.equal(isOnboardingWaitCommand('Bash', { command: cmd }), true);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+  }
+});
+
+test('onboardingWaitCommand: OpenCode app-support XDG fallback is allow-listed', () => {
+  const command = "XDG_STATE_HOME='/Users/w3s/Library/Application Support/ai.opencode.desktop' node \"/p/onboarding-wait.cjs\" \"/cwd\" \"--host=opencode\"";
+  assert.equal(isOnboardingWaitCommand('Bash', { command }), true);
+});
+
 test('isOnboardingWaitCommand: allows clean node …onboarding-wait.cjs commands', () => {
   assert.equal(isOnboardingWaitCommand('Bash', { command: 'node "/p/onboarding-wait.cjs" "/cwd"' }), true);
   assert.equal(isOnboardingWaitCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd --timeout-ms 540000' }), true);
@@ -42,6 +65,8 @@ test('isOnboardingWaitCommand: rejects chaining, redirection, expansion, and non
     'node /p/onboarding-wait.cjs > /tmp/x',
     'node /p/onboarding-wait.cjs `whoami`',
     'node /p/onboarding-wait.cjs $(rm -rf /)',
+    'HOME="$(touch /tmp/pwn)" node /p/onboarding-wait.cjs /cwd',
+    "TRAFFIC_ONE_PROJECT_PREFS_PATH='a'$(touch /tmp/pwn) node /p/onboarding-wait.cjs /cwd",
     'rm -rf / # onboarding-wait.cjs',
     'ls -la',
   ]) {

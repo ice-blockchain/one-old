@@ -44,10 +44,11 @@ or HMR, or optimizing production bundles.
 - Cache: use Next.js Cache primitives for framework-level caching before adding
   Redis. Use Redis/Upstash only for shared mutable cache, rate limits, queues,
   or cross-instance coordination.
-- Storage: use Vercel Blob for app-owned files on Vercel; use Supabase Storage
-  when the project already uses Supabase.
-- Deployment: Vercel is the default for Next.js unless the user has an existing
-  platform.
+- Storage: use Supabase Storage for app-owned files (or the project's existing
+  store if one is already established).
+- Deployment: Traffic One owns web deploy via its own `/deploy` — build the
+  Next.js production output (`next build`) and ship via the gated senior-shipper
+  pre-flight. Do not default to a third-party web host.
 - Testing: follow the active repo, but prefer Vitest for new Next.js test setup
   when no Traffic One forced test stack is already active.
 - Email/payments/observability: Resend, Stripe, and Sentry before custom code.

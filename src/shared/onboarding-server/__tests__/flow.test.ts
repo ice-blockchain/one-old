@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { mergeProjectPrefs, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
   'CURSOR_PLUGIN_ROOT',
@@ -144,6 +144,46 @@ test('existing project: only the local-preference steps are asked, then done', (
     assert.equal(view.done, true);
     assert.equal(view.step, null);
     assert.equal(readGlobalCodeGraphProvider(), 'graphify');
+  });
+});
+
+test('new project: complete shared state without local prefs still asks local-preference steps', () => {
+  const committed = {
+    mode: 'new-project',
+    version: '2.9.226',
+    originalPrompt: 'create a modern learning platform',
+    projectContext: {
+      source: 'prompted',
+      originalPrompt: 'create a modern learning platform',
+      summary: 'create a modern learning platform',
+      answers: {},
+      collectedAt: '2026-01-01T00:00:00Z',
+    },
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+    realtime: 'none',
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    supabaseFunctionsAutoDeploy: 'ask',
+    supabaseAddons: {},
+  };
+  withProject(committed, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    assert.deepEqual(readProjectPrefs(cwd), {});
+    assert.equal(computeOnboarding(cwd).done, false);
+    assert.equal(computeOnboarding(cwd).step, 'open-code');
+
+    process.argv.push('--host=opencode');
+    try {
+      assert.equal(computeOnboarding(cwd).done, false);
+      assert.equal(computeOnboarding(cwd).step, 'performance');
+    } finally {
+      process.argv.pop();
+    }
   });
 });
 
@@ -582,4 +622,167 @@ test('existing project: skipped code-graph fires the install task on the last pr
     assert.deepEqual(last.task, { kind: 'onboarding-toolchain' });
     assert.equal(computeOnboarding(cwd).done, true);
   });
+});
+
+test('computeOnboarding: shared onboardingComplete without a prefs file is not done', () => {
+  const committed = {
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    projectContext: { source: 'prompted', summary: 'x', answers: {}, collectedAt: '2026-01-01T00:00:00Z' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(committed, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    fs.rmSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, { force: true });
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, false);
+    assert.equal(view.step, 'open-code');
+    assert.equal(view.meta.step, 'open-code');
+  });
+});
+
+test('computeOnboarding: project-local env still accepts completed onboarding from legacy hashed prefs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-legacy-prefs-'));
+  const cwd = path.join(dir, 'project');
+  const home = path.join(dir, 'home');
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  const prevHome = process.env.HOME;
+  const prevXdg = process.env.XDG_STATE_HOME;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, '.traffic-one', 'preferences.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, '.traffic-one', 'machine.json');
+  process.env.HOME = home;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  delete process.env.XDG_STATE_HOME;
+  try {
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project',
+      stack: 'default',
+      frontend: 'react-vite',
+      backend: 'supabase',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      projectContext: {
+        source: 'prompted',
+        originalPrompt: 'Build responsive learning platform',
+        summary: 'responsive learning platform',
+        answers: {},
+        collectedAt: '2026-01-01T00:00:00Z',
+      },
+      technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+      openCodeDelegation: { approved: true, source: 'onboarding', decidedAt: '2026-01-01T00:00:00Z' },
+      confirmed: true,
+      onboardingComplete: true,
+      confirmedAt: '2026-01-01T00:00:00Z',
+    }), 'utf8');
+    const hashedPrefs = path.join(home, '.traffic-one', 'projects', projectRootHash(cwd), 'preferences.json');
+    fs.mkdirSync(path.dirname(hashedPrefs), { recursive: true });
+    fs.writeFileSync(hashedPrefs, JSON.stringify({
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      toolchain: {
+        gitnexus: { installedVersion: '1.6.8', installedAt: '2026-07-01T12:25:50Z' },
+        graphify: { installedVersion: null, installedAt: null },
+        opencode: { installedVersion: '1.17.12', installedAt: '2026-07-01T12:25:50Z' },
+        gitleaks: { installedVersion: null, installedAt: null },
+        trufflehog: { installedVersion: null, installedAt: null },
+      },
+    }), 'utf8');
+    fs.mkdirSync(path.join(home, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.traffic-one', 'one.json'), JSON.stringify({
+      version: 1,
+      codeGraphProvider: 'gitnexus',
+    }), 'utf8');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, true);
+    assert.equal(view.step, null);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prevXdg;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('computeOnboarding: fail-closed durable check keeps step metadata in sync', () => {
+  const committed = {
+    mode: 'new-project',
+    stack: 'default',
+    frontend: 'react-vite',
+    backend: 'supabase',
+    mobile: { enabled: false, framework: 'none', source: 'prompted' },
+    projectContext: { source: 'prompted', summary: 'x', answers: {}, collectedAt: '2026-01-01T00:00:00Z' },
+    technologies: { frontend: ['react', 'vite'], backend: ['supabase', 'postgres'], mobile: [] },
+    openCode: { enabled: true, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+    performance: { level: 'low', source: 'prompted' },
+    team: { mode: 'main-agent', source: 'prompted' },
+    confirmed: true,
+    onboardingComplete: true,
+    confirmedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(committed, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    fs.rmSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, { force: true });
+    process.argv.push('--host=opencode');
+    try {
+      const view = computeOnboarding(cwd);
+      assert.equal(view.done, false);
+      assert.ok(view.step, 'durable recovery selects a setup step');
+      assert.equal(view.meta.step, view.step);
+      assert.notEqual(view.meta.kind, 'done');
+    } finally {
+      process.argv.pop();
+    }
+  });
+});
+
+test('new-project: project-local prefs path when global home is blocked', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-local-'));
+  const blockedHome = path.join(dir, 'blocked-home');
+  fs.writeFileSync(blockedHome, 'not-a-directory', 'utf8');
+  const cwd = path.join(dir, 'project');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  const prevHome = process.env.HOME;
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  process.env.HOME = blockedHome;
+  delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  delete process.env.TRAFFIC_ONE_STATE_PATH;
+  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  try {
+    const { resolveTrafficOneEnv } = require('../../state/traffic-one-paths');
+    const resolved = resolveTrafficOneEnv(cwd, 'claude', process.env);
+    process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = resolved.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    process.env.TRAFFIC_ONE_STATE_PATH = resolved.TRAFFIC_ONE_STATE_PATH;
+
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'low');
+    applyAnswer(cwd, 'project-context', { answers: {}, summary: 'a web app' });
+    applyAnswer(cwd, 'mobile', 'web_only');
+    applyAnswer(cwd, 'code-graph', 'gitnexus');
+    applyAnswer(cwd, 'finalize', null);
+
+    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')));
+    assert.equal(computeOnboarding(cwd).done, true);
+  } finally {
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH; else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

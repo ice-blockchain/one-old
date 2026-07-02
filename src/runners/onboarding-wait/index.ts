@@ -13,6 +13,8 @@
 //   node onboarding-wait.cjs <cwd> [--timeout-ms <n>] [--interval-ms <n>]
 //
 // stdout TRAFFIC_ONE_SETUP_COMPLETE, exit 0 → setup finished; continue the build now.
+// stdout TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, exit 2 → setup finished, but OpenCode
+//   must be restarted before development continues.
 // stdout TRAFFIC_ONE_SETUP_PENDING,  exit 2 → still pending after the timeout; re-run.
 
 import { execFileSync } from 'child_process';
@@ -33,6 +35,7 @@ import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
+import { applyTrafficOneEnv } from '../../shared/state/traffic-one-paths';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
@@ -114,6 +117,16 @@ export function preSpawnOpenCodeDirective(cwd: string, host: string = detectHost
   return buildPreSpawnOpenCodeDirective(cwd, host);
 }
 
+export function openCodeRestartWarning(): string {
+  return [
+    'TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED',
+    '',
+    'Traffic One onboarding is complete, but OpenCode must be restarted before development continues.',
+    'Restart OpenCode to load the onboarding settings and new agent definitions.',
+    'After restart, return to this project and type "continue" or "resume" to continue development.',
+  ].join('\n');
+}
+
 // Host-agnostic PRE-SPAWN run-id directive, emitted at SETUP_COMPLETE on the main thread (the
 // same stdout channel that reliably reaches the Cursor user/agent). Models STILL fabricate a
 // `date`/ISO run-id in spawn prompts despite the PreToolUse announce (observed: composer-2.5
@@ -157,7 +170,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
     if (!level || teamModeForLevel(level) !== 'subagents') return '';
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
-    const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
+    const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
 
     const plan = detectHostPlan(host);
     const captured = freshCursorModels(cwd, plan);
@@ -224,6 +237,8 @@ export function announceWizardUrl(cwd: string, write: (s: string) => void = (s) 
 
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
+  const host = detectHost(process.env, argv);
+  applyTrafficOneEnv(cwd, host);
   announceWizardUrl(cwd);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
@@ -242,6 +257,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait setup-complete (pre-spawn materialize)' });
     } catch {
       // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
+    }
+    if (host === 'opencode') {
+      process.stdout.write(`${openCodeRestartWarning()}\n`);
+      process.exit(2);
     }
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
     const triage = postSetupTriage(cwd);

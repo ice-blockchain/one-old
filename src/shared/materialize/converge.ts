@@ -11,6 +11,7 @@
 import { isKnownStack } from '../config';
 import { postWriteIncompleteWarning } from '../directives';
 import { isPluginAuthoringRoot } from '../authoring-root';
+import { ensureRunnerShims } from '../runner-shims';
 import { isUnclaimedWorkspaceSubPackage } from '../hook-paths';
 import { detectMode } from '../detection';
 import { STACKS } from '../stacks';
@@ -74,6 +75,8 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
       'This directory is the Traffic One plugin source, not a generated Traffic One project. `materialize-project` only rewrites `.traffic-one/**`, root `AGENTS.md`, and root `CLAUDE.md` inside projects created with the plugin.',
     );
   }
+
+  try { ensureRunnerShims(); } catch { /* best-effort; MCP may load before sessionStart */ }
 
   const state = readEffectiveState(cwd);
   const validStackIds = Object.keys(STACKS);

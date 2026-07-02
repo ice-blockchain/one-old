@@ -149,21 +149,23 @@ do not skip. The spine carries the step index — this file is the detail.
    - One workflow: `typecheck` → `lint` → `test` → `build` → `e2e (smoke)`.
    - Remote cache enabled if available; otherwise local.
    - Storybook build artefact uploaded for PR previews.
-   - Preview deploy runs on PRs; production deploy runs only from `main` or a
-     release merge after reviewer/tester/shipper gates.
+   - Deployment is Traffic One `/deploy` (not a CI host action): preview on PRs,
+     production only from `main` or a release merge, always after the
+     reviewer/tester/shipper gates.
    - Supabase migration jobs use `supabase/setup-cli`, encrypted
      `SUPABASE_ACCESS_TOKEN`, and per-environment project/db-password secrets.
 
 9. **Deployment artifact baseline (smallest production set)**
-   - Choose one static host target for the SPA: Vercel, Netlify, or Cloudflare
-     Pages. Commit that host's manifest/fallback files and do not add a
-     Dockerfile unless the plan explicitly selects self-hosting, BYOC,
-     SSR/server runtime, or another container-only target.
+   - Produce a host-agnostic static build (`dist/`) for the SPA — web deploy is
+     Traffic One's own (`/deploy` ships that `dist/` to our infra). Do NOT add a
+     third-party web-host manifest (`vercel.json`/`netlify.toml`/`wrangler.toml`),
+     and do not add a Dockerfile unless the plan explicitly selects self-hosting,
+     BYOC, SSR/server runtime, or another container-only target.
    - Pin runtime and install determinism: `engines`, `packageManager`, `.nvmrc`,
      and the lockfile. CI uses frozen lockfile install and fails on drift.
    - Extend the `.env.example` from the Supabase setup with every required
-     variable name. Real values live only in `.env.local`, the static host's
-     encrypted environment variables, or GitHub Actions secrets.
+     variable name. Real values live only in `.env.local`, the Traffic One
+     `/deploy` encrypted environment, or GitHub Actions secrets.
    - Map environments explicitly: development, preview, staging, production.
      Use separate Supabase projects for staging/production and Supabase
      Branching for PR previews when available; never point previews at
@@ -178,10 +180,11 @@ do not skip. The spine carries the step index — this file is the detail.
      replay with privacy masking, uptime/SLO alerting, failed-deploy analysis):
      invoke the `observability` and `deployment-patterns` skills; the baseline
      itself lives in `rules/common/stack-recommendations.md`.
-   - Document rollback as previous immutable frontend deployment plus a
-     forward-only undo migration for database changes.
-   - Configure the custom domain, automatic TLS, security headers, and an HSTS
-     preload readiness check before calling production complete.
+   - Document rollback as re-shipping the previous immutable Traffic One `/deploy`
+     build plus a forward-only undo migration for database changes.
+   - Custom domain, automatic TLS, security headers, and an HSTS preload readiness
+     check are part of the Traffic One `/deploy` configuration — verify them
+     before calling production complete.
 
 10. **Tooling guards**
    - Husky + lint-staged for pre-commit format + lint.

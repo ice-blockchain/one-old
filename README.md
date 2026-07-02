@@ -3,7 +3,8 @@
 Enforces React, Ionic/Capacitor mobile packaging, explicit React Native, modern
 design quality, security, post-deploy observability, and clean code
 **automatically on every prompt**.
-No slash commands required. Compatible with **Claude Code**, **Codex CLI**, and **Cursor**.
+No slash commands required. Compatible with **Claude Code**, **Codex CLI**, **Cursor**,
+and **OpenCode**.
 
 ---
 
@@ -87,7 +88,7 @@ gate runs `scripts/traffic-one-auth.cjs login` internally with the key the user
 pastes at the prompt, passes that key to the auth client through stdin, stores
 the raw key in the OS credential manager when available, mints a session into
 `~/.traffic-one/auth.json`, and reads that session on every host (Claude Code,
-Codex, Cursor) via the shared hooks.
+Codex, Cursor, OpenCode) via the shared hooks.
 
 ---
 
@@ -103,11 +104,13 @@ Codex, Cursor) via the shared hooks.
 │   ├── rules/               ← Shared rule templates generated from src/modules/**/rules
 │   ├── agents/              ← Senior role docs generated from src/modules/**/agent.md
 │   ├── CLAUDE.md            ← Claude Code entry point
-│   ├── AGENTS.md            ← Codex CLI entry point
+│   ├── AGENTS.md            ← Codex CLI and OpenCode rule entry point
 │   ├── settings.json        ← Claude Code hooks
 │   ├── hooks/hooks.json     ← Codex CLI hooks
 │   ├── .mcp.json            ← mcp-auth server declaration
 │   ├── scripts/hook-runtime.cjs
+│   ├── scripts/opencode-hook-runtime.cjs
+│   ├── scripts/opencode-host.cjs
 │   ├── scripts/traffic-one-auth.cjs
 │   ├── .cursor/rules/*.mdc  ← Cursor mirrors
 │   ├── .claude-plugin/
@@ -122,14 +125,22 @@ Codex, Cursor) via the shared hooks.
 Run `npm run plugin:build` after source changes; `dist/` is generated output and
 is intentionally ignored by git.
 
+OpenCode host support targets `opencode-ai` / OpenCode `1.17.11`. Its global
+wrapper is installed only with explicit consent and then runs the same shared
+Traffic One gates as Codex: pristine non-coding sessions stay quiet, first coding
+prompts bootstrap setup, and mutating tools fail closed while setup/auth is
+pending. OpenCode delegation remains a paid-host feature for Claude/Codex/Cursor;
+the OpenCode host never exposes `opencode_delegate*` tools or self-delegates.
+
 ---
 
 ## How it works — no slash commands needed
 
 ### Skills auto-trigger
 Every skill has a `description:` frontmatter with explicit trigger phrases.
-Claude/Codex/Cursor reads the descriptions at session start (cheap metadata only) and
-automatically invokes the full skill body when your prompt matches:
+Claude/Codex/Cursor/OpenCode reads the descriptions at session start (cheap
+metadata only) and automatically invokes the full skill body when your prompt
+matches:
 
 Traffic One also includes a broad set of development skills under `skills/`.
 Those skills keep runtime instructions focused on behavior and include a Traffic One
@@ -257,6 +268,37 @@ codex plugin add traffic-one@traffic-one-local
 ```
 Or via Cursor Settings → Plugins → Add.
 
+### OpenCode
+
+The OpenCode host wrapper is a user-level mutation at
+`~/.config/opencode/plugins/traffic-one.js`, so install it only with explicit
+consent:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs install --yes
+node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs doctor
+```
+
+No per-project enable step is required. To verify the wrapper for a particular
+workspace:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs doctor --cwd /absolute/path/to/project
+```
+
+To opt a specific OpenCode workspace out while keeping the global wrapper
+installed:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs disable --cwd /absolute/path/to/project --yes
+```
+
+To remove the wrapper:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs uninstall
+```
+
 ### Marketplace install after publication
 
 After the marketplace listing is live, use the published marketplace source
@@ -271,6 +313,9 @@ codex plugin add traffic-one
 
 /add-plugin traffic-one/traffic-one
 ```
+
+For OpenCode, run the same `scripts/opencode-host.cjs install --yes` command
+from the installed plugin root after publication.
 
 ---
 

@@ -14,6 +14,7 @@ import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
 import { packageJsonDeclaresWorkspace, stateRequiresNewProjectMonorepo } from '../../shared/hook-paths';
 import { hasMaterializedProjectAssets } from '../../shared/materialize';
+import { canonicalHost } from '../../shared/model-tiers';
 import { openCodeDelegationActive } from '../../shared/performance';
 import { OPENCODE_PLAN_MIN_UNITS, parsePlanDelegationUnits, planDelegationUnitCount } from '../../shared/opencode-roles';
 import { openCodeQueuePolicyViolations } from '../../shared/opencode-queue';
@@ -166,6 +167,10 @@ function missingOpenCodeDelegateBlock(content: string): boolean {
   return planDelegationUnitCount(content) < OPENCODE_PLAN_MIN_UNITS;
 }
 
+function hasOpenCodeDelegateMarker(content: string): boolean {
+  return content.includes('opencode-delegate:start') || content.includes('opencode-delegate:end');
+}
+
 function openCodeQueuePolicyErrors(content: string): string[] {
   return openCodeQueuePolicyViolations(parsePlanDelegationUnits(content));
 }
@@ -176,6 +181,15 @@ function planOnDiskMissingOpenCodeBlock(projectRoot: string): boolean {
     return missingOpenCodeDelegateBlock(plan);
   } catch {
     return true;
+  }
+}
+
+function planOnDiskHasOpenCodeDelegateMarker(projectRoot: string): boolean {
+  try {
+    const plan = fs.readFileSync(path.join(projectRoot, '.traffic-one', 'plan.md'), 'utf8');
+    return hasOpenCodeDelegateMarker(plan);
+  } catch {
+    return false;
   }
 }
 
@@ -243,13 +257,14 @@ export interface ReadinessArgs {
   projectRoot: string;       // resolved project root for the target
   state: Rec;                // readEffectiveState(projectRoot)
   writingFeatureSource: boolean;
+  host?: string;
   rawData?: unknown;
   block: Block;
 }
 
 // Readiness violations for a single write/edit. Empty array == nothing to block.
 export function planReadinessViolations(args: ReadinessArgs): string[] {
-  const { filePath, content, projectRoot, state, writingFeatureSource, rawData, block } = args;
+  const { filePath, content, projectRoot, state, writingFeatureSource, rawData, block, host } = args;
   const violations: string[] = [];
 
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(state);
@@ -277,13 +292,17 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architect completion gate: do not write \`PLAN_READY\` until the required .traffic-one project-memory baseline exists with real content. Missing or incomplete: ${missingMemory.join(', ')}. Write the missing memory files yourself (do not delegate .traffic-one/* to OpenCode), then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missingMemory.join(', ') }));
     }
-    if (state.mode === 'new-project' && openCodeDelegationActive(state) && planOnDiskMissingOpenCodeBlock(projectRoot)) {
+    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot)) {
       violations.push(block('architect-opencode-queue-gate',
         `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
+    if (state.mode === 'new-project' && canonicalHost(host) === 'opencode' && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
+      violations.push(block('architect-opencode-self-delegation-gate',
+        'Architect completion gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the OpenCode host.'));
+    }
   }
 
-  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content) && state.mode === 'new-project' && openCodeDelegationActive(state) && !planOnDiskMissingOpenCodeBlock(projectRoot)) {
+  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && !planOnDiskMissingOpenCodeBlock(projectRoot)) {
     const policyErrors = planOnDiskOpenCodeQueuePolicyErrors(projectRoot);
     if (policyErrors.length > 0) {
       violations.push(block('architect-opencode-queue-policy-gate',
@@ -292,12 +311,17 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state) && missingOpenCodeDelegateBlock(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content)) {
     violations.push(block('plan-opencode-queue-gate',
       `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state) && !missingOpenCodeDelegateBlock(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && canonicalHost(host) === 'opencode' && hasOpenCodeDelegateMarker(content)) {
+    violations.push(block('plan-opencode-self-delegation-gate',
+      'Plan gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the OpenCode host.'));
+  }
+
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && !missingOpenCodeDelegateBlock(content)) {
     const policyErrors = openCodeQueuePolicyErrors(content);
     if (policyErrors.length > 0) {
       violations.push(block('plan-opencode-queue-policy-gate',

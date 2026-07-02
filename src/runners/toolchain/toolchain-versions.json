@@ -42,7 +42,7 @@
       "versionCommand": "opencode --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
       "installCommand": "Traffic One managed npm-prefix install/upgrade (latest)",
-      "notes": "OpenCode CLI used to delegate bounded, low-risk coding tasks. Installed at latest into a Traffic One-managed npm prefix; do not ask users to run the upstream curl installer. Needs Node >=18 (runtime field); the install prefers PATH npm, falling back to a resolved node/npm. Delegation runs headless (`opencode run --format json`) on the free zero-auth `opencode/*` gateway chain in src/config/opencode.ts (OPENCODE_FREE_MODELS), identically on all hosts; pin a different model per project via the `openCode.model` local preference."
+      "notes": "OpenCode CLI used to delegate bounded, low-risk coding tasks. Installed at latest into a Traffic One-managed npm prefix; do not ask users to run the upstream curl installer. Needs Node >=18 (runtime field); the install prefers PATH npm, falling back to a resolved node/npm. Delegation runs headless (`opencode run --format json`) on the free zero-auth `opencode/*` gateway chain in src/config/opencode-delegation.ts (OPENCODE_FREE_MODELS), identically on paid hosts; pin a different model per project via the `openCode.model` local preference."
     },
     "gitleaks": {
       "recommended": "8.30.1",

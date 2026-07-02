@@ -4,13 +4,18 @@
 
 import { obj, type Rec } from '../obj';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { readJson, writeJson } from '../fsjson';
 import { readOneSettings, writeOneSection } from '../one-settings';
 import { sha256 } from '../text';
+import {
+  ensureProjectLocalTrafficOneGitignore,
+  globalTrafficOneDir,
+  projectLocalMachinePath,
+  projectLocalPrefsPath,
+} from './traffic-one-paths';
 import {
   canonicalOpenCodeSource,
   canonicalPerformanceLevel,
@@ -53,12 +58,13 @@ export function projectRootHash(cwd: string): string {
   return sha256(root);
 }
 
+export function defaultProjectPrefsPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(globalTrafficOneDir(env), 'projects', projectRootHash(cwd), 'preferences.json');
+}
+
 export function projectPrefsPath(cwd: string, env: NodeJS.ProcessEnv = process.env): string {
   if (env.TRAFFIC_ONE_PROJECT_PREFS_PATH) return path.resolve(env.TRAFFIC_ONE_PROJECT_PREFS_PATH);
-  const base = env.XDG_STATE_HOME
-    ? path.join(env.XDG_STATE_HOME, 'traffic-one')
-    : path.join(env.HOME || os.homedir(), '.traffic-one');
-  return path.join(base, 'projects', projectRootHash(cwd), 'preferences.json');
+  return defaultProjectPrefsPath(cwd, env);
 }
 
 export function normalizeProjectPrefs(prefs: unknown): Rec {
@@ -159,12 +165,39 @@ export function normalizeProjectPrefs(prefs: unknown): Rec {
 }
 
 export function readProjectPrefs(cwd: string, env: NodeJS.ProcessEnv = process.env): Rec {
-  return normalizeProjectPrefs(readJson(projectPrefsPath(cwd, env), {}));
+  const prefsPath = projectPrefsPath(cwd, env);
+  const raw = readJson(prefsPath, null);
+  if (raw && typeof raw === 'object' && Object.keys(obj(raw) || {}).length > 0) {
+    return normalizeProjectPrefs(raw);
+  }
+  // Legacy OpenCode project-local prefs (pre global ~/.traffic-one parity).
+  const legacy = projectLocalPrefsPath(cwd);
+  if (legacy !== prefsPath) {
+    const legacyRaw = readJson(legacy, null);
+    if (legacyRaw && typeof legacyRaw === 'object' && Object.keys(obj(legacyRaw) || {}).length > 0) {
+      return normalizeProjectPrefs(legacyRaw);
+    }
+  }
+  // Compatibility for the host-env migration: a newer host may force
+  // project-local prefs while a just-completed wizard or older install wrote the
+  // previous hashed per-project prefs under ~/.traffic-one/projects/<hash>.
+  const hashed = defaultProjectPrefsPath(cwd, env);
+  if (hashed !== prefsPath && hashed !== legacy) {
+    const hashedRaw = readJson(hashed, null);
+    if (hashedRaw && typeof hashedRaw === 'object' && Object.keys(obj(hashedRaw) || {}).length > 0) {
+      return normalizeProjectPrefs(hashedRaw);
+    }
+  }
+  return normalizeProjectPrefs({});
 }
 
 export function writeProjectPrefs(cwd: string, prefs: unknown, env: NodeJS.ProcessEnv = process.env): Rec {
   const normalized = normalizeProjectPrefs(prefs);
-  writeJson(projectPrefsPath(cwd, env), normalized);
+  const prefsPath = projectPrefsPath(cwd, env);
+  writeJson(prefsPath, normalized);
+  if (prefsPath === projectLocalPrefsPath(cwd)) {
+    ensureProjectLocalTrafficOneGitignore(cwd);
+  }
   return normalized;
 }
 
@@ -250,6 +283,16 @@ export function extractProjectPrefs(value: unknown): Rec {
   for (const key of LOCAL_PREF_KEYS) {
     if (Object.prototype.hasOwnProperty.call(source, key)) prefs[key] = source[key];
   }
+  const delegation = obj(source.openCodeDelegation);
+  if (!prefs.openCode && typeof delegation?.approved === 'boolean') {
+    prefs.openCode = {
+      enabled: delegation.approved,
+      source: 'prompted',
+      ...(typeof delegation.decidedAt === 'string' && delegation.decidedAt.trim()
+        ? { decidedAt: delegation.decidedAt }
+        : {}),
+    };
+  }
   // codeGraphProvider is no longer extracted into per-project prefs — it is a
   // machine-wide setting (one.json) injected by applyGlobalCodeGraphProvider.
   if (!prefs.team && source.subagentTeam !== undefined) prefs.team = source.subagentTeam;
@@ -286,13 +329,8 @@ export function splitLocalPreferences(cwd: string, state: unknown, env: NodeJS.P
     return { state: stateRec, prefs: readProjectPrefs(cwd, env), changed: false };
   }
   const localPatch = extractProjectPrefs(state);
-  try {
-    const prefs = mergeProjectPrefs(cwd, localPatch, env);
-    return { state: stripLocalPreferenceFields(state), prefs, changed: true };
-  } catch {
-    const prefs = mergeProjectPrefsObject(readProjectPrefs(cwd, env), localPatch);
-    return { state: stateRec, prefs, changed: false };
-  }
+  const prefs = mergeProjectPrefs(cwd, localPatch, env);
+  return { state: stripLocalPreferenceFields(state), prefs, changed: true };
 }
 
 // ── Machine-wide code-graph provider (one.json, not per-project) ─────────────────
@@ -301,6 +339,13 @@ export function splitLocalPreferences(cwd: string, state: unknown, env: NodeJS.P
 
 export function readGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env): string | null {
   return codeGraphProviderFromValue(readOneSettings(env).codeGraphProvider);
+}
+
+function readDefaultGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env): string | null {
+  const fallbackEnv = { ...env };
+  delete fallbackEnv.TRAFFIC_ONE_STATE_PATH;
+  delete fallbackEnv.TRAFFIC_ONE_AUTH_STATE_PATH;
+  return codeGraphProviderFromValue(readOneSettings(fallbackEnv).codeGraphProvider);
 }
 
 export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.ProcessEnv = process.env): string | null {
@@ -314,8 +359,22 @@ export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.Proce
 // downstream `state.codeGraphProvider` consumer + the onboarding routers read it
 // from the same place. Mutates and returns `state`. Used by readEffectiveState and
 // by the doctor's raw-state path (which builds effectiveState directly).
-export function applyGlobalCodeGraphProvider(state: Rec, env: NodeJS.ProcessEnv = process.env): Rec {
-  const provider = readGlobalCodeGraphProvider(env);
+export function applyGlobalCodeGraphProvider(
+  state: Rec,
+  env: NodeJS.ProcessEnv = process.env,
+  cwd?: string,
+): Rec {
+  let provider = readGlobalCodeGraphProvider(env);
+  if (!provider && cwd) {
+    const legacyRaw = readJson(projectLocalMachinePath(cwd), null);
+    if (legacyRaw && typeof legacyRaw === 'object') {
+      provider = codeGraphProviderFromValue((legacyRaw as Rec).codeGraphProvider);
+    }
+  }
+  if (!provider && cwd && env.TRAFFIC_ONE_STATE_PATH
+    && path.resolve(env.TRAFFIC_ONE_STATE_PATH) === projectLocalMachinePath(cwd)) {
+    provider = readDefaultGlobalCodeGraphProvider(env);
+  }
   if (provider) state.codeGraphProvider = provider;
   else delete state.codeGraphProvider;
   return state;
@@ -362,5 +421,5 @@ export function readEffectiveState(cwd: string, env: NodeJS.ProcessEnv = process
   const prefs = Object.keys(embeddedPrefs).length > 0
     ? mergeProjectPrefsObject(readProjectPrefs(cwd, env), embeddedPrefs)
     : readProjectPrefs(cwd, env);
-  return normalizeRuntimeIds(applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), prefs), env));
+  return normalizeRuntimeIds(applyGlobalCodeGraphProvider(effectiveState(stripLocalPreferenceFields(state), prefs), env, cwd));
 }

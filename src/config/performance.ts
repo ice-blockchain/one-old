@@ -101,6 +101,17 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
     team: { base: 'high', withOpenCode: 'high' },
     enterprise: { base: 'high', withOpenCode: 'high' },
   },
+  opencode: {
+    free: { base: 'low', withOpenCode: 'low' },
+    // "Go" (auth `opencode-go` → plus): a mid paid plan over open-weight models with
+    // usage limits — recommend Balanced, not High (mirrors codex `plus`/`pro` and keeps
+    // this table consistent with PLAN_TIER_RECOMMENDATIONS.opencode.plus). At Balanced the
+    // architect still runs the `highest` tier (qwen3.7-max) via PLAN_AGENT_TIERS while
+    // implementers run glm-5.2, so the top model is used where it matters without burning
+    // the Go quota on implementer-heavy work; High stays selectable. Delegation is inert on
+    // the opencode host, so base == withOpenCode.
+    plus: { base: 'balanced', withOpenCode: 'balanced' },
+  },
 };
 
 // ── Editable default subagent tiers (THE knob to hand-tune) ──────────────────
@@ -163,4 +174,5 @@ export const PLAN_AGENT_TIERS: Readonly<
   claude: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   codex: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   cursor: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  opencode: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
 };

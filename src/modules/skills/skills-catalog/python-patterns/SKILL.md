@@ -16,8 +16,9 @@ Apply when writing, reviewing, or refactoring Python code or designing packages/
 
 ## FastAPI Backend Defaults
 
-For new Python API work, prefer FastAPI, PostgreSQL, SQLModel, pytest, Railway,
-Redis for shared cache, and Celery for durable jobs. Do not default to
+For new Python API work, prefer FastAPI, PostgreSQL, SQLModel, pytest,
+Redis for shared cache, and Celery for durable jobs; deploy via Traffic One
+`/deploy`, not a third-party host. Do not default to
 hand-rolled JWT/password auth; use a framework/provider integration unless the
 user explicitly requires local auth and no maintained provider fits.
 

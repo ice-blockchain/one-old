@@ -8,6 +8,8 @@
 
 import * as path from 'path';
 
+import type { HostId } from '../../core/types';
+import { trafficOneEnvShellPrefix } from '../state/traffic-one-paths';
 import { pluginRoot } from '../paths';
 
 export function onboardingWaitScriptPath(): string {
@@ -19,7 +21,8 @@ export function onboardingWaitScriptPath(): string {
 // the hook process), so without this the runner would mis-detect as `claude` and skip the
 // Cursor-only pre-spawn model directive. JSON-quoted so the gate's clean-node-invocation
 // allow-list (isOnboardingWaitCommand) still recognizes it.
-export function onboardingWaitCommand(cwd: string, host?: string): string {
+export function onboardingWaitCommand(cwd: string, host?: HostId): string {
   const hostArg = host ? ` ${JSON.stringify(`--host=${host}`)}` : '';
-  return `node ${JSON.stringify(onboardingWaitScriptPath())} ${JSON.stringify(cwd)}${hostArg}`;
+  const envPrefix = trafficOneEnvShellPrefix(cwd, host);
+  return `${envPrefix}node ${JSON.stringify(onboardingWaitScriptPath())} ${JSON.stringify(cwd)}${hostArg}`;
 }

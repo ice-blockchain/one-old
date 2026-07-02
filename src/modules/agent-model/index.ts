@@ -2,6 +2,7 @@
 import type { Handler } from '../../core/types';
 import { agentModelGate } from './handler';
 import { modelGateAfterShell, modelGateShell } from './model-gate';
+import { opencodeSubagentBind } from './opencode-subagent-bind';
 import { recordSpawnedAgent } from './record-agent';
 import { subagentStartBind } from './subagent-bind';
 
@@ -52,5 +53,15 @@ export const handlers: Handler[] = [
     subcommands: ['subagent-start'],
     priority: 40,
     run: (ctx) => subagentStartBind(ctx),
+  },
+  {
+    // OpenCode-only: no SubagentStart hook exists, so bind the role claim from the
+    // subagent's first prompt ([t1-role:] marker) on user-prompt-submit. Inert on
+    // other hosts and outside subagents mode (guards in the handler).
+    id: 'agent-model.opencode-subagent-bind',
+    event: 'UserPromptSubmit',
+    subcommands: ['user-prompt-submit'],
+    priority: 30,
+    run: (ctx) => opencodeSubagentBind(ctx),
   },
 ];

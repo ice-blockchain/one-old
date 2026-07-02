@@ -127,7 +127,7 @@ CHANGES_REQUESTED — <one line summary>.
 - Visual-heavy UI has screenshot or Storybook verification, or a concrete note
   explaining why visual QA could not run and which breakpoints/states remain
   unverified.
-- No raw deployment commands (`vercel deploy`, `gh release`, etc.) added without `lastShipperApprovalAt` already in `.traffic-one/.one.json` from a recent shipper run.
+- No raw deployment/publish commands (`gh release create`, `npm publish`, `supabase db push --linked`, or any stray third-party host CLI the deploy-gate intercepts) added without `lastShipperApprovalAt` already in `.traffic-one/.one.json` from a recent shipper run.
 - No deploy approval without a fresh passing `lastSecurityCheckStatus: "passed"` stamp whose fingerprint matches the current worktree.
 - No production-readiness hard blocker remains: failing production build,
   leaked browser/mobile secret, missing Supabase RLS, unsafe destructive

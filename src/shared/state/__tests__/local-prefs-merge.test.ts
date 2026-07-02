@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { mergeProjectPrefs, readProjectPrefs } from '../local-prefs';
+import { mergeProjectPrefs, projectRootHash, readProjectPrefs } from '../local-prefs';
 import { scrubProjectStateLocalPrefs } from '../normalize';
 
 function withPrefs(fn: (cwd: string) => void): void {
@@ -85,4 +85,37 @@ test('scrubProjectStateLocalPrefs strips machine-local prefs a stale runner left
     // Idempotent: a clean .one.json is a no-op.
     assert.equal(scrubProjectStateLocalPrefs(cwd), false, 'no-op on an already-clean state file');
   });
+});
+
+test('readProjectPrefs falls back to hashed prefs when project-local prefs are selected but missing', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-fallback-'));
+  const cwd = path.join(dir, 'project');
+  const home = path.join(dir, 'home');
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevHome = process.env.HOME;
+  const prevXdg = process.env.XDG_STATE_HOME;
+  fs.mkdirSync(cwd, { recursive: true });
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, '.traffic-one', 'preferences.json');
+  process.env.HOME = home;
+  delete process.env.XDG_STATE_HOME;
+  try {
+    const hashedPrefs = path.join(home, '.traffic-one', 'projects', projectRootHash(cwd), 'preferences.json');
+    fs.mkdirSync(path.dirname(hashedPrefs), { recursive: true });
+    fs.writeFileSync(hashedPrefs, JSON.stringify({
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+    }), 'utf8');
+
+    const prefs = readProjectPrefs(cwd);
+    assert.deepEqual(prefs.performance, { level: 'balanced', source: 'prompted' });
+    assert.deepEqual(prefs.team, { mode: 'subagents', source: 'prompted', approved: true });
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevHome === undefined) delete process.env.HOME;
+    else process.env.HOME = prevHome;
+    if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;
+    else process.env.XDG_STATE_HOME = prevXdg;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

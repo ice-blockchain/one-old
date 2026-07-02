@@ -25,6 +25,10 @@ import * as path from 'path';
 
 import { ONE_SETTINGS_VERSION } from '../config/one-settings';
 import { readJson } from './fsjson';
+import {
+  PROJECT_LOCAL_MACHINE_REL,
+  ensureProjectLocalTrafficOneGitignore,
+} from './state/traffic-one-paths';
 
 export type OneSection = 'auth' | 'authChoice' | 'codeGraphProvider';
 
@@ -108,6 +112,10 @@ export function updateOneSettings(patch: Partial<OneSettings>, env: NodeJS.Proce
   const current = readOneSettings(env);
   writeWholeFile(filePath, { ...current, ...patch, version: ONE_SETTINGS_VERSION });
   removeLegacyFiles(env);
+  const normalized = filePath.replace(/\\/g, '/');
+  if (normalized.endsWith(`/${PROJECT_LOCAL_MACHINE_REL.replace(/\\/g, '/')}`)) {
+    ensureProjectLocalTrafficOneGitignore(path.dirname(path.dirname(filePath)));
+  }
   return filePath;
 }
 

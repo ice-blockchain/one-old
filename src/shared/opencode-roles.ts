@@ -8,7 +8,10 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode';
+import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode-delegation';
+import { readOpenCodeQueue, readOpenCodeUnitStatuses } from './opencode-queue';
+import { detectHost } from './host';
+import { canonicalHost } from './model-tiers';
 import { openCodeDelegationActive } from './performance';
 import { obj } from './obj';
 
@@ -55,10 +58,11 @@ export function openCodeEnabled(state: unknown): boolean {
   return obj(obj(state)?.openCode)?.enabled === true;
 }
 
-// Should this role run on OpenCode rather than a paid subagent? Host-agnostic:
-// OpenCode is a locally-installed CLI invoked the same way on every host, so the
-// only gate is the user's opt-in plus the role being in the configured set.
-export function shouldRunRoleOnOpenCode(role: string, state: unknown): boolean {
+// Should this role run on OpenCode rather than a paid subagent? Delegation is a
+// paid-host feature: Claude/Codex/Cursor may offload to OpenCode, but an OpenCode
+// host must not self-delegate or spawn the worker recursively.
+export function shouldRunRoleOnOpenCode(role: string, state: unknown, host: unknown = detectHost()): boolean {
+  if (canonicalHost(host) === 'opencode') return false;
   if (!role || !openCodeEnabled(state)) return false;
   return openCodeDelegateRoles(state).includes(role);
 }
@@ -294,12 +298,51 @@ export function markOpenCodePlanBatchComplete(cwd: string, runId: string): void 
   markOpenCodePlanBatchTerminal(cwd, runId, 'success');
 }
 
+const TERMINAL_PLAN_UNIT_STATUSES = new Set([
+  'delegated',
+  'failed',
+  'no_changes',
+  'no-changes',
+  'skipped',
+  'skipped_no_units',
+  'rejected_policy',
+  'fallback_required',
+]);
+
+function allQueuedPlanUnitsTerminal(cwd: string, runId: string): boolean {
+  if (!runId) return false;
+  if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
+  const queue = readOpenCodeQueue(cwd, runId);
+  if (!queue || queue.units.length === 0) return false;
+  const statuses = readOpenCodeUnitStatuses(cwd, runId);
+  return queue.units.every((q) => {
+    const s = statuses.find((x) => x.id === q.id);
+    if (!s) return false;
+    if (s.status === 'running' || s.action === 'running') return false;
+    const status = s.status || '';
+    const action = s.action || '';
+    return TERMINAL_PLAN_UNIT_STATUSES.has(status) || TERMINAL_PLAN_UNIT_STATUSES.has(action);
+  });
+}
+
 export function openCodePlanBatchComplete(cwd: string, runId: string): boolean {
   if (!runId) return false;
   try {
     const state = readOpenCodePlanBatchState(cwd, runId);
+    if (state?.outcome === 'running') return false;
     if (state && TERMINAL_BATCH_OUTCOMES.has(state.outcome)) return true;
-    if (fs.existsSync(planBatchCompletePath(cwd, runId))) return true;
+    if (fs.existsSync(planBatchCompletePath(cwd, runId))) {
+      const batchState = readOpenCodePlanBatchState(cwd, runId);
+      if (batchState?.outcome === 'running') return false;
+      return true;
+    }
+    // Belt-and-suspenders: shell fallback may have terminal unit rows without
+    // batch.json when an older runner omitted finalizePlanBatch — clear only when
+    // every queued unit is terminal and no running batch marker exists.
+    if (allQueuedPlanUnitsTerminal(cwd, runId)) {
+      const batch = readOpenCodePlanBatchState(cwd, runId);
+      if (!batch || batch.outcome !== 'running') return true;
+    }
     return false;
   } catch {
     return false;
@@ -307,8 +350,8 @@ export function openCodePlanBatchComplete(cwd: string, runId: string): boolean {
 }
 
 // True when a new-project implementer spawn must wait for Step-0 from-plan.
-export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, state: unknown): boolean {
-  if (!runId || !openCodeDelegationActive(state)) return false;
+export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, state: unknown, host: unknown = detectHost()): boolean {
+  if (!runId || !openCodeDelegationActive(state, host)) return false;
   const mode = obj(state)?.mode;
   if (mode !== 'new-project') return false;
   if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
@@ -326,7 +369,7 @@ export function markOpenCodePlanRoleCompleted(cwd: string, runId: string, role: 
   try {
     const p = planBatchMarkerPath(cwd, runId, role);
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, '', 'utf8');
+    fs.writeFileSync(p, `${normalized}\n`, 'utf8');
     const existing = readOpenCodePlanBatchState(cwd, runId);
     if (existing && !TERMINAL_BATCH_OUTCOMES.has(existing.outcome)) {
       const rolesCompleted = existing.rolesCompleted.includes(normalized)
@@ -345,14 +388,17 @@ export function markOpenCodePlanRoleCompleted(cwd: string, runId: string, role: 
 export function openCodePlanRoleCompleted(cwd: string, runId: string, role: string): boolean {
   if (!runId || !role) return false;
   try {
-    return fs.existsSync(planBatchMarkerPath(cwd, runId, role));
+    const p = planBatchMarkerPath(cwd, runId, role);
+    if (!fs.existsSync(p)) return false;
+    const stat = fs.statSync(p);
+    return stat.size > 0;
   } catch {
     return false;
   }
 }
 
-export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown): string[] {
-  if (!runId || !openCodeDelegationActive(state)) return [];
+export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown, host: unknown = detectHost()): string[] {
+  if (!runId || !openCodeDelegationActive(state, host)) return [];
   if (openCodePlanBatchComplete(cwd, runId)) return [];
   return planDelegationQueueRolesForRun(cwd, runId);
 }

@@ -43,11 +43,19 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // Host-agnostic tool classification (see onboarding-gate): Cursor's rawName is a
   // coarse subcommand and its command/path live on ctx.input.tool, not raw.tool_input
   // — without this the shell feature-source-write deny is blind on Cursor.
+  const tool = ctx.input.tool;
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName) || 'Bash';
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
 
-  const rawFilePath = asString(toolInput.file_path).replace(/\\/g, '/');
-  const rawCommand = commandFromToolInput(toolInput);
+  // OpenCode tools carry camelCase args (write/edit → `filePath`, edit → `newString`,
+  // apply_patch → `patchText`) — the snake_case reads below miss them, which would
+  // blind every path-keyed gate (monorepo/plan/feature-source) on the OpenCode host.
+  // The adapter already normalized these into ctx.input.tool, so fall back to the
+  // canonical fields + camelCase raw names. Claude/Codex/Cursor hit the snake_case /
+  // parsedToolInput reads first, so their behavior is byte-identical.
+  const rawFilePath = (asString(toolInput.file_path) || asString(toolInput.filePath)
+    || asString(toolInput.path) || asString(tool?.filePath)).replace(/\\/g, '/');
+  const rawCommand = commandFromToolInput(toolInput) || asString(tool?.command) || asString(toolInput.patchText);
   const patchTargetPaths = normalizedToolName(toolName) === 'apply_patch'
     ? applyPatchTargetPaths(rawCommand)
     : [];
@@ -69,7 +77,8 @@ export function planWriteGate(ctx: Ctx): HookResult {
   migrateArchitectureDocsToPlan(projectRoot);
   materializeProjectIfNeeded(projectRoot, { trigger: 'plan preflight convergence' });
 
-  const content = asString(toolInput.content) || asString(toolInput.new_string) || '';
+  const content = asString(toolInput.content) || asString(toolInput.new_string)
+    || asString(toolInput.newString) || asString(tool?.content) || '';
   const state = readEffectiveState(projectRoot);
   const isNative = isNativeState(state);
 
@@ -95,7 +104,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
 
   const violations: string[] = [];
-  violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, rawData: raw, block }));
+  violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, host: ctx.host, rawData: raw, block }));
   // Run-id write-guard: a stray (e.g. `date` ISO) run-id in a runs/<id> or
   // digests/<id> write path splits run state away from currentRunId. Check the
   // direct target, apply_patch targets, and the shell command.

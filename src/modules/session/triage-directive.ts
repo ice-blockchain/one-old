@@ -85,7 +85,7 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
   if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state);
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
-  const ocActive = openCodeDelegationActive(state);
+  const ocActive = openCodeDelegationActive(state, host);
   // Render the OpenCode instruction only when delegation is actually active, so an
   // off state doesn't leave a dead-branch clause a literal reader must evaluate.
   let openCodeClause = '';

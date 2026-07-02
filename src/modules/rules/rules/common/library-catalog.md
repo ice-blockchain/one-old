@@ -58,7 +58,8 @@ still decide whether a package can be added.
   logs and `pg_stat_statements` for slow-query detection before custom database
   observability tables.
 - Explicit Next.js: Auth.js/NextAuth, App Router route handlers/server actions,
-  Next.js Cache, Drizzle + PostgreSQL, Vercel Blob SDK, Vercel deployment,
+  Next.js Cache, Drizzle + PostgreSQL, Supabase Storage for app files,
+  Traffic One `/deploy` for deployment,
   Vitest only when no Traffic One forced test stack is active, Playwright.
   Same Tailwind + shadcn UI layer as the React/Vite stack.
 - React Native/Expo: Expo Router, `expo-secure-store`, `expo-localization`,

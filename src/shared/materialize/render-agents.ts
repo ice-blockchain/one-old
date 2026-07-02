@@ -40,7 +40,7 @@ function activeTeamLines(state: Rec): string[] {
     try {
       const host = detectHost();
       const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
-      const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state) };
+      const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
       const lineup = buildTeamLineup(level, host, overrides, planCtx);
       if (lineup.length > 0) {
         lines.push(`- Role models (pass as \`model\` when spawning): ${lineup.map((m) => `${m.role.replace(/^senior-/, '')}=${m.model}`).join(', ')}`);
