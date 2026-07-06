@@ -14,9 +14,10 @@ import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenC
 import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
-test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, and prose', () => {
+test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, and prose', () => {
   assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'senior-frontend' }), 'senior-frontend');
   assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'traffic-one:senior-backend' }), 'senior-backend');
+  assert.equal(inferTrafficOneSpawnRole({ agent_name: 'senior-reviewer' }), 'senior-reviewer');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'You are the Traffic One senior-tester role.' }), 'senior-tester');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'just do something' }), null);
 });
@@ -147,7 +148,7 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   }
 }
 
-function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' = 'claude', workspaceRoot?: string): Ctx {
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host, cwd, workspaceRoot, raw: { tool_name: 'Task', tool_input: toolInput },
     tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
@@ -194,6 +195,16 @@ test('team approved but wrong model → deny model-param; correct model → allo
     // high senior-frontend → highest tier → claude "opus"
     const ok = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
     assert.equal(ok.kind, 'noop');
+  });
+});
+
+test('Copilot: missing model arg does not deadlock while slugs are unvalidated', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtx(cwd, {
+      agentName: 'senior-frontend',
+      prompt: '[t1-role: senior-frontend] implement assigned UI scope',
+    }, 'copilot'));
+    assert.equal(r.kind, 'noop');
   });
 });
 

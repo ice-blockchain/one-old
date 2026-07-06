@@ -67,3 +67,21 @@ test('projectRoot: tool workdir and file paths resolve the inner app', () => {
     })), child);
   });
 });
+
+test('projectRoot: workspaceRoot ceiling prevents climbing above opened workspace', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ws-ceiling-')));
+  const workspace = path.join(root, 'workspace');
+  const inner = path.join(workspace, 'apps', 'web');
+  const strayParent = path.join(root, 'stray-parent');
+  fs.mkdirSync(path.join(strayParent, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(strayParent, '.traffic-one', '.one.json'), '{}', 'utf8');
+  fs.mkdirSync(path.join(workspace, '.traffic-one'), { recursive: true });
+  fs.writeFileSync(path.join(workspace, '.traffic-one', '.one.json'), '{}', 'utf8');
+  fs.mkdirSync(inner, { recursive: true });
+  try {
+    assert.equal(projectRoot(input(inner, { workspaceRoot: workspace })), workspace);
+    assert.equal(projectRoot(input(inner, { workspaceRoot: workspace, cwd: inner })), workspace);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

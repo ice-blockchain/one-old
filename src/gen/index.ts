@@ -11,6 +11,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 
 import { emitAgents } from './emit/agents';
+import { emitCopilotAgents } from './emit/copilot-agents';
 import { emitCursorRules } from './emit/cursor-rules';
 import { emitHooks } from './emit/hooks';
 import { emitManifests, emitMcp } from './emit/manifests';
@@ -55,6 +56,7 @@ export function runGen(opts: { check: boolean; root?: string; sourceRoot?: strin
   emitMcp(run);
   emitHooks(run);
   emitAgents(run); // before cursor-rules: the cursor mirror derives from emitted agents/
+  emitCopilotAgents(run);
   emitRules(run); // before cursor-rules: the cursor mirror derives from emitted rules/
   emitSkills(run);
   emitCursorRules(run);

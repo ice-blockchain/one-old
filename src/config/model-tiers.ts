@@ -17,7 +17,7 @@ export const TIER_ALIASES: Readonly<Record<string, TierId>> = {
   low: 'cheapest', min: 'cheapest', minimal: 'cheapest', cheap: 'cheapest', fast: 'cheapest', lite: 'cheapest',
 };
 
-export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode'] as const;
+export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode', 'copilot'] as const;
 export type HostModelKey = (typeof HOST_IDS)[number];
 
 export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>> = {
@@ -41,6 +41,10 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
     balanced: OPENCODE_FREE_MODELS[1] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
     cheapest: OPENCODE_FREE_MODELS[2] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
   },
+  // copilot: family anchors — validate slugs on target Copilot CLI/VS Code build via
+  // model-tier-sync before tightening agent-model enforcement. Free/Student plans use
+  // auto model selection only; COPILOT_PLAN_MODELS overlays the free row.
+  copilot: { highest: 'claude-opus-4-8', balanced: 'claude-sonnet-4.6', cheapest: 'gpt-5.4-mini' },
 };
 
 // Same-tier FALLBACK FAMILIES per preferred family — the orchestrator falls back to one of
@@ -95,6 +99,11 @@ export const OPENCODE_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Rec
   },
 };
 
+// Per-plan model OVERLAY for Copilot (Free/Student → auto model only).
+export const COPILOT_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
+  free: { highest: 'gpt-5.4-mini', balanced: 'gpt-5.4-mini' },
+};
+
 // Same-tier FALLBACK chain per preferred Go model — the gate accepts any of these (and a
 // dropdown can offer them) when the preferred model is unavailable. Each chain degrades
 // within the Go open-weight catalog, then to OPENCODE_FREE_MODELS (always reachable on the
@@ -118,7 +127,8 @@ export const PLAN_ALIASES: Readonly<Record<string, UserPlan>> = {
   teams: 'team',
   edu: 'business',
   education: 'business',
-  hobby: 'free',
+  student: 'free',
+  copilotfree: 'free',
   none: 'free',
   trial: 'free',
   freetrial: 'free',
@@ -151,12 +161,13 @@ export const HOST_PLAN_IDS: Readonly<Record<HostModelKey, ReadonlySet<UserPlan>>
   // OpenCode: free zero-auth gateway, or a paid "Go" subscription (auth provider
   // `opencode-go`) mapped to `plus` (PLAN_ALIASES `go`→`plus` + detectOpenCodePlan).
   opencode: new Set<UserPlan>(['free', 'plus']),
+  copilot: new Set<UserPlan>(['free', 'pro', 'plus', 'max', 'business', 'enterprise', 'team']),
 };
 
 // Plan assumed when the host exposes no detectable signal. Generous on purpose so
 // undetected paying users are not silently downgraded (Claude stays at its top tier).
 export const DEFAULT_HOST_PLAN: Readonly<Record<HostModelKey, UserPlan>> = {
-  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free',
+  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free',
 };
 
 // One plan's tier choice: `base` when OpenCode delegation is off, `withOpenCode`
@@ -199,5 +210,14 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
     // a real working tier instead of cheapest. Delegation is inert on the opencode host,
     // so base == withOpenCode.
     plus: { base: 'balanced', withOpenCode: 'balanced' },
+  },
+  copilot: {
+    free: { base: 'cheapest', withOpenCode: 'balanced' },
+    pro: { base: 'balanced', withOpenCode: 'highest' },
+    plus: { base: 'highest', withOpenCode: 'highest' },
+    max: { base: 'highest', withOpenCode: 'highest' },
+    business: { base: 'highest', withOpenCode: 'highest' },
+    team: { base: 'highest', withOpenCode: 'highest' },
+    enterprise: { base: 'highest', withOpenCode: 'highest' },
   },
 };

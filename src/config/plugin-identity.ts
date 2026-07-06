@@ -37,6 +37,8 @@ export const CODEX_LONG_DESCRIPTION = 'Traffic One adds an mcp-auth authenticati
 
 export const CURSOR_DESCRIPTION = 'Senior-engineer team workflow for TypeScript apps (React web, Ionic/Capacitor, explicit React Native): browser onboarding wizard, persistent .traffic-one project memory, codebase-graph token economy with handoff digests, OpenCode free-tier delegation, design/QA/Lighthouse gates, pre-deploy security scanner. Senior role rules auto-attach via globs; skills auto-trigger on semantic match.';
 
+export const COPILOT_DESCRIPTION = 'Senior-engineer team workflow for TypeScript apps (React web, Ionic/Capacitor, explicit React Native): browser onboarding wizard, persistent .traffic-one project memory, codebase-graph token economy with handoff digests, OpenCode free-tier delegation, design/QA/Lighthouse gates, pre-deploy security scanner. Hooks enforce auth, plan, and deploy gates; rules load via AGENTS.md; skills auto-trigger on semantic match. Compatible with GitHub Copilot CLI and VS Code.';
+
 // ── Codex/Cursor manifest interface metadata ─────────────────────────────────
 // Verbatim; key + array-element order is preserved so the generated manifests
 // stay byte-identical. The builders in gen/sources/product.ts consume these.

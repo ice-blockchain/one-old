@@ -65,7 +65,7 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
 
 test('tierModelTable: Cursor cell is plan-aware (Free → Composer family), other hosts plan-agnostic', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0] });
+  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini' });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-opus-4-8');
   // No plan → base cursor family.
@@ -117,12 +117,13 @@ test('modelMatchesExpected accepts exact + same-family variants, rejects other f
 test('canonicalHost defaults to claude for unknowns', () => {
   assert.equal(canonicalHost('codex'), 'codex');
   assert.equal(canonicalHost('opencode'), 'opencode');
+  assert.equal(canonicalHost('copilot'), 'copilot');
   assert.equal(canonicalHost('weird'), 'claude');
 });
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0],
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'claude-opus-4-8',
   });
   assert.equal(tierModelTable('bad'), null);
 });

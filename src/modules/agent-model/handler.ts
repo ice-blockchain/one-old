@@ -89,6 +89,13 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
   return modelMatchesAny(passedModel, acceptableModelsFor(expected, ctx.host));
 }
 
+function modelParamEnforced(host: string): boolean {
+  // Copilot model slugs/frontmatter behavior still needs live validation. The project-local
+  // .agent.md files carry the model intent, so do not hard-block a spawn solely on a missing
+  // or differently-shaped `model` tool arg.
+  return host !== 'copilot';
+}
+
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
 // orchestrator can pass a model the runner actually offers when a Cursor build does
 // not offer the preferred slug (Cursor rejects an unavailable slug as invalid). The
@@ -491,15 +498,15 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (role === 'quick-fix') {
     const expected = resolveModel('cheapest', ctx.host);
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-    if (expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
+    if (modelParamEnforced(ctx.host) && expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
     }
-    const exact = expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
+    const exact = modelParamEnforced(ctx.host) && expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
     if (exact) return exact;
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
       agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
-      model: passedModel,
+      model: passedModel || expected || '',
     });
     return noop();
   }
@@ -546,6 +553,14 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  if (!modelParamEnforced(ctx.host)) {
+    ensureRunAgentClaim(cwd, state, role, raw, {
+      toolName,
+      agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+      model: passedModel || expected,
+    });
+    return noop();
+  }
   if (!modelSatisfiesTier(ctx, passedModel, expected)) {
     // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
     // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor

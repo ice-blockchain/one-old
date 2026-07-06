@@ -122,6 +122,7 @@ export function generatedCursorRules(repoRoot: string = pluginRoot()): RuleDocum
   const ruleDocs = walkMarkdownFiles(rulesRoot, repoRoot)
     .map((source) => renderCursorRule(toPosix(path.relative(rulesRoot, source)), fs.readFileSync(source, 'utf8')));
   const agentDocs = walkMarkdownFiles(agentsRoot, repoRoot)
+    .filter((source) => !source.endsWith('.agent.md'))
     .map((source) => renderAgentRule(toPosix(path.relative(agentsRoot, source)), fs.readFileSync(source, 'utf8')));
   return [...ruleDocs, ...agentDocs];
 }
@@ -132,7 +133,7 @@ export function emitCursorRules(run: GenRun): void {
   const docs = [
     ...run.emitted('rules/').filter((doc) => doc.relPath.endsWith('.md'))
       .map((doc) => renderCursorRule(doc.relPath.slice('rules/'.length), doc.content)),
-    ...run.emitted('agents/').filter((doc) => doc.relPath.endsWith('.md'))
+    ...run.emitted('agents/').filter((doc) => doc.relPath.endsWith('.md') && !doc.relPath.endsWith('.agent.md'))
       .map((doc) => renderAgentRule(doc.relPath.slice('agents/'.length), doc.content)),
   ];
   for (const doc of docs) {

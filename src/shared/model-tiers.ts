@@ -4,6 +4,7 @@
 // src/config/model-tiers.ts — edit knobs there, not here.
 
 import {
+  COPILOT_PLAN_MODELS,
   CURSOR_MODEL_ALTERNATES,
   CURSOR_PLAN_MODELS,
   DEFAULT_HOST_PLAN,
@@ -58,6 +59,11 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
     const planned = overlay ? overlay[canonical] : undefined;
     if (planned) return planned;
   }
+  if (h === 'copilot' && plan !== undefined && plan !== null && plan !== '') {
+    const overlay = COPILOT_PLAN_MODELS[canonicalPlan('copilot', plan)];
+    const planned = overlay ? overlay[canonical] : undefined;
+    if (planned) return planned;
+  }
   return HOST_MODELS[h][canonical];
 }
 
@@ -104,7 +110,7 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
 export function tierModelTable(
   tier: unknown,
   plan?: unknown,
-): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string } | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
   return {
@@ -113,6 +119,7 @@ export function tierModelTable(
     codex: HOST_MODELS.codex[canonical],
     cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor[canonical],
     opencode: resolveModel(canonical, 'opencode', plan) ?? HOST_MODELS.opencode[canonical],
+    copilot: resolveModel(canonical, 'copilot', plan) ?? HOST_MODELS.copilot[canonical],
   };
 }
 

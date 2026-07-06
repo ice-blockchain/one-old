@@ -15,6 +15,7 @@ import {
   CURSOR_DESCRIPTION,
   CURSOR_KEYWORDS,
   CURSOR_TAGS,
+  COPILOT_DESCRIPTION,
   DISPLAY_NAME,
   NAME,
 } from '../../config/plugin-identity';
@@ -73,6 +74,20 @@ export function cursorPluginManifest(version: string): Record<string, unknown> {
     rules: './.cursor/rules/',
     hooks: './hooks/hooks-cursor.json',
     mcpServers: './.mcp.json',
+  };
+}
+
+export function copilotPluginManifest(version: string): Record<string, unknown> {
+  return {
+    name: NAME,
+    description: COPILOT_DESCRIPTION,
+    version,
+    author: { ...AUTHOR },
+    skills: ['./skills/'],
+    agents: './agents/',
+    hooks: './hooks/hooks-copilot.json',
+    mcpServers: './.mcp.json',
+    instructions: './AGENTS.md',
   };
 }
 

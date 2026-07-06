@@ -1,0 +1,5 @@
+{
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "traffic-one gate blocked this tool",
+  "additionalContext": "optional gate context"
+}

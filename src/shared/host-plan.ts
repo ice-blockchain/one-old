@@ -171,6 +171,30 @@ function detectOpenCodePlan(env: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
+function copilotSettingsPath(env: NodeJS.ProcessEnv): string {
+  const home = homeDir(env);
+  const copilotHome = env.COPILOT_HOME || path.join(home, '.copilot');
+  return path.join(copilotHome, 'settings.json');
+}
+
+function detectCopilotPlan(env: NodeJS.ProcessEnv): string | null {
+  const settings = obj(readJson<unknown>(copilotSettingsPath(env), null));
+  if (!settings) return null;
+  const candidates = [
+    settings.plan,
+    settings.subscription,
+    settings.subscriptionType,
+    settings.copilotPlan,
+    settings.accountType,
+    obj(settings.account)?.plan,
+    obj(settings.account)?.type,
+  ];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
 function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
   const override = env.TRAFFIC_ONE_USER_PLAN;
   if (typeof override === 'string' && override.trim()) return canonicalPlan(host, override);
@@ -180,6 +204,7 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
     else if (host === 'codex') raw = detectCodexPlan(env);
     else if (host === 'cursor') raw = detectCursorPlan(env);
     else if (host === 'opencode') raw = detectOpenCodePlan(env);
+    else if (host === 'copilot') raw = detectCopilotPlan(env);
   } catch {
     raw = null;
   }
@@ -205,6 +230,7 @@ export function detectHostPlan(host: unknown, env: NodeJS.ProcessEnv = process.e
     env.TRAFFIC_ONE_USER_PLAN ?? '',
     env.HOME ?? env.USERPROFILE ?? '',
     env.CODEX_HOME ?? '',
+    env.COPILOT_HOME ?? '',
     env.APPDATA ?? '',
     env.XDG_CONFIG_HOME ?? '',
   ].join('\u0000');

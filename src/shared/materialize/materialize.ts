@@ -16,6 +16,7 @@ import { nowIsoNoMs } from '../text';
 import { detectHost } from '../host';
 import { cleanupPrevious, loadPreviousManifest, modeRulesForState } from './cleanup';
 import { writeCursorAgentFiles } from './cursor-agents';
+import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
 import { writeOpenCodeHostAssets } from './opencode-assets';
@@ -106,6 +107,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // orchestrator to read and pass as the Task `model` parameter; Cursor does not reliably
   // auto-apply it, so the spawn gate still enforces the passed model arg.
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
+  if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, state);
   if (detectHost() === 'opencode') written += writeOpenCodeHostAssets(cwd, state, skills);
 
   const mobile = state.mobile as Rec | undefined;

@@ -60,6 +60,8 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     subagent_type: raw.subagent_type,
     subagentType: raw.subagentType,
     agent: raw.agent,
+    agentName: raw.agentName,
+    agent_name: raw.agent_name,
     role: raw.role,
     type: raw.type,
     prompt: taskText,

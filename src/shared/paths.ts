@@ -134,11 +134,18 @@ function promptPathHints(prompt: unknown, cwd: string): string[] {
   return hints;
 }
 
+function projectWalkCeiling(input: HookInput, cwd: string): string {
+  const ws = typeof input.workspaceRoot === 'string' ? input.workspaceRoot.trim() : '';
+  if (ws && path.isAbsolute(ws)) return safeRealpath(ws);
+  return hostBoundary(cwd);
+}
+
 export function projectRoot(input: HookInput): string {
   const cwd = path.resolve(input.cwd || process.cwd());
-  const boundary = hostBoundary(cwd);
+  const ceiling = projectWalkCeiling(input, cwd);
+  const hintBoundary = ceiling;
   const workdirRoot = input.tool?.workdir
-    ? candidateRootFromHint(cwd, input.tool.workdir, boundary)
+    ? candidateRootFromHint(cwd, input.tool.workdir, hintBoundary)
     : null;
   if (workdirRoot) return workdirRoot;
 
@@ -146,16 +153,17 @@ export function projectRoot(input: HookInput): string {
     ? path.resolve(cwd, input.tool.workdir)
     : input.tool?.workdir || cwd;
   const fileRoot = input.tool?.filePath
-    ? candidateRootFromHint(cwd, input.tool.filePath, boundary, fileBase)
+    ? candidateRootFromHint(cwd, input.tool.filePath, hintBoundary, fileBase)
     : null;
   if (fileRoot) return fileRoot;
 
   for (const hint of promptPathHints(input.prompt, cwd)) {
-    const promptRoot = candidateRootFromHint(cwd, hint, boundary);
+    const promptRoot = candidateRootFromHint(cwd, hint, hintBoundary);
     if (promptRoot) return promptRoot;
   }
 
-  return findUp(boundary, boundary) ?? cwd;
+  const start = hostBoundary(cwd);
+  return findUp(start, ceiling) ?? (isInsideOrEqual(start, ceiling) ? start : ceiling);
 }
 
 export function stateFile(root: string): string {
