@@ -91,17 +91,45 @@ function parseToolArgs(raw: unknown): Record<string, unknown> {
   return asRecord(raw);
 }
 
+interface CopilotToolCall {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+function copilotToolCalls(data: Record<string, unknown>): CopilotToolCall[] {
+  const rawCalls = data.tool_calls ?? data.toolCalls;
+  if (!Array.isArray(rawCalls)) return [];
+  const calls: CopilotToolCall[] = [];
+  for (const rawCall of rawCalls) {
+    const call = asRecord(rawCall);
+    const name = firstString(call.name, call.toolName, call.tool_name);
+    if (!name) continue;
+    calls.push({
+      id: firstString(call.id, call.toolCallId, call.tool_call_id) || '',
+      name,
+      args: parseToolArgs(call.args ?? call.arguments ?? call.toolArgs ?? call.tool_args),
+    });
+  }
+  return calls;
+}
+
+function selectToolCall(calls: readonly CopilotToolCall[], admitted: ReadonlySet<ToolClass>): CopilotToolCall | null {
+  return calls.find((call) => admitted.has(toolClassForRawName(call.name))) || calls[0] || null;
+}
+
 function hasKeys(value: Record<string, unknown>): boolean {
   return Object.keys(value).length > 0;
 }
 
-function rawForPipeline(data: Record<string, unknown>, toolArgs: Record<string, unknown>): Record<string, unknown> {
+function rawForPipeline(data: Record<string, unknown>, toolName: string, toolArgs: Record<string, unknown>, toolCallId?: string): Record<string, unknown> {
   const explicit = asRecord(data.tool_input ?? data.toolInput);
-  if (!hasKeys(toolArgs) || hasKeys(explicit)) return data;
+  if (!toolName && (!hasKeys(toolArgs) || hasKeys(explicit))) return data;
   return {
     ...data,
-    tool_input: toolArgs,
-    toolInput: toolArgs,
+    ...(toolName ? { tool_name: toolName, toolName } : {}),
+    ...(toolCallId ? { tool_call_id: toolCallId, toolCallId } : {}),
+    ...(hasKeys(toolArgs) && !hasKeys(explicit) ? { tool_input: toolArgs, toolInput: toolArgs } : {}),
   };
 }
 
@@ -151,37 +179,41 @@ export function makeCopilotAdapter(surface?: CopilotWireSurface): HostAdapter {
         ? mapping.event
         : normalizeEvent(data.hook_event_name ?? data.hookEventName ?? data.event);
 
-      const rawName = firstString(data.tool_name, data.toolName, data.tool, data.name);
+      const calls = copilotToolCalls(data);
+      const preOrPost = sub === 'before-tool-use' || sub === 'after-tool-use' || event === 'PreToolUse' || event === 'PostToolUse';
+      const admit = (sub === 'after-tool-use' || event === 'PostToolUse') ? GENERIC_POST_ADMIT : GENERIC_PRE_ADMIT;
+      const selectedCall = preOrPost ? selectToolCall(calls, admit) : null;
+      const rawName = firstString(data.tool_name, data.toolName, data.tool, data.name, selectedCall?.name);
       const toolArgs = parseToolArgs(data.tool_args ?? data.toolArgs ?? data.tool_input ?? data.toolInput);
+      const effectiveToolArgs = hasKeys(toolArgs) ? toolArgs : (selectedCall?.args || {});
       const input = asRecord(data.input ?? toolArgs);
-      const rawPipeline = rawForPipeline(data, toolArgs);
+      const rawPipeline = rawForPipeline(data, rawName, effectiveToolArgs, selectedCall?.id);
 
       const command = firstString(
-        data.command, data.cmd, input.command, input.cmd, toolArgs.command, toolArgs.cmd,
+        data.command, data.cmd, input.command, input.cmd, effectiveToolArgs.command, effectiveToolArgs.cmd,
       );
       const workdir = firstString(
-        data.workdir, data.working_dir, input.workdir, input.cwd, toolArgs.workdir, toolArgs.cwd,
+        data.workdir, data.working_dir, input.workdir, input.cwd, effectiveToolArgs.workdir, effectiveToolArgs.cwd,
       );
       const filePath = firstString(
-        data.file_path, data.filePath, data.path, input.file_path, input.filePath, input.path, toolArgs.path,
+        data.file_path, data.filePath, data.path, input.file_path, input.filePath, input.path, effectiveToolArgs.path,
       );
       const content = firstString(
-        data.content, data.new_content, input.content, input.new_content, toolArgs.content, toolArgs.new_content,
+        data.content, data.new_content, input.content, input.new_content, effectiveToolArgs.content, effectiveToolArgs.new_content,
       );
 
       let tool: ToolInput | undefined;
       if (mapping.tool) {
         tool = withFields(mapping.tool, rawName || sub, command, workdir, filePath, content);
-      } else if (sub === 'before-tool-use' || sub === 'after-tool-use' || event === 'PreToolUse' || event === 'PostToolUse') {
+      } else if (preOrPost) {
         const cls = rawName ? toolClassForRawName(rawName) : 'other';
-        const admit = (sub === 'after-tool-use' || event === 'PostToolUse') ? GENERIC_POST_ADMIT : GENERIC_PRE_ADMIT;
         tool = withFields(admit.has(cls) ? cls : 'other', rawName || sub, command, workdir, filePath, content);
       } else if (rawName) {
         tool = withFields(toolClassForRawName(rawName), rawName, command, workdir, filePath, content);
       }
 
       const prompt = firstString(
-        data.prompt, data.user_prompt, data.userPrompt, data.message, input.prompt,
+        data.prompt, data.user_prompt, data.userPrompt, data.message, input.prompt, effectiveToolArgs.prompt,
       );
       const wsRoot = firstWorkspaceRoot(data);
       const wsCeiling = wsRoot && path.isAbsolute(wsRoot) ? wsRoot : undefined;

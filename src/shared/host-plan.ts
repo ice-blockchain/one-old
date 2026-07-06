@@ -12,6 +12,9 @@
 //             ItemTable['cursorAuth/stripeMembershipType'] (free / pro / business / …),
 //             read via the sqlite3 CLI (macOS/Linux) OR the built-in node:sqlite module
 //             (every OS incl. Windows, Node >=22.5) — whichever is available.
+//   - copilot: ~/.copilot/settings.json plan-like fields when present; otherwise
+//             ~/.copilot/data.db app_state['copilot-available-models'] as a capability
+//             fallback (enabled medium/powerful models imply at least Pro capability).
 // Home/config dirs resolve cross-OS (HOME → USERPROFILE → os.homedir(); APPDATA /
 // XDG_CONFIG_HOME for Cursor). TRAFFIC_ONE_USER_PLAN overrides every host (and is the
 // test seam). Result is memoized per (host + the env vars that affect detection) so
@@ -31,6 +34,14 @@ const cache = new Map<string, UserPlan>();
 
 function homeDir(env: NodeJS.ProcessEnv): string {
   return env.HOME || env.USERPROFILE || os.homedir();
+}
+
+function fileMtimeKey(file: string): string {
+  try {
+    return String(fs.statSync(file).mtimeMs);
+  } catch {
+    return '';
+  }
 }
 
 // Pull a plan keyword out of a Claude rate-limit / subscription string, e.g.
@@ -177,22 +188,88 @@ function copilotSettingsPath(env: NodeJS.ProcessEnv): string {
   return path.join(copilotHome, 'settings.json');
 }
 
-function detectCopilotPlan(env: NodeJS.ProcessEnv): string | null {
-  const settings = obj(readJson<unknown>(copilotSettingsPath(env), null));
-  if (!settings) return null;
-  const candidates = [
-    settings.plan,
-    settings.subscription,
-    settings.subscriptionType,
-    settings.copilotPlan,
-    settings.accountType,
-    obj(settings.account)?.plan,
-    obj(settings.account)?.type,
-  ];
-  for (const value of candidates) {
-    if (typeof value === 'string' && value.trim()) return value.trim();
+function copilotDataDbPath(env: NodeJS.ProcessEnv): string {
+  const home = homeDir(env);
+  const copilotHome = env.COPILOT_HOME || path.join(home, '.copilot');
+  return path.join(copilotHome, 'data.db');
+}
+
+const COPILOT_MODELS_SQL = "SELECT value FROM app_state WHERE key='copilot-available-models' LIMIT 1";
+
+function copilotModelsViaCli(db: string): string | null {
+  try {
+    const out = spawnSync('sqlite3', ['-readonly', db, `${COPILOT_MODELS_SQL};`], { encoding: 'utf8', timeout: 2000 });
+    if (out.status === 0 && typeof out.stdout === 'string' && out.stdout.trim()) return out.stdout.trim();
+  } catch {
+    /* binary missing / spawn error */
   }
   return null;
+}
+
+function copilotModelsViaNodeSqlite(db: string): string | null {
+  try {
+    const sqlite = require('node:sqlite') as SqliteModule;
+    const handle = new sqlite.DatabaseSync(db, { readOnly: true });
+    try {
+      const row = handle.prepare(COPILOT_MODELS_SQL).get() as { value?: unknown } | undefined;
+      const v = row?.value;
+      if (typeof v === 'string') return v;
+      if (v instanceof Uint8Array) return Buffer.from(v).toString('utf8');
+    } finally {
+      handle.close();
+    }
+  } catch {
+    /* module unavailable (old/flagless node), locked db, etc. */
+  }
+  return null;
+}
+
+function copilotPlanFromModelCatalog(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const models = JSON.parse(raw);
+    if (!Array.isArray(models)) return null;
+    for (const entry of models) {
+      const model = obj(entry);
+      if (!model) continue;
+      const id = typeof model.id === 'string' ? model.id.trim() : '';
+      if (!id || id === 'auto') continue;
+      const policy = obj(model.policy);
+      if (policy && policy.state === 'disabled') continue;
+      const category = typeof model.modelPickerCategory === 'string' ? model.modelPickerCategory : '';
+      const price = typeof model.modelPickerPriceCategory === 'string' ? model.modelPickerPriceCategory : '';
+      if (category === 'powerful') return 'pro';
+      if (category === 'versatile' && price !== 'low') return 'pro';
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function detectCopilotPlanViaModels(env: NodeJS.ProcessEnv): string | null {
+  const db = copilotDataDbPath(env);
+  if (!fs.existsSync(db)) return null;
+  return copilotPlanFromModelCatalog(copilotModelsViaCli(db) ?? copilotModelsViaNodeSqlite(db));
+}
+
+function detectCopilotPlan(env: NodeJS.ProcessEnv): string | null {
+  const settings = obj(readJson<unknown>(copilotSettingsPath(env), null));
+  if (settings) {
+    const candidates = [
+      settings.plan,
+      settings.subscription,
+      settings.subscriptionType,
+      settings.copilotPlan,
+      settings.accountType,
+      obj(settings.account)?.plan,
+      obj(settings.account)?.type,
+    ];
+    for (const value of candidates) {
+      if (typeof value === 'string' && value.trim()) return value.trim();
+    }
+  }
+  return detectCopilotPlanViaModels(env);
 }
 
 function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
@@ -208,13 +285,12 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
   } catch {
     raw = null;
   }
-  // Cursor's stripeMembershipType spellings for Pro+/Ultra/Teams are unconfirmed by
-  // docs; an unrecognized value silently collapses to DEFAULT_HOST_PLAN (free). Flag
-  // it (opt-in via TRAFFIC_ONE_DEBUG so the hook runtime stays quiet by default) so a
-  // real install's string can be added to PLAN_ALIASES. Best-effort; never throws.
-  if (host === 'cursor' && raw && !planIsRecognized(raw) && env.TRAFFIC_ONE_DEBUG) {
+  // Some host plan strings are app-specific (Cursor stripeMembershipType, Copilot's
+  // product-label strings). An unrecognized value silently collapses to DEFAULT_HOST_PLAN
+  // (usually free). Flag it opt-in so a real install's string can be added to PLAN_ALIASES.
+  if ((host === 'cursor' || host === 'copilot') && raw && !planIsRecognized(raw) && env.TRAFFIC_ONE_DEBUG) {
     try {
-      process.stderr.write(`[traffic-one] cursor: unrecognized plan string ${JSON.stringify(raw)} (cursorAuth/stripeMembershipType) → treated as "${DEFAULT_HOST_PLAN.cursor}". Add an alias in config/model-tiers.ts PLAN_ALIASES.\n`);
+      process.stderr.write(`[traffic-one] ${host}: unrecognized plan string ${JSON.stringify(raw)} → treated as "${DEFAULT_HOST_PLAN[host]}". Add an alias in config/model-tiers.ts PLAN_ALIASES.\n`);
     } catch {
       /* stderr unavailable; diagnostic is best-effort */
     }
@@ -233,6 +309,7 @@ export function detectHostPlan(host: unknown, env: NodeJS.ProcessEnv = process.e
     env.COPILOT_HOME ?? '',
     env.APPDATA ?? '',
     env.XDG_CONFIG_HOME ?? '',
+    ...(h === 'copilot' ? [fileMtimeKey(copilotSettingsPath(env)), fileMtimeKey(copilotDataDbPath(env))] : []),
   ].join('\u0000');
   const hit = cache.get(key);
   if (hit) return hit;

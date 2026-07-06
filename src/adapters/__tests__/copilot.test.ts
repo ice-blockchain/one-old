@@ -43,6 +43,32 @@ test('copilot CLI: spawn toolArgs are visible to raw-input gates', () => {
   assert.equal(toolInput.model, 'claude-opus-4-8');
 });
 
+test('copilot VS Code: preToolUse toolCalls task is visible to spawn gates', () => {
+  const { adapter, raw } = inv('before-tool-use', {
+    sessionId: 'parent-session',
+    cwd: '/repo',
+    toolCalls: [{
+      id: 'call_task_1',
+      name: 'task',
+      args: JSON.stringify({
+        description: 'Apply reviewer-requested fixes',
+        agent_type: 'traffic-one:senior-frontend',
+        name: 'senior-frontend-fixes',
+        mode: 'background',
+        prompt: '[t1-role: senior-frontend] fix the frontend',
+      }),
+    }],
+  }, 'vscode');
+  const parsed = adapter.parse(raw);
+  const rawParsed = parsed.raw as Record<string, unknown>;
+  const toolInput = rawParsed.tool_input as Record<string, unknown>;
+  assert.equal(parsed.tool?.class, 'spawn-agent');
+  assert.equal(parsed.tool?.rawName, 'task');
+  assert.equal(rawParsed.toolCallId, 'call_task_1');
+  assert.equal(toolInput.agent_type, 'traffic-one:senior-frontend');
+  assert.equal(toolInput.name, 'senior-frontend-fixes');
+});
+
 test('copilot CLI: PreToolUse deny → flat permissionDecision shape', async () => {
   const { adapter, raw } = inv('before-tool-use', { tool_name: 'bash', tool_args: '{"command":"rm -rf /"}' }, 'cli');
   const handlers: Handler[] = [

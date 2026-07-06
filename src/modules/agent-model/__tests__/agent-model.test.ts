@@ -1000,7 +1000,7 @@ function setCurrentRunId(cwd: string, runId: string): void {
   fs.writeFileSync(file, JSON.stringify(state), 'utf8');
 }
 
-function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' = 'claude'): Ctx {
+function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude'): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host, cwd,
     raw: { tool_name: 'Task', tool_input: toolInput, session_id: sessionId },
@@ -1009,13 +1009,20 @@ function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, se
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
-function postSpawnCtx(cwd: string, toolInput: Record<string, unknown>, toolResponse: unknown, sessionId: string): Ctx {
+function postSpawnCtx(
+  cwd: string,
+  toolInput: Record<string, unknown>,
+  toolResponse: unknown,
+  sessionId: string,
+  host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude',
+  rawName = 'Task',
+): Ctx {
   const input: HookInput = {
-    event: 'PostToolUse', host: 'claude', cwd,
-    raw: { tool_name: 'Task', tool_input: toolInput, tool_response: toolResponse, session_id: sessionId },
-    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+    event: 'PostToolUse', host, cwd,
+    raw: { tool_name: rawName, tool_input: toolInput, tool_response: toolResponse, session_id: sessionId },
+    tool: { class: 'spawn-agent' as ToolClass, rawName },
   };
-  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 test('extractSpawnedAgentId reads the Agent result footer in string and structured payloads', () => {
@@ -1034,6 +1041,10 @@ test('extractSpawnedAgentId reads the Agent result footer in string and structur
   assert.equal(
     extractSpawnedAgentId('[label](9e41b709-ff45-4f20-bcbd-d077f92944b8)'),
     '9e41b709-ff45-4f20-bcbd-d077f92944b8',
+  );
+  assert.equal(
+    extractSpawnedAgentId({ toolTelemetry: { restrictedProperties: { agent_id: 'senior-frontend' } } }),
+    'senior-frontend',
   );
   // Structured spelling: a payload carrying the id as a JSON field is scanned
   // as serialized JSON ("agentId":"…") and must match too.
@@ -1077,6 +1088,64 @@ test('reuse: recorder persists the agent id, duplicate same-role spawn is denied
       const otherSession = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'opus', prompt: 'resume after restart' }, 'parent-2'));
       assert.equal(otherSession.kind, 'noop');
     });
+  });
+});
+
+test('reuse (Copilot): records background agent_id and denies same-role respawn', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-copilot-reuse');
+    const rec = recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      {
+        agent_type: 'traffic-one:senior-frontend',
+        name: 'senior-frontend',
+        mode: 'background',
+        prompt: '[t1-role: senior-frontend] implement learner frontend',
+      },
+      {
+        toolTelemetry: {
+          restrictedProperties: {
+            agent_id: 'senior-frontend',
+            agent_name: 'traffic-one:senior-frontend',
+          },
+        },
+      },
+      'parent-1',
+      'copilot',
+      'task',
+    ));
+    assert.equal(rec.kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-copilot-reuse')['senior-frontend']?.agentId, 'senior-frontend');
+
+    const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
+      agent_type: 'traffic-one:senior-frontend',
+      name: 'senior-frontend-fixes',
+      mode: 'background',
+      prompt: '[t1-role: senior-frontend] Apply reviewer-requested fixes',
+    }, 'parent-1', 'copilot'));
+    assert.equal(duplicate.kind, 'deny');
+    if (duplicate.kind === 'deny') {
+      assert.ok(duplicate.reason.includes('senior-frontend'), 'deny names the live Copilot agent id');
+      assert.ok(duplicate.reason.includes('Copilot') && duplicate.reason.includes('task'), 'deny teaches the Copilot continuation recipe');
+      assert.ok(!duplicate.reason.includes('SendMessage'), 'no Claude SendMessage on Copilot');
+    }
+
+    const explicitContinuation = agentModelGate(spawnCtxWithSession(cwd, {
+      agent_type: 'traffic-one:senior-frontend',
+      agent_id: 'senior-frontend',
+      name: 'senior-frontend',
+      mode: 'background',
+      prompt: '[t1-role: senior-frontend] Continue with only the new fix task',
+    }, 'parent-1', 'copilot'));
+    assert.equal(explicitContinuation.kind, 'noop', 'Copilot task carrying agent_id passes as continuation');
+
+    const sameNameContinuation = agentModelGate(spawnCtxWithSession(cwd, {
+      agent_type: 'traffic-one:senior-frontend',
+      name: 'senior-frontend',
+      mode: 'background',
+      prompt: '[t1-role: senior-frontend] Continue using the same background agent name',
+    }, 'parent-1', 'copilot'));
+    assert.equal(sameNameContinuation.kind, 'noop', 'Copilot task using the recorded background-agent name passes');
   });
 });
 
@@ -1363,6 +1432,9 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   // and the explicit off-flag still force-disables everywhere.
   assert.equal(subagentContinuationAvailable({ CURSOR_PLUGIN_ROOT: '/x' } as NodeJS.ProcessEnv), true);
   assert.equal(subagentContinuationAvailable({ CURSOR_PLUGIN_ROOT: '/x', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: 'off' } as NodeJS.ProcessEnv), false);
+  assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'copilot' } as NodeJS.ProcessEnv), true);
+  assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'copilot', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0' } as NodeJS.ProcessEnv), false);
+  assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'copilot'), true);
 });
 
 test('Cursor reuse deny names the Task resume recipe and accepts continuation fields', () => {

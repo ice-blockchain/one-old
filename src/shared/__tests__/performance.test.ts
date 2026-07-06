@@ -31,7 +31,7 @@ test('modelForRoleHost resolves per host; modelForRole gives all columns', () =>
   assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'opus');
   assert.equal(modelForRoleHost('low', 'senior-architect', 'claude'), null);
   assert.deepEqual(modelForRole('balanced', 'senior-frontend'), {
-    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5.4', cursor: 'claude-4.6-sonnet', opencode: OPENCODE_FREE_MODELS[1], copilot: 'claude-sonnet-4.6',
+    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5.4', cursor: 'claude-4.6-sonnet', opencode: OPENCODE_FREE_MODELS[1], copilot: 'gpt-5.3-codex',
   });
 });
 

@@ -41,10 +41,11 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
     balanced: OPENCODE_FREE_MODELS[1] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
     cheapest: OPENCODE_FREE_MODELS[2] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
   },
-  // copilot: family anchors — validate slugs on target Copilot CLI/VS Code build via
-  // model-tier-sync before tightening agent-model enforcement. Free/Student plans use
-  // auto model selection only; COPILOT_PLAN_MODELS overlays the free row.
-  copilot: { highest: 'claude-opus-4-8', balanced: 'claude-sonnet-4.6', cheapest: 'gpt-5.4-mini' },
+  // copilot: model ids from Copilot Desktop's `copilot-available-models` catalog.
+  // Custom agents currently inherit the session model at runtime, but the onboarding
+  // wizard still needs truthful tier labels instead of collapsing paid plans to mini.
+  // Free/Student plans use the mini overlay below.
+  copilot: { highest: 'gpt-5.4', balanced: 'gpt-5.3-codex', cheapest: 'gpt-5.4-mini' },
 };
 
 // Same-tier FALLBACK FAMILIES per preferred family — the orchestrator falls back to one of
@@ -129,6 +130,13 @@ export const PLAN_ALIASES: Readonly<Record<string, UserPlan>> = {
   education: 'business',
   student: 'free',
   copilotfree: 'free',
+  githubcopilotfree: 'free',
+  copilotpro: 'pro',
+  githubcopilotpro: 'pro',
+  copilotbusiness: 'business',
+  githubcopilotbusiness: 'business',
+  copilotenterprise: 'enterprise',
+  githubcopilotenterprise: 'enterprise',
   none: 'free',
   trial: 'free',
   freetrial: 'free',

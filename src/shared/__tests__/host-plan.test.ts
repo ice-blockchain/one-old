@@ -32,6 +32,23 @@ function writeCursorMembershipDb(db: string, membership: string): boolean {
   } catch { return false; }
 }
 
+function writeCopilotAppStateDb(db: string, key: string, value: string): boolean {
+  fs.mkdirSync(path.dirname(db), { recursive: true });
+  try {
+    const sqlite = require('node:sqlite') as { DatabaseSync: new (f: string) => { exec(s: string): void; prepare(s: string): { run(...a: unknown[]): unknown }; close(): void } };
+    const h = new sqlite.DatabaseSync(db);
+    h.exec('CREATE TABLE IF NOT EXISTS app_state(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL)');
+    h.prepare('INSERT OR REPLACE INTO app_state(key, value) VALUES(?, ?)').run(key, value);
+    h.close();
+    return true;
+  } catch { /* fall through to CLI */ }
+  try {
+    const escapedKey = key.replace(/'/g, "''");
+    const escapedValue = value.replace(/'/g, "''");
+    return spawnSync('sqlite3', [db, `CREATE TABLE IF NOT EXISTS app_state(key TEXT PRIMARY KEY NOT NULL, value TEXT NOT NULL); INSERT OR REPLACE INTO app_state(key, value) VALUES('${escapedKey}','${escapedValue}');`]).status === 0;
+  } catch { return false; }
+}
+
 function tmpHome(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 't1-plan-'));
 }
@@ -148,4 +165,48 @@ test('detectHostPlan opencode: auth.json provider key → plus (opencode-go) / f
   assert.equal(detectHostPlan('opencode', env({ HOME: go })), 'plus');
   // no auth file (a fresh home) → the free zero-auth gateway
   assert.equal(detectHostPlan('opencode', env({ HOME: tmpHome() })), 'free');
+});
+
+test('detectHostPlan copilot: product-label settings strings resolve to Pro', () => {
+  const home = tmpHome();
+  const copilotHome = path.join(home, '.copilot');
+  fs.mkdirSync(copilotHome, { recursive: true });
+  fs.writeFileSync(path.join(copilotHome, 'settings.json'), JSON.stringify({ plan: 'Copilot Pro' }), 'utf8');
+  assert.equal(detectHostPlan('copilot', env({ HOME: home })), 'pro');
+});
+
+test('detectHostPlan copilot: enabled premium model catalog gives a Pro capability floor', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {
+  const home = tmpHome();
+  const db = path.join(home, '.copilot', 'data.db');
+  const catalog = JSON.stringify([
+    { id: 'auto', name: 'Auto' },
+    { id: 'gpt-5.4-mini', modelPickerCategory: 'lightweight', modelPickerPriceCategory: 'low', policy: { state: 'enabled' } },
+    { id: 'gpt-5.3-codex', modelPickerCategory: 'powerful', modelPickerPriceCategory: 'medium', policy: { state: 'enabled' } },
+  ]);
+  assert.ok(writeCopilotAppStateDb(db, 'copilot-available-models', catalog), 'could not create fixture data.db');
+  assert.equal(detectHostPlan('copilot', env({ HOME: home })), 'pro');
+});
+
+test('detectHostPlan copilot: only lightweight catalog falls back to Free', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {
+  const home = tmpHome();
+  const db = path.join(home, '.copilot', 'data.db');
+  const catalog = JSON.stringify([
+    { id: 'auto', name: 'Auto' },
+    { id: 'gpt-5.4-mini', modelPickerCategory: 'lightweight', modelPickerPriceCategory: 'low', policy: { state: 'enabled' } },
+  ]);
+  assert.ok(writeCopilotAppStateDb(db, 'copilot-available-models', catalog), 'could not create fixture data.db');
+  assert.equal(detectHostPlan('copilot', env({ HOME: home })), 'free');
+});
+
+test('detectHostPlan copilot: cache notices the model catalog appearing after a Free fallback', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {
+  const home = tmpHome();
+  const e = env({ HOME: home });
+  assert.equal(detectHostPlan('copilot', e), 'free');
+  const db = path.join(home, '.copilot', 'data.db');
+  const catalog = JSON.stringify([
+    { id: 'auto', name: 'Auto' },
+    { id: 'gpt-5.3-codex', modelPickerCategory: 'powerful', modelPickerPriceCategory: 'medium', policy: { state: 'enabled' } },
+  ]);
+  assert.ok(writeCopilotAppStateDb(db, 'copilot-available-models', catalog), 'could not create fixture data.db');
+  assert.equal(detectHostPlan('copilot', e), 'pro');
 });

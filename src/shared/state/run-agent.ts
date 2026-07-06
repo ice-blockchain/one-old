@@ -947,7 +947,7 @@ export function claimThreadRole(
   removeSiblingPendingClaims(cwd, source, runId, role, claim.parentSessionId as string | null, claim.claimId as string | null);
   // Mirror the bind into the role-keyed reuse registry (agents.json), so the spawn
   // dedup gate sees a LIVE agent for the role and routes the next same-role task to
-  // SendMessage/send_input — one agent per role instead of a fresh rule-reloading
+  // the host's continuation primitive — one agent per role instead of a fresh rule-reloading
   // spawn. Only the host's spawn-result recorder ran before, which never fires for
   // hosts that bind here (Codex SubagentStart; Claude agent-teams, whose workers
   // carry agent_id/agent_type but no separately-recorded spawn result). Gated on
@@ -1428,8 +1428,8 @@ export function tryFallbackClaim(
 // .traffic-one/runs/<runId>/agents.json maps role → the LIVE agent id returned
 // by the host's spawn tool. The PostToolUse recorder writes it; the PreToolUse
 // reuse gate denies a SECOND same-role spawn and points the orchestrator at the
-// recorded id, so the role's later tasks continue ONE agent (SendMessage) and
-// the rules+skills context loads once per role instead of once per task.
+// recorded id, so the role's later tasks continue ONE agent and the rules+skills
+// context loads once per role instead of once per task.
 // Entries are parent-session-bound: an in-process agent dies with its parent
 // session, so an id recorded by ANOTHER session never blocks a spawn.
 
@@ -1438,9 +1438,11 @@ export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 // Continuation needs the host's send-to-agent tool. On Codex that is
 // send_input — native to the multi_agent toolset, always present, no flag (so
 // the one-live-agent registry/dedup must be ON there by default; keying only on
-// the Claude flag silently disabled the whole regime on Codex). On Claude it is
-// SendMessage, which only registers when the agent-teams feature flag was set
-// at session start. An explicit falsy flag still switches it off everywhere.
+// the Claude flag silently disabled the whole regime on Codex). Cursor and
+// Copilot expose continuation through their native task/background-agent tools.
+// On Claude it is SendMessage, which only registers when the agent-teams feature
+// flag was set at session start. An explicit falsy flag still switches it off
+// everywhere.
 // `host` is the gate's already-resolved host (preferred — authoritative); env is the
 // fallback signal when a caller has no host in hand. An explicit off-flag disables
 // everywhere, on any host.
@@ -1448,17 +1450,21 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (host) {
-    if (host === 'codex' || host === 'cursor') return true;
+    if (host === 'codex' || host === 'cursor' || host === 'copilot') return true;
     return flag !== '';
   }
+  const envHost = String(env.TRAFFIC_ONE_HOST ?? '').trim().toLowerCase();
   // Codex: send_input (native to the multi_agent toolset, always present).
-  if (host === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
+  if (envHost === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
   // Cursor: live Cursor builds surface Task continuation as `resume` to resume a
   // previous subagent with full context preserved — the analogue of
   // send_input/SendMessage. Older docs/models may say `agentId`, so the gate
   // accepts both fields.
   // Without this every Cursor role task re-spawned a fresh subagent, re-loading rules+skills.
-  if (host === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
+  if (envHost === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
+  // Copilot: the plugin hook env carries only TRAFFIC_ONE_HOST=copilot, so this
+  // must not depend on a Claude feature flag or the registry stays inert.
+  if (envHost === 'copilot') return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }

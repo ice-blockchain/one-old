@@ -104,8 +104,9 @@ function modelParamEnforced(host: string): boolean {
 // Host-specific "continue the live agent" recipe for the agent-reuse deny. The
 // continuation primitive differs per host: Cursor RE-INVOKES the Task tool with
 // `resume` (live Cursor builds surface this field; older docs/models may say
-// `agentId`), Codex uses `send_input`, Claude uses `SendMessage`. The agentId is
-// interpolated here so the SKILL block stays a single host-agnostic template.
+// `agentId`), Copilot reuses the background agent id through `task`, Codex uses
+// `send_input`, Claude uses `SendMessage`. The agentId is interpolated here so the
+// SKILL block stays a single host-agnostic template.
 function continuationRecipe(host: string, agentId: string): { call: string; tool: string } {
   if (host === 'cursor') {
     return {
@@ -117,6 +118,12 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
     return {
       call: `Call \`send_input\` with \`target: "${agentId}"\` and the NEW task as the message.`,
       tool: 'send_input',
+    };
+  }
+  if (host === 'copilot') {
+    return {
+      call: `Call Copilot's \`task\` tool for the SAME background agent with \`agent_id: "${agentId}"\` (or \`name: "${agentId}"\` if your Copilot build exposes only \`name\`) and \`prompt\` = the NEW task only.`,
+      tool: 'the Copilot `task` background-agent continuation',
     };
   }
   return {
@@ -442,14 +449,6 @@ export function agentModelGate(ctx: Ctx): HookResult {
       // surfaced this as `resume` in live traces, while older docs/prose/models use
       // `agentId`; accept both. On Codex/Claude the continuation is a different tool
       // (send_input / SendMessage), so spawn_agent/Task normally never carries these.
-      const resumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
-      const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
-      if (isResume) {
-        const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
-        if (conflict) {
-          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`);
-        }
-      }
       const parentSessionId = hookSessionIdentity(raw).sessionId;
       const currentLive = (): ReturnType<typeof liveRunAgent> => {
         const live = liveRunAgent(cwd, runId, role, parentSessionId);
@@ -459,6 +458,18 @@ export function agentModelGate(ctx: Ctx): HookResult {
           ? live
           : (refreshCursorRunAgentFromTranscriptCache(cwd, state, raw, runId, role, parentSessionId) || live);
       };
+      const explicitResumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
+      const copilotNameToken = ctx.host === 'copilot' ? asString(toolInput.name) : '';
+      const liveForName = copilotNameToken ? currentLive() : null;
+      const resumeToken = explicitResumeToken
+        || (liveForName && continuationAgentId(liveForName, ctx.host) === copilotNameToken ? copilotNameToken : undefined);
+      const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
+      if (isResume) {
+        const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
+        if (conflict) {
+          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`);
+        }
+      }
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
         const live = currentLive();
         if (live && !replacementJustified(spawnPromptText)) {

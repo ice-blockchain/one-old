@@ -28,7 +28,7 @@ export const handlers: Handler[] = [
   },
   {
     // Persist the spawned agent id (role → agents.json) so the reuse gate can
-    // route the role's NEXT task to the same agent via SendMessage.
+    // route the role's NEXT task to the same agent via the host continuation tool.
     id: 'agent-model.record-spawn',
     event: 'PostToolUse',
     tools: ['spawn-agent'],

@@ -8,6 +8,7 @@ import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
+  'TRAFFIC_ONE_HOST',
   'CURSOR_PLUGIN_ROOT',
   'CODEX_PLUGIN_ROOT',
   'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
@@ -410,6 +411,34 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
     } finally {
       delete process.env.CODEX_PLUGIN_ROOT;
     }
+  });
+});
+
+test('Copilot Pro onboarding recommends Balanced and lists distinct paid subagent models', () => {
+  withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'copilot';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'Copilot Pro';
+    applyAnswer(cwd, 'open-code', 'not_now');
+
+    const perf = computeOnboarding(cwd);
+    assert.equal(perf.step, 'performance');
+    assert.equal(perf.meta.host, 'copilot');
+    assert.equal(perf.meta.recommendedLevel, 'balanced');
+    assert.equal(perf.meta.recommendedTier, 'balanced');
+    assert.equal(perf.meta.options?.[0]?.id, 'balanced');
+
+    applyAnswer(cwd, 'performance', 'balanced');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    assert.equal(view.meta.host, 'copilot');
+    assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini']);
+    const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
+    assert.equal(requireRole(by, 'senior-frontend').tier, 'balanced');
+    assert.equal(requireRole(by, 'senior-frontend').model, 'gpt-5.3-codex');
+    assert.equal(requireRole(by, 'senior-backend').model, 'gpt-5.3-codex');
+    assert.equal(requireRole(by, 'senior-tester').tier, 'cheapest');
+    assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5.4-mini');
+    assert.ok(new Set((view.meta.team || []).map((m) => m.model)).size > 1, 'Balanced Copilot team must not collapse to one mini model');
   });
 });
 
