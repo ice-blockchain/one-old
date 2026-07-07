@@ -17,6 +17,8 @@ import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, and prose', () => {
   assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'senior-frontend' }), 'senior-frontend');
   assert.equal(inferTrafficOneSpawnRole({ subagent_type: 'traffic-one:senior-backend' }), 'senior-backend');
+  assert.equal(inferTrafficOneSpawnRole({ agent_type: 'traffic-one:senior-frontend' }), 'senior-frontend');
+  assert.equal(inferTrafficOneSpawnRole({ agentType: 'traffic-one:senior-backend' }), 'senior-backend');
   assert.equal(inferTrafficOneSpawnRole({ agent_name: 'senior-reviewer' }), 'senior-reviewer');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'You are the Traffic One senior-tester role.' }), 'senior-tester');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'just do something' }), null);
@@ -927,9 +929,9 @@ function codexSpawnCtx(cwd: string, toolInput: Record<string, unknown>, rawName 
   return { input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
-function subagentStartCtx(cwd: string, raw: Record<string, unknown>): Ctx {
-  const input: HookInput = { event: 'SubagentStart', host: 'codex', cwd, raw };
-  return { input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx;
+function subagentStartCtx(cwd: string, raw: Record<string, unknown>, host: 'codex' | 'cursor' | 'copilot' = 'codex'): Ctx {
+  const input: HookInput = { event: 'SubagentStart', host, cwd, raw };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 test('codex: namespaced spawn enforces gpt-5.5 and stakes a senior-frontend claim', () => {
@@ -1100,7 +1102,7 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
         agent_type: 'traffic-one:senior-frontend',
         name: 'senior-frontend',
         mode: 'background',
-        prompt: '[t1-role: senior-frontend] implement learner frontend',
+        prompt: 'implement learner frontend',
       },
       {
         toolTelemetry: {
@@ -1121,7 +1123,7 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
       agent_type: 'traffic-one:senior-frontend',
       name: 'senior-frontend-fixes',
       mode: 'background',
-      prompt: '[t1-role: senior-frontend] Apply reviewer-requested fixes',
+      prompt: 'Apply reviewer-requested fixes',
     }, 'parent-1', 'copilot'));
     assert.equal(duplicate.kind, 'deny');
     if (duplicate.kind === 'deny') {
@@ -1135,7 +1137,7 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
       agent_id: 'senior-frontend',
       name: 'senior-frontend',
       mode: 'background',
-      prompt: '[t1-role: senior-frontend] Continue with only the new fix task',
+      prompt: 'Continue with only the new fix task',
     }, 'parent-1', 'copilot'));
     assert.equal(explicitContinuation.kind, 'noop', 'Copilot task carrying agent_id passes as continuation');
 
@@ -1143,9 +1145,43 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
       agent_type: 'traffic-one:senior-frontend',
       name: 'senior-frontend',
       mode: 'background',
-      prompt: '[t1-role: senior-frontend] Continue using the same background agent name',
+      prompt: 'Continue using the same background agent name',
     }, 'parent-1', 'copilot'));
-    assert.equal(sameNameContinuation.kind, 'noop', 'Copilot task using the recorded background-agent name passes');
+    assert.equal(sameNameContinuation.kind, 'deny', 'Copilot name-only retry is still a fresh background task');
+    if (sameNameContinuation.kind === 'deny') {
+      assert.ok(sameNameContinuation.reason.includes('Do NOT substitute `name: "senior-frontend"`'));
+    }
+  });
+});
+
+test('reuse (Copilot): SubagentStart records background display name before fix-cycle respawn', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-copilot-subagent-start');
+    subagentStartBind(subagentStartCtx(cwd, {
+      sessionId: 'parent-1',
+      transcriptPath: '/Users/w3s/.copilot/session-state/session/events.jsonl',
+      agentName: 'traffic-one:senior-frontend',
+      agentDisplayName: 'senior-frontend',
+      agentDescription: 'Use PROACTIVELY after `senior-architect` produces `.traffic-one/plan.md` to implement the UI layer.',
+    }, 'copilot'));
+
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-copilot-subagent-start')['senior-frontend']?.agentId,
+      'senior-frontend',
+      'Copilot SubagentStart display name is the reusable background agent id',
+    );
+
+    const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
+      agent_type: 'traffic-one:senior-frontend',
+      name: 'senior-frontend-fixes',
+      mode: 'sync',
+      prompt: 'Fix frontend contract mismatches',
+    }, 'parent-1', 'copilot'));
+    assert.equal(duplicate.kind, 'deny');
+    if (duplicate.kind === 'deny') {
+      assert.ok(duplicate.reason.includes('senior-frontend'));
+      assert.ok(duplicate.reason.includes('Copilot') && duplicate.reason.includes('task'));
+    }
   });
 });
 

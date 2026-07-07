@@ -122,7 +122,7 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
   }
   if (host === 'copilot') {
     return {
-      call: `Call Copilot's \`task\` tool for the SAME background agent with \`agent_id: "${agentId}"\` (or \`name: "${agentId}"\` if your Copilot build exposes only \`name\`) and \`prompt\` = the NEW task only.`,
+      call: `Call Copilot's \`task\` tool for the SAME background agent with \`agent_id: "${agentId}"\` and \`prompt\` = the NEW task only. Do NOT substitute \`name: "${agentId}"\`: live Copilot builds treat \`name\` as a fresh background task and respawn the agent. If this Copilot build rejects \`agent_id\` as unsupported, STOP and report that Copilot did not expose a reusable continuation primitive; do not spawn another same-role task.`,
       tool: 'the Copilot `task` background-agent continuation',
     };
   }
@@ -459,10 +459,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
           : (refreshCursorRunAgentFromTranscriptCache(cwd, state, raw, runId, role, parentSessionId) || live);
       };
       const explicitResumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
-      const copilotNameToken = ctx.host === 'copilot' ? asString(toolInput.name) : '';
-      const liveForName = copilotNameToken ? currentLive() : null;
-      const resumeToken = explicitResumeToken
-        || (liveForName && continuationAgentId(liveForName, ctx.host) === copilotNameToken ? copilotNameToken : undefined);
+      const resumeToken = explicitResumeToken;
       const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
       if (isResume) {
         const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
