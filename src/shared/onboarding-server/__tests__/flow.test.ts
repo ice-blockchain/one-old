@@ -414,6 +414,32 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
   });
 });
 
+test('Windsurf Free recommends Low and maps the team to SWE-1.6 Slow', () => {
+  withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'windsurf';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    applyAnswer(cwd, 'open-code', 'not_now');
+
+    const perf = computeOnboarding(cwd);
+    assert.equal(perf.step, 'performance');
+    assert.equal(perf.meta.host, 'windsurf');
+    assert.equal(perf.meta.recommendedLevel, 'low');
+    assert.equal(perf.meta.recommendedTier, 'cheapest');
+    assert.equal(perf.meta.options?.[0]?.id, 'low');
+
+    applyAnswer(cwd, 'performance', 'balanced');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    assert.equal(view.meta.host, 'windsurf');
+    assert.deepEqual(view.meta.modelChoices, [{ tier: 'cheapest', model: 'SWE-1.6 Slow' }]);
+    const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
+    assert.equal(requireRole(by, 'senior-architect').tier, 'cheapest');
+    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.6 Slow');
+    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
+    assert.ok(!(view.meta.modelChoices || []).some((c) => /opus|sonnet|haiku/i.test(c.model)));
+  });
+});
+
 test('Copilot Pro onboarding recommends Balanced and lists distinct paid subagent models', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'copilot';

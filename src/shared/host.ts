@@ -1,13 +1,18 @@
 // src/shared/host.ts
 // Decide which host wire shape we're speaking. Claude and Codex share the nested
 // hookSpecificOutput shape (and the raw→canonical tool mapping handles both tool
-// vocabularies), so they use the same adapter; Cursor is the flat-JSON outlier
-// and announces itself via `--host=cursor` from its own entry script.
+// vocabularies), so they use the same adapter; Cursor and Windsurf are JSON
+// outliers and announce themselves via host-stamped entry scripts.
 
 import type { HostId } from '../core/types';
 
 function knownHost(value: string): value is HostId {
-  return value === 'cursor' || value === 'codex' || value === 'claude' || value === 'opencode' || value === 'copilot';
+  return value === 'cursor'
+    || value === 'codex'
+    || value === 'claude'
+    || value === 'opencode'
+    || value === 'copilot'
+    || value === 'windsurf';
 }
 
 export function detectHost(

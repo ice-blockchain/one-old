@@ -20,13 +20,18 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     // The auth gate ships as the generated kernel rule; no static 00- seed copy.
     assert.ok(!fs.existsSync(path.join(dir, '.cursor', 'rules', '00-auth-required.mdc')));
     assert.ok(fs.existsSync(path.join(dir, '.cursor', 'rules', 'auth-required.mdc')));
+    assert.ok(fs.existsSync(path.join(dir, '.devin', 'rules', 'auth-required.md')));
     assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')));
     assert.ok(fs.existsSync(path.join(dir, 'plugin.json')));
     assert.ok(fs.existsSync(path.join(dir, 'hooks', 'hooks-copilot.json')));
+    assert.ok(fs.existsSync(path.join(dir, 'hooks', 'hooks-windsurf.json')));
     assert.ok(fs.existsSync(path.join(dir, 'package.json')));
     assert.ok(!fs.existsSync(path.join(dir, 'src')));
     const copilotHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-copilot.json'), 'utf8'));
     assert.equal(copilotHooks.hooks.SessionStart[0].env.TRAFFIC_ONE_HOST, 'copilot');
+    const windsurfHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-windsurf.json'), 'utf8'));
+    assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('windsurf-hook-runtime.cjs'));
+    assert.ok(windsurfHooks.hooks.post_mcp_tool_use[0].command.includes('post_mcp_tool_use'));
     const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
     assert.match(frontendAgent, /^tools: \["view", "search", "bash", "edit"\]$/m);
     assert.doesNotMatch(frontendAgent, /^tools: Read,/m);
@@ -44,22 +49,26 @@ test('gen sweeps orphaned files in managed output dirs (deleted source content)'
     runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
     const orphanRule = path.join(dir, 'rules', 'common', 'retired-rule.md');
     const orphanMdc = path.join(dir, '.cursor', 'rules', 'retired-rule.mdc');
+    const orphanWindsurf = path.join(dir, '.devin', 'rules', 'retired-rule.md');
     fs.writeFileSync(orphanRule, '# Retired\n', 'utf8');
     fs.writeFileSync(orphanMdc, '---\nalwaysApply: false\n---\n', 'utf8');
+    fs.writeFileSync(orphanWindsurf, '---\ntrigger: model_decision\n---\n# Retired\n', 'utf8');
 
     // check mode reports orphans as drift without touching them.
     const check = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
     assert.deepEqual(check.drift.sort(), [
       '.cursor/rules/retired-rule.mdc (orphan: no longer generated)',
+      '.devin/rules/retired-rule.md (orphan: no longer generated)',
       'rules/common/retired-rule.md (orphan: no longer generated)',
     ]);
     assert.ok(fs.existsSync(orphanRule));
 
     // write mode prunes them.
     const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
-    assert.deepEqual(write.pruned.sort(), ['.cursor/rules/retired-rule.mdc', 'rules/common/retired-rule.md']);
+    assert.deepEqual(write.pruned.sort(), ['.cursor/rules/retired-rule.mdc', '.devin/rules/retired-rule.md', 'rules/common/retired-rule.md']);
     assert.ok(!fs.existsSync(orphanRule));
     assert.ok(!fs.existsSync(orphanMdc));
+    assert.ok(!fs.existsSync(orphanWindsurf));
 
     // and the tree round-trips clean again.
     const recheck = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });

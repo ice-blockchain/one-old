@@ -18,6 +18,7 @@ import {
   PLAN_TIER_RECOMMENDATIONS,
   TIER_ALIASES,
   TIER_IDS,
+  WINDSURF_PLAN_MODELS,
   type HostModelKey,
   type TierId,
   type UserPlan,
@@ -61,6 +62,11 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
   }
   if (h === 'copilot' && plan !== undefined && plan !== null && plan !== '') {
     const overlay = COPILOT_PLAN_MODELS[canonicalPlan('copilot', plan)];
+    const planned = overlay ? overlay[canonical] : undefined;
+    if (planned) return planned;
+  }
+  if (h === 'windsurf' && plan !== undefined && plan !== null && plan !== '') {
+    const overlay = WINDSURF_PLAN_MODELS[canonicalPlan('windsurf', plan)];
     const planned = overlay ? overlay[canonical] : undefined;
     if (planned) return planned;
   }
@@ -110,7 +116,7 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
 export function tierModelTable(
   tier: unknown,
   plan?: unknown,
-): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string; windsurf: string } | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
   return {
@@ -120,6 +126,7 @@ export function tierModelTable(
     cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor[canonical],
     opencode: resolveModel(canonical, 'opencode', plan) ?? HOST_MODELS.opencode[canonical],
     copilot: resolveModel(canonical, 'copilot', plan) ?? HOST_MODELS.copilot[canonical],
+    windsurf: resolveModel(canonical, 'windsurf', plan) ?? HOST_MODELS.windsurf[canonical],
   };
 }
 

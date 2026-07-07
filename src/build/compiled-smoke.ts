@@ -34,6 +34,13 @@ function runShim(scratch: string, shim: string, subcommand: string, stdin: strin
   return result.stdout || '';
 }
 
+function runShimAllowingBlock(scratch: string, shim: string, subcommand: string, stdin: string, env: NodeJS.ProcessEnv): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, [path.join(scratch, shim), subcommand], {
+    input: stdin, encoding: 'utf8', env, timeout: 20000,
+  });
+  return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
+}
+
 function main(): void {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-'));
   const authTmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-auth-'));
@@ -41,7 +48,7 @@ function main(): void {
     // 1. Full cutover build: compile + descriptors + legacy-named shims.
     const built = buildRuntime(scratch);
     if (built.modulesCopied < 6) fail(`expected module descriptors copied, got ${built.modulesCopied}`);
-    for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs']) {
+    for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'windsurf-hook-runtime.cjs']) {
       if (!fs.existsSync(path.join(scratch, shim))) fail(`missing shim ${shim}`);
     }
 
@@ -68,7 +75,17 @@ function main(): void {
     if (cursorOut.permission !== 'deny') fail('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
     if (!cursorOut.user_message) fail('cursor deny had no user_message (skillBlock did not resolve from src)');
 
-    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; both legacy-path shims (hook-runtime.cjs, cursor-hook-runtime.cjs) deny unauthed tool use under bare node.\n`);
+    const windsurfOut = runShimAllowingBlock(
+      scratch,
+      'windsurf-hook-runtime.cjs',
+      'pre_run_command',
+      JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { cwd: authTmp, command_line: 'npm run build' } }),
+      env,
+    );
+    if (windsurfOut.status !== 2) fail(`windsurf-hook-runtime.cjs shim did not exit 2 on an unauthed shell (status ${windsurfOut.status})`);
+    if (!windsurfOut.stderr) fail('windsurf deny had no stderr message');
+
+    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; legacy-path shims (hook-runtime.cjs, cursor-hook-runtime.cjs, windsurf-hook-runtime.cjs) deny unauthed tool use under bare node.\n`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
     fs.rmSync(authTmp, { recursive: true, force: true });

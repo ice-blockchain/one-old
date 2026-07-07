@@ -57,13 +57,13 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
 
-// Surface the live wizard URL in the setup banner. Host-gated to Cursor (only it
-// needs the URL in the user-facing channel — see formatWizardBanner) so we don't spawn
-// the server on other hosts; spawning up front is idempotent (the PreToolUse gate
+// Surface the live wizard URL in the setup banner. Host-gated to Cursor/Windsurf
+// (they need the URL in the visible chat channel — see formatWizardBanner) so we
+// don't spawn the server on other hosts; spawning up front is idempotent (the PreToolUse gate
 // reuses it). Best-effort: a spawn failure falls back to the plain banner (the
 // PreToolUse deny still carries the URL).
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
-  if (ctx.host !== 'cursor') return banner;
+  if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return banner;
   try {
     return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd, { host: ctx.host }).url, banner);
   } catch {
@@ -71,10 +71,10 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   }
 }
 
-// The AGENT-FACING setup directive (additional_context). On Cursor the user-facing
+// The AGENT-FACING setup directive (additional_context). On Cursor/Windsurf the user-facing
 // channel (systemMessage→user_message) is NOT rendered on user-prompt-submit, so the
 // URL-less `setup-pending` prose leaves the agent with no link and no instruction to
-// post one — the user gets stuck (the 5b first-prompt failure). For Cursor, emit the
+// post one — the user gets stuck (the 5b first-prompt failure). For those hosts, emit the
 // full `server-deny-reason` recipe instead: it carries the live URL AND the explicit
 // "post the wizard URL FIRST, before the wait command" instruction. Other hosts keep
 // the plain `setup-pending` note (Claude opens via its preview pane, Codex via node_repl
@@ -88,7 +88,7 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   if (ctx.host === 'opencode') {
     return 'Traffic One project setup is required. A setup wizard will open — share the link with the user when available. Building is blocked until setup completes.';
   }
-  if (ctx.host !== 'cursor') return block('setup-pending');
+  if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return block('setup-pending');
   try {
     const server = ensureOnboardingServer(cwd, { host: ctx.host });
     if (!server.url || server.url.includes(':0/')) return block('setup-pending');

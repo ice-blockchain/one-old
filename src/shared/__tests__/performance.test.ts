@@ -28,10 +28,11 @@ test('effectiveTierForRole honors config + overrides; null for low', () => {
 test('modelForRoleHost resolves per host; modelForRole gives all columns', () => {
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude'), 'opus');
   assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5.4-mini'); // cheapest
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf'), 'Claude Opus 4.8 Medium');
   assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'opus');
   assert.equal(modelForRoleHost('low', 'senior-architect', 'claude'), null);
   assert.deepEqual(modelForRole('balanced', 'senior-frontend'), {
-    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5.4', cursor: 'claude-4.6-sonnet', opencode: OPENCODE_FREE_MODELS[1], copilot: 'gpt-5.3-codex',
+    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5.4', cursor: 'claude-4.6-sonnet', opencode: OPENCODE_FREE_MODELS[1], copilot: 'gpt-5.3-codex', windsurf: 'Claude Sonnet 5 Medium',
   });
 });
 
@@ -53,4 +54,6 @@ test('modelForRoleHost threads planCtx → plan-aware model id', () => {
   const free = { host: 'claude', plan: 'free', useOpenCode: false };
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free), 'sonnet'); // free → balanced
   assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null), 'opus'); // legacy → highest
+  const windsurfFree = { host: 'windsurf', plan: 'free', useOpenCode: false };
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf', null, windsurfFree), 'SWE-1.6 Slow');
 });

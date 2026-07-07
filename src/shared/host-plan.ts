@@ -15,6 +15,9 @@
 //   - copilot: ~/.copilot/settings.json plan-like fields when present; otherwise
 //             ~/.copilot/data.db app_state['copilot-available-models'] as a capability
 //             fallback (enabled medium/powerful models imply at least Pro capability).
+//   - windsurf: no stable documented local plan store; Devin Desktop docs point to
+//             the in-app Plan Info/model selector for truth, so default to Free unless
+//             TRAFFIC_ONE_USER_PLAN explicitly overrides it.
 // Home/config dirs resolve cross-OS (HOME → USERPROFILE → os.homedir(); APPDATA /
 // XDG_CONFIG_HOME for Cursor). TRAFFIC_ONE_USER_PLAN overrides every host (and is the
 // test seam). Result is memoized per (host + the env vars that affect detection) so
@@ -282,6 +285,7 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
     else if (host === 'cursor') raw = detectCursorPlan(env);
     else if (host === 'opencode') raw = detectOpenCodePlan(env);
     else if (host === 'copilot') raw = detectCopilotPlan(env);
+    else if (host === 'windsurf') raw = null;
   } catch {
     raw = null;
   }

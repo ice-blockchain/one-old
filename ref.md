@@ -5,8 +5,9 @@ Generated on 2026-05-12 from the checked-in plugin source.
 This file maps the Traffic One plugin surface to the rules, skills, agents,
 hooks, generated artifacts, and external inspiration/source links used to build
 it. It intentionally lists source files, not generated file bodies. Generated
-Cursor mirrors and OpenCode project-local assets are listed separately because
-their source of truth is `rules/`, `agents/`, and `skills-catalog/`.
+Cursor mirrors, Windsurf Cascade mirrors, and OpenCode project-local assets are
+listed separately because their source of truth is `rules/`, `agents/`, and
+`skills-catalog/`.
 
 ## External References
 
@@ -33,10 +34,13 @@ line-verifiable source files.
 - Skill support files: `skills/security-review/cloud-infrastructure-security.md` and `skills/senior-eng-orchestrator/resources/prompt-templates.md`.
 - Senior-agent role files: 6 files under `agents/`.
 - Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `npm run gen`.
+- Generated Windsurf / Devin Desktop Cascade rule mirrors: split-aware Markdown
+  files under `.devin/rules/` after `npm run gen`.
 - Generated OpenCode project assets: `.opencode/agents/<role>.md` and `.opencode/skills/<skill>/SKILL.md` are materialized per onboarded project when OpenCode is the host.
+- Windsurf project assets: `.devin/rules/*.md` plus generated Devin Local profiles are materialized per onboarded project when Windsurf is the host; skills remain under the canonical `.traffic-one/skills/<skill>/SKILL.md` tree.
 - Hook/runtime script entrypoints plus compiled modules under `scripts/` after `npm run build`.
 - Harness manifests: `.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`, `.claude-plugin/marketplace.json`, `.agents/plugins/marketplace.json`.
-- Hook configs: `settings.json`, `hooks/hooks.json`, `.githooks/pre-commit`, `.githooks/prepare-commit-msg`.
+- Hook configs: `settings.json`, `hooks/hooks.json`, `hooks/hooks-windsurf.json`, `.githooks/pre-commit`, `.githooks/prepare-commit-msg`.
 - CI workflows: `.github/workflows/cursor-sync.yml`, `.github/workflows/traffic-one-security-check.yml`.
 
 ## Source Conventions
@@ -305,6 +309,7 @@ Catalog conventions normalized by the audit: the activation heading is
 - `.agents/plugins/marketplace.json` - local plugin marketplace registration.
 - `.config/opencode/plugins/traffic-one.js` - consented user-level OpenCode wrapper installed by `scripts/opencode-host.cjs`.
 - `.opencode/traffic-one.json` - optional project-level OpenCode marker for explicit enable/disable overrides; no marker is required for normal auto-run behavior.
+- `~/.codeium/windsurf/hooks.json`, `~/.codeium/windsurf/mcp_config.json`, `~/.codeium/windsurf/memories/global_rules.md` - consented user-level Windsurf / Devin Desktop Cascade integration managed by `scripts/windsurf-host.cjs`.
 
 ## Hooks, Scripts, And CI
 
@@ -312,7 +317,10 @@ Catalog conventions normalized by the audit: the activation heading is
 | --- | --- |
 | `settings.json` | Claude hook config for session start, prompt submit, write/edit checks, bash library allowlist, and post-write stack loading. |
 | `hooks/hooks.json` | Codex hook config for session start, prompt submit, write/edit checks, bash library allowlist, graphify hints, page-speed gate, and stack loading. |
+| `hooks/hooks-windsurf.json` | Windsurf / Devin Desktop Cascade hook template for user-prompt, read, write, command, and MCP pre/post events. |
 | `~/.config/opencode/plugins/traffic-one.js` | OpenCode in-process JS plugin wrapper for session start and tool execute hooks; it invokes the shared Traffic One runtime for the OpenCode workspace root, stays silent for exact home sessions and explicit opt-outs, and does not expose OpenCode delegation tools. |
+| `scripts/windsurf-hook-runtime.cjs` | Windsurf Cascade hook runtime shim; installer invocations stamp `--host=windsurf`. |
+| `scripts/windsurf-host.cjs` | Windsurf user-level hook, MCP, global-rule installer, uninstaller, and doctor. |
 | `.githooks/pre-commit` | Regenerates and stages generated plugin files. |
 | `.githooks/prepare-commit-msg` | Adds `Integrated-With: Traffic One plugin <noreply@traffic.io>` commit trailer. |
 | `.github/workflows/cursor-sync.yml` | CI check for generated Cursor artifacts, stack recommendation fixtures, and security runner fixtures. |
@@ -331,7 +339,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `scripts/graphify-runner.cjs` | Codebase graph cache runner. |
 | `scripts/lighthouse-runner.mjs` | Mobile Lighthouse production-preview runner. |
 | `scripts/security-check-runner.cjs` | Traffic One pre-deployment security scanner. |
-| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, and `.cursor/rules/*.mdc`. |
+| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, `.cursor/rules/*.mdc`, and `.devin/rules/*.md`. |
 
 ## Generated Cursor Mirrors
 

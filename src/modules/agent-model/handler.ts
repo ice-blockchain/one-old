@@ -90,10 +90,10 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
 }
 
 function modelParamEnforced(host: string): boolean {
-  // Copilot model slugs/frontmatter behavior still needs live validation. The project-local
-  // .agent.md files carry the model intent, so do not hard-block a spawn solely on a missing
-  // or differently-shaped `model` tool arg.
-  return host !== 'copilot';
+  // Copilot and Windsurf/Devin Local use project-local native agent/profile files that carry
+  // the model intent in frontmatter; their spawn tools may not expose a `model` arg. Cursor is
+  // the opposite: it needs an explicit Task `model` parameter, so keep enforcing there.
+  return host !== 'copilot' && host !== 'windsurf';
 }
 
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
@@ -317,7 +317,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
   // Normalize a host namespace (Codex `multi_agent_v1.spawn_agent`) to the bare name
   // before matching, so the gate can't silently bail on a qualified spawn tool.
-  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(stripToolNamespace(toolName))) return noop();
+  if (toolName && !/^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i.test(stripToolNamespace(toolName))) return noop();
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const role = inferTrafficOneSpawnRole(toolInput);

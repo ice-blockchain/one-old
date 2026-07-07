@@ -17,7 +17,7 @@ export const TIER_ALIASES: Readonly<Record<string, TierId>> = {
   low: 'cheapest', min: 'cheapest', minimal: 'cheapest', cheap: 'cheapest', fast: 'cheapest', lite: 'cheapest',
 };
 
-export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode', 'copilot'] as const;
+export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode', 'copilot', 'windsurf'] as const;
 export type HostModelKey = (typeof HOST_IDS)[number];
 
 export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>> = {
@@ -46,6 +46,12 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
   // wizard still needs truthful tier labels instead of collapsing paid plans to mini.
   // Free/Student plans use the mini overlay below.
   copilot: { highest: 'gpt-5.4', balanced: 'gpt-5.3-codex', cheapest: 'gpt-5.4-mini' },
+  // windsurf / Devin Desktop: names mirror the Cascade model selector. Official docs
+  // say the selector is the freshest availability source; free accounts currently expose
+  // the SWE family, while premium Claude/GPT families are plan-gated. The free overlay
+  // below collapses every tier to the free SWE model so a Claude/Max account on the same
+  // machine cannot leak into Windsurf's recommendation.
+  windsurf: { highest: 'Claude Opus 4.8 Medium', balanced: 'Claude Sonnet 5 Medium', cheapest: 'SWE-1.6 Slow' },
 };
 
 // Same-tier FALLBACK FAMILIES per preferred family — the orchestrator falls back to one of
@@ -103,6 +109,15 @@ export const OPENCODE_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Rec
 // Per-plan model OVERLAY for Copilot (Free/Student → auto model only).
 export const COPILOT_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
   free: { highest: 'gpt-5.4-mini', balanced: 'gpt-5.4-mini' },
+};
+
+// Per-plan model OVERLAY for Windsurf / Devin Desktop. The app does not expose a
+// stable local account-plan store like Cursor's state.vscdb; docs direct users to the
+// in-app model selector for current availability. Free users get the SWE model only,
+// so every tier resolves to that selectable model unless an explicit plan override is
+// supplied (TRAFFIC_ONE_USER_PLAN=pro/max/team/enterprise).
+export const WINDSURF_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
+  free: { highest: 'SWE-1.6 Slow', balanced: 'SWE-1.6 Slow', cheapest: 'SWE-1.6 Slow' },
 };
 
 // Same-tier FALLBACK chain per preferred Go model — the gate accepts any of these (and a
@@ -170,12 +185,14 @@ export const HOST_PLAN_IDS: Readonly<Record<HostModelKey, ReadonlySet<UserPlan>>
   // `opencode-go`) mapped to `plus` (PLAN_ALIASES `go`→`plus` + detectOpenCodePlan).
   opencode: new Set<UserPlan>(['free', 'plus']),
   copilot: new Set<UserPlan>(['free', 'pro', 'plus', 'max', 'business', 'enterprise', 'team']),
+  // Devin Desktop self-serve docs list Free / Pro / Max / Teams / Enterprise.
+  windsurf: new Set<UserPlan>(['free', 'pro', 'max', 'team', 'enterprise']),
 };
 
 // Plan assumed when the host exposes no detectable signal. Generous on purpose so
 // undetected paying users are not silently downgraded (Claude stays at its top tier).
 export const DEFAULT_HOST_PLAN: Readonly<Record<HostModelKey, UserPlan>> = {
-  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free',
+  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free', windsurf: 'free',
 };
 
 // One plan's tier choice: `base` when OpenCode delegation is off, `withOpenCode`
@@ -225,6 +242,13 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
     plus: { base: 'highest', withOpenCode: 'highest' },
     max: { base: 'highest', withOpenCode: 'highest' },
     business: { base: 'highest', withOpenCode: 'highest' },
+    team: { base: 'highest', withOpenCode: 'highest' },
+    enterprise: { base: 'highest', withOpenCode: 'highest' },
+  },
+  windsurf: {
+    free: { base: 'cheapest', withOpenCode: 'balanced' },
+    pro: { base: 'balanced', withOpenCode: 'highest' },
+    max: { base: 'highest', withOpenCode: 'highest' },
     team: { base: 'highest', withOpenCode: 'highest' },
     enterprise: { base: 'highest', withOpenCode: 'highest' },
   },

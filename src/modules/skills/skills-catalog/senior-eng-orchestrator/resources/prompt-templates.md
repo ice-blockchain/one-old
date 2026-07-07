@@ -11,10 +11,12 @@ subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's
 context stays clean. The ONE exception is `<run-id>` — see below.
 
-## Per-role model — PASS IT in the `Task` `model` parameter (Cursor)
+## Per-role model / profile mapping
 
 Each role runs at a specific model tier (it can be overridden per role in the wizard, e.g.
-frontend → balanced). The correct model for each role is pinned in
+frontend → balanced).
+
+On Cursor, the correct model for each role is pinned in
 `.cursor/agents/<role>.md` (`model:` line). **On Cursor you MUST pass that value in the `Task`
 `model` parameter for every spawn** — read `.cursor/agents/<role>.md` and set
 `model: "<that value>"`. Cursor does NOT auto-apply the `.cursor/agents` frontmatter: if you
@@ -22,6 +24,11 @@ omit `model`, the subagent silently INHERITS YOUR (orchestrator) model — so an
 would run a balanced-tier frontend on Opus, ignoring the override. The spawn gate enforces this:
 a spawn whose `model` does not match the role's tier is DENIED with the exact value to pass. Do
 NOT put the model in the prompt text — only the `model` parameter sets it.
+
+On Windsurf / Devin Local, Traffic One materializes native custom profiles at
+`.devin/agents/<role>/AGENT.md`, with the role's `model:` already pinned for the detected
+Windsurf plan. Spawn with the profile name equal to the role (`senior-architect`,
+`senior-frontend`, etc.); do not use Claude aliases like `opus`/`sonnet`/`haiku` there.
 
 ## Run-id format
 

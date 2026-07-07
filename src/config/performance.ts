@@ -114,6 +114,13 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
     team: { base: 'high', withOpenCode: 'high' },
     enterprise: { base: 'high', withOpenCode: 'high' },
   },
+  windsurf: {
+    free: { base: 'low', withOpenCode: 'balanced' },
+    pro: { base: 'balanced', withOpenCode: 'high' },
+    max: { base: 'high', withOpenCode: 'high' },
+    team: { base: 'high', withOpenCode: 'high' },
+    enterprise: { base: 'high', withOpenCode: 'high' },
+  },
 };
 
 // ── Editable default subagent tiers (THE knob to hand-tune) ──────────────────
@@ -167,6 +174,15 @@ export const FREE_HIGH: Readonly<Partial<Record<AgentRole, PlanTier>>> = {
   'senior-reviewer': { base: 'balanced', withOpenCode: 'balanced' },
 };
 
+const WINDSURF_FREE_ALL_CHEAPEST: Readonly<Record<AgentRole, PlanTier>> = {
+  'senior-architect': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-frontend': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-backend': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-reviewer': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-shipper': { base: 'cheapest', withOpenCode: 'cheapest' },
+};
+
 // Sparse per-(host, plan, level) deviations from DEFAULT_AGENT_TIERS. List only the
 // roles that differ; omit a plan/level/role to inherit the default. Paid plans
 // mostly inherit (empty); free is cheaper.
@@ -178,4 +194,5 @@ export const PLAN_AGENT_TIERS: Readonly<
   cursor: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   opencode: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   copilot: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  windsurf: { free: { balanced: WINDSURF_FREE_ALL_CHEAPEST, high: WINDSURF_FREE_ALL_CHEAPEST } },
 };
