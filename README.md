@@ -4,7 +4,7 @@ Enforces React, Ionic/Capacitor mobile packaging, explicit React Native, modern
 design quality, security, post-deploy observability, and clean code
 **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, **Cursor**,
-and **OpenCode**.
+**GitHub Copilot CLI**, **VS Code Copilot**, and **OpenCode**.
 
 ---
 
@@ -107,9 +107,11 @@ Codex, Cursor, OpenCode) via the shared hooks.
 │   ├── AGENTS.md            ← Codex CLI and OpenCode rule entry point
 │   ├── settings.json        ← Claude Code hooks
 │   ├── hooks/hooks.json     ← Codex CLI hooks
+│   ├── hooks/hooks-copilot.json ← GitHub Copilot hooks
+│   ├── plugin.json          ← GitHub Copilot plugin manifest
 │   ├── .mcp.json            ← mcp-auth server declaration
 │   ├── scripts/hook-runtime.cjs
-│   ├── scripts/opencode-hook-runtime.cjs
+│   ├── scripts/copilot-hook-runtime.cjs
 │   ├── scripts/opencode-host.cjs
 │   ├── scripts/traffic-one-auth.cjs
 │   ├── .cursor/rules/*.mdc  ← Cursor mirrors
@@ -267,6 +269,18 @@ codex plugin add traffic-one@traffic-one-local
 /add-plugin /absolute/path/to/traffic-one/dist
 ```
 Or via Cursor Settings → Plugins → Add.
+
+### GitHub Copilot (CLI + VS Code)
+
+Build the plugin (`npm run plugin:build`), then install the generated `dist/` folder:
+
+```
+copilot plugin install /absolute/path/to/traffic-one/dist
+```
+
+Re-run `copilot plugin install` after hook changes — Copilot caches plugin components.
+
+**VS Code:** Chat gear → Customizations → Plugins → Install from folder → select the same `dist/` path.
 
 ### OpenCode
 

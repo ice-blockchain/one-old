@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "PreToolUse",
+  "tool_name": "bash",
+  "tool_args": "{\"command\":\"npm test\"}",
+  "cwd": "/Users/dev/my-app",
+  "workspace_roots": ["/Users/dev/my-app"]
+}

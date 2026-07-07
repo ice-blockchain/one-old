@@ -4,6 +4,7 @@
 
 import type { GenRun } from '../lib/run';
 import {
+  COPILOT_EVENTS,
   CURSOR_EVENTS,
   type HookEntry,
   type HookGroup,
@@ -12,6 +13,7 @@ import {
   SESSION_START,
   SUBAGENT_START,
   claudeCommand,
+  copilotCommand,
   cursorCommand,
   promptSubmitGroup,
 } from '../sources/hooks';
@@ -53,9 +55,29 @@ function cursorConfig(): Rec {
   return { version: 1, hooks };
 }
 
+function copilotHookCommand(subcommand: string): Rec {
+  const nodeCmd = copilotCommand(subcommand);
+  return {
+    type: 'command',
+    bash: nodeCmd,
+    powershell: nodeCmd,
+    cwd: '${PLUGIN_ROOT}',
+    env: { TRAFFIC_ONE_PLUGIN_ROOT: '${PLUGIN_ROOT}', TRAFFIC_ONE_HOST: 'copilot' },
+  };
+}
+
+function copilotConfig(): Rec {
+  const hooks: Rec = {};
+  for (const { event, subcommand } of COPILOT_EVENTS) {
+    hooks[event] = [copilotHookCommand(subcommand)];
+  }
+  return { version: 1, hooks };
+}
+
 export function emitHooks(run: GenRun): void {
   // settings.json keeps the UserPromptSubmit statusMessage; hooks/hooks.json omits it.
   run.json('settings.json', claudeHooks(true));
   run.json('hooks/hooks.json', claudeHooks(false));
   run.json('hooks/hooks-cursor.json', cursorConfig());
+  run.json('hooks/hooks-copilot.json', copilotConfig());
 }

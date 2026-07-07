@@ -67,7 +67,7 @@ export function modelForRole(
   role: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
-): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string } | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
   return tier ? tierModelTable(tier, planCtx?.plan) : null;
 }

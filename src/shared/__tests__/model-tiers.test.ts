@@ -65,7 +65,7 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
 
 test('tierModelTable: Cursor cell is plan-aware (Free → Composer family), other hosts plan-agnostic', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0] });
+  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini' });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-opus-4-8');
   // No plan → base cursor family.
@@ -84,10 +84,20 @@ test('canonicalPlan: Cursor recognizes its 2026 tiers (ultra→max, pro+→plus,
   assert.equal(canonicalPlan('cursor', 'galaxy'), 'free');
 });
 
+test('canonicalPlan: Copilot product labels resolve to paid plan ids', () => {
+  assert.equal(canonicalPlan('copilot', 'Copilot Pro'), 'pro');
+  assert.equal(canonicalPlan('copilot', 'GitHub Copilot Pro'), 'pro');
+  assert.equal(canonicalPlan('copilot', 'Copilot Business'), 'business');
+  assert.equal(canonicalPlan('copilot', 'GitHub Copilot Enterprise'), 'enterprise');
+  assert.equal(recommendTierForPlan('copilot', 'Copilot Pro'), 'balanced');
+  assert.equal(recommendTierForPlan('copilot', 'Copilot Pro', true), 'highest');
+});
+
 test('planIsRecognized: known ids/aliases true, unknown false', () => {
   assert.equal(planIsRecognized('ultra'), true);
   assert.equal(planIsRecognized('pro+'), true);
   assert.equal(planIsRecognized('Pro Plus'), true);
+  assert.equal(planIsRecognized('Copilot Pro'), true);
   assert.equal(planIsRecognized('max'), true);
   assert.equal(planIsRecognized('galaxy'), false);
   assert.equal(planIsRecognized(''), false);
@@ -117,12 +127,13 @@ test('modelMatchesExpected accepts exact + same-family variants, rejects other f
 test('canonicalHost defaults to claude for unknowns', () => {
   assert.equal(canonicalHost('codex'), 'codex');
   assert.equal(canonicalHost('opencode'), 'opencode');
+  assert.equal(canonicalHost('copilot'), 'copilot');
   assert.equal(canonicalHost('weird'), 'claude');
 });
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0],
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4',
   });
   assert.equal(tierModelTable('bad'), null);
 });

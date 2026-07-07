@@ -89,6 +89,13 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
   return modelMatchesAny(passedModel, acceptableModelsFor(expected, ctx.host));
 }
 
+function modelParamEnforced(host: string): boolean {
+  // Copilot model slugs/frontmatter behavior still needs live validation. The project-local
+  // .agent.md files carry the model intent, so do not hard-block a spawn solely on a missing
+  // or differently-shaped `model` tool arg.
+  return host !== 'copilot';
+}
+
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
 // orchestrator can pass a model the runner actually offers when a Cursor build does
 // not offer the preferred slug (Cursor rejects an unavailable slug as invalid). The
@@ -97,8 +104,9 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
 // Host-specific "continue the live agent" recipe for the agent-reuse deny. The
 // continuation primitive differs per host: Cursor RE-INVOKES the Task tool with
 // `resume` (live Cursor builds surface this field; older docs/models may say
-// `agentId`), Codex uses `send_input`, Claude uses `SendMessage`. The agentId is
-// interpolated here so the SKILL block stays a single host-agnostic template.
+// `agentId`), Copilot reuses the background agent id through `task`, Codex uses
+// `send_input`, Claude uses `SendMessage`. The agentId is interpolated here so the
+// SKILL block stays a single host-agnostic template.
 function continuationRecipe(host: string, agentId: string): { call: string; tool: string } {
   if (host === 'cursor') {
     return {
@@ -110,6 +118,12 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
     return {
       call: `Call \`send_input\` with \`target: "${agentId}"\` and the NEW task as the message.`,
       tool: 'send_input',
+    };
+  }
+  if (host === 'copilot') {
+    return {
+      call: `Call Copilot's \`task\` tool for the SAME background agent with \`agent_id: "${agentId}"\` and \`prompt\` = the NEW task only. Do NOT substitute \`name: "${agentId}"\`: live Copilot builds treat \`name\` as a fresh background task and respawn the agent. If this Copilot build rejects \`agent_id\` as unsupported, STOP and report that Copilot did not expose a reusable continuation primitive; do not spawn another same-role task.`,
+      tool: 'the Copilot `task` background-agent continuation',
     };
   }
   return {
@@ -435,14 +449,6 @@ export function agentModelGate(ctx: Ctx): HookResult {
       // surfaced this as `resume` in live traces, while older docs/prose/models use
       // `agentId`; accept both. On Codex/Claude the continuation is a different tool
       // (send_input / SendMessage), so spawn_agent/Task normally never carries these.
-      const resumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
-      const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
-      if (isResume) {
-        const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
-        if (conflict) {
-          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`);
-        }
-      }
       const parentSessionId = hookSessionIdentity(raw).sessionId;
       const currentLive = (): ReturnType<typeof liveRunAgent> => {
         const live = liveRunAgent(cwd, runId, role, parentSessionId);
@@ -452,6 +458,15 @@ export function agentModelGate(ctx: Ctx): HookResult {
           ? live
           : (refreshCursorRunAgentFromTranscriptCache(cwd, state, raw, runId, role, parentSessionId) || live);
       };
+      const explicitResumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
+      const resumeToken = explicitResumeToken;
+      const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
+      if (isResume) {
+        const conflict = verdictAgentConflict(cwd, runId, role, resumeToken);
+        if (conflict) {
+          return deny(`traffic-one — verifier independence gate: \`${role}\` cannot continue agent \`${String(resumeToken).trim()}\` because that id is already recorded for \`${conflict.role}\` in run \`${runId}\`. Spawn a fresh \`${role}\` verifier, or free a terminal implementer slot if the host active-agent cap is full. Same-role verifier continuation remains allowed.`);
+        }
+      }
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
         const live = currentLive();
         if (live && !replacementJustified(spawnPromptText)) {
@@ -491,15 +506,15 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (role === 'quick-fix') {
     const expected = resolveModel('cheapest', ctx.host);
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
-    if (expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
+    if (modelParamEnforced(ctx.host) && expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
     }
-    const exact = expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
+    const exact = modelParamEnforced(ctx.host) && expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
     if (exact) return exact;
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
       agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
-      model: passedModel,
+      model: passedModel || expected || '',
     });
     return noop();
   }
@@ -546,6 +561,14 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (!expected) return noop();
 
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  if (!modelParamEnforced(ctx.host)) {
+    ensureRunAgentClaim(cwd, state, role, raw, {
+      toolName,
+      agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+      model: passedModel || expected,
+    });
+    return noop();
+  }
   if (!modelSatisfiesTier(ctx, passedModel, expected)) {
     // No/wrong `model` arg → an orchestrator-actionable "pass model=X" deny (NOT a user-facing
     // budget/disabled choice — that is reserved for degradedToFloorDeny, the real Composer-floor

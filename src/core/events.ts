@@ -25,6 +25,7 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   // subagents
   Task: 'spawn-agent',
   Agent: 'spawn-agent',
+  agent: 'spawn-agent',
   spawn_agent: 'spawn-agent',
   send_input: 'spawn-agent',
   wait_agent: 'spawn-agent',

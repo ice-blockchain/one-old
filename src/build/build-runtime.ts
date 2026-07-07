@@ -24,6 +24,7 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 export const SHIMS: Readonly<Record<string, string>> = {
   'hook-runtime.cjs': './hooks/claude-entry.js',
   'cursor-hook-runtime.cjs': './hooks/cursor-entry.js',
+  'copilot-hook-runtime.cjs': './hooks/copilot-entry.js',
   'opencode-hook-runtime.cjs': './hooks/opencode-entry.js',
   'opencode-host.cjs': './runners/opencode-host/index.js',
   'traffic-one-auth.cjs': './runners/auth/index.js',

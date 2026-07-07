@@ -3,9 +3,10 @@
 // returned and persist it in the per-run registry
 // (.traffic-one/runs/<runId>/agents.json). The PreToolUse reuse gate reads the
 // registry to deny duplicate same-role spawns, so a role's later tasks continue
-// the SAME agent (SendMessage) instead of re-loading rules+skills per spawn.
+// the SAME agent instead of re-loading rules+skills per spawn.
 // Claude's Agent tool result footer prints `agentId: <id> (use SendMessage …)`;
-// the payload is matched tolerantly (string, content blocks, or nested object).
+// Copilot reports `agent_id` in tool telemetry; the payload is matched tolerantly
+// (string, content blocks, or nested object).
 
 import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';

@@ -21,8 +21,15 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.ok(!fs.existsSync(path.join(dir, '.cursor', 'rules', '00-auth-required.mdc')));
     assert.ok(fs.existsSync(path.join(dir, '.cursor', 'rules', 'auth-required.mdc')));
     assert.ok(fs.existsSync(path.join(dir, 'AGENTS.md')));
+    assert.ok(fs.existsSync(path.join(dir, 'plugin.json')));
+    assert.ok(fs.existsSync(path.join(dir, 'hooks', 'hooks-copilot.json')));
     assert.ok(fs.existsSync(path.join(dir, 'package.json')));
     assert.ok(!fs.existsSync(path.join(dir, 'src')));
+    const copilotHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-copilot.json'), 'utf8'));
+    assert.equal(copilotHooks.hooks.SessionStart[0].env.TRAFFIC_ONE_HOST, 'copilot');
+    const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
+    assert.match(frontendAgent, /^tools: \["view", "search", "bash", "edit"\]$/m);
+    assert.doesNotMatch(frontendAgent, /^tools: Read,/m);
 
     const check = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
     assert.deepEqual(check.drift, [], `generated plugin drifted: ${check.drift.join(', ')}`);
@@ -62,13 +69,13 @@ test('gen sweeps orphaned files in managed output dirs (deleted source content)'
   }
 });
 
-test('emitManifests produces all five manifests', () => {
+test('emitManifests produces all host manifests including Copilot plugin.json', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-manifests-'));
   try {
     const write = new GenRun({ check: false, root: dir, sourceRoot: REPO_ROOT });
     emitManifests(write);
     emitMcp(write);
-    assert.equal(write.written.length, 6);
+    assert.equal(write.written.length, 7);
 
     const check = new GenRun({ check: true, root: dir, sourceRoot: REPO_ROOT });
     emitManifests(check);

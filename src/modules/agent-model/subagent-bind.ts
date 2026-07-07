@@ -1,11 +1,8 @@
 // src/modules/agent-model/subagent-bind.ts
-// SubagentStart handler (Codex). Best-effort EARLY claim: Codex fires no PreToolUse
-// for spawns, so the agent-model gate never stakes a claim. SubagentStart hands us the
-// child thread id (`agent_id`) but no role, so we read the child's rollout
-// (`transcript_path`) and infer the senior-* role from its spawn prompt, then claim the
-// thread. SubagentStart can fire before the rollout is flushed — if the role isn't
-// readable yet this is a silent no-op, and resolveRunAgentContext re-attempts the same
-// inference at the child's first gated write (when the transcript is populated).
+// SubagentStart handler. Best-effort EARLY bind: Codex fires no PreToolUse for
+// spawns, so the agent-model gate never stakes a claim. Copilot fires SubagentStart
+// with the background agent name/display name; record that immediately so later
+// same-role tasks reuse the live background agent instead of respawning.
 
 import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
@@ -59,7 +56,11 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const role = identity.declaredRole || inferTrafficOneSpawnRole({
     subagent_type: raw.subagent_type,
     subagentType: raw.subagentType,
+    agent_type: raw.agent_type,
+    agentType: raw.agentType,
     agent: raw.agent,
+    agentName: raw.agentName,
+    agent_name: raw.agent_name,
     role: raw.role,
     type: raw.type,
     prompt: taskText,
@@ -97,6 +98,19 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       toolCallId: cursorSubagentId,
       model: asString(raw.subagent_model) || null,
       agentType: asString(raw.subagent_type) || null,
+      parentSessionId: identity.sessionId,
+    });
+  }
+
+  const copilotAgentId = ctx.host === 'copilot'
+    ? asString(raw.agent_id ?? raw.agentId ?? raw.agentDisplayName ?? raw.agent_display_name ?? raw.name)
+    : '';
+  if (copilotAgentId && runId) {
+    recordRunAgent(ctx.cwd, runId, role, {
+      agentId: copilotAgentId,
+      resumeId: copilotAgentId,
+      model: asString(raw.model) || null,
+      agentType: asString(raw.agentName ?? raw.agent_name ?? raw.agent_type ?? raw.agentType) || null,
       parentSessionId: identity.sessionId,
     });
   }

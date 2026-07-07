@@ -1,7 +1,7 @@
 // src/gen/emit/manifests.ts
-// Emits the five host manifests + .mcp.json from product.ts + the single
-// version source (config/plugin-identity → package.json) + the single endpoint source
-// (config/auth DEFAULT_ENDPOINT). One version bump → all manifests in lockstep.
+// Emits the host manifests + Copilot plugin.json + .mcp.json from product.ts +
+// config/plugin-identity (version) + config/auth (MCP endpoint). One version bump
+// updates every manifest in lockstep.
 
 import { DEFAULT_ENDPOINT } from '../../config/auth';
 import { OPENCODE_MCP_SERVER_KEY, openCodeMcpServerEntry } from '../../config/opencode-mcp';
@@ -13,6 +13,7 @@ import {
   claudeMarketplaceManifest,
   claudePluginManifest,
   codexPluginManifest,
+  copilotPluginManifest,
   cursorPluginManifest,
 } from '../sources/product';
 
@@ -22,6 +23,7 @@ export function emitManifests(run: GenRun): void {
   run.json('.claude-plugin/marketplace.json', claudeMarketplaceManifest(version));
   run.json('.codex-plugin/plugin.json', codexPluginManifest(version));
   run.json('.cursor-plugin/plugin.json', cursorPluginManifest(version));
+  run.json('plugin.json', copilotPluginManifest(version));
   run.json('.agents/plugins/marketplace.json', agentsMarketplaceManifest());
 }
 

@@ -23,6 +23,25 @@ export function cursorCommand(subcommand: string): string {
   return `node ./scripts/cursor-hook-runtime.cjs ${subcommand}`;
 }
 
+export function copilotCommand(subcommand: string): string {
+  const cmd = `node "./scripts/copilot-hook-runtime.cjs" ${subcommand}`;
+  return cmd;
+}
+
+export interface CopilotHookEntry {
+  subcommand: string;
+}
+
+// Copilot CLI + VS Code: coarse pre/post hooks (matchers are CLI-only optimization;
+// pipeline must be correct when every tool fires these).
+export const COPILOT_EVENTS: { event: string; subcommand: string }[] = [
+  { event: 'SessionStart', subcommand: 'session-start' },
+  { event: 'UserPromptSubmit', subcommand: 'user-prompt-submit' },
+  { event: 'PreToolUse', subcommand: 'before-tool-use' },
+  { event: 'PostToolUse', subcommand: 'after-tool-use' },
+  { event: 'SubagentStart', subcommand: 'subagent-start' },
+];
+
 export interface HookEntry { subcommand: string; statusMessage?: string; }
 export interface HookGroup { matcher?: string; entries: HookEntry[]; }
 

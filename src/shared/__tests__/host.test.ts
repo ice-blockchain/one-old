@@ -25,6 +25,12 @@ test('--host=<id> is authoritative for every host (how a spawned runner learns t
   assert.equal(detectHost(E(), ['--host=bogus']), 'claude');
 });
 
+test('TRAFFIC_ONE_HOST marks hosts that only expose the generic plugin root', () => {
+  assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'copilot', TRAFFIC_ONE_PLUGIN_ROOT: '/x' }), []), 'copilot');
+  assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'cursor', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'Codex Desktop' }), []), 'cursor');
+  assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'bogus', TRAFFIC_ONE_PLUGIN_ROOT: '/x' }), []), 'claude');
+});
+
 test('codex via CLI plugin root', () => {
   assert.equal(detectHost(E({ CODEX_PLUGIN_ROOT: '/x' }), []), 'codex');
 });
