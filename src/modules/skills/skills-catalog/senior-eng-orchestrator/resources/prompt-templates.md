@@ -27,8 +27,13 @@ NOT put the model in the prompt text — only the `model` parameter sets it.
 
 On Windsurf / Devin Local, Traffic One materializes native custom profiles at
 `.devin/agents/<role>/AGENT.md`, with the role's `model:` already pinned for the detected
-Windsurf plan. Spawn with the profile name equal to the role (`senior-architect`,
-`senior-frontend`, etc.); do not use Claude aliases like `opus`/`sonnet`/`haiku` there.
+Windsurf plan. **Spawn each role by calling the `run_subagent` tool with the profile name
+equal to the role** (`senior-architect`, `senior-frontend`, etc.); the model is pinned in
+the profile frontmatter, so pass NO `model` argument (and never use Claude aliases like
+`opus`/`sonnet`/`haiku`). Read a background subagent's result with `read_subagent`. Do NOT
+use `opencode_delegate` to spawn a role — on Windsurf that MCP tool is only the optional
+free accelerator for bounded units (and requires `openCode.enabled`); `run_subagent` is the
+role-spawn path and does not depend on OpenCode.
 
 ## Run-id format
 

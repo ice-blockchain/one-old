@@ -187,7 +187,7 @@ export function renderWindsurfRuleDocs(sourceRel: string, sourceText: string): W
   const marker = `${GENERATED_MARKER}\n<!-- GENERATED FROM: ${rel}; run \`npm run gen\` to update. -->`;
   const renderedBody = isAgent
     ? [
-      'Mirrored Traffic One role context. Cascade does not expose a stable first-class subagent contract for Traffic One v1; use this role doc as on-demand guidance.',
+      'Mirrored Traffic One role context. On Devin Local this role also has a native custom profile at `.devin/agents/<role>/AGENT.md` — the orchestrator spawns it by name with the `run_subagent` tool (see the senior-eng-orchestrator skill). Use this doc as that subagent’s role contract; if `run_subagent` is unavailable on an older single-agent build, use it as on-demand guidance instead.',
       '',
       body.trimEnd(),
     ].join('\n')
