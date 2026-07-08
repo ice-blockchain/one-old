@@ -25,6 +25,9 @@ test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'opencode'), OPENCODE_FREE_MODELS[0]);
   assert.equal(resolveModel('balanced', 'opencode'), OPENCODE_FREE_MODELS[1]);
   assert.equal(resolveModel('cheapest', 'opencode'), OPENCODE_FREE_MODELS[2]);
+  assert.equal(resolveModel('highest', 'kilo'), OPENCODE_FREE_MODELS[0]);
+  assert.equal(resolveModel('balanced', 'kilo'), OPENCODE_FREE_MODELS[1]);
+  assert.equal(resolveModel('cheapest', 'kilo'), OPENCODE_FREE_MODELS[2]);
   assert.equal(resolveModel('highest', 'windsurf'), 'Claude Opus 4.8 Medium');
   assert.equal(resolveModel('balanced', 'windsurf'), 'Claude Sonnet 5 Medium');
   assert.equal(resolveModel('cheapest', 'windsurf'), 'SWE-1.6 Slow');
@@ -68,7 +71,7 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
 
 test('tierModelTable: Cursor cell is plan-aware (Free → Composer family), other hosts plan-agnostic', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini', windsurf: 'SWE-1.6 Slow' });
+  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini', windsurf: 'SWE-1.6 Slow', kilo: OPENCODE_FREE_MODELS[0] });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-opus-4-8');
   assert.equal(paid?.windsurf, 'Claude Opus 4.8 Medium');
@@ -141,12 +144,13 @@ test('canonicalHost defaults to claude for unknowns', () => {
   assert.equal(canonicalHost('opencode'), 'opencode');
   assert.equal(canonicalHost('copilot'), 'copilot');
   assert.equal(canonicalHost('windsurf'), 'windsurf');
+  assert.equal(canonicalHost('kilo'), 'kilo');
   assert.equal(canonicalHost('weird'), 'claude');
 });
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: 'Claude Opus 4.8 Medium',
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: 'Claude Opus 4.8 Medium', kilo: OPENCODE_FREE_MODELS[0],
   });
   assert.equal(tierModelTable('bad'), null);
 });
@@ -183,6 +187,8 @@ test('canonicalPlan resolves ids/aliases per host and falls back to the host def
   assert.equal(canonicalPlan('cursor', 'business'), 'business');
   assert.equal(canonicalPlan('opencode', 'free'), 'free');
   assert.equal(canonicalPlan('opencode', 'pro'), 'free');
+  assert.equal(canonicalPlan('kilo', 'free'), 'free');
+  assert.equal(canonicalPlan('kilo', 'pro'), 'free');
   assert.equal(canonicalPlan('windsurf', 'pro'), 'pro');
   assert.equal(canonicalPlan('windsurf', 'max'), 'max');
   assert.equal(canonicalPlan('windsurf', 'teams'), 'team');

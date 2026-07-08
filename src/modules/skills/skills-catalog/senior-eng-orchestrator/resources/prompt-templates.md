@@ -64,13 +64,13 @@ missing.
 
 Produce .traffic-one/plan.md (≤250 lines, sections: Goal, Stack & rationale,
 Module map, Public contracts, Risks, Cut-list, plus OpenCode delegation queue only
-when delegation is active on a non-OpenCode host). Cite skills by name; do not
+when delegation is active on a non-OpenCode/Kilo host). Cite skills by name; do not
 inline their content.
 
-When the current host is OpenCode, do not include an "OpenCode delegation queue"
-section and do not write `<!-- opencode-delegate:start -->` markers; OpenCode
-cannot delegate to itself, so implementer work runs directly on the OpenCode host.
-When `openCode.enabled` is active on a non-OpenCode host, the "OpenCode
+When the current host is OpenCode or Kilo, do not include an "OpenCode delegation queue"
+section and do not write `<!-- opencode-delegate:start -->` markers; OpenCode/Kilo
+cannot delegate to OpenCode from inside a peer self host, so implementer work runs directly on the current host.
+When `openCode.enabled` is active on a non-OpenCode/Kilo host, the "OpenCode
 delegation queue" section is REQUIRED: list every bounded, low-risk unit
 (boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding,
 mechanical refactors/renames, formatting/codemods) in the machine-readable

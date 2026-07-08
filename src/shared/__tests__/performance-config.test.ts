@@ -17,6 +17,8 @@ test('recommendLevelForPlan maps plan → level, bumps with OpenCode, clamps at 
   assert.equal(recommendLevelForPlan('cursor', 'free'), 'low');
   assert.equal(recommendLevelForPlan('opencode', 'free'), 'low');
   assert.equal(recommendLevelForPlan('opencode', 'free', true), 'low');
+  assert.equal(recommendLevelForPlan('kilo', 'free'), 'low');
+  assert.equal(recommendLevelForPlan('kilo', 'free', true), 'low');
   assert.equal(recommendLevelForPlan('copilot', 'Copilot Pro'), 'balanced');
   assert.equal(recommendLevelForPlan('copilot', 'GitHub Copilot Pro', true), 'high');
   assert.equal(recommendLevelForPlan('windsurf', 'free'), 'low');

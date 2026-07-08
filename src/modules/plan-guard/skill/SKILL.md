@@ -43,7 +43,7 @@ Architect completion gate: OpenCode is enabled but the plan is missing at least 
 <!-- T1BLOCK:END architect-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-self-delegation-gate -->
-Architect completion gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the OpenCode host.
+Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.
 <!-- T1BLOCK:END architect-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
@@ -51,7 +51,7 @@ Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machi
 <!-- T1BLOCK:END plan-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-self-delegation-gate -->
-Plan gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the OpenCode host.
+Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the current host.
 <!-- T1BLOCK:END plan-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->

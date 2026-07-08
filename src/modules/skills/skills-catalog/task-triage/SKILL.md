@@ -38,7 +38,7 @@ honor that and drop a tier. If they say "build the whole …" / "a full feature 
 
 ## Route
 
-The directive states the project's **team mode** and whether **OpenCode** is active. Route accordingly.
+The directive states the project's **team mode** and whether **OpenCode** is active. Route accordingly. On OpenCode or Kilo hosts, OpenCode delegation is inactive by design; do not call `opencode_delegate` from inside those peer/self hosts.
 
 ### trivial
 - **Subagents mode:** delegate to a `quick-fix` worker — a dedicated cheap maintenance role with its

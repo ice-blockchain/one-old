@@ -11,8 +11,8 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   // session module spawns traffic-one-auth.cjs; skills + the post-build hint +
   // the deploy gate reference the runner CLIs.
   for (const name of [
-    'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'windsurf-hook-runtime.cjs',
-    'opencode-host.cjs', 'windsurf-host.cjs', 'traffic-one-auth.cjs', 'doctor.cjs',
+    'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'kilo-hook-runtime.cjs', 'windsurf-hook-runtime.cjs',
+    'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'traffic-one-auth.cjs', 'doctor.cjs',
     'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'traffic-one-cleanup.cjs',
     'gitnexus-runner.cjs', 'graphify-runner.cjs',
   ]) {
@@ -22,6 +22,8 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   assert.equal(SHIMS['hook-runtime.cjs'], './hooks/claude-entry.js');
   assert.equal(SHIMS['opencode-hook-runtime.cjs'], './hooks/opencode-entry.js');
   assert.equal(SHIMS['opencode-host.cjs'], './runners/opencode-host/index.js');
+  assert.equal(SHIMS['kilo-hook-runtime.cjs'], './hooks/kilo-entry.js');
+  assert.equal(SHIMS['kilo-host.cjs'], './runners/kilo-host/index.js');
   assert.equal(SHIMS['windsurf-hook-runtime.cjs'], './hooks/windsurf-entry.js');
   assert.equal(SHIMS['windsurf-host.cjs'], './runners/windsurf-host/index.js');
   assert.equal(SHIMS['traffic-one-auth.cjs'], './runners/auth/index.js');

@@ -76,9 +76,10 @@ function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
 }
 
-// A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it (family-aware
-// + same-class CURSOR_MODEL_ALTERNATES). The passed arg is authoritative on every host —
-// INCLUDING Cursor: the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
+// A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it on hosts
+// where Traffic One enforces stable subagent model ids (family-aware + same-class
+// CURSOR_MODEL_ALTERNATES). The passed arg is authoritative there — INCLUDING Cursor:
+// the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
 // live evidence proved Cursor does NOT honor that frontmatter when no `model` arg is passed — it
 // INHERITS THE PARENT (orchestrator) model (captured: a balanced-override frontend with
 // frontmatter `gpt-5.5-medium` ran on the parent's Opus because `subagent_model == parent model`).
@@ -93,7 +94,7 @@ function modelParamEnforced(host: string): boolean {
   // Copilot and Windsurf/Devin Local use project-local native agent/profile files that carry
   // the model intent in frontmatter; their spawn tools may not expose a `model` arg. Cursor is
   // the opposite: it needs an explicit Task `model` parameter, so keep enforcing there.
-  return host !== 'copilot' && host !== 'windsurf';
+  return host !== 'copilot' && host !== 'windsurf' && host !== 'kilo';
 }
 
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the

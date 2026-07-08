@@ -12,7 +12,8 @@ function knownHost(value: string): value is HostId {
     || value === 'claude'
     || value === 'opencode'
     || value === 'copilot'
-    || value === 'windsurf';
+    || value === 'windsurf'
+    || value === 'kilo';
 }
 
 export function detectHost(

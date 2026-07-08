@@ -105,6 +105,9 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
     free: { base: 'low', withOpenCode: 'low' },
     plus: { base: 'balanced', withOpenCode: 'balanced' },
   },
+  kilo: {
+    free: { base: 'low', withOpenCode: 'low' },
+  },
   copilot: {
     free: { base: 'low', withOpenCode: 'balanced' },
     pro: { base: 'balanced', withOpenCode: 'high' },
@@ -193,6 +196,7 @@ export const PLAN_AGENT_TIERS: Readonly<
   codex: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   cursor: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   opencode: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  kilo: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   copilot: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   windsurf: { free: { balanced: WINDSURF_FREE_ALL_CHEAPEST, high: WINDSURF_FREE_ALL_CHEAPEST } },
 };

@@ -301,7 +301,7 @@ function toolchainInstallPending(state: Rec, host: string): boolean {
     const entry = tc ? obj(tc[tool]) : null;
     return typeof entry?.installedVersion === 'string' && entry.installedVersion.length > 0;
   };
-  if (host !== 'opencode' && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
+  if (host !== 'opencode' && host !== 'kilo' && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
   const provider = state.codeGraphProvider;
   if ((provider === 'gitnexus' || provider === 'graphify') && !stamped(provider)) return true;
   return false;

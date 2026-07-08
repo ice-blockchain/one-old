@@ -351,7 +351,7 @@ test('plan-opencode-queue-gate: passes when opencode-delegate block has units', 
   });
 });
 
-test('plan-opencode-queue-gate: OpenCode host rejects self-delegation queue blocks', () => {
+test('plan-opencode-queue-gate: OpenCode-compatible self hosts reject self-delegation queue blocks', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -360,23 +360,25 @@ test('plan-opencode-queue-gate: OpenCode host rejects self-delegation queue bloc
       toolchain: { opencode: { installedVersion: '1.0.0' } },
     };
     writeStateFile(dir, state);
-    const v = planReadinessViolations({
-      filePath: '.traffic-one/plan.md',
-      content: [
-        '# Plan',
-        '<!-- opencode-delegate:start -->',
-        '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
-        '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
-        '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
-        '<!-- opencode-delegate:end -->',
-      ].join('\n'),
-      projectRoot: dir,
-      state,
-      writingFeatureSource: false,
-      host: 'opencode',
-      block: names,
-    });
-    assert.deepEqual(v, ['plan-opencode-self-delegation-gate']);
+    for (const host of ['opencode', 'kilo']) {
+      const v = planReadinessViolations({
+        filePath: '.traffic-one/plan.md',
+        content: [
+          '# Plan',
+          '<!-- opencode-delegate:start -->',
+          '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+          '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
+          '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+          '<!-- opencode-delegate:end -->',
+        ].join('\n'),
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        host,
+        block: names,
+      });
+      assert.deepEqual(v, ['plan-opencode-self-delegation-gate'], host);
+    }
   });
 });
 

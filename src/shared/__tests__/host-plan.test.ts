@@ -74,6 +74,8 @@ test('detectHostPlan: TRAFFIC_ONE_USER_PLAN overrides every host (canonicalized 
   assert.equal(detectHostPlan('windsurf', env({ TRAFFIC_ONE_USER_PLAN: 'pro' })), 'pro');
   assert.equal(detectHostPlan('windsurf', env({ TRAFFIC_ONE_USER_PLAN: 'max' })), 'max');
   assert.equal(detectHostPlan('windsurf', env({ TRAFFIC_ONE_USER_PLAN: 'business' })), 'free');
+  assert.equal(detectHostPlan('kilo', env({ TRAFFIC_ONE_USER_PLAN: 'free' })), 'free');
+  assert.equal(detectHostPlan('kilo', env({ TRAFFIC_ONE_USER_PLAN: 'pro' })), 'free');
 });
 
 test('detectHostPlan claude: reads ~/.claude.json oauthAccount (rate-limit tier / org type)', () => {
@@ -166,6 +168,14 @@ test('detectHostPlan windsurf: no local plan source → default Free, never Clau
     oauthAccount: { organizationType: 'claude_max', organizationRateLimitTier: 'default_claude_max_20x' },
   }), 'utf8');
   assert.equal(detectHostPlan('windsurf', env({ HOME: home })), 'free');
+});
+
+test('detectHostPlan kilo: no local plan source → default Free, never Claude fallback', () => {
+  const home = tmpHome();
+  fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
+    oauthAccount: { organizationType: 'claude_max', organizationRateLimitTier: 'default_claude_max_20x' },
+  }), 'utf8');
+  assert.equal(detectHostPlan('kilo', env({ HOME: home })), 'free');
 });
 
 test('detectHostPlan opencode: auth.json provider key → plus (opencode-go) / free (none)', () => {

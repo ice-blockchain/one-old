@@ -53,13 +53,13 @@ const block = (name: string, vars: Record<string, string | number | null | undef
   skillBlock('onboarding-gate', name, vars);
 const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
 
-function opencodeSetupDirective(url: string, waitCommand: string): string {
+function opencodeSetupDirective(url: string, waitCommand: string, hostLabel = 'OpenCode'): string {
   return [
     'Traffic One project setup is required before building.',
     `Setup link: ${url}`,
     `Wait command: ${waitCommand}`,
     'Show the setup link, then immediately run the wait command in the current turn; do not wait for another user message first.',
-    'If the wait command prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, then type "continue" or "resume" after restart.',
+    `If the wait command prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart ${hostLabel}, then type "continue" or "resume" after restart.`,
   ].join('\n\n');
 }
 
@@ -221,9 +221,9 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     seedOriginalPrompt(cwd, promptText);
     const server = ensureOnboardingServer(cwd, { host: ctx.host });
     const waitCommand = onboardingWaitCommand(cwd, ctx.host);
-    if (ctx.host === 'opencode') {
+    if (ctx.host === 'opencode' || ctx.host === 'kilo') {
       const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
-      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.url, waitCommand)}`, {
+      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.url, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
       });
     }

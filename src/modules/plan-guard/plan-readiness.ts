@@ -266,6 +266,7 @@ export interface ReadinessArgs {
 export function planReadinessViolations(args: ReadinessArgs): string[] {
   const { filePath, content, projectRoot, state, writingFeatureSource, rawData, block, host } = args;
   const violations: string[] = [];
+  const currentHost = canonicalHost(host);
 
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(state);
 
@@ -296,9 +297,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       violations.push(block('architect-opencode-queue-gate',
         `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
-    if (state.mode === 'new-project' && canonicalHost(host) === 'opencode' && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
+    if (state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
       violations.push(block('architect-opencode-self-delegation-gate',
-        'Architect completion gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the OpenCode host.'));
+        'Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.'));
     }
   }
 
@@ -316,9 +317,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && canonicalHost(host) === 'opencode' && hasOpenCodeDelegateMarker(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && hasOpenCodeDelegateMarker(content)) {
     violations.push(block('plan-opencode-self-delegation-gate',
-      'Plan gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the OpenCode host.'));
+      'Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the current host.'));
   }
 
   if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && !missingOpenCodeDelegateBlock(content)) {

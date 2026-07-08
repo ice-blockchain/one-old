@@ -82,10 +82,10 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
 // Best-effort: a server-spawn failure falls back to the plain note (the PreToolUse deny
 // still carries the URL). Single source for every SessionStart/Flow-3 setup-pending path.
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
-  // OpenCode: the full setup-pending block (with "do NOT…" behavioral overrides)
-  // can trigger the model's prompt-injection safety training when injected via
+  // OpenCode/Kilo: the full setup-pending block (with "do NOT…" behavioral
+  // overrides) can trigger prompt-injection safety training when injected via
   // system prompt. Use a minimal, factual message instead.
-  if (ctx.host === 'opencode') {
+  if (ctx.host === 'opencode' || ctx.host === 'kilo') {
     return 'Traffic One project setup is required. A setup wizard will open — share the link with the user when available. Building is blocked until setup completes.';
   }
   if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return block('setup-pending');

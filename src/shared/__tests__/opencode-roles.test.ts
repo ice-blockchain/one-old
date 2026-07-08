@@ -211,14 +211,15 @@ test('shouldRunRoleOnOpenCode: requires enabled + role in the configured set', (
   assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, delegateRoles: ['senior-backend'] } }), false);
 });
 
-test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode host', () => {
+test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode-compatible self hosts', () => {
   const enabled = { openCode: { enabled: true } };
-  // OpenCode delegation is a paid-host feature; the OpenCode host itself is inert.
+  // OpenCode delegation is a paid-host feature; OpenCode/Kilo hosts are inert.
   for (const role of ['senior-frontend', 'senior-tester', 'quick-fix']) {
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'claude'), true);
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'codex'), true);
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'cursor'), true);
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'opencode'), false);
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'kilo'), false);
   }
   // a pinned model does not change eligibility — only enabled + role-in-set do
   assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.1-codex' } }, 'codex'), true);
@@ -270,6 +271,7 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
     const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'opencode'), []);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'kilo'), []);
     markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
     assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend'],
@@ -304,6 +306,7 @@ test('plan-batch per-role markers alone do not clear gate without terminal batch
     assert.equal(openCodePlanBatchComplete(dir, 'run-role-only'), false);
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state), true);
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state, 'opencode'), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state, 'kilo'), false);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-role-only', state), ['frontend', 'backend']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
