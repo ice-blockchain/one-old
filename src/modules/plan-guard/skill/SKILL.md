@@ -39,7 +39,7 @@ Architect completion gate: do not write `PLAN_READY` until the required `.traffi
 <!-- T1BLOCK:END architect-memory-baseline-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
-Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
+Architect completion gate (nudge, fires ONCE): OpenCode is enabled but `.traffic-one/plan.md` has no machine-readable delegation units. Prefer including `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) so bounded work runs FREE on OpenCode before the paid team. Best-effort: if you cannot produce runnable bounded units, emit `PLAN_READY` anyway — the build falls back to paid subagents for everything.
 <!-- T1BLOCK:END architect-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-self-delegation-gate -->
@@ -47,7 +47,7 @@ Architect completion gate: this run is already hosted by OpenCode, so `.traffic-
 <!-- T1BLOCK:END architect-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
-Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block with at least 3 runnable bounded units (`- role: frontend|backend|tester|docs | files: … | task: …`). Prose-only or incomplete OpenCode lists are ignored by `opencode_delegate_from_plan`.
+Plan gate (nudge, fires ONCE): OpenCode is enabled — prefer a machine-readable `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` block in `.traffic-one/plan.md` with 3–6 bounded units (`- role: frontend|backend|tester|docs | files: … | task: …`) so bounded work runs FREE on OpenCode before the paid team. Best-effort: if you cannot produce runnable bounded units, save the plan as-is — the build falls back to paid subagents.
 <!-- T1BLOCK:END plan-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-self-delegation-gate -->

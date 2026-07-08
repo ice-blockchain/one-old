@@ -323,6 +323,30 @@ test('plan-opencode-queue-gate: OpenCode-enabled new projects require machine-re
   });
 });
 
+test('plan-opencode-queue-gate: nudges ONCE then falls back to paid (best-effort, no deadlock)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Prose plan, no delegate block\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      block: names,
+    };
+    // First write missing the queue → nudge fires.
+    assert.deepEqual(planReadinessViolations(args), ['plan-opencode-queue-gate']);
+    // Second write still missing the queue → allowed (fall back to paid, no stuck loop).
+    assert.deepEqual(planReadinessViolations(args), []);
+  });
+});
+
 test('plan-opencode-queue-gate: passes when opencode-delegate block has units', () => {
   withProject((dir) => {
     const state = {
