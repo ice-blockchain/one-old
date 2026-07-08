@@ -33,15 +33,19 @@ const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
 const T1_MEMORY_DIR = '.traffic' + '-one';
 
-// OpenCode delegation is BEST-EFFORT with a paid fallback (same as every host):
-// try OpenCode for bounded units, spawn the paid team for whatever it does not run.
-// So the "populate the delegation queue" gate must NUDGE, not hard-block: it fires
-// ONCE per architect session, then allows the build to proceed on paid subagents.
-// Without this a host whose architect model cannot emit the machine-readable block
-// (e.g. Devin Local's SWE tier) gets stuck in a deny loop instead of falling back.
+// WINDSURF/DEVIN ONLY: the OpenCode plan-queue gate hard-blocks on every host, which
+// is correct where the architect reliably emits the machine-readable queue (Claude/
+// Cursor/Codex/OpenCode — unchanged). But Devin Local's SWE-tier architect often can't
+// emit it, so the hard block becomes a deadlock with no fallback. On Windsurf ONLY the
+// gate NUDGES once per architect session, then allows the build to proceed on paid
+// subagents (OpenCode stays best-effort). Other hosts keep the original hard block.
 const OPENCODE_QUEUE_NUDGE = 'opencode-queue-nudge';
 
-function opencodeQueueNudgeFires(projectRoot: string, rawData: unknown): boolean {
+// True when this write should still be BLOCKED for the missing queue. Non-Windsurf
+// hosts always block (original behavior). Windsurf blocks only the FIRST time per
+// session (the nudge), then falls back to paid.
+function opencodeQueueBlocks(host: string | undefined, projectRoot: string, rawData: unknown): boolean {
+  if (canonicalHost(host) !== 'windsurf') return true;
   return firstEmitThisSession(projectRoot, OPENCODE_QUEUE_NUDGE, hookSessionIdentity(rawData).sessionId);
 }
 
@@ -305,9 +309,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architect completion gate: do not write \`PLAN_READY\` until the required .traffic-one project-memory baseline exists with real content. Missing or incomplete: ${missingMemory.join(', ')}. Write the missing memory files yourself (do not delegate .traffic-one/* to OpenCode), then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missingMemory.join(', ') }));
     }
-    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueNudgeFires(projectRoot, rawData)) {
+    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueBlocks(host, projectRoot, rawData)) {
       violations.push(block('architect-opencode-queue-gate',
-        `Architect completion gate (nudge, fires ONCE): OpenCode is enabled but \`.traffic-one/plan.md\` has no machine-readable delegation units. Prefer including \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with ${OPENCODE_PLAN_MIN_UNITS}–6 bounded units (\`- role: … | files: … | task: …\`) so bounded work runs FREE on OpenCode before the paid team. But this is best-effort: if you cannot produce runnable bounded units, emit \`PLAN_READY\` anyway — the build falls back to paid subagents for everything.`));
+        `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
     if (state.mode === 'new-project' && canonicalHost(host) === 'opencode' && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
       violations.push(block('architect-opencode-self-delegation-gate',
@@ -324,9 +328,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueNudgeFires(projectRoot, rawData)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueBlocks(host, projectRoot, rawData)) {
     violations.push(block('plan-opencode-queue-gate',
-      `Plan gate (nudge, fires ONCE): OpenCode is enabled — prefer a machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block in \`.traffic-one/plan.md\` with ${OPENCODE_PLAN_MIN_UNITS}–6 bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`) so bounded work runs FREE on OpenCode before the paid team. Best-effort: if you cannot produce runnable bounded units, save the plan as-is — the build falls back to paid subagents.`));
+      `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
   }
 
   if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && canonicalHost(host) === 'opencode' && hasOpenCodeDelegateMarker(content)) {
