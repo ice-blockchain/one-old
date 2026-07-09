@@ -323,7 +323,7 @@ test('plan-opencode-queue-gate: OpenCode-enabled new projects require machine-re
   });
 });
 
-test('plan-opencode-queue-gate: Windsurf nudges ONCE then falls back to paid (best-effort, no deadlock)', () => {
+test('plan-opencode-queue-gate: Windsurf NEVER blocks the queue gate (best-effort; no dead-end for Devin)', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -341,9 +341,9 @@ test('plan-opencode-queue-gate: Windsurf nudges ONCE then falls back to paid (be
       host: 'windsurf',
       block: names,
     };
-    // First write missing the queue → nudge fires.
-    assert.deepEqual(planReadinessViolations(args), ['plan-opencode-queue-gate']);
-    // Second write still missing the queue → allowed (fall back to paid, no stuck loop).
+    // Windsurf: the OpenCode queue gate never fires (Devin stops on any deny; the
+    // queue is a token-optimization, so it stays a no-op → OpenCode is best-effort).
+    assert.deepEqual(planReadinessViolations(args), []);
     assert.deepEqual(planReadinessViolations(args), []);
   });
 });
