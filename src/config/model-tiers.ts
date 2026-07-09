@@ -10,6 +10,16 @@ import { OPENCODE_FREE_MODELS } from './opencode-delegation';
 export const TIER_IDS = ['highest', 'balanced', 'cheapest'] as const;
 export type TierId = (typeof TIER_IDS)[number];
 
+// Kilo model names mirror the Kilo model picker labels. V1 still omits `model`
+// on Kilo task spawns unless Kilo exposes a documented subagent model parameter,
+// but the onboarding wizard and generated lineup must not advertise OpenCode
+// slugs that Kilo cannot select.
+export const KILO_MODELS: Readonly<Record<TierId, string>> = {
+  highest: 'Anthropic Claude Opus 4.8',
+  balanced: 'MoonshotAI Kimi K2.7 Code',
+  cheapest: 'MiniMax MiniMax M3',
+};
+
 // internal: consumed by canonicalTier (shared/model-tiers.ts).
 export const TIER_ALIASES: Readonly<Record<string, TierId>> = {
   max: 'highest', maximum: 'highest', top: 'highest', best: 'highest', high: 'highest',
@@ -41,14 +51,7 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
     balanced: OPENCODE_FREE_MODELS[1] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
     cheapest: OPENCODE_FREE_MODELS[2] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
   },
-  // Kilo's server plugin hooks are OpenCode-compatible, but Kilo does not yet expose
-  // a stable subagent model catalog in docs. Keep v1 model defaults on the same
-  // free OpenCode-compatible chain and exempt Kilo from hard spawn model enforcement.
-  kilo: {
-    highest: OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
-    balanced: OPENCODE_FREE_MODELS[1] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
-    cheapest: OPENCODE_FREE_MODELS[2] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
-  },
+  kilo: { ...KILO_MODELS },
   // copilot: model ids from Copilot Desktop's `copilot-available-models` catalog.
   // Custom agents currently inherit the session model at runtime, but the onboarding
   // wizard still needs truthful tier labels instead of collapsing paid plans to mini.
@@ -137,6 +140,28 @@ export const OPENCODE_MODEL_ALTERNATES: Readonly<Record<string, readonly string[
   'opencode-go/qwen3.7-max': ['opencode-go/minimax-m3', 'opencode-go/kimi-k2.7-code', 'opencode-go/deepseek-v4-pro', ...OPENCODE_FREE_MODELS],
   'opencode-go/glm-5.2': ['opencode-go/qwen3.7-plus', 'opencode-go/minimax-m2.7', 'opencode-go/glm-5.1', ...OPENCODE_FREE_MODELS],
   'opencode-go/deepseek-v4-flash': ['opencode-go/glm-5', 'opencode-go/qwen3.5-plus', ...OPENCODE_FREE_MODELS],
+};
+
+// Kilo picker fallbacks from the visible Kilo catalog. These are advisory only in
+// v1 because Kilo is exempt from hard model-param enforcement, but keeping them
+// separate prevents Kilo from inheriting OpenCode fallback slugs anywhere a
+// caller displays acceptable same-tier options.
+export const KILO_MODEL_ALTERNATES: Readonly<Record<string, readonly string[]>> = {
+  'Anthropic Claude Opus 4.8': [
+    'Stealth Claude Opus 4.8',
+    'Stealth Claude Opus 4.7',
+    'OpenAI GPT-5.5',
+    'Google Gemini 3.1 Pro Preview',
+  ],
+  'MoonshotAI Kimi K2.7 Code': [
+    'Anthropic Claude Sonnet 5',
+    'OpenAI GPT-5.5',
+    'Qwen Qwen3.7 Plus',
+  ],
+  'MiniMax MiniMax M3': [
+    'Qwen Qwen3.7 Plus',
+    'Stealth Claude Sonnet 4.6',
+  ],
 };
 
 // ── User subscription plans (per host) ──────────────────────────────────────

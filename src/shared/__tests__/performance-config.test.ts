@@ -76,6 +76,11 @@ test('agentTierForPlan: a sparse PLAN_AGENT_TIERS deviation overrides the defaul
   // Windsurf Free only exposes the SWE model, so even a manual High team stays cheapest.
   assert.equal(agentTierForPlan('windsurf', 'free', 'high', 'senior-architect'), 'cheapest');
   assert.equal(agentTierForPlan('windsurf', 'free', 'high', 'senior-shipper'), 'cheapest');
+  // Kilo's "free" is an undetected-account fallback, not proof that only one
+  // free model tier is selectable. Manual Balanced/High choices keep their tiers.
+  assert.equal(agentTierForPlan('kilo', 'free', 'balanced', 'senior-architect'), 'balanced');
+  assert.equal(agentTierForPlan('kilo', 'free', 'high', 'senior-architect'), 'highest');
+  assert.equal(agentTierForPlan('kilo', 'free', 'high', 'senior-tester'), 'cheapest');
 });
 
 test('agentTierForPlan: the OpenCode tier bump is DISABLED — useOpenCode never changes the tier (withOpenCode === base)', () => {

@@ -31,14 +31,18 @@ function activeTeamLines(state: Rec): string[] {
   const lines: string[] = [];
   const mode = team && typeof team.mode === 'string' ? team.mode : null;
   const level = performance && typeof performance.level === 'string' ? performance.level : null;
+  const host = detectHost();
   if (mode) {
     const approved = team?.approved === true ? ', approved' : '';
     lines.push(`- Team: ${mode}${level ? ` (${level}${approved})` : ''}`);
   }
-  if (openCode) lines.push(`- OpenCode delegation: ${openCode.enabled === true ? 'enabled' : 'off'}`);
+  if (openCode) lines.push(`- OpenCode delegation: ${openCodeDelegationActive(state, host) ? 'enabled' : 'off'}`);
   if (mode === 'subagents' && level) {
     try {
-      const host = detectHost();
+      if (host === 'kilo') {
+        lines.push('- Kilo subagents: use `task` with `subagent_type: "general"` when only `general`/`explore` are offered; put `[t1-role: senior-<role>]` first and omit `model` in v1.');
+        return lines;
+      }
       const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
       const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
       const lineup = buildTeamLineup(level, host, overrides, planCtx);

@@ -11,6 +11,7 @@ import {
   HOST_IDS,
   HOST_MODELS,
   HOST_PLAN_IDS,
+  KILO_MODEL_ALTERNATES,
   OPENCODE_MODEL_ALTERNATES,
   OPENCODE_PLAN_MODELS,
   PLAN_ALIASES,
@@ -99,8 +100,10 @@ export function acceptableModelsFor(expected: unknown, host: unknown): string[] 
   const h = canonicalHost(host);
   // OpenCode "Go" primaries carry a fallback chain (other Go models → free chain) so a
   // build never stalls on an unavailable paid model. claude/codex stay strict `[expected]`.
-  const alternates = h === 'opencode' || h === 'kilo'
+  const alternates = h === 'opencode'
     ? (OPENCODE_MODEL_ALTERNATES[e] ?? null)
+    : h === 'kilo'
+      ? (KILO_MODEL_ALTERNATES[e] ?? null)
     : (h === 'cursor' ? (CURSOR_MODEL_ALTERNATES[e] ?? []) : null);
   if (alternates === null) return [e];
   return [e, ...alternates.filter((m) => m && m !== e)];

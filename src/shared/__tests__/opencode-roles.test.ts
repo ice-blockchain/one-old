@@ -477,6 +477,23 @@ test('orchestrator + team prose: a denied/"Couldn\'t start" first spawn must RE-
   }
 });
 
+test('Kilo prose uses built-in general task subagents when named senior agents are absent', () => {
+  const modules = path.join(__dirname, '..', '..', 'modules');
+  const skill = fs.readFileSync(path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  for (const [name, doc] of [['orchestrator SKILL', skill], ['team rule', teamRule], ['prompt templates', promptTemplates]] as const) {
+    assert.match(doc, /Kilo/i, `${name} must name Kilo`);
+    assert.match(doc, /general.*explore|explore.*general/i, `${name} must name Kilo's built-in task choices`);
+    assert.match(doc, /\[t1-role: senior-<role>\]/, `${name} must require the marker-bound role contract`);
+    assert.match(doc, /not|do not|never/i, `${name} must include a negative guard`);
+    assert.match(doc, /\.traffic-one\/agents|named `senior-\*`|named senior/i, `${name} must prevent missing named agents from causing fallback`);
+  }
+});
+
 test('Cursor/frontend prompts require demo seed data when Supabase env is missing', () => {
   const modules = path.join(__dirname, '..', '..', 'modules');
   const promptTemplates = fs.readFileSync(

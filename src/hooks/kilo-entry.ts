@@ -19,6 +19,7 @@ const KILO_PRE_TOOL_FAIL_CLOSED = JSON.stringify({
   kind: 'deny',
   reason: 'Traffic One Kilo pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed. Run Traffic One doctor and retry after the plugin is healthy.',
 });
+const KILO_PROMPT_FAIL_CONTEXT = 'Traffic One Kilo hook failed before it could provide project context. Run Traffic One doctor, then restart Kilo/WebStorm so the plugin reloads.';
 
 function sessionStartFallback(env: NodeJS.ProcessEnv): string {
   return JSON.stringify({ kind: 'context', context: authRequiredMessage(env) });
@@ -63,6 +64,9 @@ export async function runKiloHook(
     }
     if (subcommand === 'before-tool-use') {
       return { stdout: KILO_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };
+    }
+    if (subcommand === 'user-prompt-submit') {
+      return { stdout: JSON.stringify({ kind: 'context', context: KILO_PROMPT_FAIL_CONTEXT, systemMessage: 'traffic-one Kilo hook failed' }), exitCode: 0 };
     }
     return { stdout: KILO_NOOP, exitCode: 0 };
   }

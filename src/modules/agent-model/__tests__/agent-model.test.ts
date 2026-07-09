@@ -150,7 +150,7 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   }
 }
 
-function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude', workspaceRoot?: string): Ctx {
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host, cwd, workspaceRoot, raw: { tool_name: 'Task', tool_input: toolInput },
     tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
@@ -207,6 +207,18 @@ test('Copilot: missing model arg does not deadlock while slugs are unvalidated',
       prompt: '[t1-role: senior-frontend] implement assigned UI scope',
     }, 'copilot'));
     assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Kilo: built-in general task with marker is a valid senior-role spawn without model', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'general',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'kilo'));
+    assert.equal(r.kind, 'noop');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(String(state.currentRunId || '').length > 0, 'Kilo marker spawn still mints/uses the Traffic One run id');
   });
 });
 

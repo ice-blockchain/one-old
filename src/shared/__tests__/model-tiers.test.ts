@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { acceptableModelsFor, canonicalHost, canonicalPlan, canonicalTier, modelMatchesAny, modelMatchesExpected, planIsRecognized, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
+import { KILO_MODELS } from '../../config/model-tiers';
 import { OPENCODE_FREE_MODELS } from '../../config/opencode-delegation';
 
 test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
@@ -25,9 +26,9 @@ test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'opencode'), OPENCODE_FREE_MODELS[0]);
   assert.equal(resolveModel('balanced', 'opencode'), OPENCODE_FREE_MODELS[1]);
   assert.equal(resolveModel('cheapest', 'opencode'), OPENCODE_FREE_MODELS[2]);
-  assert.equal(resolveModel('highest', 'kilo'), OPENCODE_FREE_MODELS[0]);
-  assert.equal(resolveModel('balanced', 'kilo'), OPENCODE_FREE_MODELS[1]);
-  assert.equal(resolveModel('cheapest', 'kilo'), OPENCODE_FREE_MODELS[2]);
+  assert.equal(resolveModel('highest', 'kilo'), KILO_MODELS.highest);
+  assert.equal(resolveModel('balanced', 'kilo'), KILO_MODELS.balanced);
+  assert.equal(resolveModel('cheapest', 'kilo'), KILO_MODELS.cheapest);
   assert.equal(resolveModel('highest', 'windsurf'), 'Claude Opus 4.8 Medium');
   assert.equal(resolveModel('balanced', 'windsurf'), 'Claude Sonnet 5 Medium');
   assert.equal(resolveModel('cheapest', 'windsurf'), 'SWE-1.6 Slow');
@@ -71,7 +72,7 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
 
 test('tierModelTable: Cursor cell is plan-aware (Free → Composer family), other hosts plan-agnostic', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini', windsurf: 'SWE-1.6 Slow', kilo: OPENCODE_FREE_MODELS[0] });
+  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini', windsurf: 'SWE-1.6 Slow', kilo: KILO_MODELS.highest });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-opus-4-8');
   assert.equal(paid?.windsurf, 'Claude Opus 4.8 Medium');
@@ -150,7 +151,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: 'Claude Opus 4.8 Medium', kilo: OPENCODE_FREE_MODELS[0],
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: 'Claude Opus 4.8 Medium', kilo: KILO_MODELS.highest,
   });
   assert.equal(tierModelTable('bad'), null);
 });
@@ -217,6 +218,10 @@ test('acceptableModelsFor: Cursor folds in same-tier fallback FAMILIES; claude/c
   // claude/codex have no alternates → strict single-model enforcement preserved.
   assert.deepEqual(acceptableModelsFor('sonnet', 'claude'), ['sonnet']);
   assert.deepEqual(acceptableModelsFor('gpt-5.4', 'codex'), ['gpt-5.4']);
+  const kiloHighest = acceptableModelsFor(KILO_MODELS.highest, 'kilo');
+  assert.equal(kiloHighest[0], KILO_MODELS.highest);
+  assert.ok(kiloHighest.includes('OpenAI GPT-5.5'));
+  assert.ok(!kiloHighest.some((m) => m.startsWith('opencode/')), 'Kilo fallbacks must not inherit OpenCode slugs');
   // A model with no configured alternates → just itself, even on Cursor.
   assert.deepEqual(acceptableModelsFor('some-unknown-slug', 'cursor'), ['some-unknown-slug']);
   assert.deepEqual(acceptableModelsFor('', 'cursor'), []);

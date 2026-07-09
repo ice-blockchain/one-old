@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
+import { KILO_MODELS } from '../../../config/model-tiers';
 import { mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
@@ -437,6 +438,44 @@ test('Windsurf Free recommends Low and maps the team to SWE-1.6 Slow', () => {
     assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.6 Slow');
     assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
     assert.ok(!(view.meta.modelChoices || []).some((c) => /opus|sonnet|haiku/i.test(c.model)));
+  });
+});
+
+test('Kilo Balanced/High team line-up uses native Kilo picker models, not OpenCode slugs', () => {
+  withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'kilo';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    applyAnswer(cwd, 'open-code', 'not_now');
+
+    const perf = computeOnboarding(cwd);
+    assert.equal(perf.step, 'performance');
+    assert.equal(perf.meta.host, 'kilo');
+    assert.equal(perf.meta.recommendedLevel, 'low');
+    assert.equal(perf.meta.recommendedTier, 'cheapest');
+
+    applyAnswer(cwd, 'performance', 'balanced');
+    const balanced = computeOnboarding(cwd);
+    assert.equal(balanced.step, 'team-confirmation');
+    assert.deepEqual(balanced.meta.modelChoices, [
+      { tier: 'highest', model: KILO_MODELS.highest },
+      { tier: 'balanced', model: KILO_MODELS.balanced },
+      { tier: 'cheapest', model: KILO_MODELS.cheapest },
+    ]);
+    const balancedBy = Object.fromEntries((balanced.meta.team || []).map((m) => [m.role, m]));
+    assert.equal(requireRole(balancedBy, 'senior-architect').model, KILO_MODELS.balanced);
+    assert.equal(requireRole(balancedBy, 'senior-frontend').model, KILO_MODELS.balanced);
+    assert.equal(requireRole(balancedBy, 'senior-tester').model, KILO_MODELS.cheapest);
+    assert.ok(!(balanced.meta.team || []).some((m) => m.model.startsWith('opencode/')));
+
+    applyAnswer(cwd, 'team-confirmation', 'repick_performance');
+    applyAnswer(cwd, 'performance', 'high');
+    const high = computeOnboarding(cwd);
+    const highBy = Object.fromEntries((high.meta.team || []).map((m) => [m.role, m]));
+    assert.equal(requireRole(highBy, 'senior-architect').model, KILO_MODELS.highest);
+    assert.equal(requireRole(highBy, 'senior-reviewer').model, KILO_MODELS.highest);
+    assert.equal(requireRole(highBy, 'senior-shipper').model, KILO_MODELS.balanced);
+    assert.equal(requireRole(highBy, 'senior-tester').model, KILO_MODELS.cheapest);
+    assert.ok(!(high.meta.team || []).some((m) => m.model.startsWith('opencode/')));
   });
 });
 

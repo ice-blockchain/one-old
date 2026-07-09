@@ -30,6 +30,13 @@ On Windsurf / Devin Local, Traffic One materializes native custom profiles at
 Windsurf plan. Spawn with the profile name equal to the role (`senior-architect`,
 `senior-frontend`, etc.); do not use Claude aliases like `opus`/`sonnet`/`haiku` there.
 
+On Kilo, Traffic One v1 binds roles through the prompt marker instead of a
+project-local role-agent directory. If the `task` tool exposes only `general` and
+`explore`, spawn `general` for each senior role, omit `model`, and put
+`[t1-role: senior-<role>]` on the first line followed by the concise role
+contract. Do not inspect `.traffic-one/agents/` or switch to main-agent
+simulation because named `senior-*` types are absent.
+
 ## Run-id format
 
 The run-id is `currentRunId`: a plain epoch-**millisecond digit string** (e.g. `"1715091785000"`),

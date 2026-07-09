@@ -196,7 +196,11 @@ export const PLAN_AGENT_TIERS: Readonly<
   codex: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   cursor: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   opencode: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
-  kilo: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  // Kilo has no stable local subscription signal yet, so `free` means
+  // "undetected" rather than "only a free model tier is selectable". Do not
+  // collapse a user-picked Balanced/High Kilo team to cheapest; the Kilo picker
+  // exposes native recommended models for all three capability tiers.
+  kilo: {},
   copilot: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   windsurf: { free: { balanced: WINDSURF_FREE_ALL_CHEAPEST, high: WINDSURF_FREE_ALL_CHEAPEST } },
 };
