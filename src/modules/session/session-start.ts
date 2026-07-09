@@ -18,6 +18,7 @@ import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
 import { autoDetectedAnnouncement } from '../../shared/directives';
+import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { isNewProjectOnboardingIncomplete } from '../../shared/onboarding/predicates';
 import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
@@ -295,6 +296,8 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
     const graphPreview = readGraphPreview(cwd);
+    const orchestration = buildOrchestrationDirective(cwd, ctx.host, state);
+    if (orchestration) header += `${orchestration}\n`;
     writeState(cwd, state);
     return context(`${header}${graphPreview}\n${body}`);
   }

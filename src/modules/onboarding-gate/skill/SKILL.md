@@ -118,6 +118,37 @@ The attempted mutating tool has been denied once so it cannot run against stale 
 rerun the same tool now; the canonical `.traffic-one/.one.json` and project-local materialization are current.
 <!-- T1BLOCK:END repaired-materialization -->
 
+<!-- T1BLOCK:BEGIN kilo-opencode-spawn-first -->
+[traffic-one] {{HOST}} build start — `team.mode="subagents"` is ACTIVE and `.traffic-one/plan.md` is still missing. You are the PARENT/orchestrator.
+
+DO NOT write feature source, scaffold app files, or run package installs yourself in this thread.
+Your FIRST action: spawn `senior-architect` via the host `{{TASK_TOOL}}` tool:
+- `subagent_type: "{{SUBAGENT_TYPE}}"` when named `senior-*` types are not listed (expected on {{HOST}} v1)
+- prompt line 1 MUST be: `[t1-role: senior-architect]`
+- include `Run ID: {{RUN_ID}}` and the user's original request
+- omit `model` on {{HOST}} unless the host documents a subagent model parameter
+
+This stack uses a Turborepo monorepo (`apps/web/`, `packages/*`) — do NOT create root `src/`, root `tsconfig*.json`, or a flat Vite app at the project root.
+
+After architect emits `PLAN_READY`, spawn `senior-frontend` and `senior-backend` in parallel (same `{{TASK_TOOL}}` pattern with their role markers). Read `.traffic-one/rules/common/senior-engineer-team.md` before the first spawn.
+<!-- T1BLOCK:END kilo-opencode-spawn-first -->
+
+<!-- T1BLOCK:BEGIN kilo-opencode-architect-incomplete -->
+[traffic-one] {{HOST}} build — `.traffic-one/plan.md` exists but the architect phase is INCOMPLETE. You are the PARENT/orchestrator.
+
+DO NOT spawn `senior-frontend` or `senior-backend` yet. DO NOT patch `assignments.json` or `digests/{{RUN_ID}}/architect.md` yourself unless the user explicitly opts out of subagents.
+
+Missing architect deliverables: {{MISSING}}
+
+Respawn `senior-architect` via `{{TASK_TOOL}}` with:
+- `subagent_type: "{{SUBAGENT_TYPE}}"` when named `senior-*` types are not listed
+- prompt line 1: `[t1-role: senior-architect]`
+- `Run ID: {{RUN_ID}}`
+- instruct the architect to finish the missing files, write `.traffic-one/runs/{{RUN_ID}}/assignments.json`, then `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`
+
+Implementer spawns are blocked until the digest carries `PLAN_READY` on disk.
+<!-- T1BLOCK:END kilo-opencode-architect-incomplete -->
+
 <!-- T1BLOCK:BEGIN team-mode-marker-guard -->
 Traffic One team mode guard: `team.modeChangeApproval` is an internal, single-use marker that can only be written by the UserPromptSubmit hook after an explicit user request. Do not add or refresh it in `.traffic-one/.one.json` manually.
 <!-- T1BLOCK:END team-mode-marker-guard -->
@@ -132,7 +163,7 @@ The latest user prompt explicitly requested switching away from subagents to Low
 
 <!-- T1BLOCK:BEGIN maintenance-triage-subagents -->
 [MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. Pick the tier, then ROUTE it — in this (subagents) mode do NOT implement trivial or small work yourself in this thread; handing it to a cheaper worker is the whole point of post-build triage. You judge the TIER (the keyword hint is a prior, not a verdict); the routing for the chosen tier is required, not optional. State your routing in one sentence and proceed — do not ask the user which tier, worker, or model to use.
-- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}". Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual).
+- trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}" on hosts whose spawn tool supports `model`; omit `model` on OpenCode/Kilo/Copilot/Windsurf unless the exact host tool documents support. Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual).
 - small — one component, one small endpoint, or a scoped bug fix: spawn exactly ONE role subagent (senior-frontend OR senior-backend) at its normal tier.{{SMALL_OPENCODE_CLAUSE}} No architect unless it turns cross-cutting.
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW, before any edit, as a SINGLE-FEATURE run — the architect plans just this feature, decides frontend/backend/both and the per-role model tiers, then implement → review → test.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.

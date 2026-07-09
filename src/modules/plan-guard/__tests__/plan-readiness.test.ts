@@ -4,7 +4,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { planReadinessViolations } from '../plan-readiness';
+import { planReadinessViolations, architectPhaseIncompleteReasons, isArchitectPhaseComplete } from '../plan-readiness';
+import { writeArchitectPhaseComplete } from './architect-phase-fixtures';
 
 const names = (name: string): string => name;
 
@@ -144,6 +145,18 @@ test('monorepo-root-vite: a root src/ Vite file on a monorepo stack is blocked',
       state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
     });
     assert.ok(v.includes('monorepo-root-vite'));
+  });
+});
+
+test('monorepo-root-flat-scaffold: root tsconfig files on a monorepo stack are blocked', () => {
+  withProject((dir) => {
+    for (const filePath of ['tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json']) {
+      const v = planReadinessViolations({
+        filePath, content: '{}', projectRoot: dir,
+        state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
+      });
+      assert.ok(v.includes('monorepo-root-flat-scaffold'), filePath);
+    }
   });
 });
 
@@ -549,5 +562,64 @@ test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY
       block: names,
     });
     assert.deepEqual(v, ['assignments-owner-gate']);
+  });
+});
+
+test('architectPhaseIncompleteReasons: flags partial baseline after plan exists', () => {
+  withProject((dir) => {
+    writeStateFile(dir, { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R' });
+    writePlan(dir);
+    const missing = architectPhaseIncompleteReasons(dir, { ...DEFAULT_STATE, currentRunId: 'R' });
+    assert.ok(missing.some((m) => m.includes('coding.md')));
+    assert.ok(missing.some((m) => m.includes('assignments.json')));
+    assert.ok(missing.some((m) => m.includes('architect.md')));
+    assert.equal(isArchitectPhaseComplete(dir, { ...DEFAULT_STATE, currentRunId: 'R' }), false);
+  });
+});
+
+test('isArchitectPhaseComplete: true when scaffold, memory, assignments, and digest exist', () => {
+  withProject((dir) => {
+    writeStateFile(dir, { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R' });
+    writePlan(dir);
+    writeArchitectPhaseComplete(dir, 'R', DEFAULT_STATE);
+    assert.equal(isArchitectPhaseComplete(dir, { ...DEFAULT_STATE, currentRunId: 'R' }), true);
+  });
+});
+
+test('architect-pre-ready-feature: denies senior-architect app implementation before PLAN_READY', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    writeStateFile(dir, state);
+    writePlan(dir);
+    writeMaterialized(dir);
+    writeRequiredScaffold(dir);
+    const v = planReadinessViolations({
+      filePath: 'apps/web/src/main.tsx',
+      content: 'import React from "react";\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: true,
+      block: names,
+    });
+    assert.deepEqual(v, ['architect-pre-ready-feature']);
+  });
+});
+
+test('missingArchitectScaffold: accepts packages/tsconfig/base.json instead of root tsconfig.base.json', () => {
+  withProject((dir) => {
+    writeStateFile(dir, DEFAULT_STATE);
+    writeRequiredScaffold(dir);
+    fs.unlinkSync(path.join(dir, 'tsconfig.base.json'));
+    fs.mkdirSync(path.join(dir, 'packages/tsconfig'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/tsconfig/base.json'), '{}', 'utf8');
+    const missing = architectPhaseIncompleteReasons(dir, DEFAULT_STATE)
+      .filter((m) => m.includes('tsconfig'));
+    assert.deepEqual(missing, []);
   });
 });

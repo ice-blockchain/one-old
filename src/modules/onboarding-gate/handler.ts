@@ -18,6 +18,7 @@ import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
 import { isOnboardedProjectRoot, resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
+import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
@@ -167,12 +168,14 @@ export function onboardingGate(ctx: Ctx): HookResult {
   // value is salient (where the host surfaces PreToolUse context). The plan gate's
   // run-id write-guard enforces it regardless of whether this context lands.
   if (buildRunId && firstEmitThisSession(root, 'run-id-announce', hookSessionIdentity(raw).sessionId)) {
-    return context(
-      `traffic-one — build run-id: ${buildRunId}. This is \`currentRunId\` in .traffic-one/.one.json. `
-      + `Use this EXACT value wherever a run-id is needed — \`.traffic-one/runs/${buildRunId}/\` and `
-      + `\`.traffic-one/digests/${buildRunId}/\` paths, and "Run ID:" lines in spawn prompts. Do NOT run `
-      + '`date` to mint one; the plan gate denies writing under any other run-id.',
-    );
+    const orchestration = buildOrchestrationDirective(root, ctx.host, effectiveState);
+    const runIdLines = [
+      `traffic-one — build run-id: ${buildRunId}. This is \`currentRunId\` in .traffic-one/.one.json.`,
+      `Use this EXACT value wherever a run-id is needed — \`.traffic-one/runs/${buildRunId}/\` and`,
+      `\`.traffic-one/digests/${buildRunId}/\` paths, and "Run ID:" lines in spawn prompts. Do NOT run`,
+      '`date` to mint one; the plan gate denies writing under any other run-id.',
+    ].join(' ');
+    return context(orchestration ? `${runIdLines}\n\n${orchestration}` : runIdLines);
   }
   return noop();
 }

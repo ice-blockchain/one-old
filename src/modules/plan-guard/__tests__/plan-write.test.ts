@@ -81,6 +81,16 @@ test('OpenCode write (camelCase filePath) of a root Vite file is gated — was b
   });
 });
 
+test('Kilo write of root tsconfig.json is gated on monorepo stacks', () => {
+  withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'tsconfig.json', content: '{"files":[]}',
+    }, {}, 'kilo'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(/tsconfig|monorepo|plan gate/i.test(r.reason));
+  });
+});
+
 test('subagents project: a feature write outside any role session is denied (run-team)', () => {
   withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {

@@ -63,3 +63,28 @@ export function captureClaimDebug(
     // best-effort diagnostic; a capture failure must never affect the gate
   }
 }
+
+// Append one plan-guard deny line. Separate from claim-capture so memory/coordination
+// path denials are visible even when run-team-write never fires.
+export function capturePlanGuardDebug(
+  cwd: string,
+  runId: string | null | undefined,
+  extra: Record<string, unknown> = {},
+): void {
+  try {
+    if (isPluginAuthoringRoot(cwd)) return;
+    if (!runId) return;
+    const dir = path.join(cwd, '.traffic-one', 'runs', String(runId), 'debug');
+    const file = path.join(dir, 'plan-guard-deny.jsonl');
+    try {
+      if (fs.statSync(file).size > MAX_CAPTURE_BYTES) return;
+    } catch {
+      // missing file → first capture
+    }
+    fs.mkdirSync(dir, { recursive: true });
+    const entry = { at: stateTimestamp(), label: 'plan-guard-deny', ...extra };
+    fs.appendFileSync(file, `${JSON.stringify(entry)}\n`, 'utf8');
+  } catch {
+    // best-effort diagnostic
+  }
+}

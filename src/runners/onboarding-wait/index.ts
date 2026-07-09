@@ -20,6 +20,7 @@
 import { execFileSync } from 'child_process';
 
 import { maintenanceTriageDirective } from '../../modules/session/triage-directive';
+import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
 import { buildPreSpawnOpenCodeDirective } from '../../shared/opencode-plan-directive';
 import { AGENT_ROLES } from '../../config/performance';
 import { detectMode } from '../../shared/detection';
@@ -133,6 +134,10 @@ export function openCodeRestartWarning(): string {
 // typing `2026-06-23T10-30-00Z` instead of the gate-minted epoch-ms `currentRunId`). Mint/persist
 // here so the orchestrator reads the exact value BEFORE building the first spawn prompt. The
 // spawn gate's run-id deny + self-healing echo remains the backstop. Returns '' for non-new-project.
+export function preSpawnOrchestrationDirective(cwd: string, host: string = detectHost()): string {
+  return buildOrchestrationDirective(cwd, host);
+}
+
 export function preSpawnRunIdDirective(cwd: string): string {
   try {
     const state = readEffectiveState(cwd) as Record<string, unknown>;
@@ -271,6 +276,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     const runIdDirective = preSpawnRunIdDirective(cwd);
     if (runIdDirective) {
       process.stdout.write(`\n${runIdDirective}\n`);
+    }
+    const orchestrationDirective = preSpawnOrchestrationDirective(cwd, host);
+    if (orchestrationDirective) {
+      process.stdout.write(`\n${orchestrationDirective}\n`);
     }
     // Cursor: front-load model capture + eligibility + the per-role model map so the team spawns
     // ONCE (no capture/model-tier deny + retry). Backed by the PreToolUse gates if not followed.

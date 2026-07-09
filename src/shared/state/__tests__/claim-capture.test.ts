@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { captureClaimDebug } from '../claim-capture';
+import { captureClaimDebug, capturePlanGuardDebug } from '../claim-capture';
 
 function withTmp(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-capture-'));
@@ -62,5 +62,16 @@ test('captureClaimDebug: stops appending once the log passes its size cap', () =
     captureClaimDebug(cwd, 'run-1', 'runteam-write', { session_id: 's' });
     // the over-cap file is left untouched (no new line appended)
     assert.equal(fs.readFileSync(file, 'utf8').includes('runteam-write'), false);
+  });
+});
+
+test('capturePlanGuardDebug: appends plan-guard deny lines', () => {
+  withTmp((cwd) => {
+    capturePlanGuardDebug(cwd, 'run-1', { filePath: '.traffic-one/coding.md', violations: ['architect-memory-baseline-gate'] });
+    const file = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'debug', 'plan-guard-deny.jsonl');
+    assert.equal(fs.existsSync(file), true);
+    const line = JSON.parse(fs.readFileSync(file, 'utf8').trim());
+    assert.equal(line.label, 'plan-guard-deny');
+    assert.equal(line.filePath, '.traffic-one/coding.md');
   });
 });

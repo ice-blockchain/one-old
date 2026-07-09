@@ -30,6 +30,7 @@ const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
+const ROOT_MONOREPO_FLAT_RE = /^tsconfig(\.[a-z0-9-]+)?\.json$/;
 const T1_MEMORY_DIR = '.traffic' + '-one';
 
 function exists(projectRoot: string, relPath: string): boolean {
@@ -76,7 +77,10 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   const missing: string[] = [];
   if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) missing.push('pnpm-workspace.yaml');
   if (!exists(projectRoot, 'turbo.json')) missing.push('turbo.json');
-  if (!exists(projectRoot, 'tsconfig.base.json')) missing.push('tsconfig.base.json');
+  if (!exists(projectRoot, 'tsconfig.base.json')
+    && !exists(projectRoot, 'packages/tsconfig/base.json')) {
+    missing.push('tsconfig.base.json (or packages/tsconfig/base.json)');
+  }
   if (!rootPackageJsonMatchesWorkspaceRoot(projectRoot)) {
     missing.push('package.json (private + pnpm packageManager + workspace declaration)');
   }
@@ -226,7 +230,47 @@ function assignmentRoleErrors(content: string): string[] {
   }
 }
 
-function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
+function missingAssignmentsManifest(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (!runId) return ['.traffic-one/runs/<runId>/assignments.json (currentRunId missing)'];
+  const relPath = `.traffic-one/runs/${runId}/assignments.json`;
+  if (!exists(projectRoot, relPath)) return [relPath];
+  try {
+    const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf8');
+    if (!assignmentsUsesCanonicalShape(content)) {
+      return [`${relPath} (canonical top-level assignments array required)`];
+    }
+    const roleErrors = assignmentRoleErrors(content);
+    if (roleErrors.length > 0) return roleErrors.map((err) => `${relPath} (${err})`);
+  } catch {
+    return [`${relPath} (unreadable)`];
+  }
+  return [];
+}
+
+function missingArchitectDigest(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  if (architectPlanReadyOnDisk(projectRoot, state)) return [];
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '<runId>';
+  return [`.traffic-one/digests/${runId}/architect.md (must contain PLAN_READY)`];
+}
+
+export function architectPhaseIncompleteReasons(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  return [
+    ...missingArchitectScaffold(projectRoot, state),
+    ...missingProjectMemoryBaseline(projectRoot, state),
+    ...missingAssignmentsManifest(projectRoot, state),
+    ...missingArchitectDigest(projectRoot, state),
+  ];
+}
+
+export function isArchitectPhaseComplete(projectRoot: string, state: Rec): boolean {
+  return architectPhaseIncompleteReasons(projectRoot, state).length === 0;
+}
+
+export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
   const runIds: string[] = [];
   if (typeof state.currentRunId === 'string' && state.currentRunId.trim()) runIds.push(state.currentRunId.trim());
   try {
@@ -278,6 +322,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (requiresMonorepoScaffold && ROOT_VITE_RE.test(filePath)) {
     violations.push(block('monorepo-root-vite',
       'New-project monorepo gate: root Vite app files are not allowed for this stack. Use `apps/web/` for the React app and create the required `packages/*` workspaces first; see `rules/modes/new-project.md`.'));
+  }
+
+  if (requiresMonorepoScaffold && ROOT_MONOREPO_FLAT_RE.test(filePath)) {
+    violations.push(block('monorepo-root-flat-scaffold',
+      'New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. The architect scaffolds the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) — spawn `senior-architect` first instead of creating a flat root Vite layout.'));
   }
 
   if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content)) {
@@ -381,6 +430,17 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc) {
     violations.push(block('plan-gate',
       'Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
+  }
+
+  const writerRole = assignmentWriterRole(projectRoot, state, rawData);
+  if (isNewProject
+    && writingFeatureSource
+    && writerRole === 'senior-architect'
+    && !architectPlanReadyOnDisk(projectRoot, state)
+    && !(filePath && /^packages\/[^/]+\/src\/index\.ts$/.test(filePath) && /^\s*(export\s+\{\s*\};?)?\s*$/.test(content.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n\r]*/g, '')))) {
+    violations.push(block('architect-pre-ready-feature',
+      'Architect scope gate: `senior-architect` may write only workspace scaffold and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files.',
+      { TARGET: filePath }));
   }
 
   return violations;

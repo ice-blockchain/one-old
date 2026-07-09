@@ -66,6 +66,7 @@ import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
 import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan-directive';
+import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -91,10 +92,10 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
 }
 
 function modelParamEnforced(host: string): boolean {
-  // Copilot and Windsurf/Devin Local use project-local native agent/profile files that carry
-  // the model intent in frontmatter; their spawn tools may not expose a `model` arg. Cursor is
-  // the opposite: it needs an explicit Task `model` parameter, so keep enforcing there.
-  return host !== 'copilot' && host !== 'windsurf' && host !== 'kilo';
+  // OpenCode/Kilo/Copilot/Windsurf use host-native task/profile facilities whose spawn tools
+  // may not expose a `model` arg. Cursor is the opposite: it needs an explicit Task `model`
+  // parameter, so keep enforcing there.
+  return host !== 'opencode' && host !== 'copilot' && host !== 'windsurf' && host !== 'kilo';
 }
 
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
@@ -539,6 +540,20 @@ export function agentModelGate(ctx: Ctx): HookResult {
   }
   if (!isTeamApproved(state.team)) {
     return deny(block('team-confirmation', { LEVEL: level }));
+  }
+
+  // Implementers may not start until the architect phase is complete on disk
+  // (scaffold + memory baseline + assignments + digest with PLAN_READY). Checked
+  // after team approval so earlier gates (team/materialization) keep their prose.
+  if (isPlanBatchGatedRole(role)) {
+    const incomplete = architectPhaseIncompleteReasons(cwd, state);
+    if (incomplete.length > 0) {
+      return deny(block('architect-phase-incomplete', {
+        ROLE: role,
+        RUN_ID: spawnRunId,
+        MISSING: incomplete.join('; '),
+      }));
+    }
   }
 
   const team = obj(state.team);

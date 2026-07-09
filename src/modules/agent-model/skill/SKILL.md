@@ -79,6 +79,14 @@ Recorded: you'll use the recommended model. Enable it now in Cursor Settings →
 Recorded: the team will use the next-eligible fallback model when the recommended one isn't available, for the rest of this build. Re-run your request to continue — I won't ask again this build.
 <!-- T1BLOCK:END model-choice-recorded-fallback -->
 
+<!-- T1BLOCK:BEGIN architect-phase-incomplete -->
+Architect phase gate: do NOT spawn `{{ROLE}}` yet. `.traffic-one/plan.md` exists but the architect phase is incomplete for this new-project build.
+
+Missing on disk: {{MISSING}}
+
+Respawn `senior-architect` (same run `{{RUN_ID}}`) to finish the project-memory baseline, `.traffic-one/runs/{{RUN_ID}}/assignments.json`, and `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`. Do not spawn implementers or patch coordination artifacts yourself until that digest exists.
+<!-- T1BLOCK:END architect-phase-incomplete -->
+
 <!-- T1BLOCK:BEGIN opencode-plan-batch-required -->
 OpenCode plan-batch gate: do NOT spawn `{{ROLE}}` yet. The architect queued Step-0 OpenCode work in `.traffic-one/plan.md`, and the `opencode_delegate_from_plan` batch has not finished for queued role(s): {{QUEUED_ROLES}}.
 

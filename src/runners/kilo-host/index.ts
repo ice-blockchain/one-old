@@ -574,8 +574,17 @@ function runTrafficOne(subcommand, payload) {
   }
 }
 
+function denyMessage(result) {
+  if (!result || result.kind !== 'deny') return '';
+  const reason = firstString(result.reason);
+  const ctx = firstString(result.context);
+  if (reason && ctx && reason !== ctx) return reason + '\\n\\n' + ctx;
+  return firstString(reason, ctx) || 'Traffic One denied this Kilo tool call.';
+}
+
 function resultText(result) {
   if (!result || result.kind === 'noop') return;
+  if (result.kind === 'deny') return denyMessage(result);
   return firstString(result.context, result.systemMessage, result.reason);
 }
 
@@ -612,7 +621,7 @@ function appendPromptContext(output, result) {
 async function beforeTool(input, output, pluginCtx) {
   const result = runTrafficOne('before-tool-use', normalizeToolPayload(${jsString(KILO_HOOK_TOOL_BEFORE)}, input, output, pluginCtx));
   if (result && result.kind === 'deny') {
-    throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this Kilo tool call.');
+    throw new Error(denyMessage(result) || 'Traffic One denied this Kilo tool call.');
   }
 }
 
@@ -621,7 +630,7 @@ async function permissionAsk(input, output, pluginCtx) {
   if (result && result.kind === 'deny') {
     const out = asObject(output);
     out.status = 'deny';
-    debugLog('permission-deny', { reason: firstString(result.reason, result.context).slice(0, 300) });
+    debugLog('permission-deny', { reason: denyMessage(result).slice(0, 300) });
   }
 }
 
@@ -632,13 +641,13 @@ async function afterTool(input, output, pluginCtx) {
 
 async function systemTransform(input, output, pluginCtx) {
   const result = runTrafficOne('session-start', normalizePromptPayload(${jsString(KILO_HOOK_SYSTEM_TRANSFORM)}, input, output, pluginCtx));
-  if (result && result.kind === 'deny') throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this Kilo request.');
+  if (result && result.kind === 'deny') throw new Error(denyMessage(result) || 'Traffic One denied this Kilo request.');
   appendSystem(output, result);
 }
 
 async function chatMessage(input, output, pluginCtx) {
   const result = runTrafficOne('user-prompt-submit', normalizePromptPayload(${jsString(KILO_HOOK_CHAT_MESSAGE)}, input, output, pluginCtx));
-  if (result && result.kind === 'deny') throw new Error(firstString(result.reason, result.context) || 'Traffic One denied this Kilo message.');
+  if (result && result.kind === 'deny') throw new Error(denyMessage(result) || 'Traffic One denied this Kilo message.');
   appendPromptContext(output, result);
 }
 
@@ -654,7 +663,7 @@ async function event(input, pluginCtx) {
   const payload = normalizePermissionPayload('permission.asked', permission.props, {}, pluginCtx);
   const result = runTrafficOne('before-tool-use', payload);
   if (!result || result.kind !== 'deny') return;
-  const reason = firstString(result.reason, result.context) || 'Traffic One denied this Kilo tool call.';
+  const reason = denyMessage(result) || 'Traffic One denied this Kilo tool call.';
   try {
     const projectRoot = trafficOneRootFor(payload.cwd || process.cwd());
     const rejected = await rejectPermission(pluginCtx, permission.props, projectRoot, reason);

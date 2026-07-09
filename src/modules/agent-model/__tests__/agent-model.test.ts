@@ -9,6 +9,7 @@ import { extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
+import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
 import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
@@ -109,7 +110,7 @@ const DEFAULT_CURSOR_MODELS = [
   'gpt-5.5-medium', 'gpt-5.5-extra-high', 'composer-2.5-fast',
 ];
 
-function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[] | null }, fn: (cwd: string) => void): void {
+function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[] | null; architectComplete?: boolean }, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agentmodel-'));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -141,6 +142,14 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   if (cursorModels) {
     fs.writeFileSync(path.join(t1, 'cursor-models.json'), JSON.stringify({ models: cursorModels }), 'utf8');
   }
+  if (opts.architectComplete !== false && opts.teamApproved) {
+    const runId = 'run-test';
+    const onePath = path.join(t1, '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.currentRunId = runId;
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    writeArchitectPhaseComplete(dir, runId, one);
+  }
   try {
     fn(dir);
   } finally {
@@ -150,7 +159,7 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   }
 }
 
-function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
+function spawnCtx(cwd: string, toolInput: Record<string, unknown>, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'opencode' | 'kilo' = 'claude', workspaceRoot?: string): Ctx {
   const input: HookInput = {
     event: 'PreToolUse', host, cwd, workspaceRoot, raw: { tool_name: 'Task', tool_input: toolInput },
     tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
@@ -172,6 +181,14 @@ function queueDelegateRoles(cwd: string, roles: string[]): void {
     `<!-- opencode-delegate:start -->\n${roles.map((role, index) => `- id: ${role.replace(/^senior-/, '')}-${index + 1} | role: ${role} | files: x.ts | task: one bounded unit. Acceptance: ok.`).join('\n')}\n<!-- opencode-delegate:end -->\n`,
     'utf8',
   );
+  const onePath = path.join(t1, '.one.json');
+  const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+  const runId = typeof one.currentRunId === 'string' && one.currentRunId.trim() ? one.currentRunId.trim() : 'run-test';
+  if (!one.currentRunId) {
+    one.currentRunId = runId;
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+  }
+  writeArchitectPhaseComplete(cwd, runId, one);
 }
 
 test('non-spawn tools are ignored', () => {
@@ -219,6 +236,21 @@ test('Kilo: built-in general task with marker is a valid senior-role spawn witho
     assert.equal(r.kind, 'noop');
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
     assert.ok(String(state.currentRunId || '').length > 0, 'Kilo marker spawn still mints/uses the Traffic One run id');
+  });
+});
+
+test('OpenCode: task spawn does not require unsupported model parameter', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'opencode'));
+    assert.equal(r.kind, 'noop');
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    const runId = String(state.currentRunId || '');
+    assert.ok(runId.length > 0, 'OpenCode spawn still mints/uses the Traffic One run id');
+    const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-architect-'));
+    assert.ok(pending.length > 0, 'pending senior-architect claim staked for OpenCode');
   });
 });
 
@@ -649,9 +681,7 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
     const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-Q';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-Q');
     queueDelegateRole(cwd, 'quick-fix');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'quick-fix', model: 'haiku' }));
@@ -663,6 +693,19 @@ test('quick-fix is OpenCode-delegated first when OpenCode is active, then falls 
   });
 });
 
+test('architect phase gate: blocks implementers when plan exists but baseline is incomplete', () => {
+  withMaterialized({ teamApproved: true, architectComplete: false }, (cwd) => {
+    const t1 = path.join(cwd, '.traffic-one');
+    fs.writeFileSync(path.join(t1, 'plan.md'), '# partial plan', 'utf8');
+    const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'opus' }));
+    assert.equal(denied.kind, 'deny');
+    if (denied.kind === 'deny') {
+      assert.ok(denied.reason.includes('Architect phase gate'));
+      assert.ok(denied.reason.includes('coding.md'));
+    }
+  });
+});
+
 test('opencode plan-batch gate: queued Step-0 work blocks both implementers until the batch is terminal', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
@@ -670,10 +713,7 @@ test('opencode plan-batch gate: queued Step-0 work blocks both implementers unti
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-plan-batch';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-plan-batch');
     queueDelegateRoles(cwd, ['frontend', 'backend']);
 
     const backend = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' }));
@@ -715,10 +755,7 @@ test('opencode plan-batch gate: COMPLETE marker alone clears implementer spawns'
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-plan-complete';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-plan-complete');
     queueDelegateRoles(cwd, ['frontend', 'backend', 'tester']);
 
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'deny');
@@ -735,10 +772,7 @@ test('opencode plan-batch gate: failed terminal batch.json clears implementers (
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-plan-failed';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-plan-failed');
     queueDelegateRoles(cwd, ['frontend', 'backend']);
 
     assert.equal(agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-backend', model: 'opus' })).kind, 'deny');
@@ -756,10 +790,7 @@ test('opencode role gate: a configured non-implementer role is denied until Open
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-X';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-X');
     queueDelegateRole(cwd, 'senior-tester');
 
     // senior-tester is in the default delegateRoles → deny until OpenCode tried
@@ -785,10 +816,7 @@ test('opencode role gate: a forced role with NO queued units is NOT trapped (pro
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-noqueue';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-noqueue');
     // No opencode-delegate queue for senior-frontend → from-plan can't deliver it, so
     // denying its paid spawn would STALL the role. The gate must NOT deny (the gap fix);
     // the paid implementer proceeds (correct model → noop).
@@ -840,10 +868,7 @@ test('opencode role gate: NO-DEADLOCK — denies a (run, role) at most once even
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-reviewer-reject';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-reviewer-reject');
     queueDelegateRole(cwd, 'senior-tester');
 
     // First spawn → denied (with the delegate instructions), deny recorded.
@@ -861,10 +886,7 @@ test('opencode role gate: deny block is clean (no leftover template placeholders
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-clean';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-clean');
     queueDelegateRole(cwd, 'senior-tester');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
@@ -884,10 +906,7 @@ test('codex: OpenCode role gate fires the SAME as every host (host-agnostic)', (
     prefs.openCode = { enabled: true };
     prefs.toolchain = { opencode: { installedVersion: '1.17.8' } };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-codex';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-codex');
     queueDelegateRole(cwd, 'senior-tester');
 
     // A configured role on Codex is delegated to OpenCode first, exactly like Claude/Cursor.
@@ -913,10 +932,7 @@ test('a pinned openCode.model does not change gating (no per-model branch)', () 
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
     prefs.openCode = { enabled: true, model: 'opencode/gpt-5.1-codex' };
     fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
-    const onePath = path.join(cwd, '.traffic-one', '.one.json');
-    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
-    one.currentRunId = 'run-pinned';
-    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    setCurrentRunId(cwd, 'run-pinned');
     queueDelegateRole(cwd, 'senior-tester');
 
     const denied = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-tester', model: 'haiku' }));
@@ -1012,6 +1028,7 @@ function setCurrentRunId(cwd: string, runId: string): void {
   const state = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
   state.currentRunId = runId;
   fs.writeFileSync(file, JSON.stringify(state), 'utf8');
+  writeArchitectPhaseComplete(cwd, runId, state);
 }
 
 function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude'): Ctx {
