@@ -24,6 +24,21 @@ test('tool-name classification (host-prefixed names normalized)', () => {
   assert.equal(isWriteLikeToolName('Edit'), true);
   assert.equal(isWriteLikeToolName('apply_patch'), true);
   assert.equal(commandFromToolInput({ command: 'ls' }), 'ls');
+  assert.equal(commandFromToolInput({ cmd: 'ls' }), 'ls');
+  // Windsurf/Devin pre_run_command payloads carry the command as `command_line`.
+  assert.equal(commandFromToolInput({ command_line: 'npm run dev' }), 'npm run dev');
+  assert.equal(commandFromToolInput({ commandLine: 'npm run dev' }), 'npm run dev');
+});
+
+test('isOnboardingWaitCommand recognizes the wait command from Windsurf command_line shape', () => {
+  const waitCmd = 'node "/x/dist/scripts/onboarding-wait.cjs" "/proj" "--host=windsurf"';
+  // Windsurf shape: the onboarding gate passes canonicalToolName (→ "Bash") + the
+  // raw tool_input, which carries the command as `command_line`. Previously the empty
+  // command extraction made this false, wrongly denying the wait command.
+  assert.equal(isOnboardingWaitCommand('Bash', { command_line: waitCmd, cwd: '/proj' }), true);
+  // Claude shape (command) still works.
+  assert.equal(isOnboardingWaitCommand('Bash', { command: waitCmd }), true);
+  assert.equal(isOnboardingWaitCommand('Bash', { command: 'npm run dev' }), false);
 });
 
 test('isStateFilePath matches the .one.json state files anywhere', () => {

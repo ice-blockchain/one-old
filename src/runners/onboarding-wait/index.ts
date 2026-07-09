@@ -32,6 +32,7 @@ import { modelGateCommand } from '../../shared/model-gate-command';
 import { acceptableModelsFor, canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
@@ -267,6 +268,16 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const host = detectHost(process.env, argv);
   applyTrafficOneEnv(cwd, host);
+  // Self-heal a dead wizard link: the server the gate minted can die between then
+  // and this wait (host restart, crash), leaving the agent's shown link broken and
+  // the poll never completing. Re-ensure it here (idempotent — respawns only a
+  // dead/stale record) so announceWizardUrl below always prints a LIVE url. Skipped
+  // once setup is done, and best-effort (respects TRAFFIC_ONE_ONBOARDING_NO_SPAWN).
+  try {
+    if (!onboardingDone(cwd)) ensureOnboardingServer(cwd, { host });
+  } catch {
+    // best-effort — the wait still polls without a respawn
+  }
   announceWizardUrl(cwd);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
