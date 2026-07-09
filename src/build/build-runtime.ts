@@ -26,7 +26,11 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'cursor-hook-runtime.cjs': './hooks/cursor-entry.js',
   'copilot-hook-runtime.cjs': './hooks/copilot-entry.js',
   'opencode-hook-runtime.cjs': './hooks/opencode-entry.js',
+  'kilo-hook-runtime.cjs': './hooks/kilo-entry.js',
+  'windsurf-hook-runtime.cjs': './hooks/windsurf-entry.js',
   'opencode-host.cjs': './runners/opencode-host/index.js',
+  'kilo-host.cjs': './runners/kilo-host/index.js',
+  'windsurf-host.cjs': './runners/windsurf-host/index.js',
   'traffic-one-auth.cjs': './runners/auth/index.js',
   'doctor.cjs': './runners/doctor/index.js',
   'security-check-runner.cjs': './runners/security-check/index.js',
@@ -51,7 +55,7 @@ function shimSource(target: string): string {
     `const m = require('${target}');`,
     "const r = typeof m.main === 'function' ? m.main() : undefined;",
     "if (typeof r === 'number') process.exitCode = r;",
-    "else if (r && typeof r.catch === 'function') r.catch(() => {});",
+    "else if (r && typeof r.then === 'function') r.then((code) => { if (typeof code === 'number') process.exitCode = code; }).catch(() => {});",
     '',
   ].join('\n');
 }

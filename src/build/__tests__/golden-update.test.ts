@@ -18,6 +18,7 @@ test('golden:update ignores runtime plugin-root env vars and reads the source ch
     assert.equal(result.manifestPath, manifest);
     assert.ok(result.count > 250, `expected a full generated manifest, got ${result.count}`);
     assert.match(fs.readFileSync(manifest, 'utf8'), /\.cursor\/rules\/core\.mdc/);
+    assert.match(fs.readFileSync(manifest, 'utf8'), /\.devin\/rules\/core\.md/);
   } finally {
     if (saved === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT; else process.env.TRAFFIC_ONE_PLUGIN_ROOT = saved;
     fs.rmSync(dir, { recursive: true, force: true });

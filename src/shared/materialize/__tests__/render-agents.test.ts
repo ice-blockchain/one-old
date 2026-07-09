@@ -107,6 +107,8 @@ test('renderAgentsWithLocalContext renders identical AGENTS/CLAUDE local bodies 
 
 test('Active State carries team mode, OpenCode flag, and the role→model line-up', () => {
   const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  delete process.env.TRAFFIC_ONE_HOST;
   process.env.TRAFFIC_ONE_USER_PLAN = 'max';
   try {
     const state = {
@@ -123,6 +125,32 @@ test('Active State carries team mode, OpenCode flag, and the role→model line-u
   } finally {
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
     else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+  }
+});
+
+test('Active State on Kilo gives the general-task marker recipe and omits role model ids', () => {
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  process.env.TRAFFIC_ONE_HOST = 'kilo';
+  try {
+    const state = {
+      ...STATE,
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'balanced' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.15.13' } },
+    };
+    const out = renderAgents(state, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
+    assert.ok(out.includes('- Team: subagents (balanced, approved)'));
+    assert.ok(out.includes('- OpenCode delegation: off'));
+    assert.ok(out.includes('Kilo subagents: use `task` with `subagent_type: "general"`'));
+    assert.ok(out.includes('[t1-role: senior-<role>]'));
+    assert.ok(!out.includes('Role models (pass as `model` when spawning):'));
+    assert.ok(!out.includes('opencode/'));
+  } finally {
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
   }
 });
 

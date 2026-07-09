@@ -105,12 +105,22 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
     free: { base: 'low', withOpenCode: 'low' },
     plus: { base: 'balanced', withOpenCode: 'balanced' },
   },
+  kilo: {
+    free: { base: 'low', withOpenCode: 'low' },
+  },
   copilot: {
     free: { base: 'low', withOpenCode: 'balanced' },
     pro: { base: 'balanced', withOpenCode: 'high' },
     plus: { base: 'high', withOpenCode: 'high' },
     max: { base: 'high', withOpenCode: 'high' },
     business: { base: 'high', withOpenCode: 'high' },
+    team: { base: 'high', withOpenCode: 'high' },
+    enterprise: { base: 'high', withOpenCode: 'high' },
+  },
+  windsurf: {
+    free: { base: 'low', withOpenCode: 'balanced' },
+    pro: { base: 'balanced', withOpenCode: 'high' },
+    max: { base: 'high', withOpenCode: 'high' },
     team: { base: 'high', withOpenCode: 'high' },
     enterprise: { base: 'high', withOpenCode: 'high' },
   },
@@ -167,6 +177,15 @@ export const FREE_HIGH: Readonly<Partial<Record<AgentRole, PlanTier>>> = {
   'senior-reviewer': { base: 'balanced', withOpenCode: 'balanced' },
 };
 
+const WINDSURF_FREE_ALL_CHEAPEST: Readonly<Record<AgentRole, PlanTier>> = {
+  'senior-architect': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-frontend': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-backend': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-reviewer': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
+  'senior-shipper': { base: 'cheapest', withOpenCode: 'cheapest' },
+};
+
 // Sparse per-(host, plan, level) deviations from DEFAULT_AGENT_TIERS. List only the
 // roles that differ; omit a plan/level/role to inherit the default. Paid plans
 // mostly inherit (empty); free is cheaper.
@@ -177,5 +196,11 @@ export const PLAN_AGENT_TIERS: Readonly<
   codex: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   cursor: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   opencode: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  // Kilo has no stable local subscription signal yet, so `free` means
+  // "undetected" rather than "only a free model tier is selectable". Do not
+  // collapse a user-picked Balanced/High Kilo team to cheapest; the Kilo picker
+  // exposes native recommended models for all three capability tiers.
+  kilo: {},
   copilot: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  windsurf: { free: { balanced: WINDSURF_FREE_ALL_CHEAPEST, high: WINDSURF_FREE_ALL_CHEAPEST } },
 };

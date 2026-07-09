@@ -98,6 +98,13 @@ export function commandFromToolInput(toolInput: unknown): string {
   const ti = toolInput as Rec;
   if (typeof ti.command === 'string') return ti.command;
   if (typeof ti.cmd === 'string') return ti.cmd;
+  // Windsurf/Devin `pre_run_command` payloads carry the command as `command_line`
+  // (`tool_info.command_line`); without this, run-command classifiers (e.g.
+  // isOnboardingWaitCommand) got an empty string on Windsurf and the onboarding
+  // gate wrongly DENIED the wait command — re-minting the wizard server and
+  // staling the link the agent had already shown.
+  if (typeof ti.command_line === 'string') return ti.command_line;
+  if (typeof ti.commandLine === 'string') return ti.commandLine;
   return '';
 }
 

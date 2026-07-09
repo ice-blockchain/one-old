@@ -5,7 +5,7 @@
 // 1 on drift.
 //
 // Currently wired: the host manifests + .mcp.json + hook configs + agents/ +
-// rules/ + skills-catalog/ + .cursor/rules + static plugin-root docs.
+// rules/ + skills-catalog/ + .cursor/rules + .devin/rules + static plugin-root docs.
 
 import * as path from 'path';
 import * as fs from 'fs';
@@ -18,6 +18,7 @@ import { emitManifests, emitMcp } from './emit/manifests';
 import { emitRules } from './emit/rules';
 import { emitSkills } from './emit/skills';
 import { emitStaticPluginFiles } from './emit/static';
+import { emitWindsurfRules } from './emit/windsurf-rules';
 import { GenRun } from './lib/run';
 
 export function sourceRepoRoot(): string {
@@ -47,7 +48,7 @@ export function distRoot(sourceRoot: string = sourceRepoRoot()): string {
 // Output dirs gen owns end-to-end: files inside them that no emitter produced
 // are stale copies of deleted source content and get swept. skills/ stays out —
 // the session-start surgery populates it at runtime.
-export const MANAGED_OUTPUT_DIRS = ['agents', 'rules', 'skills-catalog', path.join('.cursor', 'rules')] as const;
+export const MANAGED_OUTPUT_DIRS = ['agents', 'rules', 'skills-catalog', path.join('.cursor', 'rules'), path.join('.devin', 'rules')] as const;
 
 export function runGen(opts: { check: boolean; root?: string; sourceRoot?: string }): GenRun {
   const sourceRoot = opts.sourceRoot ?? sourceRepoRoot();
@@ -60,6 +61,7 @@ export function runGen(opts: { check: boolean; root?: string; sourceRoot?: strin
   emitRules(run); // before cursor-rules: the cursor mirror derives from emitted rules/
   emitSkills(run);
   emitCursorRules(run);
+  emitWindsurfRules(run);
   emitStaticPluginFiles(run);
   run.sweepOrphans(MANAGED_OUTPUT_DIRS);
   return run;

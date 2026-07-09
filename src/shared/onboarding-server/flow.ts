@@ -228,7 +228,8 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   // The per-agent model menu: each tier resolved to the detected host's model id,
   // so the wizard can offer real model names (and the user's pick maps straight
   // back to a tier override the spawn gate already understands).
-  meta.modelChoices = TIER_IDS.map((tier) => ({ tier, model: resolveModel(tier, host, planCtx.plan) || tier }));
+  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free' ? ['cheapest'] as const : TIER_IDS;
+  meta.modelChoices = choiceTiers.map((tier) => ({ tier, model: resolveModel(tier, host, planCtx.plan) || tier }));
 }
 
 // Pre-select the wizard's recommended performance level from the detected plan +
@@ -300,7 +301,7 @@ function toolchainInstallPending(state: Rec, host: string): boolean {
     const entry = tc ? obj(tc[tool]) : null;
     return typeof entry?.installedVersion === 'string' && entry.installedVersion.length > 0;
   };
-  if (host !== 'opencode' && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
+  if (host !== 'opencode' && host !== 'kilo' && obj(state.openCode)?.enabled === true && !stamped('opencode')) return true;
   const provider = state.codeGraphProvider;
   if ((provider === 'gitnexus' || provider === 'graphify') && !stamped(provider)) return true;
   return false;

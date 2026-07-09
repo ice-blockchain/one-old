@@ -4,7 +4,8 @@ Enforces React, Ionic/Capacitor mobile packaging, explicit React Native, modern
 design quality, security, post-deploy observability, and clean code
 **automatically on every prompt**.
 No slash commands required. Compatible with **Claude Code**, **Codex CLI**, **Cursor**,
-**GitHub Copilot CLI**, **VS Code Copilot**, and **OpenCode**.
+**GitHub Copilot CLI**, **VS Code Copilot**, **OpenCode**, **Kilo**, and
+**Windsurf / Devin Desktop Cascade**.
 
 ---
 
@@ -88,7 +89,7 @@ gate runs `scripts/traffic-one-auth.cjs login` internally with the key the user
 pastes at the prompt, passes that key to the auth client through stdin, stores
 the raw key in the OS credential manager when available, mints a session into
 `~/.traffic-one/auth.json`, and reads that session on every host (Claude Code,
-Codex, Cursor, OpenCode) via the shared hooks.
+Codex, Cursor, OpenCode, Kilo, Windsurf) via the shared hooks.
 
 ---
 
@@ -108,13 +109,17 @@ Codex, Cursor, OpenCode) via the shared hooks.
 │   ├── settings.json        ← Claude Code hooks
 │   ├── hooks/hooks.json     ← Codex CLI hooks
 │   ├── hooks/hooks-copilot.json ← GitHub Copilot hooks
+│   ├── hooks/hooks-windsurf.json ← Windsurf Cascade hooks template
 │   ├── plugin.json          ← GitHub Copilot plugin manifest
 │   ├── .mcp.json            ← mcp-auth server declaration
 │   ├── scripts/hook-runtime.cjs
 │   ├── scripts/copilot-hook-runtime.cjs
 │   ├── scripts/opencode-host.cjs
+│   ├── scripts/kilo-host.cjs
+│   ├── scripts/windsurf-host.cjs
 │   ├── scripts/traffic-one-auth.cjs
 │   ├── .cursor/rules/*.mdc  ← Cursor mirrors
+│   ├── .devin/rules/*.md    ← Windsurf / Cascade workspace rule mirrors
 │   ├── .claude-plugin/
 │   ├── .codex-plugin/
 │   └── .cursor-plugin/
@@ -134,13 +139,24 @@ prompts bootstrap setup, and mutating tools fail closed while setup/auth is
 pending. OpenCode delegation remains a paid-host feature for Claude/Codex/Cursor;
 the OpenCode host never exposes `opencode_delegate*` tools or self-delegates.
 
+Kilo host support uses Kilo's server-plugin contract and auto-loaded
+`~/.config/kilo/plugin/traffic-one.js` wrapper. It runs the same shared Traffic
+One gates as OpenCode-compatible hooks, keeps distinct host diagnostics, and
+does not self-delegate through OpenCode.
+
+Windsurf / Devin Desktop Cascade support targets the current Cascade docs:
+workspace rules are emitted to `.devin/rules/*.md`, workspace skills stay in the
+canonical `.traffic-one/skills/<skill>/SKILL.md` tree, and user-level hooks/MCP
+configuration are merged only by the consented `scripts/windsurf-host.cjs`
+installer.
+
 ---
 
 ## How it works — no slash commands needed
 
 ### Skills auto-trigger
 Every skill has a `description:` frontmatter with explicit trigger phrases.
-Claude/Codex/Cursor/OpenCode reads the descriptions at session start (cheap
+Claude/Codex/Cursor/OpenCode/Kilo/Windsurf reads the descriptions at session start (cheap
 metadata only) and automatically invokes the full skill body when your prompt
 matches:
 
@@ -313,6 +329,55 @@ To remove the wrapper:
 node /absolute/path/to/traffic-one/dist/scripts/opencode-host.cjs uninstall
 ```
 
+### Kilo
+
+The Kilo host wrapper is a user-level plugin at
+`~/.config/kilo/plugin/traffic-one.js`, so install it only with explicit
+consent:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs install --yes
+node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs doctor
+```
+
+No per-project enable step is required. To verify the wrapper for a particular
+workspace:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs doctor --cwd /absolute/path/to/project
+```
+
+To opt a specific Kilo workspace out while keeping the global wrapper installed:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs disable --cwd /absolute/path/to/project --yes
+```
+
+To remove the wrapper:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs uninstall
+```
+
+### Windsurf / Devin Desktop Cascade
+
+The Windsurf integration mutates user-level Cascade config at
+`~/.codeium/windsurf/hooks.json`, `~/.codeium/windsurf/mcp_config.json`, and
+`~/.codeium/windsurf/memories/global_rules.md`, so install it only with explicit
+consent:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/windsurf-host.cjs install --yes
+node /absolute/path/to/traffic-one/dist/scripts/windsurf-host.cjs doctor
+```
+
+For Windsurf Next or Insiders, pass `--channel next` or `--channel insiders`.
+To remove only the Traffic One-owned entries:
+
+```
+node /absolute/path/to/traffic-one/dist/scripts/windsurf-host.cjs uninstall --yes
+```
+
 ### Marketplace install after publication
 
 After the marketplace listing is live, use the published marketplace source
@@ -328,8 +393,10 @@ codex plugin add traffic-one
 /add-plugin traffic-one/traffic-one
 ```
 
-For OpenCode, run the same `scripts/opencode-host.cjs install --yes` command
-from the installed plugin root after publication.
+For OpenCode, Kilo, and Windsurf, run the same
+`scripts/opencode-host.cjs install --yes`, `scripts/kilo-host.cjs install --yes`,
+or `scripts/windsurf-host.cjs install --yes` command from the installed plugin
+root after publication.
 
 ---
 

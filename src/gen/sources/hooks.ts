@@ -28,6 +28,10 @@ export function copilotCommand(subcommand: string): string {
   return cmd;
 }
 
+export function windsurfCommand(subcommand: string): string {
+  return `TRAFFIC_ONE_PLUGIN_ROOT="${PLUGIN_ROOT_EXPR}" TRAFFIC_ONE_HOST=windsurf node "${PLUGIN_ROOT_EXPR}/scripts/windsurf-hook-runtime.cjs" ${subcommand} --host=windsurf`;
+}
+
 export interface CopilotHookEntry {
   subcommand: string;
 }
@@ -129,4 +133,16 @@ export const CURSOR_EVENTS: { event: string; subcommand: string }[] = [
   { event: 'preToolUse', subcommand: 'before-tool-use' },
   { event: 'postToolUse', subcommand: 'after-tool-use' },
   { event: 'subagentStart', subcommand: 'subagent-start' },
+];
+
+export const WINDSURF_EVENTS: { event: string; subcommand: string }[] = [
+  { event: 'pre_user_prompt', subcommand: 'pre_user_prompt' },
+  { event: 'pre_read_code', subcommand: 'pre_read_code' },
+  { event: 'post_read_code', subcommand: 'post_read_code' },
+  { event: 'pre_write_code', subcommand: 'pre_write_code' },
+  { event: 'pre_run_command', subcommand: 'pre_run_command' },
+  { event: 'pre_mcp_tool_use', subcommand: 'pre_mcp_tool_use' },
+  { event: 'post_write_code', subcommand: 'post_write_code' },
+  { event: 'post_run_command', subcommand: 'post_run_command' },
+  { event: 'post_mcp_tool_use', subcommand: 'post_mcp_tool_use' },
 ];

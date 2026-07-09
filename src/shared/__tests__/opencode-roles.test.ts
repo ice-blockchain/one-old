@@ -211,14 +211,15 @@ test('shouldRunRoleOnOpenCode: requires enabled + role in the configured set', (
   assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, delegateRoles: ['senior-backend'] } }), false);
 });
 
-test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode host', () => {
+test('shouldRunRoleOnOpenCode applies on paid hosts and is inert on OpenCode-compatible self hosts', () => {
   const enabled = { openCode: { enabled: true } };
-  // OpenCode delegation is a paid-host feature; the OpenCode host itself is inert.
+  // OpenCode delegation is a paid-host feature; OpenCode/Kilo hosts are inert.
   for (const role of ['senior-frontend', 'senior-tester', 'quick-fix']) {
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'claude'), true);
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'codex'), true);
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'cursor'), true);
     assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'opencode'), false);
+    assert.equal(shouldRunRoleOnOpenCode(role, enabled, 'kilo'), false);
   }
   // a pinned model does not change eligibility — only enabled + role-in-set do
   assert.equal(shouldRunRoleOnOpenCode('senior-frontend', { openCode: { enabled: true, model: 'opencode/gpt-5.1-codex' } }, 'codex'), true);
@@ -270,6 +271,7 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
     const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'opencode'), []);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'kilo'), []);
     markOpenCodePlanRoleCompleted(dir, 'run1', 'senior-frontend');
     assert.equal(openCodePlanRoleCompleted(dir, 'run1', 'frontend'), true);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend'],
@@ -304,6 +306,7 @@ test('plan-batch per-role markers alone do not clear gate without terminal batch
     assert.equal(openCodePlanBatchComplete(dir, 'run-role-only'), false);
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state), true);
     assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state, 'opencode'), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run-role-only', state, 'kilo'), false);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run-role-only', state), ['frontend', 'backend']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
@@ -471,6 +474,23 @@ test('orchestrator + team prose: a denied/"Couldn\'t start" first spawn must RE-
     assert.match(doc, /re-?spawn/i, `${name} must instruct a re-spawn`);
     assert.match(doc, /couldn'?t start|denied/i, `${name} must name the Couldn't-start/denied case`);
     assert.match(doc, /(not|never)[^.\n]*inline/i, `${name} must forbid building the role inline on a first spawn failure`);
+  }
+});
+
+test('Kilo prose uses built-in general task subagents when named senior agents are absent', () => {
+  const modules = path.join(__dirname, '..', '..', 'modules');
+  const skill = fs.readFileSync(path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
+  const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
+  const promptTemplates = fs.readFileSync(
+    path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'resources', 'prompt-templates.md'),
+    'utf8',
+  );
+  for (const [name, doc] of [['orchestrator SKILL', skill], ['team rule', teamRule], ['prompt templates', promptTemplates]] as const) {
+    assert.match(doc, /Kilo/i, `${name} must name Kilo`);
+    assert.match(doc, /general.*explore|explore.*general/i, `${name} must name Kilo's built-in task choices`);
+    assert.match(doc, /\[t1-role: senior-<role>\]/, `${name} must require the marker-bound role contract`);
+    assert.match(doc, /not|do not|never/i, `${name} must include a negative guard`);
+    assert.match(doc, /\.traffic-one\/agents|named `senior-\*`|named senior/i, `${name} must prevent missing named agents from causing fallback`);
   }
 });
 

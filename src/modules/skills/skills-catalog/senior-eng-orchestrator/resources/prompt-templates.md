@@ -11,10 +11,12 @@ subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's
 context stays clean. The ONE exception is `<run-id>` — see below.
 
-## Per-role model — PASS IT in the `Task` `model` parameter (Cursor)
+## Per-role model / profile mapping
 
 Each role runs at a specific model tier (it can be overridden per role in the wizard, e.g.
-frontend → balanced). The correct model for each role is pinned in
+frontend → balanced).
+
+On Cursor, the correct model for each role is pinned in
 `.cursor/agents/<role>.md` (`model:` line). **On Cursor you MUST pass that value in the `Task`
 `model` parameter for every spawn** — read `.cursor/agents/<role>.md` and set
 `model: "<that value>"`. Cursor does NOT auto-apply the `.cursor/agents` frontmatter: if you
@@ -22,6 +24,23 @@ omit `model`, the subagent silently INHERITS YOUR (orchestrator) model — so an
 would run a balanced-tier frontend on Opus, ignoring the override. The spawn gate enforces this:
 a spawn whose `model` does not match the role's tier is DENIED with the exact value to pass. Do
 NOT put the model in the prompt text — only the `model` parameter sets it.
+
+On Windsurf / Devin Local, Traffic One materializes native custom profiles at
+`.devin/agents/<role>/AGENT.md`, with the role's `model:` already pinned for the detected
+Windsurf plan. **Spawn each role by calling the `run_subagent` tool with the profile name
+equal to the role** (`senior-architect`, `senior-frontend`, etc.); the model is pinned in
+the profile frontmatter, so pass NO `model` argument (and never use Claude aliases like
+`opus`/`sonnet`/`haiku`). Read a background subagent's result with `read_subagent`. Do NOT
+use `opencode_delegate` to spawn a role — on Windsurf that MCP tool is only the optional
+free accelerator for bounded units (and requires `openCode.enabled`); `run_subagent` is the
+role-spawn path and does not depend on OpenCode.
+
+On Kilo, Traffic One v1 binds roles through the prompt marker instead of a
+project-local role-agent directory. If the `task` tool exposes only `general` and
+`explore`, spawn `general` for each senior role, omit `model`, and put
+`[t1-role: senior-<role>]` on the first line followed by the concise role
+contract. Do not inspect `.traffic-one/agents/` or switch to main-agent
+simulation because named `senior-*` types are absent.
 
 ## Run-id format
 
@@ -57,13 +76,13 @@ missing.
 
 Produce .traffic-one/plan.md (≤250 lines, sections: Goal, Stack & rationale,
 Module map, Public contracts, Risks, Cut-list, plus OpenCode delegation queue only
-when delegation is active on a non-OpenCode host). Cite skills by name; do not
+when delegation is active on a non-OpenCode/Kilo host). Cite skills by name; do not
 inline their content.
 
-When the current host is OpenCode, do not include an "OpenCode delegation queue"
-section and do not write `<!-- opencode-delegate:start -->` markers; OpenCode
-cannot delegate to itself, so implementer work runs directly on the OpenCode host.
-When `openCode.enabled` is active on a non-OpenCode host, the "OpenCode
+When the current host is OpenCode or Kilo, do not include an "OpenCode delegation queue"
+section and do not write `<!-- opencode-delegate:start -->` markers; OpenCode/Kilo
+cannot delegate to OpenCode from inside a peer self host, so implementer work runs directly on the current host.
+When `openCode.enabled` is active on a non-OpenCode/Kilo host, the "OpenCode
 delegation queue" section is REQUIRED: list every bounded, low-risk unit
 (boilerplate/CRUD scaffolding, dummy/seed/fixture data, simple test scaffolding,
 mechanical refactors/renames, formatting/codemods) in the machine-readable

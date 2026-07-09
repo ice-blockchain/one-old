@@ -30,7 +30,19 @@ const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
+const ROOT_MONOREPO_FLAT_RE = /^tsconfig(\.[a-z0-9-]+)?\.json$/;
 const T1_MEMORY_DIR = '.traffic' + '-one';
+
+// The OpenCode plan-queue gate is a TOKEN-OPTIMIZATION, not a correctness gate: it
+// wants the architect to list bounded units for the free OpenCode batch. On
+// Windsurf/Devin it must NOT block — Devin's agent treats any gate deny as terminal
+// (it stops, and a non-technical user is stuck with no "continue"), and OpenCode
+// delegation is best-effort anyway (a missing queue just falls back to paid). So
+// Windsurf never blocks here; other hosts keep the original hard block (their agents
+// read the deny and retry with the queue).
+function opencodeQueueBlocks(host: string | undefined): boolean {
+  return canonicalHost(host) !== 'windsurf';
+}
 
 function exists(projectRoot: string, relPath: string): boolean {
   return fs.existsSync(path.join(projectRoot, relPath));
@@ -76,7 +88,10 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   const missing: string[] = [];
   if (!existsAny(projectRoot, ['pnpm-workspace.yaml', 'pnpm-workspace.yml'])) missing.push('pnpm-workspace.yaml');
   if (!exists(projectRoot, 'turbo.json')) missing.push('turbo.json');
-  if (!exists(projectRoot, 'tsconfig.base.json')) missing.push('tsconfig.base.json');
+  if (!exists(projectRoot, 'tsconfig.base.json')
+    && !exists(projectRoot, 'packages/tsconfig/base.json')) {
+    missing.push('tsconfig.base.json (or packages/tsconfig/base.json)');
+  }
   if (!rootPackageJsonMatchesWorkspaceRoot(projectRoot)) {
     missing.push('package.json (private + pnpm packageManager + workspace declaration)');
   }
@@ -226,7 +241,47 @@ function assignmentRoleErrors(content: string): string[] {
   }
 }
 
-function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
+function missingAssignmentsManifest(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (!runId) return ['.traffic-one/runs/<runId>/assignments.json (currentRunId missing)'];
+  const relPath = `.traffic-one/runs/${runId}/assignments.json`;
+  if (!exists(projectRoot, relPath)) return [relPath];
+  try {
+    const content = fs.readFileSync(path.join(projectRoot, relPath), 'utf8');
+    if (!assignmentsUsesCanonicalShape(content)) {
+      return [`${relPath} (canonical top-level assignments array required)`];
+    }
+    const roleErrors = assignmentRoleErrors(content);
+    if (roleErrors.length > 0) return roleErrors.map((err) => `${relPath} (${err})`);
+  } catch {
+    return [`${relPath} (unreadable)`];
+  }
+  return [];
+}
+
+function missingArchitectDigest(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  if (architectPlanReadyOnDisk(projectRoot, state)) return [];
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '<runId>';
+  return [`.traffic-one/digests/${runId}/architect.md (must contain PLAN_READY)`];
+}
+
+export function architectPhaseIncompleteReasons(projectRoot: string, state: Rec): string[] {
+  if (state.mode !== 'new-project') return [];
+  return [
+    ...missingArchitectScaffold(projectRoot, state),
+    ...missingProjectMemoryBaseline(projectRoot, state),
+    ...missingAssignmentsManifest(projectRoot, state),
+    ...missingArchitectDigest(projectRoot, state),
+  ];
+}
+
+export function isArchitectPhaseComplete(projectRoot: string, state: Rec): boolean {
+  return architectPhaseIncompleteReasons(projectRoot, state).length === 0;
+}
+
+export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
   const runIds: string[] = [];
   if (typeof state.currentRunId === 'string' && state.currentRunId.trim()) runIds.push(state.currentRunId.trim());
   try {
@@ -266,6 +321,7 @@ export interface ReadinessArgs {
 export function planReadinessViolations(args: ReadinessArgs): string[] {
   const { filePath, content, projectRoot, state, writingFeatureSource, rawData, block, host } = args;
   const violations: string[] = [];
+  const currentHost = canonicalHost(host);
 
   const requiresMonorepoScaffold = stateRequiresNewProjectMonorepo(state);
 
@@ -277,6 +333,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (requiresMonorepoScaffold && ROOT_VITE_RE.test(filePath)) {
     violations.push(block('monorepo-root-vite',
       'New-project monorepo gate: root Vite app files are not allowed for this stack. Use `apps/web/` for the React app and create the required `packages/*` workspaces first; see `rules/modes/new-project.md`.'));
+  }
+
+  if (requiresMonorepoScaffold && ROOT_MONOREPO_FLAT_RE.test(filePath)) {
+    violations.push(block('monorepo-root-flat-scaffold',
+      'New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. The architect scaffolds the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) — spawn `senior-architect` first instead of creating a flat root Vite layout.'));
   }
 
   if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content)) {
@@ -292,13 +353,13 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architect completion gate: do not write \`PLAN_READY\` until the required .traffic-one project-memory baseline exists with real content. Missing or incomplete: ${missingMemory.join(', ')}. Write the missing memory files yourself (do not delegate .traffic-one/* to OpenCode), then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missingMemory.join(', ') }));
     }
-    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot)) {
+    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueBlocks(host)) {
       violations.push(block('architect-opencode-queue-gate',
         `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
-    if (state.mode === 'new-project' && canonicalHost(host) === 'opencode' && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
+    if (state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && planOnDiskHasOpenCodeDelegateMarker(projectRoot)) {
       violations.push(block('architect-opencode-self-delegation-gate',
-        'Architect completion gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the OpenCode host.'));
+        'Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.'));
     }
   }
 
@@ -311,14 +372,14 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueBlocks(host)) {
     violations.push(block('plan-opencode-queue-gate',
       `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && canonicalHost(host) === 'opencode' && hasOpenCodeDelegateMarker(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && (currentHost === 'opencode' || currentHost === 'kilo') && hasOpenCodeDelegateMarker(content)) {
     violations.push(block('plan-opencode-self-delegation-gate',
-      'Plan gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the OpenCode host.'));
+      'Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the current host.'));
   }
 
   if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && !missingOpenCodeDelegateBlock(content)) {
@@ -380,6 +441,17 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc) {
     violations.push(block('plan-gate',
       'Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
+  }
+
+  const writerRole = assignmentWriterRole(projectRoot, state, rawData);
+  if (isNewProject
+    && writingFeatureSource
+    && writerRole === 'senior-architect'
+    && !architectPlanReadyOnDisk(projectRoot, state)
+    && !(filePath && /^packages\/[^/]+\/src\/index\.ts$/.test(filePath) && /^\s*(export\s+\{\s*\};?)?\s*$/.test(content.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n\r]*/g, '')))) {
+    violations.push(block('architect-pre-ready-feature',
+      'Architect scope gate: `senior-architect` may write only workspace scaffold and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files.',
+      { TARGET: filePath }));
   }
 
   return violations;

@@ -6,6 +6,7 @@ import type { GenRun } from '../lib/run';
 import {
   COPILOT_EVENTS,
   CURSOR_EVENTS,
+  WINDSURF_EVENTS,
   type HookEntry,
   type HookGroup,
   POST_TOOL_USE,
@@ -16,6 +17,7 @@ import {
   copilotCommand,
   cursorCommand,
   promptSubmitGroup,
+  windsurfCommand,
 } from '../sources/hooks';
 
 type Rec = Record<string, unknown>;
@@ -74,10 +76,19 @@ function copilotConfig(): Rec {
   return { version: 1, hooks };
 }
 
+function windsurfConfig(): Rec {
+  const hooks: Rec = {};
+  for (const { event, subcommand } of WINDSURF_EVENTS) {
+    hooks[event] = [{ command: windsurfCommand(subcommand), show_output: true }];
+  }
+  return { hooks };
+}
+
 export function emitHooks(run: GenRun): void {
   // settings.json keeps the UserPromptSubmit statusMessage; hooks/hooks.json omits it.
   run.json('settings.json', claudeHooks(true));
   run.json('hooks/hooks.json', claudeHooks(false));
   run.json('hooks/hooks-cursor.json', cursorConfig());
   run.json('hooks/hooks-copilot.json', copilotConfig());
+  run.json('hooks/hooks-windsurf.json', windsurfConfig());
 }

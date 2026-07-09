@@ -177,6 +177,38 @@ test('preSpawnRunIdDirective: new-project → mints currentRunId and prints exac
     }), 'utf8');
     assert.equal(preSpawnRunIdDirective(dir), '');
   } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('preSpawnOrchestrationDirective: kilo subagents new-project emits spawn-first recipe', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { preSpawnOrchestrationDirective } = await import('../index');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-prespawn-orch-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      performance: { level: 'balanced', source: 'prompted' },
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }), 'utf8');
+
+    const d = preSpawnOrchestrationDirective(dir, 'kilo');
+    assert.match(d, /senior-architect/i);
+    assert.match(d, /subagent_type/i);
+    assert.equal(preSpawnOrchestrationDirective(dir, 'cursor'), '');
+  } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     fs.rmSync(dir, { recursive: true, force: true });
   }

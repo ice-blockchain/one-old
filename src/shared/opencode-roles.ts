@@ -59,10 +59,11 @@ export function openCodeEnabled(state: unknown): boolean {
 }
 
 // Should this role run on OpenCode rather than a paid subagent? Delegation is a
-// paid-host feature: Claude/Codex/Cursor may offload to OpenCode, but an OpenCode
-// host must not self-delegate or spawn the worker recursively.
+// paid-host feature: paid hosts may offload to OpenCode, but OpenCode/Kilo hosts
+// must not self-delegate or spawn the worker recursively.
 export function shouldRunRoleOnOpenCode(role: string, state: unknown, host: unknown = detectHost()): boolean {
-  if (canonicalHost(host) === 'opencode') return false;
+  const h = canonicalHost(host);
+  if (h === 'opencode' || h === 'kilo') return false;
   if (!role || !openCodeEnabled(state)) return false;
   return openCodeDelegateRoles(state).includes(role);
 }

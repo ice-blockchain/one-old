@@ -11,6 +11,7 @@ import {
   HOST_IDS,
   HOST_MODELS,
   HOST_PLAN_IDS,
+  KILO_MODEL_ALTERNATES,
   OPENCODE_MODEL_ALTERNATES,
   OPENCODE_PLAN_MODELS,
   PLAN_ALIASES,
@@ -18,6 +19,7 @@ import {
   PLAN_TIER_RECOMMENDATIONS,
   TIER_ALIASES,
   TIER_IDS,
+  WINDSURF_PLAN_MODELS,
   type HostModelKey,
   type TierId,
   type UserPlan,
@@ -64,6 +66,11 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
     const planned = overlay ? overlay[canonical] : undefined;
     if (planned) return planned;
   }
+  if (h === 'windsurf' && plan !== undefined && plan !== null && plan !== '') {
+    const overlay = WINDSURF_PLAN_MODELS[canonicalPlan('windsurf', plan)];
+    const planned = overlay ? overlay[canonical] : undefined;
+    if (planned) return planned;
+  }
   return HOST_MODELS[h][canonical];
 }
 
@@ -95,6 +102,8 @@ export function acceptableModelsFor(expected: unknown, host: unknown): string[] 
   // build never stalls on an unavailable paid model. claude/codex stay strict `[expected]`.
   const alternates = h === 'opencode'
     ? (OPENCODE_MODEL_ALTERNATES[e] ?? null)
+    : h === 'kilo'
+      ? (KILO_MODEL_ALTERNATES[e] ?? null)
     : (h === 'cursor' ? (CURSOR_MODEL_ALTERNATES[e] ?? []) : null);
   if (alternates === null) return [e];
   return [e, ...alternates.filter((m) => m && m !== e)];
@@ -110,7 +119,7 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
 export function tierModelTable(
   tier: unknown,
   plan?: unknown,
-): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string; windsurf: string; kilo: string } | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
   return {
@@ -120,6 +129,8 @@ export function tierModelTable(
     cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor[canonical],
     opencode: resolveModel(canonical, 'opencode', plan) ?? HOST_MODELS.opencode[canonical],
     copilot: resolveModel(canonical, 'copilot', plan) ?? HOST_MODELS.copilot[canonical],
+    windsurf: resolveModel(canonical, 'windsurf', plan) ?? HOST_MODELS.windsurf[canonical],
+    kilo: resolveModel(canonical, 'kilo', plan) ?? HOST_MODELS.kilo[canonical],
   };
 }
 

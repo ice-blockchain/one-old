@@ -43,14 +43,13 @@ export interface EnsureOptions {
 }
 
 // Append the live wizard URL to a setup banner ONLY where the recipe otherwise
-// reaches the user through an agent-only channel that the agent might not repost —
-// on Cursor, a context() result's prose rides additional_context (agent-facing); the
-// user sees only systemMessage→user_message. So Cursor gets the clickable URL in the
-// banner; other hosts (Claude preview pane, Codex recipe) keep the plain banner. The
+// reaches the user through an agent-only channel that the agent might not repost.
+// Cursor and Windsurf get the clickable URL in the visible banner; other hosts
+// (Claude preview pane, Codex recipe) keep the plain banner. The
 // NO_SPAWN placeholder (':0/', port 0) is never surfaced. Single source for both the
 // SessionStart and UserPromptSubmit setup-pending paths.
 export function formatWizardBanner(host: string, url: string, banner: string): string {
-  return host === 'cursor' && url && !url.includes(':0/')
+  return (host === 'cursor' || host === 'windsurf') && url && !url.includes(':0/')
     ? `${banner} — open the setup wizard: ${url}`
     : banner;
 }

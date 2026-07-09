@@ -21,7 +21,8 @@ export interface PlanCtx { readonly host: string; readonly plan: string; readonl
 // models / a higher level for an offload that never happens. Derive `useOpenCode`
 // through this everywhere so the wizard line-up and the spawn gate stay in sync.
 export function openCodeDelegationActive(state: unknown, host: unknown = detectHost()): boolean {
-  if (canonicalHost(host) === 'opencode') return false;
+  const h = canonicalHost(host);
+  if (h === 'opencode' || h === 'kilo') return false;
   const s = obj(state);
   if (!s) return false;
   if (obj(s.openCode)?.enabled !== true) return false;
@@ -67,7 +68,7 @@ export function modelForRole(
   role: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
-): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string } | null {
+): { tier: TierId; claude: string; codex: string; cursor: string; opencode: string; copilot: string; windsurf: string; kilo: string } | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
   return tier ? tierModelTable(tier, planCtx?.plan) : null;
 }

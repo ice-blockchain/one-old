@@ -17,8 +17,12 @@ test('recommendLevelForPlan maps plan → level, bumps with OpenCode, clamps at 
   assert.equal(recommendLevelForPlan('cursor', 'free'), 'low');
   assert.equal(recommendLevelForPlan('opencode', 'free'), 'low');
   assert.equal(recommendLevelForPlan('opencode', 'free', true), 'low');
+  assert.equal(recommendLevelForPlan('kilo', 'free'), 'low');
+  assert.equal(recommendLevelForPlan('kilo', 'free', true), 'low');
   assert.equal(recommendLevelForPlan('copilot', 'Copilot Pro'), 'balanced');
   assert.equal(recommendLevelForPlan('copilot', 'GitHub Copilot Pro', true), 'high');
+  assert.equal(recommendLevelForPlan('windsurf', 'free'), 'low');
+  assert.equal(recommendLevelForPlan('windsurf', 'max'), 'high');
   // unknown plan → host default plan's level (claude default = free → low)
   assert.equal(recommendLevelForPlan('claude', 'mystery'), 'low');
 });
@@ -69,6 +73,14 @@ test('agentTierForPlan: a sparse PLAN_AGENT_TIERS deviation overrides the defaul
   assert.equal(agentTierForPlan('codex', 'free', 'high', 'senior-tester'), 'cheapest');
   // Copilot product labels must not route Pro accounts through the free override.
   assert.equal(agentTierForPlan('copilot', 'Copilot Pro', 'balanced', 'senior-architect'), 'balanced');
+  // Windsurf Free only exposes the SWE model, so even a manual High team stays cheapest.
+  assert.equal(agentTierForPlan('windsurf', 'free', 'high', 'senior-architect'), 'cheapest');
+  assert.equal(agentTierForPlan('windsurf', 'free', 'high', 'senior-shipper'), 'cheapest');
+  // Kilo's "free" is an undetected-account fallback, not proof that only one
+  // free model tier is selectable. Manual Balanced/High choices keep their tiers.
+  assert.equal(agentTierForPlan('kilo', 'free', 'balanced', 'senior-architect'), 'balanced');
+  assert.equal(agentTierForPlan('kilo', 'free', 'high', 'senior-architect'), 'highest');
+  assert.equal(agentTierForPlan('kilo', 'free', 'high', 'senior-tester'), 'cheapest');
 });
 
 test('agentTierForPlan: the OpenCode tier bump is DISABLED — useOpenCode never changes the tier (withOpenCode === base)', () => {

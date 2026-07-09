@@ -18,6 +18,10 @@ New-project monorepo gate: stack=default / React-Vite new projects must start wi
 New-project monorepo gate: root Vite app files are not allowed for this stack. Use `apps/web/` for the React app and create the required `packages/*` workspaces first; see `rules/modes/new-project.md`.
 <!-- T1BLOCK:END monorepo-root-vite -->
 
+<!-- T1BLOCK:BEGIN monorepo-root-flat-scaffold -->
+New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. The architect scaffolds the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) under `apps/web/` — spawn `senior-architect` first instead of creating a flat root Vite layout.
+<!-- T1BLOCK:END monorepo-root-flat-scaffold -->
+
 <!-- T1BLOCK:BEGIN state-gate -->
 State gate: root .traffic-one/.one.json is missing or incomplete. Write the Traffic One state file with mode, stack, backend, realtime, confirmed, onboardingComplete, and confirmedAt before writing feature source. The .traffic-one/ folder is project memory, not the stack-selection state file.
 <!-- T1BLOCK:END state-gate -->
@@ -38,12 +42,16 @@ Architect completion gate: do not write `PLAN_READY` until the required Traffic 
 Architect completion gate: do not write `PLAN_READY` until the required `.traffic-one` project-memory baseline exists with real content. Missing or incomplete: {{MISSING}}. Write the missing memory files yourself (do not delegate `.traffic-one/*` to OpenCode), then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
 <!-- T1BLOCK:END architect-memory-baseline-gate -->
 
+<!-- T1BLOCK:BEGIN architect-pre-ready-feature -->
+Architect scope gate: `senior-architect` may write only workspace scaffold and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files such as `{{TARGET}}`.
+<!-- T1BLOCK:END architect-pre-ready-feature -->
+
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
 Architect completion gate: OpenCode is enabled but the plan is missing at least 3 runnable machine-readable delegation units. Include `<!-- opencode-delegate:start -->` … `<!-- opencode-delegate:end -->` with 3–6 bounded units (`- role: … | files: … | task: …`) in `.traffic-one/plan.md` before emitting `PLAN_READY`. The orchestrator runs `opencode_delegate_from_plan` from that block BEFORE spawning implementers.
 <!-- T1BLOCK:END architect-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-self-delegation-gate -->
-Architect completion gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the OpenCode host.
+Architect completion gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block before emitting `PLAN_READY`; implementer work runs directly on the current host.
 <!-- T1BLOCK:END architect-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-queue-gate -->
@@ -51,7 +59,7 @@ Plan gate: OpenCode is enabled — `.traffic-one/plan.md` must include the machi
 <!-- T1BLOCK:END plan-opencode-queue-gate -->
 
 <!-- T1BLOCK:BEGIN plan-opencode-self-delegation-gate -->
-Plan gate: this run is already hosted by OpenCode, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the OpenCode host.
+Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the current host.
 <!-- T1BLOCK:END plan-opencode-self-delegation-gate -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-policy-gate -->
@@ -61,6 +69,14 @@ Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add st
 <!-- T1BLOCK:BEGIN plan-opencode-queue-policy-gate -->
 Plan gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas.
 <!-- T1BLOCK:END plan-opencode-queue-policy-gate -->
+
+<!-- T1BLOCK:BEGIN scaffold-stack-gate -->
+Stack gate: this project's stack is React/Vite (Traffic One does not use Next.js or create-react-app). Scaffold the app under `apps/web` with Vite per `.traffic-one/plan.md` and `rules/modes/new-project.md` — do not run create-next-app / create-react-app. See rules/core.md for the approved stack.
+<!-- T1BLOCK:END scaffold-stack-gate -->
+
+<!-- T1BLOCK:BEGIN scaffold-plan-gate -->
+Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); it writes the `apps/web` Turborepo monorepo scaffold per the plan. Do not run `create-*` app scaffolders — build on the plan the architect produces.
+<!-- T1BLOCK:END scaffold-plan-gate -->
 
 <!-- T1BLOCK:BEGIN assignments-shape-gate -->
 Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. See `agents/senior-architect.md` § Assignments manifest.

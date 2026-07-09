@@ -13,6 +13,8 @@ export function normalizeSubagentRole(subagentType: unknown): string | null {
 export function inferTrafficOneSpawnRole(toolInput: Record<string, unknown>): string | null {
   const direct = normalizeSubagentRole(
     toolInput.subagent_type || toolInput.subagentType || toolInput.agent_type || toolInput.agentType
+      || toolInput.subagent_profile || toolInput.subagentProfile || toolInput.profile || toolInput.profile_name
+      || toolInput.profileName || toolInput.name
       || toolInput.agent || toolInput.role || toolInput.type || toolInput.agentName || toolInput.agent_name,
   );
   if (direct) return direct;

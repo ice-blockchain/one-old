@@ -66,6 +66,7 @@ import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
 import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan-directive';
+import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -76,9 +77,10 @@ function isPlanBatchGatedRole(role: string): boolean {
   return PLAN_BATCH_GATED_ROLES.has(role);
 }
 
-// A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it (family-aware
-// + same-class CURSOR_MODEL_ALTERNATES). The passed arg is authoritative on every host —
-// INCLUDING Cursor: the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
+// A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it on hosts
+// where Traffic One enforces stable subagent model ids (family-aware + same-class
+// CURSOR_MODEL_ALTERNATES). The passed arg is authoritative there — INCLUDING Cursor:
+// the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
 // live evidence proved Cursor does NOT honor that frontmatter when no `model` arg is passed — it
 // INHERITS THE PARENT (orchestrator) model (captured: a balanced-override frontend with
 // frontmatter `gpt-5.5-medium` ran on the parent's Opus because `subagent_model == parent model`).
@@ -90,10 +92,10 @@ function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): bo
 }
 
 function modelParamEnforced(host: string): boolean {
-  // Copilot model slugs/frontmatter behavior still needs live validation. The project-local
-  // .agent.md files carry the model intent, so do not hard-block a spawn solely on a missing
-  // or differently-shaped `model` tool arg.
-  return host !== 'copilot';
+  // OpenCode/Kilo/Copilot/Windsurf use host-native task/profile facilities whose spawn tools
+  // may not expose a `model` arg. Cursor is the opposite: it needs an explicit Task `model`
+  // parameter, so keep enforcing there.
+  return host !== 'opencode' && host !== 'copilot' && host !== 'windsurf' && host !== 'kilo';
 }
 
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
@@ -124,6 +126,12 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
     return {
       call: `Call Copilot's \`task\` tool for the SAME background agent with \`agent_id: "${agentId}"\` and \`prompt\` = the NEW task only. Do NOT substitute \`name: "${agentId}"\`: live Copilot builds treat \`name\` as a fresh background task and respawn the agent. If this Copilot build rejects \`agent_id\` as unsupported, STOP and report that Copilot did not expose a reusable continuation primitive; do not spawn another same-role task.`,
       tool: 'the Copilot `task` background-agent continuation',
+    };
+  }
+  if (host === 'windsurf') {
+    return {
+      call: `Call \`run_subagent\` with profile \`${agentId}\` (same role) and the NEW task as the prompt — put \`[t1-role: ${agentId}]\` as the FIRST line. Use \`read_subagent\` to collect the result. Do NOT spawn a second profile for the same role.`,
+      tool: 'run_subagent',
     };
   }
   return {
@@ -317,7 +325,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
   // Normalize a host namespace (Codex `multi_agent_v1.spawn_agent`) to the bare name
   // before matching, so the gate can't silently bail on a qualified spawn tool.
-  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(stripToolNamespace(toolName))) return noop();
+  if (toolName && !/^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i.test(stripToolNamespace(toolName))) return noop();
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const role = inferTrafficOneSpawnRole(toolInput);
@@ -538,6 +546,20 @@ export function agentModelGate(ctx: Ctx): HookResult {
   }
   if (!isTeamApproved(state.team)) {
     return deny(block('team-confirmation', { LEVEL: level }));
+  }
+
+  // Implementers may not start until the architect phase is complete on disk
+  // (scaffold + memory baseline + assignments + digest with PLAN_READY). Checked
+  // after team approval so earlier gates (team/materialization) keep their prose.
+  if (isPlanBatchGatedRole(role)) {
+    const incomplete = architectPhaseIncompleteReasons(cwd, state);
+    if (incomplete.length > 0) {
+      return deny(block('architect-phase-incomplete', {
+        ROLE: role,
+        RUN_ID: spawnRunId,
+        MISSING: incomplete.join('; '),
+      }));
+    }
   }
 
   const team = obj(state.team);

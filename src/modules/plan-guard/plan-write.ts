@@ -30,6 +30,7 @@ import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../..
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { isNativeState, readEffectiveState } from '../../shared/state';
+import { capturePlanGuardDebug } from '../../shared/state/claim-capture';
 import { canonicalToolName, commandFromToolInput, isShellToolName, normalizedToolName, parsedToolInput } from '../../shared/tool-classify';
 import { planReadinessViolations } from './plan-readiness';
 import { runIdPathViolation } from './plan-runid';
@@ -118,5 +119,12 @@ export function planWriteGate(ctx: Ctx): HookResult {
   violations.push(...planStaticViolations(filePath, content, isNative, block));
 
   if (violations.length === 0) return noop();
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
+  capturePlanGuardDebug(projectRoot, runId, {
+    filePath,
+    filePaths: writeTargetPaths,
+    host: ctx.host,
+    violations: violations.map((v) => (v.length > 400 ? `${v.slice(0, 400)}…` : v)),
+  });
   return deny(`traffic-one — plan gate violation(s):\n${violations.map((v) => `  - ${v}`).join('\n')}`);
 }

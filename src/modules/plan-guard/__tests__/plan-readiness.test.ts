@@ -4,7 +4,8 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { planReadinessViolations } from '../plan-readiness';
+import { planReadinessViolations, architectPhaseIncompleteReasons, isArchitectPhaseComplete } from '../plan-readiness';
+import { writeArchitectPhaseComplete } from './architect-phase-fixtures';
 
 const names = (name: string): string => name;
 
@@ -144,6 +145,18 @@ test('monorepo-root-vite: a root src/ Vite file on a monorepo stack is blocked',
       state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
     });
     assert.ok(v.includes('monorepo-root-vite'));
+  });
+});
+
+test('monorepo-root-flat-scaffold: root tsconfig files on a monorepo stack are blocked', () => {
+  withProject((dir) => {
+    for (const filePath of ['tsconfig.json', 'tsconfig.app.json', 'tsconfig.node.json']) {
+      const v = planReadinessViolations({
+        filePath, content: '{}', projectRoot: dir,
+        state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
+      });
+      assert.ok(v.includes('monorepo-root-flat-scaffold'), filePath);
+    }
   });
 });
 
@@ -323,6 +336,55 @@ test('plan-opencode-queue-gate: OpenCode-enabled new projects require machine-re
   });
 });
 
+test('plan-opencode-queue-gate: Windsurf NEVER blocks the queue gate (best-effort; no dead-end for Devin)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Prose plan, no delegate block\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host: 'windsurf',
+      block: names,
+    };
+    // Windsurf: the OpenCode queue gate never fires (Devin stops on any deny; the
+    // queue is a token-optimization, so it stays a no-op → OpenCode is best-effort).
+    assert.deepEqual(planReadinessViolations(args), []);
+    assert.deepEqual(planReadinessViolations(args), []);
+  });
+});
+
+test('plan-opencode-queue-gate: other hosts still HARD-block every time (no behavior change)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Prose plan, no delegate block\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: names,
+    };
+    // Non-Windsurf hosts keep the original hard block on repeated writes.
+    assert.deepEqual(planReadinessViolations(args), ['plan-opencode-queue-gate']);
+    assert.deepEqual(planReadinessViolations(args), ['plan-opencode-queue-gate']);
+  });
+});
+
 test('plan-opencode-queue-gate: passes when opencode-delegate block has units', () => {
   withProject((dir) => {
     const state = {
@@ -351,7 +413,7 @@ test('plan-opencode-queue-gate: passes when opencode-delegate block has units', 
   });
 });
 
-test('plan-opencode-queue-gate: OpenCode host rejects self-delegation queue blocks', () => {
+test('plan-opencode-queue-gate: OpenCode-compatible self hosts reject self-delegation queue blocks', () => {
   withProject((dir) => {
     const state = {
       ...DEFAULT_STATE,
@@ -360,23 +422,25 @@ test('plan-opencode-queue-gate: OpenCode host rejects self-delegation queue bloc
       toolchain: { opencode: { installedVersion: '1.0.0' } },
     };
     writeStateFile(dir, state);
-    const v = planReadinessViolations({
-      filePath: '.traffic-one/plan.md',
-      content: [
-        '# Plan',
-        '<!-- opencode-delegate:start -->',
-        '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
-        '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
-        '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
-        '<!-- opencode-delegate:end -->',
-      ].join('\n'),
-      projectRoot: dir,
-      state,
-      writingFeatureSource: false,
-      host: 'opencode',
-      block: names,
-    });
-    assert.deepEqual(v, ['plan-opencode-self-delegation-gate']);
+    for (const host of ['opencode', 'kilo']) {
+      const v = planReadinessViolations({
+        filePath: '.traffic-one/plan.md',
+        content: [
+          '# Plan',
+          '<!-- opencode-delegate:start -->',
+          '- id: i18n | role: frontend | files: packages/i18n/src/locales/en/common.json | task: seed strings',
+          '- id: seed | role: backend | files: supabase/seed.sql | task: seed demo rows',
+          '- id: smoke | role: tester | files: apps/web/e2e/smoke.spec.ts | task: scaffold smoke coverage',
+          '<!-- opencode-delegate:end -->',
+        ].join('\n'),
+        projectRoot: dir,
+        state,
+        writingFeatureSource: false,
+        host,
+        block: names,
+      });
+      assert.deepEqual(v, ['plan-opencode-self-delegation-gate'], host);
+    }
   });
 });
 
@@ -547,5 +611,64 @@ test('assignments-owner-gate: tester cannot rewrite assignments after PLAN_READY
       block: names,
     });
     assert.deepEqual(v, ['assignments-owner-gate']);
+  });
+});
+
+test('architectPhaseIncompleteReasons: flags partial baseline after plan exists', () => {
+  withProject((dir) => {
+    writeStateFile(dir, { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R' });
+    writePlan(dir);
+    const missing = architectPhaseIncompleteReasons(dir, { ...DEFAULT_STATE, currentRunId: 'R' });
+    assert.ok(missing.some((m) => m.includes('coding.md')));
+    assert.ok(missing.some((m) => m.includes('assignments.json')));
+    assert.ok(missing.some((m) => m.includes('architect.md')));
+    assert.equal(isArchitectPhaseComplete(dir, { ...DEFAULT_STATE, currentRunId: 'R' }), false);
+  });
+});
+
+test('isArchitectPhaseComplete: true when scaffold, memory, assignments, and digest exist', () => {
+  withProject((dir) => {
+    writeStateFile(dir, { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R' });
+    writePlan(dir);
+    writeArchitectPhaseComplete(dir, 'R', DEFAULT_STATE);
+    assert.equal(isArchitectPhaseComplete(dir, { ...DEFAULT_STATE, currentRunId: 'R' }), true);
+  });
+});
+
+test('architect-pre-ready-feature: denies senior-architect app implementation before PLAN_READY', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    writeStateFile(dir, state);
+    writePlan(dir);
+    writeMaterialized(dir);
+    writeRequiredScaffold(dir);
+    const v = planReadinessViolations({
+      filePath: 'apps/web/src/main.tsx',
+      content: 'import React from "react";\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: true,
+      block: names,
+    });
+    assert.deepEqual(v, ['architect-pre-ready-feature']);
+  });
+});
+
+test('missingArchitectScaffold: accepts packages/tsconfig/base.json instead of root tsconfig.base.json', () => {
+  withProject((dir) => {
+    writeStateFile(dir, DEFAULT_STATE);
+    writeRequiredScaffold(dir);
+    fs.unlinkSync(path.join(dir, 'tsconfig.base.json'));
+    fs.mkdirSync(path.join(dir, 'packages/tsconfig'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'packages/tsconfig/base.json'), '{}', 'utf8');
+    const missing = architectPhaseIncompleteReasons(dir, DEFAULT_STATE)
+      .filter((m) => m.includes('tsconfig'));
+    assert.deepEqual(missing, []);
   });
 });

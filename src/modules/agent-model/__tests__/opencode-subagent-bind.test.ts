@@ -53,6 +53,16 @@ test('opencode subagent bind: a [t1-role:] spawn prompt claims the child session
   });
 });
 
+test('opencode subagent bind: Kilo uses the same marker-based child-session claim path', () => {
+  withProject({}, (cwd) => {
+    const prompt = '[t1-role: senior-backend]\n\nYou are the Senior Backend Engineer. Run ID: 1782492658872';
+    opencodeSubagentBind(ctxFor(cwd, prompt, 'ses_kilo_child_be', 'kilo'));
+    const resolved = resolveRunAgentContext(cwd, readState(cwd), { session_id: 'ses_kilo_child_be' }, { claimPending: false });
+    assert.ok(resolved, 'claim resolves for the Kilo-bound child session');
+    assert.equal(resolved?.role, 'senior-backend');
+  });
+});
+
 test('opencode subagent bind: no role marker → no claim (orchestrator/user prompts are untouched)', () => {
   withProject({}, (cwd) => {
     opencodeSubagentBind(ctxFor(cwd, 'create a modern learning platform with courses', 'ses_orchestrator'));

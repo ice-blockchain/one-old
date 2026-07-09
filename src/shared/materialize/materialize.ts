@@ -21,6 +21,8 @@ import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
 import { writeOpenCodeHostAssets } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
+import { writeWindsurfAgentFiles } from './windsurf-agents';
+import { writeWindsurfHostAssets } from './windsurf-assets';
 
 type Rec = Record<string, unknown>;
 
@@ -76,7 +78,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
     .sort();
 
   const previous = loadPreviousManifest(cwd);
-  const removed = cleanupPrevious(cwd, previous, new Set(rules), new Set(skills));
+  let removed = cleanupPrevious(cwd, previous, new Set(rules), new Set(skills));
 
   let written = 0;
   const projectMemoryRoot = path.join(cwd, '.traffic-one');
@@ -109,6 +111,15 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
   if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, state);
   if (detectHost() === 'opencode') written += writeOpenCodeHostAssets(cwd, state, skills);
+  let windsurfAssets: ReturnType<typeof writeWindsurfHostAssets> | null = null;
+  let windsurfAgents = 0;
+  if (detectHost() === 'windsurf') {
+    windsurfAssets = writeWindsurfHostAssets(cwd, rules);
+    windsurfAgents = writeWindsurfAgentFiles(cwd, state);
+    written += windsurfAssets.written;
+    written += windsurfAgents;
+    removed += windsurfAssets.removed;
+  }
 
   const mobile = state.mobile as Rec | undefined;
   const manifest = {
@@ -121,6 +132,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
     mobile: (mobile && (mobile.framework as string)) || 'none',
     rules: rules.map(toPosix),
     skills,
+    ...(windsurfAssets ? { windsurf: { rules: windsurfAssets.rules, skills: windsurfAssets.skills, agents: windsurfAgents } } : {}),
   };
   if (writeTextIfChanged(path.join(cwd, '.traffic-one', 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)) {
     written += 1;

@@ -10,6 +10,16 @@ import { OPENCODE_FREE_MODELS } from './opencode-delegation';
 export const TIER_IDS = ['highest', 'balanced', 'cheapest'] as const;
 export type TierId = (typeof TIER_IDS)[number];
 
+// Kilo model names mirror the Kilo model picker labels. V1 still omits `model`
+// on Kilo task spawns unless Kilo exposes a documented subagent model parameter,
+// but the onboarding wizard and generated lineup must not advertise OpenCode
+// slugs that Kilo cannot select.
+export const KILO_MODELS: Readonly<Record<TierId, string>> = {
+  highest: 'Anthropic Claude Opus 4.8',
+  balanced: 'MoonshotAI Kimi K2.7 Code',
+  cheapest: 'MiniMax MiniMax M3',
+};
+
 // internal: consumed by canonicalTier (shared/model-tiers.ts).
 export const TIER_ALIASES: Readonly<Record<string, TierId>> = {
   max: 'highest', maximum: 'highest', top: 'highest', best: 'highest', high: 'highest',
@@ -17,7 +27,7 @@ export const TIER_ALIASES: Readonly<Record<string, TierId>> = {
   low: 'cheapest', min: 'cheapest', minimal: 'cheapest', cheap: 'cheapest', fast: 'cheapest', lite: 'cheapest',
 };
 
-export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode', 'copilot'] as const;
+export const HOST_IDS = ['claude', 'codex', 'cursor', 'opencode', 'copilot', 'windsurf', 'kilo'] as const;
 export type HostModelKey = (typeof HOST_IDS)[number];
 
 export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>> = {
@@ -41,11 +51,18 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
     balanced: OPENCODE_FREE_MODELS[1] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
     cheapest: OPENCODE_FREE_MODELS[2] ?? OPENCODE_FREE_MODELS[0] ?? 'opencode/deepseek-v4-flash-free',
   },
+  kilo: { ...KILO_MODELS },
   // copilot: model ids from Copilot Desktop's `copilot-available-models` catalog.
   // Custom agents currently inherit the session model at runtime, but the onboarding
   // wizard still needs truthful tier labels instead of collapsing paid plans to mini.
   // Free/Student plans use the mini overlay below.
   copilot: { highest: 'gpt-5.4', balanced: 'gpt-5.3-codex', cheapest: 'gpt-5.4-mini' },
+  // windsurf / Devin Desktop: names mirror the Cascade model selector. Official docs
+  // say the selector is the freshest availability source; free accounts currently expose
+  // the SWE family, while premium Claude/GPT families are plan-gated. The free overlay
+  // below collapses every tier to the free SWE model so a Claude/Max account on the same
+  // machine cannot leak into Windsurf's recommendation.
+  windsurf: { highest: 'Claude Opus 4.8 Medium', balanced: 'Claude Sonnet 5 Medium', cheapest: 'SWE-1.6 Slow' },
 };
 
 // Same-tier FALLBACK FAMILIES per preferred family — the orchestrator falls back to one of
@@ -105,6 +122,15 @@ export const COPILOT_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Reco
   free: { highest: 'gpt-5.4-mini', balanced: 'gpt-5.4-mini' },
 };
 
+// Per-plan model OVERLAY for Windsurf / Devin Desktop. The app does not expose a
+// stable local account-plan store like Cursor's state.vscdb; docs direct users to the
+// in-app model selector for current availability. Free users get the SWE model only,
+// so every tier resolves to that selectable model unless an explicit plan override is
+// supplied (TRAFFIC_ONE_USER_PLAN=pro/max/team/enterprise).
+export const WINDSURF_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
+  free: { highest: 'SWE-1.6 Slow', balanced: 'SWE-1.6 Slow', cheapest: 'SWE-1.6 Slow' },
+};
+
 // Same-tier FALLBACK chain per preferred Go model — the gate accepts any of these (and a
 // dropdown can offer them) when the preferred model is unavailable. Each chain degrades
 // within the Go open-weight catalog, then to OPENCODE_FREE_MODELS (always reachable on the
@@ -114,6 +140,28 @@ export const OPENCODE_MODEL_ALTERNATES: Readonly<Record<string, readonly string[
   'opencode-go/qwen3.7-max': ['opencode-go/minimax-m3', 'opencode-go/kimi-k2.7-code', 'opencode-go/deepseek-v4-pro', ...OPENCODE_FREE_MODELS],
   'opencode-go/glm-5.2': ['opencode-go/qwen3.7-plus', 'opencode-go/minimax-m2.7', 'opencode-go/glm-5.1', ...OPENCODE_FREE_MODELS],
   'opencode-go/deepseek-v4-flash': ['opencode-go/glm-5', 'opencode-go/qwen3.5-plus', ...OPENCODE_FREE_MODELS],
+};
+
+// Kilo picker fallbacks from the visible Kilo catalog. These are advisory only in
+// v1 because Kilo is exempt from hard model-param enforcement, but keeping them
+// separate prevents Kilo from inheriting OpenCode fallback slugs anywhere a
+// caller displays acceptable same-tier options.
+export const KILO_MODEL_ALTERNATES: Readonly<Record<string, readonly string[]>> = {
+  'Anthropic Claude Opus 4.8': [
+    'Stealth Claude Opus 4.8',
+    'Stealth Claude Opus 4.7',
+    'OpenAI GPT-5.5',
+    'Google Gemini 3.1 Pro Preview',
+  ],
+  'MoonshotAI Kimi K2.7 Code': [
+    'Anthropic Claude Sonnet 5',
+    'OpenAI GPT-5.5',
+    'Qwen Qwen3.7 Plus',
+  ],
+  'MiniMax MiniMax M3': [
+    'Qwen Qwen3.7 Plus',
+    'Stealth Claude Sonnet 4.6',
+  ],
 };
 
 // ── User subscription plans (per host) ──────────────────────────────────────
@@ -170,12 +218,15 @@ export const HOST_PLAN_IDS: Readonly<Record<HostModelKey, ReadonlySet<UserPlan>>
   // `opencode-go`) mapped to `plus` (PLAN_ALIASES `go`→`plus` + detectOpenCodePlan).
   opencode: new Set<UserPlan>(['free', 'plus']),
   copilot: new Set<UserPlan>(['free', 'pro', 'plus', 'max', 'business', 'enterprise', 'team']),
+  // Devin Desktop self-serve docs list Free / Pro / Max / Teams / Enterprise.
+  windsurf: new Set<UserPlan>(['free', 'pro', 'max', 'team', 'enterprise']),
+  kilo: new Set<UserPlan>(['free']),
 };
 
 // Plan assumed when the host exposes no detectable signal. Generous on purpose so
 // undetected paying users are not silently downgraded (Claude stays at its top tier).
 export const DEFAULT_HOST_PLAN: Readonly<Record<HostModelKey, UserPlan>> = {
-  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free',
+  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free', windsurf: 'free', kilo: 'free',
 };
 
 // One plan's tier choice: `base` when OpenCode delegation is off, `withOpenCode`
@@ -215,9 +266,12 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
   opencode: {
     free: { base: 'cheapest', withOpenCode: 'cheapest' },
     // "Go" subscription (auth `opencode-go` → plus): paid open-weight models, so recommend
-    // a real working tier instead of cheapest. Delegation is inert on the opencode host,
-    // so base == withOpenCode.
+    // a real working tier instead of cheapest. Delegation is inert on OpenCode-compatible
+    // self hosts, so base == withOpenCode.
     plus: { base: 'balanced', withOpenCode: 'balanced' },
+  },
+  kilo: {
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
   },
   copilot: {
     free: { base: 'cheapest', withOpenCode: 'balanced' },
@@ -225,6 +279,13 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
     plus: { base: 'highest', withOpenCode: 'highest' },
     max: { base: 'highest', withOpenCode: 'highest' },
     business: { base: 'highest', withOpenCode: 'highest' },
+    team: { base: 'highest', withOpenCode: 'highest' },
+    enterprise: { base: 'highest', withOpenCode: 'highest' },
+  },
+  windsurf: {
+    free: { base: 'cheapest', withOpenCode: 'balanced' },
+    pro: { base: 'balanced', withOpenCode: 'highest' },
+    max: { base: 'highest', withOpenCode: 'highest' },
     team: { base: 'highest', withOpenCode: 'highest' },
     enterprise: { base: 'highest', withOpenCode: 'highest' },
   },

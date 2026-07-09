@@ -20,6 +20,7 @@ test('--host=<id> is authoritative for every host (how a spawned runner learns t
   assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=cursor']), 'cursor');
   assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=codex']), 'codex');
   assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=opencode']), 'opencode');
+  assert.equal(detectHost(E(), ['node', 'x.cjs', '/cwd', '--host=kilo']), 'kilo');
   assert.equal(detectHost(E({ CURSOR_PLUGIN_ROOT: '/x' }), ['--host=codex']), 'codex');
   // An unknown --host value is ignored (falls through to env/default).
   assert.equal(detectHost(E(), ['--host=bogus']), 'claude');
@@ -27,6 +28,7 @@ test('--host=<id> is authoritative for every host (how a spawned runner learns t
 
 test('TRAFFIC_ONE_HOST marks hosts that only expose the generic plugin root', () => {
   assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'copilot', TRAFFIC_ONE_PLUGIN_ROOT: '/x' }), []), 'copilot');
+  assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'kilo', TRAFFIC_ONE_PLUGIN_ROOT: '/x' }), []), 'kilo');
   assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'cursor', CODEX_INTERNAL_ORIGINATOR_OVERRIDE: 'Codex Desktop' }), []), 'cursor');
   assert.equal(detectHost(E({ TRAFFIC_ONE_HOST: 'bogus', TRAFFIC_ONE_PLUGIN_ROOT: '/x' }), []), 'claude');
 });

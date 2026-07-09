@@ -12,8 +12,9 @@
 // the Codex SubagentStart bind (claimThreadRole consumes the matching pending claim,
 // so resolveRunAgentContext resolves the role on the child's first write).
 //
-// Inert on every other host (they bind via SubagentStart) and outside subagents
-// mode — guarded so Claude/Codex/Cursor behavior is unchanged.
+// Kilo rides the same OpenCode-compatible hook path. Inert on other hosts (they
+// bind via SubagentStart) and outside subagents mode — guarded so Claude/Codex/
+// Cursor behavior is unchanged.
 
 import { asString } from '../../adapters/coerce';
 import { noop } from '../../core/result';
@@ -24,7 +25,7 @@ import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { inferTrafficOneSpawnRole } from './role-infer';
 
 export function opencodeSubagentBind(ctx: Ctx): HookResult {
-  if (ctx.host !== 'opencode') return noop();
+  if (ctx.host !== 'opencode' && ctx.host !== 'kilo') return noop();
   if (authChoiceAllowsContinue(ctx.cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
