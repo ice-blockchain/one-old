@@ -1002,11 +1002,12 @@ function setCurrentRunId(cwd: string, runId: string): void {
   fs.writeFileSync(file, JSON.stringify(state), 'utf8');
 }
 
-function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude'): Ctx {
+function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'windsurf' = 'claude'): Ctx {
+  const rawName = host === 'windsurf' ? 'devin.run_subagent' : 'Task';
   const input: HookInput = {
     event: 'PreToolUse', host, cwd,
-    raw: { tool_name: 'Task', tool_input: toolInput, session_id: sessionId },
-    tool: { class: 'spawn-agent' as ToolClass, rawName: 'Task' },
+    raw: { tool_name: rawName, tool_input: toolInput, session_id: sessionId },
+    tool: { class: 'spawn-agent' as ToolClass, rawName },
   };
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
@@ -1016,8 +1017,8 @@ function postSpawnCtx(
   toolInput: Record<string, unknown>,
   toolResponse: unknown,
   sessionId: string,
-  host: 'claude' | 'codex' | 'cursor' | 'copilot' = 'claude',
-  rawName = 'Task',
+  host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'windsurf' = 'claude',
+  rawName = host === 'windsurf' ? 'devin.run_subagent' : 'Task',
 ): Ctx {
   const input: HookInput = {
     event: 'PostToolUse', host, cwd,
@@ -1150,6 +1151,35 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
     assert.equal(sameNameContinuation.kind, 'deny', 'Copilot name-only retry is still a fresh background task');
     if (sameNameContinuation.kind === 'deny') {
       assert.ok(sameNameContinuation.reason.includes('Do NOT substitute `name: "senior-frontend"`'));
+    }
+  });
+});
+
+test('reuse (Windsurf): records profile id and denies same-role respawn with run_subagent prose', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-windsurf-reuse');
+    const rec = recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      {
+        profile: 'senior-frontend',
+        prompt: '[t1-role: senior-frontend]\nbuild the UI',
+      },
+      { mcp_result: 'subagent started' },
+      'parent-1',
+      'windsurf',
+    ));
+    assert.equal(rec.kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, 'run-windsurf-reuse')['senior-frontend']?.agentId, 'senior-frontend');
+
+    const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
+      profile: 'senior-frontend',
+      prompt: '[t1-role: senior-frontend]\npart 2: admin area',
+    }, 'parent-1', 'windsurf'));
+    assert.equal(duplicate.kind, 'deny');
+    if (duplicate.kind === 'deny') {
+      assert.ok(duplicate.reason.includes('senior-frontend'));
+      assert.ok(duplicate.reason.includes('run_subagent'));
+      assert.ok(!duplicate.reason.includes('SendMessage'));
     }
   });
 });
@@ -1471,6 +1501,8 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'copilot' } as NodeJS.ProcessEnv), true);
   assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'copilot', CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: '0' } as NodeJS.ProcessEnv), false);
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'copilot'), true);
+  assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'windsurf'), true);
+  assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'windsurf' } as NodeJS.ProcessEnv), true);
 });
 
 test('Cursor reuse deny names the Task resume recipe and accepts continuation fields', () => {

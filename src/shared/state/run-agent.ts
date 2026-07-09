@@ -1450,7 +1450,7 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (host) {
-    if (host === 'codex' || host === 'cursor' || host === 'copilot') return true;
+    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf') return true;
     return flag !== '';
   }
   const envHost = String(env.TRAFFIC_ONE_HOST ?? '').trim().toLowerCase();
@@ -1465,6 +1465,8 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   // Copilot: the plugin hook env carries only TRAFFIC_ONE_HOST=copilot, so this
   // must not depend on a Claude feature flag or the registry stays inert.
   if (envHost === 'copilot') return true;
+  // Windsurf/Devin Local: run_subagent + read_subagent (native custom profiles).
+  if (envHost === 'windsurf') return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }

@@ -17,6 +17,8 @@ import {
   WINDSURF_HOST_NEXT_CONFIG_DIR_REL,
   type WindsurfHookEvent,
 } from '../../config/windsurf-host';
+import { globalTrafficOneDir } from '../../shared/state/traffic-one-paths';
+import { windsurfUserHookCommand } from '../../shared/windsurf-hook-command';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -81,12 +83,22 @@ function writeJson(file: string, value: unknown): void {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
 }
 
-function quote(value: string): string {
-  return `"${value.replace(/(["\\$`])/g, '\\$1')}"`;
+function windsurfPluginRootStamp(env: NodeJS.ProcessEnv): string {
+  return path.join(globalTrafficOneDir(env), 'windsurf-plugin-root');
+}
+
+function writeWindsurfPluginRootStamp(pluginRoot: string, env: NodeJS.ProcessEnv = process.env): void {
+  try {
+    const file = windsurfPluginRootStamp(env);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `${pluginRoot.trim()}\n`, 'utf8');
+  } catch {
+    // best-effort; workspace shims fall back to TRAFFIC_ONE_PLUGIN_ROOT in hook commands
+  }
 }
 
 function hookCommand(pluginRoot: string, event: WindsurfHookEvent): string {
-  return `node ${quote(path.join(pluginRoot, 'scripts', 'windsurf-hook-runtime.cjs'))} ${event} --host=windsurf`;
+  return windsurfUserHookCommand(pluginRoot, event);
 }
 
 function ownedHookEntry(entry: unknown): boolean {
@@ -228,6 +240,7 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: reado
   const hooksChanged = ensureHooks(hooksFile, pluginRoot);
   const mcpChanged = ensureMcp(mcpFile);
   const globalRules = ensureGlobalRules(rulesFile, pluginRoot);
+  writeWindsurfPluginRootStamp(pluginRoot, env);
   return {
     code: 0,
     stdout: [

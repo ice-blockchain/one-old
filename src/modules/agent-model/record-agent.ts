@@ -88,7 +88,7 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
 
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
-  if (toolName && !/^(Task|Agent|spawn_agent)$/i.test(stripToolNamespace(toolName))) return noop();
+  if (toolName && !/^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i.test(stripToolNamespace(toolName))) return noop();
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
   const role = inferTrafficOneSpawnRole(toolInput);
@@ -99,7 +99,14 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   // extractor's regex is anchored on the labelled `agent[_]id:` form, so input
   // text cannot false-positive unless it literally quotes a labelled id.
   const response = raw.tool_response ?? raw.toolResponse ?? raw.tool_result ?? raw.toolResult;
-  const agentId = extractSpawnedAgentId(response) ?? (response === undefined ? extractSpawnedAgentId(raw) : null);
+  let agentId = extractSpawnedAgentId(response) ?? (response === undefined ? extractSpawnedAgentId(raw) : null);
+  // Windsurf/Devin: run_subagent is keyed by profile name; when the post payload
+  // carries no labelled id, record the profile (or role) so the reuse gate can
+  // teach run_subagent continuation — same pattern as Copilot's agent_id.
+  if (!agentId && ctx.host === 'windsurf') {
+    const profile = asString(toolInput.profile) || role;
+    if (profile) agentId = profile;
+  }
   if (!agentId || !isResumeCapableAgentId(agentId)) return noop();
 
   const state = readEffectiveState(ctx.cwd);

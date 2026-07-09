@@ -29,7 +29,7 @@ export function copilotCommand(subcommand: string): string {
 }
 
 export function windsurfCommand(subcommand: string): string {
-  return `node "${PLUGIN_ROOT_EXPR}/scripts/windsurf-hook-runtime.cjs" ${subcommand} --host=windsurf`;
+  return `TRAFFIC_ONE_PLUGIN_ROOT="${PLUGIN_ROOT_EXPR}" TRAFFIC_ONE_HOST=windsurf node "${PLUGIN_ROOT_EXPR}/scripts/windsurf-hook-runtime.cjs" ${subcommand} --host=windsurf`;
 }
 
 export interface CopilotHookEntry {

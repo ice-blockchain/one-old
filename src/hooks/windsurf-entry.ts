@@ -69,6 +69,19 @@ function shouldBlockPromptForAuth(text: string): boolean {
     || lower.includes('session expired');
 }
 
+// Cascade pre_user_prompt ignores stdout and show_output — only exit 2 + stderr
+// reaches the agent (docs.devin.ai/desktop/cascade/hooks). Setup/auth/onboarding
+// context must block or Windsurf silently drops it and the agent freelances.
+function shouldBlockPreUserPromptContext(text: string): boolean {
+  if (shouldBlockPromptForAuth(text)) return true;
+  const lower = text.toLowerCase();
+  return lower.includes('[setup required]')
+    || lower.includes('setup required')
+    || lower.includes('open the setup wizard')
+    || lower.includes('traffic one needs a quick setup')
+    || lower.includes('project setup is required');
+}
+
 export async function runWindsurfHook(
   subcommand: string | undefined,
   stdin: string,
@@ -78,6 +91,7 @@ export async function runWindsurfHook(
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
   const cwd = cwdFrom(stdin);
   applyTrafficOneEnv(cwd, 'windsurf', env);
+  try { process.chdir(cwd); } catch { /* Cascade usually sets cwd; best-effort */ }
 
   const adapter = makeWindsurfAdapter();
   try {
@@ -97,7 +111,7 @@ export async function runWindsurfHook(
 
     if (result.kind === 'context') {
       const message = contextText(result);
-      if (action === 'pre_user_prompt' && message && shouldBlockPromptForAuth(message)) {
+      if (action === 'pre_user_prompt' && message && shouldBlockPreUserPromptContext(message)) {
         return { stdout: '', stderr: message, exitCode: 2 };
       }
       return { stdout: message, stderr: '', exitCode: 0 };
