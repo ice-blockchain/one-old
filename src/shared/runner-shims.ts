@@ -36,6 +36,7 @@ export const RUNNER_SHIMS: ReadonlyArray<{ shim: string; rel: string }> = [
   { shim: 'one-mcp-report.cjs', rel: 'scripts/one-mcp-report.cjs' },
   { shim: 'traffic-one-cleanup.cjs', rel: 'scripts/traffic-one-cleanup.cjs' },
   { shim: 'doctor.cjs', rel: 'scripts/doctor.cjs' },
+  { shim: 'windsurf-hook-runtime.cjs', rel: 'scripts/windsurf-hook-runtime.cjs' },
 ];
 
 function shimSource(rel: string): string {
@@ -80,6 +81,10 @@ function candidateRoots() {
     const local = path.join(home, host, 'plugins', 'local', 'traffic-one');
     try { if (fs.statSync(local).isDirectory()) roots.push(local); } catch { /* no local install */ }
   }
+  try {
+    const windsurfStamp = fs.readFileSync(path.join(home, '.traffic-one', 'windsurf-plugin-root'), 'utf8').trim();
+    if (windsurfStamp) roots.push(windsurfStamp);
+  } catch { /* no windsurf stamp */ }
   return roots;
 }
 

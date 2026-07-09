@@ -70,6 +70,14 @@ Architect completion gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add st
 Plan gate: OpenCode queue metadata is unsafe: {{ERRORS}}. Add stable unique `id` fields, exact `files` allowlists, and `depends` edges for overlapping areas.
 <!-- T1BLOCK:END plan-opencode-queue-policy-gate -->
 
+<!-- T1BLOCK:BEGIN scaffold-stack-gate -->
+Stack gate: this project's stack is React/Vite (Traffic One does not use Next.js or create-react-app). Scaffold the app under `apps/web` with Vite per `.traffic-one/plan.md` and `rules/modes/new-project.md` — do not run create-next-app / create-react-app. See rules/core.md for the approved stack.
+<!-- T1BLOCK:END scaffold-stack-gate -->
+
+<!-- T1BLOCK:BEGIN scaffold-plan-gate -->
+Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); it writes the `apps/web` Turborepo monorepo scaffold per the plan. Do not run `create-*` app scaffolders — build on the plan the architect produces.
+<!-- T1BLOCK:END scaffold-plan-gate -->
+
 <!-- T1BLOCK:BEGIN assignments-shape-gate -->
 Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. See `agents/senior-architect.md` § Assignments manifest.
 <!-- T1BLOCK:END assignments-shape-gate -->

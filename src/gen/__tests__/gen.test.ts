@@ -31,6 +31,7 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
     assert.equal(copilotHooks.hooks.SessionStart[0].env.TRAFFIC_ONE_HOST, 'copilot');
     const windsurfHooks = JSON.parse(fs.readFileSync(path.join(dir, 'hooks', 'hooks-windsurf.json'), 'utf8'));
     assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('windsurf-hook-runtime.cjs'));
+    assert.ok(windsurfHooks.hooks.pre_user_prompt[0].command.includes('TRAFFIC_ONE_HOST=windsurf'));
     assert.ok(windsurfHooks.hooks.post_mcp_tool_use[0].command.includes('post_mcp_tool_use'));
     const frontendAgent = fs.readFileSync(path.join(dir, 'agents', 'senior-frontend.agent.md'), 'utf8');
     assert.match(frontendAgent, /^tools: \["view", "search", "bash", "edit"\]$/m);

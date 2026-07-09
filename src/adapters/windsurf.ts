@@ -111,6 +111,17 @@ export function makeWindsurfAdapter(): HostAdapter {
       const tool = toolFor(action, info);
       const filePath = tool?.filePath || '';
       const prompt = firstString(info.user_prompt, info.userPrompt, data.prompt, data.user_prompt, data.userPrompt);
+      const cwd = cwdFor(data, info, filePath);
+      // Use Cascade's authoritative workspace root as the resolution ceiling WHEN it
+      // sends one. Do NOT fall back to the hook cwd: a tool hook's cwd is often a
+      // SUBDIRECTORY of the opened project (e.g. `apps/web/src/lib`), and pinning the
+      // ceiling there stops resolveProjectRoot from climbing UP to the onboarded
+      // workspace root — so every subdir is treated as a fresh un-onboarded project
+      // and re-triggers the wizard mid-build. With no explicit root we leave the
+      // ceiling unset and let the shared resolver climb to the nearest onboarded
+      // ancestor (same as Claude/Codex). The stray-ancestor case that motivated a
+      // cwd ceiling is avoided by not onboarding directories above real projects; the
+      // climb also stops at $HOME.
       const workspaceRoot = firstString(data.workspace_root, data.workspaceRoot, data.root_workspace_path, info.root_workspace_path);
       const explicitToolInput = asRecord(data.tool_input);
       const camelToolInput = asRecord(data.toolInput);
@@ -126,7 +137,7 @@ export function makeWindsurfAdapter(): HostAdapter {
       return {
         event: mapping.event,
         host: 'windsurf',
-        cwd: cwdFor(data, info, filePath),
+        cwd,
         ...(workspaceRoot && path.isAbsolute(workspaceRoot) ? { workspaceRoot } : {}),
         raw: normalizedRaw,
         ...(tool ? { tool } : {}),

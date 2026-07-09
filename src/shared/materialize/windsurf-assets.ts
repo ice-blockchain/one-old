@@ -9,6 +9,11 @@ import * as path from 'path';
 import { pluginRoot } from '../paths';
 import { templatePath } from '../stacks';
 import { renderWindsurfRuleDocs, WINDSURF_RULES_REL, type WindsurfRuleDocument } from '../windsurf-rules';
+import {
+  isGeneratedWindsurfWorkspaceHooks,
+  WINDSURF_WORKSPACE_HOOKS_REL,
+  windsurfWorkspaceHooksJson,
+} from '../windsurf-hook-command';
 import { GENERATED_MARKER, removeGeneratedSkillDir } from './generated';
 import { writeTextIfChanged } from '../fs-text';
 
@@ -19,6 +24,7 @@ export interface WindsurfAssetsResult {
   skills: number;
   written: number;
   removed: number;
+  workspaceHooks?: number;
 }
 
 function removeEmptyDirs(baseAbs: string): void {
@@ -119,5 +125,18 @@ export function writeWindsurfHostAssets(cwd: string, rules: readonly string[]): 
   }
 
   removed += cleanupGeneratedRuleFiles(cwd, keepRules) + cleanupGeneratedSkillDirs(cwd);
-  return { rules: docs.length, skills: 0, written, removed };
+  const workspaceHooksPath = path.join(cwd, WINDSURF_WORKSPACE_HOOKS_REL);
+  let workspaceHooks = 0;
+  try {
+    const existing = fs.existsSync(workspaceHooksPath) ? fs.readFileSync(workspaceHooksPath, 'utf8') : '';
+    if (!existing || isGeneratedWindsurfWorkspaceHooks(existing)) {
+      if (writeTextIfChanged(workspaceHooksPath, windsurfWorkspaceHooksJson())) {
+        written += 1;
+        workspaceHooks = 1;
+      }
+    }
+  } catch {
+    // best-effort; user-level install remains the primary path
+  }
+  return { rules: docs.length, skills: 0, written, removed, workspaceHooks };
 }

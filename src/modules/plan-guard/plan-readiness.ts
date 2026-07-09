@@ -33,6 +33,17 @@ const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwi
 const ROOT_MONOREPO_FLAT_RE = /^tsconfig(\.[a-z0-9-]+)?\.json$/;
 const T1_MEMORY_DIR = '.traffic' + '-one';
 
+// The OpenCode plan-queue gate is a TOKEN-OPTIMIZATION, not a correctness gate: it
+// wants the architect to list bounded units for the free OpenCode batch. On
+// Windsurf/Devin it must NOT block — Devin's agent treats any gate deny as terminal
+// (it stops, and a non-technical user is stuck with no "continue"), and OpenCode
+// delegation is best-effort anyway (a missing queue just falls back to paid). So
+// Windsurf never blocks here; other hosts keep the original hard block (their agents
+// read the deny and retry with the queue).
+function opencodeQueueBlocks(host: string | undefined): boolean {
+  return canonicalHost(host) !== 'windsurf';
+}
+
 function exists(projectRoot: string, relPath: string): boolean {
   return fs.existsSync(path.join(projectRoot, relPath));
 }
@@ -342,7 +353,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
         `Architect completion gate: do not write \`PLAN_READY\` until the required .traffic-one project-memory baseline exists with real content. Missing or incomplete: ${missingMemory.join(', ')}. Write the missing memory files yourself (do not delegate .traffic-one/* to OpenCode), then update \`.traffic-one/digests/<runId>/architect.md\` and only then emit \`PLAN_READY\`.`,
         { MISSING: missingMemory.join(', ') }));
     }
-    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot)) {
+    if (state.mode === 'new-project' && openCodeDelegationActive(state, host) && planOnDiskMissingOpenCodeBlock(projectRoot) && opencodeQueueBlocks(host)) {
       violations.push(block('architect-opencode-queue-gate',
         `Architect completion gate: OpenCode is enabled but \`.traffic-one/plan.md\` is missing at least ${OPENCODE_PLAN_MIN_UNITS} runnable machine-readable delegation units. Include \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` with 3–6 bounded units (\`- role: … | files: … | task: …\`) before emitting \`PLAN_READY\`. The orchestrator runs \`opencode_delegate_from_plan\` from that block BEFORE spawning implementers.`));
     }
@@ -361,7 +372,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content)) {
+  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && missingOpenCodeDelegateBlock(content) && opencodeQueueBlocks(host)) {
     violations.push(block('plan-opencode-queue-gate',
       `Plan gate: OpenCode is enabled — \`.traffic-one/plan.md\` must include the machine-readable \`<!-- opencode-delegate:start -->\` … \`<!-- opencode-delegate:end -->\` block with at least ${OPENCODE_PLAN_MIN_UNITS} runnable bounded units (\`- role: frontend|backend|tester|docs | files: … | task: …\`). Prose-only or incomplete OpenCode lists are ignored by \`opencode_delegate_from_plan\`.`));
   }

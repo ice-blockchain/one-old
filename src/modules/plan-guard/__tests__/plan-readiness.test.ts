@@ -336,6 +336,55 @@ test('plan-opencode-queue-gate: OpenCode-enabled new projects require machine-re
   });
 });
 
+test('plan-opencode-queue-gate: Windsurf NEVER blocks the queue gate (best-effort; no dead-end for Devin)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Prose plan, no delegate block\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host: 'windsurf',
+      block: names,
+    };
+    // Windsurf: the OpenCode queue gate never fires (Devin stops on any deny; the
+    // queue is a token-optimization, so it stays a no-op → OpenCode is best-effort).
+    assert.deepEqual(planReadinessViolations(args), []);
+    assert.deepEqual(planReadinessViolations(args), []);
+  });
+});
+
+test('plan-opencode-queue-gate: other hosts still HARD-block every time (no behavior change)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+    writeStateFile(dir, state);
+    const args = {
+      filePath: '.traffic-one/plan.md',
+      content: '## Prose plan, no delegate block\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: false,
+      host: 'claude',
+      block: names,
+    };
+    // Non-Windsurf hosts keep the original hard block on repeated writes.
+    assert.deepEqual(planReadinessViolations(args), ['plan-opencode-queue-gate']);
+    assert.deepEqual(planReadinessViolations(args), ['plan-opencode-queue-gate']);
+  });
+});
+
 test('plan-opencode-queue-gate: passes when opencode-delegate block has units', () => {
   withProject((dir) => {
     const state = {

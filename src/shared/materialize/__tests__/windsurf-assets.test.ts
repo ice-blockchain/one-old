@@ -59,6 +59,13 @@ test('writeWindsurfHostAssets mirrors active rules and role docs; skills stay ca
     assert.match(architect, /PLAN_READY/);
 
     assert.equal(fs.existsSync(path.join(project, LEGACY_WINDSURF_SKILLS_REL)), false);
+
+    const workspaceHooks = JSON.parse(fs.readFileSync(path.join(project, '.windsurf', 'hooks.json'), 'utf8')) as {
+      trafficOneGenerated?: boolean;
+      hooks: Record<string, unknown[]>;
+    };
+    assert.equal(workspaceHooks.trafficOneGenerated, true);
+    assert.ok(Array.isArray(workspaceHooks.hooks.pre_user_prompt));
   });
 });
 

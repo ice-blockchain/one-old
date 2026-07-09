@@ -128,6 +128,12 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
       tool: 'the Copilot `task` background-agent continuation',
     };
   }
+  if (host === 'windsurf') {
+    return {
+      call: `Call \`run_subagent\` with profile \`${agentId}\` (same role) and the NEW task as the prompt — put \`[t1-role: ${agentId}]\` as the FIRST line. Use \`read_subagent\` to collect the result. Do NOT spawn a second profile for the same role.`,
+      tool: 'run_subagent',
+    };
+  }
   return {
     call: `Call \`SendMessage\` with \`to: "${agentId}"\` and \`message\` = the NEW task.`,
     tool: 'SendMessage',

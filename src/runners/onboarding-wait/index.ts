@@ -30,9 +30,10 @@ import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildCursorSpawnModelMap, isBareCursorTierFamily } from '../../shared/materialize/cursor-spawn-map';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
 import { modelGateCommand } from '../../shared/model-gate-command';
-import { acceptableModelsFor } from '../../shared/model-tiers';
+import { acceptableModelsFor, canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
@@ -157,6 +158,34 @@ export function preSpawnRunIdDirective(cwd: string): string {
   }
 }
 
+// Windsurf/Devin-only PRE-SPAWN architect directive, emitted at SETUP_COMPLETE. Devin Local's
+// SWE-tier agent otherwise jumps straight to an off-stack scaffolder (create-next-app) instead of
+// spawning the architect. Other hosts get this flow from AGENTS.md read-routing; Windsurf gets no
+// post-setup nudge, so front-load it here. The scaffolder gate is the hard backstop; this is the
+// proactive "do this next" push so the build follows the flow smoothly. Returns '' off Windsurf,
+// for non-new-project, or on any read error.
+export function preSpawnArchitectDirective(cwd: string, host: string = detectHost()): string {
+  if (canonicalHost(host) !== 'windsurf') return '';
+  try {
+    const state = readEffectiveState(cwd) as Record<string, unknown>;
+    if (!state || state.mode !== 'new-project') return '';
+    const stack = typeof state.stack === 'string' ? state.stack : 'default';
+    const frontend = typeof state.frontend === 'string' ? state.frontend : 'react-vite';
+    return [
+      '[traffic-one] Windsurf build flow — do this FIRST, before writing or scaffolding anything:',
+      `1. This project's stack is \`${stack}\` (frontend \`${frontend}\`). Build ONLY on that stack — do NOT run`,
+      '   `create-next-app` / `create-react-app`; the React/Vite app lives under `apps/web` (Vite), per the plan.',
+      '2. Spawn the architect FIRST with the `run_subagent` tool (profile `senior-architect`). It writes',
+      '   `.traffic-one/plan.md` (PLAN_READY) + the `apps/web` monorepo scaffold. Development is BLOCKED until',
+      '   `.traffic-one/plan.md` exists (the scaffolder + plan gates deny premature/off-stack commands).',
+      '3. After PLAN_READY, spawn the implementer roles (`senior-frontend`, `senior-backend`, …) via `run_subagent`,',
+      '   then `senior-reviewer` + `senior-tester`. Build ON the plan the architect produced.',
+    ].join('\n');
+  } catch {
+    return '';
+  }
+}
+
 // Cursor-only PRE-SPAWN model directive, emitted at SETUP_COMPLETE on the main thread (the same
 // stdout channel that reliably reaches the Cursor user/agent). It front-loads everything the spawn
 // gate would otherwise deny-and-retry: (1) capture the build's model list, (2) check the chosen
@@ -244,6 +273,16 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const host = detectHost(process.env, argv);
   applyTrafficOneEnv(cwd, host);
+  // Self-heal a dead wizard link: the server the gate minted can die between then
+  // and this wait (host restart, crash), leaving the agent's shown link broken and
+  // the poll never completing. Re-ensure it here (idempotent — respawns only a
+  // dead/stale record) so announceWizardUrl below always prints a LIVE url. Skipped
+  // once setup is done, and best-effort (respects TRAFFIC_ONE_ONBOARDING_NO_SPAWN).
+  try {
+    if (!onboardingDone(cwd)) ensureOnboardingServer(cwd, { host });
+  } catch {
+    // best-effort — the wait still polls without a respawn
+  }
   announceWizardUrl(cwd);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
@@ -280,6 +319,12 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     const orchestrationDirective = preSpawnOrchestrationDirective(cwd, host);
     if (orchestrationDirective) {
       process.stdout.write(`\n${orchestrationDirective}\n`);
+    }
+    // Windsurf/Devin: front-load the architect-first + on-stack flow so the agent spawns senior-architect
+    // via run_subagent instead of jumping to an off-stack scaffolder. Backed by the scaffolder gate.
+    const architectDirective = preSpawnArchitectDirective(cwd, host);
+    if (architectDirective) {
+      process.stdout.write(`\n${architectDirective}\n`);
     }
     // Cursor: front-load model capture + eligibility + the per-role model map so the team spawns
     // ONCE (no capture/model-tier deny + retry). Backed by the PreToolUse gates if not followed.

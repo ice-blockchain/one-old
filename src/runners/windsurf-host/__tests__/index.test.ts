@@ -35,8 +35,14 @@ test('install requires consent and writes owned hooks, MCP, and global rule bloc
 
     const hooks = JSON.parse(fs.readFileSync(windsurfHooksPath(env), 'utf8')) as { hooks: Record<string, Array<{ command: string }>> };
     for (const event of WINDSURF_HOOK_EVENTS) {
-      assert.ok(hooks.hooks[event]?.some((entry) => entry.command.includes('windsurf-hook-runtime.cjs')), event);
+      const entry = hooks.hooks[event]?.find((e) => e.command.includes('windsurf-hook-runtime.cjs'));
+      assert.ok(entry, event);
+      assert.match(entry!.command, /TRAFFIC_ONE_PLUGIN_ROOT=/);
+      assert.match(entry!.command, /TRAFFIC_ONE_HOST=windsurf/);
     }
+
+    const stamp = fs.readFileSync(path.join(env.HOME!, '.traffic-one', 'windsurf-plugin-root'), 'utf8').trim();
+    assert.equal(stamp, env.TRAFFIC_ONE_PLUGIN_ROOT);
 
     const mcp = JSON.parse(fs.readFileSync(windsurfMcpPath(env), 'utf8')) as { mcpServers: Record<string, { serverUrl?: string }> };
     assert.equal(mcp.mcpServers['mcp-auth']?.serverUrl, DEFAULT_ENDPOINT);
