@@ -50,7 +50,23 @@ test('writeOneSection writes 0o600, round-trips, and preserves other sections', 
     const after = readOneSettings();
     assert.equal(after.auth?.sessionToken, 'tok_x.sig');
     assert.equal(after.codeGraphProvider, 'gitnexus');
-    assert.equal(after.version, 1);
+    assert.equal(after.schemaVersion, 1);
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(onDisk.schemaVersion, 1);
+    assert.equal('version' in onDisk, false);
+  });
+});
+
+test('legacy version envelope is read and migrated to schemaVersion on write', () => {
+  withStore((file) => {
+    fs.writeFileSync(file, JSON.stringify({ version: 1, codeGraphProvider: 'graphify' }), 'utf8');
+    assert.equal(readOneSettings().schemaVersion, 1);
+
+    writeOneSection('codeGraphProvider', 'gitnexus');
+    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assert.equal(onDisk.schemaVersion, 1);
+    assert.equal('version' in onDisk, false);
+    assert.equal(onDisk.codeGraphProvider, 'gitnexus');
   });
 });
 
@@ -78,6 +94,7 @@ test('deleteOneSection drops one section but leaves the file + other sections', 
 test('readOneSettings on a missing file returns safe defaults', () => {
   withStore(() => {
     const s = readOneSettings();
+    assert.equal(s.schemaVersion, 1);
     assert.equal(s.auth, null);
     assert.equal(s.authChoice, null);
     assert.equal(s.codeGraphProvider, null);

@@ -33,7 +33,7 @@ import {
 export type OneSection = 'auth' | 'authChoice' | 'codeGraphProvider';
 
 export interface OneSettings {
-  version: number;
+  schemaVersion: number;
   auth?: Record<string, unknown> | null;
   authChoice?: Record<string, unknown> | null;
   codeGraphProvider?: string | null;
@@ -61,10 +61,12 @@ export function oneSettingsPath(env: NodeJS.ProcessEnv = process.env): string {
 export function readOneSettings(env: NodeJS.ProcessEnv = process.env): OneSettings {
   const raw = readJson<Record<string, unknown> | null>(oneSettingsPath(env), null);
   if (!raw || typeof raw !== 'object') {
-    return { version: ONE_SETTINGS_VERSION, auth: null, authChoice: null, codeGraphProvider: null };
+    return { schemaVersion: ONE_SETTINGS_VERSION, auth: null, authChoice: null, codeGraphProvider: null };
   }
   return {
-    version: typeof raw.version === 'number' ? raw.version : ONE_SETTINGS_VERSION,
+    schemaVersion: typeof raw.schemaVersion === 'number'
+      ? raw.schemaVersion
+      : (typeof raw.version === 'number' ? raw.version : ONE_SETTINGS_VERSION),
     auth: raw.auth && typeof raw.auth === 'object' ? (raw.auth as Record<string, unknown>) : null,
     authChoice: raw.authChoice && typeof raw.authChoice === 'object' ? (raw.authChoice as Record<string, unknown>) : null,
     codeGraphProvider: typeof raw.codeGraphProvider === 'string' ? raw.codeGraphProvider : null,
@@ -110,7 +112,7 @@ function writeWholeFile(filePath: string, settings: OneSettings): void {
 export function updateOneSettings(patch: Partial<OneSettings>, env: NodeJS.ProcessEnv = process.env): string {
   const filePath = oneSettingsPath(env);
   const current = readOneSettings(env);
-  writeWholeFile(filePath, { ...current, ...patch, version: ONE_SETTINGS_VERSION });
+  writeWholeFile(filePath, { ...current, ...patch, schemaVersion: ONE_SETTINGS_VERSION });
   removeLegacyFiles(env);
   const normalized = filePath.replace(/\\/g, '/');
   if (normalized.endsWith(`/${PROJECT_LOCAL_MACHINE_REL.replace(/\\/g, '/')}`)) {
@@ -130,7 +132,7 @@ export function deleteOneSection(section: OneSection, env: NodeJS.ProcessEnv = p
   try {
     const current = readOneSettings(env);
     delete current[section];
-    writeWholeFile(filePath, { ...current, version: ONE_SETTINGS_VERSION });
+    writeWholeFile(filePath, { ...current, schemaVersion: ONE_SETTINGS_VERSION });
     return true;
   } catch {
     return false;
