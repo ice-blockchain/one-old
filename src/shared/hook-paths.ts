@@ -14,6 +14,16 @@ import { hasStateFile } from './tool-classify';
 
 type Rec = Record<string, unknown>;
 
+// Kilo's OpenCode-compatible hook bridge can drop the leading slash from an
+// absolute macOS path. Restore it only when the resulting path is inside this
+// hook's cwd, so an ordinary relative `Users/...` target is never reinterpreted.
+function normalizeHookTargetPath(cwd: string, filePath: unknown): string {
+  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized || path.isAbsolute(normalized)) return normalized;
+  const rootlessAbsolute = path.resolve(path.sep, normalized);
+  return isPathWithin(rootlessAbsolute, path.resolve(cwd)) ? rootlessAbsolute : normalized;
+}
+
 export function stateRequiresNewProjectMonorepo(state: Rec): boolean {
   if (!state || state.mode !== 'new-project' || isNativeState(state)) return false;
   if (state.stack === 'default' || state.stack === 'react-realtime-monorepo') return true;
@@ -23,7 +33,7 @@ export function stateRequiresNewProjectMonorepo(state: Rec): boolean {
 // Walk up from the tool's target file to the nearest dir (within cwd) that has a
 // .traffic-one state file — that's the project root for monorepo sub-apps.
 export function findProjectRootForHookFile(cwd: string, filePath: unknown): string {
-  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalized = normalizeHookTargetPath(cwd, filePath);
   if (!normalized) return cwd;
   const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
   const cwdAbs = path.resolve(cwd);
@@ -162,7 +172,7 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
 // monorepo sub-package climb is unchanged.
 export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceiling?: string } = {}): string {
   const ceiling = opts.ceiling ? path.resolve(opts.ceiling) : '';
-  const normalized = String(filePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalized = normalizeHookTargetPath(cwd, filePath);
   const fileAbs = normalized
     ? (path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized))
     : '';
@@ -189,7 +199,7 @@ export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceil
 }
 
 export function projectRelativeHookPath(cwd: string, projectRoot: string, filePath: unknown): string {
-  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalized = normalizeHookTargetPath(cwd, filePath);
   if (!normalized) return '';
   const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
   const relative = path.relative(projectRoot, absPath).replace(/\\/g, '/');

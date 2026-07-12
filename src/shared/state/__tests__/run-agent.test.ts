@@ -349,6 +349,20 @@ test('ensureRunAgentClaim rejects unknown roles', () => {
   });
 });
 
+test('native Devin foreground child resolves the sole anonymous pending role', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const claim = ensureRunAgentClaim(dir, state, 'senior-architect', {}, { toolName: 'run_subagent', agentType: 'subagent_general' });
+    assert.ok(claim);
+    const current = { ...state, currentRunId: claim!.runId };
+    const raw = { hook_event_name: 'PreToolUse', tool_name: 'write', tool_input: { file_path: path.join(dir, 'package.json') } };
+    assert.equal(resolveRunAgentContext(dir, current, raw, { claimPending: true }), null);
+    const resolved = resolveRunAgentContext(dir, current, raw, { claimPending: true, allowSoleAnonymousPending: true });
+    assert.equal(resolved?.role, 'senior-architect');
+    assert.equal(resolved?.source, 'sole-foreground-pending');
+  });
+});
+
 test('pruneExpiredPendingClaims removes stale pending claims and keeps fresh ones', () => {
   withPrefs((dir) => {
     const runId = 'run-prune';

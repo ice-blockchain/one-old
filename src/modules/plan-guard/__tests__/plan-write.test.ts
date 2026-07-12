@@ -8,7 +8,7 @@ import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
 import { writeAuthChoice } from '../../session/auth-choice';
 import { writeModelChoice } from '../../agent-model/model-choice';
-import { claimThreadRole } from '../../../shared/state/run-agent';
+import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
@@ -91,6 +91,33 @@ test('Kilo write of root tsconfig.json is gated on monorepo stacks', () => {
   });
 });
 
+test('Kilo write of root tsconfig.base.json is allowed as monorepo baseline', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'tsconfig.base.json', content: '{"compilerOptions":{}}',
+    }, {}, 'kilo'));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Kilo rootless macOS absolute assignments path is normalized to the project manifest', () => {
+  withMaterialized({}, (cwd) => {
+    const target = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json').slice(1);
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: target,
+      content: JSON.stringify({
+        version: 1,
+        runId: 'run-1',
+        assignments: [
+          { role: 'senior-frontend', scope: { include: ['apps/web/**'], exclude: [] } },
+          { role: 'senior-backend', scope: { include: ['supabase/**'], exclude: [] } },
+        ],
+      }),
+    }, { session_id: 'kilo-architect' }, 'kilo'));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
 test('subagents project: a feature write outside any role session is denied (run-team)', () => {
   withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
@@ -101,6 +128,116 @@ test('subagents project: a feature write outside any role session is denied (run
       assert.ok(r.reason.includes('Run-team enforcement gate'));
       assert.ok(r.reason.includes('team.mode'));
     }
+  });
+});
+
+test('subagents project: parent build-artifact write is denied even outside src', () => {
+  withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/api-client/tsconfig.json',
+      content: '{"extends":"../../tsconfig.base.json"}',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('Run-team enforcement gate'));
+      assert.ok(r.reason.includes('team.mode'));
+      assert.ok(r.reason.includes('assigned build-artifact') || r.reason.includes('implementation artifacts'));
+    }
+  });
+});
+
+test('subagents project: claimed role can write its package build artifact', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'frontend-child', 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/i18n/package.json',
+      content: '{"name":"@app/i18n","type":"module"}',
+    }, { session_id: 'frontend-child' }, 'opencode'));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Windsurf native foreground architect can write package.json from its sole pending claim', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(ensureRunAgentClaim(cwd, state, 'senior-architect', {}, {
+      toolName: 'run_subagent',
+      agentType: 'subagent_general',
+    }));
+
+    const result = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      file_path: path.join(cwd, 'package.json'),
+      content: '{"private":true,"packageManager":"pnpm@10.0.0","workspaces":["apps/*","packages/*"]}',
+    }, { hook_event_name: 'PreToolUse' }, 'windsurf'));
+    assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+  });
+});
+
+test('Windsurf architect may create baseline package directories with mkdir before plan.md', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const result = planWriteGate(writeCtx(cwd, 'exec', 'shell', {
+      command: 'mkdir -p packages/ui/src',
+    }, { hook_event_name: 'PreToolUse' }, 'windsurf'));
+    assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+  });
+});
+
+test('OpenCode shell write to external /tmp is denied before host permission prompt', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'bash', 'shell', {
+      command: 'npx tsc -p packages/i18n/tsconfig.json > /tmp/i18n_build.log',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('/tmp'));
+      assert.ok(/external-directory|permission|stall/i.test(r.reason));
+    }
+  });
+});
+
+test('subagents project: denied readiness write does not leave a fallback path claim', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/unknown/src/theme.ts',
+      content: 'export const theme = {};\n',
+    }, { session_id: 'architect-child' }, 'kilo'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(r.reason.includes('Architect scope gate'));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-1', 'claims')), false);
+  });
+});
+
+test('subagents project: claimed senior-architect can write Tailwind globals baseline before PLAN_READY', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/tailwind-config/src/globals.css',
+      content: '@import "tailwindcss";\n:root { color-scheme: light; }\n',
+    }, { session_id: 'architect-child' }, 'kilo'));
+    assert.equal(r.kind, 'noop');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-1', 'claims')), false);
   });
 });
 
@@ -212,6 +349,19 @@ test('static layout violation is denied even in a clean main-agent project', () 
     }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(r.reason.includes('plan gate violation'));
+  });
+});
+
+test('static asset gate denies SVG text written to a .png path', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'apps/web/public/og-default.png',
+      content: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(/SVG\/XML|bitmap|extension/i.test(r.reason));
+    }
   });
 });
 

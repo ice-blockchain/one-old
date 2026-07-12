@@ -305,6 +305,28 @@ test('cursor: a pending new project surfaces the LIVE wizard URL in the user-fac
   }
 });
 
+test('windsurf: a pending new project surfaces a compact host-only wizard directive', () => {
+  const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  try {
+    withProject({ mode: 'new-project' }, (cwd) => {
+      const url = 'http://127.0.0.1:51998/?t=windsurf';
+      writeServerRecord(cwd, { pid: process.pid, port: 51998, token: 'windsurf', url, startedAt: 'x' });
+      const r = runSessionStartAuthed(ctxHost(cwd, 'windsurf'));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.ok(r.systemMessage?.includes(url), 'Windsurf user_message carries the live wizard URL');
+        assert.ok(r.context.includes('standalone clickable setup link'));
+        for (const foreign of ['Claude Code', 'Cursor:', 'Codex Desktop', '.claude/launch.json', 'preview_start', 'node_repl']) {
+          assert.ok(!r.context.includes(foreign), `Windsurf setup must not include ${foreign}`);
+        }
+      }
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prev;
+  }
+});
+
 test('non-cursor: a pending new project keeps the plain banner (URL only via the agent recipe)', () => {
   const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';

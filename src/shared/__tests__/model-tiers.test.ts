@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { acceptableModelsFor, canonicalHost, canonicalPlan, canonicalTier, modelMatchesAny, modelMatchesExpected, planIsRecognized, recommendTierForPlan, resolveModel, tierModelTable } from '../model-tiers';
-import { KILO_MODELS } from '../../config/model-tiers';
+import { KILO_MODELS, WINDSURF_FREE_MODEL, WINDSURF_PAID_MODELS } from '../../config/model-tiers';
 import { OPENCODE_FREE_MODELS } from '../../config/opencode-delegation';
 
 test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
@@ -29,9 +29,9 @@ test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'kilo'), KILO_MODELS.highest);
   assert.equal(resolveModel('balanced', 'kilo'), KILO_MODELS.balanced);
   assert.equal(resolveModel('cheapest', 'kilo'), KILO_MODELS.cheapest);
-  assert.equal(resolveModel('highest', 'windsurf'), 'Claude Opus 4.8 Medium');
-  assert.equal(resolveModel('balanced', 'windsurf'), 'Claude Sonnet 5 Medium');
-  assert.equal(resolveModel('cheapest', 'windsurf'), 'SWE-1.6 Slow');
+  assert.equal(resolveModel('highest', 'windsurf'), WINDSURF_FREE_MODEL);
+  assert.equal(resolveModel('balanced', 'windsurf'), WINDSURF_FREE_MODEL);
+  assert.equal(resolveModel('cheapest', 'windsurf'), WINDSURF_FREE_MODEL);
   assert.equal(resolveModel('bad', 'claude'), null);
 });
 
@@ -70,22 +70,25 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
   assert.equal(modelMatchesExpected('gpt-5.5-extra-high', highest), false);
 });
 
-test('tierModelTable: Cursor cell is plan-aware (Free → Composer family), other hosts plan-agnostic', () => {
+test('tierModelTable: Cursor and Windsurf cells are plan-aware', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini', windsurf: 'SWE-1.6 Slow', kilo: KILO_MODELS.highest });
+  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4-mini', windsurf: WINDSURF_FREE_MODEL, kilo: KILO_MODELS.highest });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-opus-4-8');
-  assert.equal(paid?.windsurf, 'Claude Opus 4.8 Medium');
+  assert.equal(paid?.windsurf, WINDSURF_PAID_MODELS.highest);
   // No plan → base cursor family.
   assert.equal(tierModelTable('highest')?.cursor, 'claude-opus-4-8');
 });
 
-test('resolveModel: Windsurf Free overlay maps every tier to the selectable SWE model', () => {
-  assert.equal(resolveModel('highest', 'windsurf', 'free'), 'SWE-1.6 Slow');
-  assert.equal(resolveModel('balanced', 'windsurf', 'free'), 'SWE-1.6 Slow');
-  assert.equal(resolveModel('cheapest', 'windsurf', 'free'), 'SWE-1.6 Slow');
-  assert.equal(resolveModel('highest', 'windsurf', 'pro'), 'Claude Opus 4.8 Medium');
-  assert.equal(resolveModel('balanced', 'windsurf', 'pro'), 'Claude Sonnet 5 Medium');
+test('resolveModel: Windsurf Free stays on SWE-1.6 Slow while paid plans expose three verified selector models', () => {
+  assert.equal(resolveModel('highest', 'windsurf', 'free'), WINDSURF_FREE_MODEL);
+  assert.equal(resolveModel('balanced', 'windsurf', 'free'), WINDSURF_FREE_MODEL);
+  assert.equal(resolveModel('cheapest', 'windsurf', 'free'), WINDSURF_FREE_MODEL);
+  for (const plan of ['pro', 'max', 'team', 'enterprise']) {
+    assert.equal(resolveModel('highest', 'windsurf', plan), WINDSURF_PAID_MODELS.highest, `highest for ${plan}`);
+    assert.equal(resolveModel('balanced', 'windsurf', plan), WINDSURF_PAID_MODELS.balanced, `balanced for ${plan}`);
+    assert.equal(resolveModel('cheapest', 'windsurf', plan), WINDSURF_PAID_MODELS.cheapest, `cheapest for ${plan}`);
+  }
 });
 
 test('canonicalPlan: Cursor recognizes its 2026 tiers (ultra→max, pro+→plus, teams→team)', () => {
@@ -151,7 +154,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: 'Claude Opus 4.8 Medium', kilo: KILO_MODELS.highest,
+    tier: 'highest', claude: 'opus', codex: 'gpt-5.5', cursor: 'claude-opus-4-8', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: WINDSURF_FREE_MODEL, kilo: KILO_MODELS.highest,
   });
   assert.equal(tierModelTable('bad'), null);
 });
@@ -175,6 +178,13 @@ test('opencode Go (plus) plan: paid opencode-go overlay + fallback chain; free i
   assert.ok(accept.includes('opencode-go/minimax-m3'));
   assert.ok(OPENCODE_FREE_MODELS.every((m) => accept.includes(m)), 'free chain is the ultimate fallback');
   assert.ok(!accept.some((m) => /^opencode\/(claude|gpt|gemini)/.test(m)), 'no Zen frontier models offered on Go');
+  assert.deepEqual(acceptableModelsFor('opencode-go/deepseek-v4-flash', 'opencode'), [
+    'opencode-go/deepseek-v4-flash',
+    'opencode-go/glm-5.1',
+    'opencode-go/qwen3.7-plus',
+    'opencode-go/minimax-m2.7',
+    ...OPENCODE_FREE_MODELS,
+  ]);
 });
 
 test('canonicalPlan resolves ids/aliases per host and falls back to the host default', () => {
@@ -219,9 +229,7 @@ test('acceptableModelsFor: Cursor folds in same-tier fallback FAMILIES; claude/c
   assert.deepEqual(acceptableModelsFor('sonnet', 'claude'), ['sonnet']);
   assert.deepEqual(acceptableModelsFor('gpt-5.4', 'codex'), ['gpt-5.4']);
   const kiloHighest = acceptableModelsFor(KILO_MODELS.highest, 'kilo');
-  assert.equal(kiloHighest[0], KILO_MODELS.highest);
-  assert.ok(kiloHighest.includes('OpenAI GPT-5.5'));
-  assert.ok(!kiloHighest.some((m) => m.startsWith('opencode/')), 'Kilo fallbacks must not inherit OpenCode slugs');
+  assert.deepEqual(kiloHighest, ['kilo-auto/free']);
   // A model with no configured alternates → just itself, even on Cursor.
   assert.deepEqual(acceptableModelsFor('some-unknown-slug', 'cursor'), ['some-unknown-slug']);
   assert.deepEqual(acceptableModelsFor('', 'cursor'), []);

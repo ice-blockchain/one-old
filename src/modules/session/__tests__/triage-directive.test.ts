@@ -13,7 +13,7 @@ import type { Rec } from '../../../shared/obj';
 // verdict). Rotating then splits run state across two ids and the run-id gate
 // resolves no scope for the in-flight role spawns. (The 2026-06-17 tests/9a bug.)
 
-function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; assignments?: boolean; rolesAssignments?: boolean; orchestratorStamped?: boolean }): { dir: string; state: Rec } {
+function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; assignments?: boolean; rolesAssignments?: boolean; orchestratorStamped?: boolean; completedAt?: string }): { dir: string; state: Rec } {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-triage-'));
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -21,7 +21,7 @@ function setup(opts: { reviewer?: string; tester?: string; shipper?: boolean; as
     mode: 'new-project',
     stack: 'default', frontend: 'react-vite', backend: 'supabase',
     onboardingComplete: true, confirmed: true,
-    lifecycle: { phase: 'maintenance', source: opts.orchestratorStamped ? 'orchestrator' : 'heuristic', completedAt: new Date().toISOString() },
+    lifecycle: { phase: 'maintenance', source: opts.orchestratorStamped ? 'orchestrator' : 'heuristic', completedAt: opts.completedAt || new Date().toISOString() },
     team: { mode: 'subagents', approved: true },
     currentRunId: 'OLD',
     spawnIndex: { 'senior-frontend': 1, 'senior-backend': 1 },
@@ -58,6 +58,19 @@ function cleanup(dir: string): void {
 }
 
 const PROMPT = 'change the hero headline to Welcome';
+
+function writeFreshClaim(dir: string, role = 'senior-frontend'): void {
+  const runDir = path.join(dir, '.traffic-one', 'runs', 'OLD');
+  fs.mkdirSync(runDir, { recursive: true });
+  fs.writeFileSync(path.join(runDir, 'kilo-leftover.json'), JSON.stringify({
+    version: 1,
+    runId: 'OLD',
+    role,
+    status: 'claimed',
+    sessionId: 'kilo-child',
+    createdAt: new Date().toISOString(),
+  }));
+}
 
 test('does NOT rotate currentRunId while the current run is live (assignments + non-terminal reviewer)', () => {
   const { dir, state } = setup({ assignments: true, reviewer: 'CHANGES_REQUESTED' });
@@ -123,6 +136,38 @@ test('rotates when there is no orchestrated run (no assignments) — common main
     maintenanceTriageDirective(dir, state, PROMPT, {}, 'claude');
     assert.notEqual(state.currentRunId, 'OLD', 'a plain maintenance edit with no orchestrated run still rotates');
     assert.match(String(state.currentRunId), /^\d{13}$/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('Kilo prompt boundary rotates past stale claimed work and routes a new page without an architect', () => {
+  // Kilo does not emit a role-completion/resume event. Its completed task claims
+  // therefore remain fresh after the initial build, but a new chat.message proves
+  // the parent is at a new user-prompt boundary and must not re-use the old run.
+  const completedAt = new Date(Date.now() - 60_000).toISOString();
+  const { dir, state } = setup({ assignments: true, reviewer: 'CHANGES_REQUESTED', completedAt });
+  try {
+    writeFreshClaim(dir);
+    const directive = maintenanceTriageDirective(dir, state, 'create a new page named news', { session_id: 'kilo-parent' }, 'kilo');
+    assert.notEqual(state.currentRunId, 'OLD', 'Kilo receives a fresh maintenance run instead of reusing the stuck build run');
+    assert.deepEqual(state.spawnIndex, {}, 'fresh run clears stale role indexes');
+    assert.match(directive, /MAINTENANCE PHASE/);
+    assert.match(directive, /Keyword hint: small/);
+    assert.match(directive, /Do NOT spawn `senior-architect`/);
+  } finally {
+    cleanup(dir);
+  }
+});
+
+test('active claims still suppress triage on resumable hosts', () => {
+  const completedAt = new Date(Date.now() - 60_000).toISOString();
+  const { dir, state } = setup({ assignments: true, reviewer: 'CHANGES_REQUESTED', completedAt });
+  try {
+    writeFreshClaim(dir);
+    const directive = maintenanceTriageDirective(dir, state, 'create a new page named news', { session_id: 'cursor-parent' }, 'cursor');
+    assert.equal(directive, '', 'Cursor keeps its live role session instead of splitting the active run');
+    assert.equal(state.currentRunId, 'OLD');
   } finally {
     cleanup(dir);
   }

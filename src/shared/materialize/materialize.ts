@@ -19,6 +19,7 @@ import { writeCursorAgentFiles } from './cursor-agents';
 import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
+import { writeKiloAgentFiles } from './kilo-agents';
 import { writeOpenCodeHostAssets } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
 import { writeWindsurfAgentFiles } from './windsurf-agents';
@@ -110,6 +111,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   // auto-apply it, so the spawn gate still enforces the passed model arg.
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
   if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, state);
+  if (detectHost() === 'kilo') written += writeKiloAgentFiles(cwd, state);
   if (detectHost() === 'opencode') written += writeOpenCodeHostAssets(cwd, state, skills);
   let windsurfAssets: ReturnType<typeof writeWindsurfHostAssets> | null = null;
   let windsurfAgents = 0;

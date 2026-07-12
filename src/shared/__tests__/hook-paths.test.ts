@@ -111,6 +111,18 @@ test('findProjectRootForHookFile + projectRelativeHookPath resolve nested .traff
   }
 });
 
+test('projectRelativeHookPath repairs a Kilo macOS absolute path with its slash stripped', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-rootless-')));
+  try {
+    const target = path.join(root, '.traffic-one', 'runs', 'R', 'assignments.json');
+    const rootless = target.slice(1);
+    assert.equal(projectRelativeHookPath(root, root, rootless), '.traffic-one/runs/R/assignments.json');
+    assert.equal(resolveProjectRoot(root, rootless), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('isOnboardedProjectRoot: only a mode-bearing .one.json counts', () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onboarded-')));
   try {

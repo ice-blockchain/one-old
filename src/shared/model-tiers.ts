@@ -39,9 +39,8 @@ export function canonicalHost(host: unknown): HostModelKey {
 }
 
 // Resolve a tier to a concrete model id for a host. Optional `plan` makes the
-// Cursor row plan-aware via CURSOR_PLAN_MODELS (Free resolves frontier tiers to
-// Composer; paid plans share the base HOST_MODELS.cursor row). claude/codex ignore
-// `plan` — their rows are plan-agnostic.
+// Cursor and Windsurf rows plan-aware: Free accounts resolve to their safe
+// selector models, while paid overlays expose their verified tier maps.
 export function resolveModel(tier: unknown, host: unknown, plan?: unknown): string | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
@@ -114,8 +113,8 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
   return acceptable.some((e) => modelMatchesExpected(passed, e));
 }
 
-// Optional `plan` makes the cursor cell plan-aware (Free → Composer for the
-// frontier tiers). claude/codex cells are plan-agnostic.
+// Optional `plan` makes the Cursor and Windsurf cells plan-aware. claude/codex
+// cells are plan-agnostic.
 export function tierModelTable(
   tier: unknown,
   plan?: unknown,

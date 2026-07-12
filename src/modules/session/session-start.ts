@@ -27,6 +27,7 @@ import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
@@ -55,8 +56,8 @@ import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
-  skillBlock('onboarding-gate', name, vars);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
+  skillBlock('onboarding-gate', name, vars, fallback);
 
 // Surface the live wizard URL in the setup banner. Host-gated to Cursor/Windsurf
 // (they need the URL in the visible chat channel — see formatWizardBanner) so we
@@ -72,16 +73,10 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   }
 }
 
-// The AGENT-FACING setup directive (additional_context). On Cursor/Windsurf the user-facing
-// channel (systemMessage→user_message) is NOT rendered on user-prompt-submit, so the
-// URL-less `setup-pending` prose leaves the agent with no link and no instruction to
-// post one — the user gets stuck (the 5b first-prompt failure). For those hosts, emit the
-// full `server-deny-reason` recipe instead: it carries the live URL AND the explicit
-// "post the wizard URL FIRST, before the wait command" instruction. Other hosts keep
-// the plain `setup-pending` note (Claude opens via its preview pane, Codex via node_repl
-// — both driven by the PreToolUse deny recipe, neither needs the link surfaced in chat).
-// Best-effort: a server-spawn failure falls back to the plain note (the PreToolUse deny
-// still carries the URL). Single source for every SessionStart/Flow-3 setup-pending path.
+// The agent-facing setup directive. Cursor needs its full host-specific recipe to surface
+// the URL. Windsurf gets a compact host-only directive rather than instructions for other
+// editors. Other hosts keep the plain setup-pending note. Best-effort: a server-spawn
+// failure falls back to the plain note (the PreToolUse deny still carries the URL).
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
   // OpenCode/Kilo: the full setup-pending block (with "do NOT…" behavioral
   // overrides) can trigger prompt-injection safety training when injected via
@@ -93,6 +88,10 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   try {
     const server = ensureOnboardingServer(cwd, { host: ctx.host });
     if (!server.url || server.url.includes(':0/')) return block('setup-pending');
+    if (ctx.host === 'windsurf') {
+      const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) };
+      return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.url, vars.WAIT_CMD));
+    }
     return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
   } catch {
     return block('setup-pending');

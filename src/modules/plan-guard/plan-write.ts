@@ -22,6 +22,9 @@ import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { modelChoiceReplyPending } from '../agent-model/model-choice';
 import {
   applyPatchTargetPaths,
+  BUILD_ARTIFACT_RE,
+  commandAppearsToWriteBuildArtifact,
+  commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
 } from '../../shared/feature-source';
@@ -95,25 +98,53 @@ export function planWriteGate(ctx: Ctx): HookResult {
   const writeTargetPaths: string[] = [];
   if (filePath) writeTargetPaths.push(filePath);
   const featureTargetPaths: string[] = [];
+  const buildArtifactTargetPaths: string[] = [];
   if (FEATURE_SOURCE_RE.test(filePath)) featureTargetPaths.push(filePath);
+  if (BUILD_ARTIFACT_RE.test(filePath)) buildArtifactTargetPaths.push(filePath);
   for (const targetPath of patchTargetPaths) {
     const rel = projectRelativeHookPath(cwd, projectRoot, targetPath);
     if (rel && !writeTargetPaths.includes(rel)) writeTargetPaths.push(rel);
     if (FEATURE_SOURCE_RE.test(rel) && !featureTargetPaths.includes(rel)) featureTargetPaths.push(rel);
+    if (BUILD_ARTIFACT_RE.test(rel) && !buildArtifactTargetPaths.includes(rel)) buildArtifactTargetPaths.push(rel);
   }
   const writingFeatureSourceViaCommand = isShellToolName(toolName) && commandAppearsToWriteFeatureSource(rawCommand);
+  const writingBuildArtifactViaCommand = isShellToolName(toolName) && commandAppearsToWriteBuildArtifact(rawCommand);
+  const writingExternalTempViaCommand = isShellToolName(toolName) && commandAppearsToWriteExternalTemp(rawCommand);
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
+  const writingBuildArtifact = buildArtifactTargetPaths.length > 0 || writingBuildArtifactViaCommand;
+  const runTeamTargetPaths = [...featureTargetPaths];
+  for (const target of buildArtifactTargetPaths) {
+    if (!runTeamTargetPaths.includes(target)) runTeamTargetPaths.push(target);
+  }
 
   const violations: string[] = [];
   violations.push(...planReadinessViolations({ filePath, content, projectRoot, state, writingFeatureSource, host: ctx.host, rawData: raw, block }));
+  if ((ctx.host === 'opencode' || ctx.host === 'kilo') && writingExternalTempViaCommand) {
+    violations.push(block('opencode-external-temp-shell',
+      'OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.'));
+  }
   // Run-id write-guard: a stray (e.g. `date` ISO) run-id in a runs/<id> or
   // digests/<id> write path splits run state away from currentRunId. Check the
   // direct target, apply_patch targets, and the shell command.
   const runIdTargets = [filePath, ...patchTargetPaths.map((p) => projectRelativeHookPath(cwd, projectRoot, p))];
   const runIdViolation = runIdPathViolation({ state, relTargets: runIdTargets, command: rawCommand, block });
   if (runIdViolation) violations.push(runIdViolation);
+  const recordFallbackClaims = violations.length === 0;
   const runTeam = runTeamEnforcementViolation({
-    projectRoot, filePath, state, rawData: raw, content, writeTargetPaths, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block,
+    host: ctx.host,
+    projectRoot,
+    filePath,
+    state,
+    rawData: raw,
+    content,
+    writeTargetPaths,
+    featureTargetPaths: runTeamTargetPaths,
+    writingFeatureSource,
+    writingFeatureSourceViaCommand,
+    writingBuildArtifact,
+    writingBuildArtifactViaCommand,
+    recordFallbackClaims,
+    block,
   });
   if (runTeam) violations.push(runTeam);
   violations.push(...planStaticViolations(filePath, content, isNative, block));

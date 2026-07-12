@@ -79,6 +79,22 @@ test('scaffold gate: an on-stack scaffolder before plan.md is denied (architect-
   });
 });
 
+test('scaffold gate: Low/main-agent projects are told to write the plan locally, never to spawn Windsurf profiles', () => {
+  withProject({
+    ...NEW_REACT_VITE,
+    team: { mode: 'main-agent' },
+    performance: { level: 'low' },
+  }, (cwd) => {
+    const r = scaffoldGate(ctxFor(cwd, 'npm create vite@latest apps/web -- --template react-ts'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /Low\/main-agent mode/);
+      assert.match(r.reason, /Do NOT call `run_subagent`/);
+      assert.doesNotMatch(r.reason, /profile `senior-architect`/);
+    }
+  });
+});
+
 test('scaffold gate: an on-stack scaffolder AFTER plan.md exists is allowed', () => {
   withProject(NEW_REACT_VITE, (cwd) => {
     writePlan(cwd);

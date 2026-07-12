@@ -48,6 +48,15 @@ test('opencode: parses documented tool hook payload shape', () => {
   assert.equal(patched.tool?.class, 'file-edit');
 });
 
+test('opencode: restores a Kilo-style macOS path missing its leading slash', () => {
+  const parsed = opencode.parse(inv('before-tool-use', {
+    cwd: '/Users/w3s/WebstormProjects/11',
+    tool_name: 'write',
+    tool_input: { filePath: 'Users/w3s/WebstormProjects/11/.traffic-one/runs/R/assignments.json', content: '{}' },
+  }));
+  assert.equal(parsed.tool?.filePath, '/Users/w3s/WebstormProjects/11/.traffic-one/runs/R/assignments.json');
+});
+
 test('opencode: maps chat.message and system transform hook events', () => {
   assert.equal(opencode.parse(inv('user-prompt-submit', { event: 'chat.message', prompt: 'build it' })).event, 'UserPromptSubmit');
   assert.equal(opencode.parse(inv('system-transform', { event: 'experimental.chat.system.transform', cwd: '/repo' })).event, 'SessionStart');

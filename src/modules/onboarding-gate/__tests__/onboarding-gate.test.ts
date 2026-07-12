@@ -22,6 +22,11 @@ function ctxOpenCode(cwd: string, rawName: string, cls: ToolClass, toolInput: Re
   return { input, host: 'opencode', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function ctxWindsurf(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
+  const input: HookInput = { event: 'PreToolUse', host: 'windsurf', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
+  return { input, host: 'windsurf', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 // A subagent thread: its own session_id plus a parent_session_id (the Claude shape;
 // hookSessionIdentity flags isSubagent from parent_session_id alone).
 function ctxSub(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
@@ -142,6 +147,38 @@ test('OpenCode setup deny stops after onboarding and asks the user to restart be
       assert.ok(!r.reason.includes('continue the user\'s original request'), 'must not instruct same-process auto-continuation');
       assert.ok(!r.reason.includes('Ctrl+C'), 'no terminal interrupt workaround');
     }
+  });
+});
+
+test('Windsurf setup deny is compact and never includes another host recipe', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51444/?t=windsurf';
+    writeServerRecord(cwd, { pid: process.pid, port: 51444, token: 'windsurf', url, startedAt: 'x' });
+    const r = onboardingGate(ctxWindsurf(cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes(url));
+      assert.ok(r.reason.includes(`[Open Traffic One setup](${url})`));
+      assert.ok(r.reason.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+      for (const foreign of ['Claude Code', 'Cursor:', 'Codex Desktop', '.claude/launch.json', 'preview_start', 'node_repl']) {
+        assert.ok(!r.reason.includes(foreign), `Windsurf setup must not include ${foreign}`);
+      }
+    }
+  });
+});
+
+test('Windsurf setup allows read-only orientation and gates the first mutation', () => {
+  withProject(null, (cwd) => {
+    const url = 'http://127.0.0.1:51445/?t=windsurf-read';
+    writeServerRecord(cwd, { pid: process.pid, port: 51445, token: 'windsurf-read', url, startedAt: 'x' });
+    assert.equal(
+      onboardingGate(ctxWindsurf(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind,
+      'noop',
+      'Windsurf must not render harmless orientation as a failed command',
+    );
+    const write = onboardingGate(ctxWindsurf(cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
+    assert.equal(write.kind, 'deny');
+    if (write.kind === 'deny') assert.ok(write.reason.includes(url));
   });
 });
 

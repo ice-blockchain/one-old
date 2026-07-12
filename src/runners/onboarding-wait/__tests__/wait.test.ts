@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { openCodeRestartWarning, waitForOnboarding } from '../index';
+import { openCodeRestartWarning, preSpawnArchitectDirective, waitForOnboarding } from '../index';
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
 // sleep — so the polling loop is exercised without a real timer or state IO.
@@ -45,6 +45,35 @@ test('openCodeRestartWarning tells the user to restart before continuing develop
   assert.match(warning, /restart OpenCode/i);
   assert.match(warning, /type "continue" or "resume"/i);
   assert.doesNotMatch(warning, /Ctrl\+C/i);
+});
+
+test('Windsurf first-run architect directive uses the always-registered general profile', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-prespawn-')));
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      performance: { level: 'balanced', source: 'prompted' },
+    }));
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'nextjs', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }));
+    const directive = preSpawnArchitectDirective(dir, 'windsurf');
+    assert.match(directive, /profile `subagent_general`/);
+    assert.match(directive, /\[t1-role: senior-architect\]/);
+    assert.match(directive, /\.devin\/agents\/senior-architect\/AGENT\.md/);
+    assert.doesNotMatch(directive, /profile `senior-architect`/);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── postSetupTriage: the SETUP-COMPLETE continuation gets the routing rubric ──

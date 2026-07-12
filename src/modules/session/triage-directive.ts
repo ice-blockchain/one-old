@@ -13,7 +13,7 @@
 // not a subagent session, and no orchestration run currently in flight.
 
 import { detectMode, isLikelyEditRequest } from '../../shared/detection';
-import { resolveModel } from '../../shared/model-tiers';
+import { canonicalHost, resolveModel } from '../../shared/model-tiers';
 import { obj, type Rec } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
@@ -26,7 +26,7 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
 
-function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
+function beginFreshMaintenanceRun(cwd: string, state: Rec, options: { force?: boolean } = {}): void {
   // Never rotate while the CURRENT run is still LIVE: it has run artifacts
   // (assignments/digests) but has NOT reached a terminal verdict. Rotating then would
   // split run state across two ids — the run-id gate resolves no scope for the in-flight
@@ -44,7 +44,7 @@ function beginFreshMaintenanceRun(cwd: string, state: Rec): void {
   // boundary a finished run with both green verdicts must rotate even if the QA-evidence gate
   // didn't pass, or it pins currentRunId forever (the rotation-deadlock class). A LIVE
   // (still-verifying) run lacks both green verdicts → not settled → does not rotate.
-  if (current && runHasOrchestratedArtifacts(cwd, current) && !runSettledForRotation(cwd, current)) return;
+  if (!options.force && current && runHasOrchestratedArtifacts(cwd, current) && !runSettledForRotation(cwd, current)) return;
   const runId = runIdNow();
   const sharedState = readState(cwd);
   writeState(cwd, { ...sharedState, currentRunId: runId, spawnIndex: {} });
@@ -70,7 +70,18 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   if (hookSessionIdentity(raw).isSubagent) return '';
   // Claims from a run that finished BEFORE the lifecycle stamp are settled —
   // only claims newer than the watermark mean an orchestration is in flight.
-  if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) })) return '';
+  //
+  // Kilo is the one host that does not expose a task-completion/resume lifecycle
+  // to this plugin. Its built-in `general` task leaves a fresh `claimed` record
+  // behind after the parent has received the completed reply, so treating that
+  // record as live on the NEXT `chat.message` suppresses maintenance triage and
+  // sends the parent back through the generic greenfield architect flow. A Kilo
+  // user message is an explicit prompt boundary, analogous to the prompt-boundary
+  // maintenance flip: retire the previous Kilo run and start a new maintenance
+  // run below. Other hosts retain the live-claim guard because they can resume
+  // their in-flight role sessions across messages.
+  const kiloPromptBoundary = canonicalHost(host) === 'kilo';
+  if (hasActiveRunClaims(cwd, state, { since: lifecycleCompletedAt(state) }) && !kiloPromptBoundary) return '';
 
   const hint = classifyPromptComplexity(promptText);
   const team = obj(state.team);
@@ -83,7 +94,7 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   // without resolving an indirection (haiku on Claude/Cursor, gpt-5.4-mini on Codex).
   const cheapest = resolveModel('cheapest', host) || 'the cheapest model for this host';
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
-  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state);
+  if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state, { force: kiloPromptBoundary });
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';
   const ocActive = openCodeDelegationActive(state, host);
   // Render the OpenCode instruction only when delegation is actually active, so an
@@ -96,7 +107,7 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
       openCodeClause = ` If you prefer, offload it via the \`opencode_delegate\` tool (role "quick-fix").`;
     } else {
       quickFixOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with role "quick-fix", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid worker. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
-      smallOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST with the chosen role "senior-frontend" or "senior-backend", runId "${runId}", projectRoot, the bounded task; only if it declines, spawn the paid role subagent. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
+      smallOpenCodeClause = ` OpenCode is active — call the \`opencode_delegate\` tool FIRST for each chosen role ("senior-frontend" and/or "senior-backend"), using runId "${runId}", projectRoot, and its bounded task; only if it declines, spawn that paid role subagent. If the host safety reviewer rejects the call but offers a user-approval path, ask the user once (it sends the task + relevant code to OpenCode's hosted model) and on approval re-call; otherwise use the paid fallback. If the tool is not exposed, say the opencode-worker MCP server is not loaded and Codex needs one restart, then use the paid fallback.`;
     }
   }
   // The rubric is ~95% static prose: inject it in full once per session, then a

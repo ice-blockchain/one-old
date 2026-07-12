@@ -28,6 +28,7 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'opencode-hook-runtime.cjs': './hooks/opencode-entry.js',
   'kilo-hook-runtime.cjs': './hooks/kilo-entry.js',
   'windsurf-hook-runtime.cjs': './hooks/windsurf-entry.js',
+  'devin-hook-runtime.cjs': './hooks/devin-entry.js',
   'opencode-host.cjs': './runners/opencode-host/index.js',
   'kilo-host.cjs': './runners/kilo-host/index.js',
   'windsurf-host.cjs': './runners/windsurf-host/index.js',

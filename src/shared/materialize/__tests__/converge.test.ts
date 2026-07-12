@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { materializeProjectFromState, materializeProjectIfNeeded } from '../converge';
-import { writeGlobalCodeGraphProvider } from '../../state';
+import { stateVersion, writeGlobalCodeGraphProvider } from '../../state';
 
 // Isolate local-prefs AND one.json (the machine-wide store) so readEffectiveState
 // never reads the developer's machine.
@@ -112,6 +112,38 @@ test('materializeProjectIfNeeded: already-materialized → fires the reporter, r
     const out = materializeProjectIfNeeded(dir, { trigger: 'unit', reportOneMcp: () => { reported += 1; } });
     assert.equal(out, null);
     assert.equal(reported, 1);
+  });
+});
+
+test('materializeProjectIfNeeded: a stale materializedVersion refreshes generated context', () => {
+  withTempProject((dir) => {
+    writeMaterialized(dir);
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    const stale = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    Object.assign(stale, {
+      materializedVersion: '0.0.0',
+      mobile: { enabled: false, framework: 'none', source: 'prompted' },
+      technologies: { frontend: ['react'], backend: ['supabase'], mobile: [] },
+      projectContext: { source: 'prompted', originalPrompt: 'x', summary: 'x', answers: {}, collectedAt: '2026-01-01T00:00:00Z' },
+      confirmed: true,
+      confirmedAt: '2026-01-01T00:00:00Z',
+      realtime: 'none',
+      supabaseFunctionsAutoDeploy: 'ask',
+    });
+    writeState(dir, stale);
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+    }), 'utf8');
+    writeGlobalCodeGraphProvider('graphify');
+
+    const out = materializeProjectIfNeeded(dir, { trigger: 'version-refresh' });
+    assert.ok(out, 'a version mismatch must invoke the materializer');
+    assert.ok(out?.status === 'materialized' || out?.status === 'current');
+    const persisted = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assert.equal(persisted.materializedVersion, stateVersion());
+    assert.ok(fs.readFileSync(path.join(dir, 'AGENTS.md'), 'utf8').includes('run maintenance triage before that greenfield team flow'));
   });
 });
 

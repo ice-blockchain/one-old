@@ -48,7 +48,7 @@ function main(): void {
     // 1. Full cutover build: compile + descriptors + legacy-named shims.
     const built = buildRuntime(scratch);
     if (built.modulesCopied < 6) fail(`expected module descriptors copied, got ${built.modulesCopied}`);
-    for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'windsurf-hook-runtime.cjs']) {
+    for (const shim of ['hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs']) {
       if (!fs.existsSync(path.join(scratch, shim))) fail(`missing shim ${shim}`);
     }
 
@@ -85,7 +85,16 @@ function main(): void {
     if (windsurfOut.status !== 2) fail(`windsurf-hook-runtime.cjs shim did not exit 2 on an unauthed shell (status ${windsurfOut.status})`);
     if (!windsurfOut.stderr) fail('windsurf deny had no stderr message');
 
-    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; legacy-path shims (hook-runtime.cjs, cursor-hook-runtime.cjs, windsurf-hook-runtime.cjs) deny unauthed tool use under bare node.\n`);
+    const devinOut = JSON.parse(runShim(
+      scratch,
+      'devin-hook-runtime.cjs',
+      'check-onboarding-gate',
+      JSON.stringify({ hook_event_name: 'PreToolUse', cwd: authTmp, tool_name: 'exec', tool_input: { command: 'npm run build' } }),
+      env,
+    ) || '{}');
+    if (devinOut.decision !== 'block') fail('devin-hook-runtime.cjs shim did not block an unauthed exec');
+
+    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; Claude, Cursor, Cascade, and Devin Local runtimes deny unauthed tool use under bare node.\n`);
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });
     fs.rmSync(authTmp, { recursive: true, force: true });

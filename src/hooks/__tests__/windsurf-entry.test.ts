@@ -48,7 +48,7 @@ test('windsurf entry: unauthenticated pre_run_command blocks with exit 2 stderr'
   });
 });
 
-test('windsurf entry: setup-required pre_user_prompt blocks with exit 2 stderr (Cascade ignores stdout)', async () => {
+test('windsurf entry: setup-required pre_user_prompt does not block native Devin prompt admission', async () => {
   await withEnv(async (cwd) => {
     process.env.TRAFFIC_ONE_AUTH = 'off';
     writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
@@ -60,10 +60,10 @@ test('windsurf entry: setup-required pre_user_prompt blocks with exit 2 stderr (
       },
     });
     const out = await runWindsurfHook('pre_user_prompt', stdin);
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stdout, '');
-    assert.match(out.stderr, /setup required/i);
-    assert.match(out.stderr, /127\.0\.0\.1:56858/i);
+    assert.equal(out.exitCode, 0);
+    assert.match(out.stdout, /setup required/i);
+    assert.match(out.stdout, /127\.0\.0\.1:56858/i);
+    assert.equal(out.stderr, '');
   });
 });
 
@@ -72,5 +72,31 @@ test('windsurf entry: post hooks never block', async () => {
     const stdin = JSON.stringify({ agent_action_name: 'post_run_command', tool_info: { command_line: 'npm test', cwd } });
     const out = await runWindsurfHook('post_run_command', stdin);
     assert.equal(out.exitCode, 0);
+  });
+});
+
+test('windsurf entry: synthetic empty-trajectory Devin bridge payload is ignored', async () => {
+  await withEnv(async (cwd) => {
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_run_command',
+      trajectory_id: '',
+      timestamp: '2026-07-12T09:00:00Z',
+      tool_info: { command_line: 'npm test', cwd },
+    });
+    const out = await runWindsurfHook('pre_run_command', stdin);
+    assert.deepEqual(out, { stdout: '', stderr: '', exitCode: 0 });
+  });
+});
+
+test('windsurf entry: genuine Cascade trajectory still runs Traffic One', async () => {
+  await withEnv(async (cwd) => {
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_run_command',
+      trajectory_id: 'cascade-trajectory-1',
+      tool_info: { command_line: 'npm test', cwd },
+    });
+    const out = await runWindsurfHook('pre_run_command', stdin);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /Traffic One/i);
   });
 });

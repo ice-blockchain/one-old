@@ -37,6 +37,26 @@ Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires 
 Cursor model gate (level={{LEVEL}}): spawning `{{ROLE}}` passed `model: "{{PASSED}}"`, which matches the right Traffic One tier family but is not an exact Cursor Task model id from the fresh captured list. Cursor can create a visible "New subagent / Couldn't start" card when Task receives a family alias, so do NOT attempt the spawn with this value. Re-issue the same Task spawn with `model: "{{EXPECTED}}"` (or another exact captured id from the same tier). Captured ids for this build: {{CAPTURED}}.
 <!-- T1BLOCK:END cursor-exact-model-required -->
 
+<!-- T1BLOCK:BEGIN opencode-named-agent-required -->
+{{HOST}} agent gate: `{{ROLE}}` must be spawned with the named {{HOST}} subagent `{{ROLE}}`, not `{{AGENT_TYPE}}`.
+
+Traffic One materialized `{{AGENT_PATH}}`. {{MODEL_NOTE}}
+
+Re-issue the same `task` spawn with subagent type / agent name `{{ROLE}}` and keep `[t1-role: {{ROLE}}]` as the FIRST line of the prompt. Do NOT pass `model` unless this exact host build documents a Task `model` field. If `{{ROLE}}` is not offered by the Task tool after project materialization, stop and tell the user to close/reopen this project in {{HOST}} so the generated role-agent files are loaded; do not fall back to `general` and do not build the role inline.
+<!-- T1BLOCK:END opencode-named-agent-required -->
+
+<!-- T1BLOCK:BEGIN kilo-general-agent-required -->
+Kilo agent gate: `{{ROLE}}` must use Kilo's built-in writable Task subagent type `general`, not `{{AGENT_TYPE}}`.
+
+Traffic One materialized `{{AGENT_PATH}}` as the full role contract. This Kilo Task API exposes the built-in `general`/`explore` types, while `.kilo/agents/*.md` files are role-contract files rather than registered Task type names.
+
+Re-issue the same `task` spawn with `subagent_type: "general"`. Keep `[t1-role: {{ROLE}}]` as the FIRST line, immediately tell the child to read `{{AGENT_PATH}}` before acting, and omit `model` so it inherits the user's active Kilo model. Do NOT use `explore`, and do NOT fall back to main-agent mode: `general` is the supported Kilo subagent path for this role.
+<!-- T1BLOCK:END kilo-general-agent-required -->
+
+<!-- T1BLOCK:BEGIN absolute-traffic-one-path -->
+Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/<role>-fix-1.md`; do not paste absolute paths from another folder or a corrupted root.
+<!-- T1BLOCK:END absolute-traffic-one-path -->
+
 <!-- T1BLOCK:BEGIN cursor-models-capture -->
 Cursor model-capture gate (asked once per run, run {{RUN_ID}}). Capture is OPTIONAL and you are NOT blocked.
 **To proceed RIGHT NOW: RE-ISSUE THE SAME `Task` spawn, unchanged.** Traffic One then falls back to family-aware matching and the spawn goes through — pass any model whose family fits the tier (an `claude-opus-4-8…` slug for highest, a `claude-4.6-sonnet…`/`gpt-5.5…` slug for balanced, a `composer-2.5…` slug for cheapest).

@@ -98,7 +98,7 @@ Also include a compact implementation brief:
 
 ### You touch
 - Visual design, layout, spacing, typography, colour, interaction design, motion, accessibility.
-- Design-token proposals when new values are needed (route them through the shadcn HSL theme block + `packages/tailwind-config/src/preset.ts`).
+- Design-token proposals when new values are needed (route them through the shadcn HSL theme block + `packages/tailwind-config/src/globals.css`).
 - Component styling and visual architecture.
 
 ### You do NOT touch

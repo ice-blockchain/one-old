@@ -26,6 +26,7 @@ import { recommendTierForPlan, resolveModel } from '../model-tiers';
 import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
+import { windsurfBackend } from '../windsurf-backend';
 import {
   applyGlobalCodeGraphProvider,
   effectiveState,
@@ -220,6 +221,14 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
   const host = detectHost();
+  if (host === 'windsurf' && windsurfBackend() === 'cascade') {
+    meta.team = [];
+    meta.performanceLevel = 'low';
+    meta.recommendedTier = 'cheapest';
+    meta.modelChoices = [];
+    meta.host = host;
+    return;
+  }
   const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
   meta.team = buildTeamLineup(level, host, overrides, planCtx);
   meta.performanceLevel = level;
@@ -227,8 +236,12 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   meta.host = host;
   // The per-agent model menu: each tier resolved to the detected host's model id,
   // so the wizard can offer real model names (and the user's pick maps straight
-  // back to a tier override the spawn gate already understands).
-  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free' ? ['cheapest'] as const : TIER_IDS;
+  // back to a tier override the spawn gate already understands). Kilo's native
+  // roles inherit the active session/per-agent selection; Auto Free is its only
+  // safe static fallback, so do not show three indistinguishable fake choices.
+  const choiceTiers = (host === 'kilo' || (host === 'windsurf' && planCtx.plan === 'free'))
+    ? ['cheapest'] as const
+    : TIER_IDS;
   meta.modelChoices = choiceTiers.map((tier) => ({ tier, model: resolveModel(tier, host, planCtx.plan) || tier }));
 }
 
@@ -239,8 +252,9 @@ function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
   const host = detectHost();
   const plan = detectHostPlan(host);
   const useOpenCode = openCodeDelegationActive(state, host);
-  const recommended = recommendLevelForPlan(host, plan, useOpenCode);
-  const options = (meta.options || []).map((o) => ({ ...o }));
+  const cascade = host === 'windsurf' && windsurfBackend() === 'cascade';
+  const recommended = cascade ? 'low' : recommendLevelForPlan(host, plan, useOpenCode);
+  const options = (meta.options || []).filter((o) => !cascade || o.id === 'low').map((o) => ({ ...o }));
   for (const o of options) {
     if (o.id === recommended) o.hint = o.hint ? `Recommended — ${o.hint}` : 'Recommended';
   }
@@ -355,6 +369,9 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       if (level !== 'high' && level !== 'balanced' && level !== 'low') {
         return { ok: false, error: 'invalid performance level' };
       }
+      if (detectHost() === 'windsurf' && windsurfBackend() === 'cascade' && level !== 'low') {
+        return { ok: false, error: 'Cascade supports main-agent mode only' };
+      }
       mergeProjectPrefs(cwd, {
         performance: { level, source: 'prompted' },
         team: { mode: teamModeForLevel(level), source: 'prompted' },
@@ -362,6 +379,9 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       return { ok: true };
     }
     case 'team-confirmation': {
+      if (detectHost() === 'windsurf' && windsurfBackend() === 'cascade') {
+        return { ok: false, error: 'Cascade does not expose a subagent runner' };
+      }
       const v = obj(value);
       const action = (v && typeof v.action === 'string' ? v.action : String(value));
       // "Start the build" confirms the line-up shown for the chosen performance.

@@ -100,13 +100,9 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   // text cannot false-positive unless it literally quotes a labelled id.
   const response = raw.tool_response ?? raw.toolResponse ?? raw.tool_result ?? raw.toolResult;
   let agentId = extractSpawnedAgentId(response) ?? (response === undefined ? extractSpawnedAgentId(raw) : null);
-  // Windsurf/Devin: run_subagent is keyed by profile name; when the post payload
-  // carries no labelled id, record the profile (or role) so the reuse gate can
-  // teach run_subagent continuation — same pattern as Copilot's agent_id.
-  if (!agentId && ctx.host === 'windsurf') {
-    const profile = asString(toolInput.profile) || role;
-    if (profile) agentId = profile;
-  }
+  // Never fabricate a Windsurf agent id from the requested profile. Devin emits
+  // PostToolUse even when `run_subagent` fails (for example, an unregistered
+  // custom profile); treating the profile as live poisons the corrective retry.
   if (!agentId || !isResumeCapableAgentId(agentId)) return noop();
 
   const state = readEffectiveState(ctx.cwd);

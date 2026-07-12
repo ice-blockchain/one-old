@@ -44,7 +44,7 @@ delivering mobile with Ionic/Capacitor.
   `cn()` (= `clsx` + `tailwind-merge`).
 - Theme: design tokens as CSS variables (`--background`, `--foreground`,
   `--primary`, …) declared in the shared stylesheet's `@theme` block
-  (`packages/tailwind-config/globals.css` in the monorepo, `src/styles/globals.css`
+  (`packages/tailwind-config/src/globals.css` in the monorepo, `src/styles/globals.css`
   single-app); apps import that stylesheet, not a JS preset.
 - Animation utilities: `tw-animate-css` (the v4-native successor to
   `tailwindcss-animate`). Icons: `lucide-react`.

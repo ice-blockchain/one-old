@@ -24,6 +24,7 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(out.includes('## Active Rule Kernel'));
   assert.ok(out.includes('never re-read root `AGENTS.md`'));
   assert.ok(out.includes('AUTO-RUN the senior role team'));
+  assert.ok(out.includes('run maintenance triage before that greenfield team flow'));
   assert.ok(out.includes('never probe package registries'));
   assert.ok(out.includes('per-user local preferences'));
   assert.ok(out.includes('Existing projects skip new-project MVP/mobile prompts'));
@@ -130,7 +131,7 @@ test('Active State carries team mode, OpenCode flag, and the role→model line-u
   }
 });
 
-test('Active State on Kilo gives the general-task marker recipe and omits role model ids', () => {
+test('Active State on Kilo gives the general-agent role-contract recipe and omits role model ids', () => {
   const prevHost = process.env.TRAFFIC_ONE_HOST;
   process.env.TRAFFIC_ONE_HOST = 'kilo';
   try {
@@ -144,10 +145,60 @@ test('Active State on Kilo gives the general-task marker recipe and omits role m
     const out = renderAgents(state, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
     assert.ok(out.includes('- Team: subagents (balanced, approved)'));
     assert.ok(out.includes('- OpenCode delegation: off'));
-    assert.ok(out.includes('Kilo subagents: use `task` with `subagent_type: "general"`'));
+    assert.ok(out.includes('Kilo subagents: use `task` with built-in `general`'));
     assert.ok(out.includes('[t1-role: senior-<role>]'));
+    assert.ok(out.includes('.kilo/agents/senior-<role>.md'));
+    assert.ok(out.includes('Do not use `explore` or fall back to main-agent mode'));
     assert.ok(!out.includes('Role models (pass as `model` when spawning):'));
     assert.ok(!out.includes('opencode/'));
+  } finally {
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+  }
+});
+
+test('Active State on Windsurf lists the detected paid profile models', () => {
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  process.env.TRAFFIC_ONE_HOST = 'windsurf';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    const out = renderAgents({
+      ...STATE,
+      team: { mode: 'subagents', approved: true },
+      performance: { level: 'high' },
+    }, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
+    assert.ok(out.includes('Windsurf subagents: use `run_subagent` profile `subagent_general`'));
+    assert.ok(out.includes('[t1-role: senior-<role>]'));
+    assert.ok(out.includes('.devin/agents/<role>/AGENT.md'));
+    assert.ok(out.includes('SWE-1.7 Beta'));
+    assert.ok(out.includes('SWE-1.7 Lightning Beta'));
+    assert.ok(out.includes('SWE-1.6 Slow'));
+    assert.ok(out.includes('`run_subagent`'));
+  } finally {
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+  }
+});
+
+test('Active State makes the Low/main-agent branch explicit for Windsurf and other hosts', () => {
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  process.env.TRAFFIC_ONE_HOST = 'windsurf';
+  try {
+    const out = renderAgents({
+      ...STATE,
+      team: { mode: 'main-agent' },
+      performance: { level: 'low' },
+    }, ['rules/common/auth-gate.md'], ['project-memory'], {
+      leanMode: true,
+      mandatoryRules: ['rules/common/auth-gate.md'],
+    });
+    assert.ok(out.includes('- Team: main-agent (low)'));
+    assert.ok(out.includes('Main-agent build flow: do NOT call a host subagent primitive'));
+    assert.ok(out.includes('`run_subagent`, `Task`, `spawn_agent`, or `task`'));
+    assert.ok(out.includes('write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config'));
   } finally {
     if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
     else process.env.TRAFFIC_ONE_HOST = prevHost;

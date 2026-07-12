@@ -98,6 +98,30 @@ continue the user's original request. Full instructions were given on the first
 denial this session.
 <!-- T1BLOCK:END server-deny-reason-repeat -->
 
+<!-- T1BLOCK:BEGIN windsurf-server-deny-reason -->
+Traffic One setup is required before building.
+
+Before running any tool, show the user this standalone clickable setup link:
+[Open Traffic One setup]({{URL}})
+
+Keep the current turn active by running this wait command (timeout ~9 minutes):
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, immediately continue the original request.
+<!-- T1BLOCK:END windsurf-server-deny-reason -->
+
+<!-- T1BLOCK:BEGIN windsurf-server-deny-reason-repeat -->
+Traffic One setup is still pending.
+
+Before running any tool, show the user this standalone clickable setup link:
+[Open Traffic One setup]({{URL}})
+
+Keep the current turn active by running this wait command:
+{{WAIT_CMD}}
+
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, continue the original request.
+<!-- T1BLOCK:END windsurf-server-deny-reason-repeat -->
+
 <!-- T1BLOCK:BEGIN setup-pending -->
 Traffic One needs a quick setup before it can build in this project. When you start
 a coding task, Traffic One opens a local setup wizard — shown in your editor's
@@ -123,14 +147,15 @@ rerun the same tool now; the canonical `.traffic-one/.one.json` and project-loca
 
 DO NOT write feature source, scaffold app files, or run package installs yourself in this thread.
 Your FIRST action: spawn `senior-architect` via the host `{{TASK_TOOL}}` tool:
-- `subagent_type: "{{SUBAGENT_TYPE}}"` when named `senior-*` types are not listed (expected on {{HOST}} v1)
+- `subagent_type: "{{SUBAGENT_TYPE}}"` — {{SPAWN_RULE}}
 - prompt line 1 MUST be: `[t1-role: senior-architect]`
+- {{ROLE_CONTRACT_INSTRUCTION}}
 - include `Run ID: {{RUN_ID}}` and the user's original request
 - omit `model` on {{HOST}} unless the host documents a subagent model parameter
 
 This stack uses a Turborepo monorepo (`apps/web/`, `packages/*`) — do NOT create root `src/`, root `tsconfig*.json`, or a flat Vite app at the project root.
 
-After architect emits `PLAN_READY`, spawn `senior-frontend` and `senior-backend` in parallel (same `{{TASK_TOOL}}` pattern with their role markers). Read `.traffic-one/rules/common/senior-engineer-team.md` before the first spawn.
+After architect emits `PLAN_READY`, spawn `senior-frontend` and `senior-backend` in parallel using the same {{HOST}} spawn rule, each role marker, and its matching role-contract instruction. Read `.traffic-one/rules/common/senior-engineer-team.md` before the first spawn.
 <!-- T1BLOCK:END kilo-opencode-spawn-first -->
 
 <!-- T1BLOCK:BEGIN kilo-opencode-architect-incomplete -->
@@ -141,8 +166,9 @@ DO NOT spawn `senior-frontend` or `senior-backend` yet. DO NOT patch `assignment
 Missing architect deliverables: {{MISSING}}
 
 Respawn `senior-architect` via `{{TASK_TOOL}}` with:
-- `subagent_type: "{{SUBAGENT_TYPE}}"` when named `senior-*` types are not listed
+- `subagent_type: "{{SUBAGENT_TYPE}}"` — {{SPAWN_RULE}}
 - prompt line 1: `[t1-role: senior-architect]`
+- {{ROLE_CONTRACT_INSTRUCTION}}
 - `Run ID: {{RUN_ID}}`
 - instruct the architect to finish the missing files, write `.traffic-one/runs/{{RUN_ID}}/assignments.json`, then `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`
 
@@ -164,7 +190,7 @@ The latest user prompt explicitly requested switching away from subagents to Low
 <!-- T1BLOCK:BEGIN maintenance-triage-subagents -->
 [MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. Pick the tier, then ROUTE it — in this (subagents) mode do NOT implement trivial or small work yourself in this thread; handing it to a cheaper worker is the whole point of post-build triage. You judge the TIER (the keyword hint is a prior, not a verdict); the routing for the chosen tier is required, not optional. State your routing in one sentence and proceed — do not ask the user which tier, worker, or model to use.
 - trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: spawn a `quick-fix` subagent with model "{{CHEAPEST_MODEL}}" on hosts whose spawn tool supports `model`; omit `model` on OpenCode/Kilo/Copilot/Windsurf unless the exact host tool documents support. Do NOT make the edit yourself.{{QUICK_FIX_OPENCODE_CLAUSE}} Give it the exact file(s), the precise change, and one verification step; the worker makes the change and verifies it (screenshot if visual).
-- small — one component, one small endpoint, or a scoped bug fix: spawn exactly ONE role subagent (senior-frontend OR senior-backend) at its normal tier.{{SMALL_OPENCODE_CLAUSE}} No architect unless it turns cross-cutting.
+- small — one component, one page/route, one small endpoint, or a scoped bug fix: spawn the owning implementation role(s) directly at their normal tier. Use `senior-frontend` for UI/routes and `senior-backend` for server/data; when the bounded request genuinely touches both, spawn those two roles in parallel. On Kilo, each direct role uses built-in `general` with its first-line role marker and matching `.kilo/agents/senior-<role>.md` contract, with no `model`.{{SMALL_OPENCODE_CLAUSE}} Do NOT spawn `senior-architect` or create a feature plan unless the work turns cross-cutting.
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW, before any edit, as a SINGLE-FEATURE run — the architect plans just this feature, decides frontend/backend/both and the per-role model tiers, then implement → review → test.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
 <!-- T1BLOCK:END maintenance-triage-subagents -->
@@ -172,7 +198,7 @@ Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user expli
 <!-- T1BLOCK:BEGIN maintenance-triage-main-agent -->
 [MAINTENANCE PHASE — post-build triage] The main build is complete; this is an iteration request. This project runs in main-agent mode (no subagents). Pick the tier and scale your effort to it — you judge the TIER (the keyword hint is a prior, not a verdict). Route it yourself in one sentence and proceed; do not ask the user which tier or approach to use.
 - trivial — a CSS/styling tweak, copy/text, one i18n string, a rename, a single-file config change: make the edit directly, no planning ceremony.{{OPENCODE_CLAUSE}} Verify visually if the change is visual.
-- small — one component, one small endpoint, or a scoped bug fix: implement it directly after a brief plan.
+- small — one component, one page/route, one small endpoint, or a scoped bug fix: implement it directly after a brief plan.
 - complex — a feature spanning layers, a data-model/schema change, auth, a migration, or an external integration: read and follow the `senior-eng-orchestrator` skill NOW and run its phases INLINE via the roadmap checklist — plan the feature, decide the surface, implement, then self-review and test. Do not spawn subagents.
 Keyword hint: {{HINT}} (confidence {{CONFIDENCE}}){{SIGNALS}}. If the user explicitly asked for a quick/small change, honor that. Full rubric: read the `task-triage` skill.
 <!-- T1BLOCK:END maintenance-triage-main-agent -->

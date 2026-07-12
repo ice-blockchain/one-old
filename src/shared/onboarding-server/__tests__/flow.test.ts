@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { KILO_MODELS } from '../../../config/model-tiers';
+import { KILO_MODELS, WINDSURF_FREE_MODEL, WINDSURF_PAID_MODELS } from '../../../config/model-tiers';
 import { mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
@@ -14,6 +14,7 @@ const HOST_ENV_KEYS = [
   'CODEX_PLUGIN_ROOT',
   'CODEX_INTERNAL_ORIGINATOR_OVERRIDE',
   'CODEX_THREAD_ID',
+  'TRAFFIC_ONE_WINDSURF_BACKEND',
 ] as const;
 
 function withProject(committed: Record<string, unknown> | null, fn: (cwd: string) => void): void {
@@ -415,7 +416,7 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
   });
 });
 
-test('Windsurf Free recommends Low and maps the team to SWE-1.6 Slow', () => {
+test('Windsurf Free recommends Low and maps a manually selected team to SWE-1.6 Slow', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'windsurf';
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
@@ -432,16 +433,63 @@ test('Windsurf Free recommends Low and maps the team to SWE-1.6 Slow', () => {
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.host, 'windsurf');
-    assert.deepEqual(view.meta.modelChoices, [{ tier: 'cheapest', model: 'SWE-1.6 Slow' }]);
+    assert.deepEqual(view.meta.modelChoices, [{ tier: 'cheapest', model: WINDSURF_FREE_MODEL }]);
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(by, 'senior-architect').tier, 'cheapest');
-    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.6 Slow');
-    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
+    assert.equal(requireRole(by, 'senior-architect').model, WINDSURF_FREE_MODEL);
+    assert.equal(requireRole(by, 'senior-tester').model, WINDSURF_FREE_MODEL);
     assert.ok(!(view.meta.modelChoices || []).some((c) => /opus|sonnet|haiku/i.test(c.model)));
   });
 });
 
-test('Kilo Balanced/High team line-up uses native Kilo picker models, not OpenCode slugs', () => {
+test('Windsurf Cascade offers only Low/main-agent and rejects subagent answers', () => {
+  withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'windsurf';
+    process.env.TRAFFIC_ONE_WINDSURF_BACKEND = 'cascade';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    applyAnswer(cwd, 'open-code', 'not_now');
+
+    const perf = computeOnboarding(cwd);
+    assert.equal(perf.step, 'performance');
+    assert.equal(perf.meta.recommendedLevel, 'low');
+    assert.deepEqual(perf.meta.options?.map((option) => option.id), ['low']);
+    assert.deepEqual(applyAnswer(cwd, 'performance', 'balanced'), {
+      ok: false,
+      error: 'Cascade supports main-agent mode only',
+    });
+    assert.deepEqual(applyAnswer(cwd, 'team-confirmation', 'approve'), {
+      ok: false,
+      error: 'Cascade does not expose a subagent runner',
+    });
+
+    assert.equal(applyAnswer(cwd, 'performance', 'low').ok, true);
+    const prefs = readProjectPrefs(cwd);
+    assert.equal(asRec(prefs.performance).level, 'low');
+    assert.equal(asRec(prefs.team).mode, 'main-agent');
+  });
+});
+
+test('Windsurf Pro exposes all three verified selector models for a Balanced team', () => {
+  withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'windsurf';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'balanced');
+
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'team-confirmation');
+    assert.deepEqual(view.meta.modelChoices, [
+      { tier: 'highest', model: WINDSURF_PAID_MODELS.highest },
+      { tier: 'balanced', model: WINDSURF_PAID_MODELS.balanced },
+      { tier: 'cheapest', model: WINDSURF_PAID_MODELS.cheapest },
+    ]);
+    const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
+    assert.equal(requireRole(by, 'senior-architect').model, WINDSURF_PAID_MODELS.balanced);
+    assert.equal(requireRole(by, 'senior-tester').model, WINDSURF_PAID_MODELS.cheapest);
+  });
+});
+
+test('Kilo Balanced/High team line-up uses the valid Kilo Auto Free fallback, not OpenCode slugs', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'kilo';
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
@@ -456,11 +504,7 @@ test('Kilo Balanced/High team line-up uses native Kilo picker models, not OpenCo
     applyAnswer(cwd, 'performance', 'balanced');
     const balanced = computeOnboarding(cwd);
     assert.equal(balanced.step, 'team-confirmation');
-    assert.deepEqual(balanced.meta.modelChoices, [
-      { tier: 'highest', model: KILO_MODELS.highest },
-      { tier: 'balanced', model: KILO_MODELS.balanced },
-      { tier: 'cheapest', model: KILO_MODELS.cheapest },
-    ]);
+    assert.deepEqual(balanced.meta.modelChoices, [{ tier: 'cheapest', model: KILO_MODELS.cheapest }]);
     const balancedBy = Object.fromEntries((balanced.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(balancedBy, 'senior-architect').model, KILO_MODELS.balanced);
     assert.equal(requireRole(balancedBy, 'senior-frontend').model, KILO_MODELS.balanced);

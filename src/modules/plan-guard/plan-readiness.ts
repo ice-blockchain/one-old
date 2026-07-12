@@ -30,8 +30,15 @@ const ASSIGNMENTS_FILE_RE = /(^|\/)\.traffic-one\/runs\/[^/]+\/assignments\.json
 const ARCHITECT_DIGEST_RE = /(^|\/)\.traffic-one\/digests\/[^/]+\/architect\.md$/;
 const ADR_OR_DOC_RE = /(^|\/)(docs|architecture|README|ADR)/i;
 const ROOT_VITE_RE = /^(src\/|index\.html$|vite\.config\.(ts|js|mts|mjs)$|tailwind\.config\.(ts|js|cjs|mjs)$|postcss\.config\.(cjs|js|mjs)$|components\.json$|public\/)/;
-const ROOT_MONOREPO_FLAT_RE = /^tsconfig(\.[a-z0-9-]+)?\.json$/;
+const ROOT_MONOREPO_FLAT_RE = /^tsconfig(?!\.base\.json$)(\.[a-z0-9-]+)?\.json$/;
 const T1_MEMORY_DIR = '.traffic' + '-one';
+const CANONICAL_TAILWIND_GLOBALS_PATH = 'packages/tailwind-config/src/globals.css';
+const TAILWIND_CONFIG_BASELINE_PATHS = [
+  CANONICAL_TAILWIND_GLOBALS_PATH,
+  'packages/tailwind-config/globals.css',
+  'packages/tailwind-config/index.ts',
+  'packages/tailwind-config/tailwind.config.ts',
+];
 
 // The OpenCode plan-queue gate is a TOKEN-OPTIMIZATION, not a correctness gate: it
 // wants the architect to list bounded units for the free OpenCode batch. On
@@ -99,8 +106,8 @@ function missingArchitectScaffold(projectRoot: string, state: Rec): string[] {
   if (!exists(projectRoot, 'packages/ui/package.json')) missing.push('packages/ui/package.json');
   if (!exists(projectRoot, 'packages/ui/src/index.ts')) missing.push('packages/ui/src/index.ts');
   if (!exists(projectRoot, 'packages/tailwind-config/package.json')) missing.push('packages/tailwind-config/package.json');
-  if (!existsAny(projectRoot, ['packages/tailwind-config/index.ts', 'packages/tailwind-config/tailwind.config.ts'])) {
-    missing.push('packages/tailwind-config/index.ts');
+  if (!existsAny(projectRoot, TAILWIND_CONFIG_BASELINE_PATHS)) {
+    missing.push(CANONICAL_TAILWIND_GLOBALS_PATH);
   }
   if (!exists(projectRoot, 'packages/i18n/package.json')) missing.push('packages/i18n/package.json');
   if (!exists(projectRoot, 'packages/i18n/src/index.ts')) missing.push('packages/i18n/src/index.ts');
@@ -282,28 +289,43 @@ export function isArchitectPhaseComplete(projectRoot: string, state: Rec): boole
 }
 
 export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boolean {
-  const runIds: string[] = [];
-  if (typeof state.currentRunId === 'string' && state.currentRunId.trim()) runIds.push(state.currentRunId.trim());
+  const runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
+  if (!runId) return false;
   try {
-    const digestsDir = path.join(projectRoot, T1_MEMORY_DIR, 'digests');
-    for (const entry of fs.readdirSync(digestsDir, { withFileTypes: true })) {
-      if (entry.isDirectory() && !runIds.includes(entry.name)) runIds.push(entry.name);
-    }
+    return /\bPLAN_READY\b/.test(fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'digests', runId, 'architect.md'), 'utf8'));
   } catch {
-    // no digests
+    return false;
   }
-  return runIds.some((runId) => {
-    try {
-      return /\bPLAN_READY\b/.test(fs.readFileSync(path.join(projectRoot, T1_MEMORY_DIR, 'digests', runId, 'architect.md'), 'utf8'));
-    } catch {
-      return false;
-    }
-  });
 }
 
 function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown): string | null {
   const ctx = rawData ? resolveRunAgentContext(projectRoot, state, rawData, { claimPending: false }) : null;
   return (ctx && typeof ctx.role === 'string' ? ctx.role : null) || activeAgentRole(state);
+}
+
+function isEmptyBarrelContent(content: string): boolean {
+  const stripped = content
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n\r]*/g, '')
+    .trim();
+  return stripped === '' || stripped === 'export {}' || stripped === 'export {};';
+}
+
+function isArchitectPackageBarrelTarget(filePath: string): boolean {
+  return /^packages\/[^/]+\/src\/index\.ts$/.test(filePath);
+}
+
+function isArchitectTailwindGlobalsTarget(filePath: string): boolean {
+  return filePath === CANONICAL_TAILWIND_GLOBALS_PATH || filePath === 'packages/tailwind-config/globals.css';
+}
+
+function isArchitectBaselineFeatureWrite(filePath: string, content: string): boolean {
+  if (isArchitectTailwindGlobalsTarget(filePath)) return true;
+  return isArchitectPackageBarrelTarget(filePath) && isEmptyBarrelContent(content);
+}
+
+function usesMainAgentTeam(state: Rec): boolean {
+  return obj(state.team)?.mode === 'main-agent';
 }
 
 export interface ReadinessArgs {
@@ -337,7 +359,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
 
   if (requiresMonorepoScaffold && ROOT_MONOREPO_FLAT_RE.test(filePath)) {
     violations.push(block('monorepo-root-flat-scaffold',
-      'New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. The architect scaffolds the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) — spawn `senior-architect` first instead of creating a flat root Vite layout.'));
+      'New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. Complete the architect phase and scaffold the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) instead of creating a flat root Vite layout.'));
   }
 
   if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content)) {
@@ -393,7 +415,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
 
   if (ASSIGNMENTS_FILE_RE.test(filePath) && state.mode === 'new-project' && !assignmentsUsesCanonicalShape(content)) {
     violations.push(block('assignments-shape-gate',
-      'Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. See `agents/senior-architect.md` § Assignments manifest.'));
+      'Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. Rewrite it as `{ "version": 1, "runId": "<currentRunId>", "assignments": [{ "role": "senior-frontend", "scope": { "include": ["apps/web/**", "packages/ui/**", "packages/i18n/**", "packages/tailwind-config/**"], "exclude": [] } }, { "role": "senior-backend", "scope": { "include": ["supabase/**", "packages/api-client/**"], "exclude": [] } }] }` and adjust paths to the real Module map.'));
   }
 
   if (ASSIGNMENTS_FILE_RE.test(filePath) && state.mode === 'new-project' && assignmentsUsesCanonicalShape(content)) {
@@ -439,8 +461,13 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const writingDoc = ADR_OR_DOC_RE.test(filePath);
 
   if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc) {
-    violations.push(block('plan-gate',
-      'Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
+    if (usesMainAgentTeam(state)) {
+      violations.push(block('plan-main-agent-gate',
+        'Plan gate: .traffic-one/plan.md is missing on a new project in Low/main-agent mode. Do NOT call `run_subagent`, `Task`, `spawn_agent`, `task`, or another subagent tool. You are the architect in this thread: write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config, workspace scaffold, or feature-source writes; then resume the same ordered phases. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
+    } else {
+      violations.push(block('plan-gate',
+        'Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
+    }
   }
 
   const writerRole = assignmentWriterRole(projectRoot, state, rawData);
@@ -448,9 +475,9 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     && writingFeatureSource
     && writerRole === 'senior-architect'
     && !architectPlanReadyOnDisk(projectRoot, state)
-    && !(filePath && /^packages\/[^/]+\/src\/index\.ts$/.test(filePath) && /^\s*(export\s+\{\s*\};?)?\s*$/.test(content.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n\r]*/g, '')))) {
+    && !(filePath && isArchitectBaselineFeatureWrite(filePath, content))) {
     violations.push(block('architect-pre-ready-feature',
-      'Architect scope gate: `senior-architect` may write only workspace scaffold and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files.',
+      'Architect scope gate: `senior-architect` may write only workspace scaffold, the shared Tailwind globals baseline, and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files.',
       { TARGET: filePath }));
   }
 

@@ -10,6 +10,7 @@ import { authRequiredMessage } from '../shared/auth';
 import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
+import { stampWindsurfBackend } from '../shared/windsurf-backend';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 
@@ -44,6 +45,19 @@ function cwdFrom(stdin: string): string {
   return firstString(info.cwd, info.working_directory, info.workingDirectory, data.cwd, data.workspace_root, data.workspaceRoot) || process.cwd();
 }
 
+// Devin Local currently also forwards each native lifecycle event through the
+// legacy Cascade hook bridge. Those synthetic Cascade payloads are identifiable
+// by an explicitly present but empty trajectory_id; genuine Cascade sessions
+// carry a real trajectory id (or older builds omit the field). Ignore only the
+// synthetic duplicate so both backends can stay installed without double gates.
+function isSyntheticDevinCascadeDuplicate(stdin: string): boolean {
+  const data = asRecord(parseJson<Record<string, unknown>>(stdin, {}));
+  return typeof data.agent_action_name === 'string'
+    && Object.prototype.hasOwnProperty.call(data, 'trajectory_id')
+    && typeof data.trajectory_id === 'string'
+    && data.trajectory_id.trim() === '';
+}
+
 function parseEnvelope(stdout: string): WindResult {
   try {
     const parsed = JSON.parse(stdout || '{"kind":"noop"}') as unknown;
@@ -69,24 +83,15 @@ function shouldBlockPromptForAuth(text: string): boolean {
     || lower.includes('session expired');
 }
 
-// Cascade pre_user_prompt ignores stdout and show_output — only exit 2 + stderr
-// reaches the agent (docs.devin.ai/desktop/cascade/hooks). Setup/auth/onboarding
-// context must block or Windsurf silently drops it and the agent freelances.
-function shouldBlockPreUserPromptContext(text: string): boolean {
-  if (shouldBlockPromptForAuth(text)) return true;
-  const lower = text.toLowerCase();
-  return lower.includes('[setup required]')
-    || lower.includes('setup required')
-    || lower.includes('open the setup wizard')
-    || lower.includes('traffic one needs a quick setup')
-    || lower.includes('project setup is required');
-}
-
 export async function runWindsurfHook(
   subcommand: string | undefined,
   stdin: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
+  stampWindsurfBackend('cascade', env);
+  if (isSyntheticDevinCascadeDuplicate(stdin)) {
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
   const action = actionName(stdin, subcommand);
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
   const cwd = cwdFrom(stdin);
@@ -111,7 +116,13 @@ export async function runWindsurfHook(
 
     if (result.kind === 'context') {
       const message = contextText(result);
-      if (action === 'pre_user_prompt' && message && shouldBlockPreUserPromptContext(message)) {
+      // Current Windsurf/Devin Local loads both the legacy Cascade config and
+      // native Devin lifecycle hooks. Blocking setup here prevents the native
+      // UserPromptSubmit hook from ever admitting the user's prompt (the session
+      // contains no user node and therefore cannot run onboarding-wait). Native
+      // hooks inject setup context; legacy Cascade still gets the recipe on the
+      // first mutating tool gate. Authentication remains fail-closed here.
+      if (action === 'pre_user_prompt' && message && shouldBlockPromptForAuth(message)) {
         return { stdout: '', stderr: message, exitCode: 2 };
       }
       return { stdout: message, stderr: '', exitCode: 0 };

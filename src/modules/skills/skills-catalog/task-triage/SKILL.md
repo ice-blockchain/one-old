@@ -1,6 +1,6 @@
 ---
 name: task-triage
-description: "Post-build maintenance triage: classify each request by complexity and scale the machinery — trivial → cheap quick-fix worker, small → single role, complex → orchestrator run. Read when the maintenance-phase directive fires."
+description: "Post-build maintenance triage: classify each request by complexity and scale the machinery — trivial → cheap quick-fix worker, small → directly owning role(s), complex → orchestrator run. Read when the maintenance-phase directive fires."
 metadata:
   adapted_for: traffic-one
 ---
@@ -25,9 +25,10 @@ needless plan wastes a little budget, but an under-engineered feature ships a bu
   pass, a single-file config value. *Examples:* "make the CTA blue", "fix the typo in the footer",
   "rename `UserCard` to `ProfileCard`".
 - **small** — one localized unit of real work, no cross-cutting design:
-  one component, one small endpoint, a bug fix scoped to a file or two, a single new field on an
-  existing form. *Examples:* "add a loading spinner to the dashboard", "fix the off-by-one in
-  pagination", "add a `phone` field to the profile form".
+  one component, one page/route, one small endpoint, a bug fix scoped to a file or two, a single new
+  field on an existing form. *Examples:* "add a loading spinner to the dashboard", "create a news
+  page using the existing data seam", "fix the off-by-one in pagination", "add a `phone` field to
+  the profile form".
 - **complex** — a feature spanning layers or touching a sensitive surface:
   new data model / schema / migration, auth or permissions, payments/billing, an external integration
   or webhook, realtime, or anything spanning UI + API + DB. *Examples:* "add Stripe checkout",
@@ -71,13 +72,17 @@ The directive states the project's **team mode** and whether **OpenCode** is act
   spawn prompt.
 
 ### small
-- **Subagents mode:** spawn a SINGLE role — `senior-frontend` OR `senior-backend`, whichever layer the
-  change lives in — at its normal tier for the performance level. No architect unless the change turns
-  out to be cross-cutting (then escalate to complex).
-  - **OpenCode active:** call the `opencode_delegate` tool FIRST with that chosen role, the current
-    maintenance `runId`, `projectRoot`, exact `allowedFiles`, and the bounded task. Only if it declines should you spawn the
-    paid role subagent. If the tool is not exposed, say the opencode-worker MCP server is not loaded and
-    Codex needs one restart, then use the paid fallback for this request.
+- **Subagents mode:** spawn the directly owning implementation role(s) at their normal tier for the
+  performance level: `senior-frontend` for UI/pages/routes and `senior-backend` for a bounded
+  server/data seam. If the request truly needs both layers, spawn those two roles in parallel. Do not
+  spawn an architect or create `plan-<feature>.md`; escalate to complex only when opening the files
+  reveals cross-cutting impact.
+  - **Kilo:** each direct role is a built-in `general` task with `[t1-role: senior-<role>]` on the
+    first line, an immediate read of `.kilo/agents/senior-<role>.md`, and no `model` field.
+  - **OpenCode active:** call the `opencode_delegate` tool FIRST for each chosen role, with the current
+    maintenance `runId`, `projectRoot`, exact `allowedFiles`, and its bounded task. Only if it declines
+    should you spawn that paid role subagent. If the tool is not exposed, say the opencode-worker MCP
+    server is not loaded and Codex needs one restart, then use the paid fallback for this request.
 - **Main-agent mode:** implement it directly after a brief plan; add/keep a regression check.
 
 ### complex

@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { WINDSURF_FREE_MODEL, WINDSURF_PAID_MODELS } from '../../../config/model-tiers';
 import { WINDSURF_AGENT_MARKER, WINDSURF_AGENTS_REL, writeWindsurfAgentFiles } from '../windsurf-agents';
 
 function tmp(): string {
@@ -29,10 +30,22 @@ test('writeWindsurfAgentFiles writes .devin/agents/<role>/AGENT.md with Free SWE
     assert.ok(written >= 6);
     const architect = fs.readFileSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-architect', 'AGENT.md'), 'utf8');
     assert.ok(architect.includes(WINDSURF_AGENT_MARKER));
-    assert.match(architect, /^model: "SWE-1\.6 Slow"$/m);
+    assert.match(architect, new RegExp(`^model: ${JSON.stringify(WINDSURF_FREE_MODEL)}$`, 'm'));
     assert.match(architect, /^  - write$/m);
     const reviewer = fs.readFileSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-reviewer', 'AGENT.md'), 'utf8');
     assert.match(reviewer, /^permissions:\n  deny:\n    - write\n    - edit$/m);
+  });
+});
+
+test('writeWindsurfAgentFiles pins paid profiles to the selected verified tier model', () => {
+  withPlan('pro', () => {
+    const cwd = tmp();
+    const state = { team: { mode: 'subagents', approved: true }, performance: { level: 'balanced' } };
+    writeWindsurfAgentFiles(cwd, state);
+    const architect = fs.readFileSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-architect', 'AGENT.md'), 'utf8');
+    const tester = fs.readFileSync(path.join(cwd, WINDSURF_AGENTS_REL, 'senior-tester', 'AGENT.md'), 'utf8');
+    assert.match(architect, new RegExp(`^model: ${JSON.stringify(WINDSURF_PAID_MODELS.balanced)}$`, 'm'));
+    assert.match(tester, new RegExp(`^model: ${JSON.stringify(WINDSURF_PAID_MODELS.cheapest)}$`, 'm'));
   });
 });
 

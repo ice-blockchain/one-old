@@ -12,7 +12,6 @@ import { renderWindsurfRuleDocs, WINDSURF_RULES_REL, type WindsurfRuleDocument }
 import {
   isGeneratedWindsurfWorkspaceHooks,
   WINDSURF_WORKSPACE_HOOKS_REL,
-  windsurfWorkspaceHooksJson,
 } from '../windsurf-hook-command';
 import { GENERATED_MARKER, removeGeneratedSkillDir } from './generated';
 import { writeTextIfChanged } from '../fs-text';
@@ -129,11 +128,11 @@ export function writeWindsurfHostAssets(cwd: string, rules: readonly string[]): 
   let workspaceHooks = 0;
   try {
     const existing = fs.existsSync(workspaceHooksPath) ? fs.readFileSync(workspaceHooksPath, 'utf8') : '';
-    if (!existing || isGeneratedWindsurfWorkspaceHooks(existing)) {
-      if (writeTextIfChanged(workspaceHooksPath, windsurfWorkspaceHooksJson())) {
-        written += 1;
-        workspaceHooks = 1;
-      }
+    // Current Windsurf uses native Devin lifecycle hooks from config.json.
+    // Remove only our generated Cascade workspace file; never touch a manual one.
+    if (existing && isGeneratedWindsurfWorkspaceHooks(existing)) {
+      fs.rmSync(workspaceHooksPath, { force: true });
+      removed += 1;
     }
   } catch {
     // best-effort; user-level install remains the primary path

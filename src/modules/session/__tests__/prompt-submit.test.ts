@@ -308,6 +308,23 @@ test('opencode: incomplete onboarding prompt uses sanitized setup text', () => {
   });
 });
 
+test('windsurf: incomplete onboarding prompt uses the compact host-only setup directive', () => {
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    const url = 'http://127.0.0.1:51235/?t=windsurf';
+    writeServerRecord(cwd, { pid: process.pid, port: 51235, token: 'windsurf', url, startedAt: 'x' });
+    const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'windsurf'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.systemMessage?.includes(url), 'Windsurf banner carries the live wizard URL');
+      assert.ok(r.context.includes(`[Open Traffic One setup](${url})`));
+      assert.ok(r.context.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+      for (const foreign of ['Claude Code', 'Cursor:', 'Codex Desktop', '.claude/launch.json', 'preview_start', 'node_repl', 'const fs']) {
+        assert.ok(!r.context.includes(foreign), `Windsurf setup must not include ${foreign}`);
+      }
+    }
+  });
+});
+
 test('authed + incomplete new project but a SUBAGENT prompt → noop (subagents never onboard)', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     // The same prompt from the parent surfaces the wizard; from a subagent it must not.
@@ -538,7 +555,8 @@ test('maintenance triage mints a fresh run id so stale OpenCode role attempts do
     assert.equal(triage.kind, 'context');
     if (triage.kind === 'context') {
       assert.ok(triage.context.includes('MAINTENANCE PHASE'), 'triage directive present');
-      assert.ok(triage.context.includes('role "senior-frontend"'), 'small single-role work is explicitly OpenCode-delegated first');
+      assert.ok(triage.context.includes('for each chosen role'), 'small work is explicitly OpenCode-delegated first for every owning role');
+      assert.ok(triage.context.includes('"senior-frontend" and/or "senior-backend"'), 'the direct-role route can cover a bounded page plus data seam');
     }
 
     const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));

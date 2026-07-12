@@ -787,7 +787,7 @@ export function resolveRunAgentContext(
   cwd: string,
   state: unknown,
   rawInput: unknown,
-  options: { claimPending?: boolean } = {},
+  options: { claimPending?: boolean; allowSoleAnonymousPending?: boolean } = {},
 ): RunAgentContext | null {
   const identity = hookSessionIdentity(rawInput);
   const shouldClaimPending = options.claimPending !== false;
@@ -886,6 +886,20 @@ export function resolveRunAgentContext(
       removeSiblingPendingClaims(cwd, state, runId, String(claimed.role || ''), claimed.parentSessionId as string | null, claimed.claimId as string | null);
       return contextFromClaim(claimed, 'run-agent');
     }
+  }
+
+  // Devin Local's native PreToolUse payload currently contains no session,
+  // parent, transcript, or subagent marker. `run_subagent` is foreground-only:
+  // while it is running the parent is suspended, so one fresh pending claim is
+  // unambiguously the active child. Keep the pending file in place so every
+  // subsequent child write resolves the same role; PostToolUse owns completion.
+  // This fallback is opt-in because it would be unsafe on hosts with background
+  // or parallel anonymous workers.
+  if (shouldClaimPending && options.allowSoleAnonymousPending && exactKeys.length === 0) {
+    const pending = runIds
+      .flatMap((runId) => listPendingClaims(cwd, runId))
+      .filter(({ claim }) => claimAllowsState(state, claim));
+    if (pending.length === 1) return contextFromClaim(pending[0]!.claim, 'sole-foreground-pending');
   }
 
   return null;
@@ -1450,7 +1464,7 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (host) {
-    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf') return true;
+    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf' || host === 'opencode') return true;
     return flag !== '';
   }
   const envHost = String(env.TRAFFIC_ONE_HOST ?? '').trim().toLowerCase();
@@ -1467,6 +1481,10 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   if (envHost === 'copilot') return true;
   // Windsurf/Devin Local: run_subagent + read_subagent (native custom profiles).
   if (envHost === 'windsurf') return true;
+  // OpenCode has no resumable Task field in current builds, but Traffic One still
+  // records the active role session so duplicate same-role spawns are routed to
+  // wait/explicit replacement instead of silently creating another live role.
+  if (envHost === 'opencode') return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }

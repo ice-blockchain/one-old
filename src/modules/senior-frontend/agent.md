@@ -130,7 +130,7 @@ You do **not** touch backend modules (`apps/*/server/`, `packages/api*`, `servic
 11. Mobile nav uses shadcn `Sheet` (`md:hidden` collapse) or RNR `Sheet`/`Drawer` on native.
 12. Animations via `framer-motion` (web/Ionic) or `react-native-reanimated` (Expo). Eased timings, never linear. Respect `prefers-reduced-motion`.
 13. Capture screenshots / Storybook states for visual-heavy work; run `browser-qa` if the change ships to a real route.
-14. Append a short note to `.traffic-one/agent-log.md` for meaningful UI work: routes/components changed, design references used, verification run, and remaining UI risks.
+14. Put meaningful UI work notes in your handoff digest: routes/components changed, design references used, verification run, and remaining UI risks. Do not write `.traffic-one/agent-log.md` from the frontend role.
 
 ## Digest output (REQUIRED)
 

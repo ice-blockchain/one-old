@@ -25,7 +25,7 @@ import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isOnboardingWaitCommand, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
@@ -78,6 +78,13 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // parsedToolInput lifts ctx.input.tool.command on Cursor (no raw.tool_input) so the
   // shell command-hint convergence (materializeFromToolInputHints) sees the command.
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
+  // Devin Local backgrounds long exec calls after ~5 seconds and emits
+  // PostToolUse while onboarding-wait is still running. Converging at that
+  // moment reads the intentionally incomplete state and injects a stale
+  // "rewrite .one.json" directive, causing the model to overwrite wizard
+  // answers. The wait runner owns setup completion + materialization.
+  if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path);
   const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
   const pathBase = workdir

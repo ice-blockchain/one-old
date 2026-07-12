@@ -20,7 +20,7 @@ import { asString } from '../../adapters/coerce';
 import { noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
-import { captureClaimDebug, claimThreadRole, readEffectiveState } from '../../shared/state';
+import { captureClaimDebug, claimThreadRole, readEffectiveState, recordRunAgent } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { inferTrafficOneSpawnRole } from './role-infer';
 
@@ -47,6 +47,13 @@ export function opencodeSubagentBind(ctx: Ctx): HookResult {
   const stateObj = obj(state);
   const runId = stateObj && typeof stateObj.currentRunId === 'string' ? stateObj.currentRunId : null;
   captureClaimDebug(ctx.cwd, runId, 'opencode-subagent-prompt', { sessionId, role });
-  claimThreadRole(ctx.cwd, state, sessionId, role, {});
+  claimThreadRole(ctx.cwd, state, sessionId, role, { recordAgent: false });
+  if (runId && ctx.host === 'opencode') {
+    recordRunAgent(ctx.cwd, runId, role, {
+      agentId: sessionId,
+      agentType: role,
+      parentSessionId: null,
+    });
+  }
   return noop();
 }

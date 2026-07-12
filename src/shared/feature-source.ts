@@ -11,6 +11,12 @@ import type { RunAgentContext } from './state/run-agent';
 export const FEATURE_SOURCE_RE =
   /^(apps\/[^/]+\/(src|app)\/|packages\/[^/]+\/src\/|src\/|services\/[^/]+\/src\/)/;
 
+// Build/config/public artifacts that are part of an implementation surface even
+// when they are not under src/. In subagent team mode these must be owned by a
+// role, not edited directly by the parent/orchestrator.
+export const BUILD_ARTIFACT_RE =
+  /^(?:package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|turbo\.json|tsconfig(?:\.[a-z0-9-]+)?\.json|vite\.config\.[cm]?[jt]s|tailwind\.config\.[cm]?[jt]s|postcss\.config\.[cm]?[jt]s|eslint\.config\.[cm]?[jt]s|components\.json|(?:apps|packages|services)\/[^/]+\/(?:package\.json|tsconfig(?:\.[a-z0-9-]+)?\.json|vite\.config\.[cm]?[jt]s|tailwind\.config\.[cm]?[jt]s|postcss\.config\.[cm]?[jt]s|eslint\.config\.[cm]?[jt]s|components\.json|src\/vite-env\.d\.ts|public\/.+))$/;
+
 const FLAT_FRONTEND_SOURCE_RE =
   /^src\/(?:app\/(?!api\/)|pages\/(?!api\/)|components\/|features\/|hooks\/|i18n\/|locales\/|messages\/|styles\/|assets\/|lib\/(?!(?:db|server|auth)(?:\/|\.))|utils\/|providers\/|contexts\/|layouts\/|routes\/|theme\/|types\/|config\/|App\.[^/]+$|main\.[^/]+$|index\.[^/]+$|entry\.[^/]+$|client\.[^/]+$)/;
 
@@ -61,10 +67,35 @@ export function commandAppearsToWriteFeatureSource(command: unknown): boolean {
     || /\btee\b/.test(command)
     || /\bcat\b[\s\S]*<</.test(command)
     || /\bpython3?\b|\bnode\b|\bperl\b|\bsed\b[\s\S]*-i/.test(command)
-    || /(?:^|[\s;&|])(?:rm|mv|cp|mkdir|touch|truncate)\b/.test(command)
+    // mkdir creates no file content and carries no implementation ownership.
+    // Treating it as a source write rejects foreground architect scaffolding in
+    // Devin Local. Destructive/copying/content primitives remain gated.
+    || /(?:^|[\s;&|])(?:rm|mv|cp|touch|truncate)\b/.test(command)
     || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(command);
   const mentionsFeaturePath = /(?:^|[\s'"`/])(?:apps\/[^/\s'"`]+\/(?:src|app)(?:\/|(?=$|[\s'"`]))|packages\/[^/\s'"`]+\/src(?:\/|(?=$|[\s'"`]))|src(?:\/|(?=$|[\s'"`]))|services\/[^/\s'"`]+\/src(?:\/|(?=$|[\s'"`])))/.test(command);
   return hasWritePrimitive && mentionsFeaturePath;
+}
+
+export function commandAppearsToWriteBuildArtifact(command: unknown): boolean {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const hasOutputRedirect = /(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*(?!&?\d\b)(?!\/dev\/null\b)/.test(command);
+  const hasWritePrimitive = hasOutputRedirect
+    || /\btee\b/.test(command)
+    || /\bcat\b[\s\S]*<</.test(command)
+    || /\bpython3?\b|\bnode\b|\bperl\b|\bsed\b[\s\S]*-i/.test(command)
+    || /(?:^|[\s;&|])(?:rm|mv|cp|touch|truncate)\b/.test(command)
+    || /(?:^|[\s;&|])find\b[\s\S]*\s-delete\b/.test(command);
+  const mentionsBuildArtifact = /(?:^|[\s'"`])(?:(?:apps|packages|services)\/[^/\s'"`]+\/(?:package\.json|tsconfig(?:\.[a-z0-9-]+)?\.json|vite\.config\.[cm]?[jt]s|tailwind\.config\.[cm]?[jt]s|postcss\.config\.[cm]?[jt]s|eslint\.config\.[cm]?[jt]s|components\.json|src\/vite-env\.d\.ts|public\/[^\s'"`]+)|(?:package\.json|pnpm-workspace\.yaml|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?|turbo\.json|tsconfig(?:\.[a-z0-9-]+)?\.json|vite\.config\.[cm]?[jt]s|tailwind\.config\.[cm]?[jt]s|postcss\.config\.[cm]?[jt]s|eslint\.config\.[cm]?[jt]s|components\.json))(?:$|[\s'"`])/.test(command);
+  return hasWritePrimitive && mentionsBuildArtifact;
+}
+
+export function commandAppearsToWriteExternalTemp(command: unknown): boolean {
+  if (typeof command !== 'string' || !command.trim()) return false;
+  const tempPath = "(?:/tmp|/private/tmp|/var/tmp)/[^\\s'\"`;|&>]+";
+  const outputToTemp = new RegExp(String.raw`(?:^|[\s;&|])(?:\d?>{1,2}|&>)\s*` + tempPath).test(command);
+  const teeToTemp = new RegExp(String.raw`\btee\b[\s\S]*` + tempPath).test(command);
+  const writePrimitiveToTemp = new RegExp(String.raw`(?:^|[\s;&|])(?:touch|truncate|mkdir|rm|mv|cp)\b[\s\S]*` + tempPath).test(command);
+  return outputToTemp || teeToTemp || writePrimitiveToTemp;
 }
 
 export function applyPatchTargetPaths(patchText: unknown): string[] {

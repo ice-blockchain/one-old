@@ -23,6 +23,7 @@ import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
 import { firstEmitThisSession } from '../../shared/once';
@@ -32,8 +33,8 @@ import { canonicalToolName, isMutatingPreToolUse, isOnboardingWaitCommand, isRea
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
-  skillBlock('onboarding-gate', name, vars);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
+  skillBlock('onboarding-gate', name, vars, fallback);
 
 export function onboardingGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
@@ -130,6 +131,17 @@ export function onboardingGate(ctx: Ctx): HookResult {
         + `If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, `
         + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.`,
       );
+    }
+    if (ctx.host === 'windsurf') {
+      // Windsurf renders an exit-2 pre-hook as a failed tool card. Never spend
+      // that blocking surface on harmless orientation (`ls`, reads, grep): let
+      // the agent inspect while the user completes the already-open wizard.
+      // The host entry turns the first mutation deny into an inline setup wait,
+      // then releases that SAME tool after onboarding completes.
+      if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+      const first = firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId);
+      if (first) return deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, vars.WAIT_CMD)));
+      return deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, vars.WAIT_CMD)));
     }
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse

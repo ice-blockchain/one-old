@@ -20,6 +20,11 @@ export function planStaticViolations(filePath: string, content: string, isNative
   const violations: string[] = [];
   const INLINE_STYLE = 'style={' + '{';
 
+  if (/\.(png|jpe?g|webp|avif)$/i.test(filePath) && /^\s*(?:<\?xml\b|<svg\b)/i.test(content)) {
+    violations.push(block('asset-extension-mismatch',
+      'Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.'));
+  }
+
   if (/(apps\/[^/]+\/)?src\/pages\/.*\.(service|store|hook|query|slice|api)\.(ts|tsx)$/.test(filePath)) {
     violations.push(block('pages-service-files',
       'Service/store/hook/slice files belong in src/services/, src/features/<name>/, or packages/* — not in src/pages/.'));

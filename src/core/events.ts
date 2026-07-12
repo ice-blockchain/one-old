@@ -9,6 +9,7 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   // shell
   Bash: 'shell',
   exec_command: 'shell',
+  exec: 'shell',
   bash: 'shell',
   // write (create / bulk)
   Write: 'file-write',

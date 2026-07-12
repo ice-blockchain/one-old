@@ -18,6 +18,7 @@ import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboard
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { serverRecordExists } from '../../shared/onboarding-server/registry';
 import { projectContextOriginalPrompt } from '../../shared/onboarding/project-context';
 import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/team-mode-approval';
@@ -49,8 +50,8 @@ import * as fs from 'fs';
 type Rec = Record<string, unknown>;
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
-  skillBlock('onboarding-gate', name, vars);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
+  skillBlock('onboarding-gate', name, vars, fallback);
 const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
 
 function opencodeSetupDirective(url: string, waitCommand: string, hostLabel = 'OpenCode'): string {
@@ -225,6 +226,16 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
       return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.url, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
+      });
+    }
+    if (ctx.host === 'windsurf') {
+      const first = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId);
+      const vars = { URL: server.url, WAIT_CMD: waitCommand };
+      const directive = first
+        ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.url, waitCommand))
+        : block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(server.url, waitCommand));
+      return context(directive, {
+        systemMessage: formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]'),
       });
     }
     // Full walkthrough once per session (shared marker with the PreToolUse gate);

@@ -1,0 +1,89 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+import { runDevinHook } from '../devin-entry';
+import { writeServerRecord } from '../../shared/onboarding-server/registry';
+
+async function withSetupProject(fn: (cwd: string) => Promise<void>): Promise<void> {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-devin-entry-'));
+  const oldCwd = process.cwd();
+  const saved = {
+    auth: process.env.TRAFFIC_ONE_AUTH,
+    noSpawn: process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
+    home: process.env.HOME,
+  };
+  process.env.HOME = dir;
+  process.env.TRAFFIC_ONE_AUTH = 'off';
+  process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  try {
+    writeServerRecord(dir, { pid: process.pid, port: 56859, token: 'native', url: 'http://127.0.0.1:56859/?t=native', startedAt: 'x' });
+    await fn(dir);
+  } finally {
+    process.chdir(oldCwd);
+    if (saved.auth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+    else process.env.TRAFFIC_ONE_AUTH = saved.auth;
+    if (saved.noSpawn === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+    else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = saved.noSpawn;
+    if (saved.home === undefined) delete process.env.HOME;
+    else process.env.HOME = saved.home;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('Devin UserPromptSubmit injects a visible setup URL before planning', async () => {
+  await withSetupProject(async (cwd) => {
+    const out = await runDevinHook('user-prompt-submit', JSON.stringify({
+      hook_event_name: 'UserPromptSubmit',
+      cwd,
+      prompt: 'create a Next.js learning platform',
+    }));
+    assert.equal(out.exitCode, 0);
+    const wire = JSON.parse(out.stdout) as { hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } };
+    assert.equal(wire.hookSpecificOutput?.hookEventName, 'UserPromptSubmit');
+    assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /http:\/\/127\.0\.0\.1:56859\/\?t=native/);
+    assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /\[Open Traffic One setup\]\(http:\/\/127\.0\.0\.1:56859\/\?t=native\)/);
+    assert.match(wire.hookSpecificOutput?.additionalContext ?? '', /onboarding-wait\.cjs/);
+  });
+});
+
+test('Devin PreToolUse blocks scaffolding immediately and allows the ordinary wait command', async () => {
+  await withSetupProject(async (cwd) => {
+    const scaffold = await runDevinHook('check-onboarding-gate', JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      cwd,
+      tool_name: 'exec',
+      tool_input: { command: 'npx create-next-app@latest learning-platform' },
+    }));
+    const blocked = JSON.parse(scaffold.stdout) as { decision?: string; reason?: string };
+    assert.equal(blocked.decision, 'block');
+    assert.match(blocked.reason ?? '', /http:\/\/127\.0\.0\.1:56859\/\?t=native/);
+
+    const wait = await runDevinHook('check-onboarding-gate', JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      cwd,
+      tool_name: 'exec',
+      tool_input: { command: `node "/plugin/scripts/onboarding-wait.cjs" "${cwd}" "--host=windsurf"` },
+    }));
+    assert.equal(wait.stdout, '');
+    assert.equal(wait.exitCode, 0);
+  });
+});
+
+test('Devin Stop gives an incomplete setup one wait-command retry without looping', async () => {
+  await withSetupProject(async (cwd) => {
+    const first = await runDevinHook('onboarding-stop', JSON.stringify({
+      hook_event_name: 'Stop', cwd, stop_hook_active: false,
+    }));
+    const blocked = JSON.parse(first.stdout) as { decision?: string; reason?: string };
+    assert.equal(blocked.decision, 'block');
+    assert.match(blocked.reason ?? '', /onboarding-wait\.cjs/);
+
+    const retry = await runDevinHook('onboarding-stop', JSON.stringify({
+      hook_event_name: 'Stop', cwd, stop_hook_active: true,
+    }));
+    assert.equal(retry.stdout, '');
+  });
+});

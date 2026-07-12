@@ -226,6 +226,15 @@ test('generic write in an already-materialized project → noop (nothing to conv
   });
 });
 
+test('Devin background onboarding wait emits no stale incomplete-state convergence', () => {
+  withAuthedProject(false, (cwd) => {
+    const r = runPostStackSetup(rawCtx(cwd, 'exec', {
+      command: `node "/plugin/scripts/onboarding-wait.cjs" "${cwd}" "--host=windsurf"`,
+    }));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
 // ── Incident regression: a write from a parent workspace LANDING inside a nested
 // plugin-authoring repo must not report/flip/converge against that repo. ──
 test('write into a nested authoring repo from a parent-workspace cwd stands down completely', () => {

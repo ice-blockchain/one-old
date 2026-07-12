@@ -63,7 +63,7 @@ Meaningful frontend surfaces should show several of these, chosen for the produc
 
 The general anti-template tells are in `rules/frontend/ui-quality.md`. On top of those:
 
-- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the CSS variables in `globals.css`. Extend the `@theme` tokens in `packages/tailwind-config/globals.css` before introducing new tokens.
+- Do not use hardcoded colors, spacing, font sizes, radii, or shadows; use Tailwind tokens (`bg-primary`, `text-muted-foreground`, `rounded-lg`, …) backed by the CSS variables in `globals.css`. Extend the `@theme` tokens in `packages/tailwind-config/src/globals.css` before introducing new tokens.
 - Do not put page sections inside floating cards. Use cards for repeated items, modals, and genuinely framed tools.
 - Do not rely on color alone for state; pair it with text, iconography, or shape.
 - Do not copy desktop layouts directly onto mobile. Reorder content, simplify controls, and keep primary actions thumb-accessible.

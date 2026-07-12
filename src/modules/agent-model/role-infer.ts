@@ -19,7 +19,7 @@ export function inferTrafficOneSpawnRole(toolInput: Record<string, unknown>): st
   );
   if (direct) return direct;
 
-  const message = [toolInput.message, toolInput.prompt, toolInput.instructions, toolInput.description]
+  const message = [toolInput.message, toolInput.prompt, toolInput.task, toolInput.instructions, toolInput.description]
     .filter((value) => typeof value === 'string')
     .join('\n');
 

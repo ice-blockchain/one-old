@@ -7,6 +7,23 @@ export const WINDSURF_HOST_INSIDERS_CONFIG_DIR_REL = '.codeium/windsurf-insiders
 export const WINDSURF_HOST_HOOKS_FILE = 'hooks.json';
 export const WINDSURF_HOST_MCP_FILE = 'mcp_config.json';
 export const WINDSURF_HOST_GLOBAL_RULES_REL = 'memories/global_rules.md';
+export const DEVIN_HOST_CONFIG_REL = '.config/devin/config.json';
+
+export const DEVIN_NATIVE_HOOKS = [
+  { event: 'SessionStart', subcommand: 'session-start', matcher: '' },
+  { event: 'UserPromptSubmit', subcommand: 'user-prompt-submit', matcher: '' },
+  { event: 'Stop', subcommand: 'onboarding-stop', matcher: '' },
+  { event: 'PreToolUse', subcommand: 'check-onboarding-gate', matcher: '^(exec|edit|write|read|grep|glob|agent|task|run_subagent|spawn_subagent)$' },
+  { event: 'PreToolUse', subcommand: 'check-model-choice-gate', matcher: '^(exec|edit|write|read|grep|glob|agent|task|run_subagent|spawn_subagent)$' },
+  { event: 'PreToolUse', subcommand: 'check-agent-model', matcher: '^(agent|task|run_subagent|spawn_subagent)$' },
+  { event: 'PreToolUse', subcommand: 'check-plan-write', matcher: '^(exec|edit|write)$' },
+  { event: 'PreToolUse', subcommand: 'check-library-allowlist', matcher: '^exec$' },
+  { event: 'PreToolUse', subcommand: 'pre-graphify-hint', matcher: '^(grep|glob)$' },
+  { event: 'PostToolUse', subcommand: 'post-build-page-speed', matcher: '^exec$' },
+  { event: 'PostToolUse', subcommand: 'post-build-graphify', matcher: '^exec$' },
+  { event: 'PostToolUse', subcommand: 'post-agent-spawned', matcher: '^(agent|task|run_subagent|spawn_subagent)$' },
+  { event: 'PostToolUse', subcommand: 'post-stack-setup', matcher: '' },
+] as const;
 
 export const WINDSURF_HOOK_EVENTS = [
   'pre_user_prompt',

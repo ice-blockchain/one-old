@@ -4,6 +4,7 @@
 
 import { obj, type Rec } from '../obj';
 import { SUBAGENT_STALE_MS, VALID_AGENT_ROLES } from '../../config/state';
+import { stateVersion } from './io';
 
 export function stackFingerprint(state: unknown): string {
   const s = obj(state);
@@ -22,7 +23,12 @@ export function isMaterialized(state: unknown): boolean {
   if (!s) return false;
   if (!s.onboardingComplete) return true; // pre-onboarding: don't block
   if (!s.materializedStack) return false;
-  return s.materializedStack === stackFingerprint(s);
+  if (s.materializedStack !== stackFingerprint(s)) return false;
+  // Older projects predate the version stamp and stay compatible. Once a stamp
+  // exists, however, a plugin upgrade must refresh the generated AGENTS/rules/
+  // role contracts instead of silently carrying a previous runtime's guidance.
+  const version = typeof s.materializedVersion === 'string' ? s.materializedVersion.trim() : '';
+  return !version || version === stateVersion();
 }
 
 export function isSubagentSession(state: unknown): boolean {

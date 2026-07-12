@@ -7,12 +7,14 @@ import * as path from 'path';
 import { agentModelGate } from '../handler';
 import { extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
+import { opencodeSubagentBind } from '../opencode-subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { hookSessionIdentity, readEffectiveState, readRunAgentRegistry, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { ensureRunAgentClaim, hookSessionIdentity, readEffectiveState, readRunAgentRegistry, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 
 test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, and prose', () => {
@@ -227,15 +229,71 @@ test('Copilot: missing model arg does not deadlock while slugs are unvalidated',
   });
 });
 
-test('Kilo: built-in general task with marker is a valid senior-role spawn without model', () => {
+test('Kilo: built-in general task with marker succeeds; named project agent is redirected to general', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
-    const r = agentModelGate(spawnCtx(cwd, {
+    const general = agentModelGate(spawnCtx(cwd, {
       subagent_type: 'general',
       prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
     }, 'kilo'));
-    assert.equal(r.kind, 'noop');
+    assert.equal(general.kind, 'noop');
+    const named = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-architect',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'kilo'));
+    assert.equal(named.kind, 'deny');
+    if (named.kind === 'deny') {
+      assert.match(named.reason, /built-in writable Task subagent type `general`/);
+      assert.match(named.reason, /\.kilo\/agents\/senior-architect\.md/);
+      assert.match(named.reason, /subagent_type: "general"/);
+      assert.match(named.reason, /do NOT fall back to main-agent/i);
+    }
+    const explore = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'explore',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'kilo'));
+    assert.equal(explore.kind, 'deny');
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-    assert.ok(String(state.currentRunId || '').length > 0, 'Kilo marker spawn still mints/uses the Traffic One run id');
+    assert.ok(String(state.currentRunId || '').length > 0, 'Kilo general marker spawn still mints/uses the Traffic One run id');
+  });
+});
+
+test('Kilo: a corrective general spawn recovers from failed named-role pending claims', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const oldState = readEffectiveState(cwd);
+    ensureRunAgentClaim(cwd, oldState, 'senior-architect', { session_id: 'kilo-parent' }, {
+      toolName: 'task',
+      agentType: 'senior-architect',
+    });
+
+    const corrected = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'general',
+      prompt: '[t1-role: senior-architect]\nRead .kilo/agents/senior-architect.md before producing the plan.',
+    }, 'kilo-parent', 'kilo'));
+    assert.equal(corrected.kind, 'noop');
+
+    const runId = String(JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8')).currentRunId);
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', runId, 'pending');
+    assert.equal(fs.readdirSync(pendingDir).filter((name) => name.endsWith('.json')).length, 2,
+      'the corrective spawn is not blocked by a failed named-agent attempt');
+
+    const childPrompt = '[t1-role: senior-architect]\nRead .kilo/agents/senior-architect.md before producing the plan.';
+    opencodeSubagentBind({
+      input: {
+        event: 'UserPromptSubmit',
+        host: 'kilo',
+        cwd,
+        prompt: childPrompt,
+        raw: { session_id: 'kilo-general-child', prompt: childPrompt },
+      },
+      host: 'kilo',
+      cwd,
+      now: () => 'x',
+    } as unknown as Ctx);
+
+    const context = resolveRunAgentContext(cwd, readEffectiveState(cwd), { session_id: 'kilo-general-child' });
+    assert.equal(context?.role, 'senior-architect');
+    assert.equal(fs.readdirSync(pendingDir).filter((name) => name.endsWith('.json')).length, 0,
+      'the child bind removes the failed named-agent pending claim and its replacement');
   });
 });
 
@@ -251,6 +309,105 @@ test('OpenCode: task spawn does not require unsupported model parameter', () => 
     assert.ok(runId.length > 0, 'OpenCode spawn still mints/uses the Traffic One run id');
     const pending = fs.readdirSync(path.join(cwd, '.traffic-one', 'runs', runId, 'pending')).filter((f) => f.startsWith('senior-architect-'));
     assert.ok(pending.length > 0, 'pending senior-architect claim staked for OpenCode');
+  });
+});
+
+test('OpenCode: Task spawn records its parent so an unmarked child write can be scope-attributed', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-architect',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'ses_oc_parent', 'opencode'));
+    assert.equal(r.kind, 'noop');
+    assert.equal(isForeignOnboardingThread(cwd, 'ses_oc_parent'), false, 'the parent remains protected from scope attribution');
+    assert.equal(isForeignOnboardingThread(cwd, 'ses_oc_child_without_chat_message'), true,
+      'a child whose initial chat.message hook is skipped can still bind by assignment scope');
+  });
+});
+
+test('OpenCode: built-in general with a Traffic One role marker is denied because it inherits the parent model', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'general',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /named OpenCode subagent `senior-architect`/);
+      assert.match(r.reason, /not `general`/);
+      assert.match(r.reason, /inherit/i);
+      assert.match(r.reason, /\.opencode\/agents\/senior-architect\.md/);
+    }
+  });
+});
+
+test('OpenCode: generic role metadata is not accepted as the actual named subagent type', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtx(cwd, {
+      role: 'senior-architect',
+      prompt: '[t1-role: senior-architect]\nProduce the Traffic One plan for the approved run.',
+    }, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /subagent type \/ agent name `senior-architect`/);
+      assert.match(r.reason, /not `missing`/);
+    }
+  });
+});
+
+test('OpenCode: spawn prompts cannot carry absolute .traffic-one paths from another root', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const r = agentModelGate(spawnCtx(cwd, {
+      subagent_type: 'senior-frontend',
+      prompt: [
+        '[t1-role: senior-frontend]',
+        'Read /Users/w3s/Ps/Projects/traffic-one/tests/opencode/3/.traffic-one/digests/run-test/frontend.md first.',
+      ].join('\n'),
+    }, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /outside this project root|corrupted root|project-relative/i);
+      assert.ok(r.reason.includes('/Users/w3s/Ps/Projects/traffic-one/tests/opencode/3/.traffic-one/digests/run-test/frontend.md'));
+      assert.ok(r.reason.includes(cwd));
+    }
+  });
+});
+
+test('OpenCode: bound child session records a live role and duplicate same-role spawn requires explicit replacement', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const first = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-frontend',
+      prompt: '[t1-role: senior-frontend]\nBuild the assigned UI scope.',
+    }, 'parent-oc', 'opencode'));
+    assert.equal(first.kind, 'noop');
+
+    const bindInput: HookInput = {
+      event: 'UserPromptSubmit',
+      host: 'opencode',
+      cwd,
+      prompt: '[t1-role: senior-frontend]\nBuild the assigned UI scope.',
+      raw: { session_id: 'ses_oc_frontend_1', prompt: '[t1-role: senior-frontend]\nBuild the assigned UI scope.' },
+    };
+    opencodeSubagentBind({ input: bindInput, host: 'opencode', cwd, now: () => 'x' } as unknown as Ctx);
+    assert.equal(readRunAgentRegistry(cwd, 'run-test')['senior-frontend']?.agentId, 'ses_oc_frontend_1');
+
+    const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-frontend',
+      prompt: '[t1-role: senior-frontend]\nFix build errors.',
+    }, 'parent-oc', 'opencode'));
+    assert.equal(duplicate.kind, 'deny');
+    if (duplicate.kind === 'deny') {
+      assert.ok(duplicate.reason.includes('ses_oc_frontend_1'));
+      assert.ok(duplicate.reason.includes('OpenCode'));
+      assert.ok(duplicate.reason.includes('[t1-replace-agent]'));
+      assert.ok(!duplicate.reason.includes('SendMessage'));
+    }
+
+    const replacement = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-frontend',
+      prompt: '[t1-role: senior-frontend]\n[t1-replace-agent]\nPrevious OpenCode agent completed. Follow-up fix cycle: fix build errors only.',
+    }, 'parent-oc', 'opencode'));
+    assert.equal(replacement.kind, 'noop');
   });
 });
 
@@ -1031,7 +1188,7 @@ function setCurrentRunId(cwd: string, runId: string): void {
   writeArchitectPhaseComplete(cwd, runId, state);
 }
 
-function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'windsurf' = 'claude'): Ctx {
+function spawnCtxWithSession(cwd: string, toolInput: Record<string, unknown>, sessionId: string, host: 'claude' | 'codex' | 'cursor' | 'copilot' | 'windsurf' | 'opencode' | 'kilo' = 'claude'): Ctx {
   const rawName = host === 'windsurf' ? 'devin.run_subagent' : 'Task';
   const input: HookInput = {
     event: 'PreToolUse', host, cwd,
@@ -1184,7 +1341,7 @@ test('reuse (Copilot): records background agent_id and denies same-role respawn'
   });
 });
 
-test('reuse (Windsurf): records profile id and denies same-role respawn with run_subagent prose', () => {
+test('reuse (Windsurf): records returned agent id and denies same-role respawn with run_subagent prose', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     setCurrentRunId(cwd, 'run-windsurf-reuse');
     const rec = recordSpawnedAgent(postSpawnCtx(
@@ -1193,12 +1350,12 @@ test('reuse (Windsurf): records profile id and denies same-role respawn with run
         profile: 'senior-frontend',
         prompt: '[t1-role: senior-frontend]\nbuild the UI',
       },
-      { mcp_result: 'subagent started' },
+      { agent_id: 'devin-agent-123' },
       'parent-1',
       'windsurf',
     ));
     assert.equal(rec.kind, 'noop');
-    assert.equal(readRunAgentRegistry(cwd, 'run-windsurf-reuse')['senior-frontend']?.agentId, 'senior-frontend');
+    assert.equal(readRunAgentRegistry(cwd, 'run-windsurf-reuse')['senior-frontend']?.agentId, 'devin-agent-123');
 
     const duplicate = agentModelGate(spawnCtxWithSession(cwd, {
       profile: 'senior-frontend',
@@ -1210,6 +1367,33 @@ test('reuse (Windsurf): records profile id and denies same-role respawn with run
       assert.ok(duplicate.reason.includes('run_subagent'));
       assert.ok(!duplicate.reason.includes('SendMessage'));
     }
+  });
+});
+
+test('Windsurf first-run: built-in general profile binds the marker role and is allowed', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-windsurf-general');
+    const result = agentModelGate(spawnCtxWithSession(cwd, {
+      profile: 'subagent_general',
+      task: '[t1-role: senior-architect]\nRead .devin/agents/senior-architect/AGENT.md, then produce PLAN_READY.',
+    }, 'parent-1', 'windsurf'));
+    assert.equal(result.kind, 'noop');
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', 'run-windsurf-general', 'pending');
+    assert.ok(fs.readdirSync(pendingDir).some((file) => file.startsWith('senior-architect-')));
+  });
+});
+
+test('reuse (Windsurf): failed custom-profile spawn does not create a live registry entry', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    setCurrentRunId(cwd, 'run-windsurf-failed-spawn');
+    recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      { profile: 'senior-architect', prompt: '[t1-role: senior-architect]\nplan' },
+      { error: "Unknown subagent profile 'senior-architect'" },
+      'parent-1',
+      'windsurf',
+    ));
+    assert.equal(readRunAgentRegistry(cwd, 'run-windsurf-failed-spawn')['senior-architect'], undefined);
   });
 });
 
@@ -1532,6 +1716,8 @@ test('subagentContinuationAvailable is true on Codex without the Claude flag, an
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'copilot'), true);
   assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'windsurf'), true);
   assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'windsurf' } as NodeJS.ProcessEnv), true);
+  assert.equal(subagentContinuationAvailable({} as NodeJS.ProcessEnv, 'opencode'), true);
+  assert.equal(subagentContinuationAvailable({ TRAFFIC_ONE_HOST: 'opencode' } as NodeJS.ProcessEnv), true);
 });
 
 test('Cursor reuse deny names the Task resume recipe and accepts continuation fields', () => {
@@ -1588,4 +1774,8 @@ test('inferTrafficOneSpawnRole honors the [t1-role:] marker contract over any ph
     agent_type: 'worker',
     message: '[t1-role: senior-backend]\nDo whatever phrasing follows; senior-frontend and senior-tester are also mentioned here.',
   }), 'senior-backend');
+  assert.equal(inferTrafficOneSpawnRole({
+    profile: 'subagent_general',
+    task: '[t1-role: senior-architect]\nRead the materialized Devin role contract.',
+  }), 'senior-architect');
 });

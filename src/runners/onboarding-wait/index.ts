@@ -175,10 +175,14 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
       '[traffic-one] Windsurf build flow — do this FIRST, before writing or scaffolding anything:',
       `1. This project's stack is \`${stack}\` (frontend \`${frontend}\`). Build ONLY on that stack — do NOT run`,
       '   `create-next-app` / `create-react-app`; the React/Vite app lives under `apps/web` (Vite), per the plan.',
-      '2. Spawn the architect FIRST with the `run_subagent` tool (profile `senior-architect`). It writes',
+      '2. Spawn the architect FIRST with `run_subagent` profile `subagent_general` (custom profiles materialized',
+      '   during onboarding are not registered until a new Devin session). The task MUST start with',
+      '   `[t1-role: senior-architect]`, then tell the child to read `.devin/agents/senior-architect/AGENT.md`.',
+      '   It writes',
       '   `.traffic-one/plan.md` (PLAN_READY) + the `apps/web` monorepo scaffold. Development is BLOCKED until',
       '   `.traffic-one/plan.md` exists (the scaffolder + plan gates deny premature/off-stack commands).',
-      '3. After PLAN_READY, spawn the implementer roles (`senior-frontend`, `senior-backend`, …) via `run_subagent`,',
+      '3. After PLAN_READY, spawn every role via `subagent_general`, with its `[t1-role: senior-…]` marker first',
+      '   and an instruction to read the matching `.devin/agents/<role>/AGENT.md` contract,',
       '   then `senior-reviewer` + `senior-tester`. Build ON the plan the architect produced.',
     ].join('\n');
   } catch {
@@ -283,7 +287,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   } catch {
     // best-effort — the wait still polls without a respawn
   }
-  announceWizardUrl(cwd);
+  // Windsurf opens the wizard before the prompt and runs this waiter inside the
+  // first mutating hook. Suppress the terminal-style URL banner there: it is not
+  // clickable in Devin's tool card and the browser is already open.
+  if (!argv.includes('--quiet-url')) announceWizardUrl(cwd);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,

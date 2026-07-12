@@ -1,6 +1,7 @@
 // src/runners/windsurf-host/index.ts
-// Install/doctor/uninstall Traffic One integration for Windsurf / Devin Desktop
-// Cascade by merging owned hooks, MCP config, and a compact global-rule block.
+// Install/doctor/uninstall Traffic One integration for Windsurf. Both Cascade
+// and Devin Local backends are supported; the Cascade runtime ignores Devin's
+// identifiable empty-trajectory compatibility duplicates.
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -15,10 +16,12 @@ import {
   WINDSURF_HOST_INSIDERS_CONFIG_DIR_REL,
   WINDSURF_HOST_MCP_FILE,
   WINDSURF_HOST_NEXT_CONFIG_DIR_REL,
+  DEVIN_HOST_CONFIG_REL,
+  DEVIN_NATIVE_HOOKS,
   type WindsurfHookEvent,
 } from '../../config/windsurf-host';
 import { globalTrafficOneDir } from '../../shared/state/traffic-one-paths';
-import { windsurfUserHookCommand } from '../../shared/windsurf-hook-command';
+import { devinUserHookCommand, windsurfUserHookCommand } from '../../shared/windsurf-hook-command';
 
 export interface RunnerOutput { code: number; stdout: string; stderr?: string; }
 
@@ -65,6 +68,10 @@ export function windsurfGlobalRulesPath(env: NodeJS.ProcessEnv = process.env, ar
   return path.join(windsurfConfigDir(env, args), WINDSURF_HOST_GLOBAL_RULES_REL);
 }
 
+export function devinConfigPath(env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(homeDir(env), DEVIN_HOST_CONFIG_REL);
+}
+
 function runtimePluginRoot(env: NodeJS.ProcessEnv = process.env): string {
   return env.TRAFFIC_ONE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..', '..');
 }
@@ -97,14 +104,14 @@ function writeWindsurfPluginRootStamp(pluginRoot: string, env: NodeJS.ProcessEnv
   }
 }
 
-function hookCommand(pluginRoot: string, event: WindsurfHookEvent): string {
-  return windsurfUserHookCommand(pluginRoot, event);
-}
-
 function ownedHookEntry(entry: unknown): boolean {
   if (!entry || typeof entry !== 'object') return false;
   const command = (entry as Rec).command;
   return typeof command === 'string' && command.includes('windsurf-hook-runtime.cjs');
+}
+
+function hookCommand(pluginRoot: string, event: WindsurfHookEvent): string {
+  return windsurfUserHookCommand(pluginRoot, event);
 }
 
 function ensureHooks(file: string, pluginRoot: string): boolean {
@@ -114,7 +121,6 @@ function ensureHooks(file: string, pluginRoot: string): boolean {
     : {};
   let changed = config.hooks !== hooks;
   config.hooks = hooks;
-
   for (const event of WINDSURF_HOOK_EVENTS) {
     const current = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
     const next = [
@@ -147,6 +153,88 @@ function removeHooks(file: string): boolean {
     }
   }
   if (changed) writeJson(file, config);
+  return changed;
+}
+
+function ownedDevinCommand(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object') return false;
+  const command = (entry as Rec).command;
+  return typeof command === 'string' && command.includes('devin-hook-runtime.cjs');
+}
+
+function asHookEntries(group: unknown): unknown[] {
+  if (!group || typeof group !== 'object' || Array.isArray(group)) return [];
+  const entries = (group as Rec).hooks;
+  return Array.isArray(entries) ? entries : [];
+}
+
+function withoutOwnedDevinHooks(groups: unknown[]): unknown[] {
+  const next: unknown[] = [];
+  for (const group of groups) {
+    if (!group || typeof group !== 'object' || Array.isArray(group)) {
+      next.push(group);
+      continue;
+    }
+    const rec = { ...(group as Rec) };
+    const entries = Array.isArray(rec.hooks) ? rec.hooks as unknown[] : [];
+    const kept = entries.filter((entry) => !ownedDevinCommand(entry));
+    if (kept.length > 0) {
+      rec.hooks = kept;
+      next.push(rec);
+    } else if (entries.length === 0) {
+      next.push(group);
+    }
+  }
+  return next;
+}
+
+function ensureDevinHooks(file: string, pluginRoot: string): boolean {
+  const config = readJsonObject(file);
+  const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
+    ? config.hooks as Rec
+    : {};
+  const nextHooks: Rec = { ...hooks };
+  for (const event of new Set(DEVIN_NATIVE_HOOKS.map((spec) => spec.event))) {
+    nextHooks[event] = withoutOwnedDevinHooks(Array.isArray(hooks[event]) ? hooks[event] as unknown[] : []);
+  }
+  for (const spec of DEVIN_NATIVE_HOOKS) {
+    const groups = nextHooks[spec.event] as unknown[];
+    groups.push({
+      matcher: spec.matcher,
+      hooks: [{
+        type: 'command',
+        command: devinUserHookCommand(pluginRoot, spec.subcommand),
+        timeout: 30,
+      }],
+    });
+  }
+  const changed = config.hooks !== hooks || JSON.stringify(hooks) !== JSON.stringify(nextHooks);
+  config.hooks = nextHooks;
+  if (changed) writeJson(file, config);
+  return changed;
+}
+
+function removeDevinHooks(file: string): boolean {
+  if (!fs.existsSync(file)) return false;
+  const config = readJsonObject(file);
+  const hooks = config.hooks && typeof config.hooks === 'object' && !Array.isArray(config.hooks)
+    ? config.hooks as Rec
+    : {};
+  const nextHooks: Rec = { ...hooks };
+  let changed = false;
+  for (const event of Object.keys(hooks)) {
+    const current = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
+    const next = withoutOwnedDevinHooks(current);
+    if (JSON.stringify(current) !== JSON.stringify(next)) {
+      changed = true;
+      if (next.length > 0) nextHooks[event] = next;
+      else delete nextHooks[event];
+    }
+  }
+  if (changed) {
+    config.hooks = nextHooks;
+    writeJson(file, config);
+  }
   return changed;
 }
 
@@ -237,14 +325,17 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: reado
   const hooksFile = windsurfHooksPath(env, args);
   const mcpFile = windsurfMcpPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
+  const devinFile = devinConfigPath(env);
   const hooksChanged = ensureHooks(hooksFile, pluginRoot);
+  const devinChanged = ensureDevinHooks(devinFile, pluginRoot);
   const mcpChanged = ensureMcp(mcpFile);
   const globalRules = ensureGlobalRules(rulesFile, pluginRoot);
   writeWindsurfPluginRootStamp(pluginRoot, env);
   return {
     code: 0,
     stdout: [
-      `ok: Windsurf hooks ${hooksChanged ? 'updated' : 'already current'} at ${hooksFile}`,
+      `ok: Cascade hooks ${hooksChanged ? 'updated' : 'already current'} at ${hooksFile}`,
+      `ok: Devin Local hooks ${devinChanged ? 'updated' : 'already current'} at ${devinFile}`,
       `ok: Windsurf MCP ${mcpChanged ? 'updated' : 'already current'} at ${mcpFile}`,
       globalRules.skipped
         ? `warn: global_rules.md is over ${GLOBAL_RULE_LIMIT} characters with the Traffic One block; skipped ${rulesFile}`
@@ -261,13 +352,16 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, args: rea
   const hooksFile = windsurfHooksPath(env, args);
   const mcpFile = windsurfMcpPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
+  const devinFile = devinConfigPath(env);
   const hooksChanged = removeHooks(hooksFile);
+  const devinChanged = removeDevinHooks(devinFile);
   const mcpChanged = removeMcp(mcpFile);
   const rulesChanged = removeGlobalRules(rulesFile);
   return {
     code: 0,
     stdout: [
       `ok: hooks ${hooksChanged ? 'removed' : 'not present'} at ${hooksFile}`,
+      `ok: Devin Local hooks ${devinChanged ? 'removed' : 'not present'} at ${devinFile}`,
       `ok: MCP ${mcpChanged ? 'removed' : 'not present'} at ${mcpFile}`,
       `ok: global rule ${rulesChanged ? 'removed' : 'not present'} at ${rulesFile}`,
     ].join('\n') + '\n',
@@ -278,16 +372,34 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   const hooksFile = windsurfHooksPath(env, args);
   const mcpFile = windsurfMcpPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
+  const devinFile = devinConfigPath(env);
   const issues: string[] = [];
   try {
     const hooksConfig = readJsonObject(hooksFile);
     const hooks = hooksConfig.hooks && typeof hooksConfig.hooks === 'object' && !Array.isArray(hooksConfig.hooks) ? hooksConfig.hooks as Rec : {};
     for (const event of WINDSURF_HOOK_EVENTS) {
       const entries = Array.isArray(hooks[event]) ? hooks[event] as unknown[] : [];
-      if (!entries.some(ownedHookEntry)) issues.push(`missing hook ${event}`);
+      if (!entries.some(ownedHookEntry)) issues.push(`missing Cascade hook ${event}`);
     }
   } catch (error) {
-    issues.push(`hooks config unreadable: ${error instanceof Error ? error.message : String(error)}`);
+    issues.push(`Cascade hooks config unreadable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    const devinConfig = readJsonObject(devinFile);
+    const hooks = devinConfig.hooks && typeof devinConfig.hooks === 'object' && !Array.isArray(devinConfig.hooks) ? devinConfig.hooks as Rec : {};
+    for (const spec of DEVIN_NATIVE_HOOKS) {
+      const groups = Array.isArray(hooks[spec.event]) ? hooks[spec.event] as unknown[] : [];
+      const present = groups.some((group) => {
+        const entries = asHookEntries(group);
+        return entries.some((entry) => {
+          const command = entry && typeof entry === 'object' ? (entry as Rec).command : undefined;
+          return typeof command === 'string' && command.includes('devin-hook-runtime.cjs') && command.includes(` ${spec.subcommand} `);
+        });
+      });
+      if (!present) issues.push(`missing Devin Local hook ${spec.event}/${spec.subcommand}`);
+    }
+  } catch (error) {
+    issues.push(`Devin Local config unreadable: ${error instanceof Error ? error.message : String(error)}`);
   }
   try {
     const mcpConfig = readJsonObject(mcpFile);
@@ -305,7 +417,7 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   if (issues.length > 0) {
     return { code: 1, stdout: `not ok: ${issues.join('; ')}\nglobalRule: ${global}\n` };
   }
-  return { code: 0, stdout: `ok: Windsurf Traffic One integration active\nhooks: ${hooksFile}\nmcp: ${mcpFile}\nglobalRule: ${global}\n` };
+  return { code: 0, stdout: `ok: Windsurf Traffic One integration active\ncascadeHooks: ${hooksFile}\ndevinHooks: ${devinFile}\nmcp: ${mcpFile}\nglobalRule: ${global}\n` };
 }
 
 export function main(argv: string[] = process.argv.slice(2)): number {

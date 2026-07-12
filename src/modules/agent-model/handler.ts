@@ -6,6 +6,7 @@
 // ctx.input.raw (the canonical ToolInput doesn't carry them). Deny PROSE → skill.
 
 import { asString } from '../../adapters/coerce';
+import * as path from 'path';
 import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
@@ -62,6 +63,7 @@ import {
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { strayRunIdInText } from '../../shared/run-id-paths';
+import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -96,6 +98,89 @@ function modelParamEnforced(host: string): boolean {
   // may not expose a `model` arg. Cursor is the opposite: it needs an explicit Task `model`
   // parameter, so keep enforcing there.
   return host !== 'opencode' && host !== 'copilot' && host !== 'windsurf' && host !== 'kilo';
+}
+
+function spawnAgentType(toolInput: Rec, opts: { includeRoleAlias?: boolean } = {}): string {
+  const includeRoleAlias = opts.includeRoleAlias !== false;
+  return asString(
+    toolInput.agent_type
+      ?? toolInput.agentType
+      ?? toolInput.subagent_type
+      ?? toolInput.subagentType
+      ?? toolInput.subagent_profile
+      ?? toolInput.subagentProfile
+      ?? toolInput.profile
+      ?? toolInput.profile_name
+      ?? toolInput.profileName
+      ?? toolInput.agent
+      ?? (includeRoleAlias ? toolInput.role : undefined)
+      ?? toolInput.name
+      ?? toolInput.agentName
+      ?? toolInput.agent_name
+      ?? toolInput.type,
+  ).trim();
+}
+
+function isBuiltinSubagent(agentType: string): boolean {
+  return /^(general|explore|scout)$/i.test(agentType.trim());
+}
+
+function agentTypeMatchesRole(agentType: string, role: string): boolean {
+  return agentType.trim() === role || inferTrafficOneSpawnRole({ subagent_type: agentType }) === role;
+}
+
+function nativeOpenCodeAgentPath(role: string): string {
+  return `.opencode/agents/${role}.md`;
+}
+
+function namedOpenCodeAgentDeny(role: string, agentType: string, expected: string): HookResult {
+  return deny(block('opencode-named-agent-required', {
+    HOST: 'OpenCode',
+    ROLE: role,
+    AGENT_TYPE: agentType || 'missing',
+    AGENT_PATH: nativeOpenCodeAgentPath(role),
+    MODEL_NOTE: `Traffic One materialized this role with \`model: ${expected}\`. OpenCode applies that per-role model only when the Task spawn uses the named agent; built-in agents instead inherit the parent session model.`,
+  }));
+}
+
+function kiloGeneralAgentDeny(role: string, agentType: string): HookResult {
+  return deny(block('kilo-general-agent-required', {
+    ROLE: role,
+    AGENT_TYPE: agentType || 'missing',
+    AGENT_PATH: `.kilo/agents/${role}.md`,
+  }));
+}
+
+function absoluteTrafficOnePathsOutsideProject(prompt: string, cwd: string): string[] {
+  if (!prompt) return [];
+  const root = path.resolve(cwd).replace(/\\/g, '/').replace(/\/+$/, '');
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const re = /\/[^\s'"`<>)]*?\.traffic-one\/(?:runs|digests|fix-cycles)\/[^\s'"`<>)]*/g;
+  for (const match of prompt.matchAll(re)) {
+    const value = match[0].replace(/\\/g, '/');
+    if (value.startsWith(`${root}/`) || value === root) continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
+}
+
+function absoluteTrafficOnePathDeny(paths: string[], cwd: string): HookResult {
+  return deny(block('absolute-traffic-one-path', {
+    PROJECT_ROOT: cwd,
+    BAD_PATHS: paths.join(', '),
+  }));
+}
+
+// OpenCode/Kilo do not emit SubagentStart, so the only pre-child signal is the
+// parent's Task spawn. Record that parent before staking its pending role claim.
+// Later child writes that lack the first chat.message marker can then be safely
+// attributed by their single assignment scope, while parent writes stay denied.
+function recordSpawnParentSession(cwd: string, raw: unknown): void {
+  const parentSessionId = hookSessionIdentity(raw).sessionId;
+  if (parentSessionId) recordMainOnboardingSession(cwd, parentSessionId);
 }
 
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
@@ -134,13 +219,23 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
       tool: 'run_subagent',
     };
   }
+  if (host === 'opencode') {
+    return {
+      call: `OpenCode does not expose a resumable Task field in current Traffic One builds. If the existing task \`${agentId}\` is still running, wait for it. If it has already completed and you need a follow-up/fix, re-spawn the SAME named OpenCode agent with \`${REPLACE_AGENT_MARKER}\` in the prompt, keep \`[t1-role: <role>]\` as the FIRST line, and include only the new findings/file list inline. Do NOT use \`general\`, do NOT point at a missing fix-cycle file, and do NOT write scratch logs under \`/tmp\`.`,
+      tool: 'OpenCode Task replacement',
+    };
+  }
   return {
     call: `Call \`SendMessage\` with \`to: "${agentId}"\` and \`message\` = the NEW task.`,
     tool: 'SendMessage',
   };
 }
 
-function replacementJustified(prompt: string): boolean {
+function replacementJustified(prompt: string, host = ''): boolean {
+  if (host === 'opencode'
+    && /\b(previous|existing|current)\s+(opencode\s+)?(agent|task|subagent)\s+(completed|finished|returned|ended)\b|\bfix[- ]cycle\b|\bfollow[- ]up\b|\bno\s+resum(?:e|able|able\s+task)\b|\bcontinuation\s+(unavailable|unsupported)\b/i.test(prompt)) {
+    return true;
+  }
   return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed)\b/i
     .test(prompt);
 }
@@ -357,6 +452,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
   const spawnPromptText = [toolInput.prompt, toolInput.message, toolInput.task, toolInput.description]
     .filter((v): v is string => typeof v === 'string')
     .join('\n');
+  const badTrafficOnePaths = absoluteTrafficOnePathsOutsideProject(spawnPromptText, cwd);
+  if (badTrafficOnePaths.length > 0) {
+    return absoluteTrafficOnePathDeny(badTrafficOnePaths, cwd);
+  }
   const strayRunId = strayRunIdInText(spawnPromptText, spawnRunId);
   if (strayRunId) {
     // SELF-HEALING deny: hand back the spawn prompt with the run-id ALREADY corrected so a weak
@@ -477,7 +576,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       }
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
         const live = currentLive();
-        if (live && !replacementJustified(spawnPromptText)) {
+        if (live && !replacementJustified(spawnPromptText, ctx.host)) {
           const resumeTarget = continuationAgentId(live, ctx.host);
           if (resumeTarget) {
             const recipe = continuationRecipe(ctx.host, resumeTarget);
@@ -519,9 +618,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
     }
     const exact = modelParamEnforced(ctx.host) && expected ? cursorExactModelDeny(ctx, cwd, role, passedModel, expected, 'maintenance') : null;
     if (exact) return exact;
+    recordSpawnParentSession(cwd, raw);
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
-      agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+      agentType: spawnAgentType(toolInput) || undefined,
       model: passedModel || expected || '',
     });
     return noop();
@@ -580,13 +680,20 @@ export function agentModelGate(ctx: Ctx): HookResult {
   }
 
   const expected = modelForRoleHost(level, role, ctx.host, overrides, planCtx);
-  if (!expected) return noop();
-
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  const agentType = spawnAgentType(toolInput, { includeRoleAlias: false });
+  if (ctx.host === 'opencode') {
+    if (!agentType || !agentTypeMatchesRole(agentType, role) || isBuiltinSubagent(agentType)) {
+      return namedOpenCodeAgentDeny(role, agentType, expected || 'the configured role model');
+    }
+  }
+  if (ctx.host === 'kilo' && agentType.toLowerCase() !== 'general') return kiloGeneralAgentDeny(role, agentType);
+  if (!expected) return noop();
   if (!modelParamEnforced(ctx.host)) {
+    recordSpawnParentSession(cwd, raw);
     ensureRunAgentClaim(cwd, state, role, raw, {
       toolName,
-      agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+      agentType: spawnAgentType(toolInput) || undefined,
       model: passedModel || expected,
     });
     return noop();
@@ -618,9 +725,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // models + the budget/enable remedy (a pinned model can silently fall to Composer at runtime).
   const advisory = maybeModelAdvisory(ctx, cwd, spawnRunId, level, overrides, planCtx);
 
+  recordSpawnParentSession(cwd, raw);
   ensureRunAgentClaim(cwd, state, role, raw, {
     toolName,
-    agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || undefined,
+    agentType: spawnAgentType(toolInput) || undefined,
     model: passedModel,
   });
   return advisory ?? noop();

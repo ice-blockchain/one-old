@@ -27,8 +27,10 @@ import {
 
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
+const CANONICAL_TAILWIND_GLOBALS_PATH = 'packages/tailwind-config/src/globals.css';
 
 export interface RunTeamArgs {
+  host?: string;
   projectRoot: string;
   filePath: string;          // project-relative target path
   state: Rec;
@@ -38,6 +40,9 @@ export interface RunTeamArgs {
   featureTargetPaths: string[];
   writingFeatureSource: boolean;
   writingFeatureSourceViaCommand: boolean;
+  writingBuildArtifact?: boolean;
+  writingBuildArtifactViaCommand?: boolean;
+  recordFallbackClaims?: boolean;
   block: Block;
 }
 
@@ -60,8 +65,20 @@ function isArchitectScaffoldBarrelWrite(role: string | null, targets: string[], 
     && isEmptyBarrelContent(content || '');
 }
 
+function isArchitectTailwindGlobalsTarget(filePath: string): boolean {
+  return filePath === CANONICAL_TAILWIND_GLOBALS_PATH || filePath === 'packages/tailwind-config/globals.css';
+}
+
+function isArchitectScaffoldBaselineWrite(role: string | null, targets: string[], content: string | undefined): boolean {
+  if (isArchitectScaffoldBarrelWrite(role, targets, content)) return true;
+  return role === 'senior-architect'
+    && targets.length > 0
+    && targets.every(isArchitectTailwindGlobalsTarget);
+}
+
 function isArchitectScaffoldReservation(role: string | null | undefined, target: string): boolean {
-  return role === 'senior-architect' && isArchitectEmptyPackageBarrelTarget(target);
+  return role === 'senior-architect'
+    && (isArchitectEmptyPackageBarrelTarget(target) || isArchitectTailwindGlobalsTarget(target));
 }
 
 // Cursor scope-attribution fallback. A spawned worker's write can carry NO role/parent/
@@ -104,7 +121,19 @@ function attributeForeignWriteBySpawnScope(
 
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
-  const { projectRoot, filePath, state, rawData, content, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
+  const {
+    projectRoot,
+    filePath,
+    state,
+    rawData,
+    content,
+    featureTargetPaths,
+    writingFeatureSource,
+    writingFeatureSourceViaCommand,
+    writingBuildArtifact,
+    writingBuildArtifactViaCommand,
+    block,
+  } = args;
   const team = obj(state.team);
   if (!team || team.mode !== 'subagents') return null;
 
@@ -116,20 +145,30 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const assignedTargets = preManifest
     ? writeTargetPaths.filter((target) => preManifest.assignments.some((assignment) => matchesScope(target, assignment.scope)))
     : [];
-  const writingRunTeamTarget = writingFeatureSource || assignedTargets.length > 0;
+  const writingRunTeamTarget = writingFeatureSource || Boolean(writingBuildArtifact) || assignedTargets.length > 0;
   if (!writingRunTeamTarget) return null;
 
   const suffix = block('run-team-suffix',
     'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
   const deny = (reason: string): string => `${reason} ${suffix}`;
+  const recordFallbackClaims = args.recordFallbackClaims !== false;
+  const fallbackClaim = (ctx: RunAgentContext, target: string): { blocked: boolean; holder?: string } => (
+    recordFallbackClaims ? tryFallbackClaim(projectRoot, ctx, target) : { blocked: false }
+  );
 
   // Shell writes can't be ownership-verified from a command line.
-  if (writingFeatureSourceViaCommand) {
+  if (writingFeatureSourceViaCommand || writingBuildArtifactViaCommand) {
     return deny(block('run-team-shell',
-      'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
+      'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
   }
 
-  const agentContext = resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true })
+  const nativeAnonymousDevinWrite = args.host === 'windsurf'
+    && obj(rawData)?.hook_event_name === 'PreToolUse'
+    && !obj(rawData)?.agent_action_name;
+  const agentContext = resolveRunAgentContext(projectRoot, state, rawData, {
+    claimPending: true,
+    allowSoleAnonymousPending: nativeAnonymousDevinWrite,
+  })
     || (!hasRunAgentState(projectRoot, state) ? legacyRunAgentContext(state) : null)
     // Last resort for a Cursor worker whose write carries no role/parent/transcript linkage:
     // attribute by assigned scope (see attributeForeignWriteBySpawnScope). Uses the same
@@ -168,7 +207,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   }
 
   const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;
-  if (isArchitectScaffoldBarrelWrite(acRole, scaffoldTargets, content)) return null;
+  if (isArchitectScaffoldBaselineWrite(acRole, scaffoldTargets, content)) return null;
 
   // Preferred path: explicit per-run assignment manifest authored by the architect.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.
@@ -195,7 +234,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
           { TARGET: target, OWNER: String(conflict.agentKey || conflict.role), ROLE: String(myKey) }));
       }
       // Outside every assignment -> dynamic first-write claim (no hard deadlock).
-      const decision = tryFallbackClaim(projectRoot, agentContext, target);
+      const decision = fallbackClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every role's assigned scope and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path, or add it to an assignment in \`.traffic-one/runs/<runId>/assignments.json\`.`,
@@ -224,7 +263,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     }
     // Owned by no role -> dynamic first-write claim (was the run-team-not-owned deadlock).
     if (agentContext) {
-      const decision = tryFallbackClaim(projectRoot, agentContext, target);
+      const decision = fallbackClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every Traffic One role's owned paths and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path.`,

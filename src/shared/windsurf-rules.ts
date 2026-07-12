@@ -187,7 +187,7 @@ export function renderWindsurfRuleDocs(sourceRel: string, sourceText: string): W
   const marker = `${GENERATED_MARKER}\n<!-- GENERATED FROM: ${rel}; run \`npm run gen\` to update. -->`;
   const renderedBody = isAgent
     ? [
-      'Mirrored Traffic One role context. On Devin Local this role also has a native custom profile at `.devin/agents/<role>/AGENT.md` — the orchestrator spawns it by name with the `run_subagent` tool (see the senior-eng-orchestrator skill). Use this doc as that subagent’s role contract; if `run_subagent` is unavailable on an older single-agent build, use it as on-demand guidance instead.',
+      'Mirrored Traffic One role context. On Devin Local the orchestrator uses `run_subagent` profile `subagent_general`, starts the task with `[t1-role: senior-<role>]`, and tells the child to read `.devin/agents/<role>/AGENT.md`. Custom profiles created during onboarding are not registered until a new session, so never require the role name as the profile in the active first-run session.',
       '',
       body.trimEnd(),
     ].join('\n')

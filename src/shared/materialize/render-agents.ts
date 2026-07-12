@@ -36,11 +36,22 @@ function activeTeamLines(state: Rec): string[] {
     const approved = team?.approved === true ? ', approved' : '';
     lines.push(`- Team: ${mode}${level ? ` (${level}${approved})` : ''}`);
   }
+  if (mode === 'main-agent') {
+    lines.push('- Main-agent build flow: do NOT call a host subagent primitive (`run_subagent`, `Task`, `spawn_agent`, or `task`). You are the architect in this thread: write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config, workspace scaffold, or feature-source writes; then complete architect -> frontend -> backend -> review -> test yourself.');
+  }
   if (openCode) lines.push(`- OpenCode delegation: ${openCodeDelegationActive(state, host) ? 'enabled' : 'off'}`);
   if (mode === 'subagents' && level) {
     try {
       if (host === 'kilo') {
-        lines.push('- Kilo subagents: use `task` with `subagent_type: "general"` when only `general`/`explore` are offered; put `[t1-role: senior-<role>]` first and omit `model` in v1.');
+        lines.push('- Kilo subagents: use `task` with built-in `general`; put `[t1-role: senior-<role>]` first, then instruct the child to read `.kilo/agents/senior-<role>.md` for its full Traffic One role contract. Omit `model` so Kilo preserves the active session/per-agent model. Do not use `explore` or fall back to main-agent mode.');
+        return lines;
+      }
+      if (host === 'windsurf') {
+        const plan = detectHostPlan('windsurf');
+        const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
+        const lineup = buildTeamLineup(level, 'windsurf', overrides, { host: 'windsurf', plan, useOpenCode: false });
+        const models = Array.from(new Set(lineup.map((member) => member.model))).map((model) => `\`${model}\``);
+        lines.push(`- Windsurf subagents: use \`run_subagent\` profile \`subagent_general\`; custom profiles materialized during onboarding are not registered until a new Devin session. Start the task with \`[t1-role: senior-<role>]\`, tell the child to read \`.devin/agents/<role>/AGENT.md\`, and omit \`model\`. The materialized contracts record the detected ${plan} plan (${models.join(', ') || 'default subagent model'}).`);
         return lines;
       }
       const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
@@ -87,6 +98,7 @@ function compactRuleKernel(): string[] {
     '- Security stays active: no secrets in source or memory, validate input at boundaries, enforce auth and authorization server-side, avoid credentialed wildcard CORS, use parameterized SQL, and keep production errors sanitized.',
     '- Traffic One setup gates are blocking before mutating work: shared project state plus per-user local preferences (`openCode`, `performance`/`team`, `codeGraphProvider`) must be complete. Existing projects skip new-project MVP/mobile prompts but still require local preferences.',
     '- When local preferences record `team.mode: "subagents"` with `team.approved: true`, AUTO-RUN the senior role team for multi-layer builds (architect first, frontend + backend in parallel, reviewer + tester after) without re-asking — and the parent/orchestrator never writes feature source itself. Read `rules/common/senior-engineer-team.md` before the first spawn.',
+    '- In `lifecycle.phase: "maintenance"`, run maintenance triage before that greenfield team flow: trivial/small work bypasses architect and feature plans, and goes directly to the owning frontend and/or backend role; architect is reserved for complex cross-layer work.',
     '- UI work must satisfy i18n, SEO for public routes, accessibility, responsive layout, real visual polish, stable dimensions, and verification screenshots when the change is visual.',
     '- Backend/data work must keep API contracts explicit, schema changes reviewed, migrations reversible where practical, RLS/storage policies safe, and generated clients or schema snapshots refreshed when applicable.',
     '- Verification should match risk: reproduce bugs when practical, run focused tests/build/lint for touched surfaces, and report any skipped check with the exact reason.',

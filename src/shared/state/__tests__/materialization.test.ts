@@ -9,6 +9,7 @@ import {
   isSubagentSession,
   stackFingerprint,
 } from '../materialization';
+import { stateVersion } from '../io';
 
 test('stackFingerprint joins the four dimensions', () => {
   assert.equal(
@@ -18,9 +19,11 @@ test('stackFingerprint joins the four dimensions', () => {
   assert.equal(stackFingerprint({}), 'minimal|none|none|none');
 });
 
-test('isMaterialized matches the stamp against the live fingerprint', () => {
+test('isMaterialized matches the stamp against the live fingerprint and plugin version', () => {
   const base = { onboardingComplete: true, stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' } };
   assert.equal(isMaterialized({ ...base, materializedStack: stackFingerprint(base) }), true);
+  assert.equal(isMaterialized({ ...base, materializedStack: stackFingerprint(base), materializedVersion: stateVersion() }), true);
+  assert.equal(isMaterialized({ ...base, materializedStack: stackFingerprint(base), materializedVersion: '0.0.0' }), false);
   assert.equal(isMaterialized({ ...base, materializedStack: 'stale' }), false);
   assert.equal(isMaterialized({ ...base }), false);
   assert.equal(isMaterialized({ stack: 'default' }), true); // pre-onboarding never blocks

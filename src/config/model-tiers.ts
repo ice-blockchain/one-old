@@ -10,14 +10,27 @@ import { OPENCODE_FREE_MODELS } from './opencode-delegation';
 export const TIER_IDS = ['highest', 'balanced', 'cheapest'] as const;
 export type TierId = (typeof TIER_IDS)[number];
 
-// Kilo model names mirror the Kilo model picker labels. V1 still omits `model`
-// on Kilo task spawns unless Kilo exposes a documented subagent model parameter,
-// but the onboarding wizard and generated lineup must not advertise OpenCode
-// slugs that Kilo cannot select.
+// Kilo's live catalog is intentionally dynamic, so static provider labels become
+// stale quickly. `kilo-auto/free` is the documented stable zero-cost route. Native
+// Traffic One Kilo role-contract files deliberately omit `model` and the built-in
+// `general` task subagent inherits the user-selected session/per-agent model; this
+// value is only the safe onboarding fallback.
 export const KILO_MODELS: Readonly<Record<TierId, string>> = {
-  highest: 'Anthropic Claude Opus 4.8',
-  balanced: 'MoonshotAI Kimi K2.7 Code',
-  cheapest: 'MiniMax MiniMax M3',
+  highest: 'kilo-auto/free',
+  balanced: 'kilo-auto/free',
+  cheapest: 'kilo-auto/free',
+};
+
+// Windsurf's Cascade selector is the live source of model availability. These
+// labels mirror the verified selector snapshot: Free exposes SWE-1.6 Slow, while
+// paid plans expose the three currently recommended choices below. Keep the
+// planless base conservative so an undetected account is never pinned to a paid
+// model; explicit paid-plan overlays select the richer tier map.
+export const WINDSURF_FREE_MODEL = 'SWE-1.6 Slow';
+export const WINDSURF_PAID_MODELS: Readonly<Record<TierId, string>> = {
+  highest: 'SWE-1.7 Beta',
+  balanced: 'SWE-1.7 Lightning Beta',
+  cheapest: WINDSURF_FREE_MODEL,
 };
 
 // internal: consumed by canonicalTier (shared/model-tiers.ts).
@@ -57,12 +70,9 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, Record<TierId, string>>>
   // wizard still needs truthful tier labels instead of collapsing paid plans to mini.
   // Free/Student plans use the mini overlay below.
   copilot: { highest: 'gpt-5.4', balanced: 'gpt-5.3-codex', cheapest: 'gpt-5.4-mini' },
-  // windsurf / Devin Desktop: names mirror the Cascade model selector. Official docs
-  // say the selector is the freshest availability source; free accounts currently expose
-  // the SWE family, while premium Claude/GPT families are plan-gated. The free overlay
-  // below collapses every tier to the free SWE model so a Claude/Max account on the same
-  // machine cannot leak into Windsurf's recommendation.
-  windsurf: { highest: 'Claude Opus 4.8 Medium', balanced: 'Claude Sonnet 5 Medium', cheapest: 'SWE-1.6 Slow' },
+  // Keep the planless base on Windsurf's Free-safe model. Every real onboarding,
+  // materialization, and spawn path resolves an explicit detected plan below.
+  windsurf: { highest: WINDSURF_FREE_MODEL, balanced: WINDSURF_FREE_MODEL, cheapest: WINDSURF_FREE_MODEL },
 };
 
 // Same-tier FALLBACK FAMILIES per preferred family — the orchestrator falls back to one of
@@ -122,13 +132,16 @@ export const COPILOT_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Reco
   free: { highest: 'gpt-5.4-mini', balanced: 'gpt-5.4-mini' },
 };
 
-// Per-plan model OVERLAY for Windsurf / Devin Desktop. The app does not expose a
-// stable local account-plan store like Cursor's state.vscdb; docs direct users to the
-// in-app model selector for current availability. Free users get the SWE model only,
-// so every tier resolves to that selectable model unless an explicit plan override is
-// supplied (TRAFFIC_ONE_USER_PLAN=pro/max/team/enterprise).
+// Per-plan model OVERLAY for Windsurf / Devin Desktop. Its Cascade selector is
+// authoritative for current availability, so these labels are intentionally the
+// user-visible selector values. Free users get SWE-1.6 Slow only. Paid plans expose
+// the three verified recommended choices, including the Free-safe SWE-1.6 fallback.
 export const WINDSURF_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Record<TierId, string>>>>> = {
-  free: { highest: 'SWE-1.6 Slow', balanced: 'SWE-1.6 Slow', cheapest: 'SWE-1.6 Slow' },
+  free: { highest: WINDSURF_FREE_MODEL, balanced: WINDSURF_FREE_MODEL, cheapest: WINDSURF_FREE_MODEL },
+  pro: { ...WINDSURF_PAID_MODELS },
+  max: { ...WINDSURF_PAID_MODELS },
+  team: { ...WINDSURF_PAID_MODELS },
+  enterprise: { ...WINDSURF_PAID_MODELS },
 };
 
 // Same-tier FALLBACK chain per preferred Go model — the gate accepts any of these (and a
@@ -139,29 +152,14 @@ export const WINDSURF_PLAN_MODELS: Readonly<Partial<Record<UserPlan, Partial<Rec
 export const OPENCODE_MODEL_ALTERNATES: Readonly<Record<string, readonly string[]>> = {
   'opencode-go/qwen3.7-max': ['opencode-go/minimax-m3', 'opencode-go/kimi-k2.7-code', 'opencode-go/deepseek-v4-pro', ...OPENCODE_FREE_MODELS],
   'opencode-go/glm-5.2': ['opencode-go/qwen3.7-plus', 'opencode-go/minimax-m2.7', 'opencode-go/glm-5.1', ...OPENCODE_FREE_MODELS],
-  'opencode-go/deepseek-v4-flash': ['opencode-go/glm-5', 'opencode-go/qwen3.5-plus', ...OPENCODE_FREE_MODELS],
+  'opencode-go/deepseek-v4-flash': ['opencode-go/glm-5.1', 'opencode-go/qwen3.7-plus', 'opencode-go/minimax-m2.7', ...OPENCODE_FREE_MODELS],
 };
 
-// Kilo picker fallbacks from the visible Kilo catalog. These are advisory only in
-// v1 because Kilo is exempt from hard model-param enforcement, but keeping them
-// separate prevents Kilo from inheriting OpenCode fallback slugs anywhere a
-// caller displays acceptable same-tier options.
+// Kilo exposes a changing provider catalog and resolves the session selection at
+// invocation time. Do not invent static paid-model fallback labels here: the native
+// built-in Kilo task subagent inherits the current model and the host selector handles availability.
 export const KILO_MODEL_ALTERNATES: Readonly<Record<string, readonly string[]>> = {
-  'Anthropic Claude Opus 4.8': [
-    'Stealth Claude Opus 4.8',
-    'Stealth Claude Opus 4.7',
-    'OpenAI GPT-5.5',
-    'Google Gemini 3.1 Pro Preview',
-  ],
-  'MoonshotAI Kimi K2.7 Code': [
-    'Anthropic Claude Sonnet 5',
-    'OpenAI GPT-5.5',
-    'Qwen Qwen3.7 Plus',
-  ],
-  'MiniMax MiniMax M3': [
-    'Qwen Qwen3.7 Plus',
-    'Stealth Claude Sonnet 4.6',
-  ],
+  'kilo-auto/free': [],
 };
 
 // ── User subscription plans (per host) ──────────────────────────────────────
@@ -237,26 +235,23 @@ export interface PlanTierChoice { readonly base: TierId; readonly withOpenCode: 
 // always present below, so recommendTierForPlan always resolves.
 export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Record<UserPlan, PlanTierChoice>>>> = {
   claude: {
-    free: { base: 'cheapest', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'highest' },
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
+    pro: { base: 'balanced', withOpenCode: 'balanced' },
     max: { base: 'highest', withOpenCode: 'highest' },
     team: { base: 'highest', withOpenCode: 'highest' },
     enterprise: { base: 'highest', withOpenCode: 'highest' },
   },
   codex: {
-    free: { base: 'cheapest', withOpenCode: 'balanced' },
-    plus: { base: 'balanced', withOpenCode: 'highest' },
-    pro: { base: 'balanced', withOpenCode: 'highest' },
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
+    plus: { base: 'balanced', withOpenCode: 'balanced' },
+    pro: { base: 'balanced', withOpenCode: 'balanced' },
     business: { base: 'highest', withOpenCode: 'highest' },
     enterprise: { base: 'highest', withOpenCode: 'highest' },
     team: { base: 'highest', withOpenCode: 'highest' },
   },
   cursor: {
-    free: { base: 'cheapest', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'highest' },
-    // Pro+/Ultra/Teams/Enterprise all unlock the same frontier models as Pro — they
-    // differ only in usage BUDGET — so the higher individual/business plans top out at
-    // 'highest' (their larger budgets can sustain it). pro stays 'balanced' (smaller budget).
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
+    pro: { base: 'balanced', withOpenCode: 'balanced' },
     plus: { base: 'highest', withOpenCode: 'highest' },
     max: { base: 'highest', withOpenCode: 'highest' },
     business: { base: 'highest', withOpenCode: 'highest' },
@@ -265,17 +260,14 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
   },
   opencode: {
     free: { base: 'cheapest', withOpenCode: 'cheapest' },
-    // "Go" subscription (auth `opencode-go` → plus): paid open-weight models, so recommend
-    // a real working tier instead of cheapest. Delegation is inert on OpenCode-compatible
-    // self hosts, so base == withOpenCode.
     plus: { base: 'balanced', withOpenCode: 'balanced' },
   },
   kilo: {
     free: { base: 'cheapest', withOpenCode: 'cheapest' },
   },
   copilot: {
-    free: { base: 'cheapest', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'highest' },
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
+    pro: { base: 'balanced', withOpenCode: 'balanced' },
     plus: { base: 'highest', withOpenCode: 'highest' },
     max: { base: 'highest', withOpenCode: 'highest' },
     business: { base: 'highest', withOpenCode: 'highest' },
@@ -283,8 +275,8 @@ export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Re
     enterprise: { base: 'highest', withOpenCode: 'highest' },
   },
   windsurf: {
-    free: { base: 'cheapest', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'highest' },
+    free: { base: 'cheapest', withOpenCode: 'cheapest' },
+    pro: { base: 'balanced', withOpenCode: 'balanced' },
     max: { base: 'highest', withOpenCode: 'highest' },
     team: { base: 'highest', withOpenCode: 'highest' },
     enterprise: { base: 'highest', withOpenCode: 'highest' },
