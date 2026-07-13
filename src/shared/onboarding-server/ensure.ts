@@ -16,7 +16,7 @@ import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
 import { resolveTrafficOneEnv } from '../state/traffic-one-paths';
 import { writeLaunchConfig } from './launch-config';
-import { clearServerRecord, readServerRecord, serverLockPath } from './registry';
+import { clearLegacyOnboardingRuntime, clearServerRecord, readServerRecord, serverLockPath } from './registry';
 
 // A launch lock older than this is presumed abandoned (holder crashed between
 // claiming and publishing the record) and may be stolen — a generous multiple of
@@ -150,19 +150,23 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // on the detached child's own async self-registration having landed yet. No-op
   // for port 0 (the NO_SPAWN placeholder skips this entirely).
   const finalize = (result: EnsureResult): EnsureResult => {
-    if (result.port > 0) writeLaunchConfig(cwd, result.port);
+    // `.claude/launch.json` is Claude Code's single preview entry. A parallel
+    // Cursor/Codex wizard must never replace Claude's recorded preview port.
+    if (host === 'claude' && result.port > 0) writeLaunchConfig(cwd, result.port);
     return result;
   };
 
+  clearLegacyOnboardingRuntime(cwd, env);
+
   // Reuse a live server (its pid is alive) — no spawn.
   const reuseIfLive = (): EnsureResult | null => {
-    const rec = readServerRecord(cwd, env);
+    const rec = readServerRecord(cwd, env, host);
     return rec && isAlive(rec.pid)
       ? finalize({ url: rec.url, port: rec.port, token: rec.token, started: false })
       : null;
   };
 
-  const existing = readServerRecord(cwd, env);
+  const existing = readServerRecord(cwd, env, host);
   const live0 = reuseIfLive();
   if (live0) return live0;
 
@@ -181,7 +185,8 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // publishes and reuses that live URL. acquireLaunchLock already STEALS a dead/stale
   // holder's lock, so a persistent `false` means a LIVE holder is mid-launch — we
   // then wait for ITS record and never spawn a second server.
-  const lockPath = serverLockPath(cwd, env);
+  const lockPath = serverLockPath(cwd, env, host);
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + (options.readyTimeoutMs ?? 4000);
   let holding = acquireLaunchLock(lockPath, isAlive);
   while (!holding) {
@@ -200,16 +205,16 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
     if (!holding) {
       // We never won the lock and the holder didn't publish within the window. Do
       // NOT double-launch: surface the in-flight record if it has landed, else fail.
-      const rec = readServerRecord(cwd, env);
+      const rec = readServerRecord(cwd, env, host);
       if (rec) return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
       throw new Error('traffic-one onboarding server did not become ready (another launcher holds the lock)');
     }
-    const stale = readServerRecord(cwd, env);
-    if (stale) clearServerRecord(cwd, env);
+    const stale = readServerRecord(cwd, env, host);
+    if (stale) clearServerRecord(cwd, env, host);
 
     const childPid = launch(cwd, env, options.host || host);
     for (;;) {
-      const rec = readServerRecord(cwd, env);
+      const rec = readServerRecord(cwd, env, host);
       if (rec && (childPid <= 0 || rec.pid === childPid)) {
         return finalize({ url: rec.url, port: rec.port, token: rec.token, started: true });
       }

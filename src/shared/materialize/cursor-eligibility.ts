@@ -4,14 +4,14 @@
 // notice (converge-from-write), the beforeShellExecution model-gate prompt (agent-model), and the
 // model-gate runner — one source of truth so all three name the same model + fallback.
 //
-// cursor-models.json only exists on Cursor, so callers are implicitly Cursor-scoped. Dependency-
-// free; never throws (returns []).
+// The local availableModels capture exists only for Cursor, so callers are implicitly
+// Cursor-scoped. Dependency-free; never throws (returns []).
 
 import { AGENT_ROLES } from '../../config/performance';
 import { detectHostPlan } from '../host-plan';
-import { acceptableModelsFor } from '../model-tiers';
+import { currentAcceptableModels } from '../current-model-tiers';
 import { obj } from '../obj';
-import { modelForRoleHost, openCodeDelegationActive } from '../performance';
+import { modelForRoleHost } from '../performance';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
 export interface UnavailablePick {
@@ -30,7 +30,7 @@ export function cursorUnavailablePicks(cwd: string, state: Record<string, unknow
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
     const plan = detectHostPlan('cursor');
-    const planCtx = { host: 'cursor', plan, useOpenCode: openCodeDelegationActive(state, 'cursor') };
+    const planCtx = { host: 'cursor', plan };
     const captured = freshCursorModels(cwd, plan);
     if (!captured.length) return [];
     const out: UnavailablePick[] = [];
@@ -38,7 +38,7 @@ export function cursorUnavailablePicks(cwd: string, state: Record<string, unknow
       const expected = modelForRoleHost(level, role, 'cursor', overrides, planCtx);
       if (!expected || /^composer/i.test(expected)) continue;   // cheapest tier wants Composer — nothing to enable
       if (pickCursorSlug([expected], captured)) continue;        // the picked model IS offered → fine
-      const alts = acceptableModelsFor(expected, 'cursor').slice(1);
+      const alts = currentAcceptableModels(expected, 'cursor', plan).slice(1);
       const fallback = pickCursorSlug(alts, captured) || alts[0] || expected;
       out.push({ role, expected, fallback });
     }
@@ -59,12 +59,12 @@ export function formatModelChoiceRequiredStop(cwd: string, state: Record<string,
     'traffic-one model-gate: STOP — model choice required (build paused).\n'
     + `${rows.join('\n')}\n\n`
     + `Reply **fallback** in chat to proceed on the listed model(s).\n`
-    + `Reply **enable** to turn on ${enable} (Cursor Settings → Models), re-capture cursor-models.json, then retry.\n`
+    + `Reply **enable** to turn on ${enable} (Cursor Settings → Models), re-run the local model capture command, then retry.\n`
     + 'Do not spawn subagents, scaffold directly, or edit project files until you reply.'
   );
 }
 
-// User-visible notice when cursor-models.json is captured (PostToolUse systemMessage).
+// User-visible notice after a local Cursor model capture.
 export function cursorPickedModelUnavailableNotice(projectRoot: string, state: Record<string, unknown>): string {
   const picks = cursorUnavailablePicks(projectRoot, state);
   if (!picks.length) return '';

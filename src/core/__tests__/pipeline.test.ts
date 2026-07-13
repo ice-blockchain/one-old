@@ -66,6 +66,11 @@ test('toolClassForRawName maps all three hosts to one vocabulary', () => {
   assert.equal(toolClassForRawName('multi_agent_v1.spawn_agent'), 'spawn-agent');
   assert.equal(toolClassForRawName('wait_agent'), 'spawn-agent');
   assert.equal(toolClassForRawName('multi_agent_v1.wait_agent'), 'spawn-agent');
+  assert.equal(toolClassForRawName('followup_task'), 'spawn-agent');
+  assert.equal(toolClassForRawName('collaboration.followup_task'), 'spawn-agent');
+  assert.equal(toolClassForRawName('send_message'), 'spawn-agent');
+  assert.equal(toolClassForRawName('collaboration.send_message'), 'spawn-agent');
+  assert.equal(toolClassForRawName('send_input'), 'spawn-agent');
   assert.equal(toolClassForRawName('Grep'), 'search');
   assert.equal(toolClassForRawName('SomethingElse'), 'other');
 });

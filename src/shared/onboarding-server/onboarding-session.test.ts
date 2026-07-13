@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { resetAuthoringRootCache } from '../authoring-root';
 import { isForeignOnboardingThread, recordMainOnboardingSession, ONBOARDING_MAIN_TTL_MS } from './onboarding-session';
 
 function tmp(): string {
@@ -50,6 +51,24 @@ test('recordMainOnboardingSession: empty id is a no-op; a stale main (TTL) stops
     // After the TTL the recorded main expires → the set is empty again → nobody suppressed.
     assert.equal(isForeignOnboardingThread(cwd, 'sub', now + ONBOARDING_MAIN_TTL_MS + 1), false, 'stale main no longer suppresses');
   } finally {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('recordMainOnboardingSession: plugin authoring roots never receive local onboarding state', () => {
+  const cwd = tmp();
+  try {
+    fs.mkdirSync(path.join(cwd, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'package.json'), '{"name":"traffic-one"}\n');
+    fs.writeFileSync(path.join(cwd, 'src', 'gen', 'index.ts'), 'export {};\n');
+    resetAuthoringRootCache();
+
+    recordMainOnboardingSession(cwd, 'orchestrator');
+
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false);
+    assert.equal(isForeignOnboardingThread(cwd, 'subagent'), false);
+  } finally {
+    resetAuthoringRootCache();
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

@@ -16,14 +16,11 @@ context stays clean. The ONE exception is `<run-id>` — see below.
 Each role runs at a specific model tier (it can be overridden per role in the wizard, e.g.
 frontend → balanced).
 
-On Cursor, the correct model for each role is pinned in
-`.cursor/agents/<role>.md` (`model:` line). **On Cursor you MUST pass that value in the `Task`
-`model` parameter for every spawn** — read `.cursor/agents/<role>.md` and set
-`model: "<that value>"`. Cursor does NOT auto-apply the `.cursor/agents` frontmatter: if you
-omit `model`, the subagent silently INHERITS YOUR (orchestrator) model — so an Opus orchestrator
-would run a balanced-tier frontend on Opus, ignoring the override. The spawn gate enforces this:
-a spawn whose `model` does not match the role's tier is DENIED with the exact value to pass. Do
-NOT put the model in the prompt text — only the `model` parameter sets it.
+On Cursor, model-gate prints the exact role→model spawn map from the active local host snapshot
+and the user's locally captured available model ids. **Pass that value in the `Task` `model`
+parameter for every spawn.** Project `.cursor/agents/<role>.md` files are model-agnostic role
+contracts and are not a model source. If you omit `model`, the subagent inherits the orchestrator
+model. The spawn gate denies a missing/wrong value and names the exact runtime value to pass.
 
 On Windsurf / Devin Local, Traffic One materializes role contracts at
 `.devin/agents/<role>/AGENT.md`, but profiles created during onboarding are not registered
@@ -35,16 +32,12 @@ use `opencode_delegate` to spawn a role — on Windsurf that MCP tool is only th
 free accelerator for bounded units (and requires `openCode.enabled`); `run_subagent` is the
 role-spawn path and does not depend on OpenCode.
 
-On OpenCode, Traffic One materializes native markdown agents at
-`.opencode/agents/<role>.md`, with each role's `model:` pinned in frontmatter.
-**Spawn each role with the named OpenCode subagent whose name equals the role**
-(`senior-architect`, `senior-frontend`, etc.) and pass NO `model` argument unless
-this exact OpenCode build documents a Task `model` field. Built-in `general` is
-NOT a safe fallback for Traffic One senior roles: it has no role model pin and
-inherits the parent model. If the named `senior-*` agent is not listed by the
-Task tool, stop after ensuring materialization exists and tell the user to
-close/reopen this project or start a fresh OpenCode session so `.opencode/agents/*.md`
-is registered. Do not spawn `general` and do not build the role inline.
+On OpenCode, Traffic One materializes project-scoped global markdown agents under
+`~/.config/opencode/agents/`, named `traffic-one-<projectHash12>-<role>`, with the local role
+model pinned in frontmatter. Spawn the exact generated name shown by SessionStart/the gate and
+pass no `model` argument unless this OpenCode build documents the field. Built-in `general`
+inherits the parent model and is not a safe fallback. If the generated agent is not listed,
+ensure materialization exists and restart OpenCode so its global agent registry reloads.
 
 On Kilo, Traffic One materializes project-local role contracts at
 `.kilo/agents/<role>.md`. Spawn the built-in writable `general` Task subagent,

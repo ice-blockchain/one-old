@@ -31,6 +31,8 @@ const RAW_TOOL_CLASS: Readonly<Record<string, ToolClass>> = {
   run_subagent: 'spawn-agent',
   spawn_subagent: 'spawn-agent',
   send_input: 'spawn-agent',
+  followup_task: 'spawn-agent',
+  send_message: 'spawn-agent',
   wait_agent: 'spawn-agent',
   task: 'spawn-agent',
   // search

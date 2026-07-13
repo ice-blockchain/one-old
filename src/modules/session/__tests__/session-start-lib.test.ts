@@ -127,8 +127,10 @@ test('readGraphPreview returns the preview content or empty string', () => {
   withTmp((cwd) => {
     assert.equal(readGraphPreview(cwd), '');
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'graph-preview.md'), 'modules: a, b', 'utf8');
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'graph-preview.md'), 'Provider: graphify\nmodules: a, b', 'utf8');
     assert.ok(readGraphPreview(cwd).includes('modules: a, b'));
+    assert.ok(readGraphPreview(cwd, 'graphify').includes('modules: a, b'));
+    assert.equal(readGraphPreview(cwd, 'gitnexus'), '', 'a preview from the previous provider is not injected');
   });
 });
 

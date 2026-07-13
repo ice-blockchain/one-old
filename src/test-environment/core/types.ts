@@ -3,7 +3,7 @@
 // MAINTAINER tool: it is never compiled into dist (see tsconfig.build.json
 // exclude) and never shipped. It is run via `tsx src/test-environment/run.ts`.
 
-export type HostId = 'claude' | 'codex' | 'cursor';
+export type HostId = 'claude' | 'codex' | 'cursor' | 'opencode' | 'copilot' | 'windsurf' | 'kilo';
 export type VerdictHost = HostId | 'none';
 
 export type Category =
@@ -83,6 +83,10 @@ export interface HostCommandConfig {
   // plugin's model-tiers table may be stale for this host (e.g. 'auto' for
   // Cursor) so e2e tests plugin BEHAVIOR, not a specific model slug.
   testModel?: string;
+  // Some desktop-only hosts have deterministic adapter/onboarding coverage but
+  // no supported unattended CLI entrypoint. Keep them in the seven-host matrix
+  // while making an explicit E2E request skip cleanly instead of inventing flags.
+  e2eSupported?: boolean;
   verified?: boolean; // true once a maintainer has confirmed the flags work
 }
 
@@ -155,7 +159,7 @@ export interface HostRunContext {
 
 export interface HostDriver {
   id: HostId;
-  isAvailable(cfg: HostCommandConfig): boolean;
+  isAvailable(cfg: HostCommandConfig, env?: NodeJS.ProcessEnv): boolean;
   run(cfg: HostCommandConfig, ctx: HostRunContext): Promise<HostRunResult>;
 }
 

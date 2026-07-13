@@ -10,6 +10,8 @@ import { spawn } from 'child_process';
 import * as crypto from 'crypto';
 import * as http from 'http';
 
+import { detectHost } from '../../shared/host';
+import { canonicalHost } from '../../shared/model-tiers';
 import { clearServerRecord, writeServerRecord, type ServerRecord } from '../../shared/onboarding-server/registry';
 import { stateTimestamp } from '../../shared/state/io';
 import { removeLaunchConfig, writeLaunchConfig } from './launch-config';
@@ -47,7 +49,10 @@ function maybeOpenBrowser(url: string, env: NodeJS.ProcessEnv): void {
 export interface StartOptions {
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  host?: string;
+  // Network bind address. Kept separate from the Traffic One product host so a
+  // Cursor server can never accidentally register itself as `127.0.0.1`.
+  bindHost?: string;
+  trafficHost?: string;
   port?: number;
   token?: string;
   idleMs?: number;
@@ -56,7 +61,9 @@ export interface StartOptions {
 
 export interface RunningServer {
   server: http.Server;
+  // Network bind address (backward-compatible field name).
   host: string;
+  trafficHost: string;
   port: number;
   token: string;
   url: string;
@@ -90,7 +97,8 @@ function requestOriginOk(req: http.IncomingMessage): boolean {
 
 export function startOnboardingServer(options: StartOptions): Promise<RunningServer> {
   const env = options.env || process.env;
-  const host = options.host || '127.0.0.1';
+  const bindHost = options.bindHost || '127.0.0.1';
+  const trafficHost = canonicalHost(options.trafficHost ?? detectHost(env));
   const token = options.token || crypto.randomBytes(32).toString('hex');
   const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
   const standalone = options.standalone ?? true;
@@ -126,8 +134,10 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
         idleTimer = null;
       }
       if (standalone) {
-        clearServerRecord(cwd, env);
-        removeLaunchConfig(cwd);
+        clearServerRecord(cwd, env, trafficHost);
+        // `.claude/launch.json` belongs exclusively to Claude's preview pane.
+        // Other host servers may run in parallel and must not remove it.
+        if (trafficHost === 'claude') removeLaunchConfig(cwd);
       }
     };
 
@@ -150,7 +160,7 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
           res.end('forbidden');
           return;
         }
-        const reqUrl = new URL(req.url || '/', `http://${host}:${port}`);
+        const reqUrl = new URL(req.url || '/', `http://${bindHost}:${port}`);
         if (reqUrl.pathname === '/favicon.ico') {
           res.writeHead(204);
           res.end();
@@ -167,7 +177,7 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
           res.end('forbidden');
           return;
         }
-        const ctx: RouteContext = { cwd, env, token, port, requestShutdown: standalone ? finish : cleanup };
+        const ctx: RouteContext = { cwd, env, token, port, trafficHost, requestShutdown: standalone ? finish : cleanup };
         await dispatch(req, res, reqUrl, ctx);
       } catch (err) {
         if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json' });
@@ -179,30 +189,30 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
       if (!port) reject(err);
     });
 
-    server.listen(options.port ?? 0, host, () => {
+    server.listen(options.port ?? 0, bindHost, () => {
       const addr = server.address();
       port = typeof addr === 'object' && addr ? addr.port : 0;
-      url = `http://${host}:${port}/?t=${token}`;
+      url = `http://${bindHost}:${port}/?t=${token}`;
       // Idle reaper: close (and, when standalone, exit) after inactivity. The
       // timer is refreshed on every request (see the request handler above).
       idleTimer = setTimeout(standalone ? finish : () => { void close(); }, idleMs);
       if (!standalone) idleTimer.unref();
       if (standalone) {
-        const record: ServerRecord = { pid: process.pid, port, token, url, startedAt: stateTimestamp() };
+        const record: ServerRecord = { pid: process.pid, port, token, url, startedAt: stateTimestamp(), host: trafficHost };
         try {
-          writeServerRecord(cwd, record, env);
+          writeServerRecord(cwd, record, env, trafficHost);
         } catch {
           // best-effort; the agent can still be handed the URL from this process
         }
         // Register with Claude Code's preview (.claude/launch.json) so the agent can
         // show the wizard in the in-app preview pane via preview_start.
-        writeLaunchConfig(cwd, port);
+        if (trafficHost === 'claude') writeLaunchConfig(cwd, port);
         for (const signal of ['SIGTERM', 'SIGINT'] as const) {
           process.on(signal, finish);
         }
         maybeOpenBrowser(url, env);
       }
-      resolve({ server, host, port, token, url, close });
+      resolve({ server, host: bindHost, trafficHost, port, token, url, close });
     });
   });
 }

@@ -75,7 +75,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     const choicePending = modelChoiceReplyPending(ctx.cwd, stateObj);
     if (captureMissing || choicePending) {
       const reason = captureMissing
-        ? 'traffic-one — STOP: Cursor model capture is required before starting the senior team. Write `.traffic-one/cursor-models.json`, then rerun model-gate. This subagent must stop now and must not write files.'
+        ? 'traffic-one — STOP: Cursor model capture is required before starting the senior team. Run the internal model-gate `--capture-models` command with the exact offered ids, then rerun model-gate. This subagent must stop now and must not write files.'
         : 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
       return deny(`${reason}\nBlocked role: ${role}.`, {
         agentMessage: `${reason} Blocked role: ${role}.`,

@@ -11,3 +11,9 @@
 if (process.env.TRAFFIC_ONE_MANAGED_RUNTIME_OFF === undefined) {
   process.env.TRAFFIC_ONE_MANAGED_RUNTIME_OFF = '1';
 }
+
+// SessionStart's public model catalog refresh is intentionally live in a real
+// install. Keep the test suite hermetic; focused client tests inject a transport.
+if (process.env.TRAFFIC_ONE_MODEL_STATUS_OFF === undefined) {
+  process.env.TRAFFIC_ONE_MODEL_STATUS_OFF = '1';
+}

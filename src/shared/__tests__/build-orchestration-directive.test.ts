@@ -98,7 +98,7 @@ test('buildOrchestrationDirective: Kilo uses general with the senior-architect r
   });
 });
 
-test('buildOrchestrationDirective: names senior-architect, not general, for OpenCode', () => {
+test('buildOrchestrationDirective: names the project-scoped global architect, not general, for OpenCode', () => {
   withProject((dir) => {
     const state = subagentsState();
     const t1 = path.join(dir, '.traffic-one');
@@ -106,9 +106,9 @@ test('buildOrchestrationDirective: names senior-architect, not general, for Open
     fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
     const d = buildOrchestrationDirective(dir, 'opencode', state);
     assert.match(d, /OpenCode build start/i);
-    assert.match(d, /subagent_type: "senior-architect"/);
+    assert.match(d, /subagent_type: "traffic-one-[a-f0-9]{12}-senior-architect"/);
     assert.doesNotMatch(d, /subagent_type: "general"/);
-    assert.match(d, /\.opencode\/agents\/senior-architect\.md/);
+    assert.match(d, /\.config\/opencode\/agents\/traffic-one-[a-f0-9]{12}-senior-architect\.md/);
     assert.match(d, /\[t1-role: senior-architect\]/);
   });
 });

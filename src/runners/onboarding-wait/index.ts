@@ -26,16 +26,17 @@ import { AGENT_ROLES } from '../../config/performance';
 import { detectMode } from '../../shared/detection';
 import { detectHost } from '../../shared/host';
 import { detectHostPlan } from '../../shared/host-plan';
-import { materializeProjectIfNeeded } from '../../shared/materialize';
+import { materializeProjectIfNeeded, writeOpenCodeHostAssets } from '../../shared/materialize';
 import { buildCursorSpawnModelMap, isBareCursorTierFamily } from '../../shared/materialize/cursor-spawn-map';
 import { freshCursorModels } from '../../shared/materialize/cursor-models';
-import { modelGateCommand } from '../../shared/model-gate-command';
-import { acceptableModelsFor, canonicalHost } from '../../shared/model-tiers';
+import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-command';
+import { canonicalHost } from '../../shared/model-tiers';
+import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { obj } from '../../shared/obj';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
-import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
+import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
 import { applyTrafficOneEnv } from '../../shared/state/traffic-one-paths';
 
@@ -208,7 +209,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
     if (!level || teamModeForLevel(level) !== 'subagents') return '';
     const team = obj(state.team);
     const overrides = team && obj(team.overrides) ? (team.overrides as Record<string, unknown>) : null;
-    const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
+    const planCtx = { host, plan: detectHostPlan(host) };
 
     const plan = detectHostPlan(host);
     const captured = freshCursorModels(cwd, plan);
@@ -224,7 +225,7 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
         ? slug
         : `(after step 2 — exact slug for tier \`${fam}\`; never pass the bare family)`;
       rows.push(`   - ${role} → ${spawnValue}`);
-      if (!tierFallback.has(fam)) tierFallback.set(fam, acceptableModelsFor(fam, host).slice(1)[0] || fam);
+      if (!tierFallback.has(fam)) tierFallback.set(fam, currentAcceptableModels(fam, host, planCtx.plan).slice(1)[0] || fam);
     }
     if (!rows.length) return '';
     const eligibility = Array.from(tierFallback.entries())
@@ -232,13 +233,15 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
       .join(', ');
 
     const gateCmd = modelGateCommand(cwd, host);
+    const captureCmd = modelCaptureCommand(cwd, host);
     return [
       '[traffic-one] Cursor — resolve the subagent models BEFORE spawning the team (do this ONCE, in order; it avoids the spawn being denied and re-tried):',
-      '1. Enumerate the model ids your `Task` tool offers for subagents and write them to `.traffic-one/cursor-models.json` as {"models":[...]} (EXACT ids, with their reasoning suffixes). Traffic One re-materializes the real per-role slug for each tier from this list.',
+      '1. Enumerate the exact model ids your `Task` tool offers for subagents, then run the internal capture command below with those ids in place of the placeholders. It writes only local per-user/project preferences; never create `.traffic-one/cursor-models.json`:',
+      `   ${captureCmd}`,
       `2. Run this command (it checks whether your picked tier models — ${eligibility} — are actually offered):`,
       `   ${gateCmd}`,
       '   If a picked model is NOT offered, STOP — show the user the unavailable-model table in chat and wait for them to reply **fallback** or **enable** before spawning. The model-gate command and spawn gate both fail closed until that reply is recorded. Re-run after they enable a model.',
-      '3. Spawn using the **spawn map** printed by step 2 (or read each `.cursor/agents/<role>.md` `model:` refreshed by step 2). Pass each EXACT slug in the Task `model` parameter — per-role models (preview; step 2 is authoritative once capture exists):',
+      '3. Spawn using the **spawn map** printed by step 2. Project `.cursor/agents` files are model-agnostic; pass each EXACT slug from the map in the Task `model` parameter (preview; step 2 is authoritative):',
       ...rows,
       '   Never pass bare tier family aliases (e.g. `claude-opus-4-8` without a reasoning suffix) — Cursor rejects them and the spawn gate denies the first attempt.',
       '   Spawn the team only after steps 1–2. Passing the correct `model` per role on the FIRST spawn is what avoids the model-tier deny + retry.',
@@ -255,9 +258,13 @@ export function preSpawnModelDirective(cwd: string, host: string = detectHost())
 // the URL from the agent-facing additional_context. Host-agnostic (Claude/Codex open
 // the wizard programmatically, but the printed URL is a harmless, useful fallback
 // there too). Best-effort: no record / placeholder URL ⇒ print nothing.
-export function announceWizardUrl(cwd: string, write: (s: string) => void = (s) => process.stdout.write(s)): void {
+export function announceWizardUrl(
+  cwd: string,
+  write: (s: string) => void = (s) => process.stdout.write(s),
+  host: string = detectHost(),
+): void {
   try {
-    const rec = readServerRecord(cwd);
+    const rec = readServerRecord(cwd, process.env, host);
     if (!rec || !rec.url || rec.url.includes(':0/')) return;
     write(
       '\n════════════════════════════════════════════════════════════════\n'
@@ -290,7 +297,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   // Windsurf opens the wizard before the prompt and runs this waiter inside the
   // first mutating hook. Suppress the terminal-style URL banner there: it is not
   // clickable in Devin's tool card and the browser is already open.
-  if (!argv.includes('--quiet-url')) announceWizardUrl(cwd);
+  if (!argv.includes('--quiet-url')) announceWizardUrl(cwd, (s) => process.stdout.write(s), host);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,
@@ -306,6 +313,7 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // is clean. Idempotent + best-effort (the gate still self-heals if this is skipped).
     try {
       materializeProjectIfNeeded(cwd, { trigger: 'onboarding-wait setup-complete (pre-spawn materialize)' });
+      if (host === 'opencode') writeOpenCodeHostAssets(cwd, readEffectiveState(cwd), []);
     } catch {
       // best-effort; the PreToolUse gate's materialize-then-retry remains the backstop
     }

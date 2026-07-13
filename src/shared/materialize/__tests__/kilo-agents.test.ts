@@ -27,10 +27,9 @@ function withPlugin(fn: (project: string) => void): void {
   }
 }
 
-test('writeKiloAgentFiles writes role contracts for Kilo general subagents that inherit the selected model', () => {
+test('writeKiloAgentFiles writes model-agnostic role contracts without local preferences', () => {
   withPlugin((project) => {
-    const state = { team: { mode: 'subagents', approved: true }, performance: { level: 'balanced' } };
-    const written = writeKiloAgentFiles(project, state);
+    const written = writeKiloAgentFiles(project, {});
     assert.ok(written >= 6);
     const architect = fs.readFileSync(path.join(project, KILO_HOST_AGENTS_REL, 'senior-architect.md'), 'utf8');
     assert.ok(architect.includes(KILO_AGENT_MARKER));
@@ -49,11 +48,11 @@ test('writeKiloAgentFiles preserves a user-authored role and cleans only generat
     fs.mkdirSync(dir, { recursive: true });
     const custom = path.join(dir, 'senior-architect.md');
     fs.writeFileSync(custom, '---\ndescription: custom\n---\nuser agent\n', 'utf8');
-    writeKiloAgentFiles(project, { team: { mode: 'subagents', approved: true }, performance: { level: 'balanced' } });
+    writeKiloAgentFiles(project, {});
     assert.equal(fs.readFileSync(custom, 'utf8'), '---\ndescription: custom\n---\nuser agent\n');
     assert.equal(fs.existsSync(path.join(dir, 'senior-frontend.md')), true);
     writeKiloAgentFiles(project, { team: { mode: 'main-agent' }, performance: { level: 'low' } });
-    assert.equal(fs.existsSync(path.join(dir, 'senior-frontend.md')), false);
+    assert.equal(fs.existsSync(path.join(dir, 'senior-frontend.md')), true);
     assert.equal(fs.existsSync(custom), true);
   });
 });

@@ -91,7 +91,7 @@ export function deleteAuthChoiceState(env: NodeJS.ProcessEnv = process.env): boo
   }
   let ok = true;
   try {
-    deleteOneSection('authChoice', env);
+    if (!deleteOneSection('authChoice', env)) ok = false;
   } catch {
     ok = false;
   }

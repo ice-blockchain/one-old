@@ -32,6 +32,7 @@ test('nextOnboardingStep returns null when not a new project', () => {
 test('nextOnboardingStep walks the canonical order as fields resolve', () => {
   assert.equal(nextOnboardingStep({ mode: 'new-project' }), 'open-code');
   assert.equal(nextOnboardingStep({ mode: 'new-project' }, 'opencode'), 'performance');
+  assert.equal(nextOnboardingStep({ mode: 'new-project' }, 'kilo'), 'performance');
   const s = complete();
   delete s.performance;
   delete s.team;

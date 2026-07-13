@@ -64,7 +64,7 @@ export async function main(): Promise<void> {
     return;
   }
 
-  await startOnboardingServer({ cwd, standalone: true, ...(hasPort ? { port } : {}) });
+  await startOnboardingServer({ cwd, trafficHost: host, standalone: true, ...(hasPort ? { port } : {}) });
 }
 
 if (require.main === module) {

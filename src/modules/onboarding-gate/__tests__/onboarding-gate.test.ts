@@ -11,6 +11,7 @@ import { onboardingWaitCommand } from '../../../shared/onboarding-server/wait-co
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
@@ -58,12 +59,14 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   // Never spawn a real wizard server from a unit test; ensure() hands back a
   // deterministic placeholder URL instead.
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
@@ -72,6 +75,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -82,12 +86,20 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
   const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   assert.ok(prefsPath, 'test prefs path must be configured');
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+  const {
+    performance = { level: 'high', source: 'prompted' },
+    team = { mode: 'subagents', source: 'prompted', approved: true },
+    ...rest
+  } = extra;
   fs.writeFileSync(prefsPath, JSON.stringify({
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    performance: { level: 'high', source: 'prompted' },
-    team: { mode: 'subagents', source: 'prompted', approved: true },
+    ...hostScopedPerformancePrefs(
+      performance as Record<string, unknown>,
+      team as Record<string, unknown>,
+      'pro',
+    ),
     toolchain: TOOLCHAIN,
-    ...extra,
+    ...rest,
   }), 'utf8');
   // codeGraphProvider is machine-wide (one.json), not a per-project pref.
   writeGlobalCodeGraphProvider('graphify');
@@ -153,7 +165,7 @@ test('OpenCode setup deny stops after onboarding and asks the user to restart be
 test('Windsurf setup deny is compact and never includes another host recipe', () => {
   withProject(null, (cwd) => {
     const url = 'http://127.0.0.1:51444/?t=windsurf';
-    writeServerRecord(cwd, { pid: process.pid, port: 51444, token: 'windsurf', url, startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 51444, token: 'windsurf', url, startedAt: 'x' }, process.env, 'windsurf');
     const r = onboardingGate(ctxWindsurf(cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
@@ -170,7 +182,7 @@ test('Windsurf setup deny is compact and never includes another host recipe', ()
 test('Windsurf setup allows read-only orientation and gates the first mutation', () => {
   withProject(null, (cwd) => {
     const url = 'http://127.0.0.1:51445/?t=windsurf-read';
-    writeServerRecord(cwd, { pid: process.pid, port: 51445, token: 'windsurf-read', url, startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 51445, token: 'windsurf-read', url, startedAt: 'x' }, process.env, 'windsurf');
     assert.equal(
       onboardingGate(ctxWindsurf(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind,
       'noop',
@@ -353,7 +365,7 @@ test('Cursor: before any orchestrator is recorded, the main thread still gets th
 test('Cursor: first onboarding wait command is denied once with a clickable wizard link, then allowed', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
     const url = 'http://127.0.0.1:55222/?t=tok';
-    writeServerRecord(cwd, { pid: process.pid, port: 55222, token: 'tok', url, startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 55222, token: 'tok', url, startedAt: 'x' }, process.env, 'cursor');
     const command = onboardingWaitCommand(cwd, 'cursor');
 
     const first = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'main-conv', '/x/transcript.jsonl'));

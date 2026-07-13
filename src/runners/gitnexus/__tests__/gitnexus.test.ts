@@ -137,6 +137,78 @@ test('bootstrap short-circuits on a fresh .gitnexus/ cache', () => {
   });
 });
 
+test('bootstrap runs an existing GitNexus binary, relocates its index, stamps the toolchain, then reuses the cache', () => {
+  withGnProject((cwd) => {
+    const binDir = path.join(cwd, 'fake-bin');
+    const gitnexusBin = path.join(binDir, 'gitnexus');
+    const invocationLog = path.join(cwd, 'gitnexus-invocations.log');
+    const prefs = path.join(cwd, '.traffic-one', 'preferences.json');
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(gitnexusBin, `#!/bin/sh
+if [ "$1" = "--version" ]; then
+  echo "gitnexus 1.6.9"
+  exit 0
+fi
+if [ "$1" = "analyze" ]; then
+  printf '%s\\n' "$*" >> "$T1_FAKE_GITNEXUS_LOG"
+  mkdir -p .gitnexus
+  printf '%s' '{"stats":{"files":1,"nodes":2},"indexedAt":"2026-07-13T00:00:00.000Z"}' > .gitnexus/meta.json
+  printf '%s' '{"modules":[{"name":"src"}]}' > .gitnexus/index.json
+  exit 0
+fi
+exit 64
+`, { mode: 0o755 });
+    fs.writeFileSync(path.join(cwd, 'index.ts'), 'export const ready = true;\n', 'utf8');
+
+    const saved = {
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      T1_FAKE_GITNEXUS_LOG: process.env.T1_FAKE_GITNEXUS_LOG,
+      TRAFFIC_ONE_TOOLCHAIN_ROOT: process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT,
+      XDG_STATE_HOME: process.env.XDG_STATE_HOME,
+    };
+    process.env.HOME = path.join(cwd, 'home');
+    process.env.PATH = `${binDir}${path.delimiter}${saved.PATH || ''}`;
+    process.env.T1_FAKE_GITNEXUS_LOG = invocationLog;
+    process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(cwd, 'toolchains');
+    process.env.XDG_STATE_HOME = path.join(cwd, 'xdg-state');
+    process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prefs;
+    try {
+      const first = bootstrap(cwd, { nodeMajor: 22 });
+      assert.equal(first.ok, true);
+      assert.equal(first.action, 'used-existing');
+      assert.equal(first.installedVersion, '1.6.9');
+      assert.equal(first.report, path.join(cwd, '.traffic-one', '.gitnexus'));
+      assert.equal(fs.existsSync(path.join(cwd, '.gitnexus')), false, 'provider output is moved out of the project root');
+      assert.deepEqual(
+        JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.gitnexus', 'meta.json'), 'utf8')),
+        { stats: { files: 1, nodes: 2 }, indexedAt: '2026-07-13T00:00:00.000Z' },
+      );
+      assert.match(fs.readFileSync(path.join(cwd, '.traffic-one', 'graph-preview.md'), 'utf8'), /Provider: gitnexus.*src/s);
+      assert.match(fs.readFileSync(invocationLog, 'utf8'), /^analyze \. --skip-agents-md --skip-git\n$/);
+      assert.equal(fs.existsSync(path.join(cwd, '.gitnexusignore')), false, 'temporary scan ignore is restored');
+
+      const local = JSON.parse(fs.readFileSync(prefs, 'utf8')) as {
+        gitnexusLastRunAt?: string;
+        toolchain?: { gitnexus?: { installedVersion?: string; installedAt?: string; binPath?: string } };
+      };
+      assert.match(local.gitnexusLastRunAt || '', /^\d{4}-\d{2}-\d{2}T/);
+      assert.equal(local.toolchain?.gitnexus?.installedVersion, '1.6.9');
+      assert.match(local.toolchain?.gitnexus?.installedAt || '', /^\d{4}-\d{2}-\d{2}T/);
+      assert.equal(local.toolchain?.gitnexus?.binPath, gitnexusBin);
+
+      const second = bootstrap(cwd, { nodeMajor: 22 });
+      assert.equal(second.ok, true);
+      assert.equal(second.action, 'fresh');
+      assert.equal(fs.readFileSync(invocationLog, 'utf8').trim().split('\n').length, 1, 'fresh cache avoids a second scan');
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key]; else process.env[key] = value;
+      }
+    }
+  });
+});
+
 test('gitnexusGraphIsEmpty flags a 0-file index (so a pre-scaffold graph reindexes)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gnempty-'));
   try {

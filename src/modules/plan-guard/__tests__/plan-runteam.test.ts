@@ -69,7 +69,15 @@ function seedFallbackClaim(dir: string, target: string, holder: string, createdA
 
 function withDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runteam-'));
-  try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fn(dir);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function gate(dir: string, state: Record<string, unknown>, filePath: string, raw: unknown, overrides: Partial<RunTeamArgs> = {}): string | null {

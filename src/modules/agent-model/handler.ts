@@ -13,7 +13,8 @@ import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
-import { acceptableModelsFor, modelMatchesAny, resolveModel } from '../../shared/model-tiers';
+import { modelMatchesAny } from '../../shared/model-tiers';
+import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
 import {
   cursorModelsCapturePrompted,
   cursorModelsFresh,
@@ -21,7 +22,7 @@ import {
   markCursorModelsCapturePrompted,
   pickCursorSlug,
 } from '../../shared/materialize/cursor-models';
-import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
+import { modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
 import { recordOpenCodeFallback } from '../../shared/opencode-queue';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { AGENT_ROLES } from '../../config/performance';
@@ -70,6 +71,8 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan-directive';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { resolveProjectRoot } from '../../shared/hook-paths';
+import { modelCaptureCommand } from '../../shared/model-gate-command';
+import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
@@ -80,8 +83,8 @@ function isPlanBatchGatedRole(role: string): boolean {
 }
 
 // A role's tier is satisfied ONLY when the spawn's `model` PARAMETER matches it on hosts
-// where Traffic One enforces stable subagent model ids (family-aware + same-class
-// CURSOR_MODEL_ALTERNATES). The passed arg is authoritative there — INCLUDING Cursor:
+// where Traffic One enforces stable subagent model ids (family-aware against the
+// active local snapshot's preferred-first tier array). The passed arg is authoritative there — INCLUDING Cursor:
 // the earlier design trusted the `.cursor/agents/<role>.md` frontmatter, but
 // live evidence proved Cursor does NOT honor that frontmatter when no `model` arg is passed — it
 // INHERITS THE PARENT (orchestrator) model (captured: a balanced-override frontend with
@@ -90,14 +93,14 @@ function isPlanBatchGatedRole(role: string): boolean {
 // arg; the gate must therefore require it (the frontmatter is just the source/hint the
 // orchestrator reads, never proof the subagent will run on it).
 function modelSatisfiesTier(ctx: Ctx, passedModel: string, expected: string): boolean {
-  return modelMatchesAny(passedModel, acceptableModelsFor(expected, ctx.host));
+  return modelMatchesAny(passedModel, currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host)));
 }
 
 function modelParamEnforced(host: string): boolean {
-  // OpenCode/Kilo/Copilot/Windsurf use host-native task/profile facilities whose spawn tools
-  // may not expose a `model` arg. Cursor is the opposite: it needs an explicit Task `model`
-  // parameter, so keep enforcing there.
-  return host !== 'opencode' && host !== 'copilot' && host !== 'windsurf' && host !== 'kilo';
+  // Only Claude and Cursor expose a spawn-time `model` parameter in the supported
+  // tool schemas. Codex `spawn_agent` has task_name/message/fork_turns only; its
+  // model comes from the session or user-level custom-agent configuration.
+  return host === 'claude' || host === 'cursor';
 }
 
 function spawnAgentType(toolInput: Rec, opts: { includeRoleAlias?: boolean } = {}): string {
@@ -125,21 +128,15 @@ function isBuiltinSubagent(agentType: string): boolean {
   return /^(general|explore|scout)$/i.test(agentType.trim());
 }
 
-function agentTypeMatchesRole(agentType: string, role: string): boolean {
-  return agentType.trim() === role || inferTrafficOneSpawnRole({ subagent_type: agentType }) === role;
-}
-
-function nativeOpenCodeAgentPath(role: string): string {
-  return `.opencode/agents/${role}.md`;
-}
-
-function namedOpenCodeAgentDeny(role: string, agentType: string, expected: string): HookResult {
+function namedOpenCodeAgentDeny(cwd: string, role: string, agentType: string, expected: string): HookResult {
+  const expectedAgent = openCodeGlobalAgentName(cwd, role);
   return deny(block('opencode-named-agent-required', {
     HOST: 'OpenCode',
     ROLE: role,
     AGENT_TYPE: agentType || 'missing',
-    AGENT_PATH: nativeOpenCodeAgentPath(role),
-    MODEL_NOTE: `Traffic One materialized this role with \`model: ${expected}\`. OpenCode applies that per-role model only when the Task spawn uses the named agent; built-in agents instead inherit the parent session model.`,
+    EXPECTED_AGENT: expectedAgent,
+    AGENT_PATH: openCodeGlobalAgentPath(cwd, role),
+    MODEL_NOTE: `Traffic One materialized this project-scoped global agent with \`model: ${expected}\`. OpenCode applies that per-role model only when Task uses \`${expectedAgent}\`; built-in agents inherit the parent session model.`,
   }));
 }
 
@@ -186,15 +183,15 @@ function recordSpawnParentSession(cwd: string, raw: unknown): void {
 // The per-role model-tier deny. Lists the acceptable same-tier ALTERNATES so the
 // orchestrator can pass a model the runner actually offers when a Cursor build does
 // not offer the preferred slug (Cursor rejects an unavailable slug as invalid). The
-// gate stays strict — a wrong-FAMILY model is still denied; only the maintainer-
-// defined accept-set (CURSOR_MODEL_ALTERNATES) widens what satisfies the tier.
+// gate stays strict — a wrong-FAMILY model is still denied; only fallback ids in
+// the active local snapshot's preferred-first tier array widen what satisfies it.
 // Host-specific "continue the live agent" recipe for the agent-reuse deny. The
 // continuation primitive differs per host: Cursor RE-INVOKES the Task tool with
 // `resume` (live Cursor builds surface this field; older docs/models may say
 // `agentId`), Copilot reuses the background agent id through `task`, Codex uses
-// `send_input`, Claude uses `SendMessage`. The agentId is interpolated here so the
+// collaboration follow-up/message tools, and Claude uses `SendMessage`. The agentId is interpolated here so the
 // SKILL block stays a single host-agnostic template.
-function continuationRecipe(host: string, agentId: string): { call: string; tool: string } {
+function continuationRecipe(host: string, agentId: string, role: string): { call: string; tool: string } {
   if (host === 'cursor') {
     return {
       call: `Re-invoke the \`Task\` tool with \`resume: "${agentId}"\` and \`prompt\` = the NEW task only — Cursor resumes the SAME subagent with full context preserved. If your Cursor build exposes \`agentId\` instead, use the same id there.`,
@@ -203,8 +200,8 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
   }
   if (host === 'codex') {
     return {
-      call: `Call \`send_input\` with \`target: "${agentId}"\` and the NEW task as the message.`,
-      tool: 'send_input',
+      call: `Call \`followup_task\` with \`target: "${agentId}"\` and the NEW task as \`message\` to continue the SAME Codex agent. If that agent is still running and this is only an in-flight update, use \`send_message\` with the same target instead.`,
+      tool: 'followup_task / send_message',
     };
   }
   if (host === 'copilot') {
@@ -215,14 +212,20 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
   }
   if (host === 'windsurf') {
     return {
-      call: `Call \`run_subagent\` with profile \`${agentId}\` (same role) and the NEW task as the prompt — put \`[t1-role: ${agentId}]\` as the FIRST line. Use \`read_subagent\` to collect the result. Do NOT spawn a second profile for the same role.`,
-      tool: 'run_subagent',
+      call: `Call \`read_subagent\` with agent id \`${agentId}\` while the existing role is running. If it completed and needs a follow-up, call \`run_subagent\` with profile \`subagent_general\`; put \`[t1-role: ${role}]\` on the FIRST line, \`${REPLACE_AGENT_MARKER}\` on the next line, and immediately tell it to read \`.devin/agents/${role}/AGENT.md\`.`,
+      tool: 'read_subagent / run_subagent replacement',
     };
   }
   if (host === 'opencode') {
     return {
-      call: `OpenCode does not expose a resumable Task field in current Traffic One builds. If the existing task \`${agentId}\` is still running, wait for it. If it has already completed and you need a follow-up/fix, re-spawn the SAME named OpenCode agent with \`${REPLACE_AGENT_MARKER}\` in the prompt, keep \`[t1-role: <role>]\` as the FIRST line, and include only the new findings/file list inline. Do NOT use \`general\`, do NOT point at a missing fix-cycle file, and do NOT write scratch logs under \`/tmp\`.`,
+      call: `OpenCode does not expose a resumable Task field in current Traffic One builds. If the existing task \`${agentId}\` is still running, wait for it. If it has already completed and you need a follow-up/fix, re-spawn the SAME named OpenCode agent with \`${REPLACE_AGENT_MARKER}\` in the prompt, keep \`[t1-role: ${role}]\` as the FIRST line, and include only the new findings/file list inline. Do NOT use \`general\`, do NOT point at a missing fix-cycle file, and do NOT write scratch logs under \`/tmp\`.`,
       tool: 'OpenCode Task replacement',
+    };
+  }
+  if (host === 'kilo') {
+    return {
+      call: `Kilo does not expose a resumable Task field. If task \`${agentId}\` is still running, wait for it. If it completed and needs a follow-up, call \`task\` with built-in \`general\`; put \`[t1-role: ${role}]\` on the FIRST line, \`${REPLACE_AGENT_MARKER}\` on the next line, immediately read \`.kilo/agents/${role}.md\`, and pass no \`model\` field.`,
+      tool: 'Kilo general-task replacement',
     };
   }
   return {
@@ -232,7 +235,7 @@ function continuationRecipe(host: string, agentId: string): { call: string; tool
 }
 
 function replacementJustified(prompt: string, host = ''): boolean {
-  if (host === 'opencode'
+  if ((host === 'opencode' || host === 'kilo' || host === 'windsurf')
     && /\b(previous|existing|current)\s+(opencode\s+)?(agent|task|subagent)\s+(completed|finished|returned|ended)\b|\bfix[- ]cycle\b|\bfollow[- ]up\b|\bno\s+resum(?:e|able|able\s+task)\b|\bcontinuation\s+(unavailable|unsupported)\b/i.test(prompt)) {
     return true;
   }
@@ -251,7 +254,7 @@ function cursorRealSlug(ctx: Ctx, cwd: string, family: string): string {
   // name a slug from the old plan. detectHostPlan is memoized, so this is cheap.
   const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
   if (!captured.length) return family;
-  return pickCursorSlug(acceptableModelsFor(family, ctx.host), captured) || family;
+  return pickCursorSlug(currentAcceptableModels(family, ctx.host, detectHostPlan(ctx.host)), captured) || family;
 }
 
 function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string, expected: string, level: string, opts: { suppressAlternates?: boolean } = {}): HookResult {
@@ -263,7 +266,7 @@ function modelTierDeny(ctx: Ctx, cwd: string, role: string, passedModel: string,
   // not a bare family. suppressAlternates: after "enable & retry" we don't advertise fallbacks.
   const shownExpected = cursorRealSlug(ctx, cwd, expected);
   const captured = ctx.host === 'cursor' ? freshCursorModels(cwd, detectHostPlan(ctx.host)) : [];
-  const altFamilies = opts.suppressAlternates ? [] : acceptableModelsFor(expected, ctx.host).slice(1);
+  const altFamilies = opts.suppressAlternates ? [] : currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host)).slice(1);
   const altModels = altFamilies
     .map((f) => (captured.length ? pickCursorSlug([f], captured) : f))
     .filter((s): s is string => typeof s === 'string' && s.length > 0);
@@ -277,7 +280,7 @@ function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
   if (ctx.host !== 'cursor' || !passedModel) return null;
   const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
   if (!captured.length || captured.includes(passedModel)) return null;
-  const acceptable = acceptableModelsFor(expected, ctx.host);
+  const acceptable = currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host));
   if (!modelMatchesAny(passedModel, acceptable)) return null;
   const exact = pickCursorSlug(acceptable, captured) || cursorRealSlug(ctx, cwd, expected);
   return deny(block('cursor-exact-model-required', {
@@ -293,7 +296,7 @@ function cursorExactModelDeny(ctx: Ctx, cwd: string, role: string, passedModel: 
 // alternate FAMILY (resolved from the captured list on Cursor), or the resolved expected
 // when there is no alternate.
 function fallbackModelFor(ctx: Ctx, cwd: string, expected: string): string {
-  const altFamilies = acceptableModelsFor(expected, ctx.host).slice(1);
+  const altFamilies = currentAcceptableModels(expected, ctx.host, detectHostPlan(ctx.host)).slice(1);
   if (ctx.host === 'cursor') {
     const captured = freshCursorModels(cwd, detectHostPlan(ctx.host));
     if (captured.length) {
@@ -383,7 +386,7 @@ function preferredModelUnavailableDeny(ctx: Ctx, cwd: string, runId: string, rol
 // HookResult carrying BOTH the detailed agent-facing context AND a user-visible systemMessage
 // (→ user_message on Cursor) so the user actually SEES it — not just additional_context, which
 // Cursor injects into the agent's context but never shows in chat. null when not applicable.
-function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string, overrides: Rec | null, planCtx: { host: string; plan: string; useOpenCode: boolean }): HookResult | null {
+function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string, overrides: Rec | null, planCtx: PlanCtx): HookResult | null {
   if (ctx.host !== 'cursor' || !runId || modelAdvisoryShown(cwd, runId)) return null;
   const models = new Set<string>();
   for (const r of AGENT_ROLES) {
@@ -406,8 +409,8 @@ function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string,
 // replaced an earlier advisory-only stopgap: HOST_MODELS.cursor used to hold Anthropic
 // aliases (opus/sonnet/haiku) that Cursor REJECTS, making a hard equality deny
 // un-satisfiable. Cursor REJECTS a slug it doesn't offer rather than downgrading, and its
-// subagent lineup is account/build-specific, so each cursor tier carries same-tier
-// fallbacks (CURSOR_MODEL_ALTERNATES) that the accept-set in modelSatisfiesTier honors.)
+// subagent lineup is account/build-specific, so each local Cursor tier snapshot
+// carries a preferred id followed by same-tier fallbacks that modelSatisfiesTier honors.)
 // The gate also stakes the run-claim here (subagentStart is a different
 // canonical event, so no double-claim), which the subagent-team write gate needs to
 // resolve a role on Cursor. Agent REUSE/continuation is ENABLED on Cursor via the
@@ -555,7 +558,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       // it, or the gate would block the very continuation it asks for. Cursor has
       // surfaced this as `resume` in live traces, while older docs/prose/models use
       // `agentId`; accept both. On Codex/Claude the continuation is a different tool
-      // (send_input / SendMessage), so spawn_agent/Task normally never carries these.
+      // (followup_task/send_message / SendMessage), so spawn_agent/Task normally never carries these.
       const parentSessionId = hookSessionIdentity(raw).sessionId;
       const currentLive = (): ReturnType<typeof liveRunAgent> => {
         const live = liveRunAgent(cwd, runId, role, parentSessionId);
@@ -579,7 +582,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
         if (live && !replacementJustified(spawnPromptText, ctx.host)) {
           const resumeTarget = continuationAgentId(live, ctx.host);
           if (resumeTarget) {
-            const recipe = continuationRecipe(ctx.host, resumeTarget);
+            const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {
               ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
               CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
@@ -595,7 +598,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
           if (!resumeTarget && ctx.host === 'cursor') {
             return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
           }
-          const recipe = continuationRecipe(ctx.host, resumeTarget);
+          const recipe = continuationRecipe(ctx.host, resumeTarget, role);
           return deny(block('agent-reuse-continue', {
             ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
             CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
@@ -611,7 +614,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // absolute (team.overrides cannot lift it). Stake the run claim too, so the
   // run-team write gate can resolve the worker's role on its first write.
   if (role === 'quick-fix') {
-    const expected = resolveModel('cheapest', ctx.host);
+    const expected = currentModelForTier('cheapest', ctx.host, detectHostPlan(ctx.host));
     const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
     if (modelParamEnforced(ctx.host) && expected && !modelSatisfiesTier(ctx, passedModel, expected)) {
       return modelTierDeny(ctx, cwd, role, passedModel, expected, 'maintenance');
@@ -627,9 +630,8 @@ export function agentModelGate(ctx: Ctx): HookResult {
     return noop();
   }
 
-  if (state.mode !== 'new-project') return noop();
-
-  if (!isCompletedTrafficOneMaterialization(cwd, state)) {
+  const isNewProject = state.mode === 'new-project';
+  if (isNewProject && !isCompletedTrafficOneMaterialization(cwd, state)) {
     materializeIfNeeded(cwd);
     if (isCompletedTrafficOneMaterialization(cwd, readEffectiveState(cwd))) return deny(block('agent-materialization-deny'));
     return deny(block('agent-materialization-missing'));
@@ -651,7 +653,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
   // Implementers may not start until the architect phase is complete on disk
   // (scaffold + memory baseline + assignments + digest with PLAN_READY). Checked
   // after team approval so earlier gates (team/materialization) keep their prose.
-  if (isPlanBatchGatedRole(role)) {
+  if (isNewProject && isPlanBatchGatedRole(role)) {
     const incomplete = architectPhaseIncompleteReasons(cwd, state);
     if (incomplete.length > 0) {
       return deny(block('architect-phase-incomplete', {
@@ -664,27 +666,32 @@ export function agentModelGate(ctx: Ctx): HookResult {
 
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
-  const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host), useOpenCode: openCodeDelegationActive(state, ctx.host) };
+  const planCtx = { host: ctx.host, plan: detectHostPlan(ctx.host) };
 
   // Cursor: the build's actual subagent model set — and its reasoning-variant slugs
   // (`-thinking-max`, `-extra-high`, …) — is plan/build-specific, and only the in-Cursor
   // orchestrator can enumerate it (no plan-scoped API). Require a FRESH capture (matching the
-  // CURRENT plan) so materialization pins REAL, build-offered slugs in `.cursor/agents/<role>.md`
+  // CURRENT plan) so the runtime spawn map uses REAL, build-offered slugs
   // (else the orchestrator may pass a guessed slug Cursor doesn't offer and silently downgrade). The freshness
   // check is plan-keyed: an upgrade/downgrade makes the old capture stale → this re-prompts, so
   // subagent models stay current. NO-DEADLOCK: ask at most once per run; after that, proceed —
   // the family-aware match below still validates whatever the orchestrator passes.
   if (ctx.host === 'cursor' && !cursorModelsFresh(cwd, planCtx.plan) && !cursorModelsCapturePrompted(cwd, spawnRunId)) {
     markCursorModelsCapturePrompted(cwd, spawnRunId);
-    return deny(block('cursor-models-capture', { RUN_ID: spawnRunId, PROJECT_ROOT: cwd }));
+    return deny(block('cursor-models-capture', {
+      RUN_ID: spawnRunId,
+      PROJECT_ROOT: cwd,
+      CAPTURE_CMD: modelCaptureCommand(cwd, 'cursor'),
+    }));
   }
 
   const expected = modelForRoleHost(level, role, ctx.host, overrides, planCtx);
   const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
   const agentType = spawnAgentType(toolInput, { includeRoleAlias: false });
   if (ctx.host === 'opencode') {
-    if (!agentType || !agentTypeMatchesRole(agentType, role) || isBuiltinSubagent(agentType)) {
-      return namedOpenCodeAgentDeny(role, agentType, expected || 'the configured role model');
+    const expectedAgent = openCodeGlobalAgentName(cwd, role);
+    if (!agentType || agentType !== expectedAgent || isBuiltinSubagent(agentType)) {
+      return namedOpenCodeAgentDeny(cwd, role, agentType, expected || 'the configured role model');
     }
   }
   if (ctx.host === 'kilo' && agentType.toLowerCase() !== 'general') return kiloGeneralAgentDeny(role, agentType);

@@ -56,6 +56,7 @@ async function withServer(
   committed: Record<string, unknown> | null,
   fn: (server: RunningServer, cwd: string) => Promise<void>,
   taskCmd: string = 'noop',
+  trafficHost: string = 'claude',
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-routes-'));
   const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -69,7 +70,7 @@ async function withServer(
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(committed), 'utf8');
   }
-  const server = await startOnboardingServer({ cwd: dir, token: 'secret', standalone: false, idleMs: 60_000 });
+  const server = await startOnboardingServer({ cwd: dir, token: 'secret', standalone: false, idleMs: 60_000, trafficHost });
   try {
     await fn(server, dir);
   } finally {
@@ -136,7 +137,7 @@ test('routes: answering steps advances; code-graph runs a task; complete writes 
     const done = await call(server.port, 'POST', '/complete');
     assert.equal(done.status, 200);
     assert.equal(rec(done.json).ok, true);
-    assert.equal(completionSentinelExists(cwd), true);
+    assert.equal(completionSentinelExists(cwd, process.env, 'claude'), true);
   });
 });
 
@@ -152,8 +153,17 @@ test('routes: a failed install task leaves the completion sentinel unwritten (ga
     assert.equal(taskStatus, 'error');
     // The frontend withholds POST /complete on a failed install, so the server
     // never wrote the sentinel — onboarding is NOT marked complete.
-    assert.equal(completionSentinelExists(cwd), false);
+    assert.equal(completionSentinelExists(cwd, process.env, 'claude'), false);
   }, 'fail');
+});
+
+test('routes: completion is written only for the server active host', async () => {
+  await withServer(existing, async (server, cwd) => {
+    const done = await call(server.port, 'POST', '/complete');
+    assert.equal(done.status, 200);
+    assert.equal(completionSentinelExists(cwd, process.env, 'cursor'), true);
+    assert.equal(completionSentinelExists(cwd, process.env, 'codex'), false);
+  }, 'noop', 'cursor');
 });
 
 test('routes: /verify-toolchain reports the provider + a boolean graphMissing', async () => {

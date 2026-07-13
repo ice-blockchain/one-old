@@ -12,7 +12,7 @@ import * as fs from 'fs';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
-import { nextLocalPreferenceStep } from '../onboarding/local-prefs';
+import { currentLocalPreferenceTarget, nextLocalPreferenceStep } from '../onboarding/local-prefs';
 import {
   projectContextDomainQuestionLines,
   projectContextOriginalPrompt,
@@ -22,14 +22,17 @@ import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
 import { STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
 import { TIER_IDS } from '../../config/model-tiers';
-import { recommendTierForPlan, resolveModel } from '../model-tiers';
-import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
+import { recommendTierForPlan } from '../model-tiers';
+import { currentModelForTier } from '../current-model-tiers';
+import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
 import { windsurfBackend } from '../windsurf-backend';
 import {
   applyGlobalCodeGraphProvider,
+  clearProjectHostPrefs,
   effectiveState,
+  mergeProjectHostPrefs,
   mergeProjectPrefs,
   projectPrefsPath,
   readEffectiveState,
@@ -37,7 +40,6 @@ import {
   readProjectPrefs,
   readState,
   writeGlobalCodeGraphProvider,
-  writeProjectPrefs,
   writeState,
 } from '../state';
 
@@ -170,7 +172,7 @@ function stepWhenDurablePrefsMissing(cwd: string, state: Rec, mode: string, host
 
 function enrichStepMeta(meta: StepMeta, step: WizardStep, state: Rec): StepMeta {
   if (step === 'team-confirmation') enrichTeamMeta(meta, state);
-  if (step === 'performance') enrichPerformanceMeta(meta, state);
+  if (step === 'performance') enrichPerformanceMeta(meta);
   return meta;
 }
 
@@ -229,31 +231,29 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
     meta.host = host;
     return;
   }
-  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
+  const planCtx: PlanCtx = { host, plan: detectHostPlan(host) };
   meta.team = buildTeamLineup(level, host, overrides, planCtx);
   meta.performanceLevel = level;
-  meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
+  meta.recommendedTier = recommendTierForPlan(host, planCtx.plan);
   meta.host = host;
   // The per-agent model menu: each tier resolved to the detected host's model id,
   // so the wizard can offer real model names (and the user's pick maps straight
-  // back to a tier override the spawn gate already understands). Kilo's native
-  // roles inherit the active session/per-agent selection; Auto Free is its only
-  // safe static fallback, so do not show three indistinguishable fake choices.
-  const choiceTiers = (host === 'kilo' || (host === 'windsurf' && planCtx.plan === 'free'))
+  // back to a tier override the spawn gate already understands). Windsurf Free
+  // exposes only its single verified selector model, so do not show three
+  // indistinguishable choices for that host/plan.
+  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free'
     ? ['cheapest'] as const
     : TIER_IDS;
-  meta.modelChoices = choiceTiers.map((tier) => ({ tier, model: resolveModel(tier, host, planCtx.plan) || tier }));
+  meta.modelChoices = choiceTiers.map((tier) => ({ tier, model: currentModelForTier(tier, host, planCtx.plan) || tier }));
 }
 
-// Pre-select the wizard's recommended performance level from the detected plan +
-// the OpenCode opt-in: move it first and tag its hint "Recommended". Clones the
-// option objects so the shared STEP_META copy is never mutated.
-function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
+// Pre-select the wizard's plan recommendation: move it first and tag its hint
+// "Recommended". Clones option objects so STEP_META is never mutated.
+function enrichPerformanceMeta(meta: StepMeta): void {
   const host = detectHost();
   const plan = detectHostPlan(host);
-  const useOpenCode = openCodeDelegationActive(state, host);
   const cascade = host === 'windsurf' && windsurfBackend() === 'cascade';
-  const recommended = cascade ? 'low' : recommendLevelForPlan(host, plan, useOpenCode);
+  const recommended = cascade ? 'low' : recommendLevelForPlan(host, plan);
   const options = (meta.options || []).filter((o) => !cascade || o.id === 'low').map((o) => ({ ...o }));
   for (const o of options) {
     if (o.id === recommended) o.hint = o.hint ? `Recommended — ${o.hint}` : 'Recommended';
@@ -261,19 +261,13 @@ function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
   options.sort((a, b) => (a.id === recommended ? -1 : b.id === recommended ? 1 : 0));
   meta.options = options;
   meta.recommendedLevel = recommended;
-  meta.recommendedTier = recommendTierForPlan(host, plan, useOpenCode);
+  meta.recommendedTier = recommendTierForPlan(host, plan);
   meta.host = host;
 }
 
 // ── Answer application ──────────────────────────────────────────────────────────
 function patchSharedState(cwd: string, patch: Rec): void {
   writeState(cwd, { ...readState(cwd), ...patch });
-}
-
-function clearPrefKeys(cwd: string, keys: string[]): void {
-  const prefs = readProjectPrefs(cwd);
-  for (const key of keys) delete prefs[key];
-  writeProjectPrefs(cwd, prefs);
 }
 
 function mobileFromChoice(value: unknown): { enabled: boolean; framework: string } | null {
@@ -369,12 +363,14 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       if (level !== 'high' && level !== 'balanced' && level !== 'low') {
         return { ok: false, error: 'invalid performance level' };
       }
-      if (detectHost() === 'windsurf' && windsurfBackend() === 'cascade' && level !== 'low') {
+      const host = detectHost();
+      if (host === 'windsurf' && windsurfBackend() === 'cascade' && level !== 'low') {
         return { ok: false, error: 'Cascade supports main-agent mode only' };
       }
-      mergeProjectPrefs(cwd, {
+      mergeProjectHostPrefs(cwd, host, {
         performance: { level, source: 'prompted' },
         team: { mode: teamModeForLevel(level), source: 'prompted' },
+        configuredFor: currentLocalPreferenceTarget(host),
       });
       return { ok: true };
     }
@@ -390,13 +386,13 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       // performance" clears performance + team to choose again.
       if (action === 'approve' || action === 'continue' || action === 'customise') {
         const overrides = v && obj(v.overrides);
-        mergeProjectPrefs(cwd, {
+        mergeProjectHostPrefs(cwd, detectHost(), {
           team: { mode: 'subagents', source: 'prompted', approved: true, ...(overrides ? { overrides } : {}) },
         });
         return { ok: true };
       }
       if (action === 'repick_performance' || action === 'repick') {
-        clearPrefKeys(cwd, ['performance', 'team']);
+        clearProjectHostPrefs(cwd, detectHost(), ['performance', 'team', 'configuredFor']);
         return { ok: true };
       }
       return { ok: false, error: 'invalid team-confirmation action' };

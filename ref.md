@@ -36,7 +36,9 @@ line-verifiable source files.
 - Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `npm run gen`.
 - Generated Windsurf / Devin Desktop Cascade rule mirrors: split-aware Markdown
   files under `.devin/rules/` after `npm run gen`.
-- Generated OpenCode project assets: `.opencode/agents/<role>.md` and `.opencode/skills/<skill>/SKILL.md` are materialized per onboarded project when OpenCode is the host.
+- External model-status API: maintained independently from plugin generation;
+  responses match the local `{ plan, updatedAt, tiers }` host snapshot exactly.
+- Generated OpenCode user-local agents: `~/.config/opencode/agents/traffic-one-<projectHash12>-<role>.md`; legacy generated project profiles are cleaned while user-authored files are preserved.
 - Generated Kilo wrapper support: `scripts/kilo-host.cjs` installs `~/.config/kilo/plugin/traffic-one.js`, and `.kilo/traffic-one.json` records explicit per-project enable/disable overrides.
 - Windsurf project assets: `.devin/rules/*.md` plus generated Devin Local profiles are materialized per onboarded project when Windsurf is the host; skills remain under the canonical `.traffic-one/skills/<skill>/SKILL.md` tree.
 - Hook/runtime script entrypoints plus compiled modules under `scripts/` after `npm run build`.
@@ -345,7 +347,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `scripts/graphify-runner.cjs` | Codebase graph cache runner. |
 | `scripts/lighthouse-runner.mjs` | Mobile Lighthouse production-preview runner. |
 | `scripts/security-check-runner.cjs` | Traffic One pre-deployment security scanner. |
-| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, `.cursor/rules/*.mdc`, and `.devin/rules/*.md`. |
+| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, `.cursor/rules/*.mdc`, and `.devin/rules/*.md`; it also prunes retired generated artifacts. |
 
 ## Generated Cursor Mirrors
 

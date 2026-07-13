@@ -36,7 +36,7 @@ export const assertion: Assertion = {
       for (const host of HOST_IDS) {
         const model = modelForRoleHost(level, role, host, overrides, null);
         table[role][host] = model;
-        const expected = tier ? HOST_MODELS[host][tier] : null;
+        const expected = tier ? HOST_MODELS[host].tiers[tier][0] : null;
         if (model !== expected) {
           mismatches.push(`${role}@${host}: expected ${JSON.stringify(expected)} (tier ${tier}), got ${JSON.stringify(model)}`);
         }

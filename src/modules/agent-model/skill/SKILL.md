@@ -22,15 +22,15 @@ Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:
 <!-- T1BLOCK:END agent-materialization-missing -->
 
 <!-- T1BLOCK:BEGIN performance-main-agent -->
-Performance gate: local Traffic One preferences record performance.level="{{LEVEL}}" (main-agent only), but you are spawning the `{{ROLE}}` subagent. If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.
+Performance gate: local Traffic One preferences record performance.level="{{LEVEL}}" (main-agent only), but you are spawning the `{{ROLE}}` subagent. If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn (pass `model` only when this host's spawn schema exposes it; current Codex `spawn_agent` does not). If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.
 <!-- T1BLOCK:END performance-main-agent -->
 
 <!-- T1BLOCK:BEGIN team-confirmation -->
-Team gate: spawning subagents needs `team.approved: true`, which the Traffic One setup wizard sets AUTOMATICALLY from the performance choice (performance.level="{{LEVEL}}" ⇒ subagents). Local preferences currently have `team.approved !== true`, which means the wizard's performance/team step was not completed for this project — not that the user must approve a line-up in chat. Do NOT pop a chat "approve the team?" prompt and do NOT hand-edit preferences to set the flag. Re-open the Traffic One setup wizard and finish the performance/team step (it writes `team.approved: true` and shows the role→model line-up), then re-spawn passing the per-role `model` parameter. If the user wants Low/main-agent mode instead, they re-pick performance in the wizard; never bypass this gate for `team.mode="subagents"`.
+Team gate: spawning subagents needs `team.approved: true`, which the Traffic One setup wizard sets AUTOMATICALLY from the performance choice (performance.level="{{LEVEL}}" ⇒ subagents). Local preferences currently have `team.approved !== true`, which means the wizard's performance/team step was not completed for this project — not that the user must approve a line-up in chat. Do NOT pop a chat "approve the team?" prompt and do NOT hand-edit preferences to set the flag. Re-open the Traffic One setup wizard and finish the performance/team step (it writes `team.approved: true` and shows the role→model line-up), then re-spawn; pass the per-role `model` only on hosts whose spawn schema supports it (Claude/Cursor, not current Codex). If the user wants Low/main-agent mode instead, they re-pick performance in the wizard; never bypass this gate for `team.mode="subagents"`.
 <!-- T1BLOCK:END team-confirmation -->
 
 <!-- T1BLOCK:BEGIN performance-model-param -->
-Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect, and on Cursor the `.cursor/agents/{{ROLE}}.md` frontmatter is NOT auto-applied: without this `model` parameter the subagent INHERITS the parent (orchestrator) model, so you MUST pass `model` per role (the correct value is also pinned in `.cursor/agents/{{ROLE}}.md`).{{ALTERNATES}} Per-role model tiers are defined by the plugin's model-tiers config (`scripts/config/model-tiers.js` in the installed plugin).
+Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
 <!-- T1BLOCK:END performance-model-param -->
 
 <!-- T1BLOCK:BEGIN cursor-exact-model-required -->
@@ -38,11 +38,11 @@ Cursor model gate (level={{LEVEL}}): spawning `{{ROLE}}` passed `model: "{{PASSE
 <!-- T1BLOCK:END cursor-exact-model-required -->
 
 <!-- T1BLOCK:BEGIN opencode-named-agent-required -->
-{{HOST}} agent gate: `{{ROLE}}` must be spawned with the named {{HOST}} subagent `{{ROLE}}`, not `{{AGENT_TYPE}}`.
+{{HOST}} agent gate: `{{ROLE}}` must be spawned with the project-scoped global {{HOST}} subagent `{{EXPECTED_AGENT}}`, not `{{AGENT_TYPE}}`.
 
 Traffic One materialized `{{AGENT_PATH}}`. {{MODEL_NOTE}}
 
-Re-issue the same `task` spawn with subagent type / agent name `{{ROLE}}` and keep `[t1-role: {{ROLE}}]` as the FIRST line of the prompt. Do NOT pass `model` unless this exact host build documents a Task `model` field. If `{{ROLE}}` is not offered by the Task tool after project materialization, stop and tell the user to close/reopen this project in {{HOST}} so the generated role-agent files are loaded; do not fall back to `general` and do not build the role inline.
+Re-issue the same `task` spawn with the project-scoped global subagent name `{{EXPECTED_AGENT}}` and keep `[t1-role: {{ROLE}}]` as the FIRST line of the prompt. Do NOT pass `model` unless this exact host build documents a Task `model` field. If `{{EXPECTED_AGENT}}` is not offered after materialization, stop and tell the user to restart {{HOST}} so the global agent at `{{AGENT_PATH}}` is loaded; do not fall back to `general` and do not build the role inline.
 <!-- T1BLOCK:END opencode-named-agent-required -->
 
 <!-- T1BLOCK:BEGIN kilo-general-agent-required -->
@@ -62,8 +62,8 @@ Cursor model-capture gate (asked once per run, run {{RUN_ID}}). Capture is OPTIO
 **To proceed RIGHT NOW: RE-ISSUE THE SAME `Task` spawn, unchanged.** Traffic One then falls back to family-aware matching and the spawn goes through — pass any model whose family fits the tier (an `claude-opus-4-8…` slug for highest, a `claude-4.6-sonnet…`/`gpt-5.5…` slug for balanced, a `composer-2.5…` slug for cheapest).
 To pin the EXACT slugs your build offers FIRST (recommended — it avoids a silent downgrade where a balanced/highest role drops to the Composer floor), do this once before re-issuing:
 1. List the model ids your `Task` tool offers for spawning subagents (the same list Cursor shows when you pick a subagent model).
-2. Write them to `.traffic-one/cursor-models.json` (in {{PROJECT_ROOT}}) as exactly `{ "models": ["<id-1>", "<id-2>", "..."] }`, using the EXACT ids with their reasoning suffixes (e.g. `claude-opus-4-8-thinking-max-fast`, `gpt-5.5-extra-high`, `composer-2.5-fast`). Include at least one id per tier the team needs — highest + balanced + cheapest — so no tier silently degrades; do not invent ids, list only what your Task tool actually offers.
-3. Re-issue the spawn. Traffic One re-materializes `.cursor/agents/<role>.md` with the real slug for each role's tier.
+2. Run `{{CAPTURE_CMD}}`, replacing the placeholders with those EXACT ids and their reasoning suffixes (e.g. `claude-opus-4-8-thinking-max-fast`, `gpt-5.5-extra-high`, `composer-2.5-fast`). Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create `.traffic-one/cursor-models.json`.
+3. Re-issue the spawn and pass the exact role→model values printed by model-gate. Project `.cursor/agents` contracts remain model-agnostic.
 Either way the very next spawn proceeds — NEVER build the project inline because of this gate.
 <!-- T1BLOCK:END cursor-models-capture -->
 

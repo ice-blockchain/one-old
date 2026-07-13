@@ -7,21 +7,27 @@ import * as path from 'path';
 import { modelChoiceGate } from '../index';
 import { writeModelChoice } from '../../agent-model/model-choice';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function withProject(fn: (cwd: string, runId: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-gate-')));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const runId = '1780000000000';
   try {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      performance: { level: 'high', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+        'pro',
+      );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project',
       stack: 'default',
@@ -31,13 +37,11 @@ function withProject(fn: (cwd: string, runId: string) => void): void {
       materializedStack: 'default|react-vite|supabase|none',
       currentRunId: runId,
     }), 'utf8');
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
-    }), 'utf8');
     fn(dir, runId);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

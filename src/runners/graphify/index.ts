@@ -94,11 +94,9 @@ function graphifyRecommendedVersion(): string | null {
   return typeof spec?.recommended === 'string' && spec.recommended ? spec.recommended : null;
 }
 
-// graphify (0.8.x) ships NO `--version`/`version`/`-V` CLI — every form errors
-// with "unknown command". The reliable version source is the package metadata,
-// read via the Python interpreter that sits next to the graphify binary (the
-// managed venv's bin dir, or a pipx venv): `pip show graphifyy`. (0.8.40 also
-// reads `.gitignore` per-directory on its own, so the scan honors it natively.)
+// graphify 0.9.x exposes `--version`; package metadata remains the compatibility
+// fallback for older releases. Read it through the Python interpreter beside the
+// graphify binary (managed venv or pipx): `pip show graphifyy`.
 function graphifyPipShowVersion(binPath: string): string | null {
   const dir = path.dirname(binPath);
   const ext = process.platform === 'win32' ? '.exe' : '';
@@ -120,11 +118,11 @@ function graphifyPipShowVersion(binPath: string): string | null {
 }
 
 function graphifyInstalledVersion(binPath: string, fallbackToPinned: boolean = false): string | null {
-  // pip metadata first (authoritative, works for managed venv + pipx); the CLI
-  // probe is a forward-compatible fallback in case graphify adds `--version`
-  // later; finally the pinned `recommended` so a present binary is still usable.
-  return graphifyPipShowVersion(binPath)
-    || probeToolVersion('graphify', { binPath })
+  // Prefer the public CLI contract on current releases, retain package metadata
+  // for older managed-venv/pipx installs, then use the curated fallback so an
+  // otherwise usable binary is not rejected only because version probing failed.
+  return probeToolVersion('graphify', { binPath })
+    || graphifyPipShowVersion(binPath)
     || (fallbackToPinned ? graphifyRecommendedVersion() : null);
 }
 
@@ -262,12 +260,11 @@ export function ensureGraphifyTool(cwd: string = process.cwd(), opts: GraphifyOp
   ];
   for (const candidate of candidates) {
     if (!candidate.binPath) continue;
-    // graphify has no version CLI, so probe pip metadata next to the binary;
-    // for a bare PATH install with no adjacent python, assume the pinned version
-    // (the binary is present and usable) rather than treating it as missing.
-    const version = candidate.action === 'used-managed'
-      ? graphifyInstalledVersion(candidate.binPath)
-      : graphifyInstalledVersion(candidate.binPath, true);
+    // Never label an unversioned PATH binary as the current release. Current
+    // graphify exposes --version; older installs may resolve through adjacent pip
+    // metadata. If neither works, continue to the managed latest install instead
+    // of repeatedly reusing an unknown/possibly incompatible binary.
+    const version = graphifyInstalledVersion(candidate.binPath);
     const status = toolStatus('graphify', version);
     if (isToolUsable(status.status)) {
       stampToolchain(cwd, candidate.binPath, version);

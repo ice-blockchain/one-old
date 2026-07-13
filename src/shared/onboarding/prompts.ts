@@ -31,7 +31,8 @@ export type OnboardingStep =
 export function nextOnboardingStep(state: unknown, host?: unknown): OnboardingStep | null {
   const s = obj(state);
   if (!s || s.mode !== 'new-project') return null;
-  if (canonicalHost(host) !== 'opencode' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  const activeHost = canonicalHost(host);
+  if (activeHost !== 'opencode' && activeHost !== 'kilo' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
   if (!hasValidPerformanceState(s.performance)) return 'performance';
   if (needsTeamConfirmation(s, host)) return 'team-confirmation';
   if (!hasValidTeamState(s.team)) return 'team';

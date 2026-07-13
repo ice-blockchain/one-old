@@ -15,6 +15,7 @@ import {
   readModelChoice,
   writeModelChoice,
 } from '../model-choice';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mc-'));
@@ -102,13 +103,13 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      performance: { level: 'high', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    }), 'utf8');
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+        'pro',
+      );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     const state: Record<string, unknown> = {
       mode: 'new-project', currentRunId: 'run-pending', performance: { level: 'high' },
       team: { mode: 'subagents', approved: true, overrides: { 'senior-architect': 'balanced' } },
@@ -132,16 +133,16 @@ test('modelChoiceReplyPending: unavailable picks mint currentRunId instead of fa
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      performance: { level: 'high', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+        'pro',
+      );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
-    }), 'utf8');
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
     }), 'utf8');
     const state: Record<string, unknown> = {
       mode: 'new-project', performance: { level: 'high' },

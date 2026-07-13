@@ -51,25 +51,35 @@ test('gen sweeps orphaned files in managed output dirs (deleted source content)'
     const orphanRule = path.join(dir, 'rules', 'common', 'retired-rule.md');
     const orphanMdc = path.join(dir, '.cursor', 'rules', 'retired-rule.mdc');
     const orphanWindsurf = path.join(dir, '.devin', 'rules', 'retired-rule.md');
+    const retiredModelCatalog = path.join(dir, 'public', 'model-status-catalog.json');
     fs.writeFileSync(orphanRule, '# Retired\n', 'utf8');
     fs.writeFileSync(orphanMdc, '---\nalwaysApply: false\n---\n', 'utf8');
     fs.writeFileSync(orphanWindsurf, '---\ntrigger: model_decision\n---\n# Retired\n', 'utf8');
+    fs.mkdirSync(path.dirname(retiredModelCatalog), { recursive: true });
+    fs.writeFileSync(retiredModelCatalog, '{}\n', 'utf8');
 
     // check mode reports orphans as drift without touching them.
     const check = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });
     assert.deepEqual(check.drift.sort(), [
       '.cursor/rules/retired-rule.mdc (orphan: no longer generated)',
       '.devin/rules/retired-rule.md (orphan: no longer generated)',
+      'public/model-status-catalog.json (orphan: no longer generated)',
       'rules/common/retired-rule.md (orphan: no longer generated)',
     ]);
     assert.ok(fs.existsSync(orphanRule));
 
     // write mode prunes them.
     const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
-    assert.deepEqual(write.pruned.sort(), ['.cursor/rules/retired-rule.mdc', '.devin/rules/retired-rule.md', 'rules/common/retired-rule.md']);
+    assert.deepEqual(write.pruned.sort(), [
+      '.cursor/rules/retired-rule.mdc',
+      '.devin/rules/retired-rule.md',
+      'public/model-status-catalog.json',
+      'rules/common/retired-rule.md',
+    ]);
     assert.ok(!fs.existsSync(orphanRule));
     assert.ok(!fs.existsSync(orphanMdc));
     assert.ok(!fs.existsSync(orphanWindsurf));
+    assert.ok(!fs.existsSync(retiredModelCatalog));
 
     // and the tree round-trips clean again.
     const recheck = runGen({ check: true, root: dir, sourceRoot: REPO_ROOT });

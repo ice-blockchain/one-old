@@ -16,6 +16,7 @@ import { buildCaseEnv, withCaseEnv, type CaseEnv } from './env';
 import { materializeFixture } from './fixtures';
 import { preseed } from './preseed';
 import { driveOnboarding } from './onboarding-sim';
+import { prepareCaseHostIntegration } from './host-integration';
 import { DRIVERS } from '../drivers';
 
 function copyIfExists(from: string, to: string): void {
@@ -78,19 +79,24 @@ export async function runCase(
   if (target !== 'pure-node' && testCase.layer === 'host-e2e') {
     const driver = DRIVERS[target];
     const cfg = config.hosts[target];
-    if (!driver.isAvailable(cfg)) {
+    if (!driver.isAvailable(cfg, env)) {
       hostResult = { status: 'SKIPPED', exitCode: null, durationMs: 0, skippedReason: `${cfg.bin} not found on PATH` };
     } else {
-      const prompt = resolvePrompt(testCase);
-      hostResult = await driver.run(cfg, {
-        cwd: tmpDir,
-        prompt,
-        env,
-        timeoutMs: config.defaultTimeoutMs,
-        model: sessionModel(testCase, target, config),
-        distRoot,
-        runFolder: caseFolder,
-      });
+      const prepared = prepareCaseHostIntegration(target, distRoot, tmpDir, env);
+      if (!prepared.ok) {
+        hostResult = { status: 'ERROR', exitCode: null, durationMs: 0, skippedReason: prepared.error };
+      } else {
+        const prompt = resolvePrompt(testCase);
+        hostResult = await driver.run(cfg, {
+          cwd: tmpDir,
+          prompt,
+          env,
+          timeoutMs: config.defaultTimeoutMs,
+          model: sessionModel(testCase, target, config),
+          distRoot,
+          runFolder: caseFolder,
+        });
+      }
       // Optional second-phase edit in the SAME project (lifecycle text edits etc.).
       if (testCase.phase2Prompt && hostResult.status === 'COMPLETED') {
         await driver.run(cfg, {

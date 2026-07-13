@@ -149,8 +149,8 @@ test('detectHostPlan claude: personal Max account — plan only in organizationT
   assert.equal(detectHostPlan('claude', env({ HOME: hPro })), 'pro');
 });
 
-test('detectHostPlan claude: missing/garbage file → default (free)', () => {
-  assert.equal(detectHostPlan('claude', env({ HOME: tmpHome() })), 'free');
+test('detectHostPlan claude: missing/garbage file → conservative Claude Code default (pro)', () => {
+  assert.equal(detectHostPlan('claude', env({ HOME: tmpHome() })), 'pro');
 });
 
 test('detectHostPlan codex: decodes chatgpt_plan_type from the id_token JWT', () => {

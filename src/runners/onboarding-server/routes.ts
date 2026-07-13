@@ -18,6 +18,7 @@ export interface RouteContext {
   env: NodeJS.ProcessEnv;
   token: string;
   port: number;
+  trafficHost: string;
   requestShutdown: () => void;
 }
 
@@ -125,7 +126,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
 
   if (method === 'POST' && pathname === '/complete') {
     try {
-      writeCompletionSentinel(ctx.cwd, ctx.env);
+      writeCompletionSentinel(ctx.cwd, ctx.env, ctx.trafficHost);
     } catch {
       // best-effort — the gate's predicates remain the source of truth
     }

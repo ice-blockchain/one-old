@@ -12,6 +12,7 @@ import {
   shouldWaitForOpenCodePlanBatch,
 } from '../opencode-plan-directive';
 import { markOpenCodePlanBatchComplete } from '../opencode-roles';
+import { hostScopedPerformancePrefs } from '../../test-support/host-prefs';
 
 function queueDelegateRoles(cwd: string, roles: string[]): void {
   const t1 = path.join(cwd, '.traffic-one');
@@ -37,8 +38,11 @@ function withOpenCodeProject(fn: (cwd: string) => void): void {
     currentRunId: 'run-oc-dir',
   }), 'utf8');
   fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-    performance: { level: 'high', source: 'prompted' },
-    team: { mode: 'subagents', source: 'prompted', approved: true },
+    ...hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    ),
     openCode: { enabled: true },
     toolchain: { opencode: { installedVersion: '1.17.8' } },
   }), 'utf8');
@@ -65,8 +69,11 @@ test('pre-spawn directive is proactive before plan queue exists', () => {
     currentRunId: 'run-pre',
   }), 'utf8');
   fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-    performance: { level: 'high' },
-    team: { mode: 'subagents', approved: true },
+    ...hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    ),
     openCode: { enabled: true },
     toolchain: { opencode: { installedVersion: '1.17.8' } },
   }), 'utf8');
@@ -96,8 +103,11 @@ test('directives empty when OpenCode delegation is inactive', () => {
     currentRunId: 'run-off',
   }), 'utf8');
   fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-    performance: { level: 'high' },
-    team: { mode: 'subagents', approved: true },
+    ...hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    ),
     openCode: { enabled: false },
   }), 'utf8');
   queueDelegateRoles(dir, ['frontend']);

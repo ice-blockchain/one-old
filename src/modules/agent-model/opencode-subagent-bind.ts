@@ -48,7 +48,7 @@ export function opencodeSubagentBind(ctx: Ctx): HookResult {
   const runId = stateObj && typeof stateObj.currentRunId === 'string' ? stateObj.currentRunId : null;
   captureClaimDebug(ctx.cwd, runId, 'opencode-subagent-prompt', { sessionId, role });
   claimThreadRole(ctx.cwd, state, sessionId, role, { recordAgent: false });
-  if (runId && ctx.host === 'opencode') {
+  if (runId) {
     recordRunAgent(ctx.cwd, runId, role, {
       agentId: sessionId,
       agentType: role,

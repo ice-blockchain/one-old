@@ -51,7 +51,7 @@ test('windsurf entry: unauthenticated pre_run_command blocks with exit 2 stderr'
 test('windsurf entry: setup-required pre_user_prompt does not block native Devin prompt admission', async () => {
   await withEnv(async (cwd) => {
     process.env.TRAFFIC_ONE_AUTH = 'off';
-    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
     const stdin = JSON.stringify({
       agent_action_name: 'pre_user_prompt',
       tool_info: {

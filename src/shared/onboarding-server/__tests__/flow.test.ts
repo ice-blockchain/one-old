@@ -5,8 +5,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
-import { KILO_MODELS, WINDSURF_FREE_MODEL, WINDSURF_PAID_MODELS } from '../../../config/model-tiers';
-import { mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
+import { hostModelSnapshot } from '../../model-tiers';
+import { writeOneHostSettings } from '../../one-settings';
+import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
 
 const HOST_ENV_KEYS = [
   'TRAFFIC_ONE_HOST',
@@ -56,6 +57,7 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
 }
 
 const asRec = (value: unknown): Record<string, unknown> => (value && typeof value === 'object' ? value as Record<string, unknown> : {});
+const hostPrefs = (prefs: unknown, host = 'claude'): Record<string, unknown> => asRec(asRec(asRec(prefs).hosts)[host]);
 type TeamMember = ReturnType<typeof buildTeamLineup>[number];
 
 function requireRole(by: Record<string, TeamMember>, role: string): TeamMember {
@@ -99,11 +101,72 @@ test('new-project: the full wizard sequence completes onboarding', () => {
 
     const prefs = readProjectPrefs(cwd);
     assert.equal(asRec(prefs.openCode).enabled, false);
-    assert.equal(asRec(prefs.performance).level, 'high');
-    assert.equal(asRec(prefs.team).approved, true);
+    assert.equal(asRec(hostPrefs(prefs).performance).level, 'high');
+    assert.equal(asRec(hostPrefs(prefs).team).approved, true);
+    assert.deepEqual(hostPrefs(prefs).configuredFor, {
+      plan: 'max',
+      modelsUpdatedAt: hostModelSnapshot('claude', 'max').updatedAt,
+    });
     // codeGraphProvider is machine-wide (one.json), not a per-project pref.
     assert.equal(readGlobalCodeGraphProvider(), 'gitnexus');
   });
+});
+
+test('all hosts: onboarding shows the plan recommendation and persists only the active host', () => {
+  const cases = [
+    { host: 'claude', plan: 'pro', level: 'balanced', tier: 'balanced' },
+    { host: 'codex', plan: 'plus', level: 'balanced', tier: 'balanced' },
+    { host: 'cursor', plan: 'pro', level: 'balanced', tier: 'balanced' },
+    { host: 'opencode', plan: 'plus', level: 'balanced', tier: 'balanced' },
+    { host: 'copilot', plan: 'pro', level: 'balanced', tier: 'balanced' },
+    { host: 'windsurf', plan: 'pro', level: 'balanced', tier: 'balanced' },
+    { host: 'kilo', plan: 'free', level: 'low', tier: 'cheapest' },
+  ] as const;
+
+  for (const c of cases) {
+    withProject(null, (cwd) => {
+      process.env.TRAFFIC_ONE_HOST = c.host;
+      process.env.TRAFFIC_ONE_USER_PLAN = c.plan;
+
+      const selfHost = c.host === 'opencode' || c.host === 'kilo';
+      assert.equal(computeOnboarding(cwd).step, selfHost ? 'performance' : 'open-code', c.host);
+      if (!selfHost) assert.equal(applyAnswer(cwd, 'open-code', 'not_now').ok, true, c.host);
+
+      const performance = computeOnboarding(cwd);
+      assert.equal(performance.step, 'performance', c.host);
+      assert.equal(performance.meta.host, c.host, c.host);
+      assert.equal(performance.meta.recommendedLevel, c.level, c.host);
+      assert.equal(performance.meta.recommendedTier, c.tier, c.host);
+      assert.equal(performance.meta.options?.[0]?.id, c.level, c.host);
+
+      assert.equal(applyAnswer(cwd, 'performance', c.level).ok, true, c.host);
+      if (c.level === 'low') {
+        assert.equal(computeOnboarding(cwd).step, 'project-context', c.host);
+      } else {
+        assert.equal(computeOnboarding(cwd).step, 'team-confirmation', c.host);
+        assert.equal(applyAnswer(cwd, 'team-confirmation', { action: 'approve' }).ok, true, c.host);
+      }
+
+      assert.equal(applyAnswer(cwd, 'project-context', { summary: 'app', answers: { audience: 'teams' } }).ok, true, c.host);
+      assert.equal(applyAnswer(cwd, 'mobile', 'web_only').ok, true, c.host);
+      assert.equal(applyAnswer(cwd, 'code-graph', 'gitnexus').ok, true, c.host);
+      assert.equal(applyAnswer(cwd, 'finalize', null).ok, true, c.host);
+      assert.equal(computeOnboarding(cwd).done, true, c.host);
+
+      const prefs = readProjectPrefs(cwd);
+      const hosts = asRec(prefs.hosts);
+      assert.deepEqual(Object.keys(hosts), [c.host], c.host);
+      const active = hostPrefs(prefs, c.host);
+      assert.equal(asRec(active.performance).level, c.level, c.host);
+      assert.equal(asRec(active.team).mode, c.level === 'low' ? 'main-agent' : 'subagents', c.host);
+      if (c.level !== 'low') assert.equal(asRec(active.team).approved, true, c.host);
+      assert.deepEqual(active.configuredFor, {
+        plan: c.plan,
+        modelsUpdatedAt: hostModelSnapshot(c.host, c.plan).updatedAt,
+      }, c.host);
+      assert.equal(readGlobalCodeGraphProvider(), 'gitnexus', c.host);
+    });
+  }
 });
 
 test('new-project: performance "low" skips the team-confirmation step', () => {
@@ -147,6 +210,76 @@ test('existing project: only the local-preference steps are asked, then done', (
     assert.equal(view.done, true);
     assert.equal(view.step, null);
     assert.equal(readGlobalCodeGraphProvider(), 'graphify');
+  });
+});
+
+test('existing project: plan/catalog drift reopens only Performance and Team without mutating prefs on read', () => {
+  const committed = {
+    mode: 'existing-codebase', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+    realtime: 'none', confirmed: true, onboardingComplete: true, confirmedAt: '2026-01-01T00:00:00Z',
+  };
+  withProject(committed, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'codex';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    writeGlobalCodeGraphProvider('gitnexus');
+    applyAnswer(cwd, 'open-code', 'not_now');
+    applyAnswer(cwd, 'performance', 'balanced');
+    applyAnswer(cwd, 'team-confirmation', { action: 'approve' });
+    assert.equal(computeOnboarding(cwd).done, true);
+
+    const beforePlanChange = fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8');
+    process.env.TRAFFIC_ONE_USER_PLAN = 'free';
+    const planChanged = computeOnboarding(cwd);
+    assert.equal(planChanged.step, 'performance');
+    assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforePlanChange);
+
+    // Reconfigure for the new plan, then simulate a newer API catalog date.
+    applyAnswer(cwd, 'performance', 'balanced');
+    assert.equal(computeOnboarding(cwd).step, 'team-confirmation');
+    applyAnswer(cwd, 'team-confirmation', { action: 'approve' });
+    writeOneHostSettings('codex', {
+      ...hostModelSnapshot('codex', 'free'),
+      updatedAt: '2026-07-14',
+    });
+    const beforeCatalogChange = fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8');
+    assert.equal(computeOnboarding(cwd).step, 'performance');
+    assert.equal(fs.readFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, 'utf8'), beforeCatalogChange);
+  });
+});
+
+test('performance and repick update only the active host and preserve Cursor availableModels', () => {
+  withProject({ mode: 'existing-codebase', stack: 'default', onboardingComplete: true }, (cwd) => {
+    writeGlobalCodeGraphProvider('gitnexus');
+    mergeProjectPrefs(cwd, { openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-12T08:00:00Z' } });
+    mergeProjectHostPrefs(cwd, 'cursor', {
+      performance: { level: 'balanced', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
+      availableModels: {
+        models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
+        plan: 'pro',
+        modelsUpdatedAt: '2026-07-12',
+        capturedAt: '2026-07-12T08:00:00Z',
+      },
+    });
+
+    process.env.TRAFFIC_ONE_HOST = 'codex';
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    applyAnswer(cwd, 'performance', 'high');
+    assert.equal(computeOnboarding(cwd).step, 'team-confirmation');
+    applyAnswer(cwd, 'team-confirmation', { action: 'repick_performance' });
+
+    const prefs = readProjectPrefs(cwd);
+    assert.equal(hostPrefs(prefs, 'codex').performance, undefined);
+    assert.equal(hostPrefs(prefs, 'codex').team, undefined);
+    assert.equal(hostPrefs(prefs, 'codex').configuredFor, undefined);
+    assert.deepEqual(hostPrefs(prefs, 'cursor').availableModels, {
+      models: ['claude-opus-4-8-thinking-high', 'composer-2.5-fast'],
+      plan: 'pro',
+      modelsUpdatedAt: '2026-07-12',
+      capturedAt: '2026-07-12T08:00:00Z',
+    });
+    assert.equal(asRec(hostPrefs(prefs, 'cursor').team).approved, true);
   });
 });
 
@@ -352,7 +485,7 @@ test('buildTeamLineup: balanced uses sonnet for builders, haiku for tester', () 
 
 test('buildTeamLineup: host changes the concrete model ids (codex)', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'codex').map((m) => [m.role, m]));
-  assert.equal(requireRole(by, 'senior-architect').model, 'gpt-5.5');
+  assert.equal(requireRole(by, 'senior-architect').model, 'gpt-5.6-sol');
   assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5.4-mini');
 });
 
@@ -409,7 +542,7 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
       applyAnswer(cwd, 'performance', 'high');
       const view = computeOnboarding(cwd);
       assert.equal(view.meta.host, 'codex');
-      assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']);
+      assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.4-mini']);
     } finally {
       delete process.env.CODEX_PLUGIN_ROOT;
     }
@@ -433,11 +566,11 @@ test('Windsurf Free recommends Low and maps a manually selected team to SWE-1.6 
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.host, 'windsurf');
-    assert.deepEqual(view.meta.modelChoices, [{ tier: 'cheapest', model: WINDSURF_FREE_MODEL }]);
+    assert.deepEqual(view.meta.modelChoices, [{ tier: 'cheapest', model: 'SWE-1.6 Slow' }]);
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(by, 'senior-architect').tier, 'cheapest');
-    assert.equal(requireRole(by, 'senior-architect').model, WINDSURF_FREE_MODEL);
-    assert.equal(requireRole(by, 'senior-tester').model, WINDSURF_FREE_MODEL);
+    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.6 Slow');
+    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
     assert.ok(!(view.meta.modelChoices || []).some((c) => /opus|sonnet|haiku/i.test(c.model)));
   });
 });
@@ -464,8 +597,8 @@ test('Windsurf Cascade offers only Low/main-agent and rejects subagent answers',
 
     assert.equal(applyAnswer(cwd, 'performance', 'low').ok, true);
     const prefs = readProjectPrefs(cwd);
-    assert.equal(asRec(prefs.performance).level, 'low');
-    assert.equal(asRec(prefs.team).mode, 'main-agent');
+    assert.equal(asRec(hostPrefs(prefs, 'windsurf').performance).level, 'low');
+    assert.equal(asRec(hostPrefs(prefs, 'windsurf').team).mode, 'main-agent');
   });
 });
 
@@ -479,17 +612,17 @@ test('Windsurf Pro exposes all three verified selector models for a Balanced tea
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.deepEqual(view.meta.modelChoices, [
-      { tier: 'highest', model: WINDSURF_PAID_MODELS.highest },
-      { tier: 'balanced', model: WINDSURF_PAID_MODELS.balanced },
-      { tier: 'cheapest', model: WINDSURF_PAID_MODELS.cheapest },
+      { tier: 'highest', model: 'SWE-1.7 Beta' },
+      { tier: 'balanced', model: 'SWE-1.7 Lightning Beta' },
+      { tier: 'cheapest', model: 'SWE-1.6 Slow' },
     ]);
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
-    assert.equal(requireRole(by, 'senior-architect').model, WINDSURF_PAID_MODELS.balanced);
-    assert.equal(requireRole(by, 'senior-tester').model, WINDSURF_PAID_MODELS.cheapest);
+    assert.equal(requireRole(by, 'senior-architect').model, 'SWE-1.7 Lightning Beta');
+    assert.equal(requireRole(by, 'senior-tester').model, 'SWE-1.6 Slow');
   });
 });
 
-test('Kilo Balanced/High team line-up uses the valid Kilo Auto Free fallback, not OpenCode slugs', () => {
+test('Kilo Balanced/High line-up uses native Kilo Auto tiers with a free tester fallback', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'kilo';
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
@@ -504,21 +637,25 @@ test('Kilo Balanced/High team line-up uses the valid Kilo Auto Free fallback, no
     applyAnswer(cwd, 'performance', 'balanced');
     const balanced = computeOnboarding(cwd);
     assert.equal(balanced.step, 'team-confirmation');
-    assert.deepEqual(balanced.meta.modelChoices, [{ tier: 'cheapest', model: KILO_MODELS.cheapest }]);
+    assert.deepEqual(balanced.meta.modelChoices, [
+      { tier: 'highest', model: 'kilo/kilo-auto/frontier' },
+      { tier: 'balanced', model: 'kilo/kilo-auto/balanced' },
+      { tier: 'cheapest', model: 'kilo/kilo-auto/free' },
+    ]);
     const balancedBy = Object.fromEntries((balanced.meta.team || []).map((m) => [m.role, m]));
-    assert.equal(requireRole(balancedBy, 'senior-architect').model, KILO_MODELS.balanced);
-    assert.equal(requireRole(balancedBy, 'senior-frontend').model, KILO_MODELS.balanced);
-    assert.equal(requireRole(balancedBy, 'senior-tester').model, KILO_MODELS.cheapest);
+    assert.equal(requireRole(balancedBy, 'senior-architect').model, 'kilo/kilo-auto/balanced');
+    assert.equal(requireRole(balancedBy, 'senior-frontend').model, 'kilo/kilo-auto/balanced');
+    assert.equal(requireRole(balancedBy, 'senior-tester').model, 'kilo/kilo-auto/free');
     assert.ok(!(balanced.meta.team || []).some((m) => m.model.startsWith('opencode/')));
 
     applyAnswer(cwd, 'team-confirmation', 'repick_performance');
     applyAnswer(cwd, 'performance', 'high');
     const high = computeOnboarding(cwd);
     const highBy = Object.fromEntries((high.meta.team || []).map((m) => [m.role, m]));
-    assert.equal(requireRole(highBy, 'senior-architect').model, KILO_MODELS.highest);
-    assert.equal(requireRole(highBy, 'senior-reviewer').model, KILO_MODELS.highest);
-    assert.equal(requireRole(highBy, 'senior-shipper').model, KILO_MODELS.balanced);
-    assert.equal(requireRole(highBy, 'senior-tester').model, KILO_MODELS.cheapest);
+    assert.equal(requireRole(highBy, 'senior-architect').model, 'kilo/kilo-auto/frontier');
+    assert.equal(requireRole(highBy, 'senior-reviewer').model, 'kilo/kilo-auto/frontier');
+    assert.equal(requireRole(highBy, 'senior-shipper').model, 'kilo/kilo-auto/balanced');
+    assert.equal(requireRole(highBy, 'senior-tester').model, 'kilo/kilo-auto/free');
     assert.ok(!(high.meta.team || []).some((m) => m.model.startsWith('opencode/')));
   });
 });
@@ -540,13 +677,13 @@ test('Copilot Pro onboarding recommends Balanced and lists distinct paid subagen
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.host, 'copilot');
-    assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.4', 'gpt-5.3-codex', 'gpt-5.4-mini']);
+    assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.4', 'claude-sonnet-4.6', 'claude-haiku-4.5']);
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(by, 'senior-frontend').tier, 'balanced');
-    assert.equal(requireRole(by, 'senior-frontend').model, 'gpt-5.3-codex');
-    assert.equal(requireRole(by, 'senior-backend').model, 'gpt-5.3-codex');
+    assert.equal(requireRole(by, 'senior-frontend').model, 'claude-sonnet-4.6');
+    assert.equal(requireRole(by, 'senior-backend').model, 'claude-sonnet-4.6');
     assert.equal(requireRole(by, 'senior-tester').tier, 'cheapest');
-    assert.equal(requireRole(by, 'senior-tester').model, 'gpt-5.4-mini');
+    assert.equal(requireRole(by, 'senior-tester').model, 'claude-haiku-4.5');
     assert.ok(new Set((view.meta.team || []).map((m) => m.model)).size > 1, 'Balanced Copilot team must not collapse to one mini model');
   });
 });
@@ -557,7 +694,7 @@ test('team approve with per-agent model overrides persists them under team.overr
     applyAnswer(cwd, 'performance', 'high');
     // The wizard sends only the roles the user changed away from the shown default.
     assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'approve', overrides: { 'senior-tester': 'highest' } }).ok);
-    const team = asRec(readProjectPrefs(cwd).team);
+    const team = asRec(hostPrefs(readProjectPrefs(cwd)).team);
     assert.equal(team.approved, true);
     assert.deepEqual(asRec(team.overrides), { 'senior-tester': 'highest' });
     // …and that stored override drives the resolved line-up (tester jumps to opus).
@@ -571,7 +708,7 @@ test('team approve with an empty overrides object stores no overrides', () => {
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'high');
     assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'approve', overrides: {} }).ok);
-    const team = asRec(readProjectPrefs(cwd).team);
+    const team = asRec(hostPrefs(readProjectPrefs(cwd)).team);
     assert.equal(team.approved, true);
     assert.equal(team.overrides, undefined);
   });
@@ -587,7 +724,7 @@ test('team step reads as a single "Start the build" confirmation (continue alias
     assert.deepEqual(view.meta.options?.map((o) => o.label), ['Start the build', 'Re-pick performance']);
     // "Start the build" (continue) is the single confirmation — it approves the team.
     assert.ok(applyAnswer(cwd, 'team-confirmation', { action: 'continue' }).ok);
-    assert.equal(asRec(readProjectPrefs(cwd).team).approved, true);
+    assert.equal(asRec(hostPrefs(readProjectPrefs(cwd)).team).approved, true);
     assert.equal(computeOnboarding(cwd).step, 'project-context');
   });
 });
@@ -622,6 +759,7 @@ test('finalize falls back to the MVP answers when no prompt was captured', () =>
 
 test('plan-aware line-up: free runs the team cheaper than the (max-shaped) default', () => {
   withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'codex';
     applyAnswer(cwd, 'open-code', 'not_now');
     applyAnswer(cwd, 'performance', 'high');
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
@@ -629,15 +767,16 @@ test('plan-aware line-up: free runs the team cheaper than the (max-shaped) defau
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     // headline plan tier (free) is surfaced for the wizard; per-role tiers may differ
     assert.equal(view.meta.recommendedTier, 'cheapest');
-    // free + high: builders drop to balanced/sonnet; the hand-tuned tester stays cheapest
+    // free + high: builders drop to balanced; the hand-tuned tester stays cheapest
     assert.equal(requireRole(by, 'senior-architect').tier, 'balanced');
-    assert.equal(requireRole(by, 'senior-architect').model, 'sonnet');
+    assert.equal(requireRole(by, 'senior-architect').model, 'gpt-5.6-terra');
     assert.equal(requireRole(by, 'senior-tester').tier, 'cheapest');
   });
 });
 
 test('plan-aware performance step: the recommended option follows the plan', () => {
   withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'codex';
     applyAnswer(cwd, 'open-code', 'not_now');
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
     const view = computeOnboarding(cwd);
@@ -649,34 +788,31 @@ test('plan-aware performance step: the recommended option follows the plan', () 
   });
 });
 
-test('plan-aware performance step: OpenCode bumps the recommendation only once it is installed', () => {
+test('plan-aware performance step: OpenCode installation does not change the recommendation', () => {
   withProject(null, (cwd) => {
+    process.env.TRAFFIC_ONE_HOST = 'codex';
     applyAnswer(cwd, 'open-code', 'enable');
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
-    // Enabled but NOT installed yet → no tier-shift (don't promise pricier
-    // models for an offload that can't run). free plan recommends 'low'.
+    // The plan alone owns model/performance selection.
     assert.equal(computeOnboarding(cwd).meta.recommendedLevel, 'low');
-    // Once OpenCode is actually installed (stamped), the recommendation bumps.
     mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
     const view = computeOnboarding(cwd);
-    assert.equal(view.meta.recommendedLevel, 'balanced'); // host-eligible OpenCode = one step up
-    assert.equal(view.meta.options?.[0]?.id, 'balanced');
+    assert.equal(view.meta.recommendedLevel, 'low');
+    assert.equal(view.meta.options?.[0]?.id, 'low');
   });
 });
 
-test('plan-aware performance step: Codex bumps the OpenCode recommendation like every host (host-agnostic)', () => {
+test('plan-aware performance step: Codex selection is independent of OpenCode delegation', () => {
   withProject(null, (cwd) => {
     process.env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = 'Codex Desktop';
     process.env.TRAFFIC_ONE_USER_PLAN = 'free';
     applyAnswer(cwd, 'open-code', 'enable');
     mergeProjectPrefs(cwd, { toolchain: { opencode: { installedVersion: '1.15.13', installedAt: '2026-01-01T00:00:00Z' } } });
 
-    // Installed OpenCode bumps the recommendation on Codex exactly as elsewhere —
-    // no per-host / per-model gate.
     const view = computeOnboarding(cwd);
     assert.equal(view.meta.host, 'codex');
-    assert.equal(view.meta.recommendedLevel, 'balanced');
-    assert.equal(view.meta.options?.[0]?.id, 'balanced');
+    assert.equal(view.meta.recommendedLevel, 'low');
+    assert.equal(view.meta.options?.[0]?.id, 'low');
   });
 });
 
@@ -794,11 +930,13 @@ test('computeOnboarding: project-local env still accepts completed onboarding fr
   const prevHome = process.env.HOME;
   const prevXdg = process.env.XDG_STATE_HOME;
   const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
   fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, '.traffic-one', 'preferences.json');
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, '.traffic-one', 'machine.json');
   process.env.HOME = home;
   process.env.TRAFFIC_ONE_USER_PLAN = 'max';
+  process.env.TRAFFIC_ONE_HOST = 'claude';
   delete process.env.XDG_STATE_HOME;
   try {
     fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
@@ -823,8 +961,13 @@ test('computeOnboarding: project-local env still accepts completed onboarding fr
     const hashedPrefs = path.join(home, '.traffic-one', 'projects', projectRootHash(cwd), 'preferences.json');
     fs.mkdirSync(path.dirname(hashedPrefs), { recursive: true });
     fs.writeFileSync(hashedPrefs, JSON.stringify({
-      performance: { level: 'balanced', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true },
+      hosts: {
+        claude: {
+          performance: { level: 'balanced', source: 'prompted' },
+          team: { mode: 'subagents', source: 'prompted', approved: true },
+          configuredFor: { plan: 'max', modelsUpdatedAt: hostModelSnapshot('claude', 'max').updatedAt },
+        },
+      },
       toolchain: {
         gitnexus: { installedVersion: '1.6.8', installedAt: '2026-07-01T12:25:50Z' },
         graphify: { installedVersion: null, installedAt: null },
@@ -853,6 +996,8 @@ test('computeOnboarding: project-local env still accepts completed onboarding fr
     else process.env.XDG_STATE_HOME = prevXdg;
     if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
     else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

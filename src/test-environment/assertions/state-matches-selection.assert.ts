@@ -3,6 +3,8 @@
 // state writer/normalizer/splitter.
 
 import type { Assertion } from '../core/types';
+import { currentLocalPreferenceTarget } from '../../shared/onboarding/local-prefs';
+import { detectHost } from '../../shared/host';
 import { effState, rec, str, result } from './util';
 
 export const assertion: Assertion = {
@@ -34,6 +36,13 @@ export const assertion: Assertion = {
       for (const [role, tier] of Object.entries(ps.team.overrides)) {
         check(`team.overrides.${role}`, tier, str(got[role]));
       }
+    }
+    if (ps.performance) {
+      const host = ctx.host === 'pure-node' ? detectHost(ctx.env) : ctx.host;
+      const expected = currentLocalPreferenceTarget(host, ctx.env);
+      const configuredFor = rec(s.configuredFor);
+      check('configuredFor.plan', expected.plan, str(configuredFor.plan));
+      check('configuredFor.modelsUpdatedAt', expected.modelsUpdatedAt, str(configuredFor.modelsUpdatedAt));
     }
 
     if (mismatches.length === 0) {

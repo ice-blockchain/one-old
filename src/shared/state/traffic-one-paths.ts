@@ -21,6 +21,7 @@ const GITIGNORE_LINES = [
   '.traffic-one/onboarding-server.json',
   '.traffic-one/onboarding-complete.json',
   '.traffic-one/onboarding-server.lock',
+  '.traffic-one/onboarding/',
 ] as const;
 
 export function projectLocalPrefsPath(cwd: string): string {

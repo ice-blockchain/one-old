@@ -15,7 +15,8 @@ import { STACK_IDS } from '../../config/stacks';
 import { ensureCodexMcpServerRegistered } from '../../shared/codex-mcp';
 import { detectMode } from '../../shared/detection';
 import { exec } from '../../shared/exec';
-import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
+import { hasMaterializedProjectAssets, materializeProjectAssets, writeOpenCodeHostAssets } from '../../shared/materialize';
+import { detectHost } from '../../shared/host';
 import { pluginRoot } from '../../shared/paths';
 import { nowIsoNoMs } from '../../shared/text';
 import { managedNpmBin } from '../../shared/toolchain-paths';
@@ -45,7 +46,7 @@ const AGENT_TEAMS_FLAG = 'CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS';
 // STARTUP, so it activates on the NEXT launch — we return a one-time restart
 // nudge while the flag is set in settings but not yet live in this process. Once
 // the env var is present (post-restart) we stay silent. Claude-only: Codex uses
-// native send_input, Cursor has no such flag. Merge-preserving, best-effort, and
+// native followup_task/send_message, Cursor has no such flag. Merge-preserving, best-effort, and
 // never touches an explicit user value (including a deliberate "0" to disable).
 export function ensureAgentTeamsEnv(cwd: string, host: string, env: NodeJS.ProcessEnv = process.env): string {
   if (host !== 'claude') return '';
@@ -281,11 +282,17 @@ export function ensureOpenCodeDelegationReady(cwd: string, state: Rec): string {
 }
 
 // The ~500-token graph preview written by the gitnexus/graphify runners.
-export function readGraphPreview(cwd: string): string {
+export function readGraphPreview(cwd: string, provider?: unknown): string {
   const previewPath = path.join(cwd, '.traffic-one', 'graph-preview.md');
   if (!fs.existsSync(previewPath)) return '';
   try {
-    return `\n${fs.readFileSync(previewPath, 'utf8').trimEnd()}\n`;
+    const body = fs.readFileSync(previewPath, 'utf8').trimEnd();
+    // A provider switch can leave the previous provider's compact preview on
+    // disk while the newly selected graph builds in the background. Never inject
+    // that stale preview; the new runner will replace it after a successful scan.
+    if ((provider === 'gitnexus' || provider === 'graphify')
+      && !body.includes(`Provider: ${provider}`)) return '';
+    return `\n${body}\n`;
   } catch {
     return '';
   }
@@ -366,6 +373,14 @@ export function ensureSessionMaterialization(
   if (!state || typeof state !== 'object') return false;
   if (state.onboardingComplete !== true) return false;
   if (!state.stack || !STACK_IDS.has(state.stack as string)) return false;
+
+  // OpenCode's model-pinned agents are user-local and depend on the active
+  // host preference snapshot, which is intentionally absent from the shared
+  // materialization fingerprint. Refresh them even when project artifacts are
+  // already current (catalog/plan/performance changes must not be skipped).
+  if (detectHost() === 'opencode') {
+    try { writeOpenCodeHostAssets(cwd, state, []); } catch { /* best-effort */ }
+  }
 
   if (isMaterialized(state) && hasMaterializedProjectAssets(cwd, state)) {
     reportOneMcp(cwd, state, 'session materialization already current');

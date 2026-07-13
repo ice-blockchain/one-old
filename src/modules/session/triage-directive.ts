@@ -13,7 +13,9 @@
 // not a subagent session, and no orchestration run currently in flight.
 
 import { detectMode, isLikelyEditRequest } from '../../shared/detection';
-import { canonicalHost, resolveModel } from '../../shared/model-tiers';
+import { canonicalHost } from '../../shared/model-tiers';
+import { currentModelForTier } from '../../shared/current-model-tiers';
+import { detectHostPlan } from '../../shared/host-plan';
 import { obj, type Rec } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
@@ -90,9 +92,9 @@ export function maintenanceTriageDirective(cwd: string, state: Rec, promptText: 
   const teamMode = team && (team.mode === 'main-agent' || team.mode === 'subagents')
     ? (team.mode as string)
     : teamModeForLevel(level);
-  // Name the concrete cheapest model so the agent passes it on the quick-fix spawn
-  // without resolving an indirection (haiku on Claude/Cursor, gpt-5.4-mini on Codex).
-  const cheapest = resolveModel('cheapest', host) || 'the cheapest model for this host';
+  // Name the active local snapshot's concrete cheapest model so the agent can
+  // pass it on the quick-fix spawn without resolving a bundled indirection.
+  const cheapest = currentModelForTier('cheapest', host, detectHostPlan(host)) || 'the cheapest model for this host';
   const signals = hint.signals.length ? ` — signals: ${hint.signals.join(', ')}` : '';
   if (teamMode === 'subagents') beginFreshMaintenanceRun(cwd, state, { force: kiloPromptBoundary });
   const runId = typeof state.currentRunId === 'string' ? state.currentRunId : '';

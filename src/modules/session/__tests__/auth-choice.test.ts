@@ -8,6 +8,7 @@ import { AUTH_CHOICE_CONTINUE_TTL_MS } from '../../../config/onboarding';
 import {
   authChoiceAllowsContinue,
   authChoiceStatus,
+  deleteAuthChoiceState,
   readAuthChoice,
   tryWriteAuthChoice,
 } from '../auth-choice';
@@ -45,4 +46,30 @@ test('authenticate is a global choice and never allows continue-without', () => 
     assert.equal(rec?.scope, 'global');
     assert.equal(authChoiceAllowsContinue(cwd, env), false);
   });
+});
+
+test('deleteAuthChoiceState reports a live one.json lock failure and succeeds on retry', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-choice-lock-'));
+  const file = path.join(dir, 'one.json');
+  const env = { ...process.env, TRAFFIC_ONE_STATE_PATH: file } as NodeJS.ProcessEnv;
+  try {
+    assert.equal(tryWriteAuthChoice('authenticate', path.join(dir, 'project'), env).ok, true);
+    const lockDir = `${file}.lock`;
+    const token = 'abc123';
+    fs.mkdirSync(lockDir, { mode: 0o700 });
+    fs.writeFileSync(
+      path.join(lockDir, `owner-${token}.json`),
+      JSON.stringify({ pid: process.pid, token, createdAt: Date.now() }),
+      { encoding: 'utf8', mode: 0o600 },
+    );
+
+    assert.equal(deleteAuthChoiceState(env), false, 'the failed consolidated-store deletion is observable');
+    assert.equal('authChoice' in JSON.parse(fs.readFileSync(file, 'utf8')), true, 'failed deletion preserves the choice');
+
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    assert.equal(deleteAuthChoiceState(env), true, 'a later retry succeeds after the lock is released');
+    assert.equal('authChoice' in JSON.parse(fs.readFileSync(file, 'utf8')), false, 'retry removes only the choice section');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });

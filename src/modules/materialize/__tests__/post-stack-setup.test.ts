@@ -9,6 +9,7 @@ import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { endpointFromEnv } from '../../../shared/auth';
 import { toolClassForRawName } from '../../../core/events';
 import { applyAnswer } from '../../../shared/onboarding-server/flow';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function ctx(cwd: string, toolInput: Record<string, unknown>): Ctx {
   return rawCtx(cwd, 'Write', toolInput);
@@ -166,10 +167,16 @@ test('noop in the plugin authoring root for a write inside cwd', () => {
 
 test('architect PLAN_READY digest re-injects OpenCode Step 0 while batch pending', () => {
   withAuthedProject(true, (cwd) => {
+    const previousPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
     fs.writeFileSync(prefsPath, JSON.stringify({
-      performance: { level: 'high' },
-      team: { mode: 'subagents', approved: true },
+      ...hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
       openCode: { enabled: true },
       toolchain: { opencode: { installedVersion: '1.17.8' } },
     }), 'utf8');
@@ -193,6 +200,10 @@ test('architect PLAN_READY digest re-injects OpenCode Step 0 while batch pending
       assert.ok(r.context.includes('PLAN_READY received'));
       assert.ok(r.context.includes('opencode_delegate_from_plan'));
       assert.equal(r.systemMessage, 'traffic-one — run OpenCode Step 0 before spawning implementers');
+    }
+    } finally {
+      if (previousPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+      else process.env.TRAFFIC_ONE_USER_PLAN = previousPlan;
     }
   });
 });

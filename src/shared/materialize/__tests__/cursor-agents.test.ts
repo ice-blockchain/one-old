@@ -13,21 +13,18 @@ function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-agents-'));
 }
 
-test('writeCursorAgentFiles writes a .cursor/agents/<role>.md per team role with the resolved tier model', () => {
+test('writeCursorAgentFiles writes model-agnostic role contracts without local preferences', () => {
   const dir = tmp();
   try {
-    const n = writeCursorAgentFiles(dir, { team: { mode: 'subagents', approved: true }, performance: { level: 'balanced' } } as Rec);
+    const n = writeCursorAgentFiles(dir, {} as Rec);
     assert.ok(n >= 1, 'wrote at least one agent file');
     const agentsDir = path.join(dir, '.cursor', 'agents');
     assert.ok(fs.existsSync(path.join(agentsDir, 'senior-architect.md')), 'architect agent file exists');
     const body = fs.readFileSync(path.join(agentsDir, 'senior-architect.md'), 'utf8');
     assert.match(body, /^name: senior-architect$/m);
     assert.match(body, /^description: .+$/m);
-    assert.match(body, /^model: \S+$/m);
-    // The gate's reader returns the same model the file pins.
-    const model = cursorAgentModel(dir, 'senior-architect');
-    assert.ok(model && model.length > 0, 'cursorAgentModel reads the model');
-    assert.ok(body.includes(`model: ${model}`), 'reader matches the written frontmatter');
+    assert.doesNotMatch(body, /^model:/m);
+    assert.equal(cursorAgentModel(dir, 'senior-architect'), null);
 
     // The Cursor architect must carry the FULL role contract (not a 17-line stub) so the
     // host-only "Required project-memory baseline" ls-verify gate — which previously lived only in
@@ -51,13 +48,26 @@ test('writeCursorAgentFiles writes a .cursor/agents/<role>.md per team role with
   }
 });
 
-test('writeCursorAgentFiles no-ops without a subagents team (no .cursor/agents dir)', () => {
+test('writeCursorAgentFiles output is independent of local performance and preserves user-authored roles', () => {
   const dir = tmp();
+  const other = tmp();
   try {
-    assert.equal(writeCursorAgentFiles(dir, { team: { mode: 'main-agent' }, performance: { level: 'low' } } as Rec), 0);
-    assert.equal(fs.existsSync(path.join(dir, '.cursor', 'agents')), false);
+    const agentsDir = path.join(dir, '.cursor', 'agents');
+    fs.mkdirSync(agentsDir, { recursive: true });
+    const custom = path.join(agentsDir, 'senior-architect.md');
+    fs.writeFileSync(custom, '---\nname: custom\n---\nuser profile\n', 'utf8');
+
+    writeCursorAgentFiles(dir, { team: { mode: 'main-agent' }, performance: { level: 'low' } } as Rec);
+    writeCursorAgentFiles(other, { team: { mode: 'subagents' }, performance: { level: 'high' } } as Rec);
+
+    assert.equal(fs.readFileSync(custom, 'utf8'), '---\nname: custom\n---\nuser profile\n');
+    assert.equal(
+      fs.readFileSync(path.join(dir, '.cursor', 'agents', 'senior-reviewer.md'), 'utf8'),
+      fs.readFileSync(path.join(other, '.cursor', 'agents', 'senior-reviewer.md'), 'utf8'),
+    );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
   }
 });
 

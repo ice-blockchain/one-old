@@ -32,7 +32,8 @@ export function isNewProjectOnboardingIncomplete(state: unknown, host?: unknown)
   const team = obj(s.team);
 
   const hasValidStack = typeof s.stack === 'string' && isKnownStack(s.stack);
-  const hasOpenCode = canonicalHost(host) === 'opencode' || hasResolvedOpenCodeState(s.openCode);
+  const activeHost = canonicalHost(host);
+  const hasOpenCode = activeHost === 'opencode' || activeHost === 'kilo' || hasResolvedOpenCodeState(s.openCode);
   const hasGraphProvider = s.codeGraphProvider === 'gitnexus' || s.codeGraphProvider === 'graphify';
   const hasFrontend = typeof s.frontend === 'string' && FRONTEND_IDS.has(s.frontend);
   const hasBackend = typeof s.backend === 'string' && BACKEND_IDS.has(s.backend);

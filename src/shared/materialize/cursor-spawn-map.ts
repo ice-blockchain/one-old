@@ -1,13 +1,13 @@
 // src/shared/materialize/cursor-spawn-map.ts
 // Resolves the EXACT Cursor Task `model` slug per senior-team role from the captured
-// build list + tier families. Shared by onboarding-wait (pre-spawn directive),
-// model-gate (spawn map stdout), and cursor-agents (agent file materialization).
+// build list + tier families. Shared by onboarding-wait (pre-spawn directive)
+// and model-gate (spawn map stdout). Project agent contracts stay model-agnostic.
 
 import { AGENT_ROLES } from '../../config/performance';
 import { detectHostPlan } from '../host-plan';
-import { acceptableModelsFor } from '../model-tiers';
+import { currentAcceptableModels } from '../current-model-tiers';
 import { buildTeamLineup } from '../onboarding-server/flow';
-import { modelForRoleHost, openCodeDelegationActive } from '../performance';
+import { modelForRoleHost } from '../performance';
 import { obj } from '../obj';
 import { freshCursorModels, pickCursorSlug } from './cursor-models';
 
@@ -16,7 +16,8 @@ type Rec = Record<string, unknown>;
 export function resolveCursorTierSlug(cwd: string, tierFamily: string, plan?: string): string {
   const captured = freshCursorModels(cwd, plan ?? detectHostPlan('cursor'));
   if (!captured.length) return tierFamily;
-  return pickCursorSlug(acceptableModelsFor(tierFamily, 'cursor'), captured) || tierFamily;
+  const activePlan = plan ?? detectHostPlan('cursor');
+  return pickCursorSlug(currentAcceptableModels(tierFamily, 'cursor', activePlan), captured) || tierFamily;
 }
 
 /** True when `slug` is a bare tier family anchor, not a build-specific Task id. */
@@ -33,7 +34,7 @@ export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string
   if (!level || team?.mode !== 'subagents') return {};
 
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
-  const planCtx = { host: 'cursor' as const, plan: detectHostPlan('cursor'), useOpenCode: openCodeDelegationActive(state, 'cursor') };
+  const planCtx = { host: 'cursor' as const, plan: detectHostPlan('cursor') };
   let lineup;
   try {
     lineup = buildTeamLineup(level, 'cursor', overrides, planCtx);
@@ -48,7 +49,7 @@ export function buildCursorSpawnModelMap(cwd: string, state: Rec): Record<string
     const entry = lineup.find((m) => m.role === role);
     if (!entry?.model) continue;
     map[role] = captured.length
-      ? (pickCursorSlug(acceptableModelsFor(entry.model, 'cursor'), captured) || entry.model)
+      ? (pickCursorSlug(currentAcceptableModels(entry.model, 'cursor', planCtx.plan), captured) || entry.model)
       : entry.model;
   }
   return map;
@@ -69,7 +70,7 @@ export function formatCursorSpawnMapBlock(map: Record<string, string>): string {
   ].join('\n');
 }
 
-/** Refresh `.cursor/agents/<role>.md` with build-specific slugs after capture. */
+/** Ensure model-agnostic Cursor role contracts exist after a model capture. */
 export function syncCursorSpawnAgentFiles(cwd: string, state: Rec): void {
   // Lazy import breaks cursor-agents ↔ cursor-spawn-map cycle (spawn-map also drives agent writes).
   // eslint-disable-next-line @typescript-eslint/no-require-imports

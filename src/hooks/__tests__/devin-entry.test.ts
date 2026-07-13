@@ -19,7 +19,7 @@ async function withSetupProject(fn: (cwd: string) => Promise<void>): Promise<voi
   process.env.TRAFFIC_ONE_AUTH = 'off';
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
-    writeServerRecord(dir, { pid: process.pid, port: 56859, token: 'native', url: 'http://127.0.0.1:56859/?t=native', startedAt: 'x' });
+    writeServerRecord(dir, { pid: process.pid, port: 56859, token: 'native', url: 'http://127.0.0.1:56859/?t=native', startedAt: 'x' }, process.env, 'windsurf');
     await fn(dir);
   } finally {
     process.chdir(oldCwd);

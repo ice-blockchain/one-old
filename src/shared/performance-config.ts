@@ -14,27 +14,25 @@ import {
 } from '../config/performance';
 import { canonicalHost, canonicalPlan } from './model-tiers';
 
-export function recommendLevelForPlan(host: unknown, plan: unknown, useOpenCode = false): PerformanceLevelId {
+export function recommendLevelForPlan(host: unknown, plan: unknown): PerformanceLevelId {
   const h = canonicalHost(host);
   const p = canonicalPlan(h, plan);
   const table = PLAN_PERFORMANCE_RECOMMENDATIONS[h];
-  const choice = table[p] ?? table[DEFAULT_HOST_PLAN[h]];
-  if (!choice) return 'balanced';
-  return useOpenCode ? choice.withOpenCode : choice.base;
+  return table[p] ?? table[DEFAULT_HOST_PLAN[h]] ?? 'balanced';
 }
 
-// Resolve the capability tier for one subagent given host + plan + level + OpenCode.
+// Resolve the capability tier for one subagent given host + plan + level.
 // Precedence: PLAN_AGENT_TIERS deviation → DEFAULT_AGENT_TIERS → PERFORMANCE_CONFIG
-// (last resort, one tier for both modes). Returns null for solo/unknown levels or
+// (last resort). Returns null for solo/unknown levels or
 // unconfigured roles. (User `team.overrides` win a layer up in effectiveTierForRole.)
 export function agentTierForPlan(
-  host: unknown, plan: unknown, level: string, role: string, useOpenCode = false,
+  host: unknown, plan: unknown, level: string, role: string,
 ): TierId | null {
   if (level !== 'balanced' && level !== 'high') return null;
   const h = canonicalHost(host);
   const p = canonicalPlan(h, plan);
   const r = role as AgentRole;
   const choice = PLAN_AGENT_TIERS[h]?.[p]?.[level]?.[r] ?? DEFAULT_AGENT_TIERS[level][r];
-  if (choice) return useOpenCode ? choice.withOpenCode : choice.base;
+  if (choice) return choice;
   return PERFORMANCE_CONFIG[level]?.agents[role]?.tier ?? null;
 }

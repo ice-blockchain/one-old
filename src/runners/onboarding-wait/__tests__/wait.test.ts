@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { openCodeRestartWarning, preSpawnArchitectDirective, waitForOnboarding } from '../index';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
 // sleep — so the polling loop is exercised without a real timer or state IO.
@@ -56,8 +57,11 @@ test('Windsurf first-run architect directive uses the always-registered general 
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'balanced', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
     }));
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
@@ -93,8 +97,11 @@ test('postSetupTriage emits the subagents triage (with OpenCode-first) for the s
     // subagents + OpenCode enabled/installed via local prefs, prompt seeded by
     // the setup-required branch.
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'balanced', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
       openCode: { enabled: true, source: 'prompted' },
       toolchain: { opencode: { installedVersion: '1.15.13' } },
     }), 'utf8');
@@ -136,8 +143,11 @@ test('preSpawnOpenCodeDirective: new-project subagents + OpenCode → Step 0 bat
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'high', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
       openCode: { enabled: true, source: 'prompted' },
       toolchain: { opencode: { installedVersion: '1.17.8' } },
     }), 'utf8');
@@ -174,8 +184,11 @@ test('preSpawnRunIdDirective: new-project → mints currentRunId and prints exac
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'high', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
     }), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
@@ -224,8 +237,11 @@ test('preSpawnOrchestrationDirective: kilo subagents new-project emits spawn-fir
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'balanced', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
     }), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
@@ -260,10 +276,13 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     // tests/22 shape: high level, subagents, frontend overridden to highest.
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-frontend': 'highest' } },
-      performance: { level: 'high', source: 'prompted' },
-    }), 'utf8');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-frontend': 'highest' } },
+        'pro',
+      ),
+    ), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
@@ -286,10 +305,13 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     assert.equal(preSpawnModelDirective(dir, 'codex'), '', 'codex → no directive');
 
     // A main-agent level (no subagents) → silent.
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'low', source: 'prompted' },
-    }), 'utf8');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'low', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
+    ), 'utf8');
     assert.equal(preSpawnModelDirective(dir, 'cursor'), '', 'low/main-agent level → no directive');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
@@ -311,19 +333,17 @@ test('preSpawnModelDirective: with capture, lists exact build slugs not bare fam
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'high', source: 'prompted' },
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       confirmed: true, onboardingComplete: true,
-    }), 'utf8');
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
-      plan: 'pro',
-      capturedAt: new Date().toISOString(),
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
@@ -354,21 +374,21 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
   try {
     // No record yet → prints nothing.
     let out = '';
-    announceWizardUrl(dir, (s) => { out += s; });
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
     assert.equal(out, '', 'no server record → no banner');
 
     // Live record → the literal URL is printed for the user to click.
-    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' });
+    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' }, process.env, 'cursor');
     out = '';
-    announceWizardUrl(dir, (s) => { out += s; });
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
     assert.ok(out.includes('http://127.0.0.1:55174/?t=tok'), 'banner carries the live wizard URL');
     assert.equal(out.match(/http:\/\/127\.0\.0\.1:55174\/\?t=tok/g)?.length, 2, 'banner repeats the URL near the waiting line for compact terminals');
     assert.match(out, /SETUP WIZARD/i, 'banner is recognizable to the user');
 
     // Placeholder (:0/) → never surfaced.
-    writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' });
+    writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' }, process.env, 'cursor');
     out = '';
-    announceWizardUrl(dir, (s) => { out += s; });
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
     assert.equal(out, '', 'placeholder URL is not surfaced');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;

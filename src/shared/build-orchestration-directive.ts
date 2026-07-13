@@ -15,6 +15,7 @@ import { pluginRoot } from './paths';
 import { teamModeForLevel } from './performance';
 import { makeSkillBlock } from './skill-block';
 import { ensureCurrentRunId, isMaintenancePhase, readEffectiveState } from './state';
+import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from './materialize/opencode-assets';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
@@ -65,11 +66,10 @@ export function buildOrchestrationDirective(cwd: string, host: string, stateIn?:
   const canonical = canonicalHost(host);
   const kilo = canonical === 'kilo';
   const hostLabel = canonical === 'kilo' ? 'Kilo' : 'OpenCode';
-  const agentDir = canonical === 'kilo' ? '.kilo/agents' : '.opencode/agents';
-  const architectSubagentType = kilo ? 'general' : 'senior-architect';
+  const architectSubagentType = kilo ? 'general' : openCodeGlobalAgentName(cwd, 'senior-architect');
   const spawnRule = kilo
     ? 'use Kilo\'s built-in `general` Task type. It is a real subagent; do not use `explore` and do not fall back to main-agent mode.'
-    : `use the named role agent materialized at ${agentDir}/senior-architect.md; do not use built-in \`general\`/\`explore\`.`;
+    : `use the project-scoped global agent \`${architectSubagentType}\` materialized at ${openCodeGlobalAgentPath(cwd, 'senior-architect')}; do not use built-in \`general\`/\`explore\`.`;
   const roleContractInstruction = kilo
     ? 'Immediately after the role marker, tell the child to read `.kilo/agents/senior-architect.md` before acting; that file is the full Traffic One role contract.'
     : 'The named OpenCode agent already carries the full Traffic One role contract.';

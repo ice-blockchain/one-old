@@ -9,6 +9,7 @@ import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
 import { writeAuthChoice } from '../../session/auth-choice';
 import { writeModelChoice } from '../../agent-model/model-choice';
 import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
@@ -17,6 +18,7 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
   const prevChoice = env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
+  const { team: teamExtra, performance: performanceExtra, ...sharedExtra } = stateExtra;
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
   fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
@@ -30,8 +32,19 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
   fs.writeFileSync(path.join(t1, 'plan.md'), 'plan', 'utf8');
   fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({
     mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
-    onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none', ...stateExtra,
+    onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none', ...sharedExtra,
   }), 'utf8');
+  if (teamExtra || performanceExtra) {
+    const team = teamExtra && typeof teamExtra === 'object'
+      ? teamExtra as Record<string, unknown>
+      : { mode: 'main-agent', source: 'prompted' };
+    const performance = performanceExtra && typeof performanceExtra === 'object'
+      ? performanceExtra as Record<string, unknown>
+      : { level: team.mode === 'subagents' ? 'high' : 'low', source: 'prompted' };
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(performance, team, 'pro'),
+    ), 'utf8');
+  }
   try {
     fn(dir);
   } finally {
@@ -251,9 +264,10 @@ test('Cursor pending model choice blocks direct scaffold writes until the user r
       performance: { level: 'high', source: 'prompted' },
       team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
     }, (cwd) => {
-      fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-        models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
-      }), 'utf8');
+      const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+      const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+      withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+      fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
 
       const blocked = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
         file_path: 'README.md',

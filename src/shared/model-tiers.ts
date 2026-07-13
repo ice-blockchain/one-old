@@ -4,26 +4,36 @@
 // src/config/model-tiers.ts — edit knobs there, not here.
 
 import {
-  COPILOT_PLAN_MODELS,
-  CURSOR_MODEL_ALTERNATES,
-  CURSOR_PLAN_MODELS,
   DEFAULT_HOST_PLAN,
   HOST_IDS,
   HOST_MODELS,
   HOST_PLAN_IDS,
-  KILO_MODEL_ALTERNATES,
-  OPENCODE_MODEL_ALTERNATES,
-  OPENCODE_PLAN_MODELS,
   PLAN_ALIASES,
   PLAN_IDS,
   PLAN_TIER_RECOMMENDATIONS,
   TIER_ALIASES,
   TIER_IDS,
-  WINDSURF_PLAN_MODELS,
   type HostModelKey,
+  type ModelRow,
   type TierId,
   type UserPlan,
 } from '../config/model-tiers';
+
+export type ModelTierSnapshot = Readonly<Record<TierId, readonly string[]>>;
+
+export interface HostModelSnapshot {
+  readonly plan: UserPlan;
+  readonly updatedAt: string;
+  readonly tiers: ModelTierSnapshot;
+}
+
+export type ModelStatusResponse = HostModelSnapshot;
+
+export interface ParseModelStatusOptions {
+  readonly expectedHost?: unknown;
+  readonly expectedPlan?: unknown;
+  readonly current?: HostModelSnapshot | null;
+}
 
 export function canonicalTier(tier: unknown): TierId | null {
   if (typeof tier !== 'string') return null;
@@ -38,39 +48,22 @@ export function canonicalHost(host: unknown): HostModelKey {
   return (HOST_IDS as readonly string[]).includes(value) ? (value as HostModelKey) : 'claude';
 }
 
-// Resolve a tier to a concrete model id for a host. Optional `plan` makes the
-// Cursor and Windsurf rows plan-aware: Free accounts resolve to their safe
-// selector models, while paid overlays expose their verified tier maps.
+function resolvedModelRow(tier: TierId, host: HostModelKey, plan?: unknown): ModelRow {
+  const config = HOST_MODELS[host];
+  if (plan !== undefined && plan !== null && plan !== '') {
+    const override = config.plans?.[canonicalPlan(host, plan)]?.[tier];
+    if (override) return override;
+  }
+  return config.tiers[tier];
+}
+
+// Resolve a tier to its preferred model. Supplying no plan deliberately uses
+// the base row rather than canonicalizing to the host's Free default.
 export function resolveModel(tier: unknown, host: unknown, plan?: unknown): string | null {
   const canonical = canonicalTier(tier);
   if (!canonical) return null;
   const h = canonicalHost(host);
-  // Apply the per-plan overlay ONLY when a plan was explicitly supplied. A plan-agnostic
-  // caller (no plan arg) keeps the generous base row — canonicalPlan(undefined) would
-  // otherwise default to 'free' and silently downgrade every plan-less lookup to Composer.
-  if (h === 'opencode' && plan !== undefined && plan !== null && plan !== '') {
-    // OpenCode "Go" (plus) overlays the paid `opencode-go/*` catalog; free inherits the
-    // base HOST_MODELS.opencode row (the `opencode/*-free` chain).
-    const overlay = OPENCODE_PLAN_MODELS[canonicalPlan('opencode', plan)];
-    const planned = overlay ? overlay[canonical] : undefined;
-    if (planned) return planned;
-  }
-  if (h === 'cursor' && plan !== undefined && plan !== null && plan !== '') {
-    const overlay = CURSOR_PLAN_MODELS[canonicalPlan('cursor', plan)];
-    const planned = overlay ? overlay[canonical] : undefined;
-    if (planned) return planned;
-  }
-  if (h === 'copilot' && plan !== undefined && plan !== null && plan !== '') {
-    const overlay = COPILOT_PLAN_MODELS[canonicalPlan('copilot', plan)];
-    const planned = overlay ? overlay[canonical] : undefined;
-    if (planned) return planned;
-  }
-  if (h === 'windsurf' && plan !== undefined && plan !== null && plan !== '') {
-    const overlay = WINDSURF_PLAN_MODELS[canonicalPlan('windsurf', plan)];
-    const planned = overlay ? overlay[canonical] : undefined;
-    if (planned) return planned;
-  }
-  return HOST_MODELS[h][canonical];
+  return resolvedModelRow(canonical, h, plan)[0];
 }
 
 // Does a passed `model` parameter satisfy a tier's expected model? True when it IS
@@ -79,8 +72,7 @@ export function resolveModel(tier: unknown, host: unknown, plan?: unknown): stri
 // model list when available, so this prefix match covers reasoning/build suffixes. A different
 // family/tier (e.g. `gpt-5.5-medium` vs a highest opus family) never matches, so tier
 // enforcement holds. Claude/Codex pass bare ids, so this is exact-equality there in practice.
-// An empty/absent model never matches (deny → inherit guard). See acceptableModelsFor for the
-// cursor same-tier fallback set.
+// An empty/absent model never matches (deny → inherit guard).
 export function modelMatchesExpected(passed: unknown, expected: unknown): boolean {
   const e = typeof expected === 'string' ? expected.trim() : '';
   const p = typeof passed === 'string' ? passed.trim() : '';
@@ -88,24 +80,135 @@ export function modelMatchesExpected(passed: unknown, expected: unknown): boolea
   return p === e || p.startsWith(`${e}-`);
 }
 
-// The full set of models that satisfy a tier whose PREFERRED model is `expected`,
-// ordered preferred-first. On Cursor this folds in CURSOR_MODEL_ALTERNATES so a
-// build that doesn't offer the preferred slug can still spawn on a same-class model
-// the runner DOES offer (and the gate accepts it). claude/codex have no alternates
-// → exactly `[expected]`, preserving strict per-tier enforcement there.
-export function acceptableModelsFor(expected: unknown, host: unknown): string[] {
-  const e = typeof expected === 'string' ? expected.trim() : '';
-  if (!e) return [];
+// Build the serializable catalog saved during onboarding. Every tier is ordered
+// preferred-first. Plan overrides replace a whole row and omitted rows inherit.
+export function modelTierSnapshot(host: unknown, plan: unknown): ModelTierSnapshot {
   const h = canonicalHost(host);
-  // OpenCode "Go" primaries carry a fallback chain (other Go models → free chain) so a
-  // build never stalls on an unavailable paid model. claude/codex stay strict `[expected]`.
-  const alternates = h === 'opencode'
-    ? (OPENCODE_MODEL_ALTERNATES[e] ?? null)
-    : h === 'kilo'
-      ? (KILO_MODEL_ALTERNATES[e] ?? null)
-    : (h === 'cursor' ? (CURSOR_MODEL_ALTERNATES[e] ?? []) : null);
-  if (alternates === null) return [e];
-  return [e, ...alternates.filter((m) => m && m !== e)];
+  const p = plan === undefined || plan === null || plan === ''
+    ? undefined
+    : canonicalPlan(h, plan);
+  return {
+    highest: [...resolvedModelRow('highest', h, p)],
+    balanced: [...resolvedModelRow('balanced', h, p)],
+    cheapest: [...resolvedModelRow('cheapest', h, p)],
+  };
+}
+
+export function hostModelSnapshot(host: unknown, plan: unknown): HostModelSnapshot {
+  const h = canonicalHost(host);
+  const p = canonicalPlan(h, plan);
+  return {
+    plan: p,
+    updatedAt: HOST_MODELS[h].updatedAt,
+    tiers: modelTierSnapshot(h, p),
+  };
+}
+
+export function modelStatusSnapshot(host: unknown, plan: unknown): ModelStatusResponse {
+  return hostModelSnapshot(host, plan);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function strictHost(value: unknown): HostModelKey | null {
+  return typeof value === 'string' && (HOST_IDS as readonly string[]).includes(value)
+    ? value as HostModelKey
+    : null;
+}
+
+function strictPlan(value: unknown, host?: HostModelKey): UserPlan | null {
+  if (typeof value !== 'string' || !(PLAN_IDS as readonly string[]).includes(value)) return null;
+  const plan = value as UserPlan;
+  return host && !HOST_PLAN_IDS[host].has(plan) ? null : plan;
+}
+
+function validDateOnly(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validModelId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 256
+    && value.trim() === value
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
+}
+
+function parseTierSnapshot(value: unknown): ModelTierSnapshot | null {
+  if (!isRecord(value)) return null;
+  const keys = Object.keys(value);
+  if (keys.length !== TIER_IDS.length || keys.some((key) => !(TIER_IDS as readonly string[]).includes(key))) return null;
+  const parsed = {} as Record<TierId, readonly string[]>;
+  for (const tier of TIER_IDS) {
+    const models = value[tier];
+    if (!Array.isArray(models) || models.length === 0 || models.length > 32 || !models.every(validModelId)) return null;
+    if (new Set(models).size !== models.length) return null;
+    parsed[tier] = [...models];
+  }
+  return parsed;
+}
+
+export function parseHostModelSnapshot(value: unknown, expectedHost?: unknown): HostModelSnapshot | null {
+  if (!isRecord(value)) return null;
+  const host = expectedHost === undefined ? undefined : strictHost(expectedHost);
+  if (expectedHost !== undefined && !host) return null;
+  const plan = strictPlan(value.plan, host || undefined);
+  const tiers = parseTierSnapshot(value.tiers);
+  if (!plan || !validDateOnly(value.updatedAt) || !tiers) return null;
+  return { plan, updatedAt: value.updatedAt, tiers };
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value);
+  return keys.length === expected.length && keys.every((key) => expected.includes(key));
+}
+
+function sameTierSnapshot(left: ModelTierSnapshot, right: ModelTierSnapshot): boolean {
+  return TIER_IDS.every((tier) => {
+    const a = left[tier];
+    const b = right[tier];
+    return a.length === b.length && a.every((model, index) => model === b[index]);
+  });
+}
+
+// Strictly parse the unauthenticated /model-status payload. When the server
+// claims the same catalog date as the applicable local or bundled target-plan
+// baseline, the tier lists must also be byte-for-byte equivalent; otherwise the
+// server changed catalog semantics without bumping its version and the client
+// fails open on local data.
+export function parseModelStatusResponse(
+  value: unknown,
+  options: ParseModelStatusOptions = {},
+): ModelStatusResponse | null {
+  if (!isRecord(value) || !hasExactKeys(value, ['plan', 'updatedAt', 'tiers'])) return null;
+  const host = options.expectedHost === undefined ? undefined : strictHost(options.expectedHost);
+  if (options.expectedHost !== undefined && !host) return null;
+  const snapshot = parseHostModelSnapshot(value, host);
+  if (!snapshot) return null;
+
+  if (options.expectedPlan !== undefined) {
+    if (!planIsRecognized(options.expectedPlan)) return null;
+    const expectedPlan = host
+      ? canonicalPlan(host, options.expectedPlan)
+      : strictPlan(options.expectedPlan);
+    if (!expectedPlan || expectedPlan !== snapshot.plan) return null;
+  }
+  // A same-plan local snapshot is the strongest comparison baseline. On first
+  // use or a plan transition there is no such snapshot, so compare against the
+  // bundled host + target-plan catalog instead. This prevents an endpoint from
+  // silently changing tiers while retaining the bundled catalog date.
+  const comparisons = [
+    ...(options.current?.plan === snapshot.plan ? [options.current] : []),
+    ...(host ? [hostModelSnapshot(host, snapshot.plan)] : []),
+  ];
+  if (comparisons.some((comparison) => comparison.updatedAt === snapshot.updatedAt
+    && !sameTierSnapshot(comparison.tiers, snapshot.tiers))) return null;
+
+  return snapshot;
 }
 
 // True when `passed` matches ANY model in the acceptable set (family-aware).
@@ -113,8 +216,7 @@ export function modelMatchesAny(passed: unknown, acceptable: readonly string[]):
   return acceptable.some((e) => modelMatchesExpected(passed, e));
 }
 
-// Optional `plan` makes the Cursor and Windsurf cells plan-aware. claude/codex
-// cells are plan-agnostic.
+// Optional `plan` applies each host's sparse plan overrides.
 export function tierModelTable(
   tier: unknown,
   plan?: unknown,
@@ -123,13 +225,13 @@ export function tierModelTable(
   if (!canonical) return null;
   return {
     tier: canonical,
-    claude: HOST_MODELS.claude[canonical],
-    codex: HOST_MODELS.codex[canonical],
-    cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor[canonical],
-    opencode: resolveModel(canonical, 'opencode', plan) ?? HOST_MODELS.opencode[canonical],
-    copilot: resolveModel(canonical, 'copilot', plan) ?? HOST_MODELS.copilot[canonical],
-    windsurf: resolveModel(canonical, 'windsurf', plan) ?? HOST_MODELS.windsurf[canonical],
-    kilo: resolveModel(canonical, 'kilo', plan) ?? HOST_MODELS.kilo[canonical],
+    claude: resolveModel(canonical, 'claude', plan) ?? HOST_MODELS.claude.tiers[canonical][0],
+    codex: resolveModel(canonical, 'codex', plan) ?? HOST_MODELS.codex.tiers[canonical][0],
+    cursor: resolveModel(canonical, 'cursor', plan) ?? HOST_MODELS.cursor.tiers[canonical][0],
+    opencode: resolveModel(canonical, 'opencode', plan) ?? HOST_MODELS.opencode.tiers[canonical][0],
+    copilot: resolveModel(canonical, 'copilot', plan) ?? HOST_MODELS.copilot.tiers[canonical][0],
+    windsurf: resolveModel(canonical, 'windsurf', plan) ?? HOST_MODELS.windsurf.tiers[canonical][0],
+    kilo: resolveModel(canonical, 'kilo', plan) ?? HOST_MODELS.kilo.tiers[canonical][0],
   };
 }
 
@@ -157,11 +259,9 @@ export function planIsRecognized(plan: unknown): boolean {
   return (PLAN_IDS as readonly string[]).includes(value) || Object.prototype.hasOwnProperty.call(PLAN_ALIASES, value);
 }
 
-export function recommendTierForPlan(host: unknown, plan: unknown, useOpenCode = false): TierId {
+export function recommendTierForPlan(host: unknown, plan: unknown): TierId {
   const h = canonicalHost(host);
   const p = canonicalPlan(h, plan);
   const table = PLAN_TIER_RECOMMENDATIONS[h];
-  const choice = table[p] ?? table[DEFAULT_HOST_PLAN[h]];
-  if (!choice) return 'balanced';
-  return useOpenCode ? choice.withOpenCode : choice.base;
+  return table[p] ?? table[DEFAULT_HOST_PLAN[h]] ?? 'balanced';
 }

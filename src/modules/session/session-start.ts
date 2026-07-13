@@ -32,7 +32,7 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   hasRunAgentState,
-  hookSessionIdentity,
+  isSubagentThread,
   legacyRunAgentContext,
   legacyStatePath,
   maintenanceLifecycle,
@@ -54,6 +54,9 @@ import { authGateForHook, authRequiredHookResult } from './auth-gate';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
+import { refreshModelStatusForSession } from './model-status-refresh';
+import { cleanupLegacyCursorModels } from '../../shared/materialize/cursor-models';
+import { sessionPerformanceContext } from '../../shared/session-performance-context';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
@@ -128,7 +131,7 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
     ? roleSkillsDirective(state, role, listAllSkills())
     : pruneSkillsDirective(state, listAllSkills());
   const { body } = packRuleIndex(root, rules);
-  const graphPreview = readGraphPreview(cwd);
+  const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
   const roleLabel = role || 'subagent';
   const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
     + '[subagent] Full rules already loaded by parent session and materialized to '
@@ -179,9 +182,15 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // mode routing). Onboarding belongs to the parent/main agent; the subagent only
   // needs its role-scoped rules. Intercept BEFORE auth + onboarding so a subagent
   // can never re-trigger onboarding while the team is building.
-  if (hookSessionIdentity(ctx.input.raw).isSubagent) {
+  if (isSubagentThread(ctx.input.raw)) {
     return runSubagentSessionStart(ctx);
   }
+
+  cleanupLegacyCursorModels(cwd);
+
+  // Public, auth-independent catalog reconciliation. The child runner is
+  // bounded to 2s and fail-open; only the active host snapshot can change.
+  refreshModelStatusForSession(cwd, ctx.host);
 
   const authGate = authGateForHook({ forceRemote: true });
   if (!authGate.authenticated) {
@@ -288,13 +297,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the code graph if an existing project is missing it
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
+    header += sessionPerformanceContext(state, ctx.host);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     header += ensureAgentTeamsEnv(cwd, ctx.host); // zero-touch: enable senior-team continuation (one agent per role)
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
-    const graphPreview = readGraphPreview(cwd);
+    const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
     const orchestration = buildOrchestrationDirective(cwd, ctx.host, state);
     if (orchestration) header += `${orchestration}\n`;
     writeState(cwd, state);
@@ -342,13 +352,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
     const banner = autoDetectedAnnouncement(detected as never);
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
+    header += sessionPerformanceContext(state, ctx.host);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     header += ensureAgentTeamsEnv(cwd, ctx.host); // zero-touch: enable senior-team continuation (one agent per role)
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
-    const graphPreview = readGraphPreview(cwd);
+    const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
     if (nextLocalPreferenceStep(state, ctx.host)) {
       return context(`${banner}\n\n${setupPendingDirective(ctx, cwd)}`, {
         systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${state.stack || mode}] setup required`),

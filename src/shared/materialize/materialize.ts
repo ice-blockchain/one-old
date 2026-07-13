@@ -20,12 +20,16 @@ import { writeCopilotAgentFiles } from './copilot-agents';
 import { GENERATED_MARKER, copySkillDir } from './generated';
 import { isLeanMaterialization } from './has-assets';
 import { writeKiloAgentFiles } from './kilo-agents';
-import { writeOpenCodeHostAssets } from './opencode-assets';
+import { cleanupLegacyOpenCodeProjectAssets, refreshOpenCodeGlobalAgentFiles } from './opencode-assets';
 import { preserveManualRootContext, renderAgentsWithLocalContext, writeRootAgents, writeRootClaude } from './render-agents';
 import { writeWindsurfAgentFiles } from './windsurf-agents';
 import { writeWindsurfHostAssets } from './windsurf-assets';
 
 type Rec = Record<string, unknown>;
+
+// Maintainer-only catalog tooling stays in the plugin's active skill registry,
+// but must never be copied into a user's shared project artifacts.
+const PROJECT_MATERIALIZATION_EXCLUDED_SKILLS = new Set(['model-tier-sync']);
 
 export interface MaterializeResult {
   rules: number;
@@ -75,6 +79,7 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   const rules = unique([...mandatoryRules, ...referenceRules]);
   const skills = [...activeSkillsFor(state)]
     .filter((name) => !BOOTSTRAP_SKILLS.has(name)) // bootstrap skills live in the host skills/ dir, not per-project
+    .filter((name) => !PROJECT_MATERIALIZATION_EXCLUDED_SKILLS.has(name))
     .filter((name) => fs.existsSync(path.join(root, 'skills-catalog', name, 'SKILL.md')))
     .sort();
 
@@ -105,14 +110,17 @@ export function materializeProjectAssets(cwd: string, state: Rec): MaterializeRe
   if (writeRootAgents(cwd, localAgents)) written += 1;
   if (writeRootClaude(cwd)) written += 1;
 
-  // Cursor-only: native per-role subagent files (.cursor/agents/<role>.md) with the
-  // resolved tier model pinned in frontmatter. The frontmatter is a source for the
-  // orchestrator to read and pass as the Task `model` parameter; Cursor does not reliably
-  // auto-apply it, so the spawn gate still enforces the passed model arg.
+  // Host-native project role files are model-agnostic contracts. The active
+  // user's plan, performance choice, and model lineup are injected at runtime
+  // from local preferences rather than persisted in the shared project.
   if (detectHost() === 'cursor') written += writeCursorAgentFiles(cwd, state);
   if (detectHost() === 'copilot') written += writeCopilotAgentFiles(cwd, state);
   if (detectHost() === 'kilo') written += writeKiloAgentFiles(cwd, state);
-  if (detectHost() === 'opencode') written += writeOpenCodeHostAssets(cwd, state, skills);
+  // Legacy project-local OpenCode assets are shared, so every host removes only
+  // Traffic One-generated copies. Model-pinned replacements are user-local and
+  // are written exclusively by the active OpenCode host.
+  removed += cleanupLegacyOpenCodeProjectAssets(cwd);
+  if (detectHost() === 'opencode') written += refreshOpenCodeGlobalAgentFiles(cwd, state);
   let windsurfAssets: ReturnType<typeof writeWindsurfHostAssets> | null = null;
   let windsurfAgents = 0;
   if (detectHost() === 'windsurf') {

@@ -227,6 +227,20 @@ the active plugin integration alongside agent co-author trailers. Enable them in
 git config core.hooksPath .githooks
 ```
 
+### External model-status API
+
+The public read-only `GET /model-status?host=<host>&plan=<plan>` endpoint is
+maintained independently from this plugin. `npm run gen` does not produce an API
+deployment artifact. A successful response is the exact host snapshot stored in
+`~/.traffic-one/one.json`: `{ plan, updatedAt, tiers }`, with preferred-first
+model arrays under `highest`, `balanced`, and `cheapest`.
+
+Whenever a host's model arrays change, update that host's `updatedAt` in
+`src/config/model-tiers.ts`; the external service must be updated separately.
+The endpoint is independent of Traffic One authentication. Remote overrides use
+`TRAFFIC_ONE_MODEL_STATUS_ENDPOINT`, require HTTPS, and permit plain HTTP only
+for loopback contract testing.
+
 ### Hooks enforce at write time
 Hooks run through dependency-free Node.js scripts before files are written or packages installed — violations are blocked
 with an explanation before any code is changed.

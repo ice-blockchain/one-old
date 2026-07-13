@@ -14,13 +14,19 @@ function withTempProject(fn: (cwd: string) => void): void {
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevHost = env.TRAFFIC_ONE_HOST;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_HOST = 'codex';
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fn(dir);
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevHost === undefined) delete env.TRAFFIC_ONE_HOST; else env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -69,6 +75,15 @@ test('materializeProjectFromState: incomplete state reports an "incomplete" outc
 
 test('materializeProjectFromState: moves local-only fields out of shared .one.json', () => {
   withTempProject((dir) => {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
+      hosts: {
+        codex: {
+          performance: { level: 'low', source: 'prompted' },
+          team: { mode: 'main-agent', source: 'prompted' },
+          configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
+        },
+      },
+    }), 'utf8');
     writeState(dir, {
       mode: 'new-project',
       stack: 'default',
@@ -100,7 +115,9 @@ test('materializeProjectFromState: moves local-only fields out of shared .one.js
     const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
     assert.ok(prefsPath);
     const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
-    assert.deepEqual(prefs.performance, { level: 'low', source: 'prompted' });
+    assert.deepEqual(prefs.hosts.codex.performance, { level: 'low', source: 'prompted' });
+    assert.deepEqual(prefs.hosts.codex.configuredFor, { plan: 'pro', modelsUpdatedAt: '2026-07-12' });
+    assert.equal('performance' in prefs, false, 'legacy top-level host prefs are not migrated silently');
     assert.equal('codeGraphProvider' in prefs, false);
   });
 });
@@ -132,9 +149,14 @@ test('materializeProjectIfNeeded: a stale materializedVersion refreshes generate
     });
     writeState(dir, stale);
     fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string, JSON.stringify({
-      performance: { level: 'balanced', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true },
       openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+      hosts: {
+        codex: {
+          performance: { level: 'balanced', source: 'prompted' },
+          team: { mode: 'subagents', source: 'prompted', approved: true },
+          configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
+        },
+      },
     }), 'utf8');
     writeGlobalCodeGraphProvider('graphify');
 

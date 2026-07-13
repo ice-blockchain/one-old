@@ -5,34 +5,38 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { modelGateAfterShell, modelGateShell } from '../model-gate';
-import { isModelGateCommand } from '../../../shared/tool-classify';
-import { modelGateCommand } from '../../../shared/model-gate-command';
+import { isModelCaptureCommand, isModelGateCommand } from '../../../shared/tool-classify';
+import { modelCaptureCommand, modelGateCommand } from '../../../shared/model-gate-command';
 import { modelGatePromptFresh, readModelChoice, writeModelChoice } from '../model-choice';
 import { runModelGate } from '../../../runners/model-gate';
 import type { Ctx, ToolClass } from '../../../core/types';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function withProj(opts: { models: string[] | null; overrides?: Record<string, string> }, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-mgate-')));
   const env = process.env;
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
+  const ps = env.TRAFFIC_ONE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-    performance: { level: 'high', source: 'prompted' },
-    team: { mode: 'subagents', source: 'prompted', approved: true, overrides: opts.overrides || {} },
-  }), 'utf8');
+  const prefs = hostScopedPerformancePrefs(
+    { level: 'high', source: 'prompted' },
+    { mode: 'subagents', source: 'prompted', approved: true, overrides: opts.overrides || {} },
+    'pro',
+  );
+  if (opts.models !== null) withCursorAvailableModels(prefs, opts.models, 'pro');
+  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
     mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
     onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
   }), 'utf8');
-  if (opts.models !== null) {
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({ models: opts.models }), 'utf8');
-  }
   try { fn(dir); } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    if (ps === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = ps;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -76,16 +80,23 @@ test('isModelGateCommand recognizes the model-gate command (and rejects others)'
   assert.equal(isModelGateCommand('Bash', { command: modelGateCommand('/proj', 'cursor') }), true);
   assert.equal(isModelGateCommand('Bash', { command: 'node /p/onboarding-wait.cjs /cwd' }), false);
   assert.equal(isModelGateCommand('Bash', { command: 'node /p/model-gate.cjs /cwd && rm -rf /' }), false); // chaining rejected
+  assert.equal(isModelCaptureCommand('Bash', { command: modelCaptureCommand('/proj', 'cursor') }), true);
+});
+
+test('modelGateShell always allows the internal capture command to refresh stale availability', () => {
+  withProj({ models: ['composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+    assert.equal(modelGateShell(ctxFor(cwd, modelCaptureCommand(cwd, 'cursor'))).kind, 'noop');
+  });
 });
 
 test('modelGateShell: a PICKED model not offered → askUser (permission:ask) naming the model + fallback', () => {
-  // architect overridden to balanced (claude-4.6-sonnet), which the captured list LACKS.
-  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  // architect overridden to balanced (GPT-5.6 Terra), which the captured list LACKS.
+  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
       assert.equal((r as { askUser?: boolean }).askUser, true, 'is a user APPROVE/REJECT prompt, not a hard deny');
-      assert.ok(r.reason.includes('claude-4.6-sonnet'), 'names the unavailable picked model');
+      assert.ok(r.reason.includes('gpt-5.6-terra'), 'names the unavailable picked model');
       assert.ok(/gpt-5\.5/.test(r.reason), 'names the fallback it would use');
       assert.ok(/approve/i.test(r.reason) && /reject/i.test(r.reason), 'offers approve/reject');
       assert.ok(/fallback.*enable/i.test(r.reason), 'directs chat consent before spawn');
@@ -95,7 +106,7 @@ test('modelGateShell: a PICKED model not offered → askUser (permission:ask) na
 });
 
 test('modelGate runner fails closed until explicit chat consent (use-fallback)', () => {
-  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-model-gate';
@@ -116,7 +127,7 @@ test('modelGate runner fails closed until explicit chat consent (use-fallback)',
 });
 
 test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible message', () => {
-  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const statePath = path.join(cwd, '.traffic-one', '.one.json');
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
     state.currentRunId = 'run-after-shell';
@@ -127,7 +138,7 @@ test('modelGate after-shell surfaces exit-2 STOP as a Cursor user-visible messag
     if (r.kind === 'context') {
       assert.ok(/model choice required/i.test(r.context), 'context carries the STOP table');
       assert.ok(/fallback/i.test(String(r.systemMessage)) && /enable/i.test(String(r.systemMessage)), 'systemMessage is visible to Cursor as user_message');
-      assert.ok(String(r.systemMessage).includes('claude-4.6-sonnet'), 'visible message names the unavailable picked model');
+      assert.ok(String(r.systemMessage).includes('gpt-5.6-terra'), 'visible message names the unavailable picked model');
     }
   });
 });
@@ -148,7 +159,7 @@ test('modelGate runner fails closed when Cursor model capture is missing', () =>
 });
 
 test('modelGateShell: recognizes the real Cursor before-shell-execution shape', () => {
-  withProj({ models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     const r = modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor')));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.equal((r as { askUser?: boolean }).askUser, true);
@@ -156,19 +167,20 @@ test('modelGateShell: recognizes the real Cursor before-shell-execution shape', 
 });
 
 test('modelGateShell: every picked model offered → noop (the command runs, no prompt)', () => {
-  withProj({ models: ['claude-opus-4-8-thinking-high', 'claude-4.6-sonnet-thinking', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: { 'senior-architect': 'balanced' } }, (cwd) => {
     assert.equal(modelGateShell(ctxFor(cwd, modelGateCommand(cwd, 'cursor'))).kind, 'noop');
   });
 });
 
-test('modelGate runner prints spawn map and pins agent files when all picks are available', () => {
-  withProj({ models: ['claude-opus-4-8-thinking-medium', 'claude-4.6-sonnet-thinking', 'composer-2.5-fast'], overrides: {} }, (cwd) => {
+test('modelGate runner prints the local spawn map while project agent contracts stay model-agnostic', () => {
+  withProj({ models: ['claude-fable-5-thinking-high', 'gpt-5.6-terra-medium', 'composer-2.5-fast'], overrides: {} }, (cwd) => {
     const approved = captureStdout(() => runModelGate([cwd, '--host=cursor']));
     assert.equal(approved.code, 0);
     assert.match(approved.out, /spawn map/i);
-    assert.match(approved.out, /senior-architect → claude-opus-4-8-thinking-medium/);
+    assert.match(approved.out, /senior-architect → claude-fable-5-thinking-high/);
     const architect = fs.readFileSync(path.join(cwd, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
-    assert.match(architect, /^model: claude-opus-4-8-thinking-medium$/m);
+    assert.doesNotMatch(architect, /^model:/m);
+    assert.match(architect, /senior-architect/);
   });
 });
 

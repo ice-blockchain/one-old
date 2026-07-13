@@ -6,8 +6,10 @@
 // every src/ writer lands in the isolated per-case paths.
 
 import type { Rec } from '../../shared/obj';
+import { detectHost } from '../../shared/host';
+import { currentLocalPreferenceTarget } from '../../shared/onboarding/local-prefs';
 import { writeState } from '../../shared/state/normalize';
-import { mergeProjectPrefs, writeGlobalCodeGraphProvider } from '../../shared/state/local-prefs';
+import { mergeProjectHostPrefs, mergeProjectPrefs, writeGlobalCodeGraphProvider } from '../../shared/state/local-prefs';
 import { stateTimestamp } from '../../shared/state/io';
 import { teamModeForLevel } from '../../shared/performance';
 import type { PreSeed } from './types';
@@ -34,12 +36,9 @@ export function preseed(cwd: string, ps: PreSeed): void {
   if (ps.mobile) {
     state.mobile = { enabled: ps.mobile.enabled, framework: ps.mobile.framework, source: 'prompted' };
   }
-  if (ps.performance) state.performance = { level, source: 'prompted' };
-
   const team: Rec = { mode: teamMode, source: 'prompted' };
   if (teamApproved) team.approved = true;
   if (ps.team?.overrides) team.overrides = { ...ps.team.overrides };
-  state.team = team;
 
   if (ps.openCode !== undefined) {
     state.openCode = { enabled: ps.openCode, source: 'prompted', decidedAt: stateTimestamp() };
@@ -59,7 +58,22 @@ export function preseed(cwd: string, ps: PreSeed): void {
 
   writeState(cwd, state);
 
-  // 3) Stamp an installed OpenCode toolchain version — delegation is double-gated
+  // 3) Performance/team are host-scoped local preferences. Generic top-level
+  // fields are intentionally discarded by splitLocalPreferences so a stale
+  // runner cannot silently assign one host's choice to another host. Seed the
+  // exact active-host shape the real wizard writes, including configuredFor so
+  // SessionStart does not immediately reopen Performance in an E2E case that is
+  // meant to start fully onboarded.
+  if (ps.performance) {
+    const host = detectHost();
+    mergeProjectHostPrefs(cwd, host, {
+      performance: { level, source: 'prompted' },
+      team,
+      configuredFor: currentLocalPreferenceTarget(host),
+    });
+  }
+
+  // 4) Stamp an installed OpenCode toolchain version — delegation is double-gated
   //    (openCode.enabled AND toolchain.opencode.installedVersion). writeState does
   //    not set the install stamp, so do it explicitly when the case wants "on".
   if (ps.openCodeInstalled) {

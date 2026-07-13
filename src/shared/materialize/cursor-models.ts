@@ -1,116 +1,153 @@
-// src/shared/materialize/cursor-models.ts
-// Dependency-free (fs-only) reader + resolver for the Cursor subagent model list the
-// in-Cursor orchestrator reports its Task tool offers, captured to
-// `.traffic-one/cursor-models.json` ({ "models": string[], "plan": string, "capturedAt": iso }).
-// Cursor's offered subagent model set is plan/build-specific and there is NO plan-scoped API —
-// but the agent CAN see the list (it surfaces it when the gate asks), so the agent is the source.
-//
-// SELF-HEALING on plan change: the capture is stamped with the plan it was taken under. When the
-// detected plan later differs (upgrade/downgrade), the list is STALE → consumers ignore it and
-// the gate re-prompts for capture, so the subagent models stay current. A TTL catches catalog
-// drift (new model releases) within the same plan. Shared by the materializer (writes real slugs
-// into .cursor/agents/<role>.md) and the spawn gate. Kept light so it imports cleanly into the
-// hook runtime. Mirrors cursor-agent-model.ts.
+// Cursor's exact Task/Subagent model list is machine/user state, not project
+// configuration. It lives under the active project's local preferences at
+// hosts.cursor.availableModels and is invalidated by plan changes, catalog date
+// changes, or a seven-day TTL.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { modelMatchesExpected } from '../model-tiers';
+import { currentHostModelSnapshot } from '../current-model-tiers';
+import { canonicalPlan, modelMatchesExpected } from '../model-tiers';
+import { obj } from '../obj';
+import { mergeProjectHostPrefs, readProjectPrefs } from '../state/local-prefs';
 
-export const CURSOR_MODELS_REL = path.join('.traffic-one', 'cursor-models.json');
+export const LEGACY_CURSOR_MODELS_REL = path.join('.traffic-one', 'cursor-models.json');
+/** @deprecated Legacy cleanup only. New captures never use a project file. */
+export const CURSOR_MODELS_REL = LEGACY_CURSOR_MODELS_REL;
 
-// Re-capture after this long even if the plan is unchanged, to catch model-catalog drift
-// (new releases / build changes). Plan upgrade/downgrade invalidates immediately (plan-keyed).
 export const CURSOR_MODELS_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-interface CursorModelsFile {
+interface CursorModelsCapture {
   models: string[];
   plan: string | null;
+  modelsUpdatedAt: string | null;
   capturedAt: string | null;
 }
 
-function readRaw(cwd: string): CursorModelsFile {
+function emptyCapture(): CursorModelsCapture {
+  return { models: [], plan: null, modelsUpdatedAt: null, capturedAt: null };
+}
+
+function readRaw(cwd: string, env: NodeJS.ProcessEnv = process.env): CursorModelsCapture {
   try {
-    const raw = JSON.parse(fs.readFileSync(path.join(cwd, CURSOR_MODELS_REL), 'utf8')) as Record<string, unknown>;
-    const models = Array.isArray(raw?.models)
-      ? raw.models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map((m) => m.trim())
-      : [];
-    const plan = typeof raw?.plan === 'string' && raw.plan.trim() ? raw.plan.trim() : null;
-    const capturedAt = typeof raw?.capturedAt === 'string' && raw.capturedAt.trim() ? raw.capturedAt.trim() : null;
-    return { models, plan, capturedAt };
+    const prefs = readProjectPrefs(cwd, env);
+    const capture = obj(obj(obj(prefs.hosts)?.cursor)?.availableModels);
+    if (!capture || !Array.isArray(capture.models)) return emptyCapture();
+    return {
+      models: capture.models.filter((model): model is string => typeof model === 'string' && model.trim().length > 0),
+      plan: typeof capture.plan === 'string' ? capture.plan : null,
+      modelsUpdatedAt: typeof capture.modelsUpdatedAt === 'string' ? capture.modelsUpdatedAt : null,
+      capturedAt: typeof capture.capturedAt === 'string' ? capture.capturedAt : null,
+    };
   } catch {
-    return { models: [], plan: null, capturedAt: null };
+    return emptyCapture();
   }
 }
 
-// The captured model ids, regardless of freshness (low-level). [] when absent/malformed.
-export function readCursorModels(cwd: string): string[] {
-  return readRaw(cwd).models;
+function validModelId(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim().length > 0
+    && value.trim().length <= 256
+    && !/^(?:EXACT_MODEL_ID_\d+|MORE_EXACT_MODEL_IDS)$/.test(value.trim())
+    && !/[\u0000-\u001f\u007f-\u009f]/.test(value);
 }
 
-// FRESH = has models AND (no plan stamp yet [just captured by the agent, not stamped] OR the
-// stamp matches the current plan) AND (no capturedAt OR within TTL). A plan change (stamp !=
-// currentPlan) or an expired TTL makes it stale → re-capture.
+export function captureCursorModels(
+  cwd: string,
+  modelsInput: readonly unknown[],
+  currentPlan: unknown,
+  capturedAtIso: string = new Date().toISOString(),
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const plan = canonicalPlan('cursor', currentPlan);
+  const models = [...new Set(modelsInput.filter(validModelId).map((model) => model.trim()))];
+  if (!models.length || !Number.isFinite(Date.parse(capturedAtIso))) return false;
+  try {
+    const catalog = currentHostModelSnapshot('cursor', plan, env);
+    mergeProjectHostPrefs(cwd, 'cursor', {
+      availableModels: {
+        models,
+        plan,
+        modelsUpdatedAt: catalog.updatedAt,
+        capturedAt: capturedAtIso,
+      },
+    }, env);
+    return readRaw(cwd, env).models.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function readCursorModels(cwd: string, env: NodeJS.ProcessEnv = process.env): string[] {
+  return readRaw(cwd, env).models;
+}
+
 export function cursorModelsFresh(
   cwd: string,
   currentPlan: unknown,
   nowMs: number = Date.now(),
   ttlMs: number = CURSOR_MODELS_TTL_MS,
+  env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  const { models, plan, capturedAt } = readRaw(cwd);
-  if (!models.length) return false;
-  const cur = typeof currentPlan === 'string' && currentPlan.trim() ? currentPlan.trim() : '';
-  if (plan && cur && plan !== cur) return false; // plan upgraded/downgraded
-  if (capturedAt) {
-    const t = Date.parse(capturedAt);
-    if (Number.isFinite(t) && nowMs - t > ttlMs) return false; // catalog drift TTL
-  }
-  return true;
+  const capture = readRaw(cwd, env);
+  if (!capture.models.length || !capture.plan || !capture.modelsUpdatedAt || !capture.capturedAt) return false;
+  const plan = canonicalPlan('cursor', currentPlan);
+  if (capture.plan !== plan) return false;
+  const catalog = currentHostModelSnapshot('cursor', plan, env);
+  if (capture.modelsUpdatedAt !== catalog.updatedAt) return false;
+  const capturedAt = Date.parse(capture.capturedAt);
+  return Number.isFinite(capturedAt) && nowMs - capturedAt <= ttlMs;
 }
 
-// The captured models if FRESH for the current plan, else [] (so consumers fall back to the
-// bare family and the gate re-prompts for capture).
-export function freshCursorModels(cwd: string, currentPlan: unknown, nowMs?: number, ttlMs?: number): string[] {
-  return cursorModelsFresh(cwd, currentPlan, nowMs, ttlMs) ? readRaw(cwd).models : [];
+export function freshCursorModels(
+  cwd: string,
+  currentPlan: unknown,
+  nowMs?: number,
+  ttlMs?: number,
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  return cursorModelsFresh(cwd, currentPlan, nowMs, ttlMs, env) ? readRaw(cwd, env).models : [];
 }
 
-// True when a FRESH capture exists for the current plan.
-export function hasFreshCursorModels(cwd: string, currentPlan: unknown): boolean {
-  return cursorModelsFresh(cwd, currentPlan);
+export function hasFreshCursorModels(
+  cwd: string,
+  currentPlan: unknown,
+  nowMs?: number,
+  ttlMs?: number,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return cursorModelsFresh(cwd, currentPlan, nowMs, ttlMs, env);
 }
 
-// Stamp the capture-time plan + timestamp onto the agent-written list (called by the PostToolUse
-// re-materialize the moment the agent writes the file). Records the plan AS IT WAS at capture so
-// a later plan change is detectable. Preserves the agent's models; no-op if no models present.
-export function stampCursorModels(cwd: string, plan: string, capturedAtIso: string): boolean {
-  const { models } = readRaw(cwd);
-  if (!models.length) return false;
+// Hard-cutover hygiene. Never import the legacy project file. Delete it only
+// when every key and value matches the Traffic One capture shape; an extra key
+// is treated as user-authored and preserved.
+export function cleanupLegacyCursorModels(cwd: string): boolean {
+  const file = path.join(cwd, LEGACY_CURSOR_MODELS_REL);
   try {
-    const p = path.join(cwd, CURSOR_MODELS_REL);
-    fs.writeFileSync(p, `${JSON.stringify({ models, plan, capturedAt: capturedAtIso }, null, 2)}\n`, 'utf8');
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const allowed = new Set(['models', 'plan', 'capturedAt', 'modelsUpdatedAt']);
+    if (Object.keys(raw).some((key) => !allowed.has(key))) return false;
+    if (!Array.isArray(raw.models) || !raw.models.every(validModelId)) return false;
+    if (raw.plan !== undefined && typeof raw.plan !== 'string') return false;
+    if (raw.capturedAt !== undefined && typeof raw.capturedAt !== 'string') return false;
+    if (raw.modelsUpdatedAt !== undefined && typeof raw.modelsUpdatedAt !== 'string') return false;
+    fs.rmSync(file, { force: true });
     return true;
   } catch {
     return false;
   }
 }
 
-// From the captured build models, pick the first concrete slug whose FAMILY matches one of
-// `acceptableFamilies` (preferred-first). Family match is modelMatchesExpected(slug, family),
-// so a reasoning variant (`claude-opus-4-8-thinking-max-fast`) matches its family
-// (`claude-opus-4-8`). Returns null when the build offers nothing in the acceptable chain.
 export function pickCursorSlug(acceptableFamilies: readonly string[], models: readonly string[]): string | null {
   for (const family of acceptableFamilies) {
-    const hit = models.find((m) => modelMatchesExpected(m, family));
+    const hit = models.find((model) => modelMatchesExpected(model, family));
     if (hit) return hit;
   }
   return null;
 }
 
-// ── Capture precondition once-marker (run-scoped, project-local) ──────────────
-// Mirrors the opencode-roles / model-choice marker style: tiny files under
-// `.traffic-one/runs/<runId>/`, best-effort, never throwing. Guarantees the gate asks the
-// orchestrator to capture the model list AT MOST ONCE per run (no-deadlock: after one ask
-// the gate proceeds and family-aware matching covers the spawn).
 function capturePromptedPath(cwd: string, runId: string): string {
   return path.join(cwd, '.traffic-one', 'runs', runId, 'cursor-models-capture-prompted');
 }
@@ -127,10 +164,10 @@ export function cursorModelsCapturePrompted(cwd: string, runId: string): boolean
 export function markCursorModelsCapturePrompted(cwd: string, runId: string): void {
   if (!runId) return;
   try {
-    const p = capturePromptedPath(cwd, runId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, '', 'utf8');
+    const marker = capturePromptedPath(cwd, runId);
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.writeFileSync(marker, '', 'utf8');
   } catch {
-    // best-effort; a missing marker only risks one extra (harmless) capture ask
+    // Best effort; a missing marker only risks one extra capture request.
   }
 }

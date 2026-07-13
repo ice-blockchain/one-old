@@ -212,6 +212,11 @@ export function isModelGateCommand(toolName: unknown, toolInput: unknown): boole
   return /(^|\s)node(\s|$)/.test(command) && command.includes('model-gate.cjs');
 }
 
+export function isModelCaptureCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (!isModelGateCommand(toolName, toolInput)) return false;
+  return /(?:^|\s)--capture-models(?:\s|$)/.test(commandFromToolInput(toolInput));
+}
+
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {
   const ti = toolInput && typeof toolInput === 'object' ? (toolInput as Rec) : null;
   const name = String(toolName || (ti && (ti.tool_name || ti.toolName)) || '');

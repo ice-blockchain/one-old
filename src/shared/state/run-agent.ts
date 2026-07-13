@@ -1449,8 +1449,8 @@ export function tryFallbackClaim(
 
 export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 
-// Continuation needs the host's send-to-agent tool. On Codex that is
-// send_input — native to the multi_agent toolset, always present, no flag (so
+// Continuation needs the host's send-to-agent tool. On current Codex that is
+// followup_task/send_message — native to the collaboration toolset, with no flag (so
 // the one-live-agent registry/dedup must be ON there by default; keying only on
 // the Claude flag silently disabled the whole regime on Codex). Cursor and
 // Copilot expose continuation through their native task/background-agent tools.
@@ -1464,15 +1464,15 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (host) {
-    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf' || host === 'opencode') return true;
+    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf' || host === 'opencode' || host === 'kilo') return true;
     return flag !== '';
   }
   const envHost = String(env.TRAFFIC_ONE_HOST ?? '').trim().toLowerCase();
-  // Codex: send_input (native to the multi_agent toolset, always present).
+  // Codex: followup_task/send_message (native to the collaboration toolset).
   if (envHost === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
   // Cursor: live Cursor builds surface Task continuation as `resume` to resume a
   // previous subagent with full context preserved — the analogue of
-  // send_input/SendMessage. Older docs/models may say `agentId`, so the gate
+  // followup_task/SendMessage. Older docs/models may say `agentId`, so the gate
   // accepts both fields.
   // Without this every Cursor role task re-spawned a fresh subagent, re-loading rules+skills.
   if (envHost === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
@@ -1485,12 +1485,59 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   // records the active role session so duplicate same-role spawns are routed to
   // wait/explicit replacement instead of silently creating another live role.
   if (envHost === 'opencode') return true;
+  // Kilo has no true Task resume field, but the live-role registry still prevents
+  // duplicate general workers and requires an explicit replacement after completion.
+  if (envHost === 'kilo') return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }
 
 function agentRegistryFile(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'agents.json');
+}
+
+const AGENT_REGISTRY_LOCK_TIMEOUT_MS = 2_000;
+const AGENT_REGISTRY_LOCK_STALE_MS = 15_000;
+const AGENT_REGISTRY_LOCK_RETRY_MS = 10;
+const AGENT_REGISTRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function agentRegistryLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.agents.lock');
+}
+
+// agents.json is updated by independent PostToolUse/SubagentStart hook processes.
+// Atomic rename prevents torn JSON but not lost read-modify-write updates, so
+// serialize the tiny registry mutation behind a bounded mkdir lock. A stale lock
+// from a crashed hook is reclaimed; on timeout we skip the best-effort registry
+// write rather than overwrite another role with stale state.
+function withAgentRegistryLock(cwd: string, runId: string, mutate: () => void): boolean {
+  const lockDir = agentRegistryLockDir(cwd, runId);
+  const deadline = Date.now() + AGENT_REGISTRY_LOCK_TIMEOUT_MS;
+  try { fs.mkdirSync(path.dirname(lockDir), { recursive: true }); } catch { return false; }
+  while (true) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch {
+      try {
+        const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+        if (age > AGENT_REGISTRY_LOCK_STALE_MS) {
+          fs.rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) return false;
+      Atomics.wait(AGENT_REGISTRY_WAIT, 0, 0, AGENT_REGISTRY_LOCK_RETRY_MS);
+    }
+  }
+  try {
+    mutate();
+    return true;
+  } finally {
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
 }
 
 export interface RunAgentEntry {
@@ -1593,21 +1640,28 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
   return out;
 }
 
+type RunAgentRecordInput = {
+  agentId: string;
+  resumeId?: string | null;
+  toolCallId?: string | null;
+  model?: string | null;
+  agentType?: string | null;
+  parentSessionId?: string | null;
+};
+
 export function recordRunAgent(
   cwd: string,
   runId: string,
   role: string,
-  entry: {
-    agentId: string;
-    resumeId?: string | null;
-    toolCallId?: string | null;
-    model?: string | null;
-    agentType?: string | null;
-    parentSessionId?: string | null;
-  },
+  entry: RunAgentRecordInput,
 ): void {
   if (!VALID_AGENT_ROLES.has(role)) return;
   if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
+  if (typeof entry.agentId !== 'string' || !entry.agentId.trim()) return;
+  withAgentRegistryLock(cwd, runId, () => recordRunAgentUnlocked(cwd, runId, role, entry));
+}
+
+function recordRunAgentUnlocked(cwd: string, runId: string, role: string, entry: RunAgentRecordInput): void {
   const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
   const agents = obj(registry.agents) || {};
   const history = Array.isArray(registry.history) ? registry.history.filter((item) => item && typeof item === 'object') : [];
@@ -1750,6 +1804,10 @@ export function liveRunAgent(
 // for the role is allowed and the recorder overwrites the entry.
 export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
   if (isPluginAuthoringRoot(cwd)) return;
+  withAgentRegistryLock(cwd, runId, () => markRunAgentReplacedUnlocked(cwd, runId, role));
+}
+
+function markRunAgentReplacedUnlocked(cwd: string, runId: string, role: string): void {
   const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
   const agents = obj(registry.agents) || {};
   const entry = obj(agents[role]);

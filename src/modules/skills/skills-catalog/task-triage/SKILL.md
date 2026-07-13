@@ -45,9 +45,10 @@ The directive states the project's **team mode** and whether **OpenCode** is act
 - **Subagents mode:** delegate to a `quick-fix` worker — a dedicated cheap maintenance role with its
   own agent definition.
   - Spawn with `subagent_type: "quick-fix"` (or open the prompt with `You are acting as Traffic One quick-fix`).
-  - **Model param:** pass your host's cheapest model explicitly — `haiku` on Claude/Cursor,
-    `gpt-5.4-mini` on Codex. The spawn gate enforces this pin in **every** mode (new-project AND
-    existing codebases); any pricier model — or a missing model param — is denied.
+  - **Model param:** pass the exact cheapest model supplied by the current runtime maintenance-triage
+    directive. That value comes from this user's local host snapshot; never infer it from a bundled
+    catalog or persist it in project files. The spawn gate enforces this pin in **every** mode
+    (new-project AND existing codebases); any pricier model — or a missing model param — is denied.
   - **Spawn prompt must be self-contained and bounded:** (a) the exact file path(s) and the precise
     change, (b) one verification step (build/lint/screenshot if visual), (c) a stop condition — "do
     not explore beyond the named files; do not refactor; if the change spans more files, STOP and
@@ -66,8 +67,8 @@ The directive states the project's **team mode** and whether **OpenCode** is act
   `ui-quality`) — "trivial" scales the planning down, not the proof that it works.
 - **Reuse the worker across requests:** when this session already spawned a `quick-fix` (or role) worker
   for an earlier request, send the next bounded task to the SAME agent — on Claude
-  `SendMessage { to: <agentId from the spawn result>, message: <the new task> }`, on Copilot the same
-  background `agent_id` / `name` — instead of a fresh spawn; the spawn gate denies a duplicate while a
+  `SendMessage { to: <agentId from the spawn result>, message: <the new task> }`, on Copilot the recorded
+  background `agent_id` (not `name`, which creates a fresh task) — instead of a fresh spawn; the spawn gate denies a duplicate while a
   live agent is recorded for the run. Each task message stays self-contained and bounded exactly like a
   spawn prompt.
 

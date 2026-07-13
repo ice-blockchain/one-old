@@ -12,11 +12,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { KILO_HOST_AGENTS_REL } from '../../config/kilo-host';
+import { TEAM_ROLES } from '../../config/onboarding';
 import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
-import { detectHostPlan } from '../host-plan';
-import { buildTeamLineup } from '../onboarding-server/flow';
-import { openCodeDelegationActive } from '../performance';
 import { roleAgentBody } from '../skill-filters';
 import { GENERATED_MARKER, isGenerated } from './generated';
 
@@ -93,32 +91,16 @@ function agentFile(role: string, label: string, blurb: string): string {
   return lines.join('\n');
 }
 
-export function writeKiloAgentFiles(cwd: string, state: Rec): number {
-  const team = state.team && typeof state.team === 'object' ? (state.team as Rec) : null;
-  const performance = state.performance && typeof state.performance === 'object' ? (state.performance as Rec) : null;
-  const mode = team && typeof team.mode === 'string' ? team.mode : null;
-  const level = performance && typeof performance.level === 'string' ? performance.level : null;
+export function writeKiloAgentFiles(cwd: string, _state: Rec): number {
   const dir = path.join(cwd, KILO_HOST_AGENTS_REL);
-  if (mode !== 'subagents' || !level) return cleanupGeneratedAgents(dir, new Set());
-
-  const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
-  let lineup;
-  try {
-    const planCtx = { host: 'kilo', plan: detectHostPlan('kilo'), useOpenCode: openCodeDelegationActive(state, 'kilo') };
-    lineup = buildTeamLineup(level, 'kilo', overrides, planCtx);
-  } catch {
-    return 0;
-  }
-  if (!lineup || lineup.length === 0) return cleanupGeneratedAgents(dir, new Set());
-
-  const keep = new Set(lineup.map((member) => member.role));
+  const keep = new Set(TEAM_ROLES.map((member) => member.role));
   let written = cleanupGeneratedAgents(dir, keep);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
     return written;
   }
-  for (const member of lineup) {
+  for (const member of TEAM_ROLES) {
     const target = path.join(dir, `${member.role}.md`);
     if (fs.existsSync(target) && !isGeneratedKiloAgent(target)) continue;
     try {

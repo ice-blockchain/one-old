@@ -6,14 +6,27 @@ import * as path from 'path';
 
 import { SCAFFOLD_RE, scaffoldGate } from '../scaffold-gate';
 import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function withProject(state: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-scaffold-'));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  const { team: teamExtra, performance: performanceExtra, ...sharedState } = state;
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(sharedState), 'utf8');
+  if (teamExtra || performanceExtra) {
+    const team = teamExtra && typeof teamExtra === 'object'
+      ? teamExtra as Record<string, unknown>
+      : { mode: 'main-agent', source: 'prompted' };
+    const performance = performanceExtra && typeof performanceExtra === 'object'
+      ? performanceExtra as Record<string, unknown>
+      : { level: team.mode === 'subagents' ? 'high' : 'low', source: 'prompted' };
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(performance, team, 'pro'),
+    ), 'utf8');
+  }
   try {
     fn(dir);
   } finally {

@@ -14,6 +14,7 @@ import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { markModelChoicePrompted, readModelChoice } from '../../agent-model/model-choice';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
@@ -79,12 +80,14 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevCodexOriginator = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   const prevCodexThreadId = env.CODEX_THREAD_ID;
   const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
   env.CODEX_HOME = path.join(dir, 'codex-home');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   delete env.CODEX_PLUGIN_ROOT;
   delete env.TRAFFIC_ONE_PLUGIN_ROOT;
   delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
@@ -113,6 +116,7 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     if (prevCodexOriginator === undefined) delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = prevCodexOriginator;
     if (prevCodexThreadId === undefined) delete env.CODEX_THREAD_ID; else env.CODEX_THREAD_ID = prevCodexThreadId;
     if (prevCursorPluginRoot === undefined) delete env.CURSOR_PLUGIN_ROOT; else env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -148,12 +152,20 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
   const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   assert.ok(prefsPath, 'test prefs path must be configured');
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+  const {
+    performance = { level: 'high', source: 'prompted' },
+    team = { mode: 'subagents', source: 'prompted', approved: true },
+    ...rest
+  } = extra;
   fs.writeFileSync(prefsPath, JSON.stringify({
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    performance: { level: 'high', source: 'prompted' },
-    team: { mode: 'subagents', source: 'prompted', approved: true },
+    ...hostScopedPerformancePrefs(
+      performance as Record<string, unknown>,
+      team as Record<string, unknown>,
+      'pro',
+    ),
     toolchain: TOOLCHAIN,
-    ...extra,
+    ...rest,
   }), 'utf8');
   // codeGraphProvider is machine-wide (one.json, the AUTH_STATE_PATH alias here).
   writeGlobalCodeGraphProvider('graphify');
@@ -311,7 +323,7 @@ test('opencode: incomplete onboarding prompt uses sanitized setup text', () => {
 test('windsurf: incomplete onboarding prompt uses the compact host-only setup directive', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     const url = 'http://127.0.0.1:51235/?t=windsurf';
-    writeServerRecord(cwd, { pid: process.pid, port: 51235, token: 'windsurf', url, startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 51235, token: 'windsurf', url, startedAt: 'x' }, process.env, 'windsurf');
     const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'windsurf'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
@@ -358,7 +370,7 @@ test('cursor: incomplete onboarding puts the LIVE wizard URL in the USER-facing 
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     // Seed a live server record so ensureOnboardingServer returns a REAL url under
     // NO_SPAWN (the ':0/' placeholder is intentionally NOT surfaced — formatWizardBanner).
-    writeServerRecord(cwd, { pid: process.pid, port: 51234, token: 't', url: 'http://127.0.0.1:51234/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 51234, token: 't', url: 'http://127.0.0.1:51234/?t=t', startedAt: 'x' }, process.env, 'cursor');
     const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'cursor'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
@@ -387,7 +399,7 @@ test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post l
   withAuthedProject(null, (cwd) => {
     // Seed a live server record so ensureOnboardingServer returns a REAL url under
     // NO_SPAWN (the ':0/' placeholder is intentionally not surfaced).
-    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'cursor');
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'cursor'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
@@ -403,7 +415,7 @@ test('non-cursor PRISTINE first coding prompt keeps the URL-less setup-pending n
   // PreToolUse deny recipe — so Flow 3 must NOT spam the full URL recipe into their
   // agent context: the plain `setup-pending` note (no live URL) is correct for them.
   withAuthedProject(null, (cwd) => {
-    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'claude');
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'claude'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {

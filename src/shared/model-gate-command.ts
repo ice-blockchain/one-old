@@ -18,3 +18,7 @@ export function modelGateCommand(cwd: string, host?: string): string {
   const hostArg = host ? ` ${JSON.stringify(`--host=${host}`)}` : '';
   return `node ${JSON.stringify(modelGateScriptPath())} ${JSON.stringify(cwd)}${hostArg}`;
 }
+
+export function modelCaptureCommand(cwd: string, host?: string): string {
+  return `${modelGateCommand(cwd, host)} --capture-models "EXACT_MODEL_ID_1" "EXACT_MODEL_ID_2" "MORE_EXACT_MODEL_IDS"`;
+}

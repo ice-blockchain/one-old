@@ -4,7 +4,7 @@
     "gitnexus": {
       "installLatest": true,
       "minimum": "1.0.0",
-      "recommended": "1.6.4",
+      "recommended": "1.6.9",
       "runtime": "node",
       "runtimeMinMajor": 22,
       "license": "PolyForm Noncommercial",
@@ -18,7 +18,7 @@
     "graphify": {
       "installLatest": true,
       "minimum": "0.4.0",
-      "recommended": "0.7.10",
+      "recommended": "0.9.13",
       "runtime": "python",
       "runtimeMinMajor": 3,
       "runtimeMinMinor": 10,
@@ -28,7 +28,7 @@
       "versionCommand": "graphify --version",
       "versionRegex": "v?(\\d+\\.\\d+\\.\\d+)",
       "installCommand": "Traffic One managed pipx or venv install/upgrade (latest)",
-      "notes": "Python CLI requiring Python >=3.10 (runtime field — graphifyy wheels set Requires-Python >=3.10, so a stock-macOS CLT Python 3.9.x venv yields `No matching distribution`; the runtime resolver finds a >=3.10 interpreter via Homebrew/pyenv absolute paths). The `graphifyy` package name is intentional (not a typo) — that's how it's published on PyPI. Installed at latest; graphify exposes NO `--version` (every form errors), so Traffic One reads the installed version from `pip show graphifyy` next to the binary. `graphify update .` exits non-zero on a project with no code files, so onboarding gates on install (not on the first scan)."
+      "notes": "Python CLI requiring Python >=3.10 (runtime field — graphifyy wheels set Requires-Python >=3.10, so a stock-macOS CLT Python 3.9.x venv yields `No matching distribution`; the runtime resolver finds a >=3.10 interpreter via Homebrew/pyenv absolute paths). The `graphifyy` package name is intentional (not a typo) — that's how it is published on PyPI. Installed at latest; Traffic One prefers `graphify --version` and retains the adjacent `pip show graphifyy` probe for compatibility with older releases. `graphify update .` exits non-zero on a project with no code files, so onboarding gates on install (not on the first scan)."
     },
     "opencode": {
       "installLatest": true,

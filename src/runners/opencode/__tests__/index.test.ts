@@ -6,7 +6,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
-import { OPENCODE_FREE_MODELS } from '../../../config/opencode-delegation';
+import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
 import { openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 
 function sh(cwd: string, cmd: string, args: string[]): void {

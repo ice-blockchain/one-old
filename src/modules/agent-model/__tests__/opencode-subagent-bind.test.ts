@@ -7,20 +7,30 @@ import * as path from 'path';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
 import { resolveRunAgentContext } from '../../../shared/state';
 import type { Ctx, HookInput, HostId } from '../../../core/types';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function withProject(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-oc-bind-')));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  const { team: teamExtra, performance: performanceExtra, ...sharedExtra } = stateExtra;
+  const team = teamExtra && typeof teamExtra === 'object'
+    ? teamExtra as Record<string, unknown>
+    : { mode: 'subagents', source: 'prompted', approved: true };
+  const performance = performanceExtra && typeof performanceExtra === 'object'
+    ? performanceExtra as Record<string, unknown>
+    : { level: team.mode === 'main-agent' ? 'low' : 'high', source: 'prompted' };
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
     mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
     onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
     currentRunId: '1782492658872',
-    team: { mode: 'subagents', source: 'prompted', approved: true },
-    ...stateExtra,
+    ...sharedExtra,
   }), 'utf8');
+  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+    hostScopedPerformancePrefs(performance, team, 'free'),
+  ), 'utf8');
   try {
     fn(dir);
   } finally {

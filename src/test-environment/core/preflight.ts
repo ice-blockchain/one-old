@@ -18,11 +18,13 @@ export function nodeMajor(): number {
   return m && m[1] ? Number(m[1]) : 0;
 }
 
-export function hostIsAvailable(cfg: HostCommandConfig): boolean {
+export function hostIsAvailable(cfg: HostCommandConfig, env?: NodeJS.ProcessEnv): boolean {
+  if (cfg.e2eSupported === false) return false;
   try {
     const res = spawnSync(cfg.bin, cfg.probeArgs ?? ['--version'], {
       stdio: 'ignore',
       timeout: 15_000,
+      env: { ...process.env, ...env },
     });
     return res.status === 0 || (res.status == null && !res.error);
   } catch {
@@ -32,7 +34,9 @@ export function hostIsAvailable(cfg: HostCommandConfig): boolean {
 
 export function preflight(hosts: Record<HostId, HostCommandConfig>, enabled: HostId[]): Preflight {
   const major = nodeMajor();
-  const hostAvailable: Record<HostId, boolean> = { claude: false, codex: false, cursor: false };
+  const hostAvailable = Object.fromEntries(
+    Object.keys(hosts).map((host) => [host, false]),
+  ) as Record<HostId, boolean>;
   for (const h of enabled) hostAvailable[h] = hostIsAvailable(hosts[h]);
   return { nodeMajor: major, nodeOk: major >= 22, hostAvailable };
 }

@@ -1,10 +1,11 @@
 ---
 name: model-tier-sync
 description: >
-  Keep the Traffic One model-tier table current as providers launch new models.
-  Updates the plugin's HOST_MODELS model-tier table (scripts/config/model-tiers.js in an installed plugin; src/config/model-tiers.ts in the plugin authoring repo) so the
-  performance system (highest/balanced/cheapest tiers → per-host model ids) always
-  points at the newest Claude, OpenAI/Codex, and Cursor models. TRIGGER when the
+  Keep the Traffic One plan-aware model catalog current as providers launch new
+  models. Updates each host's preferred-first model arrays, plan overrides, and
+  catalog date in the plugin authoring repo so
+  the performance system (highest/balanced/cheapest tiers → per-host model ids)
+  stays current on every supported host. TRIGGER when the
   user says "update the models", "sync model tiers", "refresh model list", "use the
   latest models", "a new model launched", "update model-tiers", "are we on the
   newest models", or runs /model-tier-sync. Plugin-maintenance skill: it edits the
@@ -17,10 +18,11 @@ metadata:
 
 # Model Tier Sync
 
-Keeps the plugin's model-tier table (`HOST_MODELS`) pointed at the newest
-available model for each capability tier on each host. This is the single source
-of truth the performance levels (Balanced / High) resolve against, so updating it
-here updates every spawn across Claude Code, Codex, and Cursor.
+Keeps the plugin's plan-aware model-tier config pointed at the newest available
+models for each capability tier on every host. `HOST_MODELS` is the bundled
+source of truth. The public `GET /model-status?host=<host>&plan=<plan>` endpoint
+is maintained independently and returns the exact `{ plan, updatedAt, tiers }`
+snapshot stored in the user's local preferences.
 
 ## When to trigger
 
@@ -33,9 +35,10 @@ here updates every spawn across Claude Code, Codex, and Cursor.
 ## Skip when
 
 - You are inside a generated user project rather than the Traffic One plugin
-  repo, where the table lives at `src/config/model-tiers.ts` (run `npm run plugin:build` after edits). In an installed plugin the compiled copy at `scripts/config/model-tiers.js` is refreshed by plugin updates; editing the cached copy in a user's
-  plugin install would be overwritten on the next plugin update. If asked there,
-  say so and point the user at the plugin repo.
+  authoring repo, where the source config lives at `src/config/model-tiers.ts`.
+  An installed plugin's `scripts/**` files are generated copies and will be
+  overwritten by the next plugin update. If asked there, say so and point the
+  user at the authoring repo.
 
 ## What the tiers mean (do not change this contract)
 
@@ -51,10 +54,10 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
 
 ## Procedure
 
-1. **Locate the file.** In the plugin authoring repo it is `src/config/model-tiers.ts` —
-   read it and note the current `HOST_MODELS` table (claude / cursor / codex rows).
-   (In an installed plugin the compiled copy is `scripts/config/model-tiers.js`, but
-   that is overwritten on every plugin update — edit the source, see *Skip when*.)
+1. **Read the complete bundled catalog.** In `src/config/model-tiers.ts`, inspect
+   every `HOST_MODELS` host entry: its `updatedAt`, base `tiers`, plan overrides,
+   and `HOST_PLAN_IDS`. Each tier array is preferred-first; the first model is the
+   default and the remaining models are accepted fallbacks.
 
 2. **Research the current model lineup — official sources only.** Use WebSearch /
    WebFetch against the providers' own docs. Do NOT guess or use a model name you
@@ -67,51 +70,62 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
      general model, and a fast/mini model. These use concrete versioned ids
      (e.g. a `*-codex`, a flagship `gpt-*`, and a `*-mini`/`*-nano`) and DO drift,
      so this row is the one that most often needs updating.
-   - **Cursor (enforced — bare model FAMILIES, matched family-aware)**: the `cursor` row in
-     HOST_MODELS holds bare model-FAMILY anchors (currently highest `claude-opus-4-8` / balanced
-     `claude-4.6-sonnet` / cheapest `composer-2.5`) — NOT full reasoning-variant slugs and NOT the
-     Anthropic aliases (Cursor rejects `opus`/`sonnet`). The spawn gate matches FAMILY-aware
+   - **Cursor (enforced — bare model FAMILIES, matched family-aware)**: the
+     `cursor` row in `HOST_MODELS` holds bare model-family anchors, not full
+     reasoning-variant slugs and not Anthropic aliases (Cursor rejects
+     `opus`/`sonnet`). The spawn gate matches family-aware
      (`modelMatchesExpected`: `passed === family || passed.startsWith(family + '-')`), so ANY
-     reasoning variant the user's plan/build offers satisfies the tier (`claude-opus-4-8-thinking-max`,
-     `…-thinking-high`, `…-thinking-max-fast` all match `claude-opus-4-8`). This is deliberate:
+     reasoning variant the user's plan/build offers satisfies the tier
+     (`claude-fable-5-thinking-high` matches `claude-fable-5`). This is deliberate:
      the reasoning suffix is plan/build-SPECIFIC, so pinning one (e.g. `-thinking-high`) wrongly
-     rejected a higher plan's `-thinking-max` variant of the SAME family. `CURSOR_MODEL_ALTERNATES`
-     holds same-tier FALLBACK FAMILIES (highest→`claude-opus-4-7`,`claude-fable-5`,`composer-2.5`;
-     balanced→`gpt-5.5`,`composer-2.5`) with `composer-2.5` as the universal floor. The CONCRETE
-     build slug (with its suffix) is NOT hardcoded — it is discovered at build time from
-     `.traffic-one/cursor-models.json` (the in-Cursor orchestrator enumerates its Task-tool list;
-     see `shared/materialize/cursor-models.ts`/`pickCursorSlug`) and written into
-     `.cursor/agents/<role>.md`. So when SYNCING you only change a FAMILY here when a generation
+     rejected a higher plan's `-thinking-max` variant of the SAME family. The
+     preferred-first Cursor tier arrays hold the same-tier FALLBACK FAMILIES
+     and must mirror the current Task-tool catalog; `composer-2.5` remains the
+     universal floor. The CONCRETE
+     build slug (with its suffix) is NOT hardcoded — it is captured into the
+     user's local per-project/per-host preferences from the in-Cursor Task-tool
+     list. So when SYNCING you only change a FAMILY here when a generation
      bumps (opus-4-8 → opus-5); you do NOT chase reasoning suffixes. Keep capability/cost order
      highest ≥ balanced ≥ cheapest; `composer-2.5` is Cursor's own cost-optimized model (always
      available, survives API-budget exhaustion).
 
-3. **Map newest → tiers per host**, preserving capability order
-   (`highest` strictly ≥ `balanced` ≥ `cheapest` in capability). Verify the
-   spawn tool on each host accepts the identifier you choose:
+3. **Map newest → tiers per host and plan**, preserving capability order
+   (`highest` strictly ≥ `balanced` ≥ `cheapest` in capability). For hosts with
+   model-pinned spawn tools, verify the tool accepts the identifier; otherwise
+   verify the catalog identifier used by onboarding/session recommendations:
    - Claude Code Task/Agent `model` param accepts `opus` | `sonnet` | `haiku`.
-   - Codex `spawn_agent` `model` param accepts the provider's concrete ids.
+   - Codex `spawn_agent` currently exposes no `model` field. Keep its tier rows current for onboarding recommendations and session context, but never require or pass those ids at spawn time.
+   - Kilo CLI model ids include the provider prefix (for example
+     `kilo/kilo-auto/frontier`); confirm them with `kilo models kilo --refresh`.
+   - OpenCode Free and Go model ids must come from the corresponding official
+     provider catalog. Keep a reachable Free fallback at the tail of every Go row.
 
-4. **Edit ONLY the `HOST_MODELS` object** in `src/config/model-tiers.ts`. Do not
-   touch `TIER_IDS`, `TIER_ALIASES`, the resolver functions, or any other file.
-   Keep the existing formatting and comments.
+4. **Edit the smallest relevant `HOST_MODELS` arrays.** Change the base tier or
+   plan override that owns the verified behavior. An override replaces the full
+   tier array; omitted tiers inherit the base. Keep `TIER_IDS`, `TIER_ALIASES`,
+   and performance-to-tier policy unchanged unless explicitly requested.
 
-5. **Validate** (from the authoring repo root):
+5. **Bump every affected host date.** Set `HOST_MODELS[host].updatedAt` to
+   today's `YYYY-MM-DD` whenever any base or plan-specific model array changes.
+   This is mandatory even if the preferred model stayed the same. Changing a
+   resolved tier array without a date bump is an invalid snapshot contract.
+
+6. **Run the repository verification chain** (from the authoring repo root):
    ```bash
-   npm run typecheck && npm test
+   npm run typecheck
+   npm test
+   npm run gen
    ```
-   `src/shared/__tests__/model-tiers.test.ts` exercises `resolveModel(tier, host)`
-   for every tier × host and asserts the expected ids — update its expected values
-   to match any cell you changed, or the test will fail. Then run `npm run plugin:build`
-   to refresh the compiled `scripts/config/model-tiers.js`.
+   Update model-tier expectations for every affected plan, verify snapshot
+   validation and preferred-first fallback behavior, then run `npm run build`,
+   `npm run golden:update`, `npm run plugin:check`, and `npm run smoke`.
 
-6. **Bump the plugin version** (patch) in all three manifests so a reload picks
-   up the change: `.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`,
-   `.cursor-plugin/plugin.json`.
-
-7. **Report a diff table** — for every host/tier cell that changed, show
-   `old → new` and cite the official source you confirmed it from. If you could
-   not confirm a newer model for a cell, leave it unchanged and say so explicitly.
+7. **Report the independent API prerequisite and a diff table.** This skill does
+   not generate or publish API data. The external service must be updated
+   separately to return the same host/plan snapshot before release. For every
+   changed host/plan/tier array, show `old → new`, the
+   date bump, and the official source. If you could not confirm a newer model,
+   leave it unchanged and say so explicitly.
 
 ## Guardrails
 
@@ -119,5 +133,9 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
   flag it as unverified in the report.
 - Never downgrade a tier's capability or break the highest ≥ balanced ≥ cheapest
   ordering.
-- Only `model-tiers.cjs` (the `HOST_MODELS` table) and the three `plugin.json`
-  version fields may change. Anything else is out of scope for this skill.
+- Never change a preferred model, plan override, or fallback set/order without
+  bumping that `HOST_MODELS` entry's `updatedAt`.
+- Never hand-edit generated `dist/scripts/**`; edit source config/tests and
+  regenerate.
+- Never imply the external API was updated by plugin generation; it is maintained
+  and deployed independently.

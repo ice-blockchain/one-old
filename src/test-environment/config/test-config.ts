@@ -10,7 +10,8 @@ import { HOST_COMMANDS } from './hosts';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-export const ALL_HOSTS: HostId[] = ['claude', 'codex', 'cursor'];
+export const ALL_HOSTS: HostId[] = ['claude', 'codex', 'cursor', 'opencode', 'copilot', 'windsurf', 'kilo'];
+const DEFAULT_E2E_HOSTS: HostId[] = ['claude', 'codex', 'cursor'];
 
 export const ALL_CATEGORIES: Category[] = [
   'new-project',
@@ -22,7 +23,7 @@ export const ALL_CATEGORIES: Category[] = [
 
 export function defaultConfig(): RootTestConfig {
   return {
-    enabledHosts: [...ALL_HOSTS],
+    enabledHosts: [...DEFAULT_E2E_HOSTS],
     enabledCategories: [...ALL_CATEGORIES],
     // Fast deterministic default: only the free, fully-deterministic pure-node
     // layer runs. Host-CLI E2E (real LLM spend) is opt-in via --e2e.

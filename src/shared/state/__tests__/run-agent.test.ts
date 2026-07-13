@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 
 import {
   anyRunProducedImplementerOutput,
@@ -813,6 +814,43 @@ test('recordRunAgent preserves replacement history while keeping the live role s
     assert.equal(raw.history[0].oldAgentId, 'agent-old');
     assert.equal(raw.history[0].newAgentId, 'agent-new');
     assert.equal(raw.history[0].replacementReason, 'explicit-replace-agent-marker');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recordRunAgent preserves every role across concurrent hook processes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agent-concurrent-'));
+  const roles = ['senior-frontend', 'senior-backend'];
+  const source = [
+    "const { recordRunAgent } = require('./src/shared/state/run-agent.ts');",
+    "const [cwd, role, agentId] = process.argv.slice(1);",
+    "recordRunAgent(cwd, 'run-concurrent', role, { agentId, parentSessionId: 'parent-1' });",
+  ].join('\n');
+  try {
+    const lockDir = path.join(dir, '.traffic-one', 'runs', 'run-concurrent', '.agents.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    let exited = 0;
+    const children = roles.map((role, index) => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ['--import', 'tsx', '-e', source, dir, role, `agent-${index}`], {
+          cwd: process.cwd(),
+          stdio: 'ignore',
+        });
+        child.once('error', reject);
+        child.once('exit', (code) => {
+          exited += 1;
+          if (code === 0) resolve();
+          else reject(new Error(`recorder child exited ${code}`));
+        });
+      });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(exited, 0, 'both hook processes must wait for the bounded registry lock');
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    await Promise.all(children);
+    const registry = readRunAgentRegistry(dir, 'run-concurrent');
+    assert.deepEqual(Object.keys(registry).sort(), [...roles].sort());
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

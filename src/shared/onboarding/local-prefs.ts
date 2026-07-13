@@ -7,7 +7,9 @@
 // moved into the local wizard (shared/onboarding-server).
 
 import { obj } from '../obj';
-import { canonicalHost } from '../model-tiers';
+import { detectHostPlan } from '../host-plan';
+import { canonicalHost, hostModelSnapshot } from '../model-tiers';
+import { readOneHostSettings } from '../one-settings';
 import { teamModeForLevel } from '../performance';
 import {
   hasResolvedOpenCodeState,
@@ -19,11 +21,47 @@ import type { OnboardingStep } from './prompts';
 
 export type LocalPreferenceStep = Extract<OnboardingStep, 'open-code' | 'performance' | 'team-confirmation' | 'code-graph'>;
 
-export function nextLocalPreferenceStep(state: unknown, host?: unknown): LocalPreferenceStep | null {
+export interface LocalPreferenceTarget {
+  plan: string;
+  modelsUpdatedAt: string;
+}
+
+export function currentLocalPreferenceTarget(
+  host: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): LocalPreferenceTarget {
+  const activeHost = canonicalHost(host);
+  const plan = detectHostPlan(activeHost, env);
+  const storedCatalog = readOneHostSettings(activeHost, env);
+  return {
+    plan,
+    // The one.json snapshot is the API-refreshed source. A brand-new/offline
+    // install or an offline plan transition falls back to the bundled target-plan
+    // date so configuredFor never combines one plan with another plan's catalog.
+    modelsUpdatedAt: storedCatalog?.plan === plan
+      ? storedCatalog.updatedAt
+      : hostModelSnapshot(activeHost, plan).updatedAt,
+  };
+}
+
+function configuredForMatches(value: unknown, target: LocalPreferenceTarget): boolean {
+  const configured = obj(value);
+  return configured?.plan === target.plan
+    && configured.modelsUpdatedAt === target.modelsUpdatedAt;
+}
+
+export function nextLocalPreferenceStep(
+  state: unknown,
+  host?: unknown,
+  target: LocalPreferenceTarget | null | undefined = undefined,
+): LocalPreferenceStep | null {
   const s = obj(state);
   if (!s || !s.stack) return null;
-  if (canonicalHost(host) !== 'opencode' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
+  const activeHost = canonicalHost(host);
+  if (activeHost !== 'opencode' && activeHost !== 'kilo' && !hasResolvedOpenCodeState(s.openCode)) return 'open-code';
   if (!hasValidPerformanceState(s.performance)) return 'performance';
+  const current = target === undefined ? currentLocalPreferenceTarget(activeHost) : target;
+  if (current && !configuredForMatches(s.configuredFor, current)) return 'performance';
 
   const performance = obj(s.performance);
   const level = performance && typeof performance.level === 'string' ? performance.level : '';

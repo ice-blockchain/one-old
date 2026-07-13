@@ -42,7 +42,7 @@ import { materializeFromProjectMemoryWrite, materializeFromToolInputHints, type 
 import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath } from './post-helpers';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
+const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent)$/i;
 
 export interface PostStackSetupDeps {
   logTokenUse?: (cwd: string, payload: unknown) => void;

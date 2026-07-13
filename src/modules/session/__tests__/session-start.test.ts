@@ -9,6 +9,7 @@ import type { Ctx, HookInput } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function ctx(cwd: string): Ctx {
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
@@ -27,9 +28,11 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
@@ -37,17 +40,26 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 function localPrefs(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const {
+    performance = { level: 'low', source: 'prompted' },
+    team = { mode: 'main-agent', source: 'prompted' },
+    ...rest
+  } = extra;
   return {
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    performance: { level: 'low', source: 'prompted' },
-    team: { mode: 'main-agent', source: 'prompted' },
+    ...hostScopedPerformancePrefs(
+      performance as Record<string, unknown>,
+      team as Record<string, unknown>,
+      'pro',
+    ),
     toolchain: initializeToolchainState({}),
-    ...extra,
+    ...rest,
   };
 }
 
@@ -125,12 +137,11 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
     onboardingComplete: true,
     confirmed: true,
     materializedStack: 'default|react-vite|supabase|none',
-    openCode: { enabled: false },
-    performance: { level: 'high' },
-    team: { mode: 'subagents', approved: true },
-    codeGraphProvider: 'gitnexus',
-    toolchain: initializeToolchainState(),
   }, (cwd) => {
+    writeLocalPrefs({
+      performance: { level: 'high', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+    });
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ private: true, packageManager: 'pnpm@9.0.0', workspaces: ['apps/*'] }), 'utf8');
     const app = path.join(cwd, 'apps', 'web');
     fs.mkdirSync(app, { recursive: true });
@@ -158,6 +169,20 @@ test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-c
     // global disable.
     assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), true, 'authed body activates + writes state');
+  });
+});
+
+test('main SessionStart removes only a recognized legacy Cursor capture before deferring', () => {
+  withProject(null, (cwd) => {
+    const legacy = path.join(cwd, '.traffic-one', 'cursor-models.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, JSON.stringify({ models: ['composer-2.5-fast'] }), 'utf8');
+    assert.equal(runSessionStart(ctxHost(cwd, 'cursor')).kind, 'noop');
+    assert.equal(fs.existsSync(legacy), false);
+
+    fs.writeFileSync(legacy, JSON.stringify({ models: ['custom'], owner: 'user' }), 'utf8');
+    runSessionStart(ctxHost(cwd, 'cursor'));
+    assert.equal(fs.existsSync(legacy), true, 'unknown/user-authored shape is preserved');
   });
 });
 
@@ -293,7 +318,7 @@ test('cursor: a pending new project surfaces the LIVE wizard URL in the user-fac
   try {
     withProject({ mode: 'new-project' }, (cwd) => {
       // A live server record → ensureOnboardingServer reuses its URL (no spawn).
-      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' });
+      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' }, process.env, 'cursor');
       const r = runSessionStartAuthed(ctxHost(cwd, 'cursor'));
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') {
@@ -311,7 +336,7 @@ test('windsurf: a pending new project surfaces a compact host-only wizard direct
   try {
     withProject({ mode: 'new-project' }, (cwd) => {
       const url = 'http://127.0.0.1:51998/?t=windsurf';
-      writeServerRecord(cwd, { pid: process.pid, port: 51998, token: 'windsurf', url, startedAt: 'x' });
+      writeServerRecord(cwd, { pid: process.pid, port: 51998, token: 'windsurf', url, startedAt: 'x' }, process.env, 'windsurf');
       const r = runSessionStartAuthed(ctxHost(cwd, 'windsurf'));
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') {
@@ -332,7 +357,7 @@ test('non-cursor: a pending new project keeps the plain banner (URL only via the
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
     withProject({ mode: 'new-project' }, (cwd) => {
-      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' });
+      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' }, process.env, 'claude');
       const r = runSessionStartAuthed(ctx(cwd)); // host=claude
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one [setup required]');
@@ -367,6 +392,23 @@ function subagentCtx(cwd: string): Ctx {
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function codexTranscriptSubagentCtx(cwd: string): Ctx {
+  const parentThread = '11111111-1111-4111-8111-111111111111';
+  const childThread = '22222222-2222-4222-8222-222222222222';
+  const input: HookInput = {
+    event: 'SessionStart',
+    host: 'codex',
+    cwd,
+    raw: {
+      // Codex reports the parent session id in child hooks. The rollout filename
+      // is the only reliable child-thread discriminator in this payload shape.
+      session_id: parentThread,
+      transcript_path: path.join(cwd, 'sessions', `${childThread}.jsonl`),
+    },
+  };
+  return { input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
 function materializeFixture(cwd: string, stack = 'minimal'): void {
   const t1 = path.join(cwd, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
@@ -388,6 +430,22 @@ test('subagent: never runs onboarding/auth on an un-onboarded project (no setup-
       assert.equal(r.kind, 'noop');
     }
     assert.ok(!/authenticat/i.test(String((r as { systemMessage?: string }).systemMessage || '')), 'subagent must not be asked to authenticate');
+  });
+});
+
+test('Codex transcript-thread mismatch takes the child fast path before model refresh, auth, or onboarding', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const globalSettings = process.env.TRAFFIC_ONE_STATE_PATH;
+    assert.ok(globalSettings);
+
+    const r = runSessionStart(codexTranscriptSubagentCtx(cwd));
+
+    assert.equal(r.kind, 'noop');
+    assert.equal(
+      fs.existsSync(globalSettings),
+      false,
+      'a child SessionStart must not write a bundled model snapshot or auth choice',
+    );
   });
 });
 

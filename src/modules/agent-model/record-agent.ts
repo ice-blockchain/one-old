@@ -29,7 +29,7 @@ import { inferTrafficOneSpawnRole } from './role-infer';
 // hex scan would false-positive on shas in the agent's reply.
 // `agent_?id` covers Codex's snake_case spawn result (`{"agent_id":"…"}`) —
 // camelCase-only matching left the registry empty on Codex, disabling the
-// duplicate-spawn gate exactly where send_input continuation is native.
+// duplicate-spawn gate exactly where collaboration continuation is native.
 // Leading `\b` so `subagent_id`/`subagentId` (a spawn-INPUT key Cursor may echo in the
 // post payload) cannot match via the `agent_id` substring and capture the wrong id.
 const AGENT_ID_RE = /\bagent[_ ]?id['"]?\s*[:=]\s*['"`]?([A-Za-z0-9][A-Za-z0-9._-]{5,63})/i;
