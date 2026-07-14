@@ -1,8 +1,8 @@
 // src/shared/state/traffic-one-paths.ts
-// Resolves durable per-user prefs + machine settings paths. All hosts first use
+// Resolves durable per-user prefs + machine settings paths. Every host uses
 // ~/.traffic-one/projects/<hash>/preferences.json and ~/.traffic-one/one.json.
-// OpenCode gets an extra fallback to its stable desktop app-support state root
-// before we fall back to project-local files beside the committed .one.json.
+// These paths are identity, not capability: a sandbox write denial must never
+// redirect private user state into the shared project.
 
 import * as fs from 'fs';
 import * as os from 'os';
@@ -11,17 +11,18 @@ import * as path from 'path';
 import type { HostId } from '../../core/types';
 import { STATE_DIR } from '../../config/paths';
 import { detectHost } from '../host';
+import { sha256 } from '../text';
 
 export const PROJECT_LOCAL_PREFS_REL = path.join(STATE_DIR, 'preferences.json');
 export const PROJECT_LOCAL_MACHINE_REL = path.join(STATE_DIR, 'machine.json');
 
-const GITIGNORE_LINES = [
-  '.traffic-one/preferences.json',
-  '.traffic-one/machine.json',
-  '.traffic-one/onboarding-server.json',
-  '.traffic-one/onboarding-complete.json',
-  '.traffic-one/onboarding-server.lock',
-  '.traffic-one/onboarding/',
+const LEGACY_PROJECT_LOCAL_RUNTIME = [
+  PROJECT_LOCAL_PREFS_REL,
+  PROJECT_LOCAL_MACHINE_REL,
+  path.join(STATE_DIR, 'onboarding-server.json'),
+  path.join(STATE_DIR, 'onboarding-complete.json'),
+  path.join(STATE_DIR, 'onboarding-server.lock'),
+  path.join(STATE_DIR, 'onboarding'),
 ] as const;
 
 export function projectLocalPrefsPath(cwd: string): string {
@@ -38,44 +39,54 @@ export function globalTrafficOneDir(env: NodeJS.ProcessEnv = process.env): strin
     : path.join(env.HOME || os.homedir(), '.traffic-one');
 }
 
-export function openCodeStateHome(env: NodeJS.ProcessEnv = process.env): string {
-  const home = env.HOME || os.homedir();
-  if (process.platform === 'darwin') {
-    return path.join(home, 'Library', 'Application Support', 'ai.opencode.desktop');
-  }
-  if (process.platform === 'win32') {
-    return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'ai.opencode.desktop');
-  }
-  return path.join(env.XDG_STATE_HOME || path.join(home, '.local', 'state'), 'ai.opencode.desktop');
+function isExactPath(value: string | undefined, expected: string): boolean {
+  return typeof value === 'string' && path.resolve(value) === expected;
 }
 
-// Probe whether the default machine-wide ~/.traffic-one tree is writable.
-export function isGlobalTrafficOneWritable(env: NodeJS.ProcessEnv = process.env): boolean {
-  if (env.TRAFFIC_ONE_PROJECT_PREFS_PATH || env.TRAFFIC_ONE_STATE_PATH) {
-    return true;
+// Remove only files/directories created by the retired project-local fallback.
+// The shared project state (.traffic-one/.one.json) is deliberately untouched.
+export function removeLegacyProjectLocalTrafficOneRuntime(cwd: string): void {
+  const root = path.resolve(cwd);
+  for (const relativePath of LEGACY_PROJECT_LOCAL_RUNTIME) {
+    try {
+      fs.rmSync(path.join(root, relativePath), { recursive: true, force: true });
+    } catch {
+      // Best-effort. Path selection remains global even when cleanup is denied.
+    }
   }
+}
+
+// Project-tree artifacts that a pre-guard plugin version could materialize INTO
+// the machine dir when a session ran with cwd=$HOME — <$HOME>/.traffic-one IS
+// the machine dir, so the "project" tree landed among machine state. These
+// names are never legitimate at the machine dir's top level; remove on sight.
+// Machine-owned entries (one.json, projects/, bin/, toolchains/,
+// windsurf-plugin-root, secret.env) are deliberately NOT listed.
+const STRAY_PROJECT_ARTIFACTS = [
+  '.one.json', 'manifest.json', 'rules', 'skills', 'plan.md', 'runs', 'digests',
+  'graph-preview.md', '.gitnexus', 'graphify-out', '.codegraph-build-lock',
+  '.agentignore', 'one-mcp-report.json', 'cursor-models.json', 'one-uid',
+  '.onboarding-main-sessions.json', 'backups', 'reports',
+] as const;
+
+// Self-heal for machines the pre-guard bug already touched. Also drops the
+// per-project prefs bucket the bogus "$HOME project" acquired (its hash is the
+// sha256 of the home dir), which carries the stale onboarding server record.
+export function removeStrayProjectArtifactsFromGlobalDir(env: NodeJS.ProcessEnv = process.env): void {
   const dir = globalTrafficOneDir(env);
-  const probe = path.join(dir, `.write-probe-${process.pid}`);
+  for (const name of STRAY_PROJECT_ARTIFACTS) {
+    try {
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    } catch {
+      // Best-effort — a denied delete never blocks the session.
+    }
+  }
   try {
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(probe, 'ok', { encoding: 'utf8', flag: 'wx' });
-    fs.unlinkSync(probe);
-    return true;
+    const home = path.resolve(env.HOME || os.homedir());
+    fs.rmSync(path.join(dir, 'projects', sha256(home)), { recursive: true, force: true });
   } catch {
-    try { fs.unlinkSync(probe); } catch { /* best-effort */ }
-    return false;
+    // best-effort
   }
-}
-
-export function usesProjectLocalTrafficOnePaths(
-  cwd: string,
-  host: HostId,
-  env: NodeJS.ProcessEnv = process.env,
-): boolean {
-  if (env.TRAFFIC_ONE_PROJECT_PREFS_PATH) {
-    return path.resolve(env.TRAFFIC_ONE_PROJECT_PREFS_PATH) === projectLocalPrefsPath(cwd);
-  }
-  return !isGlobalTrafficOneWritable(env);
 }
 
 // OpenCode runs hooks inside Electron where process.env.HOME may point at a
@@ -105,32 +116,21 @@ export function resolveTrafficOneEnv(
   const env = normalizeElectronEnvForTrafficOne(baseEnv, host);
   const resolved = path.resolve(cwd);
 
+  // Strip overrides emitted by plugin versions that redirected sandboxed hosts
+  // into the project. Deliberate non-project overrides remain available to tests
+  // and embedded callers.
+  if (isExactPath(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, projectLocalPrefsPath(resolved))) {
+    delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  }
+  if (isExactPath(env.TRAFFIC_ONE_STATE_PATH, projectLocalMachinePath(resolved))) {
+    delete env.TRAFFIC_ONE_STATE_PATH;
+  }
   if (env.TRAFFIC_ONE_PROJECT_PREFS_PATH || env.TRAFFIC_ONE_STATE_PATH) {
     return env;
   }
 
-  if (isGlobalTrafficOneWritable(env)) {
-    delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-    delete env.TRAFFIC_ONE_STATE_PATH;
-    return env;
-  }
-
-  if (host === 'opencode') {
-    const appStateHome = openCodeStateHome(env);
-    const appEnv: NodeJS.ProcessEnv = { ...env, XDG_STATE_HOME: appStateHome };
-    if (isGlobalTrafficOneWritable(appEnv)) {
-      env.XDG_STATE_HOME = appStateHome;
-      delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-      delete env.TRAFFIC_ONE_STATE_PATH;
-      return env;
-    }
-  }
-
-  {
-    env.TRAFFIC_ONE_PROJECT_PREFS_PATH = projectLocalPrefsPath(resolved);
-    env.TRAFFIC_ONE_STATE_PATH = projectLocalMachinePath(resolved);
-  }
-
+  delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  delete env.TRAFFIC_ONE_STATE_PATH;
   return env;
 }
 
@@ -182,38 +182,8 @@ export function trafficOneEnvShellPrefix(cwd: string, host?: HostId): string {
   if (host === 'opencode' && process.env.HOME && process.env.HOME !== resolved.HOME) {
     parts.push(envAssignment('HOME', resolved.HOME || os.homedir()));
   }
-  if (host === 'opencode' && resolved.XDG_STATE_HOME && process.env.XDG_STATE_HOME !== resolved.XDG_STATE_HOME) {
+  if (host === 'opencode' && process.env.XDG_STATE_HOME !== resolved.XDG_STATE_HOME) {
     parts.push(envAssignment('XDG_STATE_HOME', resolved.XDG_STATE_HOME));
   }
-  if (usesProjectLocalTrafficOnePaths(cwd, host, resolved)) {
-    parts.push(envAssignment('TRAFFIC_ONE_PROJECT_PREFS_PATH', resolved.TRAFFIC_ONE_PROJECT_PREFS_PATH!));
-    parts.push(envAssignment('TRAFFIC_ONE_STATE_PATH', resolved.TRAFFIC_ONE_STATE_PATH!));
-  }
   return parts.length ? `${parts.join(' ')} ` : '';
-}
-
-/*
- * Best-effort: keep project-local runtime files out of git when using fallbacks.
- */
-export function ensureProjectLocalTrafficOneGitignore(cwd: string): void {
-  const gitignorePath = path.join(path.resolve(cwd), '.gitignore');
-  let existing = '';
-  try {
-    existing = fs.readFileSync(gitignorePath, 'utf8');
-  } catch {
-    // no .gitignore yet
-  }
-  const missing = GITIGNORE_LINES.filter((line) => !existing.split('\n').some((l) => l.trim() === line));
-  if (!missing.length) return;
-  const block = [
-    '',
-    '# Traffic One — per-user / machine-local runtime (not committed)',
-    ...missing,
-    '',
-  ].join('\n');
-  try {
-    fs.writeFileSync(gitignorePath, existing.trimEnd() + block, 'utf8');
-  } catch {
-    // best-effort
-  }
 }

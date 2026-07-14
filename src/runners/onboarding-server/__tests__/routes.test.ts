@@ -6,7 +6,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { startOnboardingServer, type RunningServer } from '../server';
-import { completionSentinelExists } from '../../../shared/onboarding-server/registry';
 
 type Json = Record<string, unknown> | null;
 
@@ -116,8 +115,8 @@ test('routes: /state reports the first unresolved step', async () => {
   });
 });
 
-test('routes: answering steps advances; code-graph runs a task; complete writes the sentinel', async () => {
-  await withServer(existing, async (server, cwd) => {
+test('routes: answering steps advances; code-graph runs a task; complete acknowledges', async () => {
+  await withServer(existing, async (server) => {
     let res = await call(server.port, 'POST', '/answer', { step: 'open-code', value: 'enable' });
     assert.equal(res.status, 200);
     assert.equal(rec(rec(res.json).view).step, 'performance');
@@ -137,32 +136,29 @@ test('routes: answering steps advances; code-graph runs a task; complete writes 
     const done = await call(server.port, 'POST', '/complete');
     assert.equal(done.status, 200);
     assert.equal(rec(done.json).ok, true);
-    assert.equal(completionSentinelExists(cwd, process.env, 'claude'), true);
   });
 });
 
-test('routes: a failed install task leaves the completion sentinel unwritten (gate stays closed)', async () => {
-  await withServer(existing, async (server, cwd) => {
+test('routes: a failed install task surfaces as error so the frontend withholds /complete', async () => {
+  await withServer(existing, async (server) => {
     await call(server.port, 'POST', '/answer', { step: 'open-code', value: 'enable' });
     await call(server.port, 'POST', '/answer', { step: 'performance', value: 'low' });
     const res = await call(server.port, 'POST', '/answer', { step: 'code-graph', value: 'gitnexus' });
     const taskId = rec(res.json).taskId;
     assert.equal(typeof taskId, 'string');
 
+    // Completion truth is the state predicates; the frontend re-offers the
+    // install on 'error' instead of proceeding to POST /complete.
     const taskStatus = await waitForTask(server.port, String(taskId));
     assert.equal(taskStatus, 'error');
-    // The frontend withholds POST /complete on a failed install, so the server
-    // never wrote the sentinel — onboarding is NOT marked complete.
-    assert.equal(completionSentinelExists(cwd, process.env, 'claude'), false);
   }, 'fail');
 });
 
-test('routes: completion is written only for the server active host', async () => {
-  await withServer(existing, async (server, cwd) => {
+test('routes: /complete acknowledges regardless of the server active host', async () => {
+  await withServer(existing, async (server) => {
     const done = await call(server.port, 'POST', '/complete');
     assert.equal(done.status, 200);
-    assert.equal(completionSentinelExists(cwd, process.env, 'cursor'), true);
-    assert.equal(completionSentinelExists(cwd, process.env, 'codex'), false);
+    assert.equal(rec(done.json).ok, true);
   }, 'noop', 'cursor');
 });
 

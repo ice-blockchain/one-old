@@ -21,7 +21,7 @@ test('host flow matrix: plan, team recommendation, and model routing stay isolat
     { host: 'windsurf', plan: 'free', level: 'low', fallback: 'SWE-1.6 Slow' },
     { host: 'windsurf', plan: 'pro', level: 'balanced', fallback: 'SWE-1.6 Slow', architect: 'SWE-1.7 Lightning Beta' },
     { host: 'kilo', plan: 'free', level: 'low', fallback: 'kilo/kilo-auto/free' },
-    { host: 'claude', plan: 'pro', level: 'balanced', fallback: 'haiku', architect: 'sonnet' },
+    { host: 'claude', plan: 'pro', level: 'balanced', fallback: 'claude-haiku-4-5', architect: 'claude-sonnet-5' },
     { host: 'codex', plan: 'plus', level: 'balanced', fallback: 'gpt-5.4-mini', architect: 'gpt-5.6-terra' },
     { host: 'cursor', plan: 'pro', level: 'balanced', fallback: 'composer-2.5', architect: 'gpt-5.6-terra' },
   ];

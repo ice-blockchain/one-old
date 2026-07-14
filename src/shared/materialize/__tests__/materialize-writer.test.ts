@@ -196,6 +196,10 @@ test('materialized project artifacts contain no bundled model ids or plugin-main
     }
     const text = generatedProjectText(project);
     for (const model of bundledModels) {
+      // Copilot Free's `auto` is a routing mode, not a concrete bundled model
+      // id. Treating that ordinary English word as a leak makes legitimate
+      // project guidance ("auto", "never auto-pick", etc.) fail this test.
+      if (model === 'auto') continue;
       assert.doesNotMatch(text, modelTokenPattern(model), `project artifact leaked bundled model id ${model}`);
     }
   });

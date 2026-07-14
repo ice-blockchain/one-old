@@ -18,6 +18,7 @@ import {
   tierModelTable,
 } from '../model-tiers';
 import {
+  CURSOR_MODEL_FLOOR,
   HOST_IDS,
   HOST_MODELS,
   OPENCODE_FREE_MODELS,
@@ -35,7 +36,7 @@ test('canonicalTier maps ids + aliases and rejects unknown/non-strings', () => {
 });
 
 test('resolveModel resolves per host', () => {
-  assert.equal(resolveModel('highest', 'claude'), 'opus');
+  assert.equal(resolveModel('highest', 'claude'), 'claude-opus-4-8');
   assert.equal(resolveModel('balanced', 'codex'), 'gpt-5.6-terra');
   // Cursor anchors to bare model FAMILIES (not Anthropic aliases, not full reasoning-variant
   // slugs) — the build's concrete slug is matched family-aware / captured separately.
@@ -48,17 +49,24 @@ test('resolveModel resolves per host', () => {
   assert.equal(resolveModel('highest', 'kilo'), 'kilo/kilo-auto/frontier');
   assert.equal(resolveModel('balanced', 'kilo'), 'kilo/kilo-auto/balanced');
   assert.equal(resolveModel('cheapest', 'kilo'), 'kilo/kilo-auto/free');
-  assert.equal(resolveModel('highest', 'windsurf'), 'SWE-1.6 Slow');
-  assert.equal(resolveModel('balanced', 'windsurf'), 'SWE-1.6 Slow');
+  assert.equal(resolveModel('highest', 'windsurf'), 'SWE-1.7 Beta');
+  assert.equal(resolveModel('balanced', 'windsurf'), 'SWE-1.7 Beta');
   assert.equal(resolveModel('cheapest', 'windsurf'), 'SWE-1.6 Slow');
   assert.equal(resolveModel('bad', 'claude'), null);
 });
 
 test('HOST_MODELS keeps each host catalog self-contained and every model row valid', () => {
   assert.deepEqual(Object.keys(HOST_MODELS).sort(), [...HOST_IDS].sort());
+  // Per-host snapshot version: a row change REQUIRES a date bump (same-date tier
+  // changes are rejected by parseModelStatusResponse), and a date must not bump
+  // without a row change.
+  const expectedDates: Record<string, string> = {
+    claude: '2026-07-14', codex: '2026-07-13', cursor: '2026-07-14', opencode: '2026-07-14',
+    copilot: '2026-07-14', windsurf: '2026-07-14', kilo: '2026-07-13',
+  };
   for (const host of HOST_IDS) {
     const config = HOST_MODELS[host];
-    assert.equal(config.updatedAt, '2026-07-13', `${host} catalog date`);
+    assert.equal(config.updatedAt, expectedDates[host], `${host} catalog date`);
     for (const tier of TIER_IDS) {
       const models = config.tiers[tier];
       assert.ok(models.length > 0, `${host}.${tier} is non-empty`);
@@ -81,7 +89,7 @@ test('OpenCode delegation models are the complete ordered free catalog and paid 
       'opencode/north-mini-code-free',
       'opencode/mimo-v2.5-free',
       'opencode/nemotron-3-ultra-free',
-      'opencode/big-pickle',
+      'opencode/gpt-5-nano',
     ],
   );
   const plus = modelTierSnapshot('opencode', 'plus');
@@ -95,7 +103,7 @@ test('modelTierSnapshot is plan-aware and includes preferred-first fallback fami
   assert.deepEqual(modelTierSnapshot('cursor', 'pro'), {
     highest: ['claude-fable-5', 'gpt-5.6-sol', 'claude-opus-4-8', 'gpt-5.5', 'composer-2.5'],
     balanced: ['gpt-5.6-terra', 'claude-sonnet-5', 'gpt-5.5', 'claude-4.6-sonnet', 'composer-2.5'],
-    cheapest: ['composer-2.5'],
+    cheapest: ['composer-2.5', 'gpt-5.4-mini', 'gemini-3.5-flash', 'claude-4.5-haiku'],
   });
   assert.deepEqual(modelTierSnapshot('cursor', 'free'), {
     highest: ['composer-2.5'],
@@ -145,7 +153,10 @@ test('model snapshot parsers strictly validate host, plan, date, tier shape, and
   for (const invalid of invalidResponses) {
     assert.equal(parseModelStatusResponse(invalid), null);
   }
-  assert.equal(parseModelStatusResponse(response, { expectedHost: 'codex' }), null);
+  // Wrong-host rejection works via the same-catalog-date tier comparison, so the
+  // probe host must share the response's updatedAt (copilot + cursor are both
+  // stamped the same date; codex may lag behind on an older date).
+  assert.equal(parseModelStatusResponse(response, { expectedHost: 'copilot' }), null);
   assert.equal(parseModelStatusResponse(response, { expectedPlan: 'free' }), null);
 });
 
@@ -157,7 +168,7 @@ test('same catalog date with changed tiers is rejected until updatedAt is bumped
   };
   assert.equal(parseModelStatusResponse(changedSameDate, { current }), null);
 
-  const changedNewDate = { ...changedSameDate, updatedAt: '2026-07-14' };
+  const changedNewDate = { ...changedSameDate, updatedAt: '2026-07-15' };
   assert.deepEqual(parseModelStatusResponse(changedNewDate, { current }), changedNewDate);
 });
 
@@ -181,7 +192,7 @@ test('resolveModel: Cursor Free overlay maps the frontier tiers to Composer; pai
     'claude-fable-5', 'gpt-5.6-sol', 'claude-opus-4-8', 'gpt-5.5', 'composer-2.5',
   ]);
   // claude/codex ignore the plan arg entirely.
-  assert.equal(resolveModel('highest', 'claude', 'free'), 'opus');
+  assert.equal(resolveModel('highest', 'claude', 'free'), 'claude-opus-4-8');
   assert.equal(resolveModel('highest', 'codex', 'free'), 'gpt-5.6-sol');
 });
 
@@ -201,7 +212,7 @@ test('Cursor family anchor accepts any plan/build reasoning variant (the core fi
 
 test('tierModelTable: Cursor and Windsurf cells are plan-aware', () => {
   const free = tierModelTable('highest', 'free');
-  assert.deepEqual(free, { tier: 'highest', claude: 'opus', codex: 'gpt-5.6-sol', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'auto', windsurf: 'SWE-1.6 Slow', kilo: 'kilo/kilo-auto/frontier' });
+  assert.deepEqual(free, { tier: 'highest', claude: 'claude-opus-4-8', codex: 'gpt-5.6-sol', cursor: 'composer-2.5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'auto', windsurf: 'SWE-1.7 Beta', kilo: 'kilo/kilo-auto/frontier' });
   const paid = tierModelTable('highest', 'max');
   assert.equal(paid?.cursor, 'claude-fable-5');
   assert.equal(paid?.windsurf, 'SWE-1.7 Beta');
@@ -209,9 +220,11 @@ test('tierModelTable: Cursor and Windsurf cells are plan-aware', () => {
   assert.equal(tierModelTable('highest')?.cursor, 'claude-fable-5');
 });
 
-test('resolveModel: Windsurf Free stays on SWE-1.6 Slow while paid plans expose three verified selector models', () => {
-  assert.equal(resolveModel('highest', 'windsurf', 'free'), 'SWE-1.6 Slow');
-  assert.equal(resolveModel('balanced', 'windsurf', 'free'), 'SWE-1.6 Slow');
+test('resolveModel: Windsurf Free prefers zero-credit SWE-1.7 while paid plans expose three verified selector models', () => {
+  // SWE-1.7 costs 0 credits (docs.devin.ai), so even Free prefers it for the
+  // capability tiers; cheapest stays on the SWE-1.6 workhorse.
+  assert.equal(resolveModel('highest', 'windsurf', 'free'), 'SWE-1.7 Beta');
+  assert.equal(resolveModel('balanced', 'windsurf', 'free'), 'SWE-1.7 Beta');
   assert.equal(resolveModel('cheapest', 'windsurf', 'free'), 'SWE-1.6 Slow');
   for (const plan of ['pro', 'max', 'team', 'enterprise']) {
     assert.equal(resolveModel('highest', 'windsurf', plan), 'SWE-1.7 Beta', `highest for ${plan}`);
@@ -282,7 +295,7 @@ test('canonicalHost defaults to claude for unknowns', () => {
 
 test('tierModelTable returns all host columns', () => {
   assert.deepEqual(tierModelTable('highest'), {
-    tier: 'highest', claude: 'opus', codex: 'gpt-5.6-sol', cursor: 'claude-fable-5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'gpt-5.4', windsurf: 'SWE-1.6 Slow', kilo: 'kilo/kilo-auto/frontier',
+    tier: 'highest', claude: 'claude-opus-4-8', codex: 'gpt-5.6-sol', cursor: 'claude-fable-5', opencode: OPENCODE_FREE_MODELS[0], copilot: 'claude-opus-4.8', windsurf: 'SWE-1.7 Beta', kilo: 'kilo/kilo-auto/frontier',
   });
   assert.equal(tierModelTable('bad'), null);
 });
@@ -305,6 +318,8 @@ test('opencode Go (plus) plan: paid opencode-go overlay + fallback chain; free i
   assert.equal(accept[0], 'opencode-go/qwen3.7-max');
   assert.ok(accept.includes('opencode-go/minimax-m3'));
   assert.equal(accept[accept.length - 1], 'opencode/deepseek-v4-flash-free', 'highest has a free tail');
+  // (opencode/gpt-5-nano is the permanently-free Zen exception — it lives only in the
+  // base free rows today; exempt it here if it ever joins a Go tail.)
   assert.ok(!accept.some((m) => /^opencode\/(claude|gpt|gemini)/.test(m)), 'no Zen frontier models offered on Go');
   assert.deepEqual(modelTierSnapshot('opencode', 'plus').cheapest, [
     'opencode-go/deepseek-v4-flash',
@@ -321,8 +336,8 @@ test('canonicalPlan resolves ids/aliases per host and falls back to the host def
   assert.equal(canonicalPlan('claude', 'maximum'), 'max');
   assert.equal(canonicalPlan('claude', 'team'), 'team');
   assert.equal(canonicalPlan('codex', 'plus'), 'plus');
-  assert.equal(canonicalPlan('codex', 'prolite'), 'plus'); // ChatGPT Go / Pro-Lite → Plus
-  assert.equal(canonicalPlan('codex', 'Pro-Lite'), 'plus'); // separators + case normalized
+  assert.equal(canonicalPlan('codex', 'prolite'), 'pro'); // Pro-Lite is badged "Pro" in the Codex app
+  assert.equal(canonicalPlan('codex', 'Pro-Lite'), 'pro'); // separators + case normalized
   assert.equal(canonicalPlan('cursor', 'business'), 'business');
   assert.equal(canonicalPlan('opencode', 'free'), 'free');
   assert.equal(canonicalPlan('opencode', 'pro'), 'free');
@@ -333,10 +348,10 @@ test('canonicalPlan resolves ids/aliases per host and falls back to the host def
   assert.equal(canonicalPlan('windsurf', 'teams'), 'team');
   assert.equal(canonicalPlan('windsurf', 'business'), 'free');
   // cross-host / unknown / non-string → host default
-  assert.equal(canonicalPlan('claude', 'plus'), 'pro'); // plus isn't a claude plan → claude default
+  assert.equal(canonicalPlan('claude', 'plus'), 'free'); // plus isn't a claude plan → claude default
   assert.equal(canonicalPlan('codex', 'max'), 'free'); // max isn't a codex plan → codex default
   assert.equal(canonicalPlan('cursor', 'nope'), 'free'); // unknown → cursor default
-  assert.equal(canonicalPlan('claude', 5), 'pro'); // non-string → default
+  assert.equal(canonicalPlan('claude', 5), 'free'); // non-string → default
 });
 
 test('modelTierSnapshot exposes preferred-first fallback FAMILIES', () => {
@@ -351,10 +366,11 @@ test('modelTierSnapshot exposes preferred-first fallback FAMILIES', () => {
   assert.ok(highest.includes('gpt-5.6-sol'));
   assert.ok(highest.includes('claude-fable-5'));
   assert.equal(highest[highest.length - 1], 'composer-2.5', 'composer is the last-resort fallback');
-  // cheapest has no configured fallback → just itself.
-  assert.deepEqual(modelTierSnapshot('cursor', 'pro').cheapest, ['composer-2.5']);
-  // Claude aliases stay strict; Codex exposes documented fallbacks.
-  assert.deepEqual(modelTierSnapshot('claude', 'pro').balanced, ['sonnet']);
+  // cheapest keeps the free Composer floor preferred, with cheap paid fallbacks.
+  assert.equal(modelTierSnapshot('cursor', 'pro').cheapest[0], CURSOR_MODEL_FLOOR);
+  assert.deepEqual(modelTierSnapshot('cursor', 'pro').cheapest, ['composer-2.5', 'gpt-5.4-mini', 'gemini-3.5-flash', 'claude-4.5-haiku']);
+  // Claude aliases stay preferred; concrete Anthropic ids are accepted fallbacks.
+  assert.deepEqual(modelTierSnapshot('claude', 'pro').balanced, ['claude-sonnet-5', 'claude-sonnet-4-6', 'claude-opus-4-7', 'sonnet']);
   assert.deepEqual(modelTierSnapshot('codex', 'pro').balanced, ['gpt-5.6-terra', 'gpt-5.4', 'gpt-5.5']);
   assert.deepEqual(modelTierSnapshot('kilo', 'free').highest, ['kilo/kilo-auto/frontier', 'kilo/kilo-auto/balanced', 'kilo/kilo-auto/efficient', 'kilo/kilo-auto/free']);
 });
@@ -368,7 +384,8 @@ test('modelMatchesAny: the preferred family or any same-tier fallback variant sa
 });
 
 test('recommendTierForPlan maps each plan to its configured tier', () => {
-  assert.equal(recommendTierForPlan('claude', 'free'), 'balanced');
+  // free = the undetectable-metadata fallback → fully conservative.
+  assert.equal(recommendTierForPlan('claude', 'free'), 'cheapest');
   assert.equal(recommendTierForPlan('claude', 'pro'), 'balanced');
   assert.equal(recommendTierForPlan('claude', 'max'), 'highest');
   assert.equal(recommendTierForPlan('claude', 'team'), 'balanced');

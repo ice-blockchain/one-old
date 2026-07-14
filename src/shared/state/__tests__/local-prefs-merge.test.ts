@@ -100,21 +100,17 @@ test('scrubProjectStateLocalPrefs strips machine-local prefs a stale runner left
   });
 });
 
-test('readProjectPrefs falls back to hashed host prefs when project-local prefs are selected but missing', () => {
+test('readProjectPrefs never reads a project-local preferences file', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-prefs-fallback-'));
   const cwd = path.join(dir, 'project');
   const home = path.join(dir, 'home');
-  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevHome = process.env.HOME;
   const prevXdg = process.env.XDG_STATE_HOME;
-  fs.mkdirSync(cwd, { recursive: true });
-  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, '.traffic-one', 'preferences.json');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
   process.env.HOME = home;
   delete process.env.XDG_STATE_HOME;
   try {
-    const hashedPrefs = path.join(home, '.traffic-one', 'projects', projectRootHash(cwd), 'preferences.json');
-    fs.mkdirSync(path.dirname(hashedPrefs), { recursive: true });
-    fs.writeFileSync(hashedPrefs, JSON.stringify({
+    fs.writeFileSync(path.join(cwd, '.traffic-one', 'preferences.json'), JSON.stringify({
       hosts: {
         codex: {
           performance: { level: 'balanced', source: 'prompted' },
@@ -125,14 +121,8 @@ test('readProjectPrefs falls back to hashed host prefs when project-local prefs 
     }), 'utf8');
 
     const prefs = readProjectPrefs(cwd);
-    const hosts = prefs.hosts as Record<string, Record<string, unknown>>;
-    const codex = hosts.codex;
-    assert.ok(codex);
-    assert.deepEqual(codex.performance, { level: 'balanced', source: 'prompted' });
-    assert.deepEqual(codex.team, { mode: 'subagents', source: 'prompted', approved: true });
+    assert.equal(prefs.hosts, undefined);
   } finally {
-    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevHome === undefined) delete process.env.HOME;
     else process.env.HOME = prevHome;
     if (prevXdg === undefined) delete process.env.XDG_STATE_HOME;

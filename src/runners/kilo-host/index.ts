@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../hooks/fail-closed';
 import {
   KILO_HOOK_CHAT_MESSAGE,
   KILO_HOOK_EVENT,
@@ -514,7 +515,7 @@ function runTrafficOne(subcommand, payload) {
   if (!projectRoot) { debugLog('skip-no-root', { subcommand, cwd: payload.cwd || null }); return { kind: 'noop' }; }
   const nodePath = resolveNodeExecutable();
   if (!nodePath) {
-    const reason = 'Traffic One Kilo pre-tool gate could not find a Node.js runtime, so this tool call is blocked fail-closed.';
+    const reason = ${JSON.stringify(`Traffic One Kilo pre-tool gate could not find a Node.js runtime, so this tool call is blocked fail-closed. ${PRE_TOOL_REMEDIATION}`)};
     return subcommand === 'before-tool-use' ? { kind: 'deny', reason } : { kind: 'noop' };
   }
   const input = JSON.stringify({ ...payload, cwd: projectRoot, projectRoot, workspaceRoot: projectRoot });
@@ -527,7 +528,7 @@ function runTrafficOne(subcommand, payload) {
   if (result.error || result.status !== 0) {
     debugLog('spawn-fail', { subcommand, projectRoot, execPath: process.execPath, nodePath, status: result.status, error: result.error ? String(result.error.message || result.error) : null, stderr: String(result.stderr || '').slice(0, 500) });
     if (subcommand === 'before-tool-use') {
-      return { kind: 'deny', reason: 'Traffic One Kilo pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed.' };
+      return { kind: 'deny', reason: ${JSON.stringify(preToolFailureReason('Kilo'))} };
     }
     return { kind: 'noop' };
   }

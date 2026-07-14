@@ -17,6 +17,15 @@ import {
   uninstallWrapper,
   wrapperSource,
 } from '../index';
+import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../../hooks/fail-closed';
+
+test('generated wrapper carries the shared fail-closed prose verbatim', () => {
+  const body = wrapperSource('/tmp/plugin', '2026-01-01T00:00:00Z');
+  // The wrapper is dependency-free at runtime, so the shared strings are
+  // interpolated at generation time — this locks them to hooks/fail-closed.ts.
+  assert.ok(body.includes(JSON.stringify(preToolFailureReason('Kilo'))));
+  assert.ok(body.includes(PRE_TOOL_REMEDIATION));
+});
 
 function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-host-'));

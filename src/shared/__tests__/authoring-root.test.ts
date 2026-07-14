@@ -8,6 +8,8 @@ import {
   findAuthoringRootContaining,
   hasPluginAuthoringMarkers,
   isInsidePluginAuthoringRoot,
+  isMachineConfigRoot,
+  isNonProjectRoot,
   isPluginAuthoringRoot,
   resetAuthoringRootCache,
 } from '../authoring-root';
@@ -94,15 +96,29 @@ test('the real repo detects (root and subdir)', () => {
 
 test('writeState is a silent no-op at an authoring root (and still writes elsewhere)', async () => {
   const { writeState, readState } = await import('../state');
-  withTmp((dir) => {
-    makeSourceRepo(dir);
-    writeState(dir, { mode: 'existing-codebase', stack: 'minimal' });
-    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false, 'no .traffic-one in the repo');
-  });
-  withTmp((dir) => {
-    writeState(dir, { mode: 'existing-codebase', stack: 'minimal' });
-    assert.equal((readState(dir) as Record<string, unknown>).mode, 'existing-codebase', 'plain projects still write');
-  });
+  const userState = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoring-user-state-'));
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(userState, 'projects', 'preferences.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(userState, 'one.json');
+  try {
+    withTmp((dir) => {
+      makeSourceRepo(dir);
+      writeState(dir, { mode: 'existing-codebase', stack: 'minimal' });
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false, 'no .traffic-one in the repo');
+    });
+    withTmp((dir) => {
+      writeState(dir, { mode: 'existing-codebase', stack: 'minimal' });
+      assert.equal((readState(dir) as Record<string, unknown>).mode, 'existing-codebase', 'plain projects still write');
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'preferences.json')), false, 'plain projects never receive private preferences');
+    });
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    fs.rmSync(userState, { recursive: true, force: true });
+  }
 });
 
 test('prepareReport refuses an authoring root before minting anything', async () => {
@@ -136,5 +152,42 @@ test('onboarding server refuses an authoring root (no spawn, no launch.json)', a
     assert.equal(result.port, 0);
     assert.equal(result.started, false);
     assert.equal(fs.existsSync(path.join(dir, '.claude', 'launch.json')), false);
+  });
+});
+
+test('machine-config space is never a project root: $HOME, /, and the machine state dir', () => {
+  withTmp((dir) => {
+    const home = path.join(dir, 'home');
+    fs.mkdirSync(path.join(home, '.traffic-one', 'projects'), { recursive: true });
+    const savedHome = process.env.HOME;
+    const savedXdg = process.env.XDG_STATE_HOME;
+    process.env.HOME = home;
+    delete process.env.XDG_STATE_HOME;
+    try {
+      assert.equal(isMachineConfigRoot(home), true); // $HOME itself
+      assert.equal(isMachineConfigRoot(path.parse(home).root), true); // filesystem root
+      assert.equal(isMachineConfigRoot(path.join(home, '.traffic-one')), true);
+      assert.equal(isMachineConfigRoot(path.join(home, '.traffic-one', 'projects')), true);
+      assert.equal(isNonProjectRoot(home), true);
+      // A normal project under home stays a valid project root.
+      const project = path.join(home, 'work', 'app');
+      fs.mkdirSync(project, { recursive: true });
+      assert.equal(isMachineConfigRoot(project), false);
+      assert.equal(isNonProjectRoot(project), false);
+      // An XDG override moves the machine dir — guarded at the new location too.
+      process.env.XDG_STATE_HOME = path.join(dir, 'xdg');
+      assert.equal(isMachineConfigRoot(path.join(dir, 'xdg', 'traffic-one', 'rules')), true);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+      if (savedXdg === undefined) delete process.env.XDG_STATE_HOME; else process.env.XDG_STATE_HOME = savedXdg;
+    }
+  });
+});
+
+test('isNonProjectRoot covers the authoring repo exactly like isPluginAuthoringRoot', () => {
+  withTmp((dir) => {
+    makeSourceRepo(dir);
+    assert.equal(isNonProjectRoot(dir), true);
+    assert.equal(isNonProjectRoot(path.join(dir, 'src')), true);
   });
 });

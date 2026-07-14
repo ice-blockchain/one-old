@@ -11,15 +11,13 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { authRequiredMessage } from '../shared/auth';
 import { obj } from '../shared/obj';
-import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
+import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
+import { wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
 const OPENCODE_NOOP = JSON.stringify({ kind: 'noop' });
-const OPENCODE_PRE_TOOL_FAIL_CLOSED = JSON.stringify({
-  kind: 'deny',
-  reason: 'Traffic One OpenCode pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed. Run Traffic One doctor and retry after the plugin is healthy.',
-});
+const OPENCODE_PRE_TOOL_FAIL_CLOSED = wrapperPreToolDeny('OpenCode');
 
 function sessionStartFallback(env: NodeJS.ProcessEnv): string {
   return JSON.stringify({ kind: 'context', context: authRequiredMessage(env) });
@@ -51,11 +49,11 @@ export async function runOpenCodeHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: OPENCODE_NOOP, exitCode: 0 };
-  const cwd = cwdFromStdin(stdin);
-  if (cwd) applyTrafficOneEnv(cwd, 'opencode', env);
-  const adapter = makeOpenCodeAdapter();
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const cwd = cwdFromStdin(stdin);
+    if (cwd) initializeTrafficOneEnv(cwd, 'opencode', env);
+    const adapter = makeOpenCodeAdapter();
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand, '--host=opencode'] });
     return { stdout: stdout || OPENCODE_NOOP, exitCode: 0 };
   } catch {

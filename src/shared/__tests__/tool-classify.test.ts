@@ -15,6 +15,7 @@ import {
   parsedToolInput,
 } from '../tool-classify';
 import type { ToolInput } from '../../core/types';
+import { onboardingWaitCommand } from '../onboarding-server/wait-command';
 
 test('tool-name classification (host-prefixed names normalized)', () => {
   assert.equal(normalizedToolName('mcp.Bash'), 'Bash');
@@ -31,7 +32,7 @@ test('tool-name classification (host-prefixed names normalized)', () => {
 });
 
 test('isOnboardingWaitCommand recognizes the wait command from Windsurf command_line shape', () => {
-  const waitCmd = 'node "/x/dist/scripts/onboarding-wait.cjs" "/proj" "--host=windsurf"';
+  const waitCmd = onboardingWaitCommand('/proj', 'windsurf');
   // Windsurf shape: the onboarding gate passes canonicalToolName (→ "Bash") + the
   // raw tool_input, which carries the command as `command_line`. Previously the empty
   // command extraction made this false, wrongly denying the wait command.
@@ -120,7 +121,7 @@ test('parsedToolInput lifts command/path/content off the parsed tool (Cursor has
 });
 
 test('REGRESSION: a Cursor wait command + orientation read now classify as allowed', () => {
-  const waitTool = cursorTool({ command: 'node "/x/scripts/onboarding-wait.cjs" "/proj"' });
+  const waitTool = cursorTool({ command: onboardingWaitCommand('/proj', 'cursor') });
   assert.equal(isOnboardingWaitCommand(canonicalToolName(waitTool), parsedToolInput(waitTool) || {}), true);
   const readTool = cursorTool({ class: 'file-read', rawName: 'before-read-file', filePath: '/proj/x.ts' });
   assert.equal(isReadOnlyOrientationToolUse(canonicalToolName(readTool), parsedToolInput(readTool) || {}), true);

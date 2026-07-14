@@ -13,7 +13,8 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
+import { stampEmitMarker } from '../../shared/once';
 import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
@@ -25,8 +26,8 @@ import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
-import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
-import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
@@ -57,48 +58,52 @@ import { sweepTrafficOneRetention } from '../../shared/retention';
 import { refreshModelStatusForSession } from './model-status-refresh';
 import { cleanupLegacyCursorModels } from '../../shared/materialize/cursor-models';
 import { sessionPerformanceContext } from '../../shared/session-performance-context';
+import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+import { removeStrayProjectArtifactsFromGlobalDir } from '../../shared/state/traffic-one-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
 
 // Surface the live wizard URL in the setup banner. Host-gated to Cursor/Windsurf
-// (they need the URL in the visible chat channel — see formatWizardBanner) so we
-// don't spawn the server on other hosts; spawning up front is idempotent (the PreToolUse gate
-// reuses it). Best-effort: a spawn failure falls back to the plain banner (the
-// PreToolUse deny still carries the URL).
+// because those hosts need the URL in their visible banner channel. The
+// agent-facing directive below handles startup or recovery for every host.
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return banner;
-  try {
-    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd, { host: ctx.host }).url, banner);
-  } catch {
-    return banner;
-  }
+  const prepared = prepareOnboardingServer(cwd, ctx.host);
+  return prepared.kind === 'ready'
+    ? formatWizardBanner(ctx.host, prepared.server.url, banner)
+    : banner;
 }
 
-// The agent-facing setup directive. Cursor needs its full host-specific recipe to surface
-// the URL. Windsurf gets a compact host-only directive rather than instructions for other
-// editors. Other hosts keep the plain setup-pending note. Best-effort: a server-spawn
-// failure falls back to the plain note (the PreToolUse deny still carries the URL).
+// The agent-facing setup directive. Every host receives either a live wizard URL
+// plus waiter, or an exact approved bootstrap command when its hook sandbox cannot
+// write the canonical user-local runtime. OpenCode/Kilo/Windsurf keep compact,
+// host-safe prose; Claude/Codex/Cursor/Copilot receive the full walkthrough.
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
-  // OpenCode/Kilo: the full setup-pending block (with "do NOT…" behavioral
-  // overrides) can trigger prompt-injection safety training when injected via
-  // system prompt. Use a minimal, factual message instead.
+  const prepared = prepareOnboardingServer(cwd, ctx.host);
+  if (prepared.kind !== 'ready') return prepared.reason;
+  const { server, waitCommand } = prepared;
+  if (!server.url || server.url.includes(':0/')) return block('setup-pending');
+  // Stamp the shared URL marker so the wait runner's terminal banner doesn't
+  // print the same link a second time in the same turn (observed on Cursor).
+  stampEmitMarker(cwd, 'wizard-url-shown');
+  // OpenCode/Kilo: keep this factual and compact so their prompt-injection
+  // filters do not reject a multi-host walkthrough. The live URL and executable
+  // waiter are still present on the first prompt.
   if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-    return 'Traffic One project setup is required. A setup wizard will open — share the link with the user when available. Building is blocked until setup completes.';
+    return [
+      'Traffic One project setup is required before building.',
+      `Setup link: ${server.url}`,
+      `Wait command: ${waitCommand}`,
+      'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
+    ].join('\n\n');
   }
-  if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return block('setup-pending');
-  try {
-    const server = ensureOnboardingServer(cwd, { host: ctx.host });
-    if (!server.url || server.url.includes(':0/')) return block('setup-pending');
-    if (ctx.host === 'windsurf') {
-      const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) };
-      return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.url, vars.WAIT_CMD));
-    }
-    return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
-  } catch {
-    return block('setup-pending');
+  if (ctx.host === 'windsurf') {
+    const vars = { URL: server.url, WAIT_CMD: waitCommand };
+    return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.url, waitCommand));
   }
+  return block('server-deny-reason', { URL: server.url, WAIT_CMD: waitCommand });
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
@@ -175,8 +180,14 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
 }
 
 function runSessionStartInner(ctx: Ctx): HookResult {
-  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
+  // Self-heal machines the pre-guard bug touched: project artifacts materialized
+  // into the machine dir (session cwd = $HOME) are never legitimate there.
+  // Deletes only never-legitimate names; runs before the stand-down guard so a
+  // $HOME session still heals itself.
+  removeStrayProjectArtifactsFromGlobalDir();
+  if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = sessionProjectRoot(ctx);
+  initializeTrafficOneEnv(cwd, ctx.host);
 
   // A subagent must never run the full session-start hook (auth gate + onboarding +
   // mode routing). Onboarding belongs to the parent/main agent; the subagent only
@@ -219,6 +230,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
 // Exported so it can be tested without the forced remote auth probe.
 export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const cwd = sessionProjectRoot(ctx);
+  initializeTrafficOneEnv(cwd, ctx.host);
   const root = pluginRoot();
   const raw = ctx.input.raw;
 

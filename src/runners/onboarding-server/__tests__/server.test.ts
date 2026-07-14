@@ -59,6 +59,12 @@ test('server: serves the wizard page on the BARE url (no token) so the preview p
 test('wizard: completion page has no OpenCode restart button or Ctrl+C instructions', () => {
   const html = fs.readFileSync(path.join(process.cwd(), 'src', 'runners', 'onboarding-server', 'wizard.html'), 'utf8');
   assert.ok(html.includes('Setup complete'));
+  assert.ok(html.includes('await api("/complete"'), 'completion must be acknowledged before the UI reports success');
+  assert.ok(html.includes('setTimeout(() => { try { window.close(); }'), 'hosts that support page close keep the automatic path');
+  assert.ok(!html.includes('Close setup'), 'completion must never require a manual close button');
+  assert.ok(!html.includes('closeButton'), 'manual close controls must not return');
+  assert.ok(!html.toLowerCase().includes('you can close'), 'completion copy must not delegate cleanup to the user');
+  assert.ok(!html.includes("tab's ×"), 'completion copy must not delegate cleanup to the tab chrome');
   assert.ok(!html.includes('Restart OpenCode'));
   assert.ok(!html.includes('/restart-host'));
   assert.ok(!html.includes('terminal where opencode is running'));

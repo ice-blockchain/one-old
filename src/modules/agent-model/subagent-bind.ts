@@ -12,7 +12,7 @@ import { resolveProjectRoot } from '../../shared/hook-paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { cursorModelsFresh } from '../../shared/materialize/cursor-models';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
-import { captureClaimDebug, claimThreadRole, hookSessionIdentity, inferRoleFromTranscript, readEffectiveState, recordRunAgent, transcriptThreadId } from '../../shared/state';
+import { captureClaimDebug, claimThreadRole, ensureCurrentRunId, hookSessionIdentity, inferRoleFromTranscript, readEffectiveState, recordRunAgent, transcriptThreadId } from '../../shared/state';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { modelChoiceReplyPending } from './model-choice';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -83,6 +83,15 @@ export function subagentStartBind(ctx: Ctx): HookResult {
     }
   }
 
+  // PERSISTING RUN-ID MINT: Codex fires no PreToolUse for spawns, so the
+  // ensureCurrentRunId self-heal inside agentModelGate never runs there —
+  // SubagentStart is that host's spawn signal. Without this, an existing-codebase
+  // Codex build finishes setup with NO currentRunId in project state, and the
+  // run-team write gate denies the architect's first coordination write
+  // (run-team-not-subagent) against a run id that was never persisted.
+  // Idempotent everywhere else (returns the existing id unchanged).
+  const boundRunId = runId || ensureCurrentRunId(ctx.cwd, state);
+
   // REUSE REGISTRY (Cursor): Cursor surfaces the spawned subagent id on subagent-start
   // as `subagent_id` (= tool_<uuid>) — the PostToolUse(Task) recorder never sees it, so
   // without recording it here agents.json stays empty and every fix-cycle / follow-up
@@ -92,8 +101,8 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // Cursor-only (gated on the subagent_id field; Claude/Codex record via the PostToolUse
   // recorder, which sees their agent_id in the tool result).
   const cursorSubagentId = asString(raw.subagent_id);
-  if (cursorSubagentId && runId) {
-    recordRunAgent(ctx.cwd, runId, role, {
+  if (cursorSubagentId && boundRunId) {
+    recordRunAgent(ctx.cwd, boundRunId, role, {
       agentId: cursorSubagentId,
       toolCallId: cursorSubagentId,
       model: asString(raw.subagent_model) || null,
@@ -105,8 +114,8 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   const copilotAgentId = ctx.host === 'copilot'
     ? asString(raw.agent_id ?? raw.agentId ?? raw.agentDisplayName ?? raw.agent_display_name ?? raw.name)
     : '';
-  if (copilotAgentId && runId) {
-    recordRunAgent(ctx.cwd, runId, role, {
+  if (copilotAgentId && boundRunId) {
+    recordRunAgent(ctx.cwd, boundRunId, role, {
       agentId: copilotAgentId,
       resumeId: copilotAgentId,
       model: asString(raw.model) || null,

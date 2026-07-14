@@ -10,7 +10,7 @@ import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import type { HostId } from '../../core/types';
 import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
@@ -90,7 +90,10 @@ function acquireLaunchLock(lockPath: string, isAlive: (pid: number) => boolean):
       }
       return true;
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') return true; // can't lock (perms) → proceed best-effort
+      // A permission/storage error means we do NOT own the lock. Propagate it so
+      // the gate can emit the approved bootstrap path immediately; pretending we
+      // acquired it only delays the same failure until spawn/registry timeout.
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
       return false;
     }
   };
@@ -141,7 +144,7 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
 
   // The plugin's own repo/install never onboards: no server spawn, no
   // .claude/launch.json, no registry record — hand back the inert placeholder.
-  if (isPluginAuthoringRoot(cwd)) {
+  if (isNonProjectRoot(cwd)) {
     return { url: 'http://127.0.0.1:0/?t=pending', port: 0, token: '', started: false };
   }
 

@@ -34,6 +34,7 @@ function fixture(): { cwd: string; env: NodeJS.ProcessEnv; cleanup(): void } {
 test('Cursor capture is stored in local per-project/per-host preferences, never project memory', () => {
   const f = fixture();
   try {
+    const catalogUpdatedAt = hostModelSnapshot('cursor', 'pro').updatedAt;
     assert.deepEqual(readCursorModels(f.cwd, f.env), []);
     assert.equal(captureCursorModels(
       f.cwd,
@@ -47,7 +48,7 @@ test('Cursor capture is stored in local per-project/per-host preferences, never 
     assert.deepEqual(prefs.hosts?.cursor?.availableModels, {
       models: ['gpt-5.5-extra-high', 'composer-2.5-fast'],
       plan: 'pro',
-      modelsUpdatedAt: '2026-07-12',
+      modelsUpdatedAt: catalogUpdatedAt,
       capturedAt: '2026-07-12T12:00:00Z',
     });
     assert.equal(fs.existsSync(path.join(f.cwd, LEGACY_CURSOR_MODELS_REL)), false);
@@ -84,10 +85,10 @@ test('capture freshness invalidates on plan, catalog date, and seven-day TTL', (
     assert.deepEqual(freshCursorModels(f.cwd, 'max', now, CURSOR_MODELS_TTL_MS, f.env), []);
     assert.equal(cursorModelsFresh(f.cwd, 'pro', now + CURSOR_MODELS_TTL_MS + 1, CURSOR_MODELS_TTL_MS, f.env), false);
 
-    writeOneHostSettings('cursor', {
-      ...hostModelSnapshot('cursor', 'pro'),
-      updatedAt: '2026-07-13',
-    }, f.env);
+    const current = hostModelSnapshot('cursor', 'pro');
+    const nextCatalogDate = new Date(Date.parse(`${current.updatedAt}T00:00:00Z`) + 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    writeOneHostSettings('cursor', { ...current, updatedAt: nextCatalogDate }, f.env);
     assert.equal(cursorModelsFresh(f.cwd, 'pro', now, CURSOR_MODELS_TTL_MS, f.env), false);
   } finally {
     f.cleanup();

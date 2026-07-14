@@ -13,6 +13,8 @@
 //   node onboarding-wait.cjs <cwd> [--timeout-ms <n>] [--interval-ms <n>]
 //
 // stdout TRAFFIC_ONE_SETUP_COMPLETE, exit 0 → setup finished; continue the build now.
+// stdout TRAFFIC_ONE_SETUP_READY,    exit 0 → bootstrap-only started the wizard; open URL, then run normal waiter.
+// stdout TRAFFIC_ONE_SETUP_BOOTSTRAP_REQUIRED, exit 2 → retry bootstrap with approved user-local state access.
 // stdout TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, exit 2 → setup finished, but OpenCode
 //   must be restarted before development continues.
 // stdout TRAFFIC_ONE_SETUP_PENDING,  exit 2 → still pending after the timeout; re-run.
@@ -33,17 +35,26 @@ import { modelCaptureCommand, modelGateCommand } from '../../shared/model-gate-c
 import { canonicalHost } from '../../shared/model-tiers';
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { obj } from '../../shared/obj';
+import { emittedWithin, stampEmitMarker } from '../../shared/once';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import {
+  isOnboardingPermissionError,
+  onboardingBootstrapReason,
+  onboardingStartFailureReason,
+} from '../../shared/onboarding-server/bootstrap';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
-import { applyTrafficOneEnv } from '../../shared/state/traffic-one-paths';
+import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 
 // 8 min keeps a single run safely under the host's ~10-min shell cap, so the agent
 // gets a clean PENDING signal (rather than a hard kill) when the user is slow.
 const DEFAULT_TIMEOUT_MS = 8 * 60 * 1000;
 const DEFAULT_INTERVAL_MS = 2000;
+// How recently another surface must have shown the wizard URL for the runner's
+// banner to be considered a duplicate in the same turn/session.
+const WIZARD_URL_TTL_MS = 15 * 60 * 1000;
 
 export type WaitOutcome = 'complete' | 'pending';
 
@@ -266,6 +277,15 @@ export function announceWizardUrl(
   try {
     const rec = readServerRecord(cwd, process.env, host);
     if (!rec || !rec.url || rec.url.includes(':0/')) return;
+    // Another surface (session-start banner / prompt-submit recipe / gate deny)
+    // already showed this exact link moments ago — repeating the full banner
+    // renders the URL twice in the same turn (observed on Cursor). Keep a
+    // compact wait line so the terminal output still explains the block.
+    if (emittedWithin(cwd, 'wizard-url-shown', WIZARD_URL_TTL_MS)) {
+      write('\nWaiting for Traffic One setup to complete (link shown above; this command keeps the turn open)…\n');
+      return;
+    }
+    stampEmitMarker(cwd, 'wizard-url-shown');
     write(
       '\n════════════════════════════════════════════════════════════════\n'
       + '  TRAFFIC ONE SETUP WIZARD — open this link to finish setup:\n\n'
@@ -280,29 +300,114 @@ export function announceWizardUrl(
   }
 }
 
+// Cursor's Browser editor is not a script-opened browser window, so page JavaScript
+// cannot close its tab. Cursor does expose that operation to the current agent via
+// browser_tabs. Emit the exact, index-safe sequence at SETUP_COMPLETE so cleanup is
+// automatic in the same turn and never targets an unrelated active browser tab.
+export function cursorSetupCloseDirective(wizardUrl: string, host: string = detectHost()): string {
+  if (host !== 'cursor') return '';
+  const primary = wizardUrl && !wizardUrl.includes(':0/')
+    ? `the tab whose URL is exactly \`${wizardUrl}\``
+    : 'the tab titled "Traffic One — Setup" on 127.0.0.1';
+  return [
+    '[traffic-one] Cursor — close the setup browser tab NOW, before any model-gate or build command:',
+    '1. Call the built-in `browser_tabs` tool with `{"action":"list"}`.',
+    `2. Find ${primary} — if no exact URL match, match the tab titled "Traffic One — Setup" on 127.0.0.1 instead.`,
+    '3. Call `browser_tabs` with `{"action":"close","index":<matching index>}`.',
+    '4. Re-list once to VERIFY the setup tab is gone; if it is still open, close it by the title match before moving on.',
+    '5. Continue the original request immediately. Do not ask the user to close the tab.',
+  ].join('\n');
+}
+
+// Bounded grace: `computeOnboarding().done` flips on the LAST /answer, which is
+// seconds BEFORE the wizard tab finishes (`/verify-toolchain` → `/complete` →
+// done view). `/complete` shuts the server down and clears its record, so a
+// short poll on the record lets the tab settle on its final URL/title before
+// the agent is told to close it — the exact-URL `browser_tabs` match then
+// succeeds. Capped so a tab that never posts /complete (closed early, network
+// error) cannot stall the released build.
+const COMPLETION_ACK_GRACE_MS = 4000;
+const COMPLETION_ACK_POLL_MS = 250;
+
+export function awaitWizardCompletionAck(cwd: string, host: string, graceMs: number = COMPLETION_ACK_GRACE_MS): void {
+  const deadline = Date.now() + graceMs;
+  while (Date.now() < deadline) {
+    try {
+      if (!readServerRecord(cwd, process.env, host)) return; // /complete landed — server gone
+    } catch {
+      return;
+    }
+    sleepSync(COMPLETION_ACK_POLL_MS);
+  }
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const host = detectHost(process.env, argv);
-  applyTrafficOneEnv(cwd, host);
+  initializeTrafficOneEnv(cwd, host);
   // Self-heal a dead wizard link: the server the gate minted can die between then
   // and this wait (host restart, crash), leaving the agent's shown link broken and
   // the poll never completing. Re-ensure it here (idempotent — respawns only a
   // dead/stale record) so announceWizardUrl below always prints a LIVE url. Skipped
   // once setup is done, and best-effort (respects TRAFFIC_ONE_ONBOARDING_NO_SPAWN).
+  const alreadyDone = onboardingDone(cwd);
+  let launchError: unknown;
+  let ensuredUrl = '';
   try {
-    if (!onboardingDone(cwd)) ensureOnboardingServer(cwd, { host });
-  } catch {
-    // best-effort — the wait still polls without a respawn
+    if (!alreadyDone) {
+      const server = ensureOnboardingServer(cwd, { host });
+      if (server.url && !server.url.includes(':0/')) ensuredUrl = server.url;
+    }
+  } catch (error) {
+    launchError = error;
+  }
+
+  if (argv.includes('--bootstrap-only')) {
+    if (alreadyDone) {
+      process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
+      process.exit(0);
+    }
+    if (launchError || !ensuredUrl) {
+      const failure = launchError || Object.assign(new Error('wizard did not publish a live URL'), { code: 'START_FAILED' });
+      // This command already ran through the host's approved shell boundary.
+      // Re-prescribing itself would loop forever for packaging bugs, malformed
+      // state roots, child crashes, or even a permission denial that approval did
+      // not resolve. Emit one terminal diagnostic instead.
+      process.stdout.write(`TRAFFIC_ONE_SETUP_BOOTSTRAP_FAILED\n\n${onboardingStartFailureReason(failure, host)}\n`);
+      process.exit(2);
+    }
+    process.stdout.write(`TRAFFIC_ONE_SETUP_READY\nSetup link: ${ensuredUrl}\n`);
+    process.exit(0);
   }
   // Windsurf opens the wizard before the prompt and runs this waiter inside the
   // first mutating hook. Suppress the terminal-style URL banner there: it is not
   // clickable in Devin's tool card and the browser is already open.
+  let wizardUrl = '';
+  try {
+    const record = readServerRecord(cwd, process.env, host);
+    if (record?.url && !record.url.includes(':0/')) wizardUrl = record.url;
+  } catch {
+    // best-effort — the close directive can still match the setup title + host
+  }
+  if (launchError && !wizardUrl && !alreadyDone) {
+    const reason = isOnboardingPermissionError(launchError)
+      ? onboardingBootstrapReason(cwd, host, launchError)
+      : onboardingStartFailureReason(launchError, host);
+    const marker = isOnboardingPermissionError(launchError)
+      ? 'TRAFFIC_ONE_SETUP_BOOTSTRAP_REQUIRED'
+      : 'TRAFFIC_ONE_SETUP_START_FAILED';
+    process.stdout.write(`${marker}\n\n${reason}\n`);
+    process.exit(2);
+  }
   if (!argv.includes('--quiet-url')) announceWizardUrl(cwd, (s) => process.stdout.write(s), host);
   const outcome = waitForOnboarding(cwd, {
     timeoutMs: positiveIntFlag(argv, '--timeout-ms') ?? undefined,
     intervalMs: positiveIntFlag(argv, '--interval-ms') ?? undefined,
   });
   if (outcome === 'complete') {
+    // Let the wizard tab finish its /complete handshake (bounded) so the close
+    // directive below targets a settled tab and the user sees the done view.
+    if (host === 'cursor' && !alreadyDone) awaitWizardCompletionAck(cwd, host);
     // Converge project materialization NOW, before the agent resumes and spawns its
     // first subagent. Without this the architect (Phase-1, the FIRST spawn) races the
     // bundle: onboarding is `confirmed` but `manifest`/`rules`/`skills`/`AGENTS.md`
@@ -322,6 +427,10 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.exit(2);
     }
     process.stdout.write('TRAFFIC_ONE_SETUP_COMPLETE\n');
+    const closeDirective = cursorSetupCloseDirective(wizardUrl, host);
+    if (closeDirective) {
+      process.stdout.write(`\n${closeDirective}\n`);
+    }
     const triage = postSetupTriage(cwd);
     if (triage) {
       process.stdout.write(`\n[traffic-one] Route the original request per this triage BEFORE implementing:\n${triage}\n`);

@@ -10,13 +10,18 @@
 
 import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
-import { noop } from '../../core/result';
+import { context, noop } from '../../core/result';
 import { stripToolNamespace } from '../../core/events';
 import type { Ctx, HookResult } from '../../core/types';
+import { detectHostPlan } from '../../shared/host-plan';
+import { currentAcceptableModels } from '../../shared/current-model-tiers';
+import { modelMatchesExpected } from '../../shared/model-tiers';
 import {
+  REPLACE_AGENT_MARKER,
   hookSessionIdentity,
   isCursorToolSubagentId,
   isResumeCapableAgentId,
+  markRunAgentReplaced,
   readEffectiveState,
   recordRunAgent,
   subagentContinuationAvailable,
@@ -81,6 +86,31 @@ export function extractSpawnedAgentId(response: unknown): string | null {
   return isCursorToolSubagentId(id) ? null : id;
 }
 
+// Conservative mid-run failure classifier for a spawn-tool RESULT. A successful
+// summary can casually contain the word "stopped", so bare verbs only count via
+// the structured status field; free text must name a limit/quota explicitly.
+const RESULT_LIMIT_RE = /\b(usage limit|rate limit|api (usage )?limit|quota (exceeded|reached|hit)|hit (the |an |your )?(api|usage|rate) limit|usage cap)\b/i;
+const RESULT_STOP_STATUSES = new Set(['stopped', 'aborted', 'cancelled', 'canceled', 'failed', 'error', 'errored']);
+
+export function classifySubagentStop(response: unknown): 'api-limit' | 'stopped' | null {
+  const direct = obj(response);
+  const status = direct && typeof direct.status === 'string' ? direct.status.trim().toLowerCase()
+    : direct && typeof direct.state === 'string' ? direct.state.trim().toLowerCase() : '';
+  const text = collectResponseText(response);
+  if (RESULT_LIMIT_RE.test(text)) return 'api-limit';
+  if (status && RESULT_STOP_STATUSES.has(status)) return 'stopped';
+  return null;
+}
+
+// The first same-tier model that is NOT the exhausted family, from the row that
+// owns the exhausted model. Family-level id — the spawn gate accepts it and the
+// Cursor slug resolution happens at spawn time.
+function nextSameTierFallback(exhausted: string, host: string): string {
+  if (!exhausted) return '';
+  const row = currentAcceptableModels(exhausted, host, detectHostPlan(host));
+  return row.find((entry) => !modelMatchesExpected(exhausted, entry)) || '';
+}
+
 export function recordSpawnedAgent(ctx: Ctx): HookResult {
   // Without continuation the registry is dead weight — skip the write entirely
   // so non-teams hosts keep byte-identical run dirs.
@@ -99,6 +129,33 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   // extractor's regex is anchored on the labelled `agent[_]id:` form, so input
   // text cannot false-positive unless it literally quotes a labelled id.
   const response = raw.tool_response ?? raw.toolResponse ?? raw.tool_result ?? raw.toolResult;
+
+  // MID-RUN FAILURE (api limit / stopped): the result is the ONLY synchronous
+  // signal a parallel subagent died — there is no SubagentStop event. Without
+  // this branch the recorder RE-RECORDS the dead agent as live (Cursor prints
+  // `Agent ID:` even for a stopped run) and the reuse gate then demands
+  // continuation of a dead agent while the orchestrator idles until the sibling
+  // finishes. Retire the agent and tell the orchestrator to respawn NOW on the
+  // next same-tier fallback model.
+  const stopKind = classifySubagentStop(response);
+  if (stopKind) {
+    const stopState = readEffectiveState(ctx.cwd);
+    const stopRunId = stopState && typeof stopState.currentRunId === 'string' ? stopState.currentRunId.trim() : '';
+    if (stopRunId) markRunAgentReplaced(ctx.cwd, stopRunId, role);
+    const exhausted = asString(toolInput.model);
+    const fallback = stopKind === 'api-limit' ? nextSameTierFallback(exhausted, ctx.host) : '';
+    const modelStep = fallback
+      ? ` Respawn with model: "${fallback}" (next same-tier fallback — "${exhausted}" is exhausted for this session; do not re-use it).`
+      : ' Respawn with the next same-tier fallback model from the announced lineup if the failure was an API/usage limit.';
+    const reason = stopKind === 'api-limit' ? 'API/usage limit' : 'stopped mid-run';
+    return context(
+      `traffic-one — ${role} ${reason}. React NOW; do not wait for other running subagents. `
+      + `Re-send the ${role} task with ${REPLACE_AGENT_MARKER} on the FIRST line of the prompt (the stopped agent was retired from the reuse registry).${modelStep} `
+      + 'Resume from whatever the stopped agent already completed instead of restarting the work from scratch.',
+      { systemMessage: `traffic-one: ${role} ${reason}${fallback ? ` — respawning on ${fallback}` : ' — respawning'}` },
+    );
+  }
+
   let agentId = extractSpawnedAgentId(response) ?? (response === undefined ? extractSpawnedAgentId(raw) : null);
   // Never fabricate a Windsurf agent id from the requested profile. Devin emits
   // PostToolUse even when `run_subagent` fails (for example, an unregistered

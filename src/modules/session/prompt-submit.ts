@@ -9,15 +9,15 @@
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
-import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
+import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
-import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { serverRecordExists } from '../../shared/onboarding-server/registry';
 import { projectContextOriginalPrompt } from '../../shared/onboarding/project-context';
@@ -26,8 +26,9 @@ import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { obj } from '../../shared/obj';
-import { firstEmitThisSession } from '../../shared/once';
+import { firstEmitThisSession, stampEmitMarker } from '../../shared/once';
 import { maintenanceTriageDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
 import {
@@ -108,8 +109,9 @@ function prependContext(prefix: string, result: HookResult): HookResult {
 // that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
-  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
+  if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  initializeTrafficOneEnv(cwd, ctx.host);
 
   const raw = ctx.input.raw;
   const promptText = ctx.input.prompt || promptTextFromSubmit(raw);
@@ -220,8 +222,15 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       if (id.sessionId && isForeignOnboardingThread(cwd, id.sessionId)) return noop();
     }
     seedOriginalPrompt(cwd, promptText);
-    const server = ensureOnboardingServer(cwd, { host: ctx.host });
-    const waitCommand = onboardingWaitCommand(cwd, ctx.host);
+    const prepared = prepareOnboardingServer(cwd, ctx.host);
+    if (prepared.kind !== 'ready') {
+      return context(`[ACTIVE STACK: ${stack}]\n\n${prepared.reason}`, {
+        systemMessage: prepared.kind === 'bootstrap-required'
+          ? 'traffic-one [setup permission required]'
+          : 'traffic-one [setup launcher failed]',
+      });
+    }
+    const { server, waitCommand } = prepared;
     if (ctx.host === 'opencode' || ctx.host === 'kilo') {
       const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
       return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.url, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
@@ -249,6 +258,7 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // (systemMessage → user_message on Cursor), so the user always gets a working link
     // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
     // in its preview pane and Codex via its own recipe, so they keep the plain banner.
+    stampEmitMarker(cwd, 'wizard-url-shown');
     const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
     return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: waitCommand })}`, {
       systemMessage,

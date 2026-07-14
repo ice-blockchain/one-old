@@ -1232,6 +1232,34 @@ test('codex end-to-end: SubagentStart infers role from the child rollout, claims
   });
 });
 
+test('codex SubagentStart mints + persists currentRunId when absent (existing-codebase)', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    // The exact Codex gap: no PreToolUse fires for spawn_agent, so the persisting
+    // ensureCurrentRunId in agentModelGate never runs — setup completed with NO
+    // currentRunId in project state, and the run-team write gate denied the
+    // architect's first coordination write (run-team-not-subagent).
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    one.mode = 'existing-codebase';
+    delete one.currentRunId;
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+
+    const childThread = '019e7396-0000-7881-a4a9-dfe9d5a17999';
+    const childTranscript = path.join(cwd, `rollout-2026-07-13T10-00-00-${childThread}.jsonl`);
+    fs.writeFileSync(childTranscript, `${JSON.stringify({
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: `You are the Traffic One senior-architect role for ${cwd}. Plan the fix.` }] },
+    })}\n`, 'utf8');
+
+    subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart', agent_id: childThread, session_id: 'orchestrator-parent', transcript_path: childTranscript,
+    }));
+
+    const minted = (JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId as string) || '';
+    assert.ok(minted.length > 0, 'SubagentStart must mint + persist currentRunId on Codex');
+  });
+});
+
 // ── Subagent reuse: recorder + duplicate-spawn deny ──────────────────────────
 
 function withTeamsEnv(fn: () => void): void {
@@ -1341,6 +1369,63 @@ test('reuse: recorder persists the agent id, duplicate same-role spawn is denied
       // A different PARENT session never blocks: in-process agents died with their session.
       const otherSession = agentModelGate(spawnCtxWithSession(cwd, { subagent_type: 'senior-frontend', model: 'opus', prompt: 'resume after restart' }, 'parent-2'));
       assert.equal(otherSession.kind, 'noop');
+    });
+  });
+});
+
+test('mid-run API-limit stop: recorder retires the dead agent and prescribes the next same-tier fallback NOW', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
+    process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
+    try {
+      setCurrentRunId(cwd, 'run-api-limit');
+      recordRunAgent(cwd, 'run-api-limit', 'senior-frontend', {
+        agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+        parentSessionId: 'parent-1',
+      });
+
+      // The stopped Task result is the ONLY synchronous signal (no SubagentStop
+      // event exists). Before the fix this payload RE-recorded the dead agent as
+      // live (it still prints Agent ID:) and returned noop → the orchestrator
+      // idled until the sibling finished, then respawned on the exhausted model.
+      const result = recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: 'build the UI' },
+        { status: 'stopped', content: [{ type: 'text', text: 'Agent ID: bff46cd7-3681-4cf0-adcf-263bf55cc301 — stopped: you have hit your API usage limit.' }] },
+        'parent-1',
+        'cursor',
+      ));
+      assert.equal(result.kind, 'context');
+      if (result.kind === 'context') {
+        assert.match(result.context, /React NOW/i, 'immediate reaction — no waiting for siblings');
+        assert.ok(result.context.includes('[t1-replace-agent]'), 'teaches the replacement marker');
+        assert.ok(result.context.includes('claude-sonnet-5'), 'prescribes the next same-tier fallback family');
+        assert.match(result.context, /gpt-5\.6-terra-medium.*exhausted/i, 'names the exhausted model');
+      }
+
+      // Retired from the registry → the reuse gate no longer demands continuation
+      // of the dead agent.
+      const registry = readRunAgentRegistry(cwd, 'run-api-limit');
+      assert.equal(registry['senior-frontend']?.replaced, true, 'dead agent retired');
+    } finally {
+      if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    }
+  });
+});
+
+test('a successful Task result that merely mentions the word "stopped" is NOT classified as a failure', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-ok-mention');
+      const rec = recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'build the API' },
+        "DONE — stopped the dev server after tests. agentId: abc999def456789 (use SendMessage with to: 'abc999def456789')",
+        'parent-1',
+      ));
+      assert.equal(rec.kind, 'noop', 'prose mention of stopped never triggers the failure path');
+      const registry = readRunAgentRegistry(cwd, 'run-ok-mention');
+      assert.equal(registry['senior-backend']?.agentId, 'abc999def456789', 'successful result still recorded live');
     });
   });
 });

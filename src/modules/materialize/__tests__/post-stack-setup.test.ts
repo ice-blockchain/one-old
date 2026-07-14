@@ -9,6 +9,7 @@ import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { endpointFromEnv } from '../../../shared/auth';
 import { toolClassForRawName } from '../../../core/events';
 import { applyAnswer } from '../../../shared/onboarding-server/flow';
+import { onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function ctx(cwd: string, toolInput: Record<string, unknown>): Ctx {
@@ -240,7 +241,7 @@ test('generic write in an already-materialized project → noop (nothing to conv
 test('Devin background onboarding wait emits no stale incomplete-state convergence', () => {
   withAuthedProject(false, (cwd) => {
     const r = runPostStackSetup(rawCtx(cwd, 'exec', {
-      command: `node "/plugin/scripts/onboarding-wait.cjs" "${cwd}" "--host=windsurf"`,
+      command: onboardingWaitCommand(cwd, 'windsurf'),
     }));
     assert.equal(r.kind, 'noop');
   });

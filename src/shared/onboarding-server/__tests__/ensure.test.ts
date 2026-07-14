@@ -8,13 +8,10 @@ import { ensureOnboardingServer } from '../ensure';
 import { writeLaunchConfig } from '../launch-config';
 import {
   clearServerRecord,
-  completionSentinelExists,
-  completionSentinelPath,
   readServerRecord,
   serverLockPath,
   serverRecordPath,
   serverRecordExists,
-  writeCompletionSentinel,
   writeServerRecord,
   type ServerRecord,
 } from '../registry';
@@ -53,19 +50,15 @@ test('registry: write → read roundtrip', () => {
   });
 });
 
-test('registry: server records, launch locks, and completion sentinels are isolated per host', () => {
+test('registry: server records and launch locks are isolated per host', () => {
   withProject((cwd, env) => {
     writeServerRecord(cwd, rec({ port: 51001, token: 'cursor', url: 'http://127.0.0.1:51001/?t=cursor' }), env, 'cursor');
     writeServerRecord(cwd, rec({ port: 51002, token: 'codex', url: 'http://127.0.0.1:51002/?t=codex' }), env, 'codex');
-    writeCompletionSentinel(cwd, env, 'cursor');
 
     assert.notEqual(serverRecordPath(cwd, env, 'cursor'), serverRecordPath(cwd, env, 'codex'));
     assert.notEqual(serverLockPath(cwd, env, 'cursor'), serverLockPath(cwd, env, 'codex'));
-    assert.notEqual(completionSentinelPath(cwd, env, 'cursor'), completionSentinelPath(cwd, env, 'codex'));
     assert.equal(readServerRecord(cwd, env, 'cursor')?.token, 'cursor');
     assert.equal(readServerRecord(cwd, env, 'codex')?.token, 'codex');
-    assert.equal(completionSentinelExists(cwd, env, 'cursor'), true);
-    assert.equal(completionSentinelExists(cwd, env, 'codex'), false);
 
     clearServerRecord(cwd, env, 'cursor');
     assert.equal(readServerRecord(cwd, env, 'cursor'), null);

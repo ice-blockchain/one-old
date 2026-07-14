@@ -3,9 +3,9 @@
 // to the per-user project preferences (~/.traffic-one/projects/<hash>/...), so it
 // honors TRAFFIC_ONE_PROJECT_PREFS_PATH in tests and is never committed. The
 // detached server writes {pid,port,token,url} AFTER it starts listening; the gate's
-// ensureOnboardingServer reads it back to decide reuse-vs-relaunch. A separate
-// completion sentinel lets the next hook print a positive "setup complete" signal
-// without re-deriving the full predicate chain.
+// ensureOnboardingServer reads it back to decide reuse-vs-relaunch. Completion is
+// always re-derived from the state predicates (computeOnboarding), never from a
+// runtime sentinel.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -14,7 +14,6 @@ import { readJson } from '../fsjson';
 import { detectHost } from '../host';
 import { canonicalHost } from '../model-tiers';
 import { obj } from '../obj';
-import { stateTimestamp } from '../state/io';
 import { projectPrefsPath } from '../state/local-prefs';
 import { HOST_IDS, type HostModelKey } from '../../config/model-tiers';
 
@@ -41,10 +40,6 @@ function hostRuntimeDir(cwd: string, env: NodeJS.ProcessEnv, host?: unknown): st
 
 export function serverRecordPath(cwd: string, env: NodeJS.ProcessEnv = process.env, host?: unknown): string {
   return path.join(hostRuntimeDir(cwd, env, host), 'server.json');
-}
-
-export function completionSentinelPath(cwd: string, env: NodeJS.ProcessEnv = process.env, host?: unknown): string {
-  return path.join(hostRuntimeDir(cwd, env, host), 'complete.json');
 }
 
 // Single-launcher lock: ensureOnboardingServer creates this O_EXCL before spawning,
@@ -123,25 +118,4 @@ export function clearServerRecord(cwd: string, env: NodeJS.ProcessEnv = process.
 
 export function serverRecordExists(cwd: string, env: NodeJS.ProcessEnv = process.env, host?: unknown): boolean {
   return readServerRecord(cwd, env, host) != null;
-}
-
-export function writeCompletionSentinel(cwd: string, env: NodeJS.ProcessEnv = process.env, host?: unknown): void {
-  const activeHost = runtimeHost(env, host);
-  clearLegacyOnboardingRuntime(cwd, env);
-  writeSecureJson(completionSentinelPath(cwd, env, activeHost), { host: activeHost, completedAt: stateTimestamp() });
-}
-
-export function clearCompletionSentinel(cwd: string, env: NodeJS.ProcessEnv = process.env, host?: unknown): void {
-  try {
-    fs.unlinkSync(completionSentinelPath(cwd, env, host));
-  } catch {
-    // already gone
-  }
-  clearLegacyOnboardingRuntime(cwd, env);
-}
-
-export function completionSentinelExists(cwd: string, env: NodeJS.ProcessEnv = process.env, host?: unknown): boolean {
-  const activeHost = runtimeHost(env, host);
-  const raw = obj(readJson(completionSentinelPath(cwd, env, activeHost), null));
-  return raw?.host === activeHost && typeof raw.completedAt === 'string';
 }

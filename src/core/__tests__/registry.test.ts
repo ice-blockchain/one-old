@@ -58,3 +58,20 @@ test('loadModules loads runtime handlers and ignores content modules', () => {
 test('discoverDescriptors returns empty for a missing dir', () => {
   assert.deepEqual(discoverDescriptors('/no/such/dir/xyz-traffic-one'), []);
 });
+
+test('strict hook loading throws when runtime modules are missing or broken', () => {
+  assert.throws(
+    () => loadModules('/no/such/dir/xyz-traffic-one', { strict: true }),
+    /module directory is missing or empty/,
+  );
+
+  const root = mkModules();
+  try {
+    fs.writeFileSync(path.join(root, 'demo-runtime', 'handlers.js'), 'throw new Error("broken runtime");\n', 'utf8');
+    assert.throws(() => loadModules(root, { strict: true }), /broken runtime/);
+    // Diagnostic/non-hook callers retain the historical tolerant mode.
+    assert.equal(collectHandlers(loadModules(root)).length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

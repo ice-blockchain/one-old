@@ -30,13 +30,27 @@ export interface HostModelsConfig {
   readonly plans?: Readonly<Partial<Record<UserPlan, Readonly<Partial<Record<TierId, ModelRow>>>>>>;
 }
 
+// Cursor's universal free floor: the first-party Composer model every Cursor
+// account can always run. The agent-model gate's degradation detection keys on
+// this exact family, so a Composer generation bump is a single edit here.
+export const CURSOR_MODEL_FLOOR = 'composer-2.5';
+
 // Each row is ordered preferred-first. The remaining models are accepted
 // same-tier fallbacks. A plan override replaces one complete row; omitted rows
 // inherit the host's base. With no plan argument, resolvers use the base rows.
 export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
   claude: {
-    updatedAt: '2026-07-13',
-    tiers: { highest: ['opus'], balanced: ['sonnet'], cheapest: ['haiku'] },
+    updatedAt: '2026-07-14',
+    // Concrete generations are pinned preferred-first; the bare alias at each
+    // row's tail keeps Claude Code's native `model: "opus"/"sonnet"/"haiku"`
+    // spawns accepted by the gate (aliases track point releases host-side).
+    // Fable 5 is org/promo-gated with no availability capture on this host —
+    // if a spawn fails at the API, degrade to the next accepted id in the row.
+    tiers: {
+      highest: ['claude-opus-4-8', 'claude-fable-5', 'claude-opus-4-7', 'opus'],
+      balanced: ['claude-sonnet-5', 'claude-sonnet-4-6', 'claude-opus-4-7', 'sonnet'],
+      cheapest: ['claude-haiku-4-5', 'claude-sonnet-4-6', 'haiku'],
+    },
   },
   codex: {
     updatedAt: '2026-07-13',
@@ -47,25 +61,30 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     },
   },
   cursor: {
-    updatedAt: '2026-07-13',
+    updatedAt: '2026-07-14',
     tiers: {
-      highest: ['claude-fable-5', 'gpt-5.6-sol', 'claude-opus-4-8', 'gpt-5.5', 'composer-2.5'],
-      balanced: ['gpt-5.6-terra', 'claude-sonnet-5', 'gpt-5.5', 'claude-4.6-sonnet', 'composer-2.5'],
-      cheapest: ['composer-2.5'],
+      highest: ['claude-fable-5', 'gpt-5.6-sol', 'claude-opus-4-8', 'gpt-5.5', CURSOR_MODEL_FLOOR],
+      balanced: ['gpt-5.6-terra', 'claude-sonnet-5', 'gpt-5.5', 'claude-4.6-sonnet', CURSOR_MODEL_FLOOR],
+      cheapest: [CURSOR_MODEL_FLOOR, 'gpt-5.4-mini', 'gemini-3.5-flash', 'claude-4.5-haiku'],
     },
     plans: {
-      free: { highest: ['composer-2.5'], balanced: ['composer-2.5'] },
+      // Free stays pinned to the Composer floor for every tier — without the
+      // explicit cheapest row it would inherit the base row's paid-only
+      // fallback families.
+      free: { highest: [CURSOR_MODEL_FLOOR], balanced: [CURSOR_MODEL_FLOOR], cheapest: [CURSOR_MODEL_FLOOR] },
     },
   },
   opencode: {
-    updatedAt: '2026-07-13',
+    updatedAt: '2026-07-14',
     // These three base preferred models are also the zero-auth delegation
     // fallback chain, in highest → balanced → cheapest order. Paid rows end in
     // the same sequence so every concrete model id remains editable here.
+    // gpt-5-nano is Zen's permanently-free model (the other four are the
+    // rotating limited-time free set), so it anchors the tail of every row.
     tiers: {
-      highest: ['opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/big-pickle'],
-      balanced: ['opencode/north-mini-code-free', 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/nemotron-3-ultra-free', 'opencode/big-pickle'],
-      cheapest: ['opencode/mimo-v2.5-free', 'opencode/deepseek-v4-flash-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/big-pickle'],
+      highest: ['opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/gpt-5-nano'],
+      balanced: ['opencode/north-mini-code-free', 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/nemotron-3-ultra-free', 'opencode/gpt-5-nano'],
+      cheapest: ['opencode/mimo-v2.5-free', 'opencode/deepseek-v4-flash-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/gpt-5-nano'],
     },
     plans: {
       plus: {
@@ -76,24 +95,51 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     },
   },
   copilot: {
-    updatedAt: '2026-07-13',
+    updatedAt: '2026-07-14',
+    // Capability-first: highest prefers Opus 4.8 (27x premium multiplier) —
+    // plan recommendations steer cost-sensitive plans to balanced/cheapest.
+    // Cheapest holds only 0.33x-multiplier models (gemini-3-flash, NOT the
+    // 14x gemini-3.5-flash).
     tiers: {
-      highest: ['gpt-5.4', 'gpt-5.3-codex', 'claude-sonnet-4.6', 'gemini-3.1-pro-preview'],
-      balanced: ['claude-sonnet-4.6', 'gpt-5.3-codex', 'gpt-5.4', 'gemini-3.1-pro-preview'],
-      cheapest: ['claude-haiku-4.5', 'gemini-3.5-flash', 'mai-code-1-flash'],
+      highest: ['claude-opus-4.8', 'claude-sonnet-5', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex'],
+      balanced: ['claude-sonnet-5', 'gpt-5.4', 'claude-sonnet-4.6', 'gpt-5.3-codex', 'gemini-3.1-pro-preview'],
+      cheapest: ['claude-haiku-4.5', 'gpt-5-mini', 'gemini-3-flash', 'raptor-mini', 'mai-code-1-flash'],
     },
     plans: {
       free: { highest: ['auto'], balanced: ['auto'], cheapest: ['auto'] },
     },
   },
   windsurf: {
-    updatedAt: '2026-07-13',
-    tiers: { highest: ['SWE-1.6 Slow'], balanced: ['SWE-1.6 Slow'], cheapest: ['SWE-1.6 Slow'] },
+    updatedAt: '2026-07-14',
+    // SWE-1.7 runs at 0 credits per docs.devin.ai, so the free/base rows can
+    // prefer it. Display strings are matched verbatim against the Cascade
+    // picker — verify on a real Windsurf Free install before shipping changes.
+    tiers: {
+      highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
+      balanced: ['SWE-1.7 Beta', 'SWE-1.6 Slow'],
+      cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Beta'],
+    },
     plans: {
-      pro: { highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'], balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'], cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'] },
-      max: { highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'], balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'], cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'] },
-      team: { highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'], balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'], cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'] },
-      enterprise: { highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'], balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'], cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'] },
+      pro: {
+        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
+        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
+        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+      },
+      max: {
+        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
+        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
+        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+      },
+      team: {
+        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
+        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
+        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+      },
+      enterprise: {
+        highest: ['SWE-1.7 Beta', 'SWE-1.7 Lightning Beta', 'SWE-1.6 Slow'],
+        balanced: ['SWE-1.7 Lightning Beta', 'SWE-1.7 Beta', 'SWE-1.6 Slow'],
+        cheapest: ['SWE-1.6 Slow', 'SWE-1.7 Lightning Beta', 'SWE-1.7 Beta'],
+      },
     },
   },
   kilo: {
@@ -134,8 +180,11 @@ export const PLAN_ALIASES: Readonly<Record<string, UserPlan>> = {
   trial: 'free',
   freetrial: 'free',
   professional: 'pro',
-  // ChatGPT Go / "Pro-Lite" budget tier (seen as chatgpt_plan_type="prolite") → Plus.
-  prolite: 'plus',
+  // "Pro-Lite" (chatgpt_plan_type="prolite") is badged "Pro" in the Codex app —
+  // observed live on a Pro-Lite account whose telemetry reports `prolite` while
+  // the profile shows Pro. Map it to `pro` so stored/displayed plans match the
+  // app; ChatGPT Go stays a Plus-equivalent budget tier.
+  prolite: 'pro',
   go: 'plus',
   chatgptgo: 'plus',
   // Cursor's 2026 individual tiers. Ultra is the top individual plan → reuse `max`
@@ -152,8 +201,10 @@ export const PLAN_ALIASES: Readonly<Record<string, UserPlan>> = {
 // Which plans each host actually exposes. canonicalPlan() validates against this;
 // a plan not in the host's set falls back to DEFAULT_HOST_PLAN[host].
 export const HOST_PLAN_IDS: Readonly<Record<HostModelKey, ReadonlySet<UserPlan>>> = {
-  // Claude Free does not include Claude Code. Missing local metadata therefore
-  // falls back to the lowest Claude Code subscription (Pro), not Free.
+  // Claude Free does not include Claude Code, so `free` is not a selectable
+  // Claude plan here — but undetectable local metadata still falls back to the
+  // conservative DEFAULT_HOST_PLAN.claude='free' (assume nothing about paid
+  // seats; recommendations resolve via the explicit `free` rows below).
   claude: new Set<UserPlan>(['pro', 'max', 'team', 'enterprise']),
   codex: new Set<UserPlan>(['free', 'plus', 'pro', 'business', 'enterprise', 'team']),
   // Cursor 2026: Hobby(free) / Pro / Pro+(plus) / Ultra(max) individual, plus
@@ -172,14 +223,14 @@ export const HOST_PLAN_IDS: Readonly<Record<HostModelKey, ReadonlySet<UserPlan>>
 
 // Plan assumed when the host exposes no detectable signal.
 export const DEFAULT_HOST_PLAN: Readonly<Record<HostModelKey, UserPlan>> = {
-  claude: 'pro', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free', windsurf: 'free', kilo: 'free',
+  claude: 'free', codex: 'free', cursor: 'free', opencode: 'free', copilot: 'free', windsurf: 'free', kilo: 'free',
 };
 
 // Headline plan → capability tier. Edit any cell freely. DEFAULT_HOST_PLAN[host] is
 // always present below, so recommendTierForPlan always resolves.
 export const PLAN_TIER_RECOMMENDATIONS: Readonly<Record<HostModelKey, Partial<Record<UserPlan, TierId>>>> = {
   claude: {
-    pro: 'balanced', max: 'highest', team: 'balanced', enterprise: 'balanced',
+    free: 'cheapest', pro: 'balanced', max: 'highest', team: 'balanced', enterprise: 'balanced',
   },
   codex: {
     free: 'cheapest', plus: 'balanced', pro: 'balanced', business: 'highest', enterprise: 'highest', team: 'highest',

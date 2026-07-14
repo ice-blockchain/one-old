@@ -6,6 +6,7 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { detectCopilotWireSurface, makeCopilotAdapter } from '../adapters/copilot';
 import { authRequiredMessage } from '../shared/auth';
+import { copilotPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -38,15 +39,18 @@ export async function runCopilotHook(
   let parsedRaw: unknown = {};
   try { parsedRaw = JSON.parse(stdin); } catch { /* empty stdin */ }
   const surface = detectCopilotWireSurface(env, parsedRaw);
-  const adapter = makeCopilotAdapter(surface);
   const noop = surface === 'vscode' ? COPILOT_NOOP_VSCODE : COPILOT_NOOP_CLI;
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const adapter = makeCopilotAdapter(surface);
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand] });
     return { stdout: stdout || noop, exitCode: 0 };
   } catch {
     if (subcommand === 'session-start') {
       return { stdout: sessionStartFallback(env, surface), exitCode: 0 };
+    }
+    if (subcommand === 'before-tool-use') {
+      return { stdout: copilotPreToolDeny(surface), exitCode: 0 };
     }
     return { stdout: noop, exitCode: 0 };
   }

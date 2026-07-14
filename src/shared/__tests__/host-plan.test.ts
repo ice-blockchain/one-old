@@ -149,8 +149,8 @@ test('detectHostPlan claude: personal Max account — plan only in organizationT
   assert.equal(detectHostPlan('claude', env({ HOME: hPro })), 'pro');
 });
 
-test('detectHostPlan claude: missing/garbage file → conservative Claude Code default (pro)', () => {
-  assert.equal(detectHostPlan('claude', env({ HOME: tmpHome() })), 'pro');
+test('detectHostPlan claude: missing/garbage file → conservative default (free — assume no paid seat)', () => {
+  assert.equal(detectHostPlan('claude', env({ HOME: tmpHome() })), 'free');
 });
 
 test('detectHostPlan codex: decodes chatgpt_plan_type from the id_token JWT', () => {
@@ -160,11 +160,11 @@ test('detectHostPlan codex: decodes chatgpt_plan_type from the id_token JWT', ()
   assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
 });
 
-test('detectHostPlan codex: prolite (ChatGPT Go / Pro-Lite) maps to plus', () => {
+test('detectHostPlan codex: prolite (Pro-Lite, badged "Pro" in the app) maps to pro', () => {
   const home = tmpHome();
   const token = jwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'prolite' } });
   fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
-  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'plus');
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
 });
 
 test('detectHostPlan codex: malformed token / no file → default free', () => {
@@ -172,6 +172,43 @@ test('detectHostPlan codex: malformed token / no file → default free', () => {
   fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: 'not-a-jwt' } }), 'utf8');
   assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'free');
   assert.equal(detectHostPlan('codex', env({ CODEX_HOME: tmpHome() })), 'free');
+});
+
+function writeCodexRollout(home: string, day: string, name: string, planType: string | null): void {
+  const dir = path.join(home, 'sessions', '2026', '07', day);
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = [
+    JSON.stringify({ type: 'session_meta', payload: { id: name } }),
+    ...(planType
+      ? [JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limit_snapshot: { credits: null, plan_type: planType, rate_limit_reached_type: null } } })]
+      : []),
+  ];
+  fs.writeFileSync(path.join(dir, `rollout-2026-07-${day}T${name}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
+}
+
+test('detectHostPlan codex: server-reported plan_type from session telemetry beats the stale JWT claim', () => {
+  const home = tmpHome();
+  // The JWT is only re-minted at `codex login` and lags a plan change for weeks;
+  // the session rollouts carry the server-reported CURRENT plan on every run.
+  const token = jwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'prolite' } });
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
+  writeCodexRollout(home, '12', '09-00-00-aaa', 'plus'); // older day
+  writeCodexRollout(home, '13', '10-00-00-bbb', 'pro'); // newest day, newest file
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
+});
+
+test('detectHostPlan codex: newest rollout without a plan_type falls through to the next file, then the JWT', () => {
+  const home = tmpHome();
+  const token = jwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'plus' } });
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
+  writeCodexRollout(home, '13', '11-00-00-ccc', null); // newest file carries no snapshot
+  writeCodexRollout(home, '13', '10-00-00-bbb', 'pro');
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
+
+  // No rollouts at all → the JWT claim remains the fallback.
+  const jwtOnly = tmpHome();
+  fs.writeFileSync(path.join(jwtOnly, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: jwtOnly })), 'plus');
 });
 
 test('detectHostPlan cursor: reads cursorAuth/stripeMembershipType from state.vscdb (cross-OS)', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {

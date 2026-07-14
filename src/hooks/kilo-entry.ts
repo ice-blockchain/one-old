@@ -10,15 +10,13 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { authRequiredMessage } from '../shared/auth';
 import { obj } from '../shared/obj';
-import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
+import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
+import { wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
 const KILO_NOOP = JSON.stringify({ kind: 'noop' });
-const KILO_PRE_TOOL_FAIL_CLOSED = JSON.stringify({
-  kind: 'deny',
-  reason: 'Traffic One Kilo pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed. Run Traffic One doctor and retry after the plugin is healthy.',
-});
+const KILO_PRE_TOOL_FAIL_CLOSED = wrapperPreToolDeny('Kilo');
 const KILO_PROMPT_FAIL_CONTEXT = 'Traffic One Kilo hook failed before it could provide project context. Run Traffic One doctor, then restart Kilo/WebStorm so the plugin reloads.';
 
 function sessionStartFallback(env: NodeJS.ProcessEnv): string {
@@ -51,11 +49,11 @@ export async function runKiloHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: KILO_NOOP, exitCode: 0 };
-  const cwd = cwdFromStdin(stdin);
-  if (cwd) applyTrafficOneEnv(cwd, 'kilo', env);
-  const adapter = makeKiloAdapter();
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const cwd = cwdFromStdin(stdin);
+    if (cwd) initializeTrafficOneEnv(cwd, 'kilo', env);
+    const adapter = makeKiloAdapter();
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand, '--host=kilo'] });
     return { stdout: stdout || KILO_NOOP, exitCode: 0 };
   } catch {

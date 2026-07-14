@@ -14,6 +14,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { modelMatchesAny } from '../../shared/model-tiers';
+import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
 import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
 import {
   cursorModelsCapturePrompted,
@@ -239,7 +240,11 @@ function replacementJustified(prompt: string, host = ''): boolean {
     && /\b(previous|existing|current)\s+(opencode\s+)?(agent|task|subagent)\s+(completed|finished|returned|ended)\b|\bfix[- ]cycle\b|\bfollow[- ]up\b|\bno\s+resum(?:e|able|able\s+task)\b|\bcontinuation\s+(unavailable|unsupported)\b/i.test(prompt)) {
     return true;
   }
-  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed)\b/i
+  // api/usage-limit vocabulary: a subagent stopped mid-run by provider limits is
+  // dead for this session — continuation would re-hit the same limit. The
+  // PostToolUse recorder also retires such agents proactively; this keeps the
+  // replace path open when the result carried no classifiable text.
+  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed|usage limit|rate limit|api (usage )?limit|quota|stopped|aborted|interrupted)\b/i
     .test(prompt);
 }
 
@@ -323,6 +328,8 @@ function modelEnableRetryDeny(ctx: Ctx, role: string, level: string, passedModel
   return deny(block('model-choice-enable-required', { LEVEL: level, HOST: ctx.host, ROLE: role, EXPECTED: expected, PASSED_NOTE: passedNote }));
 }
 
+// Generation-agnostic on purpose: matches any Composer release, so only the
+// CURSOR_MODEL_FLOOR constant needs editing when the floor generation bumps.
 function isComposerFamily(model: string): boolean {
   return /^composer/i.test(model.trim());
 }
@@ -341,7 +348,7 @@ function degradedToFloorDeny(ctx: Ctx, cwd: string, runId: string, role: string,
   if (ctx.host !== 'cursor' || !runId) return null;
   if (isComposerFamily(expected)) return null; // tier legitimately wants Composer (free / tester / quick-fix)
   // The passed model is authoritative (the gate already required it via modelSatisfiesTier).
-  if (!modelMatchesAny(passedModel, ['composer-2.5'])) return null; // not on the floor → running fine
+  if (!modelMatchesAny(passedModel, [CURSOR_MODEL_FLOOR])) return null; // not on the floor → running fine
   // Honor the answer precisely: fallback proceeds only after an explicit recorded choice.
   const choice = fallbackAlreadyAllowed(cwd, runId);
   if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, expected);
@@ -354,7 +361,7 @@ function degradedToFloorDeny(ctx: Ctx, cwd: string, runId: string, role: string,
   // of the actually-disabled model they picked. The user must see the exact model to enable in
   // Settings → Models. The FALLBACK is the Composer floor the spawn already degraded to (free,
   // guaranteed available — matches the "no extra cost / available immediately" choice prose).
-  return modelChoiceDeny(ctx, role, level, expected, cursorRealSlug(ctx, cwd, 'composer-2.5'));
+  return modelChoiceDeny(ctx, role, level, expected, cursorRealSlug(ctx, cwd, CURSOR_MODEL_FLOOR));
 }
 
 // The role's PREFERRED tier model (the exact one the user picked in the wizard, e.g. the
@@ -403,14 +410,15 @@ function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string,
 
 // NOTE: this gate FIRES and ENFORCES on Cursor — the generic before-tool-use hook
 // derives spawn-agent from tool_name=Task (cursor.ts GENERIC_PRE_ADMIT), the model is
-// passed in tool_input.model, and HOST_MODELS.cursor holds the EXACT Cursor Task-tool
-// slugs (claude-opus-4-8-thinking-high / claude-4.6-sonnet-medium-thinking / composer-2.5-fast)
-// — so the per-role model-param deny is enforced on all three hosts identically. (This
-// replaced an earlier advisory-only stopgap: HOST_MODELS.cursor used to hold Anthropic
-// aliases (opus/sonnet/haiku) that Cursor REJECTS, making a hard equality deny
-// un-satisfiable. Cursor REJECTS a slug it doesn't offer rather than downgrading, and its
-// subagent lineup is account/build-specific, so each local Cursor tier snapshot
-// carries a preferred id followed by same-tier fallbacks that modelSatisfiesTier honors.)
+// passed in tool_input.model, and HOST_MODELS.cursor holds bare FAMILY anchors
+// (claude-fable-5 / gpt-5.6-terra / composer-2.5) — the concrete reasoning-suffixed
+// build slug (e.g. claude-4.6-sonnet-medium-thinking) is account/build-specific, so it
+// is captured at onboarding (freshCursorModels) and resolved per spawn via
+// pickCursorSlug/cursorRealSlug, while modelSatisfiesTier matches family-aware against
+// the owning tier row (preferred id + same-tier fallbacks). (This replaced an earlier
+// advisory-only stopgap: HOST_MODELS.cursor used to hold Anthropic aliases
+// (opus/sonnet/haiku) that Cursor REJECTS rather than downgrading, making a hard
+// equality deny un-satisfiable.)
 // The gate also stakes the run-claim here (subagentStart is a different
 // canonical event, so no double-claim), which the subagent-team write gate needs to
 // resolve a role on Cursor. Agent REUSE/continuation is ENABLED on Cursor via the

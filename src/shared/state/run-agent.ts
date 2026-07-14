@@ -8,7 +8,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import { parseJson, readJson, writeJson } from '../fsjson';
 import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
@@ -83,7 +83,7 @@ function fallbackClaimFile(cwd: string, runId: string, target: string): string {
 }
 
 export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
-  if (isPluginAuthoringRoot(cwd)) return null;
+  if (isNonProjectRoot(cwd)) return null;
   if (typeof runId !== 'string' || !runId.trim()) return null;
   const id = runId.trim();
   const now = stateTimestamp();
@@ -728,7 +728,7 @@ export function ensureRunAgentClaim(
   metadata: { toolName?: string; agentType?: string; model?: string } = {},
 ): Rec | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
-  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
   const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
@@ -921,7 +921,7 @@ export function claimThreadRole(
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
-  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const id = threadId.trim();
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
@@ -1410,7 +1410,7 @@ export function tryFallbackClaim(
 ): { blocked: boolean; holder?: string } {
   const runId = ctx && ctx.runId != null ? String(ctx.runId) : '';
   if (!runId) return { blocked: false };
-  if (isPluginAuthoringRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
   const myKey = String(ctx.sessionId || ctx.claimId || ctx.role || '');
   const file = fallbackClaimFile(cwd, runId, normalizeRelPath(target));
   const existing = obj(readJson(file, null));
@@ -1656,7 +1656,7 @@ export function recordRunAgent(
   entry: RunAgentRecordInput,
 ): void {
   if (!VALID_AGENT_ROLES.has(role)) return;
-  if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return; // never write run state in the plugin's own repo
   if (typeof entry.agentId !== 'string' || !entry.agentId.trim()) return;
   withAgentRegistryLock(cwd, runId, () => recordRunAgentUnlocked(cwd, runId, role, entry));
 }
@@ -1803,7 +1803,7 @@ export function liveRunAgent(
 // Mark the role's current agent as replaced (exhausted/dead): the next spawn
 // for the role is allowed and the recorder overwrites the entry.
 export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
-  if (isPluginAuthoringRoot(cwd)) return;
+  if (isNonProjectRoot(cwd)) return;
   withAgentRegistryLock(cwd, runId, () => markRunAgentReplacedUnlocked(cwd, runId, role));
 }
 

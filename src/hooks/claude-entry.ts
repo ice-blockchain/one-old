@@ -13,6 +13,7 @@ import { collectHandlers, defaultModulesDir, loadModules } from '../core/registr
 import { selectAdapter } from '../adapters/select';
 import { authRequiredMessage } from '../shared/auth';
 import { detectHost } from '../shared/host';
+import { isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -36,14 +37,17 @@ export async function runClaudeHook(
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
   const host = detectHost(env, ['--host', subcommand]); // never cursor here
-  const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatchSubcommand(adapter, handlers, subcommand, { stdin, argv: [subcommand] });
     return { stdout, exitCode: 0 };
   } catch {
     if (subcommand === 'session-start') {
       return { stdout: sessionStartFallback(env), exitCode: 0 };
+    }
+    if (isGatePreToolSubcommand(subcommand)) {
+      return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };
   }

@@ -23,7 +23,7 @@ import { PERFORMANCE_CONFIG } from '../../config/performance';
 import { STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
-import { currentModelForTier } from '../current-model-tiers';
+import { currentModelForTier, currentModelsForTier } from '../current-model-tiers';
 import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
@@ -60,6 +60,8 @@ export interface TeamMember {
   blurb: string;
   tier: string;
   model: string;
+  // Display-only friendly name (e.g. "Opus 4.8") when `model` is a bare alias.
+  modelLabel?: string;
 }
 
 // The static step copy (kind/title/question/options/fields) is owned by
@@ -77,7 +79,32 @@ export interface StepMeta extends StepCopy {
   // capability tiers (highest/balanced/cheapest) resolved to concrete model ids
   // (opus/sonnet/haiku, gpt-5.x, …). The wizard renders one <select> per role
   // from this list; the chosen tier is sent back as a team.overrides entry.
-  modelChoices?: { tier: string; model: string }[];
+  modelChoices?: { tier: string; model: string; label?: string }[];
+}
+
+// Display label for a wizard model id. Anthropic ids read poorly raw, so both
+// forms get a friendly generation label: a concrete id parses directly
+// (claude-opus-4-8 → "Opus 4.8"), and a bare alias ("opus") resolves through
+// its tier row's first same-family versioned id. Ids on other hosts are
+// already readable and return null (no label).
+export function modelDisplayLabel(model: string, tier: string, host: string, plan?: string | null): string | null {
+  // Version = leading short numeric segments ('4-8' → '4.8'); anything longer
+  // (a dated build like 20251001) is a pin, not a display generation.
+  const claudeLabel = (id: string): string | null => {
+    const m = /^claude-([a-z]+)-([\d-]+)$/.exec(id);
+    const family = m?.[1];
+    const raw = m?.[2];
+    if (!family || !raw) return null;
+    const version = raw.split('-').filter((seg) => /^\d{1,2}$/.test(seg)).join('.');
+    if (!version) return null;
+    return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`;
+  };
+  const direct = claudeLabel(model);
+  if (direct) return direct;
+  if (!/^[a-z]+$/.test(model)) return null;
+  const row = currentModelsForTier(tier, host, plan ?? undefined);
+  const concrete = row.find((id) => id.startsWith(`claude-${model}-`));
+  return concrete ? claudeLabel(concrete) : null;
 }
 
 // Build the per-role line-up for a performance level + host. Empty for levels with
@@ -90,7 +117,8 @@ export function buildTeamLineup(level: string, host: string, overrides?: Rec | n
     const tier = effectiveTierForRole(level, r.role, overrides || null, planCtx || null);
     if (!tier) continue;
     const model = modelForRoleHost(level, r.role, host, overrides || null, planCtx || null) || tier;
-    out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model });
+    const modelLabel = modelDisplayLabel(model, tier, host, planCtx?.plan);
+    out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model, ...(modelLabel ? { modelLabel } : {}) });
   }
   return out;
 }
@@ -244,7 +272,11 @@ function enrichTeamMeta(meta: StepMeta, state: Rec): void {
   const choiceTiers = host === 'windsurf' && planCtx.plan === 'free'
     ? ['cheapest'] as const
     : TIER_IDS;
-  meta.modelChoices = choiceTiers.map((tier) => ({ tier, model: currentModelForTier(tier, host, planCtx.plan) || tier }));
+  meta.modelChoices = choiceTiers.map((tier) => {
+    const model = currentModelForTier(tier, host, planCtx.plan) || tier;
+    const label = modelDisplayLabel(model, tier, host, planCtx.plan);
+    return { tier, model, ...(label ? { label } : {}) };
+  });
 }
 
 // Pre-select the wizard's plan recommendation: move it first and tag its hint

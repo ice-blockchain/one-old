@@ -74,6 +74,10 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
   Record<HostModelKey, Partial<Record<UserPlan, PerformanceLevelId>>>
 > = {
   claude: {
+    // `free` is the undetectable-metadata fallback (DEFAULT_HOST_PLAN.claude),
+    // not a real Claude Code plan — assume nothing about paid capacity and
+    // recommend the conservative solo mode, like every other host's free plan.
+    free: 'low',
     pro: 'balanced',
     max: 'high',
     // Standard/unknown Team and Enterprise seats follow Claude Code's Sonnet

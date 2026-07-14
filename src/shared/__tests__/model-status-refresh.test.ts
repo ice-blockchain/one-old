@@ -34,13 +34,13 @@ test('refreshHostModelStatus performs zero writes for an exact plan/catalog matc
 
 test('refreshHostModelStatus stores a valid API catalog with a newer date', async () => {
   const current = hostModelSnapshot('cursor', 'pro');
-  const remote = { ...hostModelSnapshot('cursor', 'pro'), updatedAt: '2026-07-14' };
+  const remote = { ...hostModelSnapshot('cursor', 'pro'), updatedAt: '2026-07-15' };
   const h = harness(current, remote);
   const result = await h.run();
   assert.equal(result.outcome, 'remote-updated');
   assert.equal(result.changed, true);
   assert.equal(h.writes.length, 1);
-  assert.equal(h.writes[0]?.updatedAt, '2026-07-14');
+  assert.equal(h.writes[0]?.updatedAt, '2026-07-15');
 });
 
 test('same-date tier drift is invalid and preserves the last configuration', async () => {
@@ -138,7 +138,7 @@ test('a newer same-plan local snapshot is never downgraded by bundled or API dat
 
 test('a newer API snapshot survives a later timeout without being downgraded', async () => {
   const bundled = hostModelSnapshot('cursor', 'pro');
-  const remote = { ...bundled, updatedAt: '2026-07-14' };
+  const remote = { ...bundled, updatedAt: '2026-07-15' };
   const first = harness(bundled, remote);
   const firstResult = await first.run();
   assert.equal(firstResult.outcome, 'remote-updated');
@@ -149,7 +149,7 @@ test('a newer API snapshot survives a later timeout without being downgraded', a
 
   assert.equal(secondResult.outcome, 'unavailable');
   assert.equal(secondResult.changed, false);
-  assert.equal(secondResult.snapshot?.updatedAt, '2026-07-14');
+  assert.equal(secondResult.snapshot?.updatedAt, '2026-07-15');
   assert.deepEqual(second.writes, []);
 });
 

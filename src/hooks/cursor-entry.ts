@@ -14,6 +14,7 @@ import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { makeCursorAdapter } from '../adapters/cursor';
 import { authRequiredMessage } from '../shared/auth';
+import { cursorPreToolDeny, isCursorPreToolSubcommand } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -30,14 +31,17 @@ export async function runCursorHook(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: CURSOR_NOOP, exitCode: 0 };
-  const adapter = makeCursorAdapter();
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const adapter = makeCursorAdapter();
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand] });
     return { stdout: stdout || CURSOR_NOOP, exitCode: 0 };
   } catch {
     if (subcommand === 'session-start') {
       return { stdout: sessionStartFallback(env), exitCode: 0 };
+    }
+    if (isCursorPreToolSubcommand(subcommand)) {
+      return { stdout: cursorPreToolDeny(), exitCode: 0 };
     }
     return { stdout: CURSOR_NOOP, exitCode: 0 };
   }

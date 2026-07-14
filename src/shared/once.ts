@@ -46,6 +46,31 @@ export function firstEmitThisSession(cwd: string, label: string, sessionId: stri
   return true;
 }
 
+// Cross-surface TTL markers (no session key): several independent surfaces can
+// emit the same user-facing content (e.g. the wizard URL comes from the
+// session-start banner, the prompt-submit recipe, the gate deny, AND the wait
+// runner's terminal banner). The runner is a separate process with no session
+// id, so session-keyed markers can't dedupe across them — a plain mtime-TTL
+// marker can. Emitters STAMP; the redundant surface CHECKS before printing.
+export function stampEmitMarker(cwd: string, label: string): void {
+  const dir = onceDir(cwd);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${safeKey(label)}-shared`), `${new Date().toISOString()}\n`, 'utf8');
+  } catch {
+    // best effort
+  }
+}
+
+export function emittedWithin(cwd: string, label: string, ttlMs: number): boolean {
+  try {
+    const stat = fs.statSync(path.join(onceDir(cwd), `${safeKey(label)}-shared`));
+    return Date.now() - stat.mtimeMs < ttlMs;
+  } catch {
+    return false;
+  }
+}
+
 // Test helper: forget all once-markers for a project.
 export function resetOnceMarkers(cwd: string): void {
   try {

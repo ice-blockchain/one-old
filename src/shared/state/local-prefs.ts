@@ -14,10 +14,7 @@ import { canonicalHost, canonicalPlan, planIsRecognized } from '../model-tiers';
 import { readOneSettings, writeOneSection } from '../one-settings';
 import { sha256 } from '../text';
 import {
-  ensureProjectLocalTrafficOneGitignore,
   globalTrafficOneDir,
-  projectLocalMachinePath,
-  projectLocalPrefsPath,
 } from './traffic-one-paths';
 import {
   canonicalOpenCodeSource,
@@ -395,24 +392,6 @@ export function readProjectPrefs(cwd: string, env: NodeJS.ProcessEnv = process.e
   if (raw && typeof raw === 'object' && Object.keys(obj(raw) || {}).length > 0) {
     return normalizeProjectPrefs(raw);
   }
-  // Legacy OpenCode project-local prefs (pre global ~/.traffic-one parity).
-  const legacy = projectLocalPrefsPath(cwd);
-  if (legacy !== prefsPath) {
-    const legacyRaw = readJson(legacy, null);
-    if (legacyRaw && typeof legacyRaw === 'object' && Object.keys(obj(legacyRaw) || {}).length > 0) {
-      return normalizeProjectPrefs(legacyRaw);
-    }
-  }
-  // Compatibility for the host-env migration: a newer host may force
-  // project-local prefs while a just-completed wizard or older install wrote the
-  // previous hashed per-project prefs under ~/.traffic-one/projects/<hash>.
-  const hashed = defaultProjectPrefsPath(cwd, env);
-  if (hashed !== prefsPath && hashed !== legacy) {
-    const hashedRaw = readJson(hashed, null);
-    if (hashedRaw && typeof hashedRaw === 'object' && Object.keys(obj(hashedRaw) || {}).length > 0) {
-      return normalizeProjectPrefs(hashedRaw);
-    }
-  }
   return normalizeProjectPrefs({});
 }
 
@@ -420,9 +399,6 @@ export function writeProjectPrefs(cwd: string, prefs: unknown, env: NodeJS.Proce
   const normalized = normalizeProjectPrefs(prefs);
   const prefsPath = projectPrefsPath(cwd, env);
   withProjectPrefsLock(prefsPath, () => writeProjectPrefsFile(prefsPath, normalized));
-  if (prefsPath === projectLocalPrefsPath(cwd)) {
-    ensureProjectLocalTrafficOneGitignore(cwd);
-  }
   return normalized;
 }
 
@@ -440,7 +416,6 @@ function updateProjectPrefs(
     writeProjectPrefsFile(prefsPath, normalized);
     return normalized;
   });
-  if (prefsPath === projectLocalPrefsPath(cwd)) ensureProjectLocalTrafficOneGitignore(cwd);
   return next;
 }
 
@@ -665,13 +640,6 @@ export function readGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env
   return codeGraphProviderFromValue(readOneSettings(env).codeGraphProvider);
 }
 
-function readDefaultGlobalCodeGraphProvider(env: NodeJS.ProcessEnv = process.env): string | null {
-  const fallbackEnv = { ...env };
-  delete fallbackEnv.TRAFFIC_ONE_STATE_PATH;
-  delete fallbackEnv.TRAFFIC_ONE_AUTH_STATE_PATH;
-  return codeGraphProviderFromValue(readOneSettings(fallbackEnv).codeGraphProvider);
-}
-
 export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.ProcessEnv = process.env): string | null {
   const canonical = codeGraphProviderFromValue(provider);
   if (!canonical) return null;
@@ -686,19 +654,9 @@ export function writeGlobalCodeGraphProvider(provider: string, env: NodeJS.Proce
 export function applyGlobalCodeGraphProvider(
   state: Rec,
   env: NodeJS.ProcessEnv = process.env,
-  cwd?: string,
+  _cwd?: string,
 ): Rec {
-  let provider = readGlobalCodeGraphProvider(env);
-  if (!provider && cwd) {
-    const legacyRaw = readJson(projectLocalMachinePath(cwd), null);
-    if (legacyRaw && typeof legacyRaw === 'object') {
-      provider = codeGraphProviderFromValue((legacyRaw as Rec).codeGraphProvider);
-    }
-  }
-  if (!provider && cwd && env.TRAFFIC_ONE_STATE_PATH
-    && path.resolve(env.TRAFFIC_ONE_STATE_PATH) === projectLocalMachinePath(cwd)) {
-    provider = readDefaultGlobalCodeGraphProvider(env);
-  }
+  const provider = readGlobalCodeGraphProvider(env);
   if (provider) state.codeGraphProvider = provider;
   else delete state.codeGraphProvider;
   return state;

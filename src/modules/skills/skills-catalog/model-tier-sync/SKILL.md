@@ -109,6 +109,9 @@ reorder or rename the tiers, and never change `src/shared/performance-config.ts`
    today's `YYYY-MM-DD` whenever any base or plan-specific model array changes.
    This is mandatory even if the preferred model stayed the same. Changing a
    resolved tier array without a date bump is an invalid snapshot contract.
+   If the stamp already equals today (rows changed twice in one day), use the
+   NEXT calendar date — `newestSnapshot` lets a persisted local snapshot win
+   date ties, so a same-date change would never reach existing installs.
 
 6. **Run the repository verification chain** (from the authoring repo root):
    ```bash

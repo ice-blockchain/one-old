@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { openCodeRestartWarning, preSpawnArchitectDirective, waitForOnboarding } from '../index';
+import { cursorSetupCloseDirective, openCodeRestartWarning, preSpawnArchitectDirective, waitForOnboarding } from '../index';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
@@ -46,6 +46,48 @@ test('openCodeRestartWarning tells the user to restart before continuing develop
   assert.match(warning, /restart OpenCode/i);
   assert.match(warning, /type "continue" or "resume"/i);
   assert.doesNotMatch(warning, /Ctrl\+C/i);
+});
+
+test('Cursor setup completion closes the exact wizard tab through browser_tabs', () => {
+  const url = 'http://127.0.0.1:55174/?t=tok';
+  const directive = cursorSetupCloseDirective(url, 'cursor');
+  assert.ok(directive.includes('`browser_tabs`'));
+  assert.ok(directive.includes('{"action":"list"}'));
+  assert.ok(directive.includes('{"action":"close","index":<matching index>}'));
+  assert.ok(directive.includes(url), 'the exact tokenized wizard URL is used for index-safe matching');
+  assert.match(directive, /Traffic One — Setup/, 'title fallback when the exact URL does not match');
+  assert.match(directive, /VERIFY/i, 're-list to confirm the tab actually closed');
+  assert.match(directive, /Do not ask the user to close/i);
+  assert.equal(cursorSetupCloseDirective(url, 'claude'), '', 'other hosts keep their native close path');
+});
+
+test('awaitWizardCompletionAck: returns immediately once the server record is gone, bounded otherwise', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { awaitWizardCompletionAck } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ack-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    // No record (server already shut down after /complete) → no wait at all.
+    let started = Date.now();
+    awaitWizardCompletionAck(dir, 'cursor', 2000);
+    assert.ok(Date.now() - started < 500, 'gone record returns immediately');
+
+    // Live record that never clears → the grace is BOUNDED (never stalls the build).
+    writeServerRecord(dir, { pid: process.pid, port: 55175, token: 'tok', url: 'http://127.0.0.1:55175/?t=tok', startedAt: 'x' }, process.env, 'cursor');
+    started = Date.now();
+    awaitWizardCompletionAck(dir, 'cursor', 400);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 350 && elapsed < 2000, `bounded grace (got ${elapsed}ms)`);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('Windsurf first-run architect directive uses the always-registered general profile', async () => {
@@ -384,6 +426,14 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
     assert.ok(out.includes('http://127.0.0.1:55174/?t=tok'), 'banner carries the live wizard URL');
     assert.equal(out.match(/http:\/\/127\.0\.0\.1:55174\/\?t=tok/g)?.length, 2, 'banner repeats the URL near the waiting line for compact terminals');
     assert.match(out, /SETUP WIZARD/i, 'banner is recognizable to the user');
+
+    // Another surface already showed the link (the first banner stamped the shared
+    // marker) → the runner prints a compact wait line, never the URL twice.
+    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' }, process.env, 'cursor');
+    out = '';
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
+    assert.ok(!out.includes('http://127.0.0.1:55174'), 'duplicate banner suppressed after the first emission');
+    assert.match(out, /Waiting for Traffic One setup/i, 'compact wait line still explains the block');
 
     // Placeholder (:0/) → never surfaced.
     writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' }, process.env, 'cursor');

@@ -9,7 +9,7 @@
 // any failure is swallowed (it just leaves OpenCode to keep declining as before).
 
 import { exec } from './exec';
-import { isPluginAuthoringRoot } from './authoring-root';
+import { isNonProjectRoot } from './authoring-root';
 
 function git(root: string, args: readonly string[]): { code: number; stdout: string } {
   const r = exec.run('git', args, { cwd: root });
@@ -24,7 +24,7 @@ function git(root: string, args: readonly string[]): { code: number; stdout: str
 // callers never silently `git init` an intentionally un-versioned project.
 export function ensureInitialCommit(root: string, opts: { initIfNeeded?: boolean } = {}): boolean {
   try {
-    if (!root || isPluginAuthoringRoot(root)) return false;
+    if (!root || isNonProjectRoot(root)) return false;
     // Must be the top of a git work tree…
     if (git(root, ['rev-parse', '--is-inside-work-tree']).stdout.trim() !== 'true') {
       if (!opts.initIfNeeded || git(root, ['init', '-q']).code !== 0) return false;

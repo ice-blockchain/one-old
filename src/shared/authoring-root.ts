@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { pluginRoot } from './paths';
+import { globalTrafficOneDir } from './state/traffic-one-paths';
 
 function manifestNameIsTrafficOne(manifestPath: string): boolean {
   try {
@@ -110,4 +111,42 @@ export function isInsidePluginAuthoringRoot(p: string): boolean {
 
 export function isPluginAuthoringRoot(cwd: string): boolean {
   return isInsidePluginAuthoringRoot(cwd);
+}
+
+// Machine-config space is never an end-user project: $HOME itself, the
+// filesystem root, and the machine-wide state dir (~/.traffic-one or
+// $XDG_STATE_HOME/traffic-one) including anything inside it. Without this, a
+// session whose cwd is $HOME (an editor opened with no folder) onboards home as
+// an "existing codebase" and materializes the project tree INTO the machine
+// dir — <$HOME>/.traffic-one IS ~/.traffic-one — interleaving project
+// artifacts (.one.json, manifest.json, rules/, skills/) with machine state.
+// Symlink-resolved compare (best-effort): macOS spells the same dir /var/… and
+// /private/var/…, and a symlinked $HOME must not dodge the guard on spelling.
+function realResolve(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function isMachineConfigRoot(p: string): boolean {
+  const resolved = realResolve(p);
+  if (resolved === path.parse(resolved).root) return true; // filesystem root
+  let home = '';
+  try { home = realResolve(os.homedir()); } catch { /* no home */ }
+  if (home && resolved === home) return true;
+  const envHome = process.env.HOME ? realResolve(process.env.HOME) : '';
+  if (envHome && resolved === envHome) return true;
+  const globalDir = realResolve(globalTrafficOneDir());
+  return resolved === globalDir || resolved.startsWith(globalDir + path.sep);
+}
+
+// The single stand-down predicate for "never treat this dir as an end-user
+// project": machine-config space, the plugin's own repo, or a generated plugin
+// tree. Every gate/materializer/state writer that adopts a project root guards
+// on this — not on isPluginAuthoringRoot alone.
+export function isNonProjectRoot(cwd: string): boolean {
+  return isMachineConfigRoot(cwd) || isInsidePluginAuthoringRoot(cwd);
 }

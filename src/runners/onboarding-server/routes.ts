@@ -2,12 +2,11 @@
 // HTTP route dispatch for the onboarding wizard. Token + loopback checks happen in
 // server.ts before this runs. The state/answer/task routes are thin glue over the
 // shared flow brain (computeOnboarding / applyAnswer) + the async task runner; the
-// completion route writes the sentinel and asks the server to shut down.
+// completion route acknowledges the tab and asks the server to shut down.
 
 import type { IncomingMessage, ServerResponse } from 'http';
 
 import { applyAnswer, computeOnboarding } from '../../shared/onboarding-server/flow';
-import { writeCompletionSentinel } from '../../shared/onboarding-server/registry';
 import { obj } from '../../shared/obj';
 import { probeOnboardingToolchain } from '../toolchain/onboarding';
 import { wizardHtml } from './html';
@@ -125,11 +124,8 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
   }
 
   if (method === 'POST' && pathname === '/complete') {
-    try {
-      writeCompletionSentinel(ctx.cwd, ctx.env, ctx.trafficHost);
-    } catch {
-      // best-effort — the gate's predicates remain the source of truth
-    }
+    // Completion truth lives in the state predicates (computeOnboarding) —
+    // this route only acknowledges the tab and shuts the server down.
     sendJson(res, 200, { ok: true });
     ctx.requestShutdown();
     return;

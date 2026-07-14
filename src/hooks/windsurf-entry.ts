@@ -7,10 +7,11 @@ import { makeWindsurfAdapter } from '../adapters/windsurf';
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { authRequiredMessage } from '../shared/auth';
-import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
+import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
+import { isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 
@@ -94,13 +95,12 @@ export async function runWindsurfHook(
   }
   const action = actionName(stdin, subcommand);
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
-  const cwd = cwdFrom(stdin);
-  applyTrafficOneEnv(cwd, 'windsurf', env);
-  try { process.chdir(cwd); } catch { /* Cascade usually sets cwd; best-effort */ }
-
-  const adapter = makeWindsurfAdapter();
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const cwd = cwdFrom(stdin);
+    initializeTrafficOneEnv(cwd, 'windsurf', env);
+    try { process.chdir(cwd); } catch { /* Cascade usually sets cwd; best-effort */ }
+    const adapter = makeWindsurfAdapter();
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const rawOut = await dispatch(adapter, handlers, { stdin, argv: [action, '--host=windsurf'] });
     const result = parseEnvelope(rawOut);
     const isPre = PRE_HOOKS.has(action);
@@ -132,6 +132,9 @@ export async function runWindsurfHook(
   } catch {
     if (action === 'pre_user_prompt') {
       return { stdout: '', stderr: authRequiredMessage(env), exitCode: 2 };
+    }
+    if (isWindsurfPreToolAction(action)) {
+      return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };
     }
     return { stdout: '', stderr: '', exitCode: 0 };
   }

@@ -6,16 +6,23 @@ import * as path from 'path';
 
 import { runDevinHook } from '../devin-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
+import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 
 async function withSetupProject(fn: (cwd: string) => Promise<void>): Promise<void> {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-devin-entry-'));
+  // home ≠ project: a real Devin workspace is never $HOME, and cwd === $HOME is
+  // machine-config space the gate now refuses outright (isNonProjectRoot).
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-devin-entry-')));
+  const home = path.join(base, 'home');
+  const dir = path.join(base, 'project');
+  fs.mkdirSync(home, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
   const oldCwd = process.cwd();
   const saved = {
     auth: process.env.TRAFFIC_ONE_AUTH,
     noSpawn: process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
     home: process.env.HOME,
   };
-  process.env.HOME = dir;
+  process.env.HOME = home;
   process.env.TRAFFIC_ONE_AUTH = 'off';
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
@@ -29,7 +36,7 @@ async function withSetupProject(fn: (cwd: string) => Promise<void>): Promise<voi
     else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = saved.noSpawn;
     if (saved.home === undefined) delete process.env.HOME;
     else process.env.HOME = saved.home;
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(base, { recursive: true, force: true });
   }
 }
 
@@ -65,7 +72,7 @@ test('Devin PreToolUse blocks scaffolding immediately and allows the ordinary wa
       hook_event_name: 'PreToolUse',
       cwd,
       tool_name: 'exec',
-      tool_input: { command: `node "/plugin/scripts/onboarding-wait.cjs" "${cwd}" "--host=windsurf"` },
+      tool_input: { command: onboardingWaitCommand(cwd, 'windsurf') },
     }));
     assert.equal(wait.stdout, '');
     assert.equal(wait.exitCode, 0);

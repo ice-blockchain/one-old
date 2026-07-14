@@ -51,7 +51,7 @@ test('runtime ignores a stale local snapshot from a different plan and uses bund
       currentHostModelSnapshot('cursor', 'pro', env),
       hostModelSnapshot('cursor', 'pro'),
     );
-    assert.deepEqual(currentAcceptableModels('composer-2.5', 'cursor', 'pro', env), ['composer-2.5']);
+    assert.deepEqual(currentAcceptableModels('composer-2.5', 'cursor', 'pro', env), ['composer-2.5', 'gpt-5.4-mini', 'gemini-3.5-flash', 'claude-4.5-haiku']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

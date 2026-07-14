@@ -11,7 +11,7 @@ import {
 } from '../../config/performance';
 
 test('recommendLevelForPlan maps each plan directly to its configured level', () => {
-  assert.equal(recommendLevelForPlan('claude', 'free'), 'balanced'); // Free is not a Claude Code plan → Pro
+  assert.equal(recommendLevelForPlan('claude', 'free'), 'low'); // undetectable-metadata fallback → conservative solo
   assert.equal(recommendLevelForPlan('claude', 'pro'), 'balanced');
   assert.equal(recommendLevelForPlan('claude', 'max'), 'high');
   assert.equal(recommendLevelForPlan('claude', 'team'), 'balanced');
@@ -24,8 +24,8 @@ test('recommendLevelForPlan maps each plan directly to its configured level', ()
   assert.equal(recommendLevelForPlan('copilot', 'GitHub Copilot Pro'), 'balanced');
   assert.equal(recommendLevelForPlan('windsurf', 'free'), 'low');
   assert.equal(recommendLevelForPlan('windsurf', 'max'), 'high');
-  // unknown plan → host default plan's level (Claude Code default = Pro)
-  assert.equal(recommendLevelForPlan('claude', 'mystery'), 'balanced');
+  // unknown plan → host default plan's level (Claude default plan = free)
+  assert.equal(recommendLevelForPlan('claude', 'mystery'), 'low');
 });
 
 test('recommendLevelForPlan opencode Go (plus): Balanced, NOT Low (the missing-plus-entry regression)', () => {

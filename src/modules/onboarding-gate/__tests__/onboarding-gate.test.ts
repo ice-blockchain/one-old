@@ -7,8 +7,8 @@ import * as path from 'path';
 import { onboardingGate } from '../handler';
 import { recordMainOnboardingSession } from '../../../shared/onboarding-server/onboarding-session';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
-import { onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
-import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import { onboardingBootstrapCommand, onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
+import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
@@ -16,6 +16,12 @@ import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function ctxHost(host: HostId, cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
+  const raw = { tool_name: rawName, tool_input: toolInput, session_id: `${host}-main` };
+  const input: HookInput = { event: 'PreToolUse', host, cwd, raw, tool: { class: cls, rawName } };
+  return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 function ctxOpenCode(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
@@ -80,6 +86,42 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   }
 }
 
+function withBlockedCanonicalRuntime(fn: (cwd: string) => void): void {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-blocked-')));
+  const cwd = path.join(base, 'project');
+  const home = path.join(base, 'home');
+  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+  fs.mkdirSync(home, { recursive: true });
+  // A regular file where ~/.traffic-one must be a directory deterministically
+  // reproduces a canonical user-state bootstrap failure without chmod/root quirks.
+  fs.writeFileSync(path.join(home, '.traffic-one'), 'blocked', 'utf8');
+  fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'new-project' }), 'utf8');
+
+  const env = process.env;
+  const saved = {
+    home: env.HOME,
+    prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
+    state: env.TRAFFIC_ONE_STATE_PATH,
+    noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
+    plan: env.TRAFFIC_ONE_USER_PLAN,
+  };
+  env.HOME = home;
+  delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  delete env.TRAFFIC_ONE_STATE_PATH;
+  delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  try {
+    fn(cwd);
+  } finally {
+    if (saved.home === undefined) delete env.HOME; else env.HOME = saved.home;
+    if (saved.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = saved.prefs;
+    if (saved.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = saved.state;
+    if (saved.noSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = saved.noSpawn;
+    if (saved.plan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = saved.plan;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+}
+
 const TOOLCHAIN = Object.fromEntries(Object.keys(initializeToolchainState({})).map((k) => [k, { installedVersion: '1', installedAt: 'now' }]));
 
 function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
@@ -133,6 +175,51 @@ function materializeFixture(cwd: string, stack = 'minimal'): void {
 
 test('noop inside the plugin authoring root', () => {
   assert.equal(onboardingGate(ctx(process.cwd(), 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
+});
+
+test('noop when the session cwd is $HOME or the machine state dir — home is never onboarded as a project', () => {
+  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbgate-home-')));
+  const home = path.join(base, 'home');
+  fs.mkdirSync(path.join(home, '.traffic-one'), { recursive: true });
+  const saved = process.env.HOME;
+  process.env.HOME = home;
+  try {
+    assert.equal(onboardingGate(ctx(home, 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
+    assert.equal(onboardingGate(ctx(path.join(home, '.traffic-one'), 'Write', 'file-write', { file_path: 'x.ts', content: 'x' })).kind, 'noop');
+    // No wizard, no state: nothing may appear under the machine dir.
+    assert.equal(fs.existsSync(path.join(home, '.traffic-one', '.one.json')), false);
+  } finally {
+    if (saved === undefined) delete process.env.HOME; else process.env.HOME = saved;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('every host fails closed terminally when the canonical user-state root is malformed', () => {
+  withBlockedCanonicalRuntime((cwd) => {
+    const hosts: HostId[] = ['claude', 'codex', 'cursor', 'opencode', 'copilot', 'windsurf', 'kilo'];
+    for (const host of hosts) {
+      const input = ctxHost(host, cwd, host === 'codex' ? 'exec_command' : 'Write', 'file-write', {
+        file_path: 'src/app.ts',
+        content: 'export const x = 1;',
+      });
+      // Repeated failures must remain actionable; a failed launch must not consume
+      // the one-time live-URL marker and silently release later calls.
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const result = onboardingGate(input);
+        assert.equal(result.kind, 'deny', `${host} attempt ${attempt + 1} must fail closed`);
+        if (result.kind !== 'deny') continue;
+        assert.ok(!result.reason.includes(onboardingBootstrapCommand(cwd, host)), `${host}: malformed storage must not prescribe bootstrap`);
+        assert.ok(!result.reason.includes(onboardingWaitCommand(cwd, host)), `${host}: malformed storage must not enter the waiter loop`);
+        assert.match(result.reason, /plugin\/runtime failure/, `${host}: terminal diagnosis`);
+        assert.match(result.reason, /doctor|reinstall\/update/, `${host}: recovery route`);
+        assert.doesNotMatch(result.reason, /\.traffic-one\/preferences\.json|\.traffic-one\/machine\.json/, `${host}: no project-local fallback`);
+        assert.doesNotMatch(result.reason, /127\.0\.0\.1:0/, `${host}: no placeholder URL`);
+      }
+    }
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'machine.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'onboarding')), false);
+  });
 });
 
 test('new project with no Traffic One state: a mutating feature write is denied with the wizard URL', () => {
@@ -215,6 +302,22 @@ test('existing project with missing local prefs: first gated call denies with th
     if (first.kind === 'deny') assert.ok(first.reason.includes('http://127.0.0.1'), 'first deny carries the wizard URL');
     // Recipe delivered this session → subsequent read-only orientation flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+  });
+});
+
+test('Codex first read-only tool receives the live URL recipe, then orientation is released', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const url = 'http://127.0.0.1:55331/?t=codex-live';
+    writeServerRecord(cwd, { pid: process.pid, port: 55331, token: 'codex-live', url, startedAt: 'x' }, process.env, 'codex');
+    const input = ctxHost('codex', cwd, 'exec_command', 'shell', { command: 'pwd' });
+    const first = onboardingGate(input);
+    assert.equal(first.kind, 'deny');
+    if (first.kind === 'deny') {
+      assert.ok(first.reason.includes(url));
+      assert.ok(first.reason.includes('node_repl'));
+      assert.ok(first.reason.includes("'--host=codex'"));
+    }
+    assert.equal(onboardingGate(input).kind, 'noop');
   });
 });
 
@@ -359,6 +462,13 @@ test('Cursor: before any orchestrator is recorded, the main thread still gets th
   withProject(null, (cwd) => {
     const r = onboardingGate(ctxCursor(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'x' }, 'main-conv', '/x/transcript.jsonl'));
     assert.equal(r.kind, 'deny', 'no recorded main yet → nobody is suppressed → wizard shows');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('`browser_tabs`'), 'completion tells Cursor to use its built-in tab tool');
+      assert.ok(r.reason.includes('{"action":"list"}'));
+      assert.ok(r.reason.includes('{"action":"close","index":<matching index>}'));
+      assert.ok(!r.reason.includes('Cursor cannot close'), 'stale manual-close claim must not return');
+      assert.ok(!r.reason.includes('tell the user they can close'), 'the user never owns tab cleanup');
+    }
   });
 });
 
@@ -373,6 +483,10 @@ test('Cursor: first onboarding wait command is denied once with a clickable wiza
     if (first.kind === 'deny') {
       assert.ok(first.reason.includes(`Open the Traffic One setup wizard: ${url}`), 'deny carries a direct clickable URL line');
       assert.ok(first.reason.includes(command), 'deny tells the agent to re-run the wait command');
+      assert.ok(first.reason.includes('`browser_tabs`'), 'wait retry preserves automatic Cursor tab cleanup');
+      assert.ok(first.reason.includes('{"action":"close","index":<matching index>}'));
+      assert.ok(first.reason.includes('Do not ask the user to close'), 'wait retry keeps tab cleanup agent-owned');
+      assert.ok(!first.reason.includes('tell the user they can close'), 'wait retry never delegates cleanup to the user');
     }
 
     const second = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'main-conv', '/x/transcript.jsonl'));

@@ -103,12 +103,79 @@ function detectClaudePlan(env: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-function detectCodexPlan(env: NodeJS.ProcessEnv): string | null {
+function codexTokenClaims(env: NodeJS.ProcessEnv): Record<string, unknown> | null {
   const home = env.CODEX_HOME || path.join(homeDir(env), '.codex');
   const tokens = obj(obj(readJson<unknown>(path.join(home, 'auth.json'), null))?.tokens);
   if (!tokens) return null;
-  const claims = decodeJwtClaims(tokens.id_token) ?? decodeJwtClaims(tokens.access_token);
-  const auth = obj(claims?.['https://api.openai.com/auth']);
+  return decodeJwtClaims(tokens.id_token) ?? decodeJwtClaims(tokens.access_token);
+}
+
+// Newest-first bounded scan of Codex session rollouts. Every session writes
+// server-reported rate-limit snapshots that carry the account's CURRENT
+// `plan_type` — this tracks a plan change automatically (verified live: the
+// telemetry flipped the same day the user changed plans), whereas the
+// auth.json JWT claim is only re-minted at `codex login` and lags for weeks
+// (the CLI refreshes tokens on a ~28-day window; `login status` does not).
+const CODEX_SESSION_SCAN_FILES = 8;
+const CODEX_SESSION_SCAN_DAYS = 3;
+const CODEX_SESSION_TAIL_BYTES = 128 * 1024;
+const CODEX_PLAN_TYPE_RE = /"plan_type"\s*:\s*"([a-z][a-z0-9_-]{0,31})"/g;
+
+function newestDirEntries(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir).filter((n) => !n.startsWith('.')).sort().reverse();
+  } catch {
+    return [];
+  }
+}
+
+function lastPlanTypeInTail(file: string): string | null {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, CODEX_SESSION_TAIL_BYTES);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      const text = buf.toString('utf8');
+      let last: string | null = null;
+      for (const match of text.matchAll(CODEX_PLAN_TYPE_RE)) last = match[1] ?? last;
+      return last;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function detectCodexSessionPlan(env: NodeJS.ProcessEnv): string | null {
+  const sessions = path.join(env.CODEX_HOME || path.join(homeDir(env), '.codex'), 'sessions');
+  let scanned = 0;
+  let daysSeen = 0;
+  for (const year of newestDirEntries(sessions)) {
+    for (const month of newestDirEntries(path.join(sessions, year))) {
+      for (const day of newestDirEntries(path.join(sessions, year, month))) {
+        if (daysSeen >= CODEX_SESSION_SCAN_DAYS) return null;
+        daysSeen += 1;
+        const dayDir = path.join(sessions, year, month, day);
+        for (const file of newestDirEntries(dayDir)) {
+          if (!file.endsWith('.jsonl')) continue;
+          if (scanned >= CODEX_SESSION_SCAN_FILES) return null;
+          scanned += 1;
+          const plan = lastPlanTypeInTail(path.join(dayDir, file));
+          if (plan) return plan;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function detectCodexPlan(env: NodeJS.ProcessEnv): string | null {
+  const fromSessions = detectCodexSessionPlan(env);
+  if (fromSessions) return fromSessions;
+  const auth = obj(codexTokenClaims(env)?.['https://api.openai.com/auth']);
   return typeof auth?.chatgpt_plan_type === 'string' ? auth.chatgpt_plan_type : null;
 }
 

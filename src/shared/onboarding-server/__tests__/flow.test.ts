@@ -471,16 +471,16 @@ test('buildTeamLineup: high performance maps each role to its tier + claude mode
   const architect = requireRole(by, 'senior-architect');
   const tester = requireRole(by, 'senior-tester');
   const shipper = requireRole(by, 'senior-shipper');
-  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'opus' });
-  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'cheapest', model: 'haiku' });
-  assert.deepEqual({ tier: shipper.tier, model: shipper.model }, { tier: 'balanced', model: 'sonnet' });
+  assert.deepEqual({ tier: architect.tier, model: architect.model }, { tier: 'highest', model: 'claude-opus-4-8' });
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'cheapest', model: 'claude-haiku-4-5' });
+  assert.deepEqual({ tier: shipper.tier, model: shipper.model }, { tier: 'balanced', model: 'claude-sonnet-5' });
   assert.ok(architect.label === 'Architect' && architect.blurb.length > 0);
 });
 
 test('buildTeamLineup: balanced uses sonnet for builders, haiku for tester', () => {
   const by = Object.fromEntries(buildTeamLineup('balanced', 'claude').map((m) => [m.role, m]));
-  assert.equal(requireRole(by, 'senior-frontend').model, 'sonnet');
-  assert.equal(requireRole(by, 'senior-tester').model, 'haiku');
+  assert.equal(requireRole(by, 'senior-frontend').model, 'claude-sonnet-5');
+  assert.equal(requireRole(by, 'senior-tester').model, 'claude-haiku-4-5');
 });
 
 test('buildTeamLineup: host changes the concrete model ids (codex)', () => {
@@ -498,7 +498,7 @@ test('buildTeamLineup: a per-role tier override is honored', () => {
   const by = Object.fromEntries(buildTeamLineup('high', 'claude', { 'senior-tester': 'highest' }).map((m) => [m.role, m]));
   // tester is normally cheapest/haiku; the override promotes it
   const tester = requireRole(by, 'senior-tester');
-  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'opus' });
+  assert.deepEqual({ tier: tester.tier, model: tester.model }, { tier: 'highest', model: 'claude-opus-4-8' });
 });
 
 test('computeOnboarding: the team-confirmation step carries the resolved line-up', () => {
@@ -511,7 +511,7 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
     assert.equal(view.meta.recommendedTier, 'highest'); // pinned plan 'max' → highest headline tier
     assert.ok(Array.isArray(view.meta.team) && view.meta.team?.length === 6);
     const architect = view.meta.team?.find((m) => m.role === 'senior-architect');
-    assert.equal(architect?.model, 'opus');
+    assert.equal(architect?.model, 'claude-opus-4-8');
     // host is resolved (defaults to claude outside a host process) so the UI can label it
     assert.equal(view.meta.host, 'claude');
     // the approve/re-pick options are still present
@@ -525,13 +525,27 @@ test('team step carries the host model menu (modelChoices) so each agent is sele
     applyAnswer(cwd, 'performance', 'high');
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
-    // claude (default host) → opus/sonnet/haiku, one entry per capability tier.
+    // claude (default host) → opus/sonnet/haiku values (aliases track point
+    // releases) plus friendly generation labels for display.
     assert.deepEqual(view.meta.modelChoices, [
-      { tier: 'highest', model: 'opus' },
-      { tier: 'balanced', model: 'sonnet' },
-      { tier: 'cheapest', model: 'haiku' },
+      { tier: 'highest', model: 'claude-opus-4-8', label: 'Opus 4.8' },
+      { tier: 'balanced', model: 'claude-sonnet-5', label: 'Sonnet 5' },
+      { tier: 'cheapest', model: 'claude-haiku-4-5', label: 'Haiku 4.5' },
     ]);
   });
+});
+
+test('Claude lineup keeps alias values but surfaces concrete generation labels; concrete hosts get none', () => {
+  const lineup = buildTeamLineup('high', 'claude');
+  const architect = lineup.find((m) => m.role === 'senior-architect');
+  assert.equal(architect?.model, 'claude-opus-4-8');
+  assert.equal(architect?.modelLabel, 'Opus 4.8');
+  const tester = lineup.find((m) => m.role === 'senior-tester');
+  assert.equal(tester?.model, 'claude-haiku-4-5');
+  assert.equal(tester?.modelLabel, 'Haiku 4.5');
+  // Concrete ids (copilot & co.) are already readable — no label.
+  const copilot = buildTeamLineup('high', 'copilot');
+  assert.equal(copilot.find((m) => m.role === 'senior-architect')?.modelLabel, undefined);
 });
 
 test('team step model menu follows the detected host (codex → gpt-5.x)', () => {
@@ -677,11 +691,11 @@ test('Copilot Pro onboarding recommends Balanced and lists distinct paid subagen
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.host, 'copilot');
-    assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['gpt-5.4', 'claude-sonnet-4.6', 'claude-haiku-4.5']);
+    assert.deepEqual(view.meta.modelChoices?.map((c) => c.model), ['claude-opus-4.8', 'claude-sonnet-5', 'claude-haiku-4.5']);
     const by = Object.fromEntries((view.meta.team || []).map((m) => [m.role, m]));
     assert.equal(requireRole(by, 'senior-frontend').tier, 'balanced');
-    assert.equal(requireRole(by, 'senior-frontend').model, 'claude-sonnet-4.6');
-    assert.equal(requireRole(by, 'senior-backend').model, 'claude-sonnet-4.6');
+    assert.equal(requireRole(by, 'senior-frontend').model, 'claude-sonnet-5');
+    assert.equal(requireRole(by, 'senior-backend').model, 'claude-sonnet-5');
     assert.equal(requireRole(by, 'senior-tester').tier, 'cheapest');
     assert.equal(requireRole(by, 'senior-tester').model, 'claude-haiku-4.5');
     assert.ok(new Set((view.meta.team || []).map((m) => m.model)).size > 1, 'Balanced Copilot team must not collapse to one mini model');
@@ -699,7 +713,7 @@ test('team approve with per-agent model overrides persists them under team.overr
     assert.deepEqual(asRec(team.overrides), { 'senior-tester': 'highest' });
     // …and that stored override drives the resolved line-up (tester jumps to opus).
     const lineup = buildTeamLineup('high', 'claude', asRec(team.overrides));
-    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'opus');
+    assert.equal(lineup.find((m) => m.role === 'senior-tester')?.model, 'claude-opus-4-8');
   });
 });
 
@@ -740,7 +754,7 @@ test('existing project: the team step also carries the resolved line-up', () => 
     const view = computeOnboarding(cwd);
     assert.equal(view.step, 'team-confirmation');
     assert.equal(view.meta.team?.length, 6);
-    assert.equal(view.meta.team?.find((m) => m.role === 'senior-frontend')?.model, 'sonnet');
+    assert.equal(view.meta.team?.find((m) => m.role === 'senior-frontend')?.model, 'claude-sonnet-5');
   });
 });
 
@@ -921,7 +935,7 @@ test('computeOnboarding: shared onboardingComplete without a prefs file is not d
   });
 });
 
-test('computeOnboarding: project-local env still accepts completed onboarding from legacy hashed prefs', () => {
+test('computeOnboarding: canonical hashed user preferences complete onboarding', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-legacy-prefs-'));
   const cwd = path.join(dir, 'project');
   const home = path.join(dir, 'home');
@@ -932,8 +946,8 @@ test('computeOnboarding: project-local env still accepts completed onboarding fr
   const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
   const prevHost = process.env.TRAFFIC_ONE_HOST;
   fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, '.traffic-one', 'preferences.json');
-  process.env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, '.traffic-one', 'machine.json');
+  delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  delete process.env.TRAFFIC_ONE_STATE_PATH;
   process.env.HOME = home;
   process.env.TRAFFIC_ONE_USER_PLAN = 'max';
   process.env.TRAFFIC_ONE_HOST = 'claude';
@@ -1034,7 +1048,7 @@ test('computeOnboarding: fail-closed durable check keeps step metadata in sync',
   });
 });
 
-test('new-project: project-local prefs path when global home is blocked', () => {
+test('new-project: an unwritable user home never falls back to project-local preferences', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-flow-local-'));
   const blockedHome = path.join(dir, 'blocked-home');
   fs.writeFileSync(blockedHome, 'not-a-directory', 'utf8');
@@ -1043,6 +1057,7 @@ test('new-project: project-local prefs path when global home is blocked', () => 
   const prevHome = process.env.HOME;
   const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
   process.env.HOME = blockedHome;
   delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   delete process.env.TRAFFIC_ONE_STATE_PATH;
@@ -1050,22 +1065,16 @@ test('new-project: project-local prefs path when global home is blocked', () => 
   try {
     const { resolveTrafficOneEnv } = require('../../state/traffic-one-paths');
     const resolved = resolveTrafficOneEnv(cwd, 'claude', process.env);
-    process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = resolved.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-    process.env.TRAFFIC_ONE_STATE_PATH = resolved.TRAFFIC_ONE_STATE_PATH;
-
-    applyAnswer(cwd, 'open-code', 'not_now');
-    applyAnswer(cwd, 'performance', 'low');
-    applyAnswer(cwd, 'project-context', { answers: {}, summary: 'a web app' });
-    applyAnswer(cwd, 'mobile', 'web_only');
-    applyAnswer(cwd, 'code-graph', 'gitnexus');
-    applyAnswer(cwd, 'finalize', null);
-
-    assert.ok(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')));
-    assert.equal(computeOnboarding(cwd).done, true);
+    assert.equal(resolved.TRAFFIC_ONE_PROJECT_PREFS_PATH, undefined);
+    assert.equal(resolved.TRAFFIC_ONE_STATE_PATH, undefined);
+    assert.throws(() => applyAnswer(cwd, 'open-code', 'not_now'));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'preferences.json')), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'machine.json')), false);
   } finally {
     if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
     if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH; else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

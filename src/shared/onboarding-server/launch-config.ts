@@ -14,7 +14,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import { pluginRoot } from '../paths';
 
 export const LAUNCH_ENTRY_NAME = 'traffic-one-setup';
@@ -53,7 +53,7 @@ export function writeLaunchConfig(cwd: string, port: number): void {
   if (!Number.isInteger(port) || port <= 0) return;
   // Covers the detached server's async self-registration path too — never write
   // .claude/launch.json into the plugin's own repo/install.
-  if (isPluginAuthoringRoot(cwd)) return;
+  if (isNonProjectRoot(cwd)) return;
   try {
     const file = launchPath(cwd);
     const data = readLaunch(file);

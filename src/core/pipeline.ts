@@ -6,7 +6,7 @@
 
 import type { Ctx, Handler, HookResult } from './types';
 import { handlerMatches } from './events';
-import { isDeny, mergeResults } from './result';
+import { deny, isDeny, mergeResults } from './result';
 
 export function selectHandlers(handlers: readonly Handler[], ctx: Ctx): Handler[] {
   return handlers
@@ -17,7 +17,21 @@ export function selectHandlers(handlers: readonly Handler[], ctx: Ctx): Handler[
 export async function runPipeline(handlers: readonly Handler[], ctx: Ctx): Promise<HookResult> {
   const collected: HookResult[] = [];
   for (const handler of selectHandlers(handlers, ctx)) {
-    const result = await handler.run(ctx);
+    let result: HookResult;
+    try {
+      result = await handler.run(ctx);
+    } catch (error) {
+      // Every host adapter knows how to serialize a canonical deny, but several
+      // host entry wrappers historically converted a thrown hook into an empty
+      // success response. Never allow a tool merely because a gate crashed.
+      if (ctx.input.event === 'PreToolUse') {
+        const code = error && typeof error === 'object' && typeof (error as NodeJS.ErrnoException).code === 'string'
+          ? ` (${String((error as NodeJS.ErrnoException).code)})`
+          : '';
+        return deny(`Traffic One ${handler.id} gate failed${code}; this tool call is blocked fail-closed. Retry after resolving the Traffic One setup/plugin error.`);
+      }
+      throw error;
+    }
     if (isDeny(result)) return result; // short-circuit
     collected.push(result);
   }

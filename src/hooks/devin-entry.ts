@@ -5,16 +5,16 @@ import { makeDevinAdapter } from '../adapters/devin';
 import { dispatchSubcommand } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { authRequiredMessage } from '../shared/auth';
-import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
+import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, asString } from '../adapters/coerce';
 import { computeOnboarding } from '../shared/onboarding-server/flow';
-import { ensureOnboardingServer } from '../shared/onboarding-server/ensure';
-import { onboardingWaitCommand } from '../shared/onboarding-server/wait-command';
+import { prepareOnboardingServer } from '../shared/onboarding-server/bootstrap';
 import { windsurfSetupReason } from '../shared/onboarding-server/windsurf-setup';
 import { resolveProjectRoot } from '../shared/hook-paths';
-import { isPluginAuthoringRoot } from '../shared/authoring-root';
+import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
+import { devinPreToolDeny, isGatePreToolSubcommand } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -29,11 +29,14 @@ function onboardingStopResult(stdin: string, cwd: string): string {
   // avoid an infinite loop if the model still refuses to issue the wait tool.
   if (data.stop_hook_active === true) return '';
   const root = resolveProjectRoot(cwd);
-  if (isPluginAuthoringRoot(root) || computeOnboarding(root).done) return '';
-  const server = ensureOnboardingServer(root, { host: 'windsurf' });
+  if (isNonProjectRoot(root) || computeOnboarding(root).done) return '';
+  const prepared = prepareOnboardingServer(root, 'windsurf');
+  if (prepared.kind !== 'ready') {
+    return JSON.stringify({ decision: 'block', reason: prepared.reason });
+  }
   return JSON.stringify({
     decision: 'block',
-    reason: windsurfSetupReason(server.url, onboardingWaitCommand(root, 'windsurf')),
+    reason: windsurfSetupReason(prepared.server.url, prepared.waitCommand),
   });
 }
 
@@ -42,16 +45,16 @@ export async function runDevinHook(
   stdin: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
-  stampWindsurfBackend('devin', env);
   if (!subcommand) return { stdout: '', exitCode: 0 };
-  const cwd = cwdFrom(stdin);
-  applyTrafficOneEnv(cwd, 'windsurf', env);
-  try { process.chdir(cwd); } catch { /* best-effort */ }
-  if (subcommand === 'onboarding-stop') {
-    return { stdout: onboardingStopResult(stdin, cwd), exitCode: 0 };
-  }
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    stampWindsurfBackend('devin', env);
+    const cwd = cwdFrom(stdin);
+    initializeTrafficOneEnv(cwd, 'windsurf', env);
+    try { process.chdir(cwd); } catch { /* best-effort */ }
+    if (subcommand === 'onboarding-stop') {
+      return { stdout: onboardingStopResult(stdin, cwd), exitCode: 0 };
+    }
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatchSubcommand(makeDevinAdapter(), handlers, subcommand, { stdin, argv: [subcommand, '--host=windsurf'] });
     return { stdout, exitCode: 0 };
   } catch {
@@ -65,6 +68,9 @@ export async function runDevinHook(
         }),
         exitCode: 0,
       };
+    }
+    if (isGatePreToolSubcommand(subcommand)) {
+      return { stdout: devinPreToolDeny(), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };
   }

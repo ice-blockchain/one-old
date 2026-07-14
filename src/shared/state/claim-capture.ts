@@ -10,7 +10,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import { stateTimestamp } from './io';
 
 const MAX_CAPTURE_BYTES = 256 * 1024; // stop appending once the log gets this big
@@ -47,7 +47,7 @@ export function captureClaimDebug(
   extra: Record<string, unknown> = {},
 ): void {
   try {
-    if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
+    if (isNonProjectRoot(cwd)) return; // never write run state in the plugin's own repo
     if (!runId) return;
     const dir = path.join(cwd, '.traffic-one', 'runs', String(runId), 'debug');
     const file = path.join(dir, 'claim-capture.jsonl');
@@ -72,7 +72,7 @@ export function capturePlanGuardDebug(
   extra: Record<string, unknown> = {},
 ): void {
   try {
-    if (isPluginAuthoringRoot(cwd)) return;
+    if (isNonProjectRoot(cwd)) return;
     if (!runId) return;
     const dir = path.join(cwd, '.traffic-one', 'runs', String(runId), 'debug');
     const file = path.join(dir, 'plan-guard-deny.jsonl');

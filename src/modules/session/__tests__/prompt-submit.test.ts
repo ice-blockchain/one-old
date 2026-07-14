@@ -410,16 +410,17 @@ test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post l
   });
 });
 
-test('non-cursor PRISTINE first coding prompt keeps the URL-less setup-pending note (recipe rides the PreToolUse deny)', () => {
-  // Claude opens via its preview pane and Codex via node_repl — both driven by the
-  // PreToolUse deny recipe — so Flow 3 must NOT spam the full URL recipe into their
-  // agent context: the plain `setup-pending` note (no live URL) is correct for them.
+test('non-cursor PRISTINE first coding prompt carries the live setup URL and waiter immediately', () => {
+  // The first prompt is a reliable surface on every host. Supplying the live URL
+  // here prevents a URL-less dead end when the model has not made a tool call yet;
+  // the PreToolUse gate repeats the same recipe as a fail-closed backstop.
   withAuthedProject(null, (cwd) => {
     writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'claude');
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'claude'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
-      assert.ok(!r.context.includes('http://127.0.0.1:56858'), 'non-cursor agent context does not carry the live URL on the pristine first prompt');
+      assert.ok(r.context.includes('http://127.0.0.1:56858'), 'agent context carries the live URL on the pristine first prompt');
+      assert.ok(r.context.includes('onboarding-wait.cjs'), 'agent context carries the blocking waiter on the pristine first prompt');
     }
   });
 });
@@ -473,9 +474,9 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
       assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
       assert.ok(r.context.includes('Keyword hint: trivial'), 'trivial hint');
       assert.ok(r.context.includes('quick-fix'), 'subagents variant routes to quick-fix');
-      // Prescriptive: force delegation + name the concrete cheapest model (host=claude → haiku).
+      // Prescriptive: force delegation + name the concrete cheapest model (host=claude → pinned Haiku id).
       assert.ok(r.context.includes('Do NOT make the edit yourself'), 'directive forbids inline work in subagents mode');
-      assert.ok(r.context.includes('model "haiku"'), 'names the concrete cheapest model');
+      assert.ok(r.context.includes('model "claude-haiku-4-5"'), 'names the concrete cheapest model');
     }
   });
 });

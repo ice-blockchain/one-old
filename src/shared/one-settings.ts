@@ -25,10 +25,6 @@ import { HOST_IDS, type HostModelKey } from '../config/model-tiers';
 import { ONE_SETTINGS_VERSION } from '../config/one-settings';
 import { readJson } from './fsjson';
 import { parseHostModelSnapshot, type HostModelSnapshot } from './model-tiers';
-import {
-  PROJECT_LOCAL_MACHINE_REL,
-  ensureProjectLocalTrafficOneGitignore,
-} from './state/traffic-one-paths';
 
 export type OneSection = 'auth' | 'authChoice' | 'codeGraphProvider' | 'hosts';
 
@@ -313,10 +309,6 @@ export function updateOneSettings(patch: OneSettingsPatch, env: NodeJS.ProcessEn
     writeWholeFile(filePath, mergeSettings(current, patch));
   });
   removeLegacyFiles(env);
-  const normalized = filePath.replace(/\\/g, '/');
-  if (normalized.endsWith(`/${PROJECT_LOCAL_MACHINE_REL.replace(/\\/g, '/')}`)) {
-    ensureProjectLocalTrafficOneGitignore(path.dirname(path.dirname(filePath)));
-  }
   return filePath;
 }
 

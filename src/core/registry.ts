@@ -47,22 +47,39 @@ export function discoverDescriptors(
   return found;
 }
 
-function loadHandlers(dir: string, descriptor: ModuleDescriptor): Handler[] {
+function loadHandlers(dir: string, descriptor: ModuleDescriptor, strict: boolean): Handler[] {
   if (descriptor.kind !== 'runtime') return [];
   const entry = descriptor.entry ?? 'index';
   try {
     const mod = require(path.join(dir, entry)) as { handlers?: unknown };
-    return Array.isArray(mod.handlers) ? (mod.handlers as Handler[]) : [];
-  } catch {
+    if (Array.isArray(mod.handlers) && (!strict || mod.handlers.length > 0)) return mod.handlers as Handler[];
+    if (strict) throw new Error(`traffic-one runtime module ${descriptor.id} exported no handlers array`);
+    return [];
+  } catch (error) {
+    if (strict) throw error;
     return [];
   }
 }
 
-export function loadModules(modulesDir: string): LoadedModule[] {
-  return discoverDescriptors(modulesDir).map(({ descriptor, dir }) => ({
+export function loadModules(modulesDir: string, options: { strict?: boolean } = {}): LoadedModule[] {
+  const strict = options.strict === true;
+  const discovered = discoverDescriptors(modulesDir);
+  if (strict && discovered.length === 0) {
+    throw new Error(`traffic-one runtime module directory is missing or empty: ${modulesDir}`);
+  }
+  if (strict) {
+    const validDirs = new Set(discovered.map(({ dir }) => path.resolve(dir)));
+    const invalid = fs.readdirSync(modulesDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && !validDirs.has(path.resolve(modulesDir, entry.name)))
+      .map((entry) => entry.name);
+    if (invalid.length > 0) {
+      throw new Error(`traffic-one runtime module descriptor is missing or invalid: ${invalid.join(', ')}`);
+    }
+  }
+  return discovered.map(({ descriptor, dir }) => ({
     descriptor,
     dir,
-    handlers: loadHandlers(dir, descriptor),
+    handlers: loadHandlers(dir, descriptor, strict),
   }));
 }
 

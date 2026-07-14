@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import { toPosix, writeTextIfChanged } from '../fs-text';
 import { pluginRoot } from '../paths';
 import { BOOTSTRAP_SKILLS } from '../../config/skill-filters';
@@ -65,7 +65,7 @@ function extraSkillDirs(skillsRoot: string, tracked: ReadonlySet<string>): strin
 }
 
 export function materializeProjectAssets(cwd: string, state: Rec): MaterializeResult {
-  if (isPluginAuthoringRoot(cwd)) {
+  if (isNonProjectRoot(cwd)) {
     return { rules: 0, skills: 0, written: 0, removed: 0, contextProfile: 'plugin-authoring', skipped: 'plugin-authoring-root' };
   }
 
