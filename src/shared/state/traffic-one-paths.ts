@@ -18,6 +18,7 @@ export const PROJECT_LOCAL_MACHINE_REL = path.join(STATE_DIR, 'machine.json');
 const GITIGNORE_LINES = [
   '.traffic-one/preferences.json',
   '.traffic-one/machine.json',
+  '.traffic-one/auth.json',
   '.traffic-one/onboarding-server.json',
   '.traffic-one/onboarding-complete.json',
   '.traffic-one/onboarding-server.lock',

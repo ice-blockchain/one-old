@@ -8,21 +8,18 @@
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
+import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { materializeProjectFromState } from '../../shared/materialize';
-import { authChoiceAllowsContinue, tryWriteAuthChoice } from '../session/auth-choice';
-import { authGateForHook, authRequiredHookResult } from '../session/auth-gate';
 
 export function runMaterializeProject(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
   if (isPluginAuthoringRoot(cwd)) return noop();
 
-  const authGate = authGateForHook();
-  if (!authGate.authenticated) {
-    if (authChoiceAllowsContinue(cwd)) return noop();
-    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
-    return authRequiredHookResult('PostToolUse', { authChoiceWrite: writeResult });
-  }
+  // Auth gate: a pure local boolean read. When auth is enforced but the web API
+  // key isn't entered yet, do nothing — the session/onboarding gates surface the
+  // wizard's api-key page; this manual convergence just waits until it's entered.
+  if (authEnforced() && !isLocallyAuthenticated()) return noop();
 
   const out = materializeProjectFromState(cwd, { trigger: 'manual materialize-project' });
   return context(out.context, { systemMessage: out.systemMessage });

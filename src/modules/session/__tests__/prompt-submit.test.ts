@@ -47,14 +47,15 @@ function spawnCtx(cwd: string, toolInput: Record<string, unknown>): Ctx {
 function assertSetupRequired(r: HookResult): void {
   assert.equal(r.kind, 'context');
   if (r.kind === 'context') {
-    assert.equal(r.systemMessage, 'traffic-one [setup required]');
-    assert.ok(r.context.includes('http://127.0.0.1'), 'context carries the wizard URL');
+    // Banner now carries the dashboard setup link on every host (opens in the browser).
+    assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'));
+    assert.ok(r.context.includes('/onboarding/agent'), 'context carries the dashboard setup URL');
     assert.equal(r.promptRequest, undefined);
   }
 }
 
 function assertOpenCodeSetupTextIsSanitized(text: string): void {
-  assert.ok(text.includes('http://127.0.0.1'), 'OpenCode setup text still carries the wizard URL');
+  assert.ok(text.includes('/onboarding/agent'), 'OpenCode setup text still carries the dashboard setup URL');
   assert.ok(text.includes('immediately run the wait command'), 'OpenCode setup text tells the agent not to pause after the link');
   assert.ok(text.includes('TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED'), 'OpenCode setup text tells the agent to stop for restart');
   assert.ok(text.includes('type "continue" or "resume"'), 'OpenCode setup text tells the user how to resume after restart');
@@ -100,6 +101,12 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+    // Seed a live server record ONLY for already-initialized projects (mid-onboarding),
+    // so ensureOnboardingServer (NO_SPAWN) hands back a real dashboard deep link instead
+    // of the inert placeholder. Not for null state — a bare/pristine dir must stay inert
+    // so non-coding chit-chat still resolves to noop. Tests needing a specific port
+    // re-seed their own record (it overwrites this).
+    writeServerRecord(dir, { pid: process.pid, port: 51900, token: 't', url: 'http://127.0.0.1:51900/?t=t', startedAt: 'x' });
   }
   try { fn(dir); } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
@@ -302,7 +309,10 @@ test('opencode: incomplete onboarding prompt uses sanitized setup text', () => {
     const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'opencode'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
-      assert.equal(r.systemMessage, 'traffic-one [setup required]');
+      // The banner now carries the dashboard link on opencode too (a plain URL in the
+      // user-facing systemMessage is safe; the prompt-injection concern is the agent
+      // context, which stays sanitized below).
+      assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'));
       assertOpenCodeSetupTextIsSanitized(r.context);
     }
   });
@@ -346,17 +356,21 @@ test('cursor: incomplete onboarding puts the LIVE wizard URL in the USER-facing 
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'), 'banner preserved');
-      assert.ok(r.systemMessage?.includes('http://127.0.0.1:51234'), 'systemMessage (user_message) carries the LIVE wizard URL on Cursor');
-      assert.ok(r.context.includes('http://127.0.0.1'), 'agent context still carries the URL too');
+      assert.ok(r.systemMessage?.includes('https://traffic.io/onboarding/agent#p=51234&t=t'), 'systemMessage (user_message) carries the dashboard setup URL on Cursor');
+      assert.ok(r.context.includes('/onboarding/agent'), 'agent context still carries the URL too');
     }
   });
 });
 
-test('non-cursor host keeps the plain setup banner (URL only in agent context)', () => {
+test('every host now surfaces the dashboard setup URL in the banner (onboarding opens in the browser)', () => {
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    // seeded record → port 51900 (withAuthedProject default)
     const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'claude'));
     assert.equal(r.kind, 'context');
-    if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one [setup required]');
+    if (r.kind === 'context') {
+      assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'));
+      assert.ok(r.systemMessage?.includes('https://traffic.io/onboarding/agent#p=51900&t=t'), 'claude banner now carries the dashboard link too');
+    }
   });
 });
 
@@ -374,23 +388,23 @@ test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post l
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'cursor'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
-      assert.ok(r.context.includes('http://127.0.0.1:56858'), 'agent context carries the LIVE wizard URL on the pristine first prompt');
-      assert.ok(/Open the Traffic One setup wizard:/i.test(r.context), 'agent context instructs Cursor to post the clickable link line');
+      assert.ok(r.context.includes('https://traffic.io/onboarding/agent#p=56858&t=t'), 'agent context carries the dashboard setup URL on the pristine first prompt');
+      assert.ok(/Open Traffic One setup:/i.test(r.context), 'agent context instructs Cursor to post the clickable link line');
       assert.ok(/FIRST/.test(r.context) && /wait command/i.test(r.context), 'instruction says post FIRST, before the wait command');
     }
   });
 });
 
-test('non-cursor PRISTINE first coding prompt keeps the URL-less setup-pending note (recipe rides the PreToolUse deny)', () => {
-  // Claude opens via its preview pane and Codex via node_repl — both driven by the
-  // PreToolUse deny recipe — so Flow 3 must NOT spam the full URL recipe into their
-  // agent context: the plain `setup-pending` note (no live URL) is correct for them.
+test('non-cursor PRISTINE first coding prompt now also carries the dashboard setup URL (onboarding opens in the browser)', () => {
+  // The onboarding UI moved to the traffic.io dashboard and opens in an external
+  // browser on every host, so Flow 3 surfaces the dashboard link for claude too (no
+  // more preview-pane-only special-casing).
   withAuthedProject(null, (cwd) => {
     writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'claude'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
-      assert.ok(!r.context.includes('http://127.0.0.1:56858'), 'non-cursor agent context does not carry the live URL on the pristine first prompt');
+      assert.ok(r.context.includes('https://traffic.io/onboarding/agent#p=56858&t=t'), 'claude agent context now carries the dashboard setup URL');
     }
   });
 });

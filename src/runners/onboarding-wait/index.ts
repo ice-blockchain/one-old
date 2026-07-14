@@ -34,6 +34,7 @@ import { acceptableModelsFor, canonicalHost } from '../../shared/model-tiers';
 import { obj } from '../../shared/obj';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
+import { agentOnboardingUrl } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
@@ -255,12 +256,15 @@ export function announceWizardUrl(cwd: string, write: (s: string) => void = (s) 
   try {
     const rec = readServerRecord(cwd);
     if (!rec || !rec.url || rec.url.includes(':0/')) return;
+    // Show the dashboard setup link (matches the link surfaced in chat); fall back to
+    // the local URL (which itself redirects to the dashboard) if no dashboard URL.
+    const link = agentOnboardingUrl(process.env, rec.port, rec.token) || rec.url;
     write(
       '\n════════════════════════════════════════════════════════════════\n'
-      + '  TRAFFIC ONE SETUP WIZARD — open this link to finish setup:\n\n'
-      + `  ${rec.url}\n\n`
-      + '  Cursor: click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste it.\n'
-      + `  Setup link: ${rec.url}\n`
+      + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
+      + `  ${link}\n\n`
+      + '  Sign in (or choose "Continue without Traffic One" to skip) and complete the steps.\n'
+      + `  Setup link: ${link}\n`
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
       + '════════════════════════════════════════════════════════════════\n',
     );

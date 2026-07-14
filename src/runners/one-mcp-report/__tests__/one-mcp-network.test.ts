@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { prepareReport } from '../prepareReport';
 import { runReport } from '../runReport';
+import { isLocallyAuthenticated, writeSimpleAuth } from '../../../shared/auth';
 import { SAVE_MCP_REPORT } from '../../../config/reporting';
 
 const STATUS_REL = path.join('.traffic-one', 'one-mcp-report.json');
@@ -35,11 +36,11 @@ function withFreshAuth(fn: (dir: string) => void): void {
     const env = process.env;
     const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
     const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
     env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+    // The simple web-entered-key boolean model: a flat auth.json beside one.json.
+    fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+      version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
     }), 'utf8');
     try { fn(dir); } finally {
       if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
@@ -69,6 +70,29 @@ test('runReport records a failed status when the transport rejects', async () =>
     const r = await runReport(cwd, { transport: async () => { throw new Error('boom'); } });
     assert.equal(r.ok, false);
     if (SAVE_MCP_REPORT) assert.equal(statusStatus(cwd), 'failed');
+  });
+});
+
+test('runReport: a 401 from the report call clears the local auth flag (enforced)', async () => {
+  await withProjectAsync(async (cwd) => {
+    const env = process.env;
+    const saved = { auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, flag: env.TRAFFIC_ONE_AUTH };
+    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'one.json');
+    env.TRAFFIC_ONE_AUTH = '1'; // enforced → a 401 must invalidate the key
+    try {
+      writeSimpleAuth('sk-bad-key'); // entered but (per the 401) invalid
+      assert.equal(isLocallyAuthenticated(), true);
+      fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+      fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-401' }), 'utf8');
+      fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-401' }), 'utf8');
+      const transport = async () => { const e = new Error('HTTP 401') as Error & { statusCode?: number }; e.statusCode = 401; throw e; };
+      const r = await runReport(cwd, { transport });
+      assert.equal(r.ok, false);
+      assert.equal(isLocallyAuthenticated(), false); // flipped → wizard re-opens the api-key page next session
+    } finally {
+      if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = saved.auth;
+      if (saved.flag === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = saved.flag;
+    }
   });
 });
 

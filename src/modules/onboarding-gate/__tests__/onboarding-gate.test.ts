@@ -12,6 +12,10 @@ import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 
+// The dashboard deep link the gate surfaces for the seeded server record (port+token
+// in the fragment; default dashboard base since no TRAFFIC_ONE_DASHBOARD_URL is set).
+const DASH_URL = 'https://traffic.io/onboarding/agent#p=55222&t=tok';
+
 function ctx(cwd: string, rawName: string, cls: ToolClass, toolInput: Record<string, unknown>): Ctx {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: rawName, tool_input: toolInput }, tool: { class: cls, rawName } };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
@@ -63,6 +67,10 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
   }
+  // Seed a live server record so the gate's ensureOnboardingServer() (NO_SPAWN) hands
+  // back a real dashboard URL for the deny prose instead of the inert placeholder.
+  // pid=process.pid is guaranteed alive → the reuse path computes dashboardUrl.
+  writeServerRecord(dir, { pid: process.pid, port: 55222, token: 'tok', url: 'http://127.0.0.1:55222/?t=tok', startedAt: 'x' });
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
@@ -123,7 +131,7 @@ test('new project with no Traffic One state: a mutating feature write is denied 
     const r = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
-      assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
+      assert.ok(r.reason.includes(DASH_URL), 'deny reason carries the dashboard setup URL');
       assert.ok(/setup/i.test(r.reason));
       assert.equal(r.promptRequest, undefined); // no per-step popup any more — the wizard owns the questions
     }
@@ -135,7 +143,7 @@ test('OpenCode setup deny stops after onboarding and asks the user to restart be
     const r = onboardingGate(ctxOpenCode(cwd, 'write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
-      assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
+      assert.ok(r.reason.includes(DASH_URL), 'deny reason carries the dashboard setup URL');
       assert.ok(r.reason.includes('immediately run this wait command'), 'agent must run wait without another user prompt');
       assert.ok(r.reason.includes('TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED'), 'restart sentinel is named');
       assert.ok(r.reason.includes('type "continue" or "resume"'), 'resume instruction is user-visible');
@@ -151,7 +159,7 @@ test('existing project with Traffic One state but no local prefs: mutating tools
     const r = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') {
-      assert.ok(r.reason.includes('http://127.0.0.1'), 'deny reason carries the wizard URL');
+      assert.ok(r.reason.includes(DASH_URL), 'deny reason carries the dashboard setup URL');
       assert.equal(r.promptRequest, undefined);
     }
   });
@@ -163,7 +171,7 @@ test('existing project with missing local prefs: first gated call denies with th
     // with the full wizard recipe (the only PreToolUse channel Codex surfaces).
     const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
     assert.equal(first.kind, 'deny');
-    if (first.kind === 'deny') assert.ok(first.reason.includes('http://127.0.0.1'), 'first deny carries the wizard URL');
+    if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
     // Recipe delivered this session → subsequent read-only orientation flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
   });
@@ -181,13 +189,13 @@ test('incomplete new project: first gated call denies with the recipe, then orie
   withProject({ mode: 'new-project' }, (cwd) => {
     const first = onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
     assert.equal(first.kind, 'deny');
-    if (first.kind === 'deny') assert.ok(first.reason.includes('http://127.0.0.1'), 'first deny carries the wizard URL');
+    if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
     // Recipe delivered → subsequent read-only orientation flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
     // A mutating write still denies after the one-time recipe (short repeat block, still URL-bearing).
     const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(write.kind, 'deny');
-    if (write.kind === 'deny') assert.ok(write.reason.includes('http://127.0.0.1'));
+    if (write.kind === 'deny') assert.ok(write.reason.includes(DASH_URL));
   });
 });
 
@@ -315,14 +323,13 @@ test('Cursor: before any orchestrator is recorded, the main thread still gets th
 
 test('Cursor: first onboarding wait command is denied once with a clickable wizard link, then allowed', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
-    const url = 'http://127.0.0.1:55222/?t=tok';
-    writeServerRecord(cwd, { pid: process.pid, port: 55222, token: 'tok', url, startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 55222, token: 'tok', url: 'http://127.0.0.1:55222/?t=tok', startedAt: 'x' });
     const command = onboardingWaitCommand(cwd, 'cursor');
 
     const first = onboardingGate(ctxCursor(cwd, 'before-shell-execution', 'shell', { command }, 'main-conv', '/x/transcript.jsonl'));
     assert.equal(first.kind, 'deny', 'first wait is stopped to surface the link');
     if (first.kind === 'deny') {
-      assert.ok(first.reason.includes(`Open the Traffic One setup wizard: ${url}`), 'deny carries a direct clickable URL line');
+      assert.ok(first.reason.includes(`Open Traffic One setup: ${DASH_URL}`), 'deny carries a direct clickable dashboard URL line');
       assert.ok(first.reason.includes(command), 'deny tells the agent to re-run the wait command');
     }
 

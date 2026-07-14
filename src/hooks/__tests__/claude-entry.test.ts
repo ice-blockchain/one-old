@@ -51,15 +51,15 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
   const env = process.env;
   const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // unit tests must never spawn a real wizard server
   env.TRAFFIC_ONE_AUTH = '1'; // pin auth enforcement on regardless of the committed AUTH_ENABLED default
   if (opts.authed) {
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+    // The web-entered-key boolean model: a flat auth.json record beside one.json.
+    fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+      version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
     }), 'utf8');
   }
   try {
@@ -100,13 +100,15 @@ test('pre-graphify-hint AUTHED with no graph artefact → silent (empty stdout)'
   });
 });
 
-test('session-start UNAUTHED surfaces the auth choice (fail toward unverified)', async () => {
+test('session-start UNAUTHED points at the wizard (api-key page), no host prompt', async () => {
   await withEnv({ authed: false }, async (cwd) => {
     const r = await runClaudeHook('session-start', JSON.stringify({ hook_event_name: 'SessionStart', cwd }));
     assert.equal(r.exitCode, 0);
     const out = JSON.parse(r.stdout);
-    assert.match(String(out.systemMessage), /authentication choice required/);
-    assert.equal(out.promptRequest?.id, 'traffic-one.auth.choice');
+    // The web-key model surfaces the wizard (which shows the api-key page because
+    // computeOnboarding returns it while unauthenticated) — no host prompt request.
+    assert.match(String(out.systemMessage), /authentication required/);
+    assert.equal(out.promptRequest, undefined);
     assert.equal(out.hookSpecificOutput?.hookEventName, 'SessionStart');
   });
 });

@@ -48,8 +48,7 @@ import {
 } from '../../shared/state';
 import { initializeToolchainState } from '../../shared/state/toolchain';
 import { nowIsoNoMs } from '../../shared/text';
-import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
-import { authGateForHook, authRequiredHookResult } from './auth-gate';
+import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
@@ -58,15 +57,14 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
 
-// Surface the live wizard URL in the setup banner. Host-gated to Cursor/Windsurf
-// (they need the URL in the visible chat channel — see formatWizardBanner) so we
-// don't spawn the server on other hosts; spawning up front is idempotent (the PreToolUse gate
-// reuses it). Best-effort: a spawn failure falls back to the plain banner (the
-// PreToolUse deny still carries the URL).
+// Surface the dashboard setup link in the setup banner. The onboarding UI now lives
+// on traffic.io and opens in an external browser on every host, so all hosts surface
+// the link (formatWizardBanner appends it when non-empty). Spawning up front is
+// idempotent (the PreToolUse gate reuses it). Best-effort: a spawn failure falls back
+// to the plain banner (the PreToolUse deny still carries the URL).
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
-  if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return banner;
   try {
-    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd, { host: ctx.host }).url, banner);
+    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd, { host: ctx.host }).dashboardUrl, banner);
   } catch {
     return banner;
   }
@@ -83,20 +81,22 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
 // Best-effort: a server-spawn failure falls back to the plain note (the PreToolUse deny
 // still carries the URL). Single source for every SessionStart/Flow-3 setup-pending path.
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
+  let dashboardUrl = '';
+  try {
+    dashboardUrl = ensureOnboardingServer(cwd, { host: ctx.host }).dashboardUrl;
+  } catch {
+    // best-effort — the PreToolUse deny still carries the URL
+  }
   // OpenCode/Kilo: the full setup-pending block (with "do NOT…" behavioral
   // overrides) can trigger prompt-injection safety training when injected via
   // system prompt. Use a minimal, factual message instead.
   if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-    return 'Traffic One project setup is required. A setup wizard will open — share the link with the user when available. Building is blocked until setup completes.';
+    return dashboardUrl
+      ? `Traffic One project setup is required. Share this setup link with the user: ${dashboardUrl} — building is blocked until setup completes.`
+      : 'Traffic One project setup is required. A setup page will open — share the link with the user when available. Building is blocked until setup completes.';
   }
-  if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return block('setup-pending');
-  try {
-    const server = ensureOnboardingServer(cwd, { host: ctx.host });
-    if (!server.url || server.url.includes(':0/')) return block('setup-pending');
-    return block('server-deny-reason', { URL: server.url, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
-  } catch {
-    return block('setup-pending');
-  }
+  if (!dashboardUrl) return block('setup-pending');
+  return block('server-deny-reason', { URL: dashboardUrl, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
@@ -184,11 +184,15 @@ function runSessionStartInner(ctx: Ctx): HookResult {
     return runSubagentSessionStart(ctx);
   }
 
-  const authGate = authGateForHook({ forceRemote: true });
-  if (!authGate.authenticated) {
-    if (authChoiceAllowsContinue(cwd)) return noop();
-    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
-    return authRequiredHookResult('SessionStart', { authChoiceWrite: writeResult });
+  // Auth gate: a pure local boolean read — no per-session remote check. When auth
+  // is enforced but the web API key isn't entered yet, point at the wizard (the
+  // same setup-pending surface onboarding uses). The wizard shows the api-key page
+  // because computeOnboarding returns the 'api-key' step while unauthenticated —
+  // covering both a fresh project and an already-onboarded one a 401 invalidated.
+  if (authEnforced() && !isLocallyAuthenticated()) {
+    return context(setupPendingDirective(ctx, cwd), {
+      systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [authentication required]'),
+    });
   }
 
   // Defer brand-new-project activation to the first prompt. SessionStart fires

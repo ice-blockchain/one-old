@@ -7,12 +7,14 @@
 // Master switch for Traffic One auth ENFORCEMENT. When disabled, authGateForHook
 // reports authenticated, so the session-start / prompt-submit / materialize /
 // pre-tool gates stop blocking and prompting — the plugin runs without
-// authenticating. Lower-level predicates (isAuthenticatedLocal) still report the
-// real session state, so optional remote features that genuinely need a token
-// (e.g. the one-mcp report) stay correctly gated. This is the committed default;
-// the TRAFFIC_ONE_AUTH env var overrides it per-process (1/true/on → enforce,
-// 0/false/off → bypass) for ops + tests (see authEnforced in session/auth-gate).
-export const AUTH_ENABLED = false;
+// authenticating. The gate is now a pure local boolean read of the web-entered
+// API key (shared/auth/simple-auth isLocallyAuthenticated); optional remote
+// features (e.g. the one-mcp report) gate on that same boolean via authSatisfied.
+// This is the committed default; the TRAFFIC_ONE_AUTH env var overrides it
+// per-process (1/true/on → enforce, 0/false/off → bypass) for ops + tests (see
+// authEnforced in shared/auth). The test suite defaults it OFF via
+// src/build/test-preload.mjs so the existing baseline is unchanged.
+export const AUTH_ENABLED = true;
 
 export const DEFAULT_ENDPOINT = 'https://nkjomfwbtpvrhdrodmwz.supabase.co/functions/v1/traffic-one-mcp/mcp';
 export const AUTH_STATE_VERSION = 1;

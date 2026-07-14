@@ -7,23 +7,33 @@ import * as path from 'path';
 
 import { shouldOpenBrowser, startOnboardingServer, type RunningServer } from '../server';
 
-function request(port: number, p: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
+interface Res { status: number; body: string; headers: http.IncomingHttpHeaders }
+
+function request(
+  port: number,
+  p: string,
+  headers: Record<string, string> = {},
+  method = 'GET',
+): Promise<Res> {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: '127.0.0.1', port, path: p, method: 'GET', headers }, (res) => {
+    const req = http.request({ host: '127.0.0.1', port, path: p, method, headers }, (res) => {
       let body = '';
       res.on('data', (chunk) => {
         body += chunk;
       });
-      res.on('end', () => resolve({ status: res.statusCode || 0, body }));
+      res.on('end', () => resolve({ status: res.statusCode || 0, body, headers: res.headers }));
     });
     req.on('error', reject);
     req.end();
   });
 }
 
-async function withServer(fn: (server: RunningServer) => Promise<void>): Promise<void> {
+async function withServer(
+  fn: (server: RunningServer) => Promise<void>,
+  extraEnv: Record<string, string> = {},
+): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onbsrv-http-'));
-  const env: NodeJS.ProcessEnv = { ...process.env, TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'prefs.json') };
+  const env: NodeJS.ProcessEnv = { ...process.env, TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'prefs.json'), ...extraEnv };
   const server = await startOnboardingServer({ cwd: dir, env, token: 'secret', standalone: false, idleMs: 60_000 });
   try {
     await fn(server);
@@ -43,16 +53,71 @@ test('server: state/answer routes require the token; page + health are public', 
   });
 });
 
-test('server: serves the wizard page on the BARE url (no token) so the preview pane can load it', async () => {
+test('server: `/` serves the redirect page pointing at the dashboard (fragment-carried port+token)', async () => {
   await withServer(async (server) => {
-    const res = await request(server.port, '/'); // no ?t= — this is what preview_start loads
+    const res = await request(server.port, '/'); // no ?t= — public path
     assert.equal(res.status, 200);
     assert.ok(res.body.includes('Traffic One'));
+    // the redirect page builds the dashboard deep link with the token in the fragment
+    assert.ok(res.body.includes('https://dash.example.test'));
+    assert.ok(res.body.includes('/onboarding/agent'));
+    // the token is injected for the deep link + the /local fallback link
+    assert.ok(res.body.includes('secret'));
+    assert.ok(!res.body.includes('%%T1_TOKEN%%'));
+    assert.ok(!res.body.includes('%%T1_PORT%%'));
+    assert.ok(!res.body.includes('%%T1_DASHBOARD%%'));
+  }, { TRAFFIC_ONE_DASHBOARD_URL: 'https://dash.example.test' });
+});
+
+test('server: `/local` serves the full fallback wizard (token-free public path)', async () => {
+  await withServer(async (server) => {
+    const res = await request(server.port, '/local'); // no ?t= — public path
+    assert.equal(res.status, 200);
+    assert.ok(res.body.includes('Traffic One'));
+    assert.ok(res.body.includes('Setup complete')); // the real wizard, not the redirect shell
     // the token is still injected server-side for the page's own API calls
     assert.ok(res.body.includes('secret'));
     assert.ok(!res.body.includes('%%T1_TOKEN%%'));
     // the JS identifier must survive substitution intact (regression guard)
     assert.ok(!res.body.includes('window.secret'));
+  });
+});
+
+test('server: CORS is open (ACAO:*) on API responses so the dashboard can call cross-origin', async () => {
+  await withServer(async (server) => {
+    // A remote (non-loopback) Origin is allowed — the token is the gate, not the origin.
+    const ok = await request(server.port, '/state?t=secret', { origin: 'https://traffic.io' });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.headers['access-control-allow-origin'], '*');
+    // A bad token still 403s — but with CORS headers, so the dashboard can READ the error.
+    const bad = await request(server.port, '/state?t=nope', { origin: 'https://traffic.io' });
+    assert.equal(bad.status, 403);
+    assert.equal(bad.headers['access-control-allow-origin'], '*');
+  });
+});
+
+test('server: OPTIONS preflight is answered before the token gate, with PNA opt-in', async () => {
+  await withServer(async (server) => {
+    const res = await request(server.port, '/state', {
+      origin: 'https://traffic.io',
+      'access-control-request-method': 'GET',
+      'access-control-request-headers': 'x-t1-token',
+      'access-control-request-private-network': 'true',
+    }, 'OPTIONS');
+    assert.equal(res.status, 204);
+    assert.equal(res.headers['access-control-allow-origin'], '*');
+    assert.match(String(res.headers['access-control-allow-headers']), /x-t1-token/);
+    assert.match(String(res.headers['access-control-allow-methods']), /GET/);
+    // grant Chrome Private Network Access only when the browser asks for it
+    assert.equal(res.headers['access-control-allow-private-network'], 'true');
+  });
+});
+
+test('server: OPTIONS without a PNA request does not assert the PNA header', async () => {
+  await withServer(async (server) => {
+    const res = await request(server.port, '/state', { origin: 'https://traffic.io' }, 'OPTIONS');
+    assert.equal(res.status, 204);
+    assert.equal(res.headers['access-control-allow-private-network'], undefined);
   });
 });
 
