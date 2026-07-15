@@ -107,24 +107,36 @@ async function main(): Promise<void> {
     // 2. Invoke through the legacy-path shims under bare node. UNAUTHENTICATED
     //    tool use must be denied. pluginRoot points at the realistic scratch
     //    install, so skillBlock reads the compiled skill prose from scripts/.
-    //    Auth is enforced explicitly (TRAFFIC_ONE_AUTH=on): the shipped default
-    //    config/auth AUTH_ENABLED=false treats everyone as authenticated, so the
-    //    deny path this smoke exercises only exists under enforcement.
+    //    Auth is enforced explicitly (TRAFFIC_ONE_AUTH=on). The priority-0 auth
+    //    gate, while unauthenticated, delegates to the onboarding gate (which opens
+    //    the wizard's api-key page and denies mutating tools); NO_SPAWN keeps that
+    //    delegation from launching a real wizard server in the smoke — the deny
+    //    still fires with the placeholder URL, which is what this proves.
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       TRAFFIC_ONE_AUTH: 'on',
+      TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
       TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:8787/mcp',
-      TRAFFIC_ONE_AUTH_STATE_PATH: path.join(authTmp, 'auth.json'),
+      TRAFFIC_ONE_AUTH_STATE_PATH: path.join(authTmp, 'one.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),
       TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: path.join(authTmp, 'choice.json'),
       TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
     };
 
-    const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(authTmp, 'x.ts'), content: 'export const x = 1;' }, cwd: authTmp });
+    // Each host gets its OWN project cwd. The unauthenticated gate delegates to the
+    // onboarding gate, which writes per-project session markers (once-per-session
+    // deny walkthrough); sharing one cwd across hosts would let the first call's
+    // marker steer the next host's branch. A real session is one host per project,
+    // so per-host cwds match reality and keep the three checks independent.
+    const claudeCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-claude-'));
+    const cursorCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-cursor-'));
+    const windsurfCwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-smoke-windsurf-'));
+
+    const claudeStdin = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(claudeCwd, 'x.ts'), content: 'export const x = 1;' }, cwd: claudeCwd });
     const claudeOut = JSON.parse(runShim(scratch, 'hook-runtime.cjs', 'check-plan-write', claudeStdin, env) || '{}');
     if (claudeOut.hookSpecificOutput?.permissionDecision !== 'deny') fail('hook-runtime.cjs shim did not deny an unauthed write');
 
-    const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: authTmp, command: 'npm run build' }), env) || '{}');
+    const cursorOut = JSON.parse(runShim(scratch, 'cursor-hook-runtime.cjs', 'before-shell-execution', JSON.stringify({ cwd: cursorCwd, command: 'npm run build' }), env) || '{}');
     if (cursorOut.permission !== 'deny') fail('cursor-hook-runtime.cjs shim did not deny an unauthed shell');
     if (!cursorOut.user_message) fail('cursor deny had no user_message (skillBlock did not resolve from src)');
 
@@ -132,7 +144,7 @@ async function main(): Promise<void> {
       scratch,
       'windsurf-hook-runtime.cjs',
       'pre_run_command',
-      JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { cwd: authTmp, command_line: 'npm run build' } }),
+      JSON.stringify({ agent_action_name: 'pre_run_command', tool_info: { cwd: windsurfCwd, command_line: 'npm run build' } }),
       env,
     );
     if (windsurfOut.status !== 2) fail(`windsurf-hook-runtime.cjs shim did not exit 2 on an unauthed shell (status ${windsurfOut.status})`);
@@ -579,6 +591,7 @@ async function main(): Promise<void> {
       fs.renameSync(hiddenModulesDir, modulesDir);
     }
 
+    for (const d of [claudeCwd, cursorCwd, windsurfCwd]) fs.rmSync(d, { recursive: true, force: true });
     process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; authenticated gates work, Codex reports approved EPERM bootstrap recovery, Cursor lifecycle followups are parent-batch at-most-once under process contention, and all 7 host wrappers fail closed when compiled modules are unavailable.\n`);
   } finally {
     fs.rmSync(scratchRoot, { recursive: true, force: true });

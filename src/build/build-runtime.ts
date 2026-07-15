@@ -77,6 +77,7 @@ export function writeShims(outDir: string): string[] {
 const RUNNER_ASSETS: ReadonlyArray<string> = [
   path.join('runners', 'toolchain', 'toolchain-versions.json'),
   path.join('runners', 'onboarding-server', 'wizard.html'),
+  path.join('runners', 'onboarding-server', 'redirect.html'),
 ];
 
 export function copyRunnerAssets(outDir: string): string[] {

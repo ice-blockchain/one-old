@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { ensureOnboardingServer } from '../ensure';
+import { ensureOnboardingServer, formatWizardBanner } from '../ensure';
 import { writeLaunchConfig } from '../launch-config';
 import {
   clearServerRecord,
@@ -94,7 +94,7 @@ test('ensure: reuses a live record without launching', () => {
     writeServerRecord(cwd, rec(), env);
     let launched = false;
     const r = ensureOnboardingServer(cwd, {
-      env,
+      env: { ...env, TRAFFIC_ONE_DASHBOARD_URL: 'https://dash.example.test' },
       isAlive: () => true,
       launch: () => {
         launched = true;
@@ -103,8 +103,35 @@ test('ensure: reuses a live record without launching', () => {
     });
     assert.equal(r.started, false);
     assert.equal(r.url, 'http://127.0.0.1:51000/?t=tok');
+    // the dashboard deep link carries port + token in the fragment
+    assert.equal(r.dashboardUrl, 'https://dash.example.test/onboarding/agent#p=51000&t=tok');
     assert.equal(launched, false);
   });
+});
+
+test('ensure: NO_SPAWN with no seeded record returns the inert placeholder (empty dashboardUrl)', () => {
+  withProject((cwd, env) => {
+    const r = ensureOnboardingServer(cwd, {
+      env: { ...env, TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1' },
+      isAlive: () => false,
+      launch: () => { throw new Error('must not spawn'); },
+    });
+    assert.equal(r.started, false);
+    assert.equal(r.port, 0);
+    assert.equal(r.dashboardUrl, '');
+  });
+});
+
+test('formatWizardBanner: appends the dashboard link on every host when non-empty; plain when empty', () => {
+  const url = 'https://traffic.io/onboarding/agent#p=51000&t=tok';
+  for (const host of ['claude', 'cursor', 'windsurf', 'opencode', 'codex']) {
+    assert.equal(
+      formatWizardBanner(host, url, 'setup required'),
+      `setup required — open Traffic One setup: ${url}`,
+    );
+  }
+  // empty dashboardUrl (placeholder / spawn failure) → plain banner, no dangling text
+  assert.equal(formatWizardBanner('claude', '', 'setup required'), 'setup required');
 });
 
 test('ensure: relaunches when no record exists', () => {

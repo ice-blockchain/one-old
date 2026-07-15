@@ -318,7 +318,10 @@ test('opencode: onboarded new project without local prefs uses sanitized setup t
   });
 });
 
-test('cursor: a pending new project surfaces the LIVE wizard URL in the user-facing systemMessage', () => {
+// The dashboard deep link for the seeded record below (default dashboard base).
+const DASH_URL_51999 = 'https://traffic.io/onboarding/agent#p=51999&t=t';
+
+test('cursor: a pending new project surfaces the dashboard setup URL in the user-facing systemMessage', () => {
   const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // never spawn a real detached server in tests
   try {
@@ -328,7 +331,7 @@ test('cursor: a pending new project surfaces the LIVE wizard URL in the user-fac
       const r = runSessionStartAuthed(ctxHost(cwd, 'cursor'));
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') {
-        assert.ok(r.systemMessage?.includes('http://127.0.0.1:51999'), 'cursor user_message carries the live wizard URL');
+        assert.ok(r.systemMessage?.includes(DASH_URL_51999), 'cursor user_message carries the dashboard setup URL');
       }
     });
   } finally {
@@ -342,11 +345,12 @@ test('windsurf: a pending new project surfaces a compact host-only wizard direct
   try {
     withProject({ mode: 'new-project' }, (cwd) => {
       const url = 'http://127.0.0.1:51998/?t=windsurf';
+      const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51998&t=windsurf';
       writeServerRecord(cwd, { pid: process.pid, port: 51998, token: 'windsurf', url, startedAt: 'x' }, process.env, 'windsurf');
       const r = runSessionStartAuthed(ctxHost(cwd, 'windsurf'));
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') {
-        assert.ok(r.systemMessage?.includes(url), 'Windsurf user_message carries the live wizard URL');
+        assert.ok(r.systemMessage?.includes(dashboardUrl), 'Windsurf user_message carries the dashboard setup URL');
         assert.ok(r.context.includes('standalone clickable setup link'));
         for (const foreign of ['Claude Code', 'Cursor:', 'Codex Desktop', '.claude/launch.json', 'preview_start', 'node_repl']) {
           assert.ok(!r.context.includes(foreign), `Windsurf setup must not include ${foreign}`);
@@ -358,7 +362,7 @@ test('windsurf: a pending new project surfaces a compact host-only wizard direct
   }
 });
 
-test('non-cursor: a pending new project keeps the plain banner (URL only via the agent recipe)', () => {
+test('all hosts now surface the dashboard setup URL in the banner (onboarding UI opens in the browser)', () => {
   const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
@@ -366,7 +370,10 @@ test('non-cursor: a pending new project keeps the plain banner (URL only via the
       writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' }, process.env, 'claude');
       const r = runSessionStartAuthed(ctx(cwd)); // host=claude
       assert.equal(r.kind, 'context');
-      if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one [setup required]');
+      if (r.kind === 'context') {
+        assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'));
+        assert.ok(r.systemMessage?.includes(DASH_URL_51999), 'claude banner now carries the dashboard link too');
+      }
     });
   } finally {
     if (prev === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prev;

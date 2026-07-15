@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { isNonProjectRoot } from '../authoring-root';
+import { agentOnboardingUrl } from '../../config/dashboard';
 import type { HostId } from '../../core/types';
 import { detectHost } from '../host';
 import { pluginRoot } from '../paths';
@@ -24,7 +25,13 @@ import { clearLegacyOnboardingRuntime, clearServerRecord, readServerRecord, serv
 const LOCK_STALE_MS = 15000;
 
 export interface EnsureResult {
+  // Loopback wizard URL — still used by .claude/launch.json, the /local fallback,
+  // and TRAFFIC_ONE_OPEN_BROWSER.
   url: string;
+  // The traffic.io agent-onboarding deep link (port + token in the fragment). This
+  // is what the gate/banners surface to the user now. Empty for the placeholder
+  // (port 0 / no token) so callers guard on a non-empty string.
+  dashboardUrl: string;
   port: number;
   token: string;
   started: boolean;
@@ -42,15 +49,15 @@ export interface EnsureOptions {
   host?: string;
 }
 
-// Append the live wizard URL to a setup banner ONLY where the recipe otherwise
-// reaches the user through an agent-only channel that the agent might not repost.
-// Cursor and Windsurf get the clickable URL in the visible banner; other hosts
-// (Claude preview pane, Codex recipe) keep the plain banner. The
-// NO_SPAWN placeholder (':0/', port 0) is never surfaced. Single source for both the
-// SessionStart and UserPromptSubmit setup-pending paths.
-export function formatWizardBanner(host: string, url: string, banner: string): string {
-  return (host === 'cursor' || host === 'windsurf') && url && !url.includes(':0/')
-    ? `${banner} — open the setup wizard: ${url}`
+// Append the setup link to a banner. The onboarding UI now lives on the traffic.io
+// dashboard and opens in an external browser on EVERY host (no more Claude-preview /
+// Codex-only special-casing), so any host with a non-empty dashboard URL surfaces
+// it. The placeholder (port 0 → empty dashboardUrl) is never surfaced. `url` here is
+// the dashboard URL (agentOnboardingUrl). Single source for both the SessionStart and
+// UserPromptSubmit setup-pending paths.
+export function formatWizardBanner(_host: string, url: string, banner: string): string {
+  return url
+    ? `${banner} — open Traffic One setup: ${url}`
     : banner;
 }
 
@@ -142,21 +149,27 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   const isAlive = options.isAlive || processAlive;
   const launch = options.launch || defaultLaunch;
 
+  // The inert placeholder (authoring root, NO_SPAWN with no seeded record): no
+  // server, no dashboard link.
+  const placeholder = (): EnsureResult =>
+    ({ url: 'http://127.0.0.1:0/?t=pending', dashboardUrl: '', port: 0, token: '', started: false });
+
   // The plugin's own repo/install never onboards: no server spawn, no
   // .claude/launch.json, no registry record — hand back the inert placeholder.
   if (isNonProjectRoot(cwd)) {
-    return { url: 'http://127.0.0.1:0/?t=pending', port: 0, token: '', started: false };
+    return placeholder();
   }
 
   // Register the in-app preview entry (.claude/launch.json) SYNCHRONOUSLY before
   // returning, so preview_start finds it the instant the gate denies — never rely
   // on the detached child's own async self-registration having landed yet. No-op
-  // for port 0 (the NO_SPAWN placeholder skips this entirely).
-  const finalize = (result: EnsureResult): EnsureResult => {
+  // for port 0 (the NO_SPAWN placeholder skips this entirely). Also stamps the
+  // dashboard deep link (fragment-carried port+token) that the gate surfaces.
+  const finalize = (result: Omit<EnsureResult, 'dashboardUrl'>): EnsureResult => {
     // `.claude/launch.json` is Claude Code's single preview entry. A parallel
     // Cursor/Codex wizard must never replace Claude's recorded preview port.
     if (host === 'claude' && result.port > 0) writeLaunchConfig(cwd, result.port);
-    return result;
+    return { ...result, dashboardUrl: agentOnboardingUrl(env, result.port, result.token) };
   };
 
   clearLegacyOnboardingRuntime(cwd, env);
@@ -177,8 +190,14 @@ export function ensureOnboardingServer(cwd: string, options: EnsureOptions = {})
   // detached server. Reuse a pre-seeded record if present, else hand back a
   // placeholder URL so the gate can still render its deny prose deterministically.
   if (env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN === '1') {
-    if (existing) return { url: existing.url, port: existing.port, token: existing.token, started: false };
-    return { url: 'http://127.0.0.1:0/?t=pending', port: 0, token: '', started: false };
+    if (existing) return {
+      url: existing.url,
+      dashboardUrl: agentOnboardingUrl(env, existing.port, existing.token),
+      port: existing.port,
+      token: existing.token,
+      started: false,
+    };
+    return placeholder();
   }
 
   // Single-launcher: each Cursor hook is its own process, so UserPromptSubmit and

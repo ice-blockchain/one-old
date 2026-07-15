@@ -52,10 +52,13 @@ export function extractToolText(responseBody: string): string | null {
   return null;
 }
 
-export function mcpRequest(endpoint: string, toolName: string, bearer: string, args: Rec = {}, timeoutMs = 15000): Promise<Rec> {
+// Raw JSON-RPC POST: resolves with the HTTP status + body for ANY response the
+// server sends (the caller classifies); rejects only on transport failures
+// (refused/DNS/timeout). Shared by mcpRequest and the intake key validation.
+export function mcpPost(endpoint: string, payload: Rec, bearer: string, timeoutMs = 15000): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve, reject) => {
     const url = authEndpointUrl(endpoint);
-    const body = JSON.stringify(buildMcpPayload(toolName, args));
+    const body = JSON.stringify(payload);
     const client = url.protocol === 'http:' ? http : https;
     const req = client.request({
       method: 'POST',
@@ -75,31 +78,31 @@ export function mcpRequest(endpoint: string, toolName: string, bearer: string, a
       res.on('data', (chunk) => {
         responseBody += chunk;
       });
-      res.on('end', () => {
-        if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          const error: McpError = new Error(`HTTP ${res.statusCode || 'unknown'}`);
-          error.statusCode = res.statusCode;
-          reject(error);
-          return;
-        }
-        if (/"error"\s*:/.test(responseBody)) {
-          reject(new Error('MCP error response'));
-          return;
-        }
-        const text = extractToolText(responseBody);
-        if (text === null) {
-          reject(new Error('MCP response did not include tool text content'));
-          return;
-        }
-        try {
-          resolve(JSON.parse(text) as Rec);
-        } catch {
-          reject(new Error('MCP tool text content was not JSON'));
-        }
-      });
+      res.on('end', () => resolve({ statusCode: res.statusCode || 0, body: responseBody }));
     });
     req.on('timeout', () => req.destroy(new Error('request timeout')));
     req.on('error', reject);
     req.end(body);
   });
+}
+
+export async function mcpRequest(endpoint: string, toolName: string, bearer: string, args: Rec = {}, timeoutMs = 15000): Promise<Rec> {
+  const { statusCode, body: responseBody } = await mcpPost(endpoint, buildMcpPayload(toolName, args), bearer, timeoutMs);
+  if (!statusCode || statusCode < 200 || statusCode >= 300) {
+    const error: McpError = new Error(`HTTP ${statusCode || 'unknown'}`);
+    error.statusCode = statusCode || undefined;
+    throw error;
+  }
+  if (/"error"\s*:/.test(responseBody)) {
+    throw new Error('MCP error response');
+  }
+  const text = extractToolText(responseBody);
+  if (text === null) {
+    throw new Error('MCP response did not include tool text content');
+  }
+  try {
+    return JSON.parse(text) as Rec;
+  } catch {
+    throw new Error('MCP tool text content was not JSON');
+  }
 }

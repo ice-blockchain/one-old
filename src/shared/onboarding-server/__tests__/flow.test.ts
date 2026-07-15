@@ -1029,6 +1029,32 @@ test('computeOnboarding: canonical hashed user preferences complete onboarding',
   }
 });
 
+test('computeOnboarding: an unstamped team never leaks the raw "team" step (kind-less meta crashed the wizard)', () => {
+  // The call-agents reproduction (2026-07-10): valid performance but NO team state
+  // at all → needsTeamConfirmation is false (it requires a valid team), so
+  // nextOnboardingStep returns the raw id 'team', which is NOT a wizard step. It
+  // used to reach metaForStep unmapped, producing meta:{step:'team'} with no
+  // kind/title — the wizard client then crashed with appendChild-on-undefined
+  // ("Connection issue"). The flow must re-ask 'performance' instead (its answer
+  // stamps both performance AND the derived team).
+  const committed = {
+    mode: 'new-project',
+    stack: 'custom-backend',
+    frontend: 'react-vite',
+    backend: 'go',
+    openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
+    performance: { level: 'high', source: 'prompted' },
+    // no `team` key → hasValidTeamState false
+  };
+  withProject(committed, (cwd) => {
+    const view = computeOnboarding(cwd);
+    assert.equal(view.step, 'performance');
+    assert.equal(view.meta.kind, 'single_select');
+    assert.ok(view.meta.title, 'meta must carry renderable copy');
+    assert.ok(view.meta.question, 'meta must carry renderable copy');
+  });
+});
+
 test('computeOnboarding: fail-closed durable check keeps step metadata in sync', () => {
   const committed = {
     mode: 'new-project',

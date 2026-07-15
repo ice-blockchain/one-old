@@ -46,6 +46,7 @@ import {
   onboardingStartFailureReason,
 } from '../../shared/onboarding-server/bootstrap';
 import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
+import { agentOnboardingUrl } from '../../config/dashboard';
 import { readServerRecord } from '../../shared/onboarding-server/registry';
 import { modelForRoleHost, teamModeForLevel } from '../../shared/performance';
 import { ensureCurrentRunId, normalizeState, readEffectiveState } from '../../shared/state';
@@ -280,6 +281,9 @@ export function announceWizardUrl(
   try {
     const rec = readServerRecord(cwd, process.env, host);
     if (!rec || !rec.url || rec.url.includes(':0/')) return;
+    // Show the dashboard setup link (matches the link surfaced in chat); fall back to
+    // the local URL (which itself redirects to the dashboard) if no dashboard URL.
+    const link = agentOnboardingUrl(process.env, rec.port, rec.token) || rec.url;
     // Another surface (session-start banner / prompt-submit recipe / gate deny)
     // already showed this exact link moments ago — repeating the full banner
     // renders the URL twice in the same turn (observed on Cursor). Keep a
@@ -291,12 +295,10 @@ export function announceWizardUrl(
     stampEmitMarker(cwd, 'wizard-url-shown');
     write(
       '\n════════════════════════════════════════════════════════════════\n'
-      + '  TRAFFIC ONE SETUP WIZARD — open this link to finish setup:\n\n'
-      + `  ${rec.url}\n\n`
-      + '  Cursor: click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste it.\n'
-      + `  Setup link: ${rec.url}\n`
-      + "  Don't want Traffic One for this project? Say so in chat — the agent\n"
-      + '  disables it here (your choice is saved outside the project).\n'
+      + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
+      + `  ${link}\n\n`
+      + '  Sign in (or choose "Continue without Traffic One" to skip) and complete the steps.\n'
+      + `  Setup link: ${link}\n`
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
       + '════════════════════════════════════════════════════════════════\n',
     );

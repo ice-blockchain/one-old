@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="robots" content="noindex" />
+  <title>Traffic One — Setup</title>
+  <style>
+    /* Traffic One design tokens (light "cream" surface, blue accent). Kept in sync
+       with wizard.html; this page is intentionally dependency- and font-free so it
+       renders instantly before forwarding to the dashboard. */
+    :root {
+      --bg: #f7f6f2; --bg-2: #efece4; --card: #fbfaf6;
+      --ink: #160715; --muted: #5e5f64; --muted-2: #9b9ca2;
+      --line: #e3e1d8; --line-2: #d6d3c8;
+      --accent: #1668ed; --accent-strong: #125ed4; --accent-soft: #eef0ff;
+      --radius: 14px; --radius-sm: 10px;
+      --font: 'Inter Tight', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+      --mono: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, monospace;
+      --shadow-soft: 0 1px 2px #0c0d100f, 0 8px 24px #0c0d1008;
+      --shadow-strong: 0 18px 50px #0c0d1026;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; }
+    body {
+      background:
+        radial-gradient(900px 540px at 92% -8%, rgba(38,125,255,.07), transparent 60%),
+        radial-gradient(760px 460px at 4% 0%, rgba(99,102,241,.05), transparent 58%),
+        var(--bg);
+      color: var(--ink);
+      font: 15px/1.55 var(--font);
+      -webkit-font-smoothing: antialiased;
+      display: flex; align-items: center; justify-content: center; padding: 28px;
+    }
+    .card {
+      width: 100%; max-width: 520px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-strong);
+      padding: 28px 26px;
+      text-align: center;
+    }
+    .logo { width: 40px; height: 33px; margin: 0 auto 16px; display: block; }
+    h1 { font-size: 20px; font-weight: 640; letter-spacing: -.3px; margin: 0 0 8px; }
+    p { color: var(--muted); margin: 0 0 20px; font-size: 14px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      width: 100%; padding: 12px 16px; font: inherit; font-weight: 600; font-size: 15px;
+      color: #fff; background: var(--accent); border: 1px solid var(--accent-strong);
+      border-radius: var(--radius-sm); cursor: pointer; text-decoration: none;
+      transition: background .14s ease, transform .05s ease;
+    }
+    .btn:hover { background: var(--accent-strong); }
+    .btn:active { transform: translateY(1px); }
+    .row { display: flex; gap: 10px; margin-top: 10px; }
+    .btn-ghost {
+      flex: 1 1 auto; padding: 10px 12px; font: inherit; font-weight: 600; font-size: 13.5px;
+      color: var(--ink); background: var(--card); border: 1px solid var(--line);
+      border-radius: var(--radius-sm); cursor: pointer; text-decoration: none;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .btn-ghost:hover { border-color: var(--accent); background: var(--accent-soft); }
+    .muted-link { display: block; margin-top: 18px; color: var(--muted-2); font-size: 12.5px; }
+    .muted-link a { color: var(--muted); }
+    .fallback-note { margin-top: 6px; font-size: 12.5px; color: var(--muted); }
+    code { font-family: var(--mono); font-size: 12px; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <svg class="logo" viewBox="0 0 34 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <path d="M17 2L32 26H2L17 2Z" fill="#1668ed" fill-opacity="0.12" stroke="#1668ed" stroke-width="2" stroke-linejoin="round"/>
+    </svg>
+    <h1 id="title">Opening Traffic One setup…</h1>
+    <p id="sub">Redirecting you to complete setup in your browser.</p>
+    <a class="btn" id="open" href="#" target="_blank" rel="noopener">Open Traffic One setup</a>
+    <div class="row">
+      <button class="btn-ghost" id="copy" type="button">Copy link</button>
+      <a class="btn-ghost" id="local" href="#">Run setup locally instead</a>
+    </div>
+    <span class="muted-link" id="manual"></span>
+  </main>
+
+  <script>
+    // The server substitutes these placeholders. %% wrappers ensure the raw
+    // template never contains a valid JS identifier that a global replace could
+    // mangle. Fall back to the URL query for the token if served unsubstituted.
+    var T1_INJECTED_TOKEN = "%%T1_TOKEN%%";
+    var T1_INJECTED_PORT = "%%T1_PORT%%";
+    var T1_DASHBOARD = "%%T1_DASHBOARD%%";
+
+    var token = (T1_INJECTED_TOKEN.charAt(0) !== "%" ? T1_INJECTED_TOKEN : "")
+      || new URLSearchParams(location.search).get("t") || "";
+    var port = (T1_INJECTED_PORT.charAt(0) !== "%" ? T1_INJECTED_PORT : "")
+      || String(location.port || "");
+    var dashboard = (T1_DASHBOARD.charAt(0) !== "%" ? T1_DASHBOARD : "") || "https://traffic.io";
+
+    // Port + token ride in the FRAGMENT so the token never reaches the dashboard
+    // server (fragments are not sent in the HTTP request).
+    var target = dashboard + "/onboarding/agent#p=" + encodeURIComponent(port) + "&t=" + encodeURIComponent(token);
+    var localUrl = "/local?t=" + encodeURIComponent(token);
+
+    var openLink = document.getElementById("open");
+    var localLink = document.getElementById("local");
+    var copyBtn = document.getElementById("copy");
+    var manual = document.getElementById("manual");
+    openLink.href = target;
+    localLink.href = localUrl;
+    manual.innerHTML = 'Or paste this link into your browser: <a href="' + target + '">' + target + '</a>';
+
+    copyBtn.addEventListener("click", function () {
+      var done = function () { copyBtn.textContent = "Copied"; setTimeout(function () { copyBtn.textContent = "Copy link"; }, 1500); };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(target).then(done, function () {});
+      }
+    });
+
+    // Auto-forward only when we're the TOP-LEVEL document (a real browser tab).
+    // Inside an editor preview pane / iframe, auto-redirecting would load the Clerk
+    // login inside the pane — so we render the link card and let the user click out.
+    var embedded = false;
+    try { embedded = window.self !== window.top; } catch (e) { embedded = true; }
+
+    if (!embedded) {
+      document.getElementById("title").textContent = "Opening Traffic One setup…";
+      setTimeout(function () { location.replace(target); }, 800);
+    } else {
+      document.getElementById("title").textContent = "Finish Traffic One setup";
+      document.getElementById("sub").textContent = "Open the setup page in your browser to continue.";
+    }
+  </script>
+</body>
+</html>

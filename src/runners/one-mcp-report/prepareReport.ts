@@ -8,7 +8,7 @@
 import { spawn } from 'child_process';
 import * as path from 'path';
 
-import { authEnforced, isAuthenticatedLocal } from '../../shared/auth';
+import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { hasRealCodebase } from './hasRealCodebase';
@@ -42,7 +42,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
   // Auth-required ONLY when auth is actually enforced (config/auth AUTH_ENABLED /
   // TRAFFIC_ONE_AUTH). When enforcement is off, treat as authenticated — so the
   // first-look report fires in dev/test runs without a real token.
-  if (!options.allowUnauthenticated && !isAuthenticatedLocal() && authEnforced()) return { started: false, reason: 'auth-required' };
+  if (!options.allowUnauthenticated && !isLocallyAuthenticated() && authEnforced()) return { started: false, reason: 'auth-required' };
   const root = path.resolve(cwd);
   // The plugin's own repo/install is never reported on — this writer is reachable
   // outside the (guarded) post-stack-setup dispatcher, so it must refuse itself.

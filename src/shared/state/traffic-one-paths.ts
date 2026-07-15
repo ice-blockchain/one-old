@@ -19,6 +19,7 @@ export const PROJECT_LOCAL_MACHINE_REL = path.join(STATE_DIR, 'machine.json');
 const LEGACY_PROJECT_LOCAL_RUNTIME = [
   PROJECT_LOCAL_PREFS_REL,
   PROJECT_LOCAL_MACHINE_REL,
+  path.join(STATE_DIR, 'auth.json'),
   path.join(STATE_DIR, 'onboarding-server.json'),
   path.join(STATE_DIR, 'onboarding-complete.json'),
   path.join(STATE_DIR, 'onboarding-server.lock'),

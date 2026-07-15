@@ -6,7 +6,6 @@ import * as path from 'path';
 
 import { runPostStackSetup } from '../post-stack-setup';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
-import { endpointFromEnv } from '../../../shared/auth';
 import { toolClassForRawName } from '../../../core/events';
 import { applyAnswer } from '../../../shared/onboarding-server/flow';
 import { onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
@@ -39,14 +38,11 @@ function withAuthedProject(materialized: boolean, fn: (cwd: string) => void): vo
   const env = process.env;
   const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1,
-    auth: {
-      version: 1, endpoint: endpointFromEnv(), sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
-    },
+  // The simple web-entered-key boolean model: a flat auth.json beside one.json.
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+    version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
   }), 'utf8');
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(t1, { recursive: true });
@@ -107,17 +103,21 @@ function withDoneProject(extraOne: Record<string, unknown>, fn: (dir: string) =>
   }
 }
 
-test('single gate: onboarding finalized + one-uid missing → fires the one-mcp report (onboarding-complete), even unauthenticated + enforced', () => {
+test('single gate: onboarding finalized (key entered) + one-uid missing → fires the one-mcp report (onboarding-complete)', () => {
   withDoneProject({}, (dir) => {
     const savedAuth = process.env.TRAFFIC_ONE_AUTH;
-    process.env.TRAFFIC_ONE_AUTH = '1'; // enforce so the post-report sections stay gated
+    process.env.TRAFFIC_ONE_AUTH = '1'; // enforce
+    // Enter the web API key so onboarding is truly complete (computeOnboarding.done
+    // now includes the api-key gate). Uses the real answer path (merges the auth
+    // section, preserving the code-graph provider). The report carries this key as a
+    // Bearer token — it is exactly the request whose 401 would later invalidate it.
+    applyAnswer(dir, 'api-key', { apiKey: 'sk-telemetry-123' });
     try {
       const calls: string[] = [];
-      const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+      runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
         reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
       });
-      assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate, no auth required
-      assert.equal(r.kind, 'noop'); // unauthenticated + enforced → rest gated; the report already fired
+      assert.deepEqual(calls, ['onboarding-complete']); // fired on the onboarding-finalized gate
     } finally {
       if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
       else process.env.TRAFFIC_ONE_AUTH = savedAuth;
@@ -223,8 +223,8 @@ test('noop in the plugin authoring root for a write inside cwd', () => {
   // process.cwd() is the authoring root; a file_path inside it → noop (auth not reached for authoring).
   const env = process.env;
   const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(os.tmpdir(), 'pss-authoring-auth.json');
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({ version: 1, auth: { version: 1, endpoint: endpointFromEnv(), sessionToken: 'tok_x.sig', expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString() } }), 'utf8');
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(os.tmpdir(), 'pss-authoring-one.json');
+  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({ version: 1 }), 'utf8');
   try {
     assert.equal(runPostStackSetup(ctx(process.cwd(), { file_path: 'src/x.ts' })).kind, 'noop');
   } finally {

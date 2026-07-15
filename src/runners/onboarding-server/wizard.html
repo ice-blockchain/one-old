@@ -209,8 +209,8 @@
     var T1_INJECTED = "%%T1_TOKEN%%";
     var T1_TOKEN = (T1_INJECTED.charAt(0) !== "%" ? T1_INJECTED : "")
       || new URLSearchParams(location.search).get("t") || "";
-    const NEW_PROJECT_STEPS = ["open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
-    const EXISTING_STEPS = ["open-code", "performance", "team-confirmation", "code-graph"];
+    const NEW_PROJECT_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "project-context", "mobile", "code-graph"];
+    const EXISTING_STEPS = ["api-key", "open-code", "performance", "team-confirmation", "code-graph"];
     // Presentation-only grouping for the long project-context form so the fields
     // read as a few scannable sections instead of one tall stack. Unknown keys
     // (e.g. a field added server-side later) fall through to "More details".
@@ -258,7 +258,9 @@
     function el(tag, attrs, children) {
       const node = document.createElement(tag);
       Object.assign(node, attrs || {});
-      (children || []).forEach((c) => node.appendChild(typeof c === "string" ? document.createTextNode(c) : c));
+      // Skip nullish children: a server payload missing an optional field must
+      // degrade to an empty element, never kill the whole page via appendChild.
+      (children || []).forEach((c) => { if (c == null) return; node.appendChild(typeof c === "string" ? document.createTextNode(c) : c); });
       return node;
     }
 
@@ -446,6 +448,41 @@
       return el("label", { className: "field" + (cls ? " " + cls : "") }, [el("span", { className: "name" }, [labelText]), control]);
     }
 
+    // The api-key step: a single text input + Continue. The key is VALIDATED against
+    // the auth endpoint by the server before it is stored; a rejected/unverifiable
+    // key surfaces inline here and keeps the user on this step (fail-closed). This is
+    // the first step on a fresh project and the only step on an invalidated reopen.
+    function renderApiKey(v) {
+      view.innerHTML = "";
+      view.appendChild(stepHead(v));
+      const input = el("input", { type: "text", id: "f-apikey", placeholder: "Paste your Traffic One API key", autocomplete: "off", spellcheck: false });
+      view.appendChild(field("API key", input, "lead"));
+      const errBox = el("div", { className: "err" });
+      view.appendChild(errBox);
+      const submit = el("button", { className: "btn", type: "button" }, ["Continue"]);
+      async function go() {
+        const key = input.value.trim();
+        if (!key) { errBox.textContent = "Enter your API key to continue."; return; }
+        errBox.textContent = "";
+        submit.disabled = true;
+        submit.textContent = "Verifying…";
+        let resp;
+        try {
+          resp = await api("/answer", { method: "POST", body: JSON.stringify({ step: "api-key", value: { apiKey: key } }) });
+        } catch (err) {
+          submit.disabled = false;
+          submit.textContent = "Continue";
+          errBox.textContent = err.message || "Couldn't verify the key. Try again.";
+          return;
+        }
+        render(resp.view);
+      }
+      submit.addEventListener("click", go);
+      input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); go(); } });
+      setActions(actionBar(v, submit));
+      setTimeout(() => { try { input.focus(); } catch (_) { /* focus best-effort */ } }, 0);
+    }
+
     function normalizeFields(raw) {
       // Tolerate both the rich {key,label,hint} shape and a bare key string.
       return (raw || []).map((f) => (typeof f === "string"
@@ -596,6 +633,7 @@
       if (v.error) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Setup error"])); return showError(v.error); }
       if (v.done) return verifyThenDone();
       if (v.step === "finalize") return submitAnswer("finalize", null, "Finishing setup…");
+      if (v.meta && v.meta.kind === "text_input") return renderApiKey(v);
       if (v.meta && v.meta.kind === "form") return renderForm(v);
       return renderSingleSelect(v);
     }

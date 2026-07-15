@@ -80,19 +80,30 @@ function hostnameOf(hostHeader: string): string {
   return trimmed.replace(/^\[|\]$/g, '');
 }
 
+// Constant-time token comparison. With CORS wide open the token is the sole auth
+// boundary, so avoid leaking length/prefix via early-exit string compare.
+function tokenMatches(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
 function requestHostOk(req: http.IncomingMessage): boolean {
   const host = headerValue(req.headers.host);
   return host ? LOOPBACK_HOSTS.has(hostnameOf(host)) : false;
 }
 
-function requestOriginOk(req: http.IncomingMessage): boolean {
-  const origin = headerValue(req.headers.origin);
-  if (!origin) return true;
-  try {
-    return LOOPBACK_HOSTS.has(new URL(origin).hostname.toLowerCase());
-  } catch {
-    return false;
-  }
+// CORS is intentionally wide open (`*`): the onboarding UI now lives on the
+// traffic.io dashboard and calls this loopback server cross-origin. The 32-byte
+// session token (x-t1-token header / ?t= query) is the SOLE auth boundary for the
+// state/answer/task routes — the origin is NOT trusted, so we neither restrict nor
+// reflect it. Applied to EVERY response (incl. 403/500) so the dashboard can read
+// error bodies instead of seeing an opaque network failure. No credentials header:
+// `*` forbids it and the token rides in a custom header, not a cookie.
+function applyCors(res: http.ServerResponse): void {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Expose-Headers', 'content-type');
 }
 
 export function startOnboardingServer(options: StartOptions): Promise<RunningServer> {
@@ -155,9 +166,26 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
 
     async function route(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
       try {
-        if (!requestHostOk(req) || !requestOriginOk(req)) {
+        // Origin is deliberately NOT checked — the dashboard calls cross-origin and
+        // the token is the real gate. Host must still be loopback (DNS-rebind guard).
+        applyCors(res);
+        if (!requestHostOk(req)) {
           res.writeHead(403, { 'content-type': 'text/plain' });
           res.end('forbidden');
+          return;
+        }
+        // Answer CORS preflights BEFORE the token gate — they carry no x-t1-token.
+        // Chrome's Private Network Access asks permission to reach a loopback host
+        // from a public (https) page; we grant it only when the browser requests it.
+        if (req.method === 'OPTIONS') {
+          res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'content-type, x-t1-token');
+          res.setHeader('Access-Control-Max-Age', '600');
+          if (headerValue(req.headers['access-control-request-private-network']) === 'true') {
+            res.setHeader('Access-Control-Allow-Private-Network', 'true');
+          }
+          res.writeHead(204);
+          res.end();
           return;
         }
         const reqUrl = new URL(req.url || '/', `http://${bindHost}:${port}`);
@@ -166,13 +194,14 @@ export function startOnboardingServer(options: StartOptions): Promise<RunningSer
           res.end();
           return;
         }
-        // The page shell + health are loopback-only and need NO token, so the editor's
-        // preview pane (which loads the bare URL via preview_start) can open it. The
-        // served page carries the token for its own API calls; the state/answer/task
-        // routes stay token-protected.
-        const publicPath = reqUrl.pathname === '/' || reqUrl.pathname === '/index.html' || reqUrl.pathname === '/healthz';
+        // The redirect shell (`/`), the local fallback wizard (`/local`) and health
+        // are loopback-reachable and need NO token: the redirect page bootstraps the
+        // dashboard, and `/local` re-injects the token into its own served HTML for
+        // its API calls. The state/answer/task routes stay token-protected.
+        const publicPath = reqUrl.pathname === '/' || reqUrl.pathname === '/index.html'
+          || reqUrl.pathname === '/local' || reqUrl.pathname === '/healthz';
         const provided = headerValue(req.headers['x-t1-token']) || reqUrl.searchParams.get('t') || '';
-        if (!publicPath && provided !== token) {
+        if (!publicPath && !tokenMatches(provided, token)) {
           res.writeHead(403, { 'content-type': 'text/plain' });
           res.end('forbidden');
           return;

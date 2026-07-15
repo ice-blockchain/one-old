@@ -1,9 +1,11 @@
 // src/shared/one-settings.ts
 // The single owner of ~/.traffic-one/one.json — the consolidated GLOBAL, per-user
-// settings file. It replaces the old three-way split (auth.json + auth-choice.json
-// + a per-project codeGraphProvider): auth state, auth-choice state, the
-// machine-wide code-graph provider, and per-host model catalogs now live as
-// top-level SECTIONS of one file.
+// settings file holding the auth-choice state and the machine-wide code-graph
+// provider as top-level SECTIONS. The `auth` section is retired: the live
+// web-entered API-key record is a separate small auth.json beside this file
+// (shared/auth/simple-auth), so authenticating never creates one.json — this
+// file only appears once a genuinely cross-project setting is written. Per-host
+// model catalogs also live here as top-level sections.
 //
 // Why consolidate: the code-graph provider becomes a machine-level setting so a
 // provider already chosen/installed locally is reused across projects (onboarding
@@ -49,7 +51,10 @@ const ONE_SETTINGS_LOCK_STALE_MS = 10_000;
 
 // Legacy global files superseded by one.json. Hard cutover: never READ, just
 // best-effort removed on the first write so stale copies don't linger.
-const LEGACY_BASENAMES = ['auth.json', 'auth-choice.json'];
+// NOTE: auth.json is NOT legacy anymore — the simple web-entered API-key record
+// lives there again (shared/auth/simple-auth), deliberately OUTSIDE one.json so
+// entering the key never creates this cross-project settings file.
+const LEGACY_BASENAMES = ['auth-choice.json'];
 
 function settingsDir(env: NodeJS.ProcessEnv): string {
   return env.XDG_STATE_HOME

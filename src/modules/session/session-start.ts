@@ -54,8 +54,7 @@ import {
 } from '../../shared/state';
 import { initializeToolchainState } from '../../shared/state/toolchain';
 import { nowIsoNoMs } from '../../shared/text';
-import { authChoiceAllowsContinue, tryWriteAuthChoice } from './auth-choice';
-import { authGateForHook, authRequiredHookResult } from './auth-gate';
+import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
@@ -69,17 +68,15 @@ const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
   skillBlock('onboarding-gate', name, vars, fallback);
 
-// Surface the live wizard URL in the setup banner. Host-gated to Cursor/Windsurf
-// because those hosts need the URL in their visible banner channel. The
-// agent-facing directive below handles startup or recovery for every host.
+// Surface the dashboard setup link without bypassing ask-first or the approved
+// bootstrap path when a host sandbox cannot write canonical user-local state.
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
-  if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return banner;
   // Ask-first: the user has not said yes — never launch the wizard server (or
   // leak its URL) just to decorate the banner. The plain banner is enough.
   if (usePluginQuestionPending(cwd)) return banner;
   const prepared = prepareOnboardingServer(cwd, ctx.host);
   return prepared.kind === 'ready'
-    ? formatWizardBanner(ctx.host, prepared.server.url, banner)
+    ? formatWizardBanner(ctx.host, prepared.server.dashboardUrl, banner)
     : banner;
 }
 
@@ -103,7 +100,7 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   const prepared = prepareOnboardingServer(cwd, ctx.host);
   if (prepared.kind !== 'ready') return prepared.reason;
   const { server, waitCommand } = prepared;
-  if (!server.url || server.url.includes(':0/')) return block('setup-pending');
+  if (!server.dashboardUrl) return block('setup-pending');
   // Stamp the shared URL marker so the wait runner's terminal banner doesn't
   // print the same link a second time in the same turn (observed on Cursor).
   stampEmitMarker(cwd, 'wizard-url-shown');
@@ -113,17 +110,17 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
   if (ctx.host === 'opencode' || ctx.host === 'kilo') {
     return [
       'Traffic One project setup is required before building.',
-      `Setup link: ${server.url}`,
+      `Setup link: ${server.dashboardUrl}`,
       `Wait command: ${waitCommand}`,
       'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
       `If the user does not want Traffic One for this project, run instead: ${onboardingDeclineCommand(cwd, ctx.host)}`,
     ].join('\n\n');
   }
   if (ctx.host === 'windsurf') {
-    const vars = { URL: server.url, WAIT_CMD: waitCommand };
-    return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.url, waitCommand));
+    const vars = { URL: server.dashboardUrl, WAIT_CMD: waitCommand };
+    return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, waitCommand));
   }
-  return block('server-deny-reason', { URL: server.url, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) });
+  return block('server-deny-reason', { URL: server.dashboardUrl, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) });
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
@@ -226,11 +223,15 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   // bounded to 2s and fail-open; only the active host snapshot can change.
   refreshModelStatusForSession(cwd, ctx.host);
 
-  const authGate = authGateForHook({ forceRemote: true });
-  if (!authGate.authenticated) {
-    if (authChoiceAllowsContinue(cwd)) return noop();
-    const writeResult = tryWriteAuthChoice('pending-choice', cwd);
-    return authRequiredHookResult('SessionStart', { authChoiceWrite: writeResult });
+  // Auth gate: a pure local boolean read — no per-session remote check. When auth
+  // is enforced but the web API key isn't entered yet, point at the wizard (the
+  // same setup-pending surface onboarding uses). The wizard shows the api-key page
+  // because computeOnboarding returns the 'api-key' step while unauthenticated —
+  // covering both a fresh project and an already-onboarded one a 401 invalidated.
+  if (authEnforced() && !isLocallyAuthenticated()) {
+    return context(setupPendingDirective(ctx, cwd), {
+      systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [authentication required]'),
+    });
   }
 
   // Defer brand-new-project activation to the first prompt. SessionStart fires

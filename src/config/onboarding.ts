@@ -59,11 +59,12 @@ export interface TeamRole {
   blurb: string;
 }
 
-export type StepKind = 'single_select' | 'form' | 'finalize' | 'done';
+export type StepKind = 'single_select' | 'form' | 'finalize' | 'done' | 'text_input';
 
 // The steps that carry static copy (excludes the 'finalize'/'done'/null flow
 // states, which flow.ts builds inline).
 export type WizardStepId =
+  | 'api-key'
   | 'open-code'
   | 'performance'
   | 'team-confirmation'
@@ -114,6 +115,11 @@ export const PROJECT_CONTEXT_FIELDS: FormField[] = [
 // Static step copy (the questions now live here, not in agent prose). flow.ts
 // layers dynamic fields on top per step (team line-up, recommendations, host).
 export const STEP_COPY: Record<WizardStepId, StepCopy> = {
+  'api-key': {
+    kind: 'text_input',
+    title: 'Your API key',
+    question: 'Paste your Traffic One API key to activate the plugin. It is a data/telemetry key that helps us make Traffic One better — not a password. You only enter it once; we will only ask again if the key stops working.',
+  },
   'open-code': {
     kind: 'single_select',
     title: 'OpenCode',

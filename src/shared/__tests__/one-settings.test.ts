@@ -297,7 +297,7 @@ test('applyGlobalCodeGraphProvider injects when set, clears when unset', () => {
   });
 });
 
-test('legacy auth.json/auth-choice.json are removed at the DEFAULT location only', () => {
+test('legacy auth-choice.json is removed at the DEFAULT location only; auth.json is live and preserved', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onelegacy-'));
   const env = process.env;
   const saved = { home: env.HOME, xdg: env.XDG_STATE_HOME, state: env.TRAFFIC_ONE_STATE_PATH, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH };
@@ -313,8 +313,10 @@ test('legacy auth.json/auth-choice.json are removed at the DEFAULT location only
     delete env.TRAFFIC_ONE_STATE_PATH;
     delete env.TRAFFIC_ONE_AUTH_STATE_PATH;
     writeOneSection('codeGraphProvider', 'gitnexus');
-    assert.equal(fs.existsSync(path.join(t1, 'auth.json')), false); // hard cutover removed it
-    assert.equal(fs.existsSync(path.join(t1, 'auth-choice.json')), false);
+    // auth.json is NOT legacy anymore — the simple web-entered API-key record
+    // lives there (shared/auth/simple-auth); one.json writes must never sweep it.
+    assert.equal(fs.existsSync(path.join(t1, 'auth.json')), true);
+    assert.equal(fs.existsSync(path.join(t1, 'auth-choice.json')), false); // hard cutover removed it
 
     // Override location: legacy files beside the override must be left untouched.
     const custom = path.join(dir, 'custom');
