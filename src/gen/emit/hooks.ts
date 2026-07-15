@@ -51,8 +51,11 @@ function claudeHooks(promptStatus: boolean): Rec {
 
 function cursorConfig(): Rec {
   const hooks: Rec = {};
-  for (const { event, subcommand } of CURSOR_EVENTS) {
-    hooks[event] = [{ command: cursorCommand(subcommand) }];
+  for (const { event, subcommand, loopLimit } of CURSOR_EVENTS) {
+    hooks[event] = [{
+      command: cursorCommand(subcommand),
+      ...(loopLimit !== undefined ? { loop_limit: loopLimit } : {}),
+    }];
   }
   return { version: 1, hooks };
 }

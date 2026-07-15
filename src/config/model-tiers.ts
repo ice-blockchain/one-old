@@ -79,12 +79,15 @@ export const HOST_MODELS: Readonly<Record<HostModelKey, HostModelsConfig>> = {
     // These three base preferred models are also the zero-auth delegation
     // fallback chain, in highest → balanced → cheapest order. Paid rows end in
     // the same sequence so every concrete model id remains editable here.
-    // gpt-5-nano is Zen's permanently-free model (the other four are the
-    // rotating limited-time free set), so it anchors the tail of every row.
+    // The set mirrors the LIVE zero-auth gateway catalog (`opencode models` on
+    // the managed CLI, checked 2026-07-14): the -free ids are the rotating
+    // limited-time promo set; hy3-free and the stealth big-pickle anchor the
+    // tails as extra fallbacks. gpt-5-nano (the former "permanently free"
+    // anchor) has left the catalog and was dropped.
     tiers: {
-      highest: ['opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/gpt-5-nano'],
-      balanced: ['opencode/north-mini-code-free', 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/nemotron-3-ultra-free', 'opencode/gpt-5-nano'],
-      cheapest: ['opencode/mimo-v2.5-free', 'opencode/deepseek-v4-flash-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/gpt-5-nano'],
+      highest: ['opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free', 'opencode/big-pickle'],
+      balanced: ['opencode/north-mini-code-free', 'opencode/deepseek-v4-flash-free', 'opencode/mimo-v2.5-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free', 'opencode/big-pickle'],
+      cheapest: ['opencode/mimo-v2.5-free', 'opencode/deepseek-v4-flash-free', 'opencode/north-mini-code-free', 'opencode/nemotron-3-ultra-free', 'opencode/hy3-free', 'opencode/big-pickle'],
     },
     plans: {
       plus: {

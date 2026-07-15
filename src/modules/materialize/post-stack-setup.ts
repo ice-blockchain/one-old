@@ -26,9 +26,10 @@ import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { canonicalToolName, isOnboardingWaitCommand, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
-import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
 import { maybeFlipToMaintenance } from './build-complete';
 import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan-directive';
@@ -107,7 +108,20 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath, { ceiling: ctx.input.workspaceRoot });
   // digestRoot bypasses resolveProjectRoot's authoring filter — re-check the result.
   if (isPluginAuthoringRoot(reportRoot)) return noop();
+  // The user declined Traffic One for this project — every hook stands down.
+  // Critically, computeOnboarding reports done:true for a declined project (so
+  // waiters unblock), which would otherwise satisfy the one-mcp report gate
+  // below and mint a one-uid .one.json into a repo the user said no to.
+  if (pluginUseDeclined(reportRoot)) return noop();
   const state = readEffectiveState(reportRoot);
+  // Ask-first pending on a never-onboarded project: nothing may be written
+  // before the user's answer. A pristine EXISTING codebase also computes
+  // done:true (no stack → no required local prefs), so without this the report
+  // gate would mint a one-uid pre-decision. A mode-bearing state means the
+  // project was genuinely onboarded (possibly before ask-first existed) — those
+  // keep reporting/flipping/converging normally.
+  const onboardedState = typeof state.mode === 'string' && state.mode.trim() !== '';
+  if (!onboardedState && usePluginQuestionPending(reportRoot)) return noop();
   const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
 
   // Single one-mcp report gate: fire ONLY once onboarding is finalized — new-project

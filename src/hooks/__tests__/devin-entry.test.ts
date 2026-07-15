@@ -8,6 +8,12 @@ import { runDevinHook } from '../devin-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
 import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 
+// These tests exercise the setup-wizard flow itself, which under the shipped
+// ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
+// recorded yes. Pin the runtime override off so the wizard paths stay directly
+// testable; the ask-first question has dedicated tests that set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
+
 async function withSetupProject(fn: (cwd: string) => Promise<void>): Promise<void> {
   // home ≠ project: a real Devin workspace is never $HOME, and cwd === $HOME is
   // machine-config space the gate now refuses outright (isNonProjectRoot).

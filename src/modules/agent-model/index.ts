@@ -5,6 +5,7 @@ import { modelGateAfterShell, modelGateShell } from './model-gate';
 import { opencodeSubagentBind } from './opencode-subagent-bind';
 import { recordSpawnedAgent } from './record-agent';
 import { subagentStartBind } from './subagent-bind';
+import { cursorFailureReconcileHook } from './cursor-failures';
 
 export const handlers: Handler[] = [
   {
@@ -63,5 +64,36 @@ export const handlers: Handler[] = [
     subcommands: ['user-prompt-submit'],
     priority: 30,
     run: (ctx) => opencodeSubagentBind(ctx),
+  },
+  {
+    // Cursor transcript cache backstop. A failed Task startup can omit both
+    // postToolUse and subagentStop; the next parent prompt/session still
+    // reconciles and persists the result without an external poller.
+    id: 'agent-model.cursor-failure-prompt-reconcile',
+    event: 'UserPromptSubmit',
+    subcommands: ['user-prompt-submit'],
+    priority: 35,
+    run: (ctx) => cursorFailureReconcileHook(ctx),
+  },
+  {
+    id: 'agent-model.cursor-failure-session-reconcile',
+    event: 'SessionStart',
+    subcommands: ['session-start'],
+    priority: 35,
+    run: (ctx) => cursorFailureReconcileHook(ctx),
+  },
+  {
+    id: 'agent-model.cursor-subagent-stop',
+    event: 'SubagentStop',
+    subcommands: ['cursor-subagent-stop'],
+    priority: 40,
+    run: (ctx) => cursorFailureReconcileHook(ctx),
+  },
+  {
+    id: 'agent-model.cursor-stop',
+    event: 'Stop',
+    subcommands: ['cursor-stop'],
+    priority: 40,
+    run: (ctx) => cursorFailureReconcileHook(ctx),
   },
 ];

@@ -13,7 +13,11 @@ export type CanonicalEvent =
   // Codex-only: fired when a subagent (worker) thread spawns. Its input carries the
   // child thread id (`agent_id`) — the deterministic hook-time signal Codex provides
   // for binding a Traffic One role claim to the new subagent session.
-  | 'SubagentStart';
+  | 'SubagentStart'
+  // Cursor-only lifecycle events. Both may return `followup_message` to enqueue
+  // another parent/subagent turn; hosts without these events never invoke them.
+  | 'SubagentStop'
+  | 'Stop';
 
 // Gates match these classes, never raw per-host tool names.
 export type ToolClass =
@@ -55,9 +59,12 @@ export interface HookInput {
 //   systemMessage — a host "system message" line (legacy `systemMessage`).
 //   promptRequest — a host modal/popup-input spec (legacy `promptRequest`);
 //     Claude/Codex pass it through; Cursor (no equivalent) drops it.
+//   followupMessage — Cursor stop/subagentStop continuation text. It is emitted
+//     only for those two events and ignored by all other event/host serializers.
 export interface ResultMeta {
   readonly systemMessage?: string;
   readonly promptRequest?: unknown;
+  readonly followupMessage?: string;
   // Cursor only: on a PreToolUse (beforeShellExecution) deny, emit `permission:"ask"` instead of
   // `"deny"` — a user approve/reject dialog. This is the ONLY hook-driven user prompt Cursor
   // supports (preToolUse-tool "ask" is documented-but-not-enforced). `agentMessage` carries the

@@ -14,7 +14,15 @@ import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { markModelChoicePrompted, readModelChoice } from '../../agent-model/model-choice';
+import { exhaustedModelsForRole, recordExhaustedModel } from '../../agent-model/exhausted-models';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+
+// These tests exercise the setup-wizard flow itself, which under the shipped
+// ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
+// recorded yes. Pin the runtime override off so the wizard paths stay directly
+// testable; the ask-first question has dedicated tests that set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
@@ -183,6 +191,23 @@ test('noop inside the plugin authoring root', () => {
   assert.equal(runUserPromptSubmit(ctx(process.cwd(), 'hello')).kind, 'noop');
 });
 
+test('declined project: silent on normal prompts; an explicit Traffic One mention offers the reconsider command', () => {
+  withAuthedProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'command');
+    // Normal prompts: fully silent — no recipes, no banners, no wizard.
+    assert.equal(runUserPromptSubmit(ctx(cwd, 'build a todo app with auth')).kind, 'noop');
+    assert.equal(runUserPromptSubmit(ctx(cwd, 'fix the login bug')).kind, 'noop');
+    // The one re-entry signal: the user explicitly names Traffic One.
+    const r = runUserPromptSubmit(ctx(cwd, 'actually, I want to use Traffic One for this project'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /DISABLED by the user's own earlier choice/);
+      assert.ok(r.context.includes('--reconsider'), 'offers the reconsider command');
+    }
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'still no project files');
+  });
+});
+
 test('authed + no state + a coding prompt → bootstraps new-project setup (mid-session auth)', () => {
   withAuthedProject(null, (cwd) => {
     const r = runUserPromptSubmit(ctx(cwd, 'build a todo app with auth'));
@@ -204,6 +229,34 @@ test('seeds the user request into new-project state so the wizard can derive the
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(state.mode, 'new-project');
     assert.ok(String(state.originalPrompt || '').includes('learning platform'), 'original prompt persisted for the wizard');
+  });
+});
+
+test('ask-first: the first coding prompt gets ONLY the question — nothing written, request rides the yes command', () => {
+  withAuthedProject(null, (cwd) => {
+    const prevAsk = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+    try {
+      const prompt = 'create a modern learning platform with courses for web development';
+      const r = runUserPromptSubmit(ctx(cwd, prompt));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.match(r.context, /Do you want to use the Traffic One plugin/);
+        assert.ok(r.context.includes(`--seed-prompt=${prompt}`), 'the yes command carries the request so it is seeded AFTER the recorded yes');
+        assert.ok(!r.context.includes('http://127.0.0.1'), 'no wizard URL before the user says yes');
+      }
+      // The exact regression this guards: .one.json, per-user preferences.json,
+      // and the wizard server record were all created BEFORE the user answered.
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'no project .traffic-one before the answer');
+      assert.equal(fs.existsSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string), false, 'no per-user prefs before the answer');
+      // Repeat prompts keep asking (still no writes) instead of seeding state.
+      const again = runUserPromptSubmit(ctx(cwd, prompt));
+      assert.equal(again.kind, 'context');
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'still nothing after a repeat prompt');
+    } finally {
+      if (prevAsk === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+      else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
+    }
   });
 });
 
@@ -459,6 +512,25 @@ test('records a pending Cursor model-choice reply before normal prompt handling'
     assert.equal(r.kind, 'context');
     assert.equal(readModelChoice(cwd, 'run-choice'), 'use-fallback');
     if (r.kind === 'context') assert.equal(r.systemMessage, 'traffic-one: model choice recorded');
+  });
+});
+
+test('an "enable" model-choice reply clears the run\'s exhausted-model ledger (restored model gets retried)', () => {
+  withAuthedProject(completeSharedState({ currentRunId: 'run-enable' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    markModelChoicePrompted(cwd, 'run-enable');
+    recordExhaustedModel(cwd, 'run-enable', 'senior-backend', 'gpt-5.6-terra-medium');
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-enable', 'senior-backend'), ['gpt-5.6-terra-medium']);
+
+    const r = runUserPromptSubmit(ctxHost(cwd, 'enable', 'cursor'));
+    assert.equal(r.kind, 'context');
+    assert.equal(readModelChoice(cwd, 'run-enable'), 'enable-retry');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-enable', 'senior-backend'),
+      [],
+      'the enable reply un-condemns the models the user just restored',
+    );
   });
 });
 

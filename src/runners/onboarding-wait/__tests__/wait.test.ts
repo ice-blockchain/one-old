@@ -61,6 +61,88 @@ test('Cursor setup completion closes the exact wizard tab through browser_tabs',
   assert.equal(cursorSetupCloseDirective(url, 'claude'), '', 'other hosts keep their native close path');
 });
 
+test('declineOutput records the opt-out and closes an already-open cursor wizard tab', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { declineOutput } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+  const { pluginUseDeclined } = await import('../../../shared/state/plugin-use');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-decline-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    // Flag-off flow: the wizard link was already shown → its tab gets closed.
+    const url = 'http://127.0.0.1:55177/?t=tok';
+    writeServerRecord(dir, { pid: process.pid, port: 55177, token: 'tok', url, startedAt: 'x' }, process.env, 'cursor');
+    const out = declineOutput(dir, 'cursor');
+    assert.match(out, /^TRAFFIC_ONE_DISABLED/, 'terminal disable marker');
+    assert.ok(out.includes('`browser_tabs`'), 'closes the open wizard tab');
+    assert.ok(out.includes(url), 'matches the tab by its exact URL');
+    assert.equal(pluginUseDeclined(dir), true, 'choice recorded durably');
+
+    // Ask-first flow: no wizard was ever opened → no tab-close noise. Own prefs
+    // path so the first project's server record cannot leak into this one.
+    const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-decline2-')));
+    env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(fresh, 'prefs.json');
+    try {
+      const quiet = declineOutput(fresh, 'cursor');
+      assert.match(quiet, /^TRAFFIC_ONE_DISABLED/);
+      assert.ok(!quiet.includes('browser_tabs'), 'no close directive without an open tab');
+    } finally {
+      env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('applyUseChoice records the yes and seeds originalPrompt at decision time (ask-first: first-ever write)', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { applyUseChoice } = await import('../index');
+  const { readPluginUseChoice } = await import('../../../shared/state/plugin-use');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-seed-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    assert.equal(fs.existsSync(statePath), false, 'ask-first: nothing exists before the yes');
+    const seed = 'create a modern learning platform with courses for web development';
+    applyUseChoice(dir, ['--use', '--bootstrap-only', dir, '--host=cursor', `--seed-prompt=${seed}`]);
+    assert.equal(readPluginUseChoice(dir)?.enabled, true, 'yes recorded durably');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    assert.equal(state.originalPrompt, seed, 'the triggering request is seeded at decision time');
+
+    // Idempotent: a later --use never overwrites the seeded description.
+    applyUseChoice(dir, ['--use', dir, '--seed-prompt=ok build it now please']);
+    const after = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    assert.equal(after.originalPrompt, seed, 'existing seed preserved');
+
+    // Without a seed argument the yes is recorded and nothing else is written.
+    const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-seedless-')));
+    env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(fresh, 'prefs.json');
+    try {
+      applyUseChoice(fresh, ['--use', fresh]);
+      assert.equal(readPluginUseChoice(fresh)?.enabled, true);
+      assert.equal(fs.existsSync(path.join(fresh, '.traffic-one')), false, 'no seed → no project write from the choice itself');
+    } finally {
+      env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('awaitWizardCompletionAck: returns immediately once the server record is gone, bounded otherwise', async () => {
   const fs = await import('node:fs');
   const os = await import('node:os');

@@ -31,6 +31,9 @@ import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeSta
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { canonicalToolName, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
+import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
@@ -60,7 +63,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   if (isNonProjectRoot(root)) return noop();
   initializeTrafficOneEnv(root, ctx.host);
 
-  if (authChoiceAllowsContinue(root)) return noop();
+  if (authChoiceAllowsContinue(root) || pluginUseDeclined(root)) return noop();
   // Auth is enforced by the priority-0 session gate before this gate runs.
 
   const state = readEffectiveState(root);
@@ -108,6 +111,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Cursor URL-repost path, which necessarily calls the same failing launcher.
     if (isOnboardingBootstrapCommand(toolName, toolInput)) return noop();
     if (isOnboardingWaitCommand(toolName, toolInput)) {
+      // Ask-first pending: the runner invocation IS the answer path (--use /
+      // --decline) — let it run without pre-launching the wizard or reposting
+      // a URL the user has not said yes to.
+      if (usePluginQuestionPending(root)) return noop();
       if (ctx.host === 'cursor') {
         const prepared = prepareOnboardingServer(root, ctx.host);
         // The wait command is the recovery path when the hook sandbox itself
@@ -127,6 +134,13 @@ export function onboardingGate(ctx: Ctx): HookResult {
       }
       return noop();
     }
+    // Ask-first: the user has not said whether this project uses Traffic One.
+    // Deny mutating work with the HOST-CHAT question — no wizard server, no
+    // setup URL, until the user answers (yes → --use runs the normal wait).
+    if (usePluginQuestionPending(root)) {
+      return deny(usePluginQuestion(root, ctx.host));
+    }
+    const declineCmd = onboardingDeclineCommand(root, ctx.host);
     const prepared = prepareOnboardingServer(root, ctx.host);
     if (prepared.kind !== 'ready') {
       // Windsurf renders a denied read as a failed tool card. Its prompt hook
@@ -137,7 +151,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
       return deny(prepared.reason);
     }
     const { server, waitCommand } = prepared;
-    const vars = { URL: server.url, WAIT_CMD: waitCommand };
+    const vars = { URL: server.url, WAIT_CMD: waitCommand, DECLINE_CMD: declineCmd };
     // OpenCode: the full multi-host deny block (URLs + shell commands + JavaScript
     // code blocks + "do NOT…" behavioral overrides) triggers the model's prompt-
     // injection safety training — it reads as a third-party hijack attempt and
@@ -149,7 +163,8 @@ export function onboardingGate(ctx: Ctx): HookResult {
         + `Show this setup link to the user: ${vars.URL}\n\n`
         + `Then immediately run this wait command in the current turn (timeout ~9 minutes); do not wait for another user message first:\n${vars.WAIT_CMD}\n\n`
         + `If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, `
-        + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.`,
+        + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n`
+        + `If the user does not want Traffic One for this project, run instead: ${declineCmd}`,
       );
     }
     if (ctx.host === 'windsurf') {

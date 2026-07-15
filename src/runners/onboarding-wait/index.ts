@@ -36,6 +36,9 @@ import { canonicalHost } from '../../shared/model-tiers';
 import { currentAcceptableModels } from '../../shared/current-model-tiers';
 import { obj } from '../../shared/obj';
 import { emittedWithin, stampEmitMarker } from '../../shared/once';
+import { clearPluginUseChoice, pluginUseDeclined, recordPluginUseChoice } from '../../shared/state/plugin-use';
+import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
+import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import {
   isOnboardingPermissionError,
@@ -292,6 +295,8 @@ export function announceWizardUrl(
       + `  ${rec.url}\n\n`
       + '  Cursor: click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste it.\n'
       + `  Setup link: ${rec.url}\n`
+      + "  Don't want Traffic One for this project? Say so in chat — the agent\n"
+      + '  disables it here (your choice is saved outside the project).\n'
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
       + '════════════════════════════════════════════════════════════════\n',
     );
@@ -341,10 +346,65 @@ export function awaitWizardCompletionAck(cwd: string, host: string, graceMs: num
   }
 }
 
+// The --decline output: records the durable opt-out and, when a wizard tab is
+// already open (a live server record exists — the flag-off flow where the link
+// was shown before the user said no), also tells the Cursor agent to close it.
+// The URL is read BEFORE recording so the exact-URL tab match still works.
+export function declineOutput(cwd: string, host: string): string {
+  let openWizardUrl = '';
+  try {
+    const rec = readServerRecord(cwd, process.env, host);
+    if (rec?.url && !rec.url.includes(':0/')) openWizardUrl = rec.url;
+  } catch {
+    // best-effort — the decline itself never depends on the record
+  }
+  recordPluginUseChoice(cwd, false, 'command');
+  let out = 'TRAFFIC_ONE_DISABLED\n'
+    + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions. "
+    + 'It stays silent here until the user explicitly asks for Traffic One again.\n';
+  if (openWizardUrl) {
+    const close = cursorSetupCloseDirective(openWizardUrl, host);
+    if (close) out += `\n${close}\n`;
+  }
+  return out;
+}
+
+// The `--use` yes path: record the durable per-project opt-in, then seed the
+// request that triggered the ask-first question (`--seed-prompt=…`). In that
+// flow NOTHING was written before this recorded yes — this is the FIRST write
+// that may create the project's .traffic-one folder, exactly at decision time.
+// The seed feeds the wizard's stack derivation and the post-setup triage.
+export function applyUseChoice(cwd: string, argv: readonly string[]): void {
+  recordPluginUseChoice(cwd, true, 'command');
+  const seedArg = argv.find((a) => a.startsWith('--seed-prompt='));
+  if (seedArg) seedOriginalPrompt(cwd, seedArg.slice('--seed-prompt='.length));
+}
+
 export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   const host = detectHost(process.env, argv);
   initializeTrafficOneEnv(cwd, host);
+  // Durable per-project opt-out/opt-in. The choice lives in the per-user prefs
+  // (never inside the repo); a decline also sweeps any pre-decline runtime
+  // files, so the project keeps no .traffic-one folder.
+  if (argv.includes('--decline')) {
+    process.stdout.write(declineOutput(cwd, host));
+    process.exit(0);
+  }
+  if (argv.includes('--reconsider')) {
+    clearPluginUseChoice(cwd);
+    process.stdout.write(
+      'TRAFFIC_ONE_RECONSIDER\n'
+      + `Traffic One can be set up for this project again. Run the setup wait command now:\n${onboardingWaitCommand(cwd, host)}\n`,
+    );
+    process.exit(0);
+  }
+  // "Yes, use Traffic One here" — record the answer, then continue straight into
+  // the normal wait behavior below (start wizard, print the link, block). With
+  // `--bootstrap-only` it instead exits right after printing the link (the
+  // ask-first recipe's fast first half, so the agent can show the link before
+  // running the blocking waiter).
+  if (argv.includes('--use')) applyUseChoice(cwd, argv);
   // Self-heal a dead wizard link: the server the gate minted can die between then
   // and this wait (host restart, crash), leaving the agent's shown link broken and
   // the poll never completing. Re-ensure it here (idempotent — respawns only a
@@ -408,6 +468,19 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // Let the wizard tab finish its /complete handshake (bounded) so the close
     // directive below targets a settled tab and the user sees the done view.
     if (host === 'cursor' && !alreadyDone) awaitWizardCompletionAck(cwd, host);
+    // The user answered "don't use Traffic One" in the wizard: unblock the build
+    // with NO materialization, triage, or orchestration directives — the project
+    // keeps no .traffic-one folder and the hooks stand down from here on. The
+    // Cursor tab-close directive still applies (the wizard tab is open).
+    if (pluginUseDeclined(cwd)) {
+      process.stdout.write(
+        'TRAFFIC_ONE_DISABLED\n'
+        + "Traffic One is disabled for this project — continue the user's request without Traffic One conventions.\n",
+      );
+      const declinedClose = cursorSetupCloseDirective(wizardUrl, host);
+      if (declinedClose) process.stdout.write(`\n${declinedClose}\n`);
+      process.exit(0);
+    }
     // Converge project materialization NOW, before the agent resumes and spawns its
     // first subagent. Without this the architect (Phase-1, the FIRST spawn) races the
     // bundle: onboarding is `confirmed` but `manifest`/`rules`/`skills`/`AGENTS.md`

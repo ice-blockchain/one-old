@@ -5,9 +5,11 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  clearModelGatePrompted,
   clearModelChoice,
   markModelAdvisoryShown,
   markModelChoicePrompted,
+  markModelGatePrompted,
   modelAdvisoryShown,
   modelChoicePrompted,
   modelChoiceReplyPending,
@@ -15,6 +17,7 @@ import {
   readModelChoice,
   writeModelChoice,
 } from '../model-choice';
+import { resetAuthoringRootCache } from '../../../shared/authoring-root';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function tmp(): string {
@@ -155,6 +158,29 @@ test('modelChoiceReplyPending: unavailable picks mint currentRunId instead of fa
   } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('model-choice mutators stand down in plugin authoring roots', () => {
+  const cwd = tmp();
+  resetAuthoringRootCache();
+  try {
+    fs.mkdirSync(path.join(cwd, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src', 'gen', 'index.ts'), '// generator', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    resetAuthoringRootCache();
+
+    assert.equal(writeModelChoice(cwd, 'run-stand-down', 'use-fallback'), false);
+    markModelChoicePrompted(cwd, 'run-stand-down');
+    markModelAdvisoryShown(cwd, 'run-stand-down');
+    markModelGatePrompted(cwd, 'run-stand-down');
+    clearModelChoice(cwd, 'run-stand-down');
+    clearModelGatePrompted(cwd, 'run-stand-down');
+    assert.equal(modelChoiceReplyPending(cwd, { currentRunId: 'run-stand-down' }), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'no project state is created in the source repo');
+  } finally {
+    resetAuthoringRootCache();
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

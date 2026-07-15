@@ -20,7 +20,8 @@ import {
 import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
-import { STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
+import { ASK_USE_PLUGIN_FIRST, STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
+import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
 import { recommendTierForPlan } from '../model-tiers';
 import { currentModelForTier, currentModelsForTier } from '../current-model-tiers';
@@ -80,6 +81,9 @@ export interface StepMeta extends StepCopy {
   // (opus/sonnet/haiku, gpt-5.x, …). The wizard renders one <select> per role
   // from this list; the chosen tier is sent back as a team.overrides entry.
   modelChoices?: { tier: string; model: string; label?: string }[];
+  // True when the user declined Traffic One for this project — the wizard shows
+  // the "Traffic One disabled" view instead of "Setup complete".
+  declined?: boolean;
 }
 
 // Display label for a wizard model id. Anthropic ids read poorly raw, so both
@@ -204,12 +208,39 @@ function enrichStepMeta(meta: StepMeta, step: WizardStep, state: Rec): StepMeta 
   return meta;
 }
 
+// Runtime override (TRAFFIC_ONE_ASK_USE_PLUGIN=1|0) over the bundled default so
+// the ask-first behavior can be toggled without rebuilding the plugin. When
+// active AND the project has no recorded use-plugin choice, the hooks ask the
+// question in the HOST CHAT (no wizard server, no URL) — see usePluginQuestion.
+export function askUsePluginFirst(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  if (typeof raw === 'string' && raw.trim()) return /^(1|true|on|yes)$/i.test(raw.trim());
+  return ASK_USE_PLUGIN_FIRST;
+}
+
+// True when the ask-first chat question is still pending for this project: the
+// feature is on and the user has recorded no use-plugin choice yet. Gates deny
+// mutating work with the question; session/prompt hooks relay it — nothing
+// launches the wizard until the user answers yes.
+export function usePluginQuestionPending(cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return askUsePluginFirst(env) && readPluginUseChoice(cwd, env) === null;
+}
+
 export function computeOnboarding(cwd: string): OnboardingView {
   const { state, mode } = effectiveOnboardingState(cwd);
   const originalPrompt = projectContextOriginalPrompt(state);
   const host = detectHost();
   let step: WizardStep;
   let done: boolean;
+
+  // The user chose NOT to use Traffic One for this project: onboarding is
+  // terminally done (the waiter unblocks, the gates stand down) and the wizard
+  // shows the declined view instead of "Setup complete".
+  if (readPluginUseChoice(cwd)?.enabled === false) {
+    const meta = metaForStep(null, originalPrompt);
+    meta.declined = true;
+    return { mode, stack: null, step: null, done: true, originalPrompt, meta };
+  }
 
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {

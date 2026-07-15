@@ -249,6 +249,11 @@ function cleanShellWords(command: string): string[] | null {
 
 interface OnboardingRunnerInvocation {
   bootstrap: boolean;
+  // The per-project "don't use / reconsider Traffic One" choice commands share
+  // the wait runner and its allow-list (same script, leading mode flags — one,
+  // or `--use --bootstrap-only` for the yes path's exit-fast first half).
+  decline: boolean;
+  reconsider: boolean;
 }
 
 function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): OnboardingRunnerInvocation | null {
@@ -266,8 +271,20 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
   if (words[0] !== 'node' || words[1] !== onboardingWaitScriptPath()) return null;
 
   const args = words.slice(2);
-  const bootstrap = args[0] === '--bootstrap-only';
-  if (bootstrap) args.shift();
+  let bootstrap = args[0] === '--bootstrap-only';
+  const decline = args[0] === '--decline';
+  const reconsider = args[0] === '--reconsider';
+  // `--use` records the yes-choice then behaves exactly like the plain waiter,
+  // so it keeps the wait-only flags available (unlike the exit-fast modes).
+  const use = args[0] === '--use';
+  if (bootstrap || decline || reconsider || use) args.shift();
+  // `--use --bootstrap-only` is the ask-first yes path's fast first half —
+  // record the choice, print the setup link, exit. Grammar-wise it is a
+  // bootstrap invocation (exit-fast, so the wait-only flags stay rejected).
+  if (use && args[0] === '--bootstrap-only') {
+    bootstrap = true;
+    args.shift();
+  }
   const cwd = args.shift() || '';
   if (!cwd || !path.isAbsolute(cwd)) return null;
 
@@ -281,13 +298,22 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       host = arg.slice('--host='.length);
       continue;
     }
+    // The ask-first yes commands carry the user's original request so the runner
+    // can seed `originalPrompt` AFTER recording the yes (nothing is written
+    // pre-decision). The value is an inert quoted word by construction; it is
+    // only meaningful (and only accepted) on a `--use` invocation.
+    if (arg.startsWith('--seed-prompt=')) {
+      if (!use || seen.has('seed-prompt')) return null;
+      seen.add('seed-prompt');
+      continue;
+    }
     if (arg === '--quiet-url') {
-      if (bootstrap || seen.has(arg)) return null;
+      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
       seen.add(arg);
       continue;
     }
     if (arg === '--timeout-ms' || arg === '--interval-ms') {
-      if (bootstrap || seen.has(arg)) return null;
+      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
       const value = args.shift() || '';
       if (!/^[1-9]\d*$/.test(value)) return null;
       seen.add(arg);
@@ -303,7 +329,7 @@ function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): Onbo
       if (value !== expectedValue) return null;
     }
   }
-  return { bootstrap };
+  return { bootstrap, decline, reconsider };
 }
 
 // The blocking "wait for setup" command is allow-listed only when it invokes

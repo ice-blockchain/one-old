@@ -68,31 +68,61 @@ Either way the very next spawn proceeds — NEVER build the project inline becau
 <!-- T1BLOCK:END cursor-models-capture -->
 
 <!-- T1BLOCK:BEGIN model-unavailable-choice -->
-Model tier gate (level={{LEVEL}}, host={{HOST}}): `{{ROLE}}` should run on the recommended model "{{EXPECTED}}", but this Cursor build is about to use "{{FALLBACK}}" instead. Cursor does not report WHY to a plugin, so it is one of the two cases below. Reply with the number or the word:
-1. **enable** — fix the cause, then re-run and I will use "{{EXPECTED}}":
-   • **API budget exhausted** (most common): your premium/API usage is spent, so Cursor marks "{{EXPECTED}}" unavailable and drops to Composer. Turn on usage-based / on-demand spend, or upgrade your plan, in Cursor → Settings (Billing) — or wait for the budget to reset. Then reply `enable`.
-   • **Model disabled**: "{{EXPECTED}}" is toggled off in your model list. Open Cursor Settings (Cmd/Ctrl+Shift+J) → Models and enable it (or click "Add Model" if it isn't listed). Then reply `enable`.
-2. **fallback** — proceed now on "{{FALLBACK}}" (available immediately; it may be a same-tier alternate or the Composer floor depending on what Cursor offers).
-Do not proceed until the user replies `fallback` or `enable` in chat. End your turn after showing this choice.
+Model availability gate (level={{LEVEL}}, host={{HOST}}): Cursor's fresh captured model list does not offer the recommended model **{{EXPECTED}}** for `{{ROLE}}`. Do not silently switch models.
+
+**enable** — Open Cursor Settings → Models, enable **{{EXPECTED}}**, then reply **enable**; I’ll retry on the recommended model.
+
+**fallback** — Proceed now on **{{FALLBACK}}**.
+
+Do not proceed until the user replies **enable** or **fallback**. The fallback is the next exact captured slug in this role's original tier; reaching the Composer floor for a highest/balanced role still requires this explicit choice.
 <!-- T1BLOCK:END model-unavailable-choice -->
 
+<!-- T1BLOCK:BEGIN cursor-api-limit-auto-retry -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to an API/usage-limit failure on **{{FAILED}}**. The failed agent is retired. Retry the same role now, without asking the user, on `model: "{{NEXT}}"` — the next exact captured slug from this role's original tier. Never announce or attempt a fallback named only by Cursor error prose. The next model is authoritative only when Traffic One supplies its exact slug. Issue the prescribed Task without a pre-tool model announcement, and do not say the replacement is running until a real `subagentStart` proves it.
+<!-- T1BLOCK:END cursor-api-limit-auto-retry -->
+
+<!-- T1BLOCK:BEGIN cursor-api-limit-composer-choice -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to an API/usage-limit failure. The next eligible model in this highest/balanced role's original tier is the Composer floor, so pause once for the user's choice:
+
+**enable** — Restore API budget for **{{RECOMMENDED}}**, then reply **enable**; I’ll retry on the recommended model.
+
+**fallback** — Proceed now on **{{FALLBACK}}**.
+
+Do not start Composer until the user replies **fallback**. A cheapest-tier role treats Composer as its normal tier model and rotates automatically to its next candidate instead of showing this downgrade choice.
+<!-- T1BLOCK:END cursor-api-limit-composer-choice -->
+
+<!-- T1BLOCK:BEGIN cursor-model-unavailable-runtime-choice -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to an explicit model-unavailable failure for **{{FAILED}}**. This Settings prompt is valid only when the error text explicitly ties a model to “not enabled”, “disabled”, “unavailable”, “invalid”, “unsupported”, “unknown”, or “not found”.
+
+**enable** — Open Cursor Settings → Models, enable **{{FAILED}}**, then reply **enable**; I’ll retry on the recommended model.
+
+**fallback** — Proceed now on **{{FALLBACK}}**.
+
+Do not proceed until the user replies **enable** or **fallback**. The fallback is the next exact captured slug from this role's original tier.
+<!-- T1BLOCK:END cursor-model-unavailable-runtime-choice -->
+
+<!-- T1BLOCK:BEGIN cursor-model-failure-generic -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to a non-API failure on **{{FAILED}}**. Use generic recovery and preserve the actual error; do not tell the user to enable a model. Authentication, network, user abort/cancel, context exhaustion, and generic API errors are not evidence that a model is disabled.
+<!-- T1BLOCK:END cursor-model-failure-generic -->
+
+<!-- T1BLOCK:BEGIN cursor-api-limit-terminal -->
+Traffic One model rotation is terminal for `{{ROLE}}` in this run: every eligible model that was actually started from the role's original tier reached an API/usage limit ({{TRIED}}). Stop retrying this role. The terminal marker remains after individual limit entries expire and clears only when the user replies **enable** or a new run starts; a model absent from Cursor's captured list never counts as API-limited.
+<!-- T1BLOCK:END cursor-api-limit-terminal -->
+
 <!-- T1BLOCK:BEGIN model-choice-enable-required -->
-Model tier gate (level={{LEVEL}}, host={{HOST}}): the user chose **enable/retry**, so do NOT proceed on a fallback for `{{ROLE}}`. {{PASSED_NOTE}} Stop the fallback spawn, enable or re-capture "{{EXPECTED}}" in Cursor Settings → Models, then re-run the model capture/model-gate step and spawn with the recommended model. Do not advertise fallback alternates again for this build unless the user explicitly replies `fallback`.
+Model tier gate (level={{LEVEL}}, host={{HOST}}): the user chose **enable/retry**, so do NOT proceed on a fallback for `{{ROLE}}`. {{PASSED_NOTE}} Finish the selected remedy — restore API budget after an API-limit result, or enable/re-capture "{{EXPECTED}}" in Cursor Settings → Models after an availability result — then re-run the model-gate step and spawn with the recommended model. Do not advertise fallback alternates again for this build unless the user explicitly replies `fallback`.
 <!-- T1BLOCK:END model-choice-enable-required -->
 
 <!-- T1BLOCK:BEGIN model-availability-advisory -->
-Traffic One — heads up before the team spawns: this build will pass these Cursor models to its subagents: {{MODELS}}. Cursor may SILENTLY fall back from a passed model (usually to Composer) with NO error and NO signal a plugin can read when one of these applies:
-  • **API budget exhausted** (most common): once your premium/API usage is spent, Cursor makes the premium models unavailable and runs subagents on Composer instead. Restore it via Cursor → Settings (Billing) — enable usage-based / on-demand spend, or upgrade, or wait for the reset.
-  • **Model disabled / not on plan**: enable it in Cursor Settings (Cmd/Ctrl+Shift+J) → Models (or "Add Model" if it isn't listed).
-If a role ends up running on Composer despite the pin above, it is almost always the budget case — top it up to run the team on the intended models.
+Traffic One — this build will pass these exact Cursor models to its subagents: {{MODELS}}. A correlated API/usage-limit failure rotates automatically through the role's original tier; restore API budget to retry the recommended model, and a highest/balanced drop to the Composer floor requires an explicit **enable**/**fallback** choice. An explicit model-not-enabled/unavailable error offers Cursor Settings → Models or the next tier candidate. Authentication, network, abort/cancel, context exhaustion, and other generic failures use generic recovery and are never presented as a disabled model.
 <!-- T1BLOCK:END model-availability-advisory -->
 
 <!-- T1BLOCK:BEGIN model-availability-banner -->
-traffic-one — team models: {{MODELS}}. If a role runs on Composer instead, your Cursor premium/API budget is likely exhausted → enable usage-based spend / upgrade / wait for reset (Cursor → Settings → Billing) to run on the pinned models.
+traffic-one — team models: {{MODELS}}. Correlated API limits rotate within each role's original tier; restore API budget for the recommended model, and Composer-floor downgrades require your explicit choice.
 <!-- T1BLOCK:END model-availability-banner -->
 
 <!-- T1BLOCK:BEGIN model-choice-recorded-enable -->
-Recorded: you'll use the recommended model. Enable it now in Cursor Settings → Models (Cmd/Ctrl+Shift+J → Models; click "Add Model" if it isn't listed), then re-run your request — the team will spawn on the recommended model and I won't ask again this build.
+Recorded: you'll retry on the recommended model. Traffic One cleared this run's API-limit ledger and pending model decisions. Re-run your request after completing the remedy you selected — restored API budget or Cursor Settings → Models — and the team will use the recommended model.
 <!-- T1BLOCK:END model-choice-recorded-enable -->
 
 <!-- T1BLOCK:BEGIN model-choice-recorded-fallback -->

@@ -53,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -229,6 +229,36 @@ const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 
 fs.writeFileSync(counter, String(n));
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'model ' + model } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'oc-' + n + '.txt'), model + '\\n');
+`,
+    // gateway behavior when a promo model STALLS (the live `spawnSync … opencode
+    // ETIMEDOUT` failure): the chain head hangs silently until the runner's spawn
+    // timeout kills it; every other model succeeds. Records -m per invocation and
+    // writes a UNIQUE file per success so back-to-back delegations apply cleanly.
+    stall: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const a = process.argv;
+const dir = a.indexOf('--dir') >= 0 ? a[a.indexOf('--dir') + 1] : process.env.PWD;
+const model = a.indexOf('-m') >= 0 ? a[a.indexOf('-m') + 1] : '(none)';
+fs.appendFileSync(path.join(__dirname, 'models-seen'), model + '\\n');
+if (model === ${JSON.stringify(OPENCODE_FREE_MODELS[0])}) {
+  setInterval(() => {}, 1000); // hang with no output until SIGTERM'd (ETIMEDOUT)
+} else {
+  const counter = path.join(__dirname, 'stall-wins');
+  const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 0 : 0) + 1;
+  fs.writeFileSync(counter, String(n));
+  process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'model ' + model } }) + '\\n');
+  fs.writeFileSync(path.join(dir, 'oc-stall-' + n + '.txt'), model + '\\n');
+}
+`,
+    // gateway-wide outage: EVERY model hangs until the spawn timeout kills it.
+    // The walk must stop after MAX_CONSECUTIVE_STALLS probes, not burn the unit
+    // timeout on the entire chain.
+    stallall: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const a = process.argv;
+const model = a.indexOf('-m') >= 0 ? a[a.indexOf('-m') + 1] : '(none)';
+fs.appendFileSync(path.join(__dirname, 'models-seen'), model + '\\n');
+setInterval(() => {}, 1000);
 `,
     // network down: NOT a model-class error — must fail fast without walking the
     // chain. Also records -m so the no-advance assertion can count invocations.
@@ -749,6 +779,49 @@ test('delegate walks the free chain when the gateway retires a promo model, and 
     assert.equal(r2.ok, true);
     assert.equal(r2.model, OPENCODE_FREE_MODELS[1]);
     assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1], OPENCODE_FREE_MODELS[1]]);
+  });
+});
+
+test('delegate advances the free chain past a STALLED model (spawn timeout) and memoizes the skip', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stall'); // chain[0] hangs until the spawn timeout; the rest succeed
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1500';
+    try {
+      const r = delegate(dir, { role: 'frontend', task: 'create a file', runId: 'stall-1' });
+      assert.equal(r.ok, true);
+      assert.equal(r.action, 'delegated');
+      assert.equal(r.model, OPENCODE_FREE_MODELS[1]);
+      assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1]]);
+      // the stalling id is memoized away: the next delegation in this process
+      // starts at the survivor instead of re-burning the unit timeout
+      const r2 = delegate(dir, { role: 'frontend', task: 'create another file', runId: 'stall-2' });
+      assert.equal(r2.ok, true);
+      assert.equal(r2.model, OPENCODE_FREE_MODELS[1]);
+      assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1], OPENCODE_FREE_MODELS[1]]);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+    }
+  });
+});
+
+test('delegate stops after two back-to-back stalls (gateway-wide outage) with a provider-timeout failure', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stallall'); // every model hangs
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1200';
+    try {
+      const r = delegate(dir, { role: 'frontend', task: 'do it', runId: 'stall-all-1' });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'failed');
+      assert.equal(r.failureKind, 'provider-timeout');
+      assert.match(r.error || '', /stalled/);
+      // exactly TWO probes: the walk stops instead of burning the unit timeout
+      // on every remaining chain entry before the paid fallback
+      assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1]]);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+    }
   });
 });
 

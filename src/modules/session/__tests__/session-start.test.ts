@@ -11,6 +11,12 @@ import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
+// These tests exercise the setup-wizard flow itself, which under the shipped
+// ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
+// recorded yes. Pin the runtime override off so the wizard paths stay directly
+// testable; the ask-first question has dedicated tests that set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
+
 function ctx(cwd: string): Ctx {
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
@@ -383,6 +389,48 @@ test('Flow 2: an existing codebase with no state auto-detects, writes state, the
     assert.equal(onDisk.stack, 'custom-frontend');
     assert.equal(onDisk.frontend, 'nextjs');
     assert.equal('openCode' in onDisk, false);
+  });
+});
+
+test('ask-first: a pristine new project gets ONLY the question — no state, no prefs, no wizard', () => {
+  withProject(null, (cwd) => {
+    const prevAsk = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+    try {
+      const r = runSessionStartAuthed(ctx(cwd));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.match(r.context, /Do you want to use the Traffic One plugin/);
+        assert.ok(!r.context.includes('http://127.0.0.1'), 'NO wizard URL before the user says yes');
+      }
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'no project .traffic-one before the answer');
+      assert.equal(fs.existsSync(path.join(cwd, 'prefs.json')), false, 'no per-user prefs before the answer');
+    } finally {
+      if (prevAsk === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+      else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
+    }
+  });
+});
+
+test('ask-first Flow 2: an existing codebase is NOT auto-detected or materialized before the yes', () => {
+  withProject(null, (cwd) => {
+    const prevAsk = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+    try {
+      writeExistingNextCodebase(cwd);
+      const r = runSessionStartAuthed(ctx(cwd));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.match(r.context, /Do you want to use the Traffic One plugin/);
+        assert.ok(!r.context.includes('auto-detected'), 'no auto-detect announcement pre-decision');
+        assert.ok(!r.context.includes('http://127.0.0.1'), 'NO wizard URL before the user says yes');
+      }
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'a "no" must leave the repo byte-identical');
+      assert.equal(fs.existsSync(path.join(cwd, 'prefs.json')), false, 'no per-user prefs before the answer');
+    } finally {
+      if (prevAsk === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+      else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
+    }
   });
 });
 

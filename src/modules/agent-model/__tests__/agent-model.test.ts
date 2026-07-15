@@ -5,15 +5,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { agentModelGate } from '../handler';
-import { extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
+import { classifySubagentStop, extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
 import { inferTrafficOneSpawnRole } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
+import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { ensureRunAgentClaim, hookSessionIdentity, readEffectiveState, readRunAgentRegistry, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
@@ -115,7 +116,7 @@ const DEFAULT_CURSOR_MODELS = [
   'claude-4.6-sonnet-thinking', 'composer-2.5-fast',
 ];
 
-function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[] | null; architectComplete?: boolean }, fn: (cwd: string) => void): void {
+function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[] | null; architectComplete?: boolean; level?: 'high' | 'balanced' | 'low' }, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agentmodel-'));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
@@ -143,7 +144,7 @@ function withMaterialized(opts: { teamApproved: boolean; cursorModels?: string[]
   }), 'utf8');
   const cursorModels = opts.cursorModels === undefined ? DEFAULT_CURSOR_MODELS : opts.cursorModels;
   const prefs = hostScopedPerformancePrefs(
-    { level: 'high', source: 'prompted' },
+    { level: opts.level ?? 'high', source: 'prompted' },
     { mode: 'subagents', source: 'prompted', ...(opts.teamApproved ? { approved: true } : {}) },
     'pro',
   );
@@ -1307,6 +1308,27 @@ function postSpawnCtx(
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function observeCursorSpawn(
+  cwd: string,
+  runId: string,
+  role: string,
+  requestedModel: string,
+  tier: 'highest' | 'balanced' | 'cheapest',
+  expectedModel: string,
+  toolCallId: string,
+  parentSessionId = 'parent-1',
+): void {
+  const observed = recordCursorSpawnObservation(cwd, runId, {
+    parentSessionId,
+    toolCallId,
+    role,
+    requestedModel,
+    tier,
+    expectedModel,
+  });
+  assert.ok(observed, `records Cursor start observation ${toolCallId}`);
+}
+
 test('extractSpawnedAgentId reads the Agent result footer in string and structured payloads', () => {
   assert.equal(
     extractSpawnedAgentId("READY\nagentId: add5367d74354d9b3 (use SendMessage with to: 'add5367d74354d9b3' to continue this agent)"),
@@ -1373,14 +1395,24 @@ test('reuse: recorder persists the agent id, duplicate same-role spawn is denied
   });
 });
 
-test('mid-run API-limit stop: recorder retires the dead agent and prescribes the next same-tier fallback NOW', () => {
-  withMaterialized({ teamApproved: true }, (cwd) => {
+test('mid-run API-limit stop anchors fallback on the role original tier, not the failed model owning row', () => {
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
     const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
     process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
     try {
       setCurrentRunId(cwd, 'run-api-limit');
+      observeCursorSpawn(
+        cwd,
+        'run-api-limit',
+        'senior-frontend',
+        'gpt-5.6-terra-medium',
+        'highest',
+        'claude-fable-5',
+        'tool_11111111-1111-4111-8111-111111111111',
+      );
       recordRunAgent(cwd, 'run-api-limit', 'senior-frontend', {
         agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc301',
+        toolCallId: 'tool_11111111-1111-4111-8111-111111111111',
         parentSessionId: 'parent-1',
       });
 
@@ -1395,21 +1427,460 @@ test('mid-run API-limit stop: recorder retires the dead agent and prescribes the
         'parent-1',
         'cursor',
       ));
-      assert.equal(result.kind, 'context');
-      if (result.kind === 'context') {
-        assert.match(result.context, /React NOW/i, 'immediate reaction — no waiting for siblings');
-        assert.ok(result.context.includes('[t1-replace-agent]'), 'teaches the replacement marker');
-        assert.ok(result.context.includes('claude-sonnet-5'), 'prescribes the next same-tier fallback family');
-        assert.match(result.context, /gpt-5\.6-terra-medium.*exhausted/i, 'names the exhausted model');
-      }
+      assert.equal(result.kind, 'noop', 'PostTool persists; parent reconciliation owns delivery');
 
       // Retired from the registry → the reuse gate no longer demands continuation
       // of the dead agent.
       const registry = readRunAgentRegistry(cwd, 'run-api-limit');
       assert.equal(registry['senior-frontend']?.replaced, true, 'dead agent retired');
+      const durable = listCursorSpawnObservations(cwd, 'run-api-limit')[0];
+      assert.equal(durable?.outcome, 'api-limit', 'PostTool result persists the correlated outcome');
+      assert.equal(durable?.prescribedModel, 'claude-fable-5-thinking-high', 'durable result stores the exact original-tier retry slug');
+      assert.match(durable?.directive || '', /Retry the same role now/i);
+      assert.ok(durable?.directive?.includes('claude-fable-5-thinking-high'), 'prescribes the first captured slug in the role original highest tier');
+      assert.ok(!durable?.directive?.includes('claude-sonnet-5'), 'does not drift into Terra\'s owning balanced row');
+      assert.match(durable?.directive || '', /gpt-5\.6-terra-medium/i, 'names the exhausted model');
+
+      const wrongRetry = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-frontend',
+        model: 'gpt-5.6-terra-medium',
+        prompt: '[t1-role: senior-frontend]\nContinue after the failed child.',
+      }, 'parent-1', 'cursor'));
+      assert.equal(wrongRetry.kind, 'deny', 'no-marker correlated gate blocks the exhausted model');
+      if (wrongRetry.kind === 'deny') assert.ok(wrongRetry.reason.includes('claude-fable-5-thinking-high'));
+
+      const exactRetry = agentModelGate(spawnCtxWithSession(cwd, {
+        subagent_type: 'senior-frontend',
+        model: 'claude-fable-5-thinking-high',
+        prompt: '[t1-role: senior-frontend]\nContinue after the failed child.',
+      }, 'parent-1', 'cursor'));
+      assert.notEqual(exactRetry.kind, 'deny', 'the exact prescribed slug is accepted without a replacement marker');
     } finally {
       if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN; else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     }
+  });
+});
+
+test('mid-run API-limit stop requires the existing choice before a highest role drops to Composer', () => {
+  withMaterialized({
+    teamApproved: true,
+    level: 'high',
+    cursorModels: ['gpt-5.6-terra-medium', 'composer-2.5-fast'],
+  }, (cwd) => {
+    setCurrentRunId(cwd, 'run-recorder-floor');
+    observeCursorSpawn(
+      cwd,
+      'run-recorder-floor',
+      'senior-frontend',
+      'gpt-5.6-terra-medium',
+      'highest',
+      'claude-fable-5',
+      'tool_22222222-2222-4222-8222-222222222222',
+    );
+    const stopped = () => recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: 'build the UI' },
+      { status: 'error', content: [{ type: 'text', text: 'API usage limit reached.' }] },
+      'parent-1',
+      'cursor',
+    ));
+
+    const ask = stopped();
+    assert.equal(ask.kind, 'noop');
+    let durable = listCursorSpawnObservations(cwd, 'run-recorder-floor')[0]!;
+    assert.match(durable.directive || '', /\*\*enable\*\*.*Restore API budget/s);
+    assert.match(durable.directive || '', /\*\*fallback\*\*.*composer-2\.5-fast/s);
+    assert.ok(!/Re-send .*model="composer-2\.5-fast"/.test(durable.directive || ''), 'does not auto-spawn the floor before consent');
+    assert.equal(modelChoicePrompted(cwd, 'run-recorder-floor'), true);
+
+    writeModelChoice(cwd, 'run-recorder-floor', 'use-fallback');
+    const accepted = stopped();
+    assert.equal(accepted.kind, 'noop');
+    durable = listCursorSpawnObservations(cwd, 'run-recorder-floor')[0]!;
+    assert.match(durable.directive || '', /model:\s*"composer-2\.5-fast"/i, 'accepted fallback prescribes the exact captured Composer slug');
+
+    writeModelChoice(cwd, 'run-recorder-floor', 'enable-retry');
+    const enable = stopped();
+    assert.equal(enable.kind, 'noop');
+    durable = listCursorSpawnObservations(cwd, 'run-recorder-floor')[0]!;
+    assert.match(durable.directive || '', /do not rotate to a fallback/i);
+    assert.ok(durable.directive?.includes('claude-fable-5'), 'enable/retry points back to the original tier recommendation');
+  });
+});
+
+test('mid-run API-limit on cheapest Composer rotates automatically to the next cheapest candidate', () => {
+  withMaterialized({
+    teamApproved: true,
+    level: 'high',
+    cursorModels: ['composer-2.5-fast', 'gpt-5.4-mini-fast'],
+  }, (cwd) => {
+    setCurrentRunId(cwd, 'run-recorder-cheapest');
+    observeCursorSpawn(
+      cwd,
+      'run-recorder-cheapest',
+      'quick-fix',
+      'composer-2.5-fast',
+      'cheapest',
+      'composer-2.5',
+      'tool_33333333-3333-4333-8333-333333333333',
+    );
+    const result = recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      { subagent_type: 'quick-fix', model: 'composer-2.5-fast', prompt: 'apply the fix' },
+      { status: 'error', content: [{ type: 'text', text: 'RESOURCE_EXHAUSTED: quota exceeded' }] },
+      'parent-1',
+      'cursor',
+    ));
+    assert.equal(result.kind, 'noop');
+    const durable = listCursorSpawnObservations(cwd, 'run-recorder-cheapest')[0]!;
+    assert.ok(durable.directive?.includes('gpt-5.4-mini-fast'), 'Composer is the cheapest-tier primary, so its API limit advances automatically');
+    assert.ok(!durable.directive?.includes('**enable**'), 'normal cheapest rotation does not ask for a floor downgrade');
+  });
+});
+
+test('mid-run explicit model-unavailable result asks Settings/enable or the next exact tier slug', () => {
+  withMaterialized({
+    teamApproved: true,
+    level: 'balanced',
+    cursorModels: ['gpt-5.6-terra-medium', 'claude-sonnet-5-thinking-high', 'composer-2.5-fast'],
+  }, (cwd) => {
+    setCurrentRunId(cwd, 'run-recorder-unavailable');
+    observeCursorSpawn(
+      cwd,
+      'run-recorder-unavailable',
+      'senior-frontend',
+      'gpt-5.6-terra-medium',
+      'balanced',
+      'gpt-5.6-terra',
+      'tool_44444444-4444-4444-8444-444444444444',
+    );
+    recordRunAgent(cwd, 'run-recorder-unavailable', 'senior-frontend', {
+      agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc302',
+      toolCallId: 'tool_44444444-4444-4444-8444-444444444444',
+      parentSessionId: 'parent-1',
+    });
+    const unavailable = () => recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      { subagent_type: 'senior-frontend', model: 'gpt-5.6-terra-medium', prompt: 'build the UI' },
+      { status: 'error', content: [{ type: 'text', text: 'The requested model gpt-5.6-terra-medium is not enabled.' }] },
+      'parent-1',
+      'cursor',
+    ));
+
+    const ask = unavailable();
+    assert.equal(ask.kind, 'noop');
+    let durable = listCursorSpawnObservations(cwd, 'run-recorder-unavailable')[0]!;
+    assert.match(durable.directive || '', /Settings → Models/);
+    assert.match(durable.directive || '', /\*\*enable\*\*.*gpt-5\.6-terra-medium/s);
+    assert.match(durable.directive || '', /\*\*fallback\*\*.*claude-sonnet-5-thinking-high/s);
+    assert.equal(modelChoicePrompted(cwd, 'run-recorder-unavailable'), true);
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-recorder-unavailable', 'senior-frontend'), [], 'availability does not condemn the model as API-limited');
+    assert.equal(readRunAgentRegistry(cwd, 'run-recorder-unavailable')['senior-frontend']?.replaced, true);
+
+    writeModelChoice(cwd, 'run-recorder-unavailable', 'use-fallback');
+    const fallback = unavailable();
+    assert.equal(fallback.kind, 'noop');
+    durable = listCursorSpawnObservations(cwd, 'run-recorder-unavailable')[0]!;
+    assert.match(durable.directive || '', /Proceed now on \*\*claude-sonnet-5-thinking-high\*\*/);
+  });
+});
+
+test('Cursor API-limit respawn: the pre-spawn gate REFUSES reusing the exhausted model and names the next same-tier fallback', () => {
+  // The real bug (session 6ce81ecd): Cursor emits NO post-spawn stop event (Task
+  // fires preToolUse but never postToolUse), so record-agent.ts's stop→fallback
+  // directive can never run there. The orchestrator self-detected the API limit and
+  // RE-SPAWNED senior-backend — but on the SAME exhausted gpt-5.6-terra-medium. The
+  // spawn gate is the only hook Cursor delivers; it must force the model rotation.
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-rotate');
+    // A live backend agent on the balanced model that will be reported exhausted.
+    recordRunAgent(cwd, 'run-rotate', 'senior-backend', {
+      agentId: '2c2a9638-8ba9-401b-84a9-f9b42ee968b0',
+      resumeId: '2c2a9638-8ba9-401b-84a9-f9b42ee968b0',
+      model: 'gpt-5.6-terra-medium',
+      parentSessionId: 'parent-1',
+    });
+
+    // Respawn reusing the SAME exhausted model → denied, pointing at the fallback.
+    const reuse = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'gpt-5.6-terra-medium',
+      prompt: '[t1-replace-agent]\n[t1-role: senior-backend]\nPrevious senior-backend spawn failed (API limit). Replace and complete backend scope.',
+    }, 'parent-1', 'cursor'));
+    assert.equal(reuse.kind, 'deny');
+    if (reuse.kind === 'deny') {
+      assert.match(reuse.reason, /rotation/i, 'names the model-rotation reason');
+      assert.match(reuse.reason, /gpt-5\.6-terra-medium.*exhaust/i, 'names the exhausted model');
+      assert.ok(reuse.reason.includes('claude-sonnet-5'), 'prescribes the next same-tier fallback (resolved to the captured slug)');
+      assert.ok(reuse.reason.includes('[t1-replace-agent]'), 'keeps the replacement marker in the recipe');
+    }
+    // The exhausted model is persisted for the run so later retries also skip it.
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-rotate', 'senior-backend'),
+      ['gpt-5.6-terra-medium'],
+    );
+
+    // Respawn on a FRESH same-tier model (the prescribed fallback) is NOT rotation-denied.
+    const rotated = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'claude-sonnet-5-thinking-high',
+      prompt: '[t1-replace-agent]\n[t1-role: senior-backend]\nPrevious senior-backend spawn hit an API limit. Replace on the fallback model.',
+    }, 'parent-1', 'cursor'));
+    assert.notEqual(rotated.kind, 'deny', 'the fresh fallback model spawns (no rotation block)');
+  });
+});
+
+test('rotation to the Composer FLOOR asks the user (enable/fallback) instead of silently downgrading', () => {
+  // Only terra + composer are offered: exhausting terra leaves the floor as the
+  // sole fallback. That is a REAL downgrade — it must route through the SAME
+  // enable/fallback choice the pre-spawn guards use, not rotate silently.
+  withMaterialized({ teamApproved: true, level: 'balanced', cursorModels: ['gpt-5.6-terra-medium', 'composer-2.5-fast'] }, (cwd) => {
+    setCurrentRunId(cwd, 'run-floor');
+    const rd = path.join(cwd, '.traffic-one', 'runs', 'run-floor');
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+      version: 1,
+      agents: { 'senior-backend': { agentId: '2c2a9638-8ba9-401b-84a9-f9b42ee968b0', resumeId: '2c2a9638-8ba9-401b-84a9-f9b42ee968b0', role: 'senior-backend', model: 'gpt-5.6-terra-medium', agentType: 'senior-backend', parentSessionId: 'parent-1', recordedAt: new Date().toISOString(), tasks: 1, replaced: false } },
+      history: [],
+    }));
+    const spawn = () => agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'gpt-5.6-terra-medium',
+      prompt: '[t1-replace-agent]\n[t1-role: senior-backend]\nPrevious senior-backend spawn failed (API limit). Replace and complete backend scope.',
+    }, 'parent-1', 'cursor'));
+
+    // No choice recorded yet → the enable/fallback question, once per run.
+    const ask = spawn();
+    assert.equal(ask.kind, 'deny');
+    if (ask.kind === 'deny') {
+      assert.match(ask.reason, /API\/usage-limit failure/i, 'the API-limit Composer choice prose');
+      assert.ok(ask.reason.includes('composer-2.5-fast'), 'names the floor as the fallback');
+      assert.match(ask.reason, /enable/i, 'offers the enable option');
+    }
+    assert.equal(modelChoicePrompted(cwd, 'run-floor'), true, 'shares the once-per-run choice marker');
+
+    // "fallback" recorded → the floor respawn is prescribed automatically.
+    writeModelChoice(cwd, 'run-floor', 'use-fallback');
+    const proceed = spawn();
+    assert.equal(proceed.kind, 'deny');
+    if (proceed.kind === 'deny') {
+      assert.match(proceed.reason, /model rotation/i);
+      assert.ok(proceed.reason.includes('model="composer-2.5-fast"'), 'prescribes the accepted floor');
+    }
+
+    // "enable" recorded → the floor spawn stays denied until the model is restored.
+    writeModelChoice(cwd, 'run-floor', 'enable-retry');
+    const enable = spawn();
+    assert.equal(enable.kind, 'deny');
+    if (enable.kind === 'deny') assert.match(enable.reason, /enable/i, 'insists on restoring the recommended model');
+  });
+});
+
+test('exhausted-model ledger entries EXPIRE — a transient throttle does not condemn the model for the whole build', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-ttl');
+    const rd = path.join(cwd, '.traffic-one', 'runs', 'run-ttl');
+    fs.mkdirSync(rd, { recursive: true });
+    const old = new Date(Date.now() - 15 * 60 * 1000).toISOString(); // > 10-min TTL
+    fs.writeFileSync(path.join(rd, 'exhausted-models.json'), JSON.stringify({
+      'senior-backend': [{ model: 'gpt-5.6-terra-medium', at: old }],
+      'senior-frontend': ['legacy-entry-no-timestamp'],
+    }));
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-ttl', 'senior-backend'), [], 'expired condemnation is lifted');
+    // Legacy (no-timestamp) entries never expire within the run — safer on upgrade.
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-ttl', 'senior-frontend'), ['legacy-entry-no-timestamp']);
+    // A fresh record re-condemns and refreshes.
+    recordExhaustedModel(cwd, 'run-ttl', 'senior-backend', 'gpt-5.6-terra-medium');
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-ttl', 'senior-backend'), ['gpt-5.6-terra-medium']);
+  });
+});
+
+test('dead-agent escape corroboration: a signal-less retry inside the hard window still waits; a corroborated one retires at the grace', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-corr');
+    const rd = path.join(cwd, '.traffic-one', 'runs', 'run-corr');
+    fs.mkdirSync(rd, { recursive: true });
+    const midWindow = new Date(Date.now() - 2 * 60 * 1000).toISOString(); // 2 min: > 90s grace, < 270s hard
+    const writeAgent = () => fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+      version: 1,
+      agents: { 'senior-architect': { agentId: 'tool_dead5678-1a31-47e6-a1ce-ba45b370fe7', resumeId: null, toolCallId: 'tool_dead5678-1a31-47e6-a1ce-ba45b370fe7', role: 'senior-architect', model: 'gpt-5.6-terra-medium', agentType: 'senior-architect', parentSessionId: 'parent-1', recordedAt: midWindow, tasks: 1, replaced: false } },
+      history: [],
+    }));
+
+    // Signal-less "continue" retry at 2 min → NOT presumed dead (no bare-timer duplicate).
+    writeAgent();
+    const quiet = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'gpt-5.6-terra-medium',
+      prompt: '[t1-role: senior-architect]\nContinue architect work; deliverables still needed under the run dir.',
+    }, 'parent-1', 'cursor'));
+    assert.equal(quiet.kind, 'deny', 'a slow-but-live agent is not retired on a bare timer');
+    if (quiet.kind === 'deny') assert.ok(/has not exposed a valid Task `resume` UUID/i.test(quiet.reason));
+
+    // The SAME 2-min-old agent with a corroborating failure signal → retired, retry allowed.
+    writeAgent();
+    const corroborated = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'claude-sonnet-5-thinking-high',
+      prompt: '[t1-role: senior-architect]\nPrevious architect subagent stopped (API usage limit). Re-run the architect scope.',
+    }, 'parent-1', 'cursor'));
+    assert.notEqual(corroborated.kind, 'deny', 'a corroborated death retires at the 90s grace');
+    assert.equal(readRunAgentRegistry(cwd, 'run-corr')['senior-architect']?.replaced, true);
+  });
+});
+
+test('Cursor no-marker liveness uses exhaustion of the current live model, not another role-ledger model', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    const runId = 'run-live-model-specific';
+    const role = 'senior-architect';
+    const parent = 'parent-live-model-specific';
+    const terra = 'gpt-5.6-terra-medium';
+    const sonnet = 'claude-sonnet-5-thinking-high';
+    const agentId = 'tool_abcddcba-1234-4abc-8def-123456789abc';
+    setCurrentRunId(cwd, runId);
+    recordExhaustedModel(cwd, runId, role, terra);
+    const rd = path.join(cwd, '.traffic-one', 'runs', runId);
+    fs.mkdirSync(rd, { recursive: true });
+    const writeCurrentSonnet = (ageMs: number): void => {
+      fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+        version: 1,
+        agents: {
+          [role]: {
+            agentId,
+            resumeId: null,
+            toolCallId: agentId,
+            role,
+            model: sonnet,
+            agentType: role,
+            parentSessionId: parent,
+            recordedAt: new Date(Date.now() - ageMs).toISOString(),
+            tasks: 1,
+            replaced: false,
+          },
+        },
+        history: [],
+      }));
+    };
+    const quietRetry = () => agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: role,
+      model: sonnet,
+      prompt: '[t1-role: senior-architect]\nContinue the remaining architect scope.',
+    }, parent, 'cursor'));
+
+    writeCurrentSonnet(2 * 60 * 1000);
+    const insideHardWindow = quietRetry();
+    assert.equal(
+      insideHardWindow.kind,
+      'deny',
+      'Terra exhaustion cannot shorten the liveness window of the current Sonnet child',
+    );
+    if (insideHardWindow.kind === 'deny') {
+      assert.match(insideHardWindow.reason, /has not exposed a valid Task `resume` UUID/i);
+    }
+    assert.equal(readRunAgentRegistry(cwd, runId)[role]?.replaced, false);
+
+    writeCurrentSonnet(271 * 1000);
+    assert.notEqual(quietRetry().kind, 'deny', 'the same signal-less Sonnet child retires after 270s');
+    assert.equal(readRunAgentRegistry(cwd, runId)[role]?.replaced, true);
+    assert.deepEqual(exhaustedModelsForRole(cwd, runId, role), [terra]);
+  });
+});
+
+test('Cursor ambiguous replace marker obeys 90/270s timers without condemning a model from prompt text', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    const role = 'senior-architect';
+    const model = 'gpt-5.6-terra-medium';
+    const parent = 'parent-ambiguous-marker';
+    const writeLive = (runId: string, ageMs: number): void => {
+      setCurrentRunId(cwd, runId);
+      const rd = path.join(cwd, '.traffic-one', 'runs', runId);
+      fs.mkdirSync(rd, { recursive: true });
+      fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+        version: 1,
+        agents: {
+          [role]: {
+            agentId: 'tool_a11b22c3-4444-4555-8666-777788889999',
+            resumeId: null,
+            toolCallId: 'tool_a11b22c3-4444-4555-8666-777788889999',
+            role,
+            model,
+            agentType: role,
+            parentSessionId: parent,
+            recordedAt: new Date(Date.now() - ageMs).toISOString(),
+            tasks: 1,
+            replaced: false,
+          },
+        },
+        history: [],
+      }));
+    };
+    const retry = (prompt: string) => agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: role,
+      model,
+      prompt,
+    }, parent, 'cursor'));
+    const apiMarker = '[t1-replace-agent]\n[t1-role: senior-architect]\nPrevious child reported API usage limit; retry.';
+    const quietMarker = '[t1-replace-agent]\n[t1-role: senior-architect]\nContinue the remaining architect scope.';
+
+    writeLive('run-marker-fresh', 0);
+    const fresh = retry(apiMarker);
+    assert.equal(fresh.kind, 'deny', 'prompt-only API text cannot retire a fresh no-resume child');
+    if (fresh.kind === 'deny') assert.match(fresh.reason, /has not exposed a valid Task `resume` UUID/i);
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-marker-fresh', role), []);
+
+    writeLive('run-marker-grace', 2 * 60 * 1000);
+    const grace = retry(apiMarker);
+    assert.notEqual(grace.kind, 'deny', 'API text corroborates death only after the 90s grace');
+    assert.equal(readRunAgentRegistry(cwd, 'run-marker-grace')[role]?.replaced, true);
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-marker-grace', role),
+      [],
+      'orchestrator-authored API text never becomes durable model exhaustion evidence',
+    );
+
+    writeLive('run-marker-hard-wait', 2 * 60 * 1000);
+    const hardWait = retry(quietMarker);
+    assert.equal(hardWait.kind, 'deny', 'an uncorroborated marker still waits inside the 270s hard window');
+    assert.equal(readRunAgentRegistry(cwd, 'run-marker-hard-wait')[role]?.replaced, false);
+
+    writeLive('run-marker-hard-retire', 5 * 60 * 1000);
+    const hardRetire = retry(quietMarker);
+    assert.notEqual(hardRetire.kind, 'deny', 'the hard timer eventually retires an unresumable child');
+    assert.equal(readRunAgentRegistry(cwd, 'run-marker-hard-retire')[role]?.replaced, true);
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-marker-hard-retire', role), []);
+
+    writeLive('run-marker-durable-limit', 2 * 60 * 1000);
+    recordExhaustedModel(cwd, 'run-marker-durable-limit', role, model);
+    const durable = retry(quietMarker);
+    assert.equal(durable.kind, 'deny', 'durable per-role evidence enables model rotation after the grace');
+    if (durable.kind === 'deny') {
+      assert.match(durable.reason, /model rotation/i);
+      assert.ok(durable.reason.includes('claude-sonnet-5-thinking-high'), 'rotation names the next model in the original tier');
+    }
+  });
+});
+
+test('non-limit replacement (a plain stop) may reuse the same model — rotation only fires on an API/usage limit', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-plainstop');
+    recordRunAgent(cwd, 'run-plainstop', 'senior-backend', {
+      agentId: '3d3b0000-8ba9-401b-84a9-f9b42ee968b0',
+      resumeId: '3d3b0000-8ba9-401b-84a9-f9b42ee968b0',
+      model: 'gpt-5.6-terra-medium',
+      parentSessionId: 'parent-1',
+    });
+    // "context exhausted" is a valid replacement reason but does NOT condemn the model.
+    const replace = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-backend',
+      model: 'gpt-5.6-terra-medium',
+      prompt: '[t1-replace-agent]\n[t1-role: senior-backend]\nPrevious agent context exhausted; continue the remaining backend scope.',
+    }, 'parent-1', 'cursor'));
+    assert.notEqual(replace.kind, 'deny', 'a non-limit replacement is not model-rotated');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-plainstop', 'senior-backend'),
+      [],
+      'no model recorded exhausted for a non-limit stop',
+    );
   });
 });
 
@@ -1426,6 +1897,152 @@ test('a successful Task result that merely mentions the word "stopped" is NOT cl
       assert.equal(rec.kind, 'noop', 'prose mention of stopped never triggers the failure path');
       const registry = readRunAgentRegistry(cwd, 'run-ok-mention');
       assert.equal(registry['senior-backend']?.agentId, 'abc999def456789', 'successful result still recorded live');
+    });
+  });
+});
+
+test('Cursor PostTool classifier requires structured failure evidence and ignores negated limit prose', () => {
+  assert.equal(classifySubagentStop('API usage limit reached.'), null, 'plain model-written output is not structured failure evidence');
+  assert.equal(classifySubagentStop({
+    status: 'completed',
+    content: [{ type: 'text', text: 'Report: API usage limit reached in the incident fixture; model foo is not enabled.' }],
+  }), null, 'successful structured result may discuss both failure vocabularies');
+  assert.equal(classifySubagentStop({
+    status: 'completed',
+    content: [{ type: 'text', text: 'Implemented API-limit fallback behavior.' }],
+  }, false), null, 'an explicit success envelope also wins on legacy/non-Cursor hosts');
+  assert.equal(classifySubagentStop({ status: 'error', error: 'No API limit was reached.' }), 'stopped', 'negated phrase remains generic stopped recovery');
+  assert.equal(classifySubagentStop({ status: 'error', error: 'API usage limit reached.' }), 'api-limit');
+});
+
+test('successful Cursor Task report cannot condemn a model or retire its live observation', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-cursor-success-report');
+    observeCursorSpawn(
+      cwd,
+      'run-cursor-success-report',
+      'senior-backend',
+      'gpt-5.6-terra-medium',
+      'balanced',
+      'gpt-5.6-terra',
+      'tool_55555555-5555-4555-8555-555555555555',
+    );
+    recordRunAgent(cwd, 'run-cursor-success-report', 'senior-backend', {
+      agentId: 'tool_55555555-5555-4555-8555-555555555555',
+      toolCallId: 'tool_55555555-5555-4555-8555-555555555555',
+      model: 'gpt-5.6-terra-medium',
+      parentSessionId: 'parent-1',
+    });
+
+    const result = recordSpawnedAgent(postSpawnCtx(
+      cwd,
+      { subagent_type: 'senior-backend', model: 'gpt-5.6-terra-medium', prompt: 'audit recovery code' },
+      {
+        status: 'completed',
+        agentId: 'bff46cd7-3681-4cf0-adcf-263bf55cc399',
+        content: [{ type: 'text', text: 'Verified the API usage limit fixture and the model-not-enabled Settings copy. No API limit was reached during this run.' }],
+      },
+      'parent-1',
+      'cursor',
+    ));
+    assert.equal(result.kind, 'noop');
+    assert.equal(listCursorSpawnObservations(cwd, 'run-cursor-success-report')[0]?.outcome, null);
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-cursor-success-report', 'senior-backend'), []);
+    assert.notEqual(readRunAgentRegistry(cwd, 'run-cursor-success-report')['senior-backend']?.replaced, true);
+  });
+});
+
+test('delayed Cursor PostTool result persists against its old observation but CAS cannot retire a newer retry', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-cursor-delayed-post');
+    observeCursorSpawn(
+      cwd,
+      'run-cursor-delayed-post',
+      'senior-backend',
+      'gpt-5.6-terra-medium',
+      'highest',
+      'claude-fable-5',
+      'tool_66666666-6666-4666-8666-666666666666',
+    );
+    observeCursorSpawn(
+      cwd,
+      'run-cursor-delayed-post',
+      'senior-backend',
+      'gpt-5.6-terra-medium',
+      'balanced',
+      'gpt-5.6-terra',
+      'tool_77777777-7777-4777-8777-777777777777',
+    );
+    recordRunAgent(cwd, 'run-cursor-delayed-post', 'senior-backend', {
+      agentId: 'tool_77777777-7777-4777-8777-777777777777',
+      toolCallId: 'tool_77777777-7777-4777-8777-777777777777',
+      model: 'gpt-5.6-terra-medium',
+      parentSessionId: 'parent-1',
+    });
+
+    const nested = path.join(cwd, 'packages', 'api');
+    fs.mkdirSync(nested, { recursive: true });
+    const post = postSpawnCtx(
+      nested,
+      { subagent_type: 'senior-backend', model: 'gpt-5.6-terra-medium', prompt: 'old task' },
+      { status: 'error', error: 'HTTP 429 Too Many Requests' },
+      'parent-1',
+      'cursor',
+    );
+    (post.input.raw as Record<string, unknown>).tool_call_id = 'tool_66666666-6666-4666-8666-666666666666';
+    const result = recordSpawnedAgent({ ...post, input: { ...post.input, workspaceRoot: cwd } });
+    assert.equal(result.kind, 'noop', 'Cursor PostTool persists only; parent reconciliation owns delivery');
+
+    let observations = listCursorSpawnObservations(cwd, 'run-cursor-delayed-post');
+    const old = observations.find((item) => item.toolCallId === 'tool_66666666-6666-4666-8666-666666666666');
+    assert.equal(old?.outcome, 'api-limit');
+    assert.ok(old?.directive?.includes('claude-fable-5-thinking-high'), 'old immutable highest-tier anchor wins over current balanced state');
+    assert.equal(old?.followupEmitted, false, 'PostTool persistence cannot claim parent delivery ownership');
+    assert.equal(observations.find((item) => item.toolCallId === 'tool_77777777-7777-4777-8777-777777777777')?.outcome, null);
+    assert.ok(old?.childTranscriptId);
+    markCursorSpawnObservationRetryHandled(cwd, 'run-cursor-delayed-post', old!.childTranscriptId!);
+
+    const idlessReplay = postSpawnCtx(
+      nested,
+      { subagent_type: 'senior-backend', model: 'gpt-5.6-terra-medium', prompt: 'delayed old task without identity' },
+      { status: 'error', error: 'HTTP 429 Too Many Requests' },
+      'parent-1',
+      'cursor',
+    );
+    assert.equal(recordSpawnedAgent({
+      ...idlessReplay,
+      input: { ...idlessReplay.input, workspaceRoot: cwd },
+    }).kind, 'noop', 'id-less replay stays ambiguous across old+new matching starts');
+    observations = listCursorSpawnObservations(cwd, 'run-cursor-delayed-post');
+    assert.equal(observations.find((item) => item.toolCallId === 'tool_77777777-7777-4777-8777-777777777777')?.outcome, null, 'handled old start is still counted for ambiguity');
+    const current = readRunAgentRegistry(cwd, 'run-cursor-delayed-post')['senior-backend'];
+    assert.equal(current?.toolCallId, 'tool_77777777-7777-4777-8777-777777777777');
+    assert.notEqual(current?.replaced, true, 'old result cannot retire the newer retry');
+    assert.equal(fs.existsSync(path.join(nested, '.traffic-one')), false, 'nested Cursor cwd resolves writes to workspace root');
+  });
+});
+
+test('explicit model-unavailable PostTool text stays generic outside Cursor', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    withTeamsEnv(() => {
+      setCurrentRunId(cwd, 'run-noncursor-unavailable');
+      recordRunAgent(cwd, 'run-noncursor-unavailable', 'senior-backend', {
+        agentId: 'noncursor-backend-agent',
+        parentSessionId: 'parent-1',
+      });
+      const result = recordSpawnedAgent(postSpawnCtx(
+        cwd,
+        { subagent_type: 'senior-backend', model: 'opus', prompt: 'build API' },
+        { status: 'error', error: 'The requested model opus is not enabled.' },
+        'parent-1',
+        'claude',
+      ));
+      assert.equal(result.kind, 'context');
+      if (result.kind === 'context') {
+        assert.doesNotMatch(result.context, /Settings → Models|\*\*enable\*\*/);
+        assert.match(result.context, /stopped mid-run/i);
+      }
+      assert.equal(readRunAgentRegistry(cwd, 'run-noncursor-unavailable')['senior-backend']?.replaced, true);
     });
   });
 });
@@ -1720,6 +2337,45 @@ test('reuse (Cursor): subagent-start records the spawned subagent_id into the re
   });
 });
 
+test('Cursor: nested SubagentStart anchors every run write at the workspace root', () => {
+  withMaterialized({ teamApproved: true, level: 'high' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-cursor-nested-start');
+    const nested = path.join(cwd, 'packages', 'web');
+    fs.mkdirSync(nested, { recursive: true });
+    const result = subagentStartBind({
+      input: {
+        event: 'SubagentStart', host: 'cursor', cwd: nested, workspaceRoot: cwd,
+        raw: {
+          hook_event_name: 'subagent-start',
+          subagent_id: 'tool_c11d22e3-4444-4555-8666-777788889999',
+          subagent_type: 'senior-architect',
+          subagent_model: 'claude-fable-5-thinking-high',
+          session_id: 'orchestrator-parent',
+          started_at: Date.now(),
+        },
+      },
+      host: 'cursor', cwd: nested, now: () => 'x',
+    } as unknown as Ctx);
+
+    assert.equal(result.kind, 'noop');
+    assert.equal(
+      readRunAgentRegistry(cwd, 'run-cursor-nested-start')['senior-architect']?.toolCallId,
+      'tool_c11d22e3-4444-4555-8666-777788889999',
+      'the live registry is rooted at the workspace',
+    );
+    assert.equal(
+      listCursorSpawnObservations(cwd, 'run-cursor-nested-start')[0]?.toolCallId,
+      'tool_c11d22e3-4444-4555-8666-777788889999',
+      'the immutable spawn observation is rooted at the workspace',
+    );
+    assert.equal(
+      fs.existsSync(path.join(nested, '.traffic-one')),
+      false,
+      'SubagentStart must never mint nested run/model/claim state',
+    );
+  });
+});
+
 test('Cursor: SubagentStart stops senior team when model choice is still pending, even with generic subagent_type', () => {
   withMaterialized({
     teamApproved: true,
@@ -1754,6 +2410,11 @@ test('Cursor: SubagentStart stops senior team when model choice is still pending
       assert.ok(blocked.reason.includes('senior-architect'), 'infers the role from the task marker');
       assert.ok(/must stop now|must not write files/i.test(blocked.reason), 'tells the already-started subagent to stop');
     }
+    assert.equal(
+      listCursorSpawnObservations(cwd, 'run-cursor-pending-model-choice')[0]?.toolCallId,
+      'tool_pending_model_choice',
+      'the actual start remains immutable evidence even though the pending choice stops the child',
+    );
     assert.equal(readRunAgentRegistry(cwd, 'run-cursor-pending-model-choice')['senior-architect'], undefined);
 
     writeModelChoice(cwd, 'run-cursor-pending-model-choice', 'use-fallback');
@@ -1962,6 +2623,55 @@ test('Cursor reuse deny names the Task resume recipe and accepts continuation fi
     assert.equal(resume.kind, 'noop', 'a Cursor Task call carrying resume passes the reuse gate');
     const legacyAgentId = agentModelGate(spawnCtx(cwd, { subagent_type: 'senior-frontend', model: 'claude-opus-4-8-thinking-high', agentId: 'cursor-agent-xyz' }, 'cursor'));
     assert.equal(legacyAgentId.kind, 'noop', 'legacy agentId continuation remains accepted');
+  });
+});
+
+test('Cursor dead-agent escape: a stale no-resume-id agent is retired so the retry is NOT deadlocked on await-cursor-id', () => {
+  // The real deadlock (session dfde9239): the senior-architect hit a Cursor API
+  // usage limit and died BEFORE producing a resume UUID (resumeId stays null). The
+  // orchestrator retried with "Continue architect work" (no [t1-replace-agent], no
+  // limit wording), and the reuse gate denied every retry with await-cursor-id —
+  // telling it to wait for a resume id that will never arrive. Past the grace
+  // window, the gate must presume the agent dead, retire it, and allow the retry.
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-dead');
+    const rd = path.join(cwd, '.traffic-one', 'runs', 'run-dead');
+    fs.mkdirSync(rd, { recursive: true });
+    const stale = new Date(Date.now() - 5 * 60 * 1000).toISOString(); // 5 min ago (> 90s grace)
+    fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+      version: 1,
+      agents: { 'senior-architect': { agentId: 'tool_dead1234-1a31-47e6-a1ce-ba45b370fe7', resumeId: null, toolCallId: 'tool_dead1234-1a31-47e6-a1ce-ba45b370fe7', role: 'senior-architect', model: 'gpt-5.6-terra-medium', agentType: 'senior-architect', parentSessionId: 'orchestrator-parent', recordedAt: stale, tasks: 1, replaced: false } },
+      history: [],
+    }));
+    // Plain retry — the exact framing the stuck run used: no marker, no limit text.
+    const retry = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'gpt-5.6-terra-medium',
+      prompt: '[t1-role: senior-architect]\nContinue architect work; deliverables still needed: .traffic-one/plan.md',
+    }, 'orchestrator-parent', 'cursor'));
+    assert.notEqual(retry.kind, 'deny', 'the retry is allowed once the dead agent is retired (no await-cursor-id deadlock)');
+    assert.equal(readRunAgentRegistry(cwd, 'run-dead')['senior-architect']?.replaced, true, 'the dead architect is retired from the registry');
+  });
+});
+
+test('Cursor await-cursor-id is preserved for a FRESH no-resume-id agent (resume id may still be incoming)', () => {
+  withMaterialized({ teamApproved: true, level: 'balanced' }, (cwd) => {
+    setCurrentRunId(cwd, 'run-fresh');
+    const rd = path.join(cwd, '.traffic-one', 'runs', 'run-fresh');
+    fs.mkdirSync(rd, { recursive: true });
+    fs.writeFileSync(path.join(rd, 'agents.json'), JSON.stringify({
+      version: 1,
+      agents: { 'senior-architect': { agentId: 'tool_face9012-1a31-47e6-a1ce-ba45b370fe7', resumeId: null, toolCallId: 'tool_face9012-1a31-47e6-a1ce-ba45b370fe7', role: 'senior-architect', model: 'gpt-5.6-terra-medium', agentType: 'senior-architect', parentSessionId: 'orchestrator-parent', recordedAt: new Date().toISOString(), tasks: 1, replaced: false } },
+      history: [],
+    }));
+    const retry = agentModelGate(spawnCtxWithSession(cwd, {
+      subagent_type: 'senior-architect',
+      model: 'gpt-5.6-terra-medium',
+      prompt: '[t1-role: senior-architect]\nContinue architect work; deliverables still needed: .traffic-one/plan.md',
+    }, 'orchestrator-parent', 'cursor'));
+    assert.equal(retry.kind, 'deny', 'a fresh agent still waits — the resume id may not have been harvested yet');
+    if (retry.kind === 'deny') assert.ok(/has not exposed a valid Task `resume` UUID/i.test(retry.reason));
+    assert.equal(readRunAgentRegistry(cwd, 'run-fresh')['senior-architect']?.replaced, false, 'a fresh agent is not retired');
   });
 });
 

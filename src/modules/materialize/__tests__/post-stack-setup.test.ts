@@ -10,7 +10,14 @@ import { endpointFromEnv } from '../../../shared/auth';
 import { toolClassForRawName } from '../../../core/events';
 import { applyAnswer } from '../../../shared/onboarding-server/flow';
 import { onboardingWaitCommand } from '../../../shared/onboarding-server/wait-command';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
+
+// These tests exercise post-onboarding convergence paths whose fixtures often
+// carry no .one.json; under the shipped ask-first default (ASK_USE_PLUGIN_FIRST)
+// such a project reads as question-pending and the handler stands down. Pin the
+// runtime override off; the ask-first stand-down tests set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 
 function ctx(cwd: string, toolInput: Record<string, unknown>): Ctx {
   return rawCtx(cwd, 'Write', toolInput);
@@ -148,6 +155,66 @@ test('single gate: does NOT fire while onboarding is not finalized', () => {
   } finally {
     if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('declined project: stands down completely — no one-uid mint into a repo the user said no to', () => {
+  // Field bug (tests/cursor/6): computeOnboarding reports done:true for a DECLINED
+  // project (so waiters unblock), which satisfied the report gate and minted a
+  // one-uid .one.json into the declined repo on the first post-decline tool use.
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-declined-')));
+  const env = process.env;
+  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'no-auth.json');
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(path.join(dir, 'package.json'), '{"name":"x"}', 'utf8');
+    recordPluginUseChoice(dir, false, 'command');
+    const calls: string[] = [];
+    const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+    });
+    assert.equal(r.kind, 'noop');
+    assert.deepEqual(calls, [], 'the one-mcp report never fires for a declined project');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false, 'a declined repo stays byte-identical');
+  } finally {
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('ask-first pending on a never-onboarded project: no report, no writes (pristine existing codebase computes done)', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-pss-pending-')));
+  const env = process.env;
+  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevAsk = env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'no-auth.json');
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+  try {
+    // A stateless existing codebase needs no local prefs → computeOnboarding
+    // reports done:true even though the user has not answered the question.
+    // (detectMode needs a real dependency + source files to read as existing.)
+    fs.mkdirSync(path.join(dir, 'src'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'x', dependencies: { next: '15.0.0', react: '19.0.0' } }), 'utf8');
+    for (let i = 0; i < 6; i += 1) {
+      fs.writeFileSync(path.join(dir, 'src', `file-${i}.tsx`), `export const value${i} = ${i};\n`, 'utf8');
+    }
+    const calls: string[] = [];
+    const r = runPostStackSetup(ctx(dir, { file_path: path.join(dir, 'src', 'x.ts') }), {
+      reportOneMcp: (_cwd, _state, trigger) => { calls.push(trigger); },
+    });
+    assert.equal(r.kind, 'noop');
+    assert.deepEqual(calls, [], 'no one-mcp report before the user answers');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false, 'nothing written before the answer');
+  } finally {
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevAsk === undefined) delete env.TRAFFIC_ONE_ASK_USE_PLUGIN; else env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

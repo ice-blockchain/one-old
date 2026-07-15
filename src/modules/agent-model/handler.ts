@@ -15,7 +15,8 @@ import { pluginRoot } from '../../shared/paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { modelMatchesAny } from '../../shared/model-tiers';
 import { CURSOR_MODEL_FLOOR } from '../../config/model-tiers';
-import { currentAcceptableModels, currentModelForTier } from '../../shared/current-model-tiers';
+import { currentAcceptableModels, currentModelForTier, currentModelsForTier, resolveTierFallback } from '../../shared/current-model-tiers';
+import { exhaustedModelsForRole, isApiUsageLimitText, markModelExhaustionTerminal, modelIsExhausted, recordExhaustedModel } from './exhausted-models';
 import {
   cursorModelsCapturePrompted,
   cursorModelsFresh,
@@ -23,7 +24,7 @@ import {
   markCursorModelsCapturePrompted,
   pickCursorSlug,
 } from '../../shared/materialize/cursor-models';
-import { modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
+import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../../shared/performance';
 import { recordOpenCodeFallback } from '../../shared/opencode-queue';
 import { PERFORMANCE_LEVEL_IDS } from '../../config/state';
 import { AGENT_ROLES } from '../../config/performance';
@@ -57,6 +58,7 @@ import {
   isTeamApproved,
   liveRunAgent,
   markRunAgentReplaced,
+  markRunAgentReplacedIfMatches,
   refreshCursorRunAgentFromTranscriptCache,
   readEffectiveState,
   REPLACE_AGENT_MARKER,
@@ -67,8 +69,14 @@ import { ensureRunnerShims } from '../../shared/runner-shims';
 import { strayRunIdInText } from '../../shared/run-id-paths';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
+import {
+  correlatedCursorFailureGate,
+  CURSOR_FAILURE_BLOCK_FALLBACKS,
+} from './cursor-failures';
+import { cursorAgentPresumedDead } from './cursor-liveness';
 import { buildOpenCodePlanBatchDenyContext } from '../../shared/opencode-plan-directive';
 import { architectPhaseIncompleteReasons } from '../plan-guard/plan-readiness';
 import { resolveProjectRoot } from '../../shared/hook-paths';
@@ -76,7 +84,11 @@ import { modelCaptureCommand } from '../../shared/model-gate-command';
 import { openCodeGlobalAgentName, openCodeGlobalAgentPath } from '../../shared/materialize/opencode-assets';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string => skillBlock('agent-model', name, vars);
+const block = (
+  name: string,
+  vars: Record<string, string | number | null | undefined> = {},
+  fallback = '',
+): string => skillBlock('agent-model', name, vars, fallback);
 const PLAN_BATCH_GATED_ROLES = new Set(['senior-frontend', 'senior-backend']);
 
 function isPlanBatchGatedRole(role: string): boolean {
@@ -235,16 +247,130 @@ function continuationRecipe(host: string, agentId: string, role: string): { call
   };
 }
 
+// API/usage-limit replacement handling for the reuse gate. When the orchestrator
+// re-spawns a role because its subagent hit a provider limit, the retired model is
+// exhausted for the session — record it, then if the new spawn tries to REUSE an
+// already-exhausted model (or passes none, which inherits the parent), DENY and name
+// the next same-tier fallback that is still untried. Returns null when the failure
+// isn't a limit (a plain stop can reuse the same model) or the spawn already picked a
+// fresh model (rotation satisfied → proceed). Cursor-and-Claude safe: the store is the
+// same ledger the transcript reconciler and PostToolUse recorder write; this retry
+// inspection is the backstop when Cursor omits its post-Task lifecycle events.
+function performanceLevelFromState(state: Rec): string {
+  const performance = obj(state.performance);
+  return performance && typeof performance.level === 'string' && PERFORMANCE_LEVEL_IDS.has(performance.level)
+    ? performance.level
+    : 'current';
+}
+
+function exhaustedModelRotationDeny(
+  ctx: Ctx,
+  cwd: string,
+  runId: string,
+  role: string,
+  live: ReturnType<typeof liveRunAgent>,
+  toolInput: Rec,
+  spawnPromptText: string,
+  state: Rec,
+  opts: { requireDurableEvidence?: boolean } = {},
+): HookResult | null {
+  if (!runId || !modelParamEnforced(ctx.host)) return null;
+  // The retired agent's model is the one that actually hit the limit — the only
+  // model we KNOW is exhausted. With no live agent (nothing recorded to be dead)
+  // there is nothing to rotate off, so a replacement passes normally.
+  const anchor = (live && typeof live.model === 'string' ? live.model : '').trim();
+  if (!anchor) return null;
+  const durableEvidence = modelIsExhausted(cwd, runId, role, anchor);
+  if (opts.requireDurableEvidence ? !durableEvidence : !isApiUsageLimitText(spawnPromptText)) return null;
+  const passedModel = typeof toolInput.model === 'string' ? toolInput.model.trim() : '';
+  const exhausted = opts.requireDurableEvidence
+    ? exhaustedModelsForRole(cwd, runId, role)
+    : recordExhaustedModel(cwd, runId, role, anchor);
+  if (passedModel && !modelIsExhausted(cwd, runId, role, passedModel)) return null; // already rotated → allow
+  // The next model to use: the first tier-row family that is (a) not condemned in
+  // the exhaustion ledger and (b) actually OFFERED by this build (captured slug on
+  // Cursor). Resolving each family to its OWN slug via pickCursorSlug — NOT
+  // cursorRealSlug, which resolves through the whole tier row (that row starts
+  // with the exhausted family, so it would hand back the very model we're
+  // rotating off).
+  const plan = detectHostPlan(ctx.host);
+  const captured = ctx.host === 'cursor' ? freshCursorModels(cwd, plan) : [];
+  const level = performanceLevelFromState(state);
+  const team = obj(state.team);
+  const overrides = team && obj(team.overrides) ? team.overrides as Rec : null;
+  const planCtx = { host: ctx.host, plan };
+  const tier = role === 'quick-fix' ? 'cheapest' : effectiveTierForRole(level, role, overrides, planCtx);
+  if (!tier) return null;
+  const candidate = resolveTierFallback({
+    tier,
+    exhaustedModels: exhausted,
+    ...(ctx.host === 'cursor' ? { capturedModels: captured } : {}),
+  }, ctx.host, plan);
+  let fallbackFamily = candidate?.family || '';
+  let fallback = candidate?.model || '';
+  // A SAME-TIER swap costs no quality, so it rotates automatically. A drop to
+  // the Composer FLOOR — or no offered model left at all — is a REAL downgrade
+  // the user owns: route it through the SAME enable/fallback choice the
+  // pre-spawn guards use (shared once-per-run marker + model-choice.json; the
+  // model-choice gate pauses the build until the reply lands). "enable" also
+  // clears the exhaustion ledger (prompt-submit), so the restored model is
+  // retried instead of re-rotated off.
+  if (ctx.host === 'cursor' && isComposerFamily(fallbackFamily) && tier !== 'cheapest') {
+    const floorSlug = (captured.length ? pickCursorSlug([CURSOR_MODEL_FLOOR], captured) : '') || CURSOR_MODEL_FLOOR;
+    const choice = fallbackAlreadyAllowed(cwd, runId);
+    if (choice === 'enable-retry') return modelEnableRetryDeny(ctx, role, level, passedModel, anchor);
+    if (choice !== 'use-fallback') {
+      markModelChoicePrompted(cwd, runId);
+      return deny(block('cursor-api-limit-composer-choice', {
+        ROLE: role,
+        RECOMMENDED: anchor,
+        FALLBACK: floorSlug,
+      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-composer-choice']));
+    }
+    fallback = floorSlug; // user already accepted the fallback → prescribe the floor below
+  }
+  if (!fallbackFamily) {
+    const row = currentModelsForTier(tier, ctx.host, plan);
+    const allActuallyLimited = row.length > 0 && row.every((family) => modelIsExhausted(cwd, runId, role, family));
+    const composerAccepted = tier === 'cheapest' || fallbackAlreadyAllowed(cwd, runId) === 'use-fallback';
+    if (allActuallyLimited && composerAccepted) {
+      markModelExhaustionTerminal(cwd, runId, role);
+      return deny(block('cursor-api-limit-terminal', {
+        ROLE: role,
+        TRIED: exhausted.join(', '),
+      }, CURSOR_FAILURE_BLOCK_FALLBACKS['cursor-api-limit-terminal']));
+    }
+    const missing = row.find((family) => !captured.some((slug) => modelMatchesAny(slug, [family]))
+      && !modelIsExhausted(cwd, runId, role, family));
+    return deny(
+      missing
+        ? `traffic-one — ${role}'s API-limit retry has no exact captured candidate left in its original ${tier} tier. Model family "${missing}" is absent from Cursor's captured list, so use the model-availability flow (Settings → Models / re-capture); do not mark all models exhausted and do not change tiers.`
+        : `traffic-one — ${role}'s API-limit retry has no eligible model left in its original ${tier} tier. Stop retrying until the user restores API budget or enables another exact tier model.`,
+    );
+  }
+  const passedNote = passedModel
+    ? `You passed model="${passedModel}", which is exhausted this session.`
+    : 'You passed no `model`, so the subagent would inherit the parent model.';
+  const fallbackNote = fallback
+    ? `Re-send the SAME ${role} task with ${REPLACE_AGENT_MARKER} on the first line and model="${fallback}" (the next same-tier model still available).`
+    : `Re-send the SAME ${role} task with ${REPLACE_AGENT_MARKER} on the first line and a DIFFERENT same-tier model — every model in this tier's chain is exhausted, so drop to the next lower tier or ask the user to enable a model.`;
+  return deny(
+    `traffic-one — model rotation: ${role}'s previous subagent stopped on an API/usage limit, so ${anchor} is exhausted for this session and must not be re-used. ${passedNote} ${fallbackNote} `
+    + 'Resume from whatever the stopped agent already completed instead of restarting from scratch.',
+  );
+}
+
 function replacementJustified(prompt: string, host = ''): boolean {
   if ((host === 'opencode' || host === 'kilo' || host === 'windsurf')
     && /\b(previous|existing|current)\s+(opencode\s+)?(agent|task|subagent)\s+(completed|finished|returned|ended)\b|\bfix[- ]cycle\b|\bfollow[- ]up\b|\bno\s+resum(?:e|able|able\s+task)\b|\bcontinuation\s+(unavailable|unsupported)\b/i.test(prompt)) {
     return true;
   }
+  if (isApiUsageLimitText(prompt)) return true;
   // api/usage-limit vocabulary: a subagent stopped mid-run by provider limits is
   // dead for this session — continuation would re-hit the same limit. The
   // PostToolUse recorder also retires such agents proactively; this keeps the
   // replace path open when the result carried no classifiable text.
-  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed|usage limit|rate limit|api (usage )?limit|quota|stopped|aborted|interrupted)\b/i
+  return /\b(context exhausted|context limit|agent not found|resume failed|continuation failed|couldn'?t continue|could not continue|unresponsive|dead|stale|closed|stopped|aborted|interrupted)\b/i
     .test(prompt);
 }
 
@@ -425,7 +551,7 @@ function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string,
 // Task tool's `resume` continuation field (with `agentId` accepted for older
 // docs/models); a resume Task call is allowed straight through the reuse gate.
 export function agentModelGate(ctx: Ctx): HookResult {
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+  if (authChoiceAllowsContinue(ctx.cwd) || pluginUseDeclined(ctx.cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);
@@ -548,6 +674,19 @@ export function agentModelGate(ctx: Ctx): HookResult {
     recordOpenCodeFallback(cwd, spawnRunId, role, { status: 'paid_spawned' });
   }
 
+  // Cursor startup failures can have no Task postToolUse/subagentStop at all.
+  // Reconcile the child transcript now and enforce its persisted role-specific
+  // retry even when the failed registry entry was already retired and this Task
+  // carries no [t1-replace-agent] marker.
+  const correlatedFailure = correlatedCursorFailureGate(
+    ctx,
+    cwd,
+    spawnRunId,
+    role,
+    typeof toolInput.model === 'string' ? toolInput.model.trim() : '',
+  );
+  if (correlatedFailure) return correlatedFailure;
+
   // Subagent reuse (hosts with agent continuation): when this run already holds
   // a LIVE agent for the role, a fresh same-role spawn re-loads the entire
   // rules+skills context and re-explores the codebase — measured at 7 frontend
@@ -576,6 +715,27 @@ export function agentModelGate(ctx: Ctx): HookResult {
           ? live
           : (refreshCursorRunAgentFromTranscriptCache(cwd, state, raw, runId, role, parentSessionId) || live);
       };
+      const concurrentCursorReplacementDeny = (): HookResult | null => {
+        const concurrent = currentLive();
+        if (!concurrent) return null;
+        const concurrentResume = continuationAgentId(concurrent, 'cursor');
+        if (!concurrentResume) {
+          return deny(block('agent-reuse-await-cursor-id', {
+            ROLE: role,
+            RUN_ID: runId,
+            MARKER: REPLACE_AGENT_MARKER,
+          }));
+        }
+        const recipe = continuationRecipe('cursor', concurrentResume, role);
+        return deny(block('agent-reuse-continue', {
+          ROLE: role,
+          RUN_ID: runId,
+          AGENT_ID: concurrentResume,
+          MARKER: REPLACE_AGENT_MARKER,
+          CONTINUE_CALL: recipe.call,
+          CONTINUE_TOOL: recipe.tool,
+        }));
+      };
       const explicitResumeToken = toolInput.agentId ?? toolInput.agent_id ?? (ctx.host === 'cursor' ? toolInput.resume : undefined);
       const resumeToken = explicitResumeToken;
       const isResume = typeof resumeToken === 'string' && resumeToken.trim().length > 0;
@@ -587,8 +747,25 @@ export function agentModelGate(ctx: Ctx): HookResult {
       }
       if (spawnPromptText.includes(REPLACE_AGENT_MARKER)) {
         const live = currentLive();
-        if (live && !replacementJustified(spawnPromptText, ctx.host)) {
-          const resumeTarget = continuationAgentId(live, ctx.host);
+        const resumeTarget = live ? continuationAgentId(live, ctx.host) : '';
+        const markerJustified = replacementJustified(spawnPromptText, ctx.host);
+        const cursorAwaitingResume = ctx.host === 'cursor' && Boolean(live) && !resumeTarget;
+        const liveModel = live && typeof live.model === 'string' ? live.model.trim() : '';
+        // A retry prompt is orchestrator-authored and therefore can corroborate
+        // that a no-resume Cursor child is dead after the 90s grace, but it is
+        // not evidence that the named model actually ran or hit a limit. Only a
+        // durable result (transcript/PostToolUse) in the per-role ledger may
+        // condemn that model and trigger rotation. A marker with no failure
+        // signal remains on the conservative 270s hard timer.
+        const durableLiveModelExhaustion = cursorAwaitingResume
+          && Boolean(liveModel)
+          && modelIsExhausted(cwd, runId, role, liveModel);
+        const markerCorroborated = markerJustified || durableLiveModelExhaustion;
+        if (cursorAwaitingResume
+          && !cursorAgentPresumedDead(live, { corroborated: markerCorroborated })) {
+          return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+        }
+        if (live && !cursorAwaitingResume && !markerJustified) {
           if (resumeTarget) {
             const recipe = continuationRecipe(ctx.host, resumeTarget, role);
             return deny(block('agent-reuse-continue', {
@@ -598,19 +775,72 @@ export function agentModelGate(ctx: Ctx): HookResult {
           }
           return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
         }
-        markRunAgentReplaced(cwd, runId, role);
+        // API/usage-limit replacement: the retired agent's model is DEAD for this
+        // session. When Cursor omits post-Task events, this pre-spawn backstop still
+        // forces the respawn onto the next
+        // same-tier fallback instead of letting the orchestrator loop on the
+        // exhausted model (observed: two senior-backend spawns on the same
+        // gpt-5.6-terra-medium before it stumbled to Composer).
+        // Resume-capable/structured records (and non-Cursor hosts) retain the
+        // prompt backstop. A Cursor tool_<id> record without resume UUID reaches
+        // rotation only when durable evidence already condemns its exact model.
+        if (!cursorAwaitingResume || durableLiveModelExhaustion) {
+          const rotate = exhaustedModelRotationDeny(ctx, cwd, runId, role, live, toolInput, spawnPromptText, state, {
+            requireDurableEvidence: cursorAwaitingResume,
+          });
+          if (rotate) return rotate;
+        }
+        if (ctx.host === 'cursor' && live) {
+          const retired = markRunAgentReplacedIfMatches(
+            cwd,
+            runId,
+            role,
+            live.toolCallId || live.agentId,
+          );
+          if (!retired) {
+            const raced = concurrentCursorReplacementDeny();
+            if (raced) return raced;
+          }
+        } else {
+          markRunAgentReplaced(cwd, runId, role);
+        }
       } else if (!isResume) {
         const live = currentLive();
         if (live) {
           const resumeTarget = continuationAgentId(live, ctx.host);
           if (!resumeTarget && ctx.host === 'cursor') {
-            return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+            // The dead-agent escape: a Cursor agent that never surfaced a resume id
+            // past the grace is presumed dead — retire it and ALLOW this retry to
+            // spawn a fresh one, instead of deadlocking on await-cursor-id (which
+            // tells the orchestrator to wait for a resume id that will never come).
+            // Corroborated (retry names a failure/limit, or the role's exhaustion
+            // ledger is non-empty) → 90s grace; a signal-less "continue" retry
+            // waits for the hard window before the agent is presumed dead.
+            const corroborated = replacementJustified(spawnPromptText, ctx.host)
+              || isApiUsageLimitText(spawnPromptText)
+              || (typeof live.model === 'string' && live.model.trim().length > 0
+                && modelIsExhausted(cwd, runId, role, live.model.trim()));
+            if (cursorAgentPresumedDead(live, { corroborated })) {
+              const retired = markRunAgentReplacedIfMatches(
+                cwd,
+                runId,
+                role,
+                live.toolCallId || live.agentId,
+              );
+              if (!retired) {
+                const raced = concurrentCursorReplacementDeny();
+                if (raced) return raced;
+              }
+            } else {
+              return deny(block('agent-reuse-await-cursor-id', { ROLE: role, RUN_ID: runId, MARKER: REPLACE_AGENT_MARKER }));
+            }
+          } else {
+            const recipe = continuationRecipe(ctx.host, resumeTarget, role);
+            return deny(block('agent-reuse-continue', {
+              ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
+              CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
+            }));
           }
-          const recipe = continuationRecipe(ctx.host, resumeTarget, role);
-          return deny(block('agent-reuse-continue', {
-            ROLE: role, RUN_ID: runId, AGENT_ID: resumeTarget, MARKER: REPLACE_AGENT_MARKER,
-            CONTINUE_CALL: recipe.call, CONTINUE_TOOL: recipe.tool,
-          }));
         }
       }
     }

@@ -298,7 +298,17 @@ codex plugin add traffic-one@traffic-one-local
 ```
 /add-plugin /absolute/path/to/traffic-one/dist
 ```
+
 Or via Cursor Settings → Plugins → Add.
+
+Keep exactly ONE install per machine. Cursor auto-imports Claude Code's
+user-scope plugins, so if Claude Code already has traffic-one installed there is
+nothing to add in Cursor — a second copy (`/add-plugin` or
+`~/.cursor/plugins/local/`) shows up as a duplicate entry and every hook fires
+twice. To drop a copy, remove that one install. Never disable Cursor's
+third-party extensibility to hide the duplicate: that switch turns off ALL
+plugin hooks machine-wide (rules and MCP keep loading, so the breakage is
+silent — setup/deploy gates simply stop running).
 
 ### GitHub Copilot (CLI + VS Code)
 

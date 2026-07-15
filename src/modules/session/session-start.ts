@@ -15,6 +15,7 @@ import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isNonProjectRoot } from '../../shared/authoring-root';
 import { stampEmitMarker } from '../../shared/once';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
@@ -27,8 +28,11 @@ import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/pack
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
 import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
+import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
 import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
+import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
@@ -70,10 +74,21 @@ const block = (name: string, vars: Record<string, string | number | null | undef
 // agent-facing directive below handles startup or recovery for every host.
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
   if (ctx.host !== 'cursor' && ctx.host !== 'windsurf') return banner;
+  // Ask-first: the user has not said yes — never launch the wizard server (or
+  // leak its URL) just to decorate the banner. The plain banner is enough.
+  if (usePluginQuestionPending(cwd)) return banner;
   const prepared = prepareOnboardingServer(cwd, ctx.host);
   return prepared.kind === 'ready'
     ? formatWizardBanner(ctx.host, prepared.server.url, banner)
     : banner;
+}
+
+// The prompt that triggered this hook run, when the event carries one (the
+// UserPromptSubmit path re-runs the authed SessionStart body with its Ctx).
+// SessionStart events have no prompt — the ask-first question is then emitted
+// without a seed and the wizard's no-signal floor covers stack derivation.
+function ctxPromptText(ctx: Ctx): string {
+  return ctx.input.prompt || promptTextFromSubmit(ctx.input.raw) || '';
 }
 
 // The agent-facing setup directive. Every host receives either a live wizard URL
@@ -81,6 +96,10 @@ function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
 // write the canonical user-local runtime. OpenCode/Kilo/Windsurf keep compact,
 // host-safe prose; Claude/Codex/Cursor/Copilot receive the full walkthrough.
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
+  // Ask-first: relay the host-chat question — no wizard server, no URL, and no
+  // state writes anywhere until the user says whether this project uses Traffic
+  // One at all. The triggering prompt rides the yes command as the seed.
+  if (usePluginQuestionPending(cwd)) return usePluginQuestion(cwd, ctx.host, ctxPromptText(ctx));
   const prepared = prepareOnboardingServer(cwd, ctx.host);
   if (prepared.kind !== 'ready') return prepared.reason;
   const { server, waitCommand } = prepared;
@@ -97,13 +116,14 @@ function setupPendingDirective(ctx: Ctx, cwd: string): string {
       `Setup link: ${server.url}`,
       `Wait command: ${waitCommand}`,
       'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
+      `If the user does not want Traffic One for this project, run instead: ${onboardingDeclineCommand(cwd, ctx.host)}`,
     ].join('\n\n');
   }
   if (ctx.host === 'windsurf') {
     const vars = { URL: server.url, WAIT_CMD: waitCommand };
     return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.url, waitCommand));
   }
-  return block('server-deny-reason', { URL: server.url, WAIT_CMD: waitCommand });
+  return block('server-deny-reason', { URL: server.url, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) });
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
@@ -152,7 +172,7 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
   const cwd = sessionProjectRoot(ctx);
   const root = pluginRoot();
   const raw = ctx.input.raw;
-  const state = readEffectiveState(cwd);
+  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
 
   cleanActiveSkills();
   try {
@@ -188,6 +208,9 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = sessionProjectRoot(ctx);
   initializeTrafficOneEnv(cwd, ctx.host);
+  // The user chose not to use Traffic One for this project — stay silent.
+  // (UserPromptSubmit offers re-enabling when the user explicitly names it.)
+  if (pluginUseDeclined(cwd)) return noop();
 
   // A subagent must never run the full session-start hook (auth gate + onboarding +
   // mode routing). Onboarding belongs to the parent/main agent; the subagent only
@@ -234,7 +257,7 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const root = pluginRoot();
   const raw = ctx.input.raw;
 
-  const state = readEffectiveState(cwd);
+  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
 
   // Multi-project safety: reset to the 3-skill baseline before copying THIS
   // project's set. Digest retention sweep. Best-effort session materialization.
@@ -325,6 +348,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
   // ── Flow 2 — existing project with detectable stack → auto-write + prune ──
   if (mode === 'existing-codebase' || mode === 'existing-with-supabase') {
+    // Ask-first: the user has not said whether this project uses Traffic One.
+    // Emit ONLY the question — no auto-detected state write, no materialization,
+    // no code graph — so a "no" leaves the repo byte-identical.
+    if (usePluginQuestionPending(cwd)) {
+      return context(setupPendingDirective(ctx, cwd), {
+        systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
+      });
+    }
     const detected = detectStackFromCodebase(cwd);
     if (!detected.stack) {
       detected.stack = 'minimal';
@@ -392,8 +423,13 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const directive = setupPendingDirective(ctx, cwd);
   const spec = STACKS.minimal;
   const { body } = packBundle(root, spec.mandatory, spec.optional);
-  if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();
-  writeState(cwd, state);
+  // Ask-first: no writes until the user answers — the yes command (`--use`)
+  // creates the project state; a no leaves the project untouched. Otherwise
+  // stamp the stub state (mode + toolchain skeleton) exactly as before.
+  if (!usePluginQuestionPending(cwd)) {
+    if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();
+    writeState(cwd, state);
+  }
   return context(`${directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n${body}`, {
     systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
   });

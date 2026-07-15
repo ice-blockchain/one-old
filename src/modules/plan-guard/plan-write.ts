@@ -19,6 +19,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from '../agent-model/model-choice';
 import {
   applyPatchTargetPaths,
@@ -69,7 +70,7 @@ export function planWriteGate(ctx: Ctx): HookResult {
   // act on it (mirrors the onboarding gate). Without this, a stale or missing
   // .traffic-one here makes the plan gate fire on plugin development.
   if (isPluginAuthoringRoot(cwd)) return noop();
-  if (authChoiceAllowsContinue(cwd)) return noop();
+  if (authChoiceAllowsContinue(cwd) || pluginUseDeclined(cwd)) return noop();
 
   const projectRoot = resolveProjectRoot(cwd, rawFilePath || patchTargetPaths[0] || '', { ceiling: ctx.input.workspaceRoot });
   // The resolver's fallback can still hand back a dir inside the plugin repo.

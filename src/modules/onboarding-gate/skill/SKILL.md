@@ -102,8 +102,11 @@ stay blocked until setup completes. Do NOT restart the host, do NOT answer these
 setup questions yourself in chat, and do NOT hand-write launch.json — the wizard owns
 the questions and Traffic One owns the preview config.
 
-If the user would rather not use Traffic One, they can choose "Continue without
-Traffic One" from the Traffic One auth prompt.
+Don't use Traffic One: if the user says they don't want Traffic One for this
+project, run this command instead — it saves their choice outside the project (no
+files are added to it) and Traffic One stays silent here until they ask for it again:
+
+{{DECLINE_CMD}}
 <!-- T1BLOCK:END server-deny-reason -->
 
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
@@ -131,6 +134,8 @@ continue the user's original request. On Cursor, use `browser_tabs` with
 `{"action":"list"}`, match the exact `{{URL}}` tab, then close its index with
 `{"action":"close","index":<matching index>}`; never ask the user to close it.
 Full instructions were given on the first denial this session.
+Don't use Traffic One: if the user says they don't want it for this project, run:
+{{DECLINE_CMD}}
 <!-- T1BLOCK:END server-deny-reason-repeat -->
 
 <!-- T1BLOCK:BEGIN windsurf-server-deny-reason -->

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { makeCursorAdapter } from '../cursor';
 import { dispatch } from '../../core/dispatch';
-import { askUser, context, deny, noop } from '../../core/result';
+import { askUser, context, deny, followup, noop } from '../../core/result';
 import type { Handler } from '../../core/types';
 
 const cursor = makeCursorAdapter();
@@ -168,6 +168,40 @@ test('cursor: subagentStart → SubagentStart, no tool', () => {
   const s = cursor.parse(inv('subagent-start', { subagent_id: 'a', subagent_type: 'general' }));
   assert.equal(s.event, 'SubagentStart');
   assert.equal(s.tool, undefined);
+});
+
+test('cursor: stop/subagentStop subcommands map to dedicated lifecycle events', () => {
+  assert.equal(cursor.parse(inv('cursor-stop', { status: 'completed', loop_count: 0 })).event, 'Stop');
+  assert.equal(cursor.parse(inv('cursor-subagent-stop', {
+    status: 'error',
+    subagent_id: 'tool_1',
+    loop_count: 0,
+  })).event, 'SubagentStop');
+});
+
+test('cursor: stop/subagentStop serialize a continuation as exact followup_message JSON', async () => {
+  const stopHandlers: Handler[] = [
+    { id: 'continue-parent', event: 'Stop', priority: 0, run: () => followup('retry parent') },
+  ];
+  assert.deepEqual(JSON.parse(await dispatch(cursor, stopHandlers, inv('cursor-stop', {
+    status: 'completed',
+    loop_count: 0,
+  }))), { followup_message: 'retry parent' });
+
+  const subagentHandlers: Handler[] = [
+    { id: 'continue-child', event: 'SubagentStop', priority: 0, run: () => followup('retry child') },
+  ];
+  assert.deepEqual(JSON.parse(await dispatch(cursor, subagentHandlers, inv('cursor-subagent-stop', {
+    status: 'error',
+    loop_count: 0,
+  }))), { followup_message: 'retry child' });
+});
+
+test('cursor: followupMessage is inert outside stop/subagentStop', async () => {
+  const handlers: Handler[] = [
+    { id: 'wrong-event', event: 'SessionStart', priority: 0, run: () => followup('must not leak') },
+  ];
+  assert.deepEqual(JSON.parse(await dispatch(cursor, handlers, inv('session-start', {}))), {});
 });
 
 test('cursor: NET-NEW — generic preToolUse(Write) fires a PreToolUse/file-write gate (pre-write deny works)', async () => {

@@ -9,6 +9,9 @@
     { "event": "PostToolUse", "subcommand": "after-shell-execution", "tools": ["shell"] },
     { "event": "PostToolUse", "subcommand": "post-agent-spawned", "tools": ["spawn-agent"] },
     { "event": "SubagentStart", "subcommand": "subagent-start" },
+    { "event": "SubagentStop", "subcommand": "cursor-subagent-stop" },
+    { "event": "Stop", "subcommand": "cursor-stop" },
+    { "event": "SessionStart", "subcommand": "session-start" },
     { "event": "UserPromptSubmit", "subcommand": "user-prompt-submit" }
   ],
   "gates": [

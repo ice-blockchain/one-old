@@ -10,7 +10,7 @@
 // (the two biggest cutover risks). Non-destructive: the scratch dir is removed.
 // Exits non-zero on any failure.
 
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -38,7 +38,55 @@ function runShimAllowingBlock(scratch: string, shim: string, subcommand: string,
   return { status: result.status, stdout: result.stdout || '', stderr: result.stderr || '' };
 }
 
-function main(): void {
+interface AsyncShimResult {
+  status: number | null;
+  stdout: string;
+  stderr: string;
+}
+
+// Start a real bare-node shim process without awaiting it, so two lifecycle
+// invocations can contend on the compiled on-disk CAS exactly as Cursor hooks do.
+function runShimAsync(
+  scratch: string,
+  shim: string,
+  subcommand: string,
+  stdin: string,
+  env: NodeJS.ProcessEnv,
+  cwd?: string,
+): Promise<AsyncShimResult> {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(scratch, shim), subcommand], {
+      cwd,
+      env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const finish = (status: number | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    };
+    const timer = setTimeout(() => {
+      stderr += '\ncompiled-smoke: shim timed out after 20000ms';
+      child.kill('SIGKILL');
+    }, 20000);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.on('data', (chunk: string) => { stderr += chunk; });
+    child.on('error', (error) => {
+      stderr += `\n${error.message}`;
+      finish(null);
+    });
+    child.on('close', (status) => finish(status));
+    child.stdin.end(stdin);
+  });
+}
+
+async function main(): Promise<void> {
   const scratchRoot = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-'));
   // Mirror an installed plugin layout: <plugin>/scripts/*.cjs. This matters for
   // generated recovery commands, which must point at a real shipped runner.
@@ -47,6 +95,7 @@ function main(): void {
   fs.mkdirSync(scratch, { recursive: true });
   const authTmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-auth-'));
   const onboardingTmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-onboarding-'));
+  const cursorConcurrencyTmp = fs.mkdtempSync(path.join(os.tmpdir(), 't1-compiled-smoke-cursor-concurrency-'));
   try {
     // 1. Full cutover build: compile + descriptors + legacy-named shims.
     const built = buildRuntime(scratch);
@@ -135,6 +184,7 @@ function main(): void {
       HOME: onboardingHome,
       NODE_OPTIONS: [process.env.NODE_OPTIONS, `--require=${epermPreload}`].filter(Boolean).join(' '),
       TRAFFIC_ONE_AUTH: 'off',
+      TRAFFIC_ONE_ASK_USE_PLUGIN: 'off',
       TRAFFIC_ONE_HOST: 'codex',
       TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
       TRAFFIC_ONE_SMOKE_BLOCKED_PATH: blockedUserState,
@@ -213,6 +263,7 @@ function main(): void {
     try {
       const builtWaitCommands = require(path.join(scratch, 'shared', 'onboarding-server', 'wait-command.js')) as {
         onboardingBootstrapCommand(cwd: string, host: string): string;
+        onboardingUseBootstrapCommand(cwd: string, host: string, seedPrompt?: string): string;
       };
       const builtClassifier = require(path.join(scratch, 'shared', 'tool-classify.js')) as {
         isOnboardingBootstrapCommand(toolName: unknown, toolInput: unknown): boolean;
@@ -224,6 +275,30 @@ function main(): void {
       }
       if (!builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedBootstrap })) {
         fail('built classifier did not identify its metacharacter-safe bootstrap command');
+      }
+      // The ask-first yes recipe's link-first command (--use --bootstrap-only) must
+      // stay classifier-approved in the COMPILED bundle, and as a bootstrap (exit-fast).
+      const quotedUseBootstrap = builtWaitCommands.onboardingUseBootstrapCommand(quotedProject, 'codex');
+      if (!builtClassifier.isOnboardingWaitCommand('exec_command', { command: quotedUseBootstrap })) {
+        fail('built classifier rejected its --use --bootstrap-only command');
+      }
+      if (!builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedUseBootstrap })) {
+        fail('built classifier did not treat --use --bootstrap-only as a bootstrap invocation');
+      }
+      // The seeded yes command (--seed-prompt carries the user's request, quotes
+      // included) must survive quoting AND classify in the COMPILED bundle — this
+      // is how the ask-first flow defers all state writes to the recorded yes.
+      const quotedSeeded = builtWaitCommands.onboardingUseBootstrapCommand(
+        quotedProject, 'codex', "build the user's learning platform (v2); responsive",
+      );
+      if (!quotedSeeded.includes('--seed-prompt=')) {
+        fail('built wait-command dropped the --seed-prompt argument');
+      }
+      if (!builtClassifier.isOnboardingWaitCommand('exec_command', { command: quotedSeeded })) {
+        fail('built classifier rejected the seeded --use --bootstrap-only command');
+      }
+      if (!builtClassifier.isOnboardingBootstrapCommand('exec_command', { command: quotedSeeded })) {
+        fail('built classifier did not treat the seeded yes command as a bootstrap invocation');
       }
 
       const quotedEnv: NodeJS.ProcessEnv = {
@@ -270,7 +345,162 @@ function main(): void {
       else process.env.TRAFFIC_ONE_PLUGIN_ROOT = previousPluginRoot;
     }
 
-    // 4. The pipeline catches handler failures, but module discovery happens
+    // 4. Compiled Cursor lifecycle concurrency: finalize two role failures under
+    //    one parent with the compiled state API, then start Stop and SubagentStop
+    //    as separate bare-node processes. One process must atomically own the
+    //    complete parent batch; the loser must emit exactly {}. A replay proves
+    //    that the at-most-once markers survived process exit on disk.
+    const cursorProject = path.join(cursorConcurrencyTmp, 'project');
+    const cursorHome = path.join(cursorConcurrencyTmp, 'home');
+    const cursorProjects = path.join(cursorConcurrencyTmp, 'cursor-projects');
+    const cursorRunId = 'compiled-smoke-cursor-concurrency';
+    const cursorParentId = 'compiled-smoke-cursor-parent';
+    fs.mkdirSync(path.join(cursorProject, '.traffic-one'), { recursive: true });
+    fs.mkdirSync(cursorHome, { recursive: true });
+    fs.mkdirSync(cursorProjects, { recursive: true });
+    fs.writeFileSync(path.join(cursorProject, '.traffic-one', '.one.json'), `${JSON.stringify({
+      version: 1,
+      mode: 'existing-codebase',
+      stack: 'default',
+      onboardingComplete: true,
+      currentRunId: cursorRunId,
+    })}\n`, 'utf8');
+
+    const compiledCursorState = require(path.join(scratch, 'shared', 'state', 'index.js')) as {
+      recordCursorSpawnObservation(cwd: string, runId: string, input: Record<string, unknown>): Record<string, any> | null;
+      claimCursorSpawnObservation(cwd: string, runId: string, toolCallId: string, childTranscriptId: string, nowMs?: number): Record<string, any> | null;
+      updateCursorSpawnObservation(cwd: string, runId: string, childTranscriptId: string, patch: Record<string, unknown>, nowMs?: number): Record<string, any> | null;
+      consumeCursorSpawnObservation(cwd: string, runId: string, childTranscriptId: string, nowMs?: number): Record<string, any> | null;
+      listCursorSpawnObservations(cwd: string, runId: string): Array<Record<string, any>>;
+    };
+    const finalizedRoles = [
+      { role: 'senior-backend', toolCallId: 'tool_compiled_backend', childId: 'child-compiled-backend', model: 'compiled-backend-model' },
+      { role: 'senior-frontend', toolCallId: 'tool_compiled_frontend', childId: 'child-compiled-frontend', model: 'compiled-frontend-model' },
+    ];
+    const fixtureStartedAt = Date.now() - 5_000;
+    for (const [index, item] of finalizedRoles.entries()) {
+      const recorded = compiledCursorState.recordCursorSpawnObservation(cursorProject, cursorRunId, {
+        parentSessionId: cursorParentId,
+        toolCallId: item.toolCallId,
+        role: item.role,
+        requestedModel: item.model,
+        tier: 'balanced',
+        expectedModel: item.model,
+        startedAtMs: fixtureStartedAt + index,
+      });
+      if (!recorded) fail(`compiled cursor fixture did not record ${item.role}`);
+      const claimed = compiledCursorState.claimCursorSpawnObservation(
+        cursorProject, cursorRunId, item.toolCallId, item.childId, fixtureStartedAt + 100 + index,
+      );
+      if (!claimed) fail(`compiled cursor fixture did not claim ${item.role}'s child transcript`);
+      const updated = compiledCursorState.updateCursorSpawnObservation(cursorProject, cursorRunId, item.childId, {
+        outcome: 'generic',
+        error: `compiled generic failure for ${item.role}`,
+        directive: `compiled pending directive for ${item.role}`,
+        prescribedModel: null,
+      }, fixtureStartedAt + 200 + index);
+      if (!updated) fail(`compiled cursor fixture did not persist ${item.role}'s failure`);
+      const consumed = compiledCursorState.consumeCursorSpawnObservation(
+        cursorProject, cursorRunId, item.childId, fixtureStartedAt + 300 + index,
+      );
+      if (!consumed?.consumedAtMs) fail(`compiled cursor fixture did not finalize ${item.role}'s failure`);
+    }
+    const beforeLifecycle = compiledCursorState.listCursorSpawnObservations(cursorProject, cursorRunId);
+    if (beforeLifecycle.length !== 2
+      || beforeLifecycle.some((item) => !item.consumedAtMs || item.followupEmitted || item.retryHandled)) {
+      fail('compiled cursor fixture was not two finalized, unclaimed role failures');
+    }
+
+    const cursorLifecycleEnv: NodeJS.ProcessEnv = {
+      ...process.env,
+      HOME: cursorHome,
+      TRAFFIC_ONE_AUTH: 'off',
+      TRAFFIC_ONE_HOST: 'cursor',
+      TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
+      CURSOR_PLUGIN_ROOT: pluginRoot,
+      TRAFFIC_ONE_CURSOR_PROJECTS_DIR: cursorProjects,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cursorConcurrencyTmp, 'preferences.json'),
+      TRAFFIC_ONE_STATE_PATH: path.join(cursorConcurrencyTmp, 'machine.json'),
+    };
+    delete cursorLifecycleEnv.NODE_OPTIONS;
+    delete cursorLifecycleEnv.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+    const stopInput = JSON.stringify({
+      cwd: cursorProject,
+      workspace_roots: [cursorProject],
+      conversation_id: cursorParentId,
+      session_id: cursorParentId,
+      status: 'completed',
+      loop_count: 0,
+    });
+    const subagentStopInput = JSON.stringify({
+      cwd: cursorProject,
+      workspace_roots: [cursorProject],
+      conversation_id: cursorParentId,
+      parent_conversation_id: cursorParentId,
+      session_id: cursorParentId,
+      subagent_id: finalizedRoles[0]!.toolCallId,
+      status: 'error',
+      error_message: 'compiled non-abort subagent failure',
+      loop_count: 0,
+    });
+    const concurrentLifecycle = await Promise.all([
+      runShimAsync(scratch, 'cursor-hook-runtime.cjs', 'cursor-stop', stopInput, cursorLifecycleEnv, cursorProject),
+      runShimAsync(scratch, 'cursor-hook-runtime.cjs', 'cursor-subagent-stop', subagentStopInput, cursorLifecycleEnv, cursorProject),
+    ]);
+    for (const [index, result] of concurrentLifecycle.entries()) {
+      if (result.status !== 0) {
+        fail(`compiled Cursor lifecycle contender ${index + 1} exited ${result.status}: ${result.stderr}`);
+      }
+    }
+    let lifecycleJson: Array<Record<string, unknown>>;
+    try {
+      lifecycleJson = concurrentLifecycle.map((result) => JSON.parse(result.stdout || '{}') as Record<string, unknown>);
+    } catch {
+      fail(`compiled Cursor lifecycle emitted invalid JSON: ${concurrentLifecycle.map((item) => item.stdout).join(' | ')}`);
+    }
+    const followups = lifecycleJson.filter((item) => typeof item.followup_message === 'string');
+    const noops = lifecycleJson.filter((item) => Object.keys(item).length === 0);
+    if (followups.length !== 1 || noops.length !== 1 || Object.keys(followups[0]!).length !== 1) {
+      fail(`compiled Cursor lifecycle did not emit one combined followup and one {}: ${JSON.stringify(lifecycleJson)}`);
+    }
+    const combinedFollowup = String(followups[0]!.followup_message);
+    for (const { role } of finalizedRoles) {
+      const occurrences = combinedFollowup.split(role).length - 1;
+      if (occurrences !== 1) {
+        fail(`compiled Cursor combined followup mentioned ${role} ${occurrences} times instead of once`);
+      }
+    }
+
+    const afterLifecycle = compiledCursorState.listCursorSpawnObservations(cursorProject, cursorRunId);
+    if (afterLifecycle.length !== 2
+      || afterLifecycle.some((item) => item.followupEmitted !== true || !item.consumedAtMs || item.retryHandled)) {
+      fail('compiled Cursor lifecycle did not persist one complete at-most-once parent claim');
+    }
+    const persistedCursorState = JSON.parse(fs.readFileSync(
+      path.join(cursorProject, '.traffic-one', 'runs', cursorRunId, 'cursor-spawns.json'),
+      'utf8',
+    )) as { observations?: Array<Record<string, unknown>> };
+    if (persistedCursorState.observations?.length !== 2
+      || persistedCursorState.observations.some((item) => item.followupEmitted !== true)) {
+      fail('compiled Cursor at-most-once markers were not durable in cursor-spawns.json');
+    }
+
+    const replayLifecycle = await Promise.all([
+      runShimAsync(scratch, 'cursor-hook-runtime.cjs', 'cursor-stop', stopInput, cursorLifecycleEnv, cursorProject),
+      runShimAsync(scratch, 'cursor-hook-runtime.cjs', 'cursor-subagent-stop', subagentStopInput, cursorLifecycleEnv, cursorProject),
+    ]);
+    for (const [index, result] of replayLifecycle.entries()) {
+      if (result.status !== 0) fail(`compiled Cursor lifecycle replay ${index + 1} exited ${result.status}: ${result.stderr}`);
+      let replay: Record<string, unknown>;
+      try { replay = JSON.parse(result.stdout || '{}') as Record<string, unknown>; } catch {
+        fail(`compiled Cursor lifecycle replay emitted invalid JSON: ${result.stdout}`);
+      }
+      if (Object.keys(replay).length !== 0) {
+        fail(`compiled Cursor lifecycle replay escaped persisted at-most-once state: ${result.stdout}`);
+      }
+    }
+
+    // 5. The pipeline catches handler failures, but module discovery happens
     //    outside it. Remove the compiled modules after the ordinary runtime
     //    checks and prove every supported host's OUTER wrapper independently
     //    turns that wider failure into its native deny/block wire shape.
@@ -349,12 +579,15 @@ function main(): void {
       fs.renameSync(hiddenModulesDir, modulesDir);
     }
 
-    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; authenticated gates work, Codex reports approved EPERM bootstrap recovery, and all 7 host wrappers fail closed when compiled modules are unavailable.\n`);
+    process.stdout.write(`compiled-smoke: PASS — built ${built.modulesCopied} modules + ${built.shimsWritten.length} shims; authenticated gates work, Codex reports approved EPERM bootstrap recovery, Cursor lifecycle followups are parent-batch at-most-once under process contention, and all 7 host wrappers fail closed when compiled modules are unavailable.\n`);
   } finally {
     fs.rmSync(scratchRoot, { recursive: true, force: true });
     fs.rmSync(authTmp, { recursive: true, force: true });
     fs.rmSync(onboardingTmp, { recursive: true, force: true });
+    fs.rmSync(cursorConcurrencyTmp, { recursive: true, force: true });
   }
 }
 
-main();
+main().catch((error: unknown) => {
+  fail(error instanceof Error ? (error.stack || error.message) : String(error));
+});

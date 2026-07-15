@@ -9,6 +9,7 @@
 import * as path from 'path';
 
 import type { HostId } from '../../core/types';
+import { qualifiesAsSeedPrompt, truncateSeedPrompt } from '../onboarding/seed-prompt';
 import { trafficOneEnvShellPrefix } from '../state/traffic-one-paths';
 import { pluginRoot } from '../paths';
 
@@ -25,11 +26,29 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function onboardingRunnerCommand(cwd: string, host: HostId | undefined, flags: readonly string[]): string {
+function onboardingRunnerCommand(
+  cwd: string,
+  host: HostId | undefined,
+  flags: readonly string[],
+  trailingFlags: readonly string[] = [],
+): string {
   const flagArgs = flags.map((flag) => ` ${shellQuote(flag)}`).join('');
   const hostArg = host ? ` ${shellQuote(`--host=${host}`)}` : '';
+  const trailingArgs = trailingFlags.map((flag) => ` ${shellQuote(flag)}`).join('');
   const envPrefix = trafficOneEnvShellPrefix(cwd, host);
-  return `${envPrefix}node ${shellQuote(onboardingWaitScriptPath())}${flagArgs} ${shellQuote(cwd)}${hostArg}`;
+  return `${envPrefix}node ${shellQuote(onboardingWaitScriptPath())}${flagArgs} ${shellQuote(cwd)}${hostArg}${trailingArgs}`;
+}
+
+// The user's original request, carried on the `--use` yes commands as an inert
+// quoted `--seed-prompt=` argument. In ask-first mode NOTHING is written before
+// the recorded yes — so the prompt that triggered the question cannot be seeded
+// into project state by the hook (the old pre-decision write). The runner seeds
+// it right after recording the yes instead. Only a prompt that looks like a
+// project description is embedded; control prompts ("stop", greetings) never are.
+function seedPromptFlags(seedPrompt?: string): string[] {
+  const text = truncateSeedPrompt(seedPrompt || '');
+  if (!text || !qualifiesAsSeedPrompt(text)) return [];
+  return [`--seed-prompt=${text}`];
 }
 
 // Starts the wizard under an approval-capable shell process, prints its live URL,
@@ -46,4 +65,59 @@ export function onboardingBootstrapCommand(cwd: string, host?: HostId): string {
 // allow-list (isOnboardingWaitCommand) still recognizes it.
 export function onboardingWaitCommand(cwd: string, host?: HostId): string {
   return onboardingRunnerCommand(cwd, host, []);
+}
+
+// Records the durable per-project "don't use Traffic One" choice (stored in the
+// per-user prefs, never inside the repo) and exits. Every Traffic One hook
+// stands down for the project afterwards.
+export function onboardingDeclineCommand(cwd: string, host?: HostId): string {
+  return onboardingRunnerCommand(cwd, host, ['--decline']);
+}
+
+// Records "yes, use Traffic One here", then continues straight into the normal
+// wait behavior: starts the wizard, prints the setup link, and blocks until
+// setup completes — one command for the whole yes path. The prescribed recipe
+// (usePluginQuestion) is now the bootstrap-first two-step, but this single-command
+// form stays valid: sessions that saw the old prose re-run it verbatim.
+export function onboardingUseCommand(cwd: string, host?: HostId, seedPrompt?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--use'], seedPromptFlags(seedPrompt));
+}
+
+// The fast first half of the yes path: records "yes, use Traffic One here",
+// starts the wizard, prints its live `Setup link:` URL, and exits immediately
+// (TRAFFIC_ONE_SETUP_READY) — so the agent can SHOW/open the link BEFORE
+// blocking on the waiter. On hosts that hide a running command's stdout
+// (Claude desktop), the single blocking --use command buried the link for its
+// whole 8-minute timeout and read as a hang (observed 2026-07-14). Prints
+// TRAFFIC_ONE_SETUP_COMPLETE instead when setup is already done.
+export function onboardingUseBootstrapCommand(cwd: string, host?: HostId, seedPrompt?: string): string {
+  return onboardingRunnerCommand(cwd, host, ['--use', '--bootstrap-only'], seedPromptFlags(seedPrompt));
+}
+
+// The ask-first HOST-CHAT question (ASK_USE_PLUGIN_FIRST / TRAFFIC_ONE_ASK_USE_PLUGIN):
+// shown by the session/prompt/gate hooks INSTEAD of the wizard link while the
+// project has no recorded use-plugin choice. No wizard server is launched, no
+// URL is shown, and NOTHING is written (project or per-user) until the user
+// answers. `seedPrompt` (the request that triggered the question) rides the yes
+// command so the runner can seed `originalPrompt` AFTER recording the yes.
+export function usePluginQuestion(cwd: string, host?: HostId, seedPrompt?: string): string {
+  return [
+    'traffic-one — before anything else, ask the user IN CHAT and STOP for their reply:',
+    '',
+    '"Do you want to use the Traffic One plugin for this development?"',
+    '',
+    '- If the user answers YES, do these steps IN ORDER:',
+    `  1. Run this command — it saves the choice, starts the setup wizard, prints its \`Setup link:\` URL, and returns immediately:\n${onboardingUseBootstrapCommand(cwd, host, seedPrompt)}`,
+    '  2. Show that setup link to the user in chat; if a browser tool is available, ALSO open the link there so they can complete setup. (Skip this step if step 1 printed TRAFFIC_ONE_SETUP_COMPLETE.)',
+    `  3. Run this command to wait for setup to finish — IN THE BACKGROUND when the shell tool supports it (a foreground run hides its output while it blocks and looks hung). Do read-only orientation meanwhile; when it prints TRAFFIC_ONE_SETUP_COMPLETE, follow any directives it printed and continue the request:\n${onboardingWaitCommand(cwd, host)}`,
+    `- If the user answers NO, run this command — the choice is saved outside the project (no files are added to it) and Traffic One stays silent here until the user explicitly asks for it again:\n${onboardingDeclineCommand(cwd, host)}`,
+    '',
+    'Do not scaffold, edit files, or start building until the user has answered.',
+  ].join('\n');
+}
+
+// Clears a recorded decline so onboarding (and, in ask-first mode, the
+// use-plugin question) can run again when the user asks for Traffic One.
+export function onboardingReconsiderCommand(cwd: string, host?: HostId): string {
+  return onboardingRunnerCommand(cwd, host, ['--reconsider']);
 }

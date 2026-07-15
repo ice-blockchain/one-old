@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { context, deny, mergeResults } from '../result';
+import { context, deny, followup, mergeResults } from '../result';
 import { makeClaudeAdapter } from '../../adapters/claude';
 import { makeCursorAdapter } from '../../adapters/cursor';
 import type { HookInput } from '../types';
@@ -37,12 +37,22 @@ test('cursor adapter maps systemMessage→user_message and drops promptRequest',
   assert.equal('promptRequest' in out, false);
 });
 
-test('mergeResults keeps first systemMessage/promptRequest + concatenated context', () => {
-  const r = mergeResults([context('a', { systemMessage: 's1' }), context('b', { promptRequest: { id: 'p' } })]);
+test('mergeResults keeps first systemMessage/promptRequest/followupMessage + concatenated context', () => {
+  const r = mergeResults([
+    context('a', { systemMessage: 's1' }),
+    followup('continue once'),
+    followup('ignored second continuation'),
+    context('b', { promptRequest: { id: 'p' } }),
+  ]);
   assert.equal(r.kind, 'context');
   if (r.kind === 'context') {
     assert.equal(r.context, 'a\n\nb');
     assert.equal(r.systemMessage, 's1');
     assert.deepEqual(r.promptRequest, { id: 'p' });
+    assert.equal(r.followupMessage, 'continue once');
   }
+});
+
+test('followup rejects empty continuation text', () => {
+  assert.deepEqual(followup('   '), { kind: 'noop' });
 });

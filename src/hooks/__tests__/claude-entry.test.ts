@@ -15,11 +15,15 @@ function idsFor(sub: string): string[] {
 
 // ── Routing: each subcommand → exactly its legacy-equivalent handler set ──────
 test('subcommand routing maps each hook entry point to the right handlers', () => {
-  assert.deepEqual(idsFor('session-start'), ['session.session-start']);
+  assert.deepEqual(idsFor('session-start'), ['agent-model.cursor-failure-session-reconcile', 'session.session-start']);
   // agent-model.opencode-subagent-bind rides user-prompt-submit to bind a spawned
   // OpenCode role subagent's claim from its first prompt's [t1-role:] marker
   // (OpenCode has no SubagentStart); inert on other hosts.
-  assert.deepEqual(idsFor('user-prompt-submit'), ['agent-model.opencode-subagent-bind', 'session.prompt-submit']);
+  assert.deepEqual(idsFor('user-prompt-submit'), [
+    'agent-model.cursor-failure-prompt-reconcile',
+    'agent-model.opencode-subagent-bind',
+    'session.prompt-submit',
+  ]);
   // The PreToolUse gate subcommands each include the priority-0 auth gate
   // (so the pipeline checks auth first, matching the legacy per-gate auth check).
   // The authoring write-guard (priority 5) piggybacks the two write-gate
@@ -39,6 +43,8 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   assert.deepEqual(idsFor('post-stack-setup'), ['materialize.post-stack-setup']);
   // Codex SubagentStart binds the pending role claim to the new subagent thread id.
   assert.deepEqual(idsFor('subagent-start'), ['agent-model.subagent-start']);
+  assert.deepEqual(idsFor('cursor-subagent-stop'), ['agent-model.cursor-subagent-stop']);
+  assert.deepEqual(idsFor('cursor-stop'), ['agent-model.cursor-stop']);
 });
 
 test('an unknown subcommand routes to no handlers', () => {

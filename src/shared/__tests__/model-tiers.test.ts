@@ -89,7 +89,8 @@ test('OpenCode delegation models are the complete ordered free catalog and paid 
       'opencode/north-mini-code-free',
       'opencode/mimo-v2.5-free',
       'opencode/nemotron-3-ultra-free',
-      'opencode/gpt-5-nano',
+      'opencode/hy3-free',
+      'opencode/big-pickle',
     ],
   );
   const plus = modelTierSnapshot('opencode', 'plus');
@@ -318,8 +319,8 @@ test('opencode Go (plus) plan: paid opencode-go overlay + fallback chain; free i
   assert.equal(accept[0], 'opencode-go/qwen3.7-max');
   assert.ok(accept.includes('opencode-go/minimax-m3'));
   assert.equal(accept[accept.length - 1], 'opencode/deepseek-v4-flash-free', 'highest has a free tail');
-  // (opencode/gpt-5-nano is the permanently-free Zen exception — it lives only in the
-  // base free rows today; exempt it here if it ever joins a Go tail.)
+  // (No free-tier exception needed today — gpt-5-nano left the gateway catalog.
+  // If a free `opencode/gpt-*`-style id ever joins a Go tail, exempt it here.)
   assert.ok(!accept.some((m) => /^opencode\/(claude|gpt|gemini)/.test(m)), 'no Zen frontier models offered on Go');
   assert.deepEqual(modelTierSnapshot('opencode', 'plus').cheapest, [
     'opencode-go/deepseek-v4-flash',

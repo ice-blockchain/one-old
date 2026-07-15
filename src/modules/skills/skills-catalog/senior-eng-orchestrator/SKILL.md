@@ -264,6 +264,58 @@ only in local per-user/project preferences; never create `.traffic-one/cursor-mo
 Then run model-gate and pass each exact role→model value from its spawn map. (If capture is
 missing/stale, the spawn gate asks once and prints the command.)
 
+### Cursor subagent failure recovery (transcript-backed)
+
+Cursor startup failures can emit `subagentStart` without a matching Task
+`postToolUse`/`subagentStop`, leaving a role falsely recorded as live. Traffic One therefore
+reconciles terminal records only from Cursor child transcripts under `subagents/*.jsonl` and
+ties them back to immutable observations recorded at actual `subagentStart`. A parent
+`User aborted request` record is never a subagent result. If a role-less transcript cannot be
+uniquely correlated, do not condemn its model: the existing 90-second corroborated grace and
+270-second hard-dead timers recover the role without inventing a failure cause. Never announce or attempt a fallback named only by Cursor error prose. The next model is authoritative only when Traffic One supplies its exact slug. Issue the prescribed Task without a pre-tool model announcement, and do not say the replacement is running until a real `subagentStart` proves it.
+
+Cursor failure handling has exactly three flows:
+
+1. **Correlated API/usage limit** — retire the false-live agent immediately and retry
+   automatically on the next exact captured model from the role's **original** tier. Never infer
+   the tier from the failed model: the same family can occur in more than one tier. API-limit
+   entries are isolated per run + role, so one role never rotates another role's model.
+   Highest/balanced roles rotate automatically until the next candidate is the Composer floor;
+   then stop once and show exactly:
+
+   **enable** — Restore API budget for **<recommended-model>**, then reply **enable**; I’ll retry on the recommended model.
+
+   **fallback** — Proceed now on **<composer-slug>**.
+
+   Do not start Composer for that role until the user replies **fallback**. Composer is a normal
+   cheapest-tier candidate, not a downgrade: a cheapest role that limits on Composer continues
+   automatically to its next cheapest candidate. Once every eligible model actually started for
+   a role has reached an API limit, stop that role with a terminal per-role marker. Individual
+   limit entries may expire, but the terminal marker persists until **enable** or a new run; a
+   disabled/absent model was never tried and cannot count toward “all exhausted”.
+2. **Explicit model unavailable/not enabled** — use the Settings choice only when the runtime
+   error explicitly ties a model to `not enabled`, `disabled`, `unavailable`, `invalid`,
+   `unsupported`, `unknown`, or `not found` (the fresh captured model list remains the primary
+   availability signal). Show exactly:
+
+   **enable** — Open Cursor Settings → Models, enable **<failed-model>**, then reply **enable**; I’ll retry on the recommended model.
+
+   **fallback** — Proceed now on **<next-tier-slug>**.
+
+   **fallback** selects the next exact captured slug from each pending role's original tier;
+   **enable** preserves the run-level choice semantics and clears the run's API-limit ledger and
+   pending model decisions before retrying the recommended model.
+3. **Every other non-API failure** — use generic recovery and report the actual cause. Never
+   label authentication, network, user abort/cancel, context exhaustion, or a generic API error
+   as a disabled model, and never show Cursor Settings → Models without the positive vocabulary
+   above.
+
+Cursor may append a synthetic `Briefly inform the user…` background-completion request. It is not
+an **enable**/**fallback** decision. If the immediately preceding assistant turn already displayed
+the pending choice and no new tool work ran, do not call tools or repeat the options; reply at most
+`Awaiting your enable/fallback choice.` The run-level `model-choice-prompted` marker is not proof
+that the initial choice was shown and must not suppress it.
+
 ### Subagent token-economy: per-agent run claims
 
 `currentRunId` is already persisted in `.traffic-one/.one.json` (Traffic One pre-mints it
@@ -306,14 +358,12 @@ requirement for solo builds.
 
 Mechanics on hosts with agent continuation: Claude uses `SendMessage` when `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1` enables the tool; Codex uses `followup_task` for the next turn on the same agent (or `send_message` for an in-flight update); Cursor re-invokes the `Task` tool with `resume: "<agentId>"` (if a Cursor build exposes `agentId`, use the same id there); Copilot calls `task` with the recorded background `agent_id` (`name` alone creates a fresh task). OpenCode currently has no true Task resume field exposed to Traffic One: wait for the existing named role task while it runs; after it has completed, a follow-up/fix uses an explicit replacement spawn of the same named `senior-*` agent with `[t1-replace-agent]`, `[t1-role: senior-<role>]` first, and only the new findings inline. Kilo likewise waits for the live role and permits a new built-in `general` task only as an explicit `[t1-replace-agent]` replacement after completion, with `[t1-role: senior-<role>]` first and an immediate read of `.kilo/agents/senior-<role>.md`; never use `explore`.
 
-1. **First task for a role** → normal spawn (model param per tier). The spawn tool result footer prints the agent id (`agentId: <id> (use SendMessage …)`). The PostToolUse hook records it automatically in `.traffic-one/runs/<runId>/agents.json`.
+1. **First task for a role** → normal spawn (model param per tier). The spawn tool result footer prints the agent id (`agentId: <id> (use SendMessage …)`). The PostToolUse hook records the resumable agent in `.traffic-one/runs/<runId>/agents.json` where the host emits one; on Cursor, `subagentStart` separately records the immutable role/model/original-tier observation used by transcript reconciliation.
 2. **Every later task for that role** — the next planned part (e.g. frontend: foundation → learner journey → admin area), a fix cycle, a re-review, a re-test — goes to the SAME agent via the host-specific continuation primitive above. The PreToolUse gate DENIES a duplicate same-role spawn and names the recorded id, so following this protocol is also the only path the gate allows.
 3. **The continuation message carries ONLY what is new**: task spec, exact file paths, acceptance criteria, reviewer/tester findings verbatim. The agent keeps everything it already read (rules, skills, plan, digests, source) — never re-paste those. Treat the reply exactly like a spawn's final report: same digest + terminal-token contract.
 4. **Parallel roles stay parallel**: frontend ∥ backend follow-ups are two continuation calls in ONE message, exactly like parallel spawns.
 5. **Big roles split into sequential parts on purpose**: each continuation turn gets a fresh tool/turn budget, so "foundation, then admin" runs as message 1, then message 2 to the SAME agent — splitting no longer costs a context reload per part.
-6. **Replacement (rare)**: only when the continuation call errors ("agent not found"), the agent's replies show context exhaustion, or the agent STOPPED mid-run (API/usage/rate limit — the Task result says so), re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id.
-   - **A mid-run stop is reacted to IMMEDIATELY, not after sibling subagents finish.** The moment a Task result reports the subagent stopped (API/usage limit), replace it in the SAME turn — the parallel sibling keeps running; do not idle waiting for it.
-   - **An API/usage-limit stop also exhausts that model for this session**: the replacement spawn MUST pass the next same-tier fallback model from the announced lineup (the PostToolUse hook names it), never the model that just hit the limit. Tell the replacement what the stopped agent already completed so it resumes rather than restarts.
+6. **Replacement (rare)**: when a continuation call errors ("agent not found") or the agent's replies show context exhaustion, re-spawn the role with the literal marker `[t1-replace-agent]` in the spawn prompt — the gate allows that one replacement and re-records the new id. On Cursor, a transcript-correlated startup/mid-run failure follows the three-flow recovery above instead: reconciliation persists the result and tier anchor before retiring the false-live agent, and the prescribed retry is accepted even when it arrives without `[t1-replace-agent]`. React in the same turn rather than waiting for sibling roles, and pass only the exact prescribed fallback slug so a generic replacement cannot bypass model gates.
 7. **Keep role threads open after MVP/maintenance** unless the user explicitly archives them, the agent is dead/replaced, or host active-agent caps require cleanup. A finished first MVP is often the start of the next feature, and the live role context is valuable.
 8. **No continuation available** (flag unset, non-teams host): the gate stays inert; fall back to the legacy re-spawn protocol below. On OpenCode the gate is not inert: it records the child session id and denies bare duplicate spawns, so use the explicit replacement marker for completed-task follow-ups.
 

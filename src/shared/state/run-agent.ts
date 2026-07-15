@@ -4,6 +4,7 @@
 // scripts/hook-runtime/state/run-agent.cjs.
 
 import { obj, type Rec } from '../obj';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -17,6 +18,7 @@ import {
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../config/state';
+import { TIER_IDS, type TierId } from '../../config/model-tiers';
 import { stateTimestamp } from './io';
 import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
 import { writeState } from './normalize';
@@ -510,6 +512,682 @@ function removeSiblingPendingClaims(
   for (const item of pending) removePendingClaim(item.filePath);
 }
 
+// --- Cursor spawn observations ---------------------------------------------
+//
+// Cursor can emit `subagentStart` without ever emitting a matching Task result or
+// subagentStop. Keep the immutable facts known at spawn time in a separate,
+// run-scoped ledger so a later child transcript can be correlated even after the
+// live-agent registry entry has been retired. Classification deliberately lives in
+// the agent-model layer; this module only owns the one-to-one persistence
+// primitives and accepts the classifier's eventual outcome/directive.
+
+export const CURSOR_SPAWN_OBSERVATION_LIMIT = 128;
+
+export type CursorSpawnObservationOutcome = 'api-limit' | 'model-unavailable' | 'generic';
+export type CursorFollowupSuppressionReason =
+  | 'stop-user-abort'
+  | 'subagent-stop-user-abort'
+  | 'subagent-stop-parent-user-abort'
+  | 'parent-transcript-user-abort';
+
+export interface CursorSpawnObservationInput {
+  parentSessionId: string;
+  toolCallId: string;
+  role: string;
+  requestedModel: string;
+  tier: TierId;
+  expectedModel: string;
+  startedAtMs?: number;
+}
+
+export interface CursorSpawnObservation {
+  parentSessionId: string;
+  toolCallId: string;
+  role: string;
+  requestedModel: string;
+  tier: TierId;
+  expectedModel: string;
+  startedAtMs: number;
+  childTranscriptId: string | null;
+  outcome: CursorSpawnObservationOutcome | null;
+  error: string | null;
+  directive: string | null;
+  prescribedModel: string | null;
+  followupEmitted: boolean;
+  followupSuppressed: boolean;
+  followupSuppressedAtMs: number | null;
+  followupSuppressionReason: CursorFollowupSuppressionReason | null;
+  retryHandled: boolean;
+  claimedAtMs: number | null;
+  consumedAtMs: number | null;
+  updatedAtMs: number;
+}
+
+export interface CursorSpawnObservationUpdate {
+  outcome?: CursorSpawnObservationOutcome | null;
+  error?: string | null;
+  directive?: string | null;
+  prescribedModel?: string | null;
+  followupEmitted?: boolean;
+  retryHandled?: boolean;
+}
+
+// Snapshot produced by the agent-model selector immediately before a lifecycle
+// continuation is claimed. `expectedLatest*` fingerprints the newest immutable
+// SubagentStart for this parent+role, which may be a newer no-resume attempt the
+// selector has already allowed to age past the 90/270-second liveness window.
+// A start recorded after selection changes that fingerprint and invalidates the
+// whole parent batch instead of letting concurrent Stop hooks split it.
+export interface CursorFollowupClaimRequest {
+  parentSessionId: string;
+  expectedParentFingerprint: string;
+  role: string;
+  childTranscriptId: string;
+  toolCallId: string;
+  expectedLatestToolCallId: string;
+  expectedLatestStartedAtMs: number;
+  directive: string;
+  prescribedModel: string | null;
+}
+
+export interface CursorParentObservationSnapshot {
+  parentSessionId: string;
+  fingerprint: string;
+  observations: CursorSpawnObservation[];
+}
+
+export interface CursorParentFollowupSuppressionRequest {
+  scope: 'parent';
+  parentSessionId: string;
+  observedAtMs: number;
+  reason:
+    | 'stop-user-abort'
+    | 'subagent-stop-parent-user-abort'
+    | 'parent-transcript-user-abort';
+}
+
+export interface CursorChildFollowupSuppressionRequest {
+  scope: 'child';
+  toolCallId: string;
+  parentSessionId?: string;
+  observedAtMs: number;
+  reason: 'subagent-stop-user-abort';
+}
+
+export type CursorFollowupSuppressionRequest =
+  | CursorParentFollowupSuppressionRequest
+  | CursorChildFollowupSuppressionRequest;
+
+interface CursorSpawnObservationStore {
+  version: 1;
+  observations: CursorSpawnObservation[];
+}
+
+const CURSOR_SPAWN_OUTCOMES: ReadonlySet<string> = new Set(['api-limit', 'model-unavailable', 'generic']);
+const CURSOR_FOLLOWUP_SUPPRESSION_REASONS: ReadonlySet<string> = new Set([
+  'stop-user-abort',
+  'subagent-stop-user-abort',
+  'subagent-stop-parent-user-abort',
+  'parent-transcript-user-abort',
+]);
+const CURSOR_PARENT_FOLLOWUP_SUPPRESSION_REASONS: ReadonlySet<string> = new Set([
+  'stop-user-abort',
+  'subagent-stop-parent-user-abort',
+  'parent-transcript-user-abort',
+]);
+const CURSOR_SPAWN_LOCK_TIMEOUT_MS = 2_000;
+const CURSOR_SPAWN_LOCK_STALE_MS = 15_000;
+const CURSOR_SPAWN_LOCK_RETRY_MS = 10;
+const CURSOR_TRANSCRIPT_EARLY_TOLERANCE_MS = 1_500;
+const CURSOR_SPAWN_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function cursorSpawnObservationFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'cursor-spawns.json');
+}
+
+function cursorSpawnObservationLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.cursor-spawns.lock');
+}
+
+function validCursorTranscriptId(value: unknown): string | null {
+  const id = firstString(value);
+  if (!id || id.includes('..') || /[\\/]/.test(id)) return null;
+  return id.slice(0, 200);
+}
+
+function finiteMs(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return null;
+}
+
+function boundedCursorSpawnText(value: unknown, maxLength: number): string | null {
+  const text = firstString(value);
+  return text ? text.slice(0, maxLength) : null;
+}
+
+function normalizeCursorSpawnObservation(value: unknown): CursorSpawnObservation | null {
+  const item = obj(value);
+  if (!item) return null;
+  const parentSessionId = firstString(item.parentSessionId, item.parent_session_id);
+  const toolCallId = firstString(item.toolCallId, item.tool_call_id, item.observationId);
+  const role = firstString(item.role);
+  const requestedModel = firstString(item.requestedModel, item.requested_model, item.model);
+  const expectedModel = firstString(item.expectedModel, item.expected_model, item.expected);
+  const rawTier = firstString(item.tier);
+  const tier = rawTier && (TIER_IDS as readonly string[]).includes(rawTier) ? rawTier as TierId : null;
+  const startedAtMs = finiteMs(item.startedAtMs, item.started_at_ms, item.startedAt, item.createdAt);
+  if (!parentSessionId || !toolCallId || !role || !VALID_AGENT_ROLES.has(role)
+    || !requestedModel || !tier || !expectedModel || !startedAtMs) return null;
+
+  const childTranscriptId = validCursorTranscriptId(item.childTranscriptId ?? item.child_transcript_id);
+  const rawOutcome = firstString(item.outcome);
+  const outcome = rawOutcome && CURSOR_SPAWN_OUTCOMES.has(rawOutcome)
+    ? rawOutcome as CursorSpawnObservationOutcome
+    : null;
+  const error = boundedCursorSpawnText(item.error, 8_192);
+  const directive = boundedCursorSpawnText(item.directive, 8_192);
+  const prescribedModel = boundedCursorSpawnText(item.prescribedModel ?? item.prescribed_model, 300);
+  const claimedAtMs = finiteMs(item.claimedAtMs, item.claimed_at_ms, item.claimedAt);
+  const consumedAtMs = finiteMs(item.consumedAtMs, item.consumed_at_ms, item.consumedAt);
+  const followupSuppressed = item.followupSuppressed === true || item.followup_suppressed === true;
+  const rawSuppressionReason = firstString(item.followupSuppressionReason, item.followup_suppression_reason);
+  const followupSuppressionReason = rawSuppressionReason
+    && CURSOR_FOLLOWUP_SUPPRESSION_REASONS.has(rawSuppressionReason)
+    ? rawSuppressionReason as CursorFollowupSuppressionReason
+    : null;
+  const followupSuppressedAtMs = followupSuppressed
+    ? finiteMs(
+      item.followupSuppressedAtMs,
+      item.followup_suppressed_at_ms,
+      item.followupSuppressedAt,
+      item.followup_suppressed_at,
+    )
+    : null;
+  const updatedAtMs = finiteMs(item.updatedAtMs, item.updated_at_ms, item.updatedAt)
+    || followupSuppressedAtMs || consumedAtMs || claimedAtMs || startedAtMs;
+  return {
+    parentSessionId,
+    toolCallId,
+    role,
+    requestedModel,
+    tier,
+    expectedModel,
+    startedAtMs,
+    childTranscriptId,
+    outcome,
+    error,
+    directive,
+    prescribedModel,
+    followupEmitted: item.followupEmitted === true || item.followup_emitted === true,
+    followupSuppressed,
+    followupSuppressedAtMs: followupSuppressed ? (followupSuppressedAtMs || updatedAtMs) : null,
+    followupSuppressionReason: followupSuppressed ? followupSuppressionReason : null,
+    retryHandled: item.retryHandled === true || item.retry_handled === true,
+    claimedAtMs,
+    consumedAtMs,
+    updatedAtMs,
+  };
+}
+
+function readCursorSpawnObservationStore(cwd: string, runId: string): CursorSpawnObservationStore {
+  const raw = readJson<unknown>(cursorSpawnObservationFile(cwd, runId), null);
+  const record = obj(raw);
+  // Tolerate the pre-versioned array and the early `spawns` key so an in-flight
+  // run survives a plugin upgrade. Invalid/duplicate rows are ignored rather than
+  // weakening the child-transcript one-to-one invariant.
+  const values = Array.isArray(raw)
+    ? raw
+    : (Array.isArray(record?.observations) ? record.observations : (Array.isArray(record?.spawns) ? record.spawns : []));
+  const seenTools = new Set<string>();
+  const seenChildren = new Set<string>();
+  const observations: CursorSpawnObservation[] = [];
+  for (const value of values) {
+    const observation = normalizeCursorSpawnObservation(value);
+    if (!observation || seenTools.has(observation.toolCallId)) continue;
+    if (observation.childTranscriptId && seenChildren.has(observation.childTranscriptId)) continue;
+    seenTools.add(observation.toolCallId);
+    if (observation.childTranscriptId) seenChildren.add(observation.childTranscriptId);
+    observations.push(observation);
+  }
+  observations.sort((a, b) => a.startedAtMs - b.startedAtMs || a.toolCallId.localeCompare(b.toolCallId));
+  return { version: 1, observations: observations.slice(-CURSOR_SPAWN_OBSERVATION_LIMIT) };
+}
+
+function cursorParentObservationFingerprint(
+  observations: readonly CursorSpawnObservation[],
+  parentSessionId: string,
+): string {
+  const rows = observations
+    .filter((observation) => observation.parentSessionId === parentSessionId)
+    .sort((left, right) => (
+      left.startedAtMs - right.startedAtMs || left.toolCallId.localeCompare(right.toolCallId)
+    ))
+    .map((observation) => [
+      observation.parentSessionId,
+      observation.role,
+      observation.toolCallId,
+      observation.startedAtMs,
+      observation.requestedModel,
+      observation.tier,
+      observation.expectedModel,
+      observation.childTranscriptId,
+      observation.claimedAtMs,
+      observation.outcome,
+      observation.error,
+      observation.directive,
+      observation.prescribedModel,
+      observation.consumedAtMs,
+      observation.followupEmitted,
+      observation.followupSuppressed,
+      observation.followupSuppressedAtMs,
+      observation.followupSuppressionReason,
+      observation.retryHandled,
+    ]);
+  return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+}
+
+function writeCursorSpawnObservationStore(cwd: string, runId: string, observations: CursorSpawnObservation[]): void {
+  const store: CursorSpawnObservationStore = {
+    version: 1,
+    observations: [...observations]
+      .sort((a, b) => a.startedAtMs - b.startedAtMs || a.toolCallId.localeCompare(b.toolCallId))
+      .slice(-CURSOR_SPAWN_OBSERVATION_LIMIT),
+  };
+  writeJson(cursorSpawnObservationFile(cwd, runId), store);
+}
+
+function withCursorSpawnObservationLock<T>(cwd: string, runId: string, mutate: () => T): T | null {
+  const lockDir = cursorSpawnObservationLockDir(cwd, runId);
+  const deadline = Date.now() + CURSOR_SPAWN_LOCK_TIMEOUT_MS;
+  try { fs.mkdirSync(path.dirname(lockDir), { recursive: true }); } catch { return null; }
+  while (true) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch {
+      try {
+        const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+        if (age > CURSOR_SPAWN_LOCK_STALE_MS) {
+          fs.rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) return null;
+      Atomics.wait(CURSOR_SPAWN_LOCK_WAIT, 0, 0, CURSOR_SPAWN_LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return mutate();
+  } finally {
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
+export function listCursorSpawnObservations(cwd: string, runId: string): CursorSpawnObservation[] {
+  if (!runId || isNonProjectRoot(cwd)) return [];
+  return readCursorSpawnObservationStore(cwd, runId).observations;
+}
+
+/**
+ * One-read snapshot for a parent lifecycle pass. The caller derives its complete
+ * role set and selection from these rows, then supplies the fingerprint to the
+ * batch CAS. Any start/result/action transition after this read invalidates the
+ * complete continuation instead of allowing a stale subset to be emitted.
+ */
+export function cursorParentObservationSnapshot(
+  cwd: string,
+  runId: string,
+  parentSessionId: string,
+): CursorParentObservationSnapshot | null {
+  const parentId = firstString(parentSessionId);
+  if (!runId || !parentId || isNonProjectRoot(cwd)) return null;
+  const observations = readCursorSpawnObservationStore(cwd, runId).observations
+    .filter((observation) => observation.parentSessionId === parentId)
+    .map((observation) => ({ ...observation }));
+  return {
+    parentSessionId: parentId,
+    fingerprint: cursorParentObservationFingerprint(observations, parentId),
+    observations,
+  };
+}
+
+// Record the facts known at subagentStart. A repeated tool-call id is idempotent
+// and never rewrites the immutable spawn anchor, even if a later hook carries
+// different metadata.
+export function recordCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  input: CursorSpawnObservationInput,
+): CursorSpawnObservation | null {
+  if (!runId || isNonProjectRoot(cwd)) return null;
+  const startedAtMs = finiteMs(input.startedAtMs) || Date.now();
+  const candidate = normalizeCursorSpawnObservation({
+    ...input,
+    startedAtMs,
+    childTranscriptId: null,
+    outcome: null,
+    error: null,
+    directive: null,
+    prescribedModel: null,
+    followupEmitted: false,
+    followupSuppressed: false,
+    followupSuppressedAtMs: null,
+    followupSuppressionReason: null,
+    retryHandled: false,
+    claimedAtMs: null,
+    consumedAtMs: null,
+    updatedAtMs: startedAtMs,
+  });
+  if (!candidate) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const existing = store.observations.find((item) => item.toolCallId === candidate.toolCallId);
+    if (existing) return existing;
+    store.observations.push(candidate);
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return candidate;
+  });
+}
+
+// Attach one child transcript to one spawn observation. Both directions are
+// unique: a transcript can never be claimed by two starts, and a start can never
+// be rebound to a different transcript. Repeating the same claim is idempotent.
+export function claimCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  toolCallId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  const toolId = firstString(toolCallId);
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !toolId || !childId || isNonProjectRoot(cwd)) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.toolCallId === toolId);
+    if (!target) return null;
+    const claimedElsewhere = store.observations.some((item) => (
+      item.toolCallId !== toolId && item.childTranscriptId === childId
+    ));
+    if (claimedElsewhere || (target.childTranscriptId && target.childTranscriptId !== childId)) return null;
+    if (target.childTranscriptId === childId) return target;
+    target.childTranscriptId = childId;
+    target.claimedAtMs = finiteMs(nowMs) || Date.now();
+    target.updatedAtMs = target.claimedAtMs;
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
+export function cursorSpawnObservationForChild(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  return readCursorSpawnObservationStore(cwd, runId).observations
+    .find((item) => item.childTranscriptId === childId) || null;
+}
+
+export function updateCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  patch: CursorSpawnObservationUpdate,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  if (patch.outcome !== undefined && patch.outcome !== null && !CURSOR_SPAWN_OUTCOMES.has(patch.outcome)) return null;
+  if (patch.error !== undefined && patch.error !== null && typeof patch.error !== 'string') return null;
+  if (patch.directive !== undefined && patch.directive !== null && typeof patch.directive !== 'string') return null;
+  if (patch.prescribedModel !== undefined && patch.prescribedModel !== null && typeof patch.prescribedModel !== 'string') return null;
+  if (patch.followupEmitted !== undefined && typeof patch.followupEmitted !== 'boolean') return null;
+  if (patch.retryHandled !== undefined && typeof patch.retryHandled !== 'boolean') return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.childTranscriptId === childId);
+    if (!target) return null;
+    if (patch.outcome !== undefined) target.outcome = patch.outcome;
+    if (patch.error !== undefined) target.error = boundedCursorSpawnText(patch.error, 8_192);
+    if (patch.directive !== undefined) target.directive = boundedCursorSpawnText(patch.directive, 8_192);
+    if (patch.prescribedModel !== undefined) target.prescribedModel = boundedCursorSpawnText(patch.prescribedModel, 300);
+    // Action ownership is monotonic. A generic patch may set the marker, but it
+    // can never reopen a one-shot follow-up/retry already claimed by another hook.
+    if (patch.followupEmitted === true) target.followupEmitted = true;
+    if (patch.retryHandled === true) target.retryHandled = true;
+    target.updatedAtMs = finiteMs(nowMs) || Date.now();
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
+function cursorObservationComesAfter(
+  left: CursorSpawnObservation,
+  right: CursorSpawnObservation,
+): boolean {
+  return left.startedAtMs > right.startedAtMs
+    || (left.startedAtMs === right.startedAtMs && left.toolCallId > right.toolCallId);
+}
+
+function latestCursorObservation(
+  observations: readonly CursorSpawnObservation[],
+  predicate: (observation: CursorSpawnObservation) => boolean,
+): CursorSpawnObservation | null {
+  let latest: CursorSpawnObservation | null = null;
+  for (const observation of observations) {
+    if (!predicate(observation)) continue;
+    if (!latest || cursorObservationComesAfter(observation, latest)) latest = observation;
+  }
+  return latest;
+}
+
+function validCursorFollowupClaimRequest(request: CursorFollowupClaimRequest): boolean {
+  return Boolean(
+    firstString(request.parentSessionId)
+    && /^[a-f0-9]{64}$/.test(request.expectedParentFingerprint)
+    && firstString(request.toolCallId)
+    && firstString(request.expectedLatestToolCallId)
+    && VALID_AGENT_ROLES.has(request.role)
+    && validCursorTranscriptId(request.childTranscriptId)
+    && typeof request.expectedLatestStartedAtMs === 'number'
+    && Number.isFinite(request.expectedLatestStartedAtMs)
+    && request.expectedLatestStartedAtMs > 0
+    && typeof request.directive === 'string'
+    && request.directive.length > 0
+    && request.directive.length <= 8_192
+    && (request.prescribedModel === null
+      || (typeof request.prescribedModel === 'string' && request.prescribedModel.length <= 300)),
+  );
+}
+
+/**
+ * Atomically owns one complete parent lifecycle continuation batch.
+ *
+ * The selector refreshes directives and computes liveness outside this lock,
+ * then supplies an immutable fingerprint for each role. This function performs
+ * no nested state calls: one unlocked store read, validation of the entire
+ * batch, and one unlocked store write. Any stale row makes the whole batch lose
+ * the CAS so concurrent Stop/subagentStop hooks can never partition roles.
+ */
+export function claimCursorFollowupsBatch(
+  cwd: string,
+  runId: string,
+  requests: readonly CursorFollowupClaimRequest[],
+  nowMs: number = Date.now(),
+): CursorSpawnObservation[] {
+  if (!runId || !requests.length || isNonProjectRoot(cwd)) return [];
+  if (!requests.every(validCursorFollowupClaimRequest)) return [];
+  const parentSessionId = requests[0]!.parentSessionId;
+  if (requests.some((request) => request.parentSessionId !== parentSessionId)) return [];
+  const expectedParentFingerprint = requests[0]!.expectedParentFingerprint;
+  if (requests.some((request) => request.expectedParentFingerprint !== expectedParentFingerprint)) return [];
+  if (new Set(requests.map((request) => request.role)).size !== requests.length) return [];
+  if (new Set(requests.map((request) => request.childTranscriptId)).size !== requests.length) return [];
+  const claimedAtMs = finiteMs(nowMs) || Date.now();
+
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    if (cursorParentObservationFingerprint(store.observations, parentSessionId)
+      !== expectedParentFingerprint) return [];
+    const claimed: CursorSpawnObservation[] = [];
+
+    for (const request of requests) {
+      const target = store.observations.find((observation) => (
+        observation.parentSessionId === request.parentSessionId
+        && observation.role === request.role
+        && observation.toolCallId === request.toolCallId
+        && observation.childTranscriptId === request.childTranscriptId
+      ));
+      if (!target || !target.outcome || !target.consumedAtMs || !target.directive
+        || target.retryHandled || target.followupEmitted || target.followupSuppressed
+        || target.directive !== request.directive
+        || target.prescribedModel !== request.prescribedModel) return [];
+
+      const latestFinalized = latestCursorObservation(store.observations, (observation) => (
+        observation.parentSessionId === request.parentSessionId
+        && observation.role === request.role
+        && observation.consumedAtMs !== null
+      ));
+      if (!latestFinalized || latestFinalized.toolCallId !== target.toolCallId
+        || latestFinalized.childTranscriptId !== target.childTranscriptId) return [];
+
+      const latest = latestCursorObservation(store.observations, (observation) => (
+        observation.parentSessionId === request.parentSessionId
+        && observation.role === request.role
+      ));
+      if (!latest || latest.toolCallId !== request.expectedLatestToolCallId
+        || latest.startedAtMs !== request.expectedLatestStartedAtMs) return [];
+      claimed.push(target);
+    }
+
+    for (const target of claimed) {
+      target.followupEmitted = true;
+      target.updatedAtMs = claimedAtMs;
+    }
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return claimed.map((observation) => ({ ...observation }));
+  }) || [];
+}
+
+function validCursorFollowupSuppressionRequest(request: CursorFollowupSuppressionRequest): boolean {
+  if (!Number.isFinite(request.observedAtMs) || request.observedAtMs <= 0) return false;
+  if (request.scope === 'child') {
+    return request.reason === 'subagent-stop-user-abort'
+      && Boolean(firstString(request.toolCallId))
+      && (request.parentSessionId === undefined || Boolean(firstString(request.parentSessionId)));
+  }
+  return Boolean(firstString(request.parentSessionId))
+    && CURSOR_PARENT_FOLLOWUP_SUPPRESSION_REASONS.has(request.reason);
+}
+
+/**
+ * Durably suppress lifecycle continuation for observations that existed when a
+ * user-abort signal was observed. Parent scope covers every pre-event row for
+ * that parent; child scope is exact by immutable SubagentStart tool id. Future
+ * starts are deliberately outside the observedAtMs watermark. First evidence
+ * wins so duplicate lifecycle hooks cannot rewrite the audit reason/timestamp.
+ */
+export function suppressCursorFollowupsBatch(
+  cwd: string,
+  runId: string,
+  request: CursorFollowupSuppressionRequest,
+): CursorSpawnObservation[] {
+  if (!runId || isNonProjectRoot(cwd) || !validCursorFollowupSuppressionRequest(request)) return [];
+  const suppressedAtMs = request.observedAtMs;
+
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const changed = store.observations.filter((observation) => {
+      if (observation.followupSuppressed || observation.startedAtMs > request.observedAtMs) return false;
+      if (request.scope === 'child') {
+        return observation.toolCallId === request.toolCallId
+          && (!request.parentSessionId || observation.parentSessionId === request.parentSessionId);
+      }
+      return observation.parentSessionId === request.parentSessionId;
+    });
+    if (!changed.length) return [];
+    for (const observation of changed) {
+      observation.followupSuppressed = true;
+      observation.followupSuppressedAtMs = suppressedAtMs;
+      observation.followupSuppressionReason = request.reason;
+      observation.updatedAtMs = suppressedAtMs;
+    }
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return changed.map((observation) => ({ ...observation }));
+  }) || [];
+}
+
+function markCursorSpawnObservationOnce(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  field: 'followupEmitted' | 'retryHandled',
+  nowMs: number,
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.childTranscriptId === childId);
+    if (!target || target[field]
+      || (field === 'followupEmitted' && (target.retryHandled || target.followupSuppressed))) return null;
+    target[field] = true;
+    target.updatedAtMs = finiteMs(nowMs) || Date.now();
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
+// Atomic compare-and-set markers for hooks that may race. A null return means the
+// transcript is unknown or another hook already owns the follow-up/retry action.
+export function markCursorSpawnObservationFollowupEmitted(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  return markCursorSpawnObservationOnce(cwd, runId, childTranscriptId, 'followupEmitted', nowMs);
+}
+
+export function markCursorSpawnObservationRetryHandled(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  return markCursorSpawnObservationOnce(cwd, runId, childTranscriptId, 'retryHandled', nowMs);
+}
+
+export function consumeCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.childTranscriptId === childId);
+    if (!target) return null;
+    if (target.consumedAtMs) return target;
+    target.consumedAtMs = finiteMs(nowMs) || Date.now();
+    target.updatedAtMs = target.consumedAtMs;
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
 function cursorProjectsRoot(): string | null {
   const override = firstString(process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR);
   if (override) return override;
@@ -543,10 +1221,50 @@ function workspaceRootsForCursorLookup(cwd: string, rawInput: unknown): string[]
   ]);
 }
 
-interface CursorTranscriptCandidate {
+export interface CursorTranscriptCandidate {
   filePath: string;
   parentSessionId: string;
+  childTranscriptId: string;
+  birthtimeMs: number;
   mtimeMs: number;
+}
+
+// Cursor appends to child transcripts, so mtime reflects the last write rather
+// than the spawn. birthtime is the correlation anchor when the filesystem
+// exposes it; mtime remains available (and is the fallback on filesystems whose
+// birthtime is zero/invalid).
+export function cursorTranscriptCandidateTimeMs(candidate: CursorTranscriptCandidate): number {
+  return Number.isFinite(candidate.birthtimeMs) && candidate.birthtimeMs > 0
+    ? candidate.birthtimeMs
+    : candidate.mtimeMs;
+}
+
+function cursorTranscriptCandidate(
+  filePath: string,
+  parentSessionId: string,
+  childTranscriptId: string,
+): CursorTranscriptCandidate | null {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return null;
+    return {
+      filePath,
+      parentSessionId,
+      childTranscriptId,
+      birthtimeMs: Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? stat.birthtimeMs : 0,
+      mtimeMs: stat.mtimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sortCursorTranscriptCandidates(candidates: CursorTranscriptCandidate[]): CursorTranscriptCandidate[] {
+  return candidates.sort((a, b) => (
+    cursorTranscriptCandidateTimeMs(b) - cursorTranscriptCandidateTimeMs(a)
+    || b.mtimeMs - a.mtimeMs
+    || a.filePath.localeCompare(b.filePath)
+  ));
 }
 
 function subagentTranscriptCandidates(projectDir: string, sessionId: string): CursorTranscriptCandidate[] {
@@ -556,12 +1274,8 @@ function subagentTranscriptCandidates(projectDir: string, sessionId: string): Cu
     for (const parent of fs.readdirSync(agentTranscriptsDir, { withFileTypes: true })) {
       if (!parent.isDirectory()) continue;
       const filePath = path.join(agentTranscriptsDir, parent.name, 'subagents', `${sessionId}.jsonl`);
-      try {
-        const stat = fs.statSync(filePath);
-        if (stat.isFile()) out.push({ filePath, parentSessionId: parent.name, mtimeMs: stat.mtimeMs });
-      } catch {
-        // no subagent transcript under this parent
-      }
+      const candidate = cursorTranscriptCandidate(filePath, parent.name, sessionId);
+      if (candidate) out.push(candidate);
     }
   } catch {
     // no Cursor transcript cache for this project
@@ -586,18 +1300,65 @@ function allSubagentTranscriptCandidates(projectDir: string, parentSessionId?: s
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
         const filePath = path.join(dir, entry.name);
-        try {
-          const stat = fs.statSync(filePath);
-          if (stat.isFile()) out.push({ filePath, parentSessionId: parent.name, mtimeMs: stat.mtimeMs });
-        } catch {
-          // transcript disappeared mid-scan
-        }
+        const childTranscriptId = entry.name.slice(0, -'.jsonl'.length);
+        const candidate = cursorTranscriptCandidate(filePath, parent.name, childTranscriptId);
+        if (candidate) out.push(candidate);
       }
     }
   } catch {
     // no Cursor transcript cache for this project
   }
   return out;
+}
+
+// List Cursor CHILD transcripts for the current workspace (optionally one parent
+// session). The traversal is intentionally rooted at `subagents/`; it never reads
+// or returns the parent `<session>.jsonl`, whose terminal error can be an unrelated
+// "User aborted request". Paths are de-duplicated because workspace_roots can name
+// the same project through both a symlink and its real path.
+export function listCursorSubagentTranscriptCandidates(
+  cwd: string,
+  rawInput: unknown,
+  parentSessionId?: string | null,
+): CursorTranscriptCandidate[] {
+  if (isNonProjectRoot(cwd)) return [];
+  const root = cursorProjectsRoot();
+  if (!root) return [];
+
+  const projectRoots = workspaceRootsForCursorLookup(cwd, rawInput);
+  const projectDirs: string[] = [];
+  for (const projectRoot of projectRoots) {
+    for (const dirName of cursorProjectDirNames(projectRoot)) {
+      projectDirs.push(path.join(root, dirName));
+    }
+  }
+
+  const candidates: CursorTranscriptCandidate[] = [];
+  for (const projectDir of uniqueStrings(projectDirs)) {
+    candidates.push(...allSubagentTranscriptCandidates(projectDir, parentSessionId));
+  }
+
+  // Cursor has changed project-key encoding before. Fall back to directories
+  // ending in the workspace basename only when exact keys yield no candidates.
+  if (candidates.length === 0) {
+    const basenames = uniqueStrings(projectRoots.map((projectRoot) => path.basename(projectRoot)).filter(Boolean));
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (!basenames.some((base) => entry.name === base || entry.name.endsWith(`-${base}`))) continue;
+        candidates.push(...allSubagentTranscriptCandidates(path.join(root, entry.name), parentSessionId));
+      }
+    } catch {
+      // no Cursor projects root
+    }
+  }
+
+  const unique = new Map<string, CursorTranscriptCandidate>();
+  for (const candidate of candidates) {
+    const key = path.resolve(candidate.filePath);
+    if (!unique.has(key)) unique.set(key, candidate);
+  }
+  return sortCursorTranscriptCandidates([...unique.values()]);
 }
 
 // Cursor child tool events currently report only the child conversation/session id
@@ -641,8 +1402,7 @@ function cursorSubagentTranscript(cwd: string, rawInput: unknown, sessionId: str
   }
 
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return candidates[0]!;
+  return sortCursorTranscriptCandidates(candidates)[0]!;
 }
 
 function cursorSubagentTranscriptsForRole(
@@ -652,43 +1412,13 @@ function cursorSubagentTranscriptsForRole(
   parentSessionId?: string | null,
 ): CursorTranscriptCandidate[] {
   if (!VALID_AGENT_ROLES.has(role)) return [];
-  const root = cursorProjectsRoot();
-  if (!root) return [];
-
-  const projectRoots = workspaceRootsForCursorLookup(cwd, rawInput);
-  const projectDirs: string[] = [];
-  for (const projectRoot of projectRoots) {
-    for (const dirName of cursorProjectDirNames(projectRoot)) {
-      projectDirs.push(path.join(root, dirName));
-    }
-  }
-
-  const candidates: CursorTranscriptCandidate[] = [];
-  for (const projectDir of uniqueStrings(projectDirs)) {
-    candidates.push(...allSubagentTranscriptCandidates(projectDir, parentSessionId));
-  }
-
-  if (candidates.length === 0) {
-    const basenames = uniqueStrings(projectRoots.map((projectRoot) => path.basename(projectRoot)).filter(Boolean));
-    try {
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        if (!basenames.some((base) => entry.name === base || entry.name.endsWith(`-${base}`))) continue;
-        candidates.push(...allSubagentTranscriptCandidates(path.join(root, entry.name), parentSessionId));
-      }
-    } catch {
-      // no Cursor projects root
-    }
-  }
-
-  return candidates
+  return listCursorSubagentTranscriptCandidates(cwd, rawInput, parentSessionId)
     .filter((candidate) => inferRoleFromTranscript(candidate.filePath) === role)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    .sort((a, b) => cursorTranscriptCandidateTimeMs(b) - cursorTranscriptCandidateTimeMs(a));
 }
 
 function candidateThreadId(candidate: CursorTranscriptCandidate): string | null {
-  const base = path.basename(candidate.filePath).replace(/\.jsonl$/i, '');
-  return isResumeCapableAgentId(base) ? base : null;
+  return isResumeCapableAgentId(candidate.childTranscriptId) ? candidate.childTranscriptId : null;
 }
 
 function listClaimedAgents(cwd: string, runId: string): Rec[] {
@@ -1762,21 +2492,79 @@ export function refreshCursorRunAgentFromTranscriptCache(
   role: string,
   parentSessionId: string | null,
 ): RunAgentEntry | null {
-  if (!runId || !VALID_AGENT_ROLES.has(role)) return null;
-  const candidates = cursorSubagentTranscriptsForRole(cwd, rawInput, role, parentSessionId);
+  if (!runId || !VALID_AGENT_ROLES.has(role) || isNonProjectRoot(cwd)) return null;
+  const expected = readRunAgentRegistry(cwd, runId)[role];
+  if (!expected || expected.replaced) return null;
+  if (expected.parentSessionId && parentSessionId
+    && expected.parentSessionId !== parentSessionId) return null;
+  const boundParentSessionId = expected.parentSessionId || parentSessionId;
+  if (!boundParentSessionId) return null;
+  if (continuationAgentId(expected, 'cursor')) return expected;
+
+  const expectedIds = new Set(idsForRunAgent(expected));
+  const candidates = cursorSubagentTranscriptsForRole(cwd, rawInput, role, boundParentSessionId);
   for (const candidate of candidates) {
     const childId = candidateThreadId(candidate);
     if (!childId) continue;
-    claimThreadRole(cwd, state, childId, role, {
-      parentSessionId: candidate.parentSessionId || parentSessionId || null,
+    const candidateParentId = candidate.parentSessionId || boundParentSessionId;
+
+    // Hold the observation lock while validating transcript ownership and
+    // conditionally upgrading agents.json. A concurrent transcript claim cannot
+    // turn an apparently-unclaimed old child into another spawn's result between
+    // those two operations, and the registry identity CAS prevents a late cache
+    // scan from overwriting a newer tool_* start for the same role.
+    const upgraded = withCursorSpawnObservationLock(cwd, runId, () => {
+      const store = readCursorSpawnObservationStore(cwd, runId);
+      const currentObservation = latestCursorObservation(store.observations, (observation) => (
+        observation.parentSessionId === boundParentSessionId
+        && observation.role === role
+        && (expectedIds.has(observation.toolCallId)
+          || Boolean(observation.childTranscriptId && expectedIds.has(observation.childTranscriptId)))
+      ));
+      const claimedObservation = store.observations.find((observation) => (
+        observation.childTranscriptId === childId
+      ));
+      if (claimedObservation) {
+        const belongsToCurrent = currentObservation
+          ? claimedObservation.toolCallId === currentObservation.toolCallId
+          : (expectedIds.has(claimedObservation.toolCallId)
+            || Boolean(claimedObservation.childTranscriptId
+              && expectedIds.has(claimedObservation.childTranscriptId)));
+        if (!belongsToCurrent) return null;
+      } else {
+        const currentStartedAtMs = currentObservation?.startedAtMs || finiteMs(expected.recordedAt);
+        const candidateStartedAtMs = cursorTranscriptCandidateTimeMs(candidate);
+        if (!currentStartedAtMs
+          || candidateStartedAtMs < currentStartedAtMs - CURSOR_TRANSCRIPT_EARLY_TOLERANCE_MS) return null;
+      }
+
+      let result: RunAgentEntry | null = null;
+      withAgentRegistryLock(cwd, runId, () => {
+        const latest = readRunAgentRegistry(cwd, runId)[role];
+        if (!latest || latest.replaced) return;
+        const sameExpectedStart = latest.agentId === expected.agentId
+          && (latest.resumeId || null) === (expected.resumeId || null)
+          && (latest.toolCallId || null) === (expected.toolCallId || null)
+          && (latest.parentSessionId || null) === (expected.parentSessionId || null);
+        if (!sameExpectedStart) {
+          if ((latest.toolCallId || null) === (expected.toolCallId || null)
+            && continuationAgentId(latest, 'cursor') === childId) result = latest;
+          return;
+        }
+        recordRunAgentUnlocked(cwd, runId, role, {
+          agentId: childId,
+          resumeId: childId,
+          parentSessionId: candidateParentId,
+        });
+        const next = readRunAgentRegistry(cwd, runId)[role];
+        if (next && (next.toolCallId || null) === (expected.toolCallId || null)
+          && continuationAgentId(next, 'cursor') === childId) result = next;
+      });
+      return result;
     });
-    recordRunAgent(cwd, runId, role, {
-      agentId: childId,
-      resumeId: childId,
-      parentSessionId: candidate.parentSessionId || parentSessionId || null,
-    });
-    const upgraded = readRunAgentRegistry(cwd, runId)[role];
-    if (upgraded) return upgraded;
+    if (!upgraded) continue;
+    claimThreadRole(cwd, state, childId, role, { parentSessionId: candidateParentId });
+    return upgraded;
   }
   return null;
 }
@@ -1805,6 +2593,35 @@ export function liveRunAgent(
 export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
   if (isNonProjectRoot(cwd)) return;
   withAgentRegistryLock(cwd, runId, () => markRunAgentReplacedUnlocked(cwd, runId, role));
+}
+
+// Transcript reconciliation knows the failed SubagentStart tool-call id. Retire
+// the registry entry only while it still represents that spawn; a delayed child
+// transcript must never retire a newer retry that already took over the role.
+export function markRunAgentReplacedIfMatches(
+  cwd: string,
+  runId: string,
+  role: string,
+  expectedId: string,
+): boolean {
+  if (!expectedId || isNonProjectRoot(cwd)) return false;
+  let replaced = false;
+  withAgentRegistryLock(cwd, runId, () => {
+    const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+    const agents = obj(registry.agents) || {};
+    const entry = obj(agents[role]);
+    if (!entry || entry.replaced === true || !idsForRunAgent(entry).includes(expectedId)) return;
+    entry.replaced = true;
+    entry.replacedAt = stateTimestamp();
+    entry.replacementReason = 'correlated-cursor-transcript-failure';
+    try {
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
+      replaced = true;
+    } catch {
+      // best-effort; existing grace/hard timers remain the deadlock backstop
+    }
+  });
+  return replaced;
 }
 
 function markRunAgentReplacedUnlocked(cwd: string, runId: string, role: string): void {

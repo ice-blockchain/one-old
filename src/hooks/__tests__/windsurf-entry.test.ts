@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { runWindsurfHook } from '../windsurf-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
+import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 
 async function withEnv(fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-entry-'));
@@ -51,6 +52,9 @@ test('windsurf entry: unauthenticated pre_run_command blocks with exit 2 stderr'
 test('windsurf entry: setup-required pre_user_prompt does not block native Devin prompt admission', async () => {
   await withEnv(async (cwd) => {
     process.env.TRAFFIC_ONE_AUTH = 'off';
+    // The wizard URL is only surfaced AFTER the user's recorded yes (ask-first);
+    // the live-server flow below is the post-consent state.
+    recordPluginUseChoice(cwd, true, 'command');
     writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
     const stdin = JSON.stringify({
       agent_action_name: 'pre_user_prompt',
@@ -64,6 +68,26 @@ test('windsurf entry: setup-required pre_user_prompt does not block native Devin
     assert.match(out.stdout, /setup required/i);
     assert.match(out.stdout, /127\.0\.0\.1:56858/i);
     assert.equal(out.stderr, '');
+  });
+});
+
+test('windsurf entry: ask-first pending pre_user_prompt asks the question and never leaks a wizard URL', async () => {
+  await withEnv(async (cwd) => {
+    process.env.TRAFFIC_ONE_AUTH = 'off';
+    // Even a stray live server record must not resurface its URL pre-decision.
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_user_prompt',
+      tool_info: {
+        user_prompt: 'create a modern learning platform with courses for web development',
+        cwd,
+      },
+    });
+    const out = await runWindsurfHook('pre_user_prompt', stdin);
+    assert.equal(out.exitCode, 0);
+    assert.match(out.stdout, /Do you want to use the Traffic One plugin/);
+    assert.doesNotMatch(out.stdout, /127\.0\.0\.1:56858/i);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'nothing written before the answer');
   });
 });
 

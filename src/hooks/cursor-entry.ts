@@ -1,7 +1,7 @@
 // src/hooks/cursor-entry.ts
 // Thin host entry for Cursor. Compiles to scripts/cursor-hook-runtime.cjs at
 // cutover — the path Cursor's hooks-cursor.json already invokes:
-//   node ./scripts/cursor-hook-runtime.cjs <subcommand>
+//   node "${CURSOR_PLUGIN_ROOT}/scripts/cursor-hook-runtime.cjs" <subcommand>
 //
 // Cursor exposes COARSE events (one hook per event), so unlike the Claude entry
 // (which routes its fine-grained subcommands to specific handlers), this runs

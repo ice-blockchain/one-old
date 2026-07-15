@@ -7,6 +7,7 @@ import { DEFAULT_ENDPOINT } from '../../config/auth';
 import { OPENCODE_MCP_SERVER_KEY, openCodeMcpServerEntry } from '../../config/opencode-mcp';
 import { pluginVersion } from '../../config/plugin-identity';
 import type { GenRun } from '../lib/run';
+import { generatedAgents } from './agents';
 import { PLUGIN_ROOT_EXPR } from '../sources/hooks';
 import {
   agentsMarketplaceManifest,
@@ -19,7 +20,11 @@ import {
 
 export function emitManifests(run: GenRun): void {
   const version = pluginVersion(run.sourceRoot);
-  run.json('.claude-plugin/plugin.json', claudePluginManifest(version));
+  // Sorted so the manifest bytes don't depend on module-directory read order.
+  const claudeAgentPaths = generatedAgents(run.sourceRoot)
+    .map((doc) => `./${doc.relPath.replace(/\\/g, '/')}`)
+    .sort();
+  run.json('.claude-plugin/plugin.json', claudePluginManifest(version, claudeAgentPaths));
   run.json('.claude-plugin/marketplace.json', claudeMarketplaceManifest(version));
   run.json('.codex-plugin/plugin.json', codexPluginManifest(version));
   run.json('.cursor-plugin/plugin.json', cursorPluginManifest(version));

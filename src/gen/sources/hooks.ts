@@ -15,12 +15,17 @@
 // .mcp.json must resolve on Claude/Codex/Cursor alike).
 export const PLUGIN_ROOT_EXPR = '${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-.}}}}';
 
+// Cursor replaces this exact literal before handing the command to the host
+// shell. Keep it separate from PLUGIN_ROOT_EXPR: nested `:-` shell expansion is
+// not recognized by Cursor's replacement and is not portable to Windows.
+export const CURSOR_PLUGIN_ROOT_TOKEN = '${CURSOR_PLUGIN_ROOT}';
+
 export function claudeCommand(subcommand: string): string {
   return `node "${PLUGIN_ROOT_EXPR}/scripts/hook-runtime.cjs" ${subcommand}`;
 }
 
 export function cursorCommand(subcommand: string): string {
-  return `node ./scripts/cursor-hook-runtime.cjs ${subcommand}`;
+  return `node "${CURSOR_PLUGIN_ROOT_TOKEN}/scripts/cursor-hook-runtime.cjs" ${subcommand}`;
 }
 
 export function copilotCommand(subcommand: string): string {
@@ -73,12 +78,13 @@ export const PRE_TOOL_USE: HookGroup[] = [
     // Codex) so the onboarding gate blocks subagent spawns on a new project too —
     // not just the agent-model gate. Without Task|Agent, a Claude `Task` spawn
     // skipped the onboarding gate and surfaced onboarding inside the subagent.
+    // One group per matcher: hooks sharing a matcher live in one entries list so
+    // /hooks lists the matcher once; execution semantics are identical.
     matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent|multi_tool_use',
-    entries: [{ subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' }],
-  },
-  {
-    matcher: 'Bash|Write|Edit|MultiEdit|Read|LS|Glob|Grep|exec_command|apply_patch|Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent|multi_tool_use',
-    entries: [{ subcommand: 'check-model-choice-gate', statusMessage: 'Checking model choice gate...' }],
+    entries: [
+      { subcommand: 'check-onboarding-gate', statusMessage: 'Checking onboarding gate...' },
+      { subcommand: 'check-model-choice-gate', statusMessage: 'Checking model choice gate...' },
+    ],
   },
   {
     matcher: 'Task|Agent|spawn_agent',
@@ -119,7 +125,13 @@ export const POST_TOOL_USE: HookGroup[] = [
 ];
 
 // Cursor: one entry per canonical host event → subcommand.
-export const CURSOR_EVENTS: { event: string; subcommand: string }[] = [
+export interface CursorHookEvent {
+  event: string;
+  subcommand: string;
+  loopLimit?: number;
+}
+
+export const CURSOR_EVENTS: CursorHookEvent[] = [
   { event: 'sessionStart', subcommand: 'session-start' },
   { event: 'beforeSubmitPrompt', subcommand: 'user-prompt-submit' },
   { event: 'beforeShellExecution', subcommand: 'before-shell-execution' },
@@ -133,6 +145,10 @@ export const CURSOR_EVENTS: { event: string; subcommand: string }[] = [
   { event: 'preToolUse', subcommand: 'before-tool-use' },
   { event: 'postToolUse', subcommand: 'after-tool-use' },
   { event: 'subagentStart', subcommand: 'subagent-start' },
+  // Cursor consumes `followup_message` only from these lifecycle events. Bound
+  // both loops above the longest model tier while still preventing runaway retries.
+  { event: 'subagentStop', subcommand: 'cursor-subagent-stop', loopLimit: 8 },
+  { event: 'stop', subcommand: 'cursor-stop', loopLimit: 8 },
 ];
 
 export const WINDSURF_EVENTS: { event: string; subcommand: string }[] = [

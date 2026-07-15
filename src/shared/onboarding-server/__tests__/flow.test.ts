@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
+import { recordPluginUseChoice } from '../../state/plugin-use';
 import { hostModelSnapshot } from '../../model-tiers';
 import { writeOneHostSettings } from '../../one-settings';
 import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
@@ -516,6 +517,18 @@ test('computeOnboarding: the team-confirmation step carries the resolved line-up
     assert.equal(view.meta.host, 'claude');
     // the approve/re-pick options are still present
     assert.deepEqual(view.meta.options?.map((o) => o.id), ['approve', 'repick_performance']);
+  });
+});
+
+test('declined project: computeOnboarding is terminally done with the declined flag', () => {
+  withProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'command');
+    const view = computeOnboarding(cwd);
+    assert.equal(view.done, true);
+    assert.equal(view.step, null);
+    assert.equal(view.meta.declined, true);
+    // No project files exist for a declined project.
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false);
   });
 });
 

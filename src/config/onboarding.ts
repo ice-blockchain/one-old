@@ -8,6 +8,17 @@
 // shared/onboarding-server/flow.ts; other knobs are read in
 // shared/onboarding/** and modules/session/auth-choice.ts.
 
+// Ask "Do you want to use the Traffic One plugin for this development?" IN THE
+// HOST CHAT before anything else happens for an undecided project: no wizard
+// server is launched and no onboarding URL is shown until the user answers yes
+// (the agent records the answer via the runner's --use / --decline commands).
+// When false, onboarding opens directly as before, but the onboarding prompts
+// still carry a "don't use Traffic One" decline command. A decline is durable
+// per project (stored in the per-user prefs, never inside the repo) until the
+// user explicitly asks for Traffic One again. Runtime override:
+// TRAFFIC_ONE_ASK_USE_PLUGIN=1|0.
+export const ASK_USE_PLUGIN_FIRST = true;
+
 export const PROJECT_CONTEXT_ANSWER_KEYS = [
   'audience',
   'coreFlows',
