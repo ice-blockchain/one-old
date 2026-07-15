@@ -8,6 +8,7 @@ import * as path from 'path';
 
 import { buildMcpPayload } from './buildMcpPayload';
 import { collectMetadata } from './collectMetadata';
+import { authEnforced, clearAuthentication } from '../../shared/auth';
 import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
 import { mcpRequest, nowIso, readJson, stateForReport, writeJson } from './lib';
 import { readReportIdState } from './readReportIdState';
@@ -51,6 +52,13 @@ export async function runReport(cwd: string, options: RunOptions = {}): Promise<
     if (SAVE_MCP_REPORT) writeJson(statusPath, { status: 'ok', reportId: idState.id, endpoint, queuedAt, reportedAt: nowIso(), attempts, trigger, mcpPayload });
     return { ok: true, reportId: idState.id };
   } catch (error) {
+    // A 401 means the entered key was rejected → flip the local auth flag to
+    // false so the next session re-opens the wizard's api-key page. Only act when
+    // auth is actually enforced (in dev/tests with enforcement off, a 401 is inert
+    // and must not touch the settings file). Preserves the stored key for prefill.
+    if (authEnforced() && (error as { statusCode?: number } | null)?.statusCode === 401) {
+      clearAuthentication();
+    }
     if (SAVE_MCP_REPORT) {
       writeJson(statusPath, {
         status: 'failed', reportId: idState.id, endpoint, queuedAt, lastAttemptAt: nowIso(), attempts, trigger, mcpPayload,

@@ -13,102 +13,74 @@ by the gate, and each block has a verbatim fallback in code, so a missing block
 never disables the gate.
 
 <!-- T1BLOCK:BEGIN server-deny-reason -->
-Traffic One setup is required before building in this project. OPEN THE SETUP WIZARD
-IN YOUR EDITOR'S IN-APP PREVIEW PANE — do NOT open an external browser. Traffic One
-has ALREADY written this project's .claude/launch.json, so do NOT create or edit that
-file yourself:
+Traffic One setup is required before building in this project. Setup now happens on the
+Traffic One dashboard in the user's web browser — they sign in or create an account,
+then finish a few setup steps. Your job is to SURFACE THE LINK to the user and then
+wait. Do NOT try to answer the setup questions yourself, and do NOT create or edit
+.claude/launch.json.
 
-- Claude Code: your FIRST action is to call preview_start with name
-  "traffic-one-setup" — it is already registered in .claude/launch.json and points at
-  the running wizard, so it opens in the in-app preview pane.
-- Cursor: your FIRST visible action MUST be exactly this clickable line, before any
-  tool call or wait command:
+Present this clickable setup link to the user as your FIRST visible action, before any
+wait command — put it on its own line, not buried in a terminal block:
 
-      Open the Traffic One setup wizard: {{URL}}
+    Open Traffic One setup: {{URL}}
 
-  Do NOT bury it in a terminal block and do NOT skip straight to waiting. The user opens it in Cursor's built-in
-  Simple Browser (click the link, or Cmd+Shift+P → "Simple Browser: Show" → paste).
-  Cursor exposes no API to open it for you; do NOT pop an external browser.
-- Codex Desktop: do NOT tool-search for or read any browser skill — this is the
-  complete recipe. Open the wizard with the node_repl `js` tool running exactly:
+The link opens in the user's browser. If the browser can reach the local setup helper
+running on this machine, setup completes on the dashboard; if a browser blocks that
+(e.g. Safari), the page automatically falls back to a local setup page — either way the
+user finishes in the browser. All setup logic and saves stay on this machine; the
+dashboard is just the UI.
 
-      const fs = await import("fs");
-      const base = `${nodeRepl.homeDir}/.codex/plugins/cache/openai-bundled/browser`;
-      const ver = fs.readdirSync(base).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).pop();
-      const { setupBrowserRuntime } = await import(`${base}/${ver}/scripts/browser-client.mjs`);
-      await setupBrowserRuntime({ globals: globalThis });
-      globalThis.browser = await agent.browsers.get("iab");
-      await browser.nameSession("traffic-one-setup");
-      await (await browser.capabilities.get("visibility")).set(true);
-      globalThis.trafficOneSetupTab = await browser.tabs.new();
-      await trafficOneSetupTab.goto("{{URL}}");
-      nodeRepl.write("traffic-one setup opened");
-
-- Other hosts: open the link below in your in-app web view if you have one.
-
-If you have no in-app preview at all, give the user this clickable link to open:
-{{URL}}
-
-CONTINUE AUTOMATICALLY — do NOT end your turn after opening the wizard. Immediately
-after opening it, run this command and keep your turn open; it BLOCKS until the user
-finishes setup (run it with a long timeout, ~9 minutes / 540000 ms):
+CONTINUE AUTOMATICALLY — do NOT end your turn after showing the link. Immediately run
+this command and keep your turn open; it BLOCKS until the user finishes setup (run it
+with a long timeout, ~9 minutes / 540000 ms):
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, first CLOSE the wizard view you opened
-(the page also closes itself where the host allows it): Claude Code → `preview_stop`
-for "traffic-one-setup"; Codex → node_repl `await trafficOneSetupTab.close()`;
-Cursor → tell the user they can close the wizard browser tab (Cursor cannot close it
-programmatically — the wizard already shows a "you can close this tab" note).
-Then IMMEDIATELY continue the user's original
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, IMMEDIATELY continue the user's original
 request and build it end to end — do not stop to ask "what next?". If it prints
 `TRAFFIC_ONE_SETUP_PENDING` (it timed out before setup finished), run the exact same
 command again; after a couple of pending rounds with no progress, tell the user to
-finish the wizard and wait for their go-ahead. (If you genuinely cannot run a shell
-command, fall back to: when the wizard says it is done, continue the request.)
+finish setup and wait for their go-ahead. (If you genuinely cannot run a shell command,
+fall back to: when the user says setup is done, continue the request.)
 
-The wizard runs locally, installs the tools it needs (showing progress), and writes
-the configuration. Read-only orientation (pwd, ls, reading files, searching) and the
-wait command above are allowed now, but feature writes, installs, and subagent work
-stay blocked until setup completes. Do NOT restart the host, do NOT answer these
-setup questions yourself in chat, and do NOT hand-write launch.json — the wizard owns
-the questions and Traffic One owns the preview config.
+Read-only orientation (pwd, ls, reading files, searching) and the wait command above
+are allowed now, but feature writes, installs, and subagent work stay blocked until
+setup completes. Do NOT restart the host and do NOT answer these setup questions
+yourself in chat — setup happens in the browser.
 
 If the user would rather not use Traffic One, they can choose "Continue without
 Traffic One" from the Traffic One auth prompt.
 <!-- T1BLOCK:END server-deny-reason -->
 
 <!-- T1BLOCK:BEGIN cursor-wait-link-first -->
-Open the Traffic One setup wizard: {{URL}}
+Open Traffic One setup: {{URL}}
 
-Cursor did not show the setup link in chat before the wait command, so Traffic One stopped this first wait attempt to surface the clickable URL. Now re-run the wait command and keep the turn open:
+The setup link was not shown in chat before the wait command, so Traffic One stopped this first wait attempt to surface the clickable URL. Now re-run the wait command and keep the turn open:
 
 {{WAIT_CMD}}
 <!-- T1BLOCK:END cursor-wait-link-first -->
 
 <!-- T1BLOCK:BEGIN server-deny-reason-repeat -->
-Traffic One setup is still pending — building stays blocked until the wizard finishes.
-Wizard (open in the in-app preview pane, not an external browser): {{URL}}
+Traffic One setup is still pending — building stays blocked until setup finishes.
+Open Traffic One setup in the browser: {{URL}}
 Keep your turn open by running the wait command again (long timeout, ~9 minutes):
 
 {{WAIT_CMD}}
 
-When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, close the wizard view and IMMEDIATELY
-continue the user's original request. Full instructions were given on the first
-denial this session.
+When it prints `TRAFFIC_ONE_SETUP_COMPLETE`, IMMEDIATELY continue the user's original
+request. Full instructions were given on the first denial this session.
 <!-- T1BLOCK:END server-deny-reason-repeat -->
 
 <!-- T1BLOCK:BEGIN setup-pending -->
 Traffic One needs a quick setup before it can build in this project. When you start
-a coding task, Traffic One opens a local setup wizard — shown in your editor's
-in-app preview pane (Claude Code preview / Cursor Simple Browser), with a clickable
-link as fallback — that collects a few choices and installs the tools it needs, then
-writes the configuration.
+a coding task, Traffic One gives you a link to the Traffic One dashboard — the user
+opens it in their browser, signs in, and finishes a few setup steps there (all logic
+and saves stay on this machine). Share that link with the user when it appears.
 
 Until then only read-only orientation is in effect: do not scaffold, install, or
 write feature code, do not invoke build/design skills, and do NOT try to ask these
-setup questions yourself in chat — the wizard owns them. Do not tell the user to
-restart the host. If the user would rather not use Traffic One, they can choose
+setup questions yourself in chat — setup happens in the browser. Do not tell the user
+to restart the host. If the user would rather not use Traffic One, they can choose
 "Continue without Traffic One" from the auth prompt.
 <!-- T1BLOCK:END setup-pending -->
 

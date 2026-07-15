@@ -9,8 +9,10 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { applyAnswer, computeOnboarding } from '../../shared/onboarding-server/flow';
 import { writeCompletionSentinel } from '../../shared/onboarding-server/registry';
 import { obj } from '../../shared/obj';
+import { validateApiKey } from '../auth/validate-key';
 import { probeOnboardingToolchain } from '../toolchain/onboarding';
-import { wizardHtml } from './html';
+import { dashboardUrlFromEnv } from '../../config/dashboard';
+import { redirectHtml, wizardHtml } from './html';
 import { getTask, startInstallTask } from './tasks';
 
 export interface RouteContext {
@@ -71,7 +73,15 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
     return;
   }
 
+  // `/` forwards to the traffic.io dashboard (the onboarding UI now lives there);
+  // `/local` still serves the full self-contained wizard as an offline / blocked-
+  // browser fallback. Both are token-free public paths (see server.ts publicPath).
   if (method === 'GET' && (pathname === '/' || pathname === '/index.html')) {
+    sendHtml(res, 200, redirectHtml(ctx.token, ctx.port, dashboardUrlFromEnv(ctx.env)));
+    return;
+  }
+
+  if (method === 'GET' && pathname === '/local') {
     sendHtml(res, 200, wizardHtml(ctx.token));
     return;
   }
@@ -87,6 +97,23 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
     if (!step) {
       sendJson(res, 400, { ok: false, error: 'missing step' });
       return;
+    }
+    // The API key is VALIDATED against the auth endpoint before it is stored — a
+    // rejected or unverifiable key never lets onboarding proceed (fail-closed).
+    if (step === 'api-key') {
+      const key = String((obj(body.value)?.apiKey ?? body.value ?? '')).trim();
+      if (!key) {
+        sendJson(res, 400, { ok: false, error: 'Enter your API key to continue.' });
+        return;
+      }
+      const check = await validateApiKey(key, ctx.env);
+      if (!check.ok) {
+        const error = check.reason === 'invalid-api-key'
+          ? 'That API key was rejected. Double-check it and try again.'
+          : 'Could not reach Traffic One to verify the key. Check your connection and try again.';
+        sendJson(res, 400, { ok: false, error });
+        return;
+      }
     }
     const outcome = applyAnswer(ctx.cwd, step, body.value);
     if (!outcome.ok) {

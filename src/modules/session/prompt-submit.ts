@@ -29,18 +29,6 @@ import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { maintenanceTriageDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
-import {
-  authApiKeyPromptHookResult,
-  authChoiceHookResult,
-  authGateForHook,
-  authRequiredHookResult,
-  isSessionExpiryReauth,
-  parseTrafficOneApiKey,
-  parseUnauthenticatedAuthChoice,
-  runInternalAuthLogin,
-  sessionExpiredReauthPromptResult,
-} from './auth-gate';
-import { authChoiceAllowsContinue, authChoiceStatus, tryWriteAuthChoice } from './auth-choice';
 import { modelChoiceReplyPending, parseModelChoice, writeModelChoice } from '../agent-model/model-choice';
 import { runSessionStartAuthed } from './session-start';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
@@ -51,7 +39,6 @@ type Rec = Record<string, unknown>;
 const skillBlock = makeSkillBlock(pluginRoot);
 const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
   skillBlock('onboarding-gate', name, vars);
-const sessionBlock = (name: string, vars: Record<string, string | number> = {}): string => skillBlock('session', name, vars);
 
 function opencodeSetupDirective(url: string, waitCommand: string, hostLabel = 'OpenCode'): string {
   return [
@@ -92,16 +79,6 @@ function seedOriginalPrompt(cwd: string, prompt: string): void {
   }
 }
 
-// Prepend a note (e.g. the login-success line) to a context result, leaving
-// non-context results untouched.
-function prependContext(prefix: string, result: HookResult): HookResult {
-  if (!prefix || result.kind !== 'context') return result;
-  return context(`${prefix}${result.context}`, {
-    ...(result.systemMessage ? { systemMessage: result.systemMessage } : {}),
-    ...(result.promptRequest ? { promptRequest: result.promptRequest } : {}),
-  });
-}
-
 // Post-build maintenance triage lives in ./triage-directive (shared with the
 // onboarding-wait runner, which emits it for the SETUP-COMPLETE continuation —
 // that request never reaches UserPromptSubmit).
@@ -113,32 +90,12 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   const raw = ctx.input.raw;
   const promptText = ctx.input.prompt || promptTextFromSubmit(raw);
 
-  // ── Auth gate / auth-choice flow ──
-  const authGate = authGateForHook();
-  let loginSucceeded = false;
-  if (!authGate.authenticated) {
-    const choiceStatus = authChoiceStatus(cwd);
-    const authChoice = parseUnauthenticatedAuthChoice(promptText, { allowNumeric: choiceStatus === 'pending-choice' });
-    if (authChoice) return authChoiceHookResult(authChoice, cwd);
-    if (authChoiceAllowsContinue(cwd)) return noop();
-    const promptApiKey = parseTrafficOneApiKey(promptText);
-    if (promptApiKey) {
-      const login = runInternalAuthLogin(promptApiKey);
-      if (!login.ok) {
-        return context(sessionBlock('login-failed', { REASON: login.reason || 'unknown failure' }), { systemMessage: 'traffic-one authentication failed' });
-      }
-      // Authenticated this turn → fall through and run the authed SessionStart
-      // body now, so setup starts in the SAME response.
-      loginSucceeded = true;
-    } else if (isSessionExpiryReauth(authGate)) {
-      return sessionExpiredReauthPromptResult();
-    } else if (choiceStatus === 'authenticate') {
-      return authApiKeyPromptHookResult();
-    } else {
-      const writeResult = tryWriteAuthChoice('pending-choice', cwd);
-      return authRequiredHookResult('UserPromptSubmit', { authChoiceWrite: writeResult });
-    }
-  }
+  // ── Auth gate ──
+  // Auth intake now lives in the wizard's api-key page (never in a prompt message,
+  // which some hosts flag). When auth is enforced but the key isn't entered yet,
+  // computeOnboarding returns the 'api-key' step, so the onboarding-incomplete
+  // surface below points the user at the wizard (which shows that page). Nothing to
+  // parse from the prompt here.
 
   // ── Disabled/unavailable-model spawn choice (Cursor) ──
   // When picked tier models aren't offered (or the spawn gate surfaced a degradation choice),
@@ -174,19 +131,20 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // past this gate), and a later thin "ok build it" becomes originalPrompt — which
   // classifyPromptForStack maps to `minimal`. A signal-less greeting/question still
   // has no stack signal, so genuine chit-chat is still suppressed.
-  if (uninitialized && !loginSucceeded && !serverRecordExists(cwd)
+  if (uninitialized && !serverRecordExists(cwd)
     && !isLikelyCodingPrompt(promptText) && !promptHasStackSignal(promptText)) {
     return noop();
   }
 
-  // A fresh login, or any authenticated interaction on a not-yet-initialized
-  // project (auth completed mid-session, so SessionStart returned the gate and
-  // never ran the authed body), runs that authed SessionStart body now — this is
-  // where new-project setup / existing-codebase auto-detect actually starts.
-  if (loginSucceeded || uninitialized) {
+  // Any interaction on a not-yet-initialized project (SessionStart fires before a
+  // prompt exists and defers a pristine new project) runs the authed SessionStart
+  // body now — this is where new-project setup / existing-codebase auto-detect
+  // actually starts. Auth is handled by the onboarding surface (it shows the
+  // api-key page first while unauthenticated).
+  if (uninitialized) {
     const bootstrapped = runSessionStartAuthed(ctx);
     seedOriginalPrompt(cwd, promptText);
-    return loginSucceeded ? prependContext(`${sessionBlock('login-success')}\n\n`, bootstrapped) : bootstrapped;
+    return bootstrapped;
   }
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return runSessionStartAuthed(ctx);
@@ -222,8 +180,8 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     const server = ensureOnboardingServer(cwd, { host: ctx.host });
     const waitCommand = onboardingWaitCommand(cwd, ctx.host);
     if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-      const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
-      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.url, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
+      const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]');
+      return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
       });
     }
@@ -238,8 +196,8 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // (systemMessage → user_message on Cursor), so the user always gets a working link
     // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
     // in its preview pane and Codex via its own recipe, so they keep the plain banner.
-    const systemMessage = formatWizardBanner(ctx.host, server.url, 'traffic-one [setup required]');
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.url, WAIT_CMD: waitCommand })}`, {
+    const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]');
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.dashboardUrl, WAIT_CMD: waitCommand })}`, {
       systemMessage,
     });
   }

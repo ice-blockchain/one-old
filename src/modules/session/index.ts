@@ -1,7 +1,7 @@
 // src/modules/session/index.ts
 // The session module's runtime handlers: the SessionStart auth gate + rule
-// bundle / onboarding directive, the priority-0 auth PreToolUse gate (denies
-// tool use until auth is resolved), and the UserPromptSubmit auth /
+// bundle / onboarding directive, the priority-0 auth PreToolUse gate (blocks
+// tool use until the web API key is entered), and the UserPromptSubmit auth /
 // onboarding-reminder / convergence handler.
 
 import type { Handler } from '../../core/types';
@@ -33,8 +33,9 @@ export const handlers: Handler[] = [
   },
   {
     // The priority-0 auth gate participates in every PreToolUse gate subcommand,
-    // so the pipeline runs it first (matching the legacy per-gate auth check)
-    // and short-circuits on an auth deny before the specific gate runs.
+    // so the pipeline runs it first and short-circuits on an auth deny before the
+    // specific gate runs. While unauthenticated it delegates to the onboarding
+    // gate to open the wizard's api-key page.
     id: 'session.auth',
     event: 'PreToolUse',
     tools: ['shell', 'file-write', 'file-edit', 'file-read', 'spawn-agent', 'search'],

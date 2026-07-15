@@ -8,7 +8,10 @@
 // install is returned as a `task` signal for the HTTP layer to run out-of-band.
 
 import { classifyPromptForStack, detectMode, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
+import { authEnforced, isLocallyAuthenticated, writeSimpleAuth } from '../auth';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
@@ -99,6 +102,47 @@ export interface OnboardingView {
   done: boolean;
   meta: StepMeta;
   originalPrompt: string;
+  // This machine's name (os.hostname()). Traffic One auth is one key per device, so
+  // the dashboard names the auto-generated api-key after the device it will run on.
+  hostname: string;
+  // A short, STABLE per-device fingerprint. The dashboard appends it to the key name
+  // ("<hostname> · <deviceId>") so that re-authing on the SAME device finds the
+  // existing key and REROLLs it (fresh secret) instead of piling up duplicates.
+  deviceId: string;
+}
+
+// Short, human-friendly device label from os.hostname() — drops a trailing
+// ".local"/".lan"/domain suffix so the key name reads as e.g. "MacBook-Pro". When the
+// hostname is IP-like or numeric (DHCP networks resolve os.hostname() to an address,
+// giving a useless "10"), fall back to the OS username so the label still identifies
+// the device. The stable deviceId (deviceFingerprint) is unaffected either way.
+function deviceName(): string {
+  try {
+    const raw = (os.hostname() || '').trim();
+    const short = raw.split('.')[0] ?? '';
+    const ipLike = /^\d+$/.test(short) || /^\d{1,3}(\.\d{1,3}){3}$/.test(raw) || raw.includes(':');
+    if (short && !ipLike) return short;
+    try {
+      const user = os.userInfo().username;
+      if (user) return `${user}'s device`;
+    } catch { /* ignore */ }
+    return short || 'this device';
+  } catch {
+    return 'this device';
+  }
+}
+
+// Deterministic 8-hex fingerprint of stable machine attributes — same value across
+// re-auths on the same device, distinct across devices. No persistence, so it can't
+// drift or need cleanup; if the hostname genuinely changes it becomes a new device,
+// which is the correct behavior for a per-device key.
+function deviceFingerprint(): string {
+  const parts: string[] = [];
+  try { parts.push(os.hostname()); } catch { /* ignore */ }
+  try { parts.push(os.userInfo().username); } catch { /* ignore */ }
+  try { parts.push(os.platform(), os.arch(), os.homedir()); } catch { /* ignore */ }
+  const seed = parts.filter(Boolean).join('|') || 'traffic-one-device';
+  return crypto.createHash('sha256').update(seed).digest('hex').slice(0, 8);
 }
 
 export interface AnswerOutcome {
@@ -154,11 +198,22 @@ function lacksDurableOnboardingState(cwd: string, state: Rec, host: string): boo
   return provider !== 'gitnexus' && provider !== 'graphify';
 }
 
+// nextOnboardingStep can return ids that aren't wizard steps: 'state' (all
+// answered → the wizard's finalize step) and 'team' (team unstamped but fully
+// derivable — the performance answer writes both performance AND team, so re-ask
+// that). Anything else IS a WizardStepId. Without this mapping a raw 'team'
+// reaches metaForStep, which finds no STEP_COPY entry and returns a kind-less
+// meta the wizard client can't render (the appendChild-on-undefined crash).
+function wizardStepFromRaw(raw: string | null): WizardStep {
+  if (raw === 'state') return 'finalize';
+  if (raw === 'team') return 'performance';
+  return raw as WizardStep;
+}
+
 function stepWhenDurablePrefsMissing(cwd: string, state: Rec, mode: string, host: string): WizardStep {
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {
-      const raw = nextOnboardingStep(state, host);
-      return raw === 'state' ? 'finalize' : (raw as WizardStep);
+      return wizardStepFromRaw(nextOnboardingStep(state, host));
     }
     const raw = nextLocalPreferenceStep(state, host);
     return (raw as WizardStep) ?? 'performance';
@@ -177,13 +232,31 @@ export function computeOnboarding(cwd: string): OnboardingView {
   const { state, mode } = effectiveOnboardingState(cwd);
   const originalPrompt = projectContextOriginalPrompt(state);
   const host = detectHost();
+
+  // Web auth gate. Until the user enters the API key on the wizard's api-key page,
+  // the ONLY unresolved step is 'api-key' — this is the FIRST wizard step on a
+  // fresh project AND the ONLY step shown for an already-onboarded project whose
+  // key a 401 invalidated (the api-key-only re-auth). Gated on authEnforced so
+  // dev/test runs with TRAFFIC_ONE_AUTH=0 keep their existing onboarding flow.
+  if (authEnforced() && !isLocallyAuthenticated()) {
+    return {
+      mode,
+      stack: typeof state.stack === 'string' ? state.stack : null,
+      step: 'api-key',
+      done: false,
+      originalPrompt,
+      meta: metaForStep('api-key', originalPrompt),
+      hostname: deviceName(),
+      deviceId: deviceFingerprint(),
+    };
+  }
+
   let step: WizardStep;
   let done: boolean;
 
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {
-      const raw = nextOnboardingStep(state, host);
-      step = raw === 'state' ? 'finalize' : (raw as WizardStep);
+      step = wizardStepFromRaw(nextOnboardingStep(state, host));
       done = false;
     } else {
       const raw = nextLocalPreferenceStep(state, host);
@@ -209,6 +282,8 @@ export function computeOnboarding(cwd: string): OnboardingView {
     done,
     originalPrompt,
     meta,
+    hostname: deviceName(),
+    deviceId: deviceFingerprint(),
   };
 }
 
@@ -330,11 +405,24 @@ function attachPendingInstallTask(cwd: string, step: string, outcome: AnswerOutc
 }
 
 export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOutcome {
+  // The api-key answer only writes the auth flag — it is never a terminal
+  // onboarding answer, so it must not trigger the toolchain install task.
+  if (step === 'api-key') return applyAnswerStep(cwd, step, value);
   return attachPendingInstallTask(cwd, step, applyAnswerStep(cwd, step, value));
 }
 
 function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutcome {
   switch (step) {
+    case 'api-key': {
+      // The key rides as { apiKey } (the wizard's text_input control) but tolerate
+      // a bare string. No remote validation — storing it + marking authenticated is
+      // "the only auth we need"; a bad key surfaces as a 401 on the next report call,
+      // which flips authenticated back to false and re-opens this page.
+      const key = String((obj(value)?.apiKey ?? value ?? '')).trim();
+      if (!key) return { ok: false, error: 'missing api key' };
+      writeSimpleAuth(key);
+      return { ok: true };
+    }
     case 'open-code': {
       const enabled = value === true || value === 'enable' || value === 'enabled';
       mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } });

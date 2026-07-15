@@ -17,6 +17,7 @@ import {
   authRequiredMessage,
   authStateFreshness,
   isAuthenticatedLocal,
+  isLocallyAuthenticated,
   isTrafficOneAuthCommand,
   isTrafficOneDoctorCommand,
   readAuthState,
@@ -26,6 +27,7 @@ import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
 import { authApiKeyPromptRequest, authChoicePromptRequest, sessionExpiredPromptRequest } from '../../shared/prompt-request';
 import { makeSkillBlock } from '../../shared/skill-block';
+import { onboardingGate } from '../onboarding-gate/handler';
 import { authChoiceAllowsContinue, tryWriteAuthChoice, type WriteResult } from './auth-choice';
 
 type Rec = Record<string, unknown>;
@@ -59,47 +61,16 @@ export interface AuthGate {
 // like the one-mcp reporter can consult it too); re-exported here for back-compat.
 export { authEnforced };
 
-export function authGateForHook({ forceRemote = false }: { forceRemote?: boolean } = {}): AuthGate {
-  // Master kill-switch (config/auth.ts AUTH_ENABLED + TRAFFIC_ONE_AUTH override).
-  // When auth is disabled, report authenticated so every gate (session / prompt /
-  // pre-tool / materialize) passes through without spawning the CLI, prompting, or
-  // denying.
+// The auth gate is now a PURE LOCAL BOOLEAN read of the web-entered API key —
+// no per-session remote check, no CLI spawn, no session-token/refresh. When auth
+// enforcement is off (TRAFFIC_ONE_AUTH=0 / dev / tests) it reports authenticated
+// so every gate passes through. Otherwise it reflects isLocallyAuthenticated():
+// true once the key is entered in the wizard's api-key page, false again only
+// after a 401 clears it. The wizard (not a host prompt) owns key intake, so no
+// gate here ever spawns the auth CLI or emits a prompt request.
+export function authGateForHook(): AuthGate {
   if (!authEnforced()) return { authenticated: true, checkedRemote: false };
-  const authScript = authScriptPath();
-  const timeoutMs = Number.parseInt(process.env.TRAFFIC_ONE_AUTH_REMOTE_CHECK_TIMEOUT_MS || '5000', 10);
-  const runStatus = (args: string[]) => spawnSync(process.execPath, [authScript, ...args], {
-    cwd: process.cwd(), env: process.env, encoding: 'utf8',
-    timeout: Number.isInteger(timeoutMs) && timeoutMs > 0 ? timeoutMs : 5000, maxBuffer: 64 * 1024,
-  });
-
-  if (!isAuthenticatedLocal()) {
-    const refreshResult = runStatus(['status']);
-    const refreshParsed = parseAuthStatusOutput(refreshResult.stdout);
-    if (refreshResult.status === 0 && refreshParsed && refreshParsed.authenticated === true) {
-      return { authenticated: true, checkedRemote: false, reauthenticated: refreshParsed.reauthenticated === true };
-    }
-    return {
-      authenticated: false,
-      reason: (refreshParsed && (refreshParsed.reason as string)) || (refreshResult.error && refreshResult.error.message) || 'local-auth-required',
-      priorReason: (refreshParsed && (refreshParsed.priorReason as string)) || null,
-    };
-  }
-
-  const authState = readAuthState();
-  if (!forceRemote && !authRemoteCheckDue(authState)) return { authenticated: true, checkedRemote: false };
-
-  const result = runStatus(['status', '--remote']);
-  const parsed = parseAuthStatusOutput(result.stdout);
-  if (parsed && parsed.authenticated === false) {
-    return { authenticated: false, reason: (parsed.reason as string) || 'remote-auth-required', priorReason: (parsed.priorReason as string) || null };
-  }
-  if (!parsed || result.status !== 0 || parsed.remoteChecked === false) {
-    if (process.env.TRAFFIC_ONE_AUTH_ALLOW_REMOTE_CHECK_FAILURE === '1') {
-      return { authenticated: true, checkedRemote: true, remoteCheckFailed: true };
-    }
-    return { authenticated: false, reason: (parsed && (parsed.reason as string)) || (result.error && result.error.message) || 'remote-auth-check-failed' };
-  }
-  return { authenticated: true, checkedRemote: true, remoteCheckFailed: false };
+  return { authenticated: isLocallyAuthenticated(), checkedRemote: false };
 }
 
 export interface LoginResult {
@@ -233,20 +204,16 @@ export function authLoginFromPromptHookResult(apiKey: string): HookResult {
   return context(block('login-success'), { systemMessage: 'traffic-one authenticated' });
 }
 
-// PreToolUse gate: returns deny (block) or noop (allow).
+// Priority-0 PreToolUse auth gate. It participates in EVERY gate pipeline
+// (onboarding, plan-write, agent-model, library-allowlist) so the API key is
+// enforced before any mutation — not only on the onboarding pipeline. When the
+// key is entered (or enforcement is off) it is a pass-through; while
+// unauthenticated it DELEGATES to the onboarding gate, which — because
+// computeOnboarding returns the 'api-key' step while unauthenticated — opens the
+// wizard on that page and denies mutating tools, reusing all of that gate's
+// orientation / wait-command / subagent / host-specific allowances.
 export function authPreToolGate(ctx: Ctx): HookResult {
   if (isPluginAuthoringRoot(ctx.cwd)) return noop();
-  const gate = authGateForHook();
-  if (gate.authenticated) return noop();
-  const command = ctx.input.tool?.command ?? '';
-  if (ctx.input.tool?.class === 'shell' && (isTrafficOneAuthCommand(command) || isTrafficOneDoctorCommand(command))) {
-    return noop();
-  }
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
-  if (isSessionExpiryReauth(gate)) {
-    const reason = sessionExpiredReauthContext();
-    return deny(reason, { promptRequest: sessionExpiredPromptRequest(reason) });
-  }
-  const reason = authChoiceRequiredDenyReason();
-  return deny(reason, { promptRequest: authChoicePromptRequest(reason) });
+  if (!authEnforced() || isLocallyAuthenticated()) return noop();
+  return onboardingGate(ctx);
 }

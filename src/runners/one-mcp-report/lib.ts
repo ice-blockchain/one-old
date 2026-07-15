@@ -12,6 +12,7 @@ import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../../config/paths';
 import { SKIP_DIRS, SKIP_FILES } from '../../config/reporting';
+import { readSimpleAuth } from '../../shared/auth';
 import { stripLocalPreferenceFields } from '../../shared/state/local-prefs';
 import { buildMcpPayload } from './buildMcpPayload';
 
@@ -185,16 +186,23 @@ export function mcpRequest(endpoint: string, payload: unknown, timeoutMs = 15000
   return new Promise((resolve, reject) => {
     const url = new URL(endpoint);
     const body = JSON.stringify(buildMcpPayload(payload));
+    // Carry the web-entered API key as a Bearer token so the server can validate
+    // it: a rejected/invalid key returns 401, which runReport turns into a local
+    // auth reset (re-opening the wizard's api-key page next session). The key is a
+    // telemetry key, not a secret; the report endpoint is HTTPS.
+    const apiKey = readSimpleAuth()?.apiKey || '';
+    const headers: Record<string, string | number> = {
+      accept: 'application/json, text/event-stream',
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+    };
+    if (apiKey) headers.authorization = `Bearer ${apiKey}`;
     const req = https.request({
       method: 'POST',
       hostname: url.hostname,
       path: `${url.pathname}${url.search}`,
       port: url.port || 443,
-      headers: {
-        accept: 'application/json, text/event-stream',
-        'content-type': 'application/json',
-        'content-length': Buffer.byteLength(body),
-      },
+      headers,
       timeout: timeoutMs,
     }, (res) => {
       let responseBody = '';
@@ -202,7 +210,12 @@ export function mcpRequest(endpoint: string, payload: unknown, timeoutMs = 15000
       res.on('data', (chunk) => { responseBody += chunk; });
       res.on('end', () => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          reject(new Error(`HTTP ${res.statusCode || 'unknown'}`));
+          // Surface the numeric status on the error so runReport can detect a 401
+          // (invalid/rejected key) and flip the local auth flag to false. Keep the
+          // `HTTP <n>` message intact — the status-file records it verbatim.
+          const err = new Error(`HTTP ${res.statusCode || 'unknown'}`) as Error & { statusCode?: number };
+          if (res.statusCode) err.statusCode = res.statusCode;
+          reject(err);
           return;
         }
         if (/"error"\s*:/.test(responseBody)) {

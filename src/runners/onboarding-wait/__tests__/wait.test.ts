@@ -328,13 +328,21 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
     announceWizardUrl(dir, (s) => { out += s; });
     assert.equal(out, '', 'no server record → no banner');
 
-    // Live record → the literal URL is printed for the user to click.
+    // Live record → the DASHBOARD setup link (port+token in the fragment) is printed,
+    // matching the link surfaced in chat.
     writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' });
     out = '';
-    announceWizardUrl(dir, (s) => { out += s; });
-    assert.ok(out.includes('http://127.0.0.1:55174/?t=tok'), 'banner carries the live wizard URL');
-    assert.equal(out.match(/http:\/\/127\.0\.0\.1:55174\/\?t=tok/g)?.length, 2, 'banner repeats the URL near the waiting line for compact terminals');
-    assert.match(out, /SETUP WIZARD/i, 'banner is recognizable to the user');
+    const prevDash = env.TRAFFIC_ONE_DASHBOARD_URL;
+    env.TRAFFIC_ONE_DASHBOARD_URL = 'https://dash.example.test';
+    try {
+      announceWizardUrl(dir, (s) => { out += s; });
+    } finally {
+      if (prevDash === undefined) delete env.TRAFFIC_ONE_DASHBOARD_URL; else env.TRAFFIC_ONE_DASHBOARD_URL = prevDash;
+    }
+    const dashLink = 'https://dash.example.test/onboarding/agent#p=55174&t=tok';
+    assert.ok(out.includes(dashLink), 'banner carries the dashboard setup URL');
+    assert.equal(out.split(dashLink).length - 1, 2, 'banner repeats the URL near the waiting line for compact terminals');
+    assert.match(out, /TRAFFIC ONE SETUP/i, 'banner is recognizable to the user');
 
     // Placeholder (:0/) → never surfaced.
     writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' });

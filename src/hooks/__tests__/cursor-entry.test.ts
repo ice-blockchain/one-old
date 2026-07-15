@@ -5,6 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { runCursorHook } from '../cursor-entry';
+import { writeServerRecord } from '../../shared/onboarding-server/registry';
 
 async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-entry-'));
@@ -65,11 +66,13 @@ test('beforeShellExecution AUTHED + benign command on an existing codebase → n
 
 test('beforeShellExecution AUTHED on a fresh new-project dir → onboarding gate denies', async () => {
   await withEnv({ authed: true }, async (cwd) => {
+    // Seed a live server record so the gate (NO_SPAWN) surfaces a real dashboard link.
+    writeServerRecord(cwd, { pid: process.pid, port: 55555, token: 'tok', url: 'http://127.0.0.1:55555/?t=tok', startedAt: 'x' });
     const stdin = JSON.stringify({ cwd, command: 'npm run build' });
     const r = await runCursorHook('before-shell-execution', stdin);
     const out = JSON.parse(r.stdout);
     assert.equal(out.permission, 'deny');
-    assert.ok(out.user_message.includes('http://127.0.0.1'), 'deny carries the wizard URL');
+    assert.ok(out.user_message.includes('/onboarding/agent'), 'deny carries the dashboard setup URL');
     assert.ok(/setup/i.test(out.user_message));
   });
 });

@@ -59,7 +59,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
   if (isPluginAuthoringRoot(root)) return noop();
 
   if (authChoiceAllowsContinue(root)) return noop();
-  // Auth is enforced by the priority-0 session gate before this gate runs.
+  // Auth is enforced HERE now (the separate priority-0 auth PreToolUse gate is
+  // retired): computeOnboarding below returns the 'api-key' step while the web
+  // API key is unentered, so this gate opens the wizard on that page and blocks
+  // mutating tools until the key is entered.
 
   const state = readEffectiveState(root);
   const mode = (state.mode as string) || detectMode(root);
@@ -105,10 +108,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
       if (ctx.host === 'cursor') {
         const server = ensureOnboardingServer(root, { host: ctx.host });
         const id = hookSessionIdentity(raw).sessionId;
-        if (server.url && !server.url.includes(':0/')
+        if (server.dashboardUrl
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
           return deny(block('cursor-wait-link-first', {
-            URL: server.url,
+            URL: server.dashboardUrl,
             WAIT_CMD: onboardingWaitCommand(root, ctx.host),
           }));
         }
@@ -116,7 +119,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
       return noop();
     }
     const server = ensureOnboardingServer(root, { host: ctx.host });
-    const vars = { URL: server.url, WAIT_CMD: onboardingWaitCommand(root, ctx.host) };
+    const vars = { URL: server.dashboardUrl, WAIT_CMD: onboardingWaitCommand(root, ctx.host) };
     // OpenCode: the full multi-host deny block (URLs + shell commands + JavaScript
     // code blocks + "do NOT…" behavioral overrides) triggers the model's prompt-
     // injection safety training — it reads as a third-party hijack attempt and

@@ -63,7 +63,7 @@ test('windsurf entry: setup-required pre_user_prompt blocks with exit 2 stderr (
     assert.equal(out.exitCode, 2);
     assert.equal(out.stdout, '');
     assert.match(out.stderr, /setup required/i);
-    assert.match(out.stderr, /127\.0\.0\.1:56858/i);
+    assert.match(out.stderr, /onboarding\/agent#p=56858&t=t/i);
   });
 });
 
