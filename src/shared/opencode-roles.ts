@@ -9,7 +9,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { DEFAULT_OPENCODE_DELEGATE_ROLES } from '../config/opencode-delegation';
-import { readOpenCodeQueue, readOpenCodeUnitStatuses } from './opencode-queue';
+import { opencodeAssignmentHash, readOpenCodeQueue, readOpenCodeUnitStatuses } from './opencode-queue';
 import { detectHost } from './host';
 import { canonicalHost } from './model-tiers';
 import { openCodeDelegationActive } from './performance';
@@ -350,11 +350,31 @@ export function openCodePlanBatchComplete(cwd: string, runId: string): boolean {
   }
 }
 
-// True when a new-project implementer spawn must wait for Step-0 from-plan.
+// The senior-architect writes a run-scoped `runs/<runId>/assignments.json` on
+// every architect run (a new-project scaffold OR a complex maintenance build it
+// was spawned for). Its presence is our proof that plan.md's `opencode-delegate`
+// block is FRESH for THIS run — not the durable block left over from a previous
+// build. `opencodeAssignmentHash` reads exactly that file and is null when it is
+// absent, so small/triage maintenance runs (which never invoke the architect)
+// never look fresh. Requiring it also makes `expectedAssignmentHash` non-null,
+// re-activating the runner's stale-diff guard.
+export function hasFreshArchitectQueueForRun(cwd: string, runId: string): boolean {
+  return Boolean(runId) && opencodeAssignmentHash(cwd, runId) !== null;
+}
+
+// Plan-batch delegation applies to new-project builds AND to complex maintenance
+// builds that re-entered the architect THIS run. Small maintenance work (triage
+// → direct-to-implementer, no fresh architect queue) stays on the per-role
+// `opencode_delegate` path and must NOT re-run a stale plan.md queue.
+function planBatchPhaseEligible(cwd: string, runId: string, state: unknown): boolean {
+  return obj(state)?.mode === 'new-project' || hasFreshArchitectQueueForRun(cwd, runId);
+}
+
+// True when an implementer spawn must wait for Step-0 from-plan — in a new-project
+// build, or a complex maintenance build with a fresh architect-produced queue.
 export function shouldBlockImplementerForPlanBatch(cwd: string, runId: string, state: unknown, host: unknown = detectHost()): boolean {
   if (!runId || !openCodeDelegationActive(state, host)) return false;
-  const mode = obj(state)?.mode;
-  if (mode !== 'new-project') return false;
+  if (!planBatchPhaseEligible(cwd, runId, state)) return false;
   if (planDelegationQueueRolesForRun(cwd, runId).length === 0) return false;
   return !openCodePlanBatchComplete(cwd, runId);
 }
@@ -400,6 +420,7 @@ export function openCodePlanRoleCompleted(cwd: string, runId: string, role: stri
 
 export function pendingOpenCodePlanRoles(cwd: string, runId: string, state: unknown, host: unknown = detectHost()): string[] {
   if (!runId || !openCodeDelegationActive(state, host)) return [];
+  if (!planBatchPhaseEligible(cwd, runId, state)) return [];
   if (openCodePlanBatchComplete(cwd, runId)) return [];
   return planDelegationQueueRolesForRun(cwd, runId);
 }

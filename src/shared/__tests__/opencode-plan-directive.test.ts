@@ -56,6 +56,47 @@ function withOpenCodeProject(fn: (cwd: string) => void): void {
   }
 }
 
+test('plan-batch directive fires in maintenance only with a fresh run-scoped queue', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocdir-maint-'));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  const t1 = path.join(dir, '.traffic-one');
+  fs.mkdirSync(t1, { recursive: true });
+  fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({
+    mode: 'existing-codebase',
+    onboardingComplete: true,
+    lifecycle: { phase: 'maintenance' },
+    currentRunId: 'run-maint',
+  }), 'utf8');
+  fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+    ...hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    ),
+    openCode: { enabled: true },
+    toolchain: { opencode: { installedVersion: '1.17.8' } },
+  }), 'utf8');
+  queueDelegateRoles(dir, ['frontend', 'backend']);
+  try {
+    // Maintenance with a durable plan.md but no fresh architect queue → suppressed.
+    assert.equal(buildOpenCodePlanBatchPendingDirective(dir), '');
+
+    // Architect wrote a fresh run-scoped queue THIS run → the directive fires.
+    fs.mkdirSync(path.join(t1, 'runs', 'run-maint'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run-maint', 'assignments.json'),
+      JSON.stringify({ version: 1, runId: 'run-maint', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    const directive = buildOpenCodePlanBatchPendingDirective(dir);
+    assert.match(directive, /opencode_delegate_from_plan/);
+    assert.match(directive, /Pending queued role\(s\): frontend, backend/);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('pre-spawn directive is proactive before plan queue exists', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocdir-pre-'));
   const env = process.env;

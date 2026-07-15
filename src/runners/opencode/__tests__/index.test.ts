@@ -732,6 +732,41 @@ test('delegateFromPlan ignores stale plan queues in maintenance runs', () => {
   });
 });
 
+test('delegateFromPlan delegates in maintenance when the architect wrote a fresh run-scoped queue', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = '.traffic' + '-one';
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      mode: 'existing-codebase',
+      onboardingComplete: true,
+      lifecycle: { phase: 'maintenance' },
+      currentRunId: 'maint-fresh',
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    // A run-scoped assignments.json is the architect's freshness proof: its
+    // presence flips `hasFreshArchitectQueueForRun` true so the maintenance
+    // from-plan batch delegates THIS run's queue instead of suppressing it.
+    fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId: 'maint-fresh',
+      createdBy: 'senior-architect',
+      assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
+    }), 'utf8');
+
+    const r = delegateFromPlan(dir);
+
+    assert.equal(r.total, 1);
+    assert.equal(r.delegated, 1);
+    assert.notEqual(r.units[0]?.id, '__no_units__');
+  });
+});
+
 test('maintenance ad-hoc delegation writes a terminal maintenance marker with failureKind', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('error');

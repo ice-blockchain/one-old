@@ -385,7 +385,11 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
     }
   }
 
-  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && !planOnDiskMissingOpenCodeBlock(projectRoot)) {
+  // Queue-policy validation runs whenever a delegate block is present and OpenCode
+  // is active — new-project builds AND complex maintenance builds the architect
+  // was spawned for (which emit the same block). The require-block gate above stays
+  // new-project-only; we never force a maintenance plan to contain a queue.
+  if (ARCHITECT_DIGEST_RE.test(filePath) && /\bPLAN_READY\b/.test(content) && openCodeDelegationActive(state, host) && !planOnDiskMissingOpenCodeBlock(projectRoot)) {
     const policyErrors = planOnDiskOpenCodeQueuePolicyErrors(projectRoot);
     if (policyErrors.length > 0) {
       violations.push(block('architect-opencode-queue-policy-gate',
@@ -404,7 +408,7 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
       'Plan gate: this run is already hosted by OpenCode/Kilo, so `.traffic-one/plan.md` must not include an OpenCode delegation queue or `opencode-delegate` marker. Remove the self-delegation block; implementer work runs directly on the current host.'));
   }
 
-  if (PLAN_FILE_RE.test(filePath) && state.mode === 'new-project' && openCodeDelegationActive(state, host) && !missingOpenCodeDelegateBlock(content)) {
+  if (PLAN_FILE_RE.test(filePath) && openCodeDelegationActive(state, host) && !missingOpenCodeDelegateBlock(content)) {
     const policyErrors = openCodeQueuePolicyErrors(content);
     if (policyErrors.length > 0) {
       violations.push(block('plan-opencode-queue-policy-gate',

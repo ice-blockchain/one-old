@@ -31,6 +31,7 @@ import { ensureInitialCommit } from '../../shared/git-init';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
+  hasFreshArchitectQueueForRun,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   type PlanDelegationUnit,
@@ -1139,9 +1140,15 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
-  const queue = isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)
-    ? []
-    : parsePlanDelegationQueue(planText);
+  // In maintenance, plan.md is a durable artifact from the last build, so from-plan
+  // is a no-op — UNLESS the architect wrote a fresh run-scoped queue for THIS run
+  // (a complex maintenance build). `hasFreshArchitectQueueForRun` gates that: it is
+  // true only when `runs/<runId>/assignments.json` exists, which small/triage
+  // maintenance runs never produce, so a stale plan.md is never re-delegated.
+  const maintenanceQueueSuppressed =
+    isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined) &&
+    !hasFreshArchitectQueueForRun(cwd, runId);
+  const queue = maintenanceQueueSuppressed ? [] : parsePlanDelegationQueue(planText);
   const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
   writeOpenCodeQueue(cwd, formalQueue);
   let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));

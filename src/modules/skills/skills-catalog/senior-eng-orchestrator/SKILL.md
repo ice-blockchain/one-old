@@ -86,7 +86,7 @@ When the current host is NOT OpenCode or Kilo, `openCode.enabled` is true in the
 
 How it works:
 
-1. **The architect classifies + queues (Phase 1, non-OpenCode/Kilo hosts only).** `senior-architect` emits an OpenCode delegation queue in `.traffic-one/plan.md` — a machine-readable block listing ONLY bounded units. When the current host is OpenCode or Kilo, the architect must omit this section and the `opencode-delegate` markers entirely.
+1. **The architect classifies + queues (Phase 1, non-OpenCode/Kilo hosts only).** `senior-architect` emits an OpenCode delegation queue in `.traffic-one/plan.md` — a machine-readable block listing ONLY bounded units. This runs in a new-project build AND in a complex existing-codebase/maintenance build the architect was spawned for (e.g. a large revamp). The batch delegates ONLY a queue the architect wrote for THIS run (tied to `runs/<runId>/assignments.json`), so a stale block from a previous build is never re-run; small maintenance fixes that never invoke the architect keep using per-unit `opencode_delegate`, not this batch. When the current host is OpenCode or Kilo, the architect must omit this section and the `opencode-delegate` markers entirely.
 
    ```text
    <!-- opencode-delegate:start -->
@@ -124,7 +124,7 @@ How it works:
    paid reviewer consumes), ROOT human-docs drafts ONLY (`README`/`CONTRIBUTING`/
    `CHANGELOG`, incl. secret-free deploy manifests — NEVER the `.traffic-one/`
    memory baseline), Storybook story stubs, and mechanical refactors/codemods. A
-   productive greenfield queue has 3–6 units — an EMPTY queue wastes the free tier
+   productive queue (new-project OR complex maintenance build) has 3–6 units — an EMPTY queue wastes the free tier
    (measured: a populated queue delivered 2–6 units/run at ~2 min each). NEVER
    queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts,
    security/auth/RLS, data-model/migrations, cross-file invariants, deploys or

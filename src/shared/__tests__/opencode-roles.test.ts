@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import {
   deriveBatchOutcomeFromUnits,
+  hasFreshArchitectQueueForRun,
   markOpenCodePlanBatchComplete,
   markOpenCodePlanBatchRunning,
   markOpenCodePlanBatchTerminal,
@@ -268,7 +269,7 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
       + '- role: frontend | files: a | task: t\n'
       + '- role: backend | files: b | task: t\n'
       + '<!-- opencode-delegate:end -->\n', 'utf8');
-    const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
+    const state = { mode: 'new-project', openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'opencode'), []);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'kilo'), []);
@@ -282,6 +283,40 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run2', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', { openCode: { enabled: false } }), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('maintenance plan-batch requires a fresh run-scoped architect queue (assignments.json)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmaint-'));
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'existing-codebase',
+      lifecycle: { phase: 'maintenance' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+
+    // No run-scoped assignments.json → the durable plan.md is treated as stale
+    // (small/triage maintenance work), so the plan-batch stays suppressed.
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run1'), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), false);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
+
+    // The architect wrote a fresh run-scoped queue THIS run → plan-batch is live.
+    fs.mkdirSync(path.join(t1, 'runs', 'run1'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run1', 'assignments.json'),
+      JSON.stringify({ version: 1, runId: 'run1', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run1'), true);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), true);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
