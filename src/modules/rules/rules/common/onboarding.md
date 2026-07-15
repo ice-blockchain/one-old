@@ -27,8 +27,9 @@ defines mode/stack detection.
   `rules/common/setup-gate.md`). Surface the URL, let the user finish in their browser
   (inline where the host supports it), then continue the original request — Traffic One
   picks up where you left off.
-- Do not tell the user to restart the host. If the user prefers not to use Traffic One,
-  they choose "Continue without Traffic One" from the auth prompt.
+- Do not tell the user to restart the host. The durable per-project `pluginUse`
+  question is asked before the wizard opens; a decline makes all Traffic One
+  hooks stand down for this project until the user explicitly enables it again.
 
 ## Reconfigure / existing projects
 

@@ -48,60 +48,51 @@ async function withStoreAsync(fn: (file: string, dir: string) => Promise<void>):
   }
 }
 
-test('oneSettingsPath honors TRAFFIC_ONE_STATE_PATH and the TRAFFIC_ONE_AUTH_STATE_PATH alias', () => {
+test('oneSettingsPath honors only TRAFFIC_ONE_STATE_PATH', () => {
   assert.equal(oneSettingsPath({ TRAFFIC_ONE_STATE_PATH: '/tmp/x/one.json' } as NodeJS.ProcessEnv), '/tmp/x/one.json');
-  // Back-compat alias (old auth-state path) when the canonical override is absent.
-  assert.equal(oneSettingsPath({ TRAFFIC_ONE_AUTH_STATE_PATH: '/tmp/y/auth.json' } as NodeJS.ProcessEnv), '/tmp/y/auth.json');
+  assert.equal(oneSettingsPath({ HOME: '/tmp/home' } as NodeJS.ProcessEnv), '/tmp/home/.traffic-one/one.json');
 });
 
 test('writeOneSection writes 0o600, round-trips, and preserves other sections', () => {
   withStore((file) => {
-    writeOneSection('auth', { version: 1, sessionToken: 'tok_x.sig' });
+    writeOneSection('auth', { version: 1, authenticated: true, apiKey: 'sk-x', updatedAt: '2026-07-15T00:00:00Z' });
     assert.equal((fs.statSync(file).mode & 0o777), 0o600);
-    assert.equal(readOneSettings().auth?.sessionToken, 'tok_x.sig');
+    assert.equal(readOneSettings().auth?.apiKey, 'sk-x');
 
     // A second section write must NOT clobber the first (read-merge-write).
     writeOneSection('codeGraphProvider', 'gitnexus');
     const after = readOneSettings();
-    assert.equal(after.auth?.sessionToken, 'tok_x.sig');
+    assert.equal(after.auth?.apiKey, 'sk-x');
     assert.equal(after.codeGraphProvider, 'gitnexus');
-    assert.equal(after.schemaVersion, 2);
+    assert.equal(after.schemaVersion, 3);
     const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(onDisk.schemaVersion, 2);
+    assert.equal(onDisk.schemaVersion, 3);
     assert.equal('version' in onDisk, false);
-  });
-});
-
-test('legacy version envelope is read and migrated to schemaVersion on write', () => {
-  withStore((file) => {
-    fs.writeFileSync(file, JSON.stringify({ version: 1, codeGraphProvider: 'graphify' }), 'utf8');
-    assert.equal(readOneSettings().schemaVersion, 1);
-
-    writeOneSection('codeGraphProvider', 'gitnexus');
-    const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
-    assert.equal(onDisk.schemaVersion, 2);
-    assert.equal('version' in onDisk, false);
-    assert.equal(onDisk.codeGraphProvider, 'gitnexus');
   });
 });
 
 test('updateOneSettings applies multiple sections atomically', () => {
   withStore(() => {
-    writeOneSection('authChoice', { version: 3, globalChoice: null, choices: {} });
-    updateOneSettings({ auth: { version: 1, sessionToken: 'tok_a.sig' }, authChoice: null });
+    updateOneSettings({
+      auth: { version: 1, authenticated: true, apiKey: 'sk-a', updatedAt: '2026-07-15T00:00:00Z' },
+      codeGraphProvider: 'graphify',
+    });
     const s = readOneSettings();
-    assert.equal(s.auth?.sessionToken, 'tok_a.sig');
-    assert.equal(s.authChoice, null); // cleared in the same write
+    assert.equal(s.auth?.apiKey, 'sk-a');
+    assert.equal(s.codeGraphProvider, 'graphify');
   });
 });
 
 test('deleteOneSection drops one section but leaves the file + other sections', () => {
   withStore((file) => {
-    updateOneSettings({ auth: { version: 1, sessionToken: 'tok_x.sig' }, codeGraphProvider: 'graphify' });
+    updateOneSettings({
+      auth: { version: 1, authenticated: true, apiKey: 'sk-x', updatedAt: '2026-07-15T00:00:00Z' },
+      codeGraphProvider: 'graphify',
+    });
     assert.equal(deleteOneSection('auth'), true);
     assert.equal(fs.existsSync(file), true); // file persists
     const s = readOneSettings();
-    assert.equal(s.auth, null);
+    assert.equal(s.auth, undefined);
     assert.equal(s.codeGraphProvider, 'graphify'); // untouched
   });
 });
@@ -109,9 +100,8 @@ test('deleteOneSection drops one section but leaves the file + other sections', 
 test('readOneSettings on a missing file returns safe defaults', () => {
   withStore(() => {
     const s = readOneSettings();
-    assert.equal(s.schemaVersion, 2);
-    assert.equal(s.auth, null);
-    assert.equal(s.authChoice, null);
+    assert.equal(s.schemaVersion, 3);
+    assert.equal(s.auth, undefined);
     assert.equal(s.codeGraphProvider, null);
     assert.deepEqual(s.hosts, {});
   });
@@ -123,7 +113,7 @@ test('host model snapshots round-trip per host and survive unrelated section wri
     const cursor = hostModelSnapshot('cursor', 'max');
     writeOneHostSettings('codex', codex);
     writeOneHostSettings('cursor', cursor);
-    writeOneSection('auth', { version: 1, sessionToken: 'tok_x.sig' });
+    writeOneSection('auth', { version: 1, authenticated: true, apiKey: 'sk-x', updatedAt: '2026-07-15T00:00:00Z' });
     writeOneSection('codeGraphProvider', 'gitnexus');
     assert.equal(deleteOneSection('auth'), true);
 
@@ -131,7 +121,7 @@ test('host model snapshots round-trip per host and survive unrelated section wri
     assert.deepEqual(readOneHostSettings('cursor'), cursor);
     const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.deepEqual(Object.keys(onDisk.hosts).sort(), ['codex', 'cursor']);
-    assert.equal(onDisk.schemaVersion, 2);
+    assert.equal(onDisk.schemaVersion, 3);
     assert.equal(fs.statSync(file).mode & 0o777, 0o600);
   });
 });
@@ -150,8 +140,8 @@ test('readOneSettings drops malformed host snapshots without losing valid hosts'
   withStore((file) => {
     const codex = hostModelSnapshot('codex', 'pro');
     fs.writeFileSync(file, JSON.stringify({
-      schemaVersion: 2,
-      auth: { keep: true },
+      schemaVersion: 3,
+      auth: { version: 1, authenticated: true, apiKey: 'sk-keep', updatedAt: '2026-07-15T00:00:00Z' },
       hosts: {
         codex,
         cursor: { ...hostModelSnapshot('cursor', 'pro'), tiers: { highest: ['bad\nmodel'], balanced: ['ok'], cheapest: ['ok'] } },
@@ -160,7 +150,7 @@ test('readOneSettings drops malformed host snapshots without losing valid hosts'
     }), 'utf8');
     const settings = readOneSettings();
     assert.deepEqual(settings.hosts, { codex });
-    assert.equal(settings.auth?.keep, true);
+    assert.equal(settings.auth?.apiKey, 'sk-keep');
   });
 });
 
@@ -295,42 +285,4 @@ test('applyGlobalCodeGraphProvider injects when set, clears when unset', () => {
     assert.equal(b.codeGraphProvider, 'graphify'); // injected from the store
     assert.equal(b.other, 1);
   });
-});
-
-test('legacy auth-choice.json is removed at the DEFAULT location only; auth.json is live and preserved', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onelegacy-'));
-  const env = process.env;
-  const saved = { home: env.HOME, xdg: env.XDG_STATE_HOME, state: env.TRAFFIC_ONE_STATE_PATH, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH };
-  try {
-    // Default location: HOME/.traffic-one, no path override.
-    const home = path.join(dir, 'home');
-    const t1 = path.join(home, '.traffic-one');
-    fs.mkdirSync(t1, { recursive: true });
-    fs.writeFileSync(path.join(t1, 'auth.json'), '{}', 'utf8');
-    fs.writeFileSync(path.join(t1, 'auth-choice.json'), '{}', 'utf8');
-    env.HOME = home;
-    delete env.XDG_STATE_HOME;
-    delete env.TRAFFIC_ONE_STATE_PATH;
-    delete env.TRAFFIC_ONE_AUTH_STATE_PATH;
-    writeOneSection('codeGraphProvider', 'gitnexus');
-    // auth.json is NOT legacy anymore — the simple web-entered API-key record
-    // lives there (shared/auth/simple-auth); one.json writes must never sweep it.
-    assert.equal(fs.existsSync(path.join(t1, 'auth.json')), true);
-    assert.equal(fs.existsSync(path.join(t1, 'auth-choice.json')), false); // hard cutover removed it
-
-    // Override location: legacy files beside the override must be left untouched.
-    const custom = path.join(dir, 'custom');
-    fs.mkdirSync(custom, { recursive: true });
-    fs.writeFileSync(path.join(custom, 'auth.json'), '{}', 'utf8');
-    fs.writeFileSync(path.join(custom, 'auth-choice.json'), '{}', 'utf8');
-    env.TRAFFIC_ONE_STATE_PATH = path.join(custom, 'one.json');
-    writeOneSection('codeGraphProvider', 'graphify');
-    assert.equal(fs.existsSync(path.join(custom, 'auth.json')), true); // preserved under an override
-    assert.equal(fs.existsSync(path.join(custom, 'auth-choice.json')), true);
-  } finally {
-    for (const [k, v] of Object.entries({
-      HOME: saved.home, XDG_STATE_HOME: saved.xdg, TRAFFIC_ONE_STATE_PATH: saved.state, TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
-    })) { if (v === undefined) delete env[k]; else env[k] = v; }
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
 });

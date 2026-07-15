@@ -8,6 +8,7 @@ import { obj } from '../../shared/obj';
 import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { hookSessionIdentity, readEffectiveState } from '../../shared/state';
 import {
   canonicalToolName,
@@ -16,7 +17,6 @@ import {
   isReadOnlyOrientationToolUse,
   parsedToolInput,
 } from '../../shared/tool-classify';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { modelChoiceReplyPending } from '../agent-model/model-choice';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -33,7 +33,7 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
   if (isPluginAuthoringRoot(ctx.cwd)) return noop();
   const root = resolveProjectRoot(ctx.cwd, filePath, { ceiling: ctx.input.workspaceRoot });
   if (isPluginAuthoringRoot(root)) return noop();
-  if (authChoiceAllowsContinue(root)) return noop();
+  if (pluginUseDeclined(root)) return noop();
 
   const state = readEffectiveState(root);
   if (!state || !modelChoiceReplyPending(root, state as Record<string, unknown>)) return noop();

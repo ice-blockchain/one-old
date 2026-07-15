@@ -30,7 +30,6 @@ import { obj } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { readEffectiveState } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { allowsNextjs } from './forbidden';
 import { makePlanBlock } from './plan-static';
@@ -60,7 +59,7 @@ function usesMainAgentTeam(state: Record<string, unknown>): boolean {
 export function scaffoldGate(ctx: Ctx): HookResult {
   // Windsurf/Devin only — never touch other hosts.
   if (canonicalHost(ctx.host) !== 'windsurf') return noop();
-  if (authChoiceAllowsContinue(ctx.cwd) || pluginUseDeclined(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!SCAFFOLD_RE.test(command)) return noop();

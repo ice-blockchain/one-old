@@ -96,7 +96,7 @@ export interface Handler {
   // participates in all four PreToolUse gate subcommands; most handlers list
   // exactly one. The entry routes an incoming subcommand to the handlers that
   // include it, then runs them through the priority-ordered pipeline (so the
-  // priority-0 auth gate runs first, matching the legacy per-gate auth check).
+  // priority-0 auth gate runs first).
   // Undefined means the handler is not directly hook-invoked by a subcommand.
   readonly subcommands?: readonly string[];
   // Lower runs first; a deny short-circuits the rest.

@@ -3,7 +3,7 @@
 // never act on it. Two independent signals, so detection survives layout changes:
 //   1. the SOURCE repo — identified by the TypeScript generator/build entries plus
 //      package.json name (independent of where the build emits), and
-//   2. a GENERATED plugin tree — hook-runtime + auth shim + a plugin manifest named
+//   2. a GENERATED plugin tree — hook-runtime + a plugin manifest named
 //      traffic-one, which since the dist/ refactor lives under dist/ (older layouts
 //      kept it at the repo root).
 // Detection walks UP (bounded, stopping at $HOME) so a session cwd or write
@@ -28,13 +28,12 @@ function manifestNameIsTrafficOne(manifestPath: string): boolean {
   }
 }
 
-// A generated/installed plugin tree rooted at `base`: hook-runtime + auth shim + a
+// A generated/installed plugin tree rooted at `base`: hook-runtime + a
 // plugin manifest named traffic-one. Covers both the legacy root layout (base =
 // repo root) and the current dist/ layout (base = <repo>/dist).
 function hasGeneratedPluginTree(base: string): boolean {
   const hookRuntime = path.join(base, 'scripts', 'hook-runtime.cjs');
-  const authScript = path.join(base, 'scripts', 'traffic-one-auth.cjs');
-  if (!fs.existsSync(hookRuntime) || !fs.existsSync(authScript)) return false;
+  if (!fs.existsSync(hookRuntime)) return false;
   const claudeManifest = path.join(base, '.claude-plugin', 'plugin.json');
   const codexManifest = path.join(base, '.codex-plugin', 'plugin.json');
   return manifestNameIsTrafficOne(fs.existsSync(claudeManifest) ? claudeManifest : codexManifest);

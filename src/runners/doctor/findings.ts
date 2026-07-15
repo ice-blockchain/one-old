@@ -8,7 +8,7 @@ import { codeGraphProviderFromValue, normalizedProjectState, onboardingStateIssu
 import type {
   CodexHooksProbe,
   GitnexusProbe,
-  McpAuthProbe,
+  CanonicalAuthProbe,
   NodeProbe,
   NvmProbe,
   OpenCodeMcpProbe,
@@ -32,7 +32,7 @@ export interface BuildFindingsInput {
   gitnexus: GitnexusProbe;
   project: ProjectProbe;
   codexHooks?: CodexHooksProbe | null;
-  mcpAuth?: McpAuthProbe | null;
+  auth?: CanonicalAuthProbe | null;
   openCodeMcp?: OpenCodeMcpProbe | null;
   sessionDiagnostics?: SessionDiagnosticsResult;
 }
@@ -63,20 +63,6 @@ export function buildFindings({ node, nvm, gitnexus, project, codexHooks = null,
           severity: 'fix-needed',
           code: 'TRAFFIC_ONE_INSTRUCTIONS_NOT_INJECTED',
           message: `Codex session ${sessionDiagnostics.id} did not receive Traffic One root instructions at session start. Skill metadata may still be visible, but plugin instructions were not active.`,
-        });
-      }
-      if (sessionDiagnostics.authState && sessionDiagnostics.authState.expiredAtSessionStart) {
-        findings.push({
-          severity: 'fix-needed',
-          code: 'TRAFFIC_ONE_AUTH_EXPIRED_AT_SESSION_START',
-          message: `Traffic One auth state expired at ${sessionDiagnostics.authState.expiresAt} before Codex session ${sessionDiagnostics.id} started. A working hook should have shown the re-auth prompt before Traffic One work.`,
-        });
-      }
-      if (sessionDiagnostics.mutatingToolBeforeAuthGate) {
-        findings.push({
-          severity: 'fix-needed',
-          code: 'SESSION_MUTATED_BEFORE_TRAFFIC_ONE_AUTH_GATE',
-          message: `Codex session ${sessionDiagnostics.id} used a mutating tool before any Traffic One auth gate appeared. Treat generated artifacts from that session as untrusted Traffic One output.`,
         });
       }
     }

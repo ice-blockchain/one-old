@@ -6,12 +6,14 @@
 import { makeWindsurfAdapter } from '../adapters/windsurf';
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
-import { authRequiredMessage } from '../shared/auth';
+import { authEnforced, isLocallyAuthenticated } from '../shared/auth';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
+import { pluginUseDeclined } from '../shared/state/plugin-use';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 
@@ -75,13 +77,9 @@ function contextText(result: Extract<WindResult, { kind: 'context' }>): string {
   return [result.systemMessage, result.context].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n\n');
 }
 
-function shouldBlockPromptForAuth(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes('traffic-one inactive')
-    || lower.includes('authentication is missing')
-    || lower.includes('authenticate traffic one')
-    || lower.includes('api key')
-    || lower.includes('session expired');
+function shouldBlockPromptForAuth(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  if (pluginUseDeclined(cwd, env)) return false;
+  return authEnforced(env) && !isLocallyAuthenticated(env);
 }
 
 export async function runWindsurfHook(
@@ -122,7 +120,7 @@ export async function runWindsurfHook(
       // contains no user node and therefore cannot run onboarding-wait). Native
       // hooks inject setup context; legacy Cascade still gets the recipe on the
       // first mutating tool gate. Authentication remains fail-closed here.
-      if (action === 'pre_user_prompt' && message && shouldBlockPromptForAuth(message)) {
+      if (action === 'pre_user_prompt' && message && shouldBlockPromptForAuth(cwd, env)) {
         return { stdout: '', stderr: message, exitCode: 2 };
       }
       return { stdout: message, stderr: '', exitCode: 0 };
@@ -130,8 +128,14 @@ export async function runWindsurfHook(
 
     return { stdout: '', stderr: '', exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) {
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
     if (action === 'pre_user_prompt') {
-      return { stdout: '', stderr: authRequiredMessage(env), exitCode: 2 };
+      const message = authFallbackMessage(stdin, env);
+      return message
+        ? { stdout: '', stderr: message, exitCode: 2 }
+        : { stdout: '', stderr: '', exitCode: 0 };
     }
     if (isWindsurfPreToolAction(action)) {
       return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };

@@ -297,7 +297,7 @@ export function announceWizardUrl(
       '\n════════════════════════════════════════════════════════════════\n'
       + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
       + `  ${link}\n\n`
-      + '  Sign in (or choose "Continue without Traffic One" to skip) and complete the steps.\n'
+      + '  Enter your API key and complete the setup steps.\n'
       + `  Setup link: ${link}\n`
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
       + '════════════════════════════════════════════════════════════════\n',
@@ -470,8 +470,9 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
     // Let the wizard tab finish its /complete handshake (bounded) so the close
     // directive below targets a settled tab and the user sees the done view.
     if (host === 'cursor' && !alreadyDone) awaitWizardCompletionAck(cwd, host);
-    // The user answered "don't use Traffic One" in the wizard: unblock the build
-    // with NO materialization, triage, or orchestration directives — the project
+    // The user declined Traffic One through the pre-onboarding plugin-use choice:
+    // unblock the build with NO materialization, triage, or orchestration
+    // directives — the project
     // keeps no .traffic-one folder and the hooks stand down from here on. The
     // Cursor tab-close directive still applies (the wizard tab is open).
     if (pluginUseDeclined(cwd)) {

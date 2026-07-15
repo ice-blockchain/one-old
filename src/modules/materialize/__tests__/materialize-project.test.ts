@@ -6,33 +6,38 @@ import * as path from 'path';
 
 import { runMaterializeProject } from '../materialize-project';
 import type { Ctx, HookInput } from '../../../core/types';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 
 function ctxFor(cwd: string): Ctx {
   const input: HookInput = { event: 'PostToolUse', host: 'claude', cwd, raw: {} };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
-// Fresh local auth state so authGateForHook returns authenticated WITHOUT
-// spawning the CLI (remote not due) + isolated prefs path.
+// Fresh canonical auth lets runtime gates continue without opening the wizard;
+// the preferences path stays isolated per test.
 function withFreshAuthProject(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-materialize-'));
   const env = process.env;
-  const prevState = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  const prevAuth = env.TRAFFIC_ONE_AUTH;
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-    expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+  env.TRAFFIC_ONE_AUTH = '1';
+  fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+    schemaVersion: 3,
+    auth: { version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z' },
+    hosts: {},
   }), 'utf8');
   try {
     fn(dir);
   } finally {
-    if (prevState === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevState;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevAuth;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -63,7 +68,7 @@ test('runMaterializeProject (authed, no spawn) delegates to convergence and maps
   withFreshAuthProject((dir) => {
     // The fixture state is materialized-shaped but not fully onboarding-complete,
     // so the convergence reports "incomplete" — which proves the auth gate passed
-    // (fresh local auth, no CLI spawn) and the outcome mapped to a context result.
+    // (fresh canonical auth, no CLI spawn) and the outcome mapped to a context result.
     writeMaterialized(dir);
     const r = runMaterializeProject(ctxFor(dir));
     assert.equal(r.kind, 'context');
@@ -71,5 +76,13 @@ test('runMaterializeProject (authed, no spawn) delegates to convergence and maps
       assert.ok((r.systemMessage || '').includes('incomplete'));
       assert.ok(r.context.includes('State validation issues'));
     }
+  });
+});
+
+test('runMaterializeProject stands down when pluginUse is declined', () => {
+  withFreshAuthProject((dir) => {
+    recordPluginUseChoice(dir, false, 'test');
+    assert.equal(runMaterializeProject(ctxFor(dir)).kind, 'noop');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);
   });
 });

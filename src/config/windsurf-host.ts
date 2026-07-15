@@ -5,7 +5,6 @@ export const WINDSURF_HOST_CONFIG_DIR_REL = '.codeium/windsurf';
 export const WINDSURF_HOST_NEXT_CONFIG_DIR_REL = '.codeium/windsurf-next';
 export const WINDSURF_HOST_INSIDERS_CONFIG_DIR_REL = '.codeium/windsurf-insiders';
 export const WINDSURF_HOST_HOOKS_FILE = 'hooks.json';
-export const WINDSURF_HOST_MCP_FILE = 'mcp_config.json';
 export const WINDSURF_HOST_GLOBAL_RULES_REL = 'memories/global_rules.md';
 export const DEVIN_HOST_CONFIG_REL = '.config/devin/config.json';
 

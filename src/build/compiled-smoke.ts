@@ -117,9 +117,8 @@ async function main(): Promise<void> {
       TRAFFIC_ONE_AUTH: 'on',
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
       TRAFFIC_ONE_MCP_KEY_ENDPOINT: 'http://127.0.0.1:8787/mcp',
-      TRAFFIC_ONE_AUTH_STATE_PATH: path.join(authTmp, 'one.json'),
+      TRAFFIC_ONE_STATE_PATH: path.join(authTmp, 'one.json'),
       TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(authTmp, 'prefs.json'),
-      TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: path.join(authTmp, 'choice.json'),
       TRAFFIC_ONE_PLUGIN_ROOT: pluginRoot,
     };
 
@@ -205,8 +204,6 @@ async function main(): Promise<void> {
       'XDG_STATE_HOME',
       'TRAFFIC_ONE_PROJECT_PREFS_PATH',
       'TRAFFIC_ONE_STATE_PATH',
-      'TRAFFIC_ONE_AUTH_STATE_PATH',
-      'TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH',
       'TRAFFIC_ONE_ONBOARDING_NO_SPAWN',
       'TRAFFIC_ONE_ONBOARDING_SERVER_ENTRY',
     ]) delete onboardingEnv[key];
@@ -327,8 +324,6 @@ async function main(): Promise<void> {
         'XDG_STATE_HOME',
         'TRAFFIC_ONE_PROJECT_PREFS_PATH',
         'TRAFFIC_ONE_STATE_PATH',
-        'TRAFFIC_ONE_AUTH_STATE_PATH',
-        'TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH',
       ]) delete quotedEnv[key];
       const quotedRun = spawnSync('/bin/sh', ['-c', quotedBootstrap], {
         cwd: onboardingTmp,

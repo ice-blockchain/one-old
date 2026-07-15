@@ -224,7 +224,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
   refreshModelStatusForSession(cwd, ctx.host);
 
   // Auth gate: a pure local boolean read — no per-session remote check. When auth
-  // is enforced but the web API key isn't entered yet, point at the wizard (the
+  // is enforced but the API key isn't entered yet, point at the wizard (the
   // same setup-pending surface onboarding uses). The wizard shows the api-key page
   // because computeOnboarding returns the 'api-key' step while unauthenticated —
   // covering both a fresh project and an already-onboarded one a 401 invalidated.
@@ -251,7 +251,7 @@ function runSessionStartInner(ctx: Ctx): HookResult {
 
 // The post-auth SessionStart body: skill sweep + digest retention + session
 // materialization → subagent fast path → mode-routed rule bundle / directive.
-// Exported so it can be tested without the forced remote auth probe.
+// Exported so its post-gate behavior can be tested directly.
 export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const cwd = sessionProjectRoot(ctx);
   initializeTrafficOneEnv(cwd, ctx.host);

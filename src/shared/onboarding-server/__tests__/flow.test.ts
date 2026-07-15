@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { applyAnswer, buildTeamLineup, computeOnboarding } from '../flow';
 import { recordPluginUseChoice } from '../../state/plugin-use';
+import { writeSimpleAuth } from '../../auth';
 import { hostModelSnapshot } from '../../model-tiers';
 import { writeOneHostSettings } from '../../one-settings';
 import { mergeProjectHostPrefs, mergeProjectPrefs, projectRootHash, readGlobalCodeGraphProvider, readProjectPrefs, readState, writeGlobalCodeGraphProvider, writeState } from '../../state';
@@ -32,6 +33,9 @@ function withProject(committed: Record<string, unknown> | null, fn: (cwd: string
   // codeGraphProvider is machine-wide now — isolate one.json so applyAnswer's
   // writeGlobalCodeGraphProvider never touches the real ~/.traffic-one.
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  // This suite exercises post-auth wizard sequencing. The API-key gate itself
+  // has dedicated flow/routes tests, so enable canonical auth explicitly here.
+  writeSimpleAuth('sk-flow-fixture');
   // Pin the detected plan so plan-aware line-up / recommendation assertions are
   // deterministic across machines; tests needing another plan override it inline.
   const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
@@ -576,6 +580,48 @@ test('team step model menu follows the detected host (codex → gpt-5.x)', () =>
   });
 });
 
+test('computeOnboarding explicit env owns the preference target and model metadata', () => {
+  withProject({ mode: 'existing-codebase', stack: 'default', onboardingComplete: true }, (cwd) => {
+    const env = {
+      ...process.env,
+      TRAFFIC_ONE_HOST: 'codex',
+      TRAFFIC_ONE_USER_PLAN: 'pro',
+      TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'explicit-one.json'),
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'explicit-preferences.json'),
+      TRAFFIC_ONE_AUTH: '1',
+    } as NodeJS.ProcessEnv;
+    const updatedAt = '2099-01-01';
+    writeSimpleAuth('sk-explicit-flow', env);
+    writeGlobalCodeGraphProvider('gitnexus', env);
+    writeOneHostSettings('codex', {
+      plan: 'pro',
+      updatedAt,
+      tiers: {
+        highest: ['explicit-highest'],
+        balanced: ['explicit-balanced'],
+        cheapest: ['explicit-cheapest'],
+      },
+    }, env);
+    mergeProjectPrefs(cwd, {
+      openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-15T00:00:00Z' },
+    }, env);
+    mergeProjectHostPrefs(cwd, 'codex', {
+      performance: { level: 'balanced', source: 'prompted' },
+      configuredFor: { plan: 'pro', modelsUpdatedAt: updatedAt },
+    }, env);
+
+    const view = computeOnboarding(cwd, env);
+    assert.equal(view.step, 'team-confirmation');
+    assert.equal(view.meta.host, 'codex');
+    assert.deepEqual(view.meta.modelChoices?.map((choice) => choice.model), [
+      'explicit-highest',
+      'explicit-balanced',
+      'explicit-cheapest',
+    ]);
+    assert.equal(view.meta.team?.find((member) => member.role === 'senior-architect')?.model, 'explicit-balanced');
+  });
+});
+
 test('Windsurf Free recommends Low and maps a manually selected team to SWE-1.6 Slow', () => {
   withProject(null, (cwd) => {
     process.env.TRAFFIC_ONE_HOST = 'windsurf';
@@ -1005,8 +1051,15 @@ test('computeOnboarding: canonical hashed user preferences complete onboarding',
     }), 'utf8');
     fs.mkdirSync(path.join(home, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(home, '.traffic-one', 'one.json'), JSON.stringify({
-      version: 1,
+      schemaVersion: 3,
+      auth: {
+        version: 1,
+        authenticated: true,
+        apiKey: 'sk-hashed-prefs-fixture',
+        updatedAt: '2026-07-15T00:00:00Z',
+      },
       codeGraphProvider: 'gitnexus',
+      hosts: {},
     }), 'utf8');
 
     const view = computeOnboarding(cwd);

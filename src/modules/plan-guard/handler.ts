@@ -8,12 +8,11 @@
 import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { readEffectiveState } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { INSTALL_RE, allowsNextjs, forbiddenForStack } from './forbidden';
 
 export function libraryAllowlistGate(ctx: Ctx): HookResult {
-  if (authChoiceAllowsContinue(ctx.cwd) || pluginUseDeclined(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!INSTALL_RE.test(command)) return noop();

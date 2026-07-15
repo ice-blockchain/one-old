@@ -98,7 +98,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | --- | --- |
 | `rules/core.md` | Traffic One local core, inspired by ECC common/typescript layering: https://github.com/affaan-m/everything-claude-code/tree/main/rules |
 | `rules/common/agent-handoff-digests.md` | Traffic One local token-economy rule, inspired by ECC subagent/memory patterns: https://github.com/affaan-m/everything-claude-code |
-| `rules/common/auth-gate.md` | Traffic One local auth-gate rule (login / auth-choice flow). |
+| `rules/common/auth-gate.md` | Traffic One local auth-gate rule (wizard-validated API key in user-level `one.json.auth`; per-project opt-out is owned by `pluginUse`). |
 | `rules/common/clean-code.md` | Traffic One local baseline, inspired by ECC common rules and Karpathy simplicity guidance: https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md — **canonical owner** of the language-agnostic floor; `*-patterns`/`coding-standards` skills defer here. |
 | `rules/common/codebase-graph.md` | Traffic One local graphify cache rule, inspired by ECC memory/token optimization: https://github.com/affaan-m/everything-claude-code — **canonical owner** of graph artefact paths + read protocol; `agent-handoff-digests`/`project-memory` defer here. |
 | `rules/common/dependencies.md` | Traffic One local dependency gate, now topped up from ECC search-first behavior: https://github.com/affaan-m/everything-claude-code/blob/main/skills/search-first/SKILL.md |

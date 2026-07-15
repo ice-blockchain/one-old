@@ -105,7 +105,7 @@ export function agentsMarketplaceManifest(): Record<string, unknown> {
       {
         name: NAME,
         source: { source: 'local', path: './.' },
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        policy: { installation: 'AVAILABLE' },
         category: 'Engineering',
       },
     ],

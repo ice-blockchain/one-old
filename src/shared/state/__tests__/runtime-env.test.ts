@@ -20,13 +20,10 @@ test('initializeTrafficOneEnv migrates completed legacy Cursor answers before de
   fs.writeFileSync(defaultProjectPrefsPath(cwd, env), JSON.stringify({
     toolchain: { gitnexus: { installedVersion: '1.6.9' } },
   }), 'utf8');
-  fs.writeFileSync(path.join(home, '.traffic-one', 'one.json'), JSON.stringify({
-    schemaVersion: 1,
-    auth: { accessToken: 'canonical-token' },
-    hosts: {},
-  }), 'utf8');
   fs.writeFileSync(path.join(stateDir, 'preferences.json'), JSON.stringify({
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-07-13T08:56:01Z' },
+    pluginUse: { enabled: true, source: 'prompted', decidedAt: '2026-07-13T08:56:02Z' },
+    retiredJunk: { mustNotMigrate: true },
     hosts: {
       cursor: {
         performance: { level: 'balanced', source: 'prompted' },
@@ -36,8 +33,7 @@ test('initializeTrafficOneEnv migrates completed legacy Cursor answers before de
     },
   }), 'utf8');
   fs.writeFileSync(path.join(stateDir, 'machine.json'), JSON.stringify({
-    version: 1,
-    auth: { accessToken: 'stale-local-token' },
+    schemaVersion: 3,
     codeGraphProvider: 'gitnexus',
   }), 'utf8');
   fs.writeFileSync(path.join(stateDir, 'onboarding', 'cursor', 'server.json'), '{}', 'utf8');
@@ -54,10 +50,15 @@ test('initializeTrafficOneEnv migrates completed legacy Cursor answers before de
     const gitnexus = (prefs.toolchain as Record<string, Record<string, unknown>>).gitnexus;
     assert.ok(gitnexus);
     assert.equal(gitnexus.installedVersion, '1.6.9');
+    assert.deepEqual(prefs.pluginUse, {
+      enabled: true,
+      source: 'prompted',
+      decidedAt: '2026-07-13T08:56:02Z',
+    });
+    assert.equal(Object.prototype.hasOwnProperty.call(prefs, 'retiredJunk'), false);
 
     const machine = readOneSettings(env);
     assert.equal(machine.codeGraphProvider, 'gitnexus');
-    assert.deepEqual(machine.auth, { accessToken: 'canonical-token' }, 'canonical settings win conflicts');
 
     assert.equal(fs.existsSync(path.join(stateDir, 'preferences.json')), false);
     assert.equal(fs.existsSync(path.join(stateDir, 'machine.json')), false);

@@ -11,9 +11,7 @@ import {
   uninstallWrapper,
   windsurfGlobalRulesPath,
   windsurfHooksPath,
-  windsurfMcpPath,
 } from '../index';
-import { DEFAULT_ENDPOINT } from '../../../config/auth';
 import { WINDSURF_HOOK_EVENTS } from '../../../config/windsurf-host';
 
 function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
@@ -28,7 +26,7 @@ function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
   }
 }
 
-test('install requires consent and writes Cascade + native hooks, MCP, and global rule block', () => {
+test('install requires consent and writes Cascade + native hooks and global rule block', () => {
   withHome((env) => {
     assert.equal(installWrapper(env, ['install']).code, 2);
     const installed = installWrapper(env, ['install', '--yes']);
@@ -42,8 +40,6 @@ test('install requires consent and writes Cascade + native hooks, MCP, and globa
     const stamp = fs.readFileSync(path.join(env.HOME!, '.traffic-one', 'windsurf-plugin-root'), 'utf8').trim();
     assert.equal(stamp, env.TRAFFIC_ONE_PLUGIN_ROOT);
 
-    const mcp = JSON.parse(fs.readFileSync(windsurfMcpPath(env), 'utf8')) as { mcpServers: Record<string, { serverUrl?: string }> };
-    assert.equal(mcp.mcpServers['mcp-auth']?.serverUrl, DEFAULT_ENDPOINT);
     assert.match(fs.readFileSync(windsurfGlobalRulesPath(env), 'utf8'), /traffic-one:windsurf:start/);
     const devin = JSON.parse(fs.readFileSync(devinConfigPath(env), 'utf8')) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
     assert.ok(devin.hooks.UserPromptSubmit?.some((group) => group.hooks.some((entry) => /devin-hook-runtime\.cjs.* user-prompt-submit /.test(entry.command))));

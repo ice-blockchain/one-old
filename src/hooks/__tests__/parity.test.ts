@@ -6,6 +6,7 @@ import * as path from 'path';
 
 import { runClaudeHook } from '../claude-entry';
 import { runCursorHook } from '../cursor-entry';
+import { writeOneSection } from '../../shared/one-settings';
 
 // Golden parity: the SAME canonical scenario must yield the SAME canonical
 // decision (deny / silent) across hosts, serialized into each host's wire shape
@@ -19,18 +20,17 @@ async function withScenario(
 ): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-parity-'));
   const env = process.env;
-  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
+  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // parity test must never spawn a real wizard server
   env.TRAFFIC_ONE_AUTH = '1'; // pin auth enforcement on regardless of the committed AUTH_ENABLED default
   if (opts.authed) {
-    // The simple web-entered-key boolean model: a flat auth.json beside one.json.
-    fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+    // The sole wizard-validated auth record lives under one.json.auth.
+    writeOneSection('auth', {
       version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
-    }), 'utf8');
+    }, env);
   }
   if (opts.state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -40,8 +40,8 @@ async function withScenario(
     await fn(dir);
   } finally {
     for (const [k, v] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
-      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs, TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
+      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn, TRAFFIC_ONE_AUTH: saved.authFlag,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }
     fs.rmSync(dir, { recursive: true, force: true });

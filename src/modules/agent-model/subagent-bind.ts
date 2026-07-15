@@ -14,7 +14,6 @@ import { cursorModelsFresh } from '../../shared/materialize/cursor-models';
 import { effectiveTierForRole, modelForRoleHost } from '../../shared/performance';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { captureClaimDebug, claimThreadRole, ensureCurrentRunId, hookSessionIdentity, inferRoleFromTranscript, readEffectiveState, recordCursorSpawnObservation, recordRunAgent, transcriptThreadId } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from './model-choice';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -26,7 +25,7 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // and use it for every state read/write below; otherwise a start event can
   // split the run across nested `.traffic-one` trees.
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
-  if (authChoiceAllowsContinue(cwd) || pluginUseDeclined(cwd)) return noop();
+  if (pluginUseDeclined(cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
   const payload = obj(raw.payload) || {};

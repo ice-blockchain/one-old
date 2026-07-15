@@ -1618,7 +1618,6 @@ test('Cursor reconciliation never writes run state in a generated plugin root', 
   fs.mkdirSync(scripts, { recursive: true });
   fs.mkdirSync(manifestDir, { recursive: true });
   fs.writeFileSync(path.join(scripts, 'hook-runtime.cjs'), 'module.exports = {};\n', 'utf8');
-  fs.writeFileSync(path.join(scripts, 'traffic-one-auth.cjs'), 'module.exports = {};\n', 'utf8');
   fs.writeFileSync(path.join(manifestDir, 'plugin.json'), '{"name":"traffic-one"}\n', 'utf8');
   resetAuthoringRootCache();
 

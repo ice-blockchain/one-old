@@ -126,9 +126,9 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
 
   // Single one-mcp report gate: fire ONLY once onboarding is finalized — new-project
   // (canonical state committed) or existing-project (local prefs resolved), via
-  // computeOnboarding(...).done. Runs BEFORE the auth gate below so an
-  // AUTH_ENABLED=false dev/test run still reports. prepareReport then enforces
-  // real-codebase + auth (bypassed when auth isn't enforced) + once-per-project.
+  // computeOnboarding(...).done. Runs before the auth gate below so an explicit
+  // TRAFFIC_ONE_AUTH=off dev/test run still reports; prepareReport owns the
+  // real-codebase, canonical-auth, and once-per-project checks.
   const oneUidMissing = !(typeof state[ONE_UID_FIELD] === 'string' && state[ONE_UID_FIELD]);
   if (reportOneMcp && oneUidMissing && computeOnboarding(reportRoot).done) {
     reportOneMcp(reportRoot, state, 'onboarding-complete');
@@ -139,7 +139,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // guards first so computeOnboarding + the disk scans inside maybeFlipToMaintenance
   // only run for a new-project still in the building window — once flipped,
   // isMaintenancePhase short-circuits. Independent of one-mcp; runs before the auth
-  // gate so it also works in AUTH_ENABLED=false dev/test.
+  // gate so it also works in explicit auth-bypass dev/test runs.
   if (!isSpawnAgentLifecycleTool
     && state.mode === 'new-project'
     && !isMaintenancePhase(state, 'new-project')

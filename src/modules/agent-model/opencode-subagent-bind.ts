@@ -21,12 +21,12 @@ import { noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import { captureClaimDebug, claimThreadRole, readEffectiveState, recordRunAgent } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { inferTrafficOneSpawnRole } from './role-infer';
 
 export function opencodeSubagentBind(ctx: Ctx): HookResult {
   if (ctx.host !== 'opencode' && ctx.host !== 'kilo') return noop();
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
   const sessionId = asString(raw.session_id ?? raw.sessionID ?? raw.sessionId);

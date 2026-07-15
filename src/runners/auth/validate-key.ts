@@ -1,5 +1,5 @@
 // src/runners/auth/validate-key.ts
-// Intake-time API-key validation for the onboarding wizard. The web-entered key is
+// Intake-time API-key validation for the onboarding wizard. The submitted key is
 // checked against the AUTH endpoint (`.../traffic-one-mcp/mcp`, endpointFromEnv) —
 // NOT the public first-look report endpoint, which accepts anything and can never
 // reject a bad key.
@@ -7,9 +7,8 @@
 // HOW: a standard `tools/list` JSON-RPC call carrying the key as Bearer. The
 // gated endpoint's whole auth model is its Unkey Bearer gate — an invalid key is
 // bounced 401/403 BEFORE method dispatch, a valid key gets a 2xx `result`. Do NOT
-// validate via the retired `authenticate` session-token tool: the server no
-// longer implements it (tools/call returns "Tool authenticate not found" as a
-// 200, which mis-read as "endpoint unreachable" — observed live 2026-07-10).
+// substitute another MCP method: validation proves that the Bearer key can reach
+// the authenticated MCP tool surface.
 // Anything that is neither a 2xx result nor a 401/403 (timeout, DNS, non-HTTPS,
 // 5xx) is treated as unreachable. The wizard fails CLOSED on both non-ok cases:
 // a key is only stored once the gate confirms it.

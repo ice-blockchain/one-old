@@ -9,6 +9,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { authSatisfied } from '../../shared/auth';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { logToolUse } from '../../shared/token-logger';
 
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
@@ -101,6 +102,7 @@ function lighthouseBlockedStatus(raw: unknown): { status: 'blocked:sandbox' | 'b
 }
 
 export function postBuildPageSpeed(ctx: Ctx): HookResult {
+  if (pluginUseDeclined(ctx.cwd)) return noop();
   if (!authSatisfied()) return noop();
   logToolUse(ctx.cwd, ctx.input.raw && typeof ctx.input.raw === 'object' ? (ctx.input.raw as Record<string, unknown>) : null);
   const command = ctx.input.tool?.command ?? '';

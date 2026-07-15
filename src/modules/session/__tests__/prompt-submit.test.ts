@@ -74,11 +74,11 @@ function assertOpenCodeSetupTextIsSanitized(text: string): void {
   }
 }
 
-// Fresh local auth → authGateForHook authenticated WITHOUT spawning the CLI.
+// Fresh canonical auth lets runtime gates continue without opening the wizard.
 function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-'));
   const env = process.env;
-  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
@@ -90,7 +90,7 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevCodexThreadId = env.CODEX_THREAD_ID;
   const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
@@ -102,12 +102,12 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   delete env.CODEX_THREAD_ID;
   delete env.CURSOR_PLUGIN_ROOT;
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1,
+  fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+    schemaVersion: 3,
     auth: {
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+      version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
     },
+    hosts: {},
   }), 'utf8');
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -127,7 +127,7 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     }
   }
   try { fn(dir); } finally {
-    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
@@ -189,7 +189,7 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
     toolchain: TOOLCHAIN,
     ...rest,
   }), 'utf8');
-  // codeGraphProvider is machine-wide (one.json, the AUTH_STATE_PATH alias here).
+  // codeGraphProvider is machine-wide in the canonical one.json envelope.
   writeGlobalCodeGraphProvider('graphify');
 }
 
@@ -322,21 +322,21 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-child-')));
   const child = path.join(root, 'one-nextjs');
   const env = process.env;
-  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   try {
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(root, 'auth.json');
+    env.TRAFFIC_ONE_STATE_PATH = path.join(root, 'one.json');
     env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
     env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(root, 'prefs.json');
     env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1,
+    fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+      schemaVersion: 3,
       auth: {
-        version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-        expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+        version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
       },
+      hosts: {},
     }), 'utf8');
 
     fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });
@@ -362,7 +362,7 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
     assert.equal(rootStateAfter.rootMarker, true);
     assert.equal(rootStateAfter.stack, 'minimal');
   } finally {
-    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;

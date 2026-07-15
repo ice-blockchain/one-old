@@ -1,7 +1,7 @@
 // src/runners/doctor/probes.ts
 // Environment + project + Codex-session probes for the traffic-one doctor.
 // Ported 1:1 from scripts/doctor/{probeNode,probeNvm,probeGitnexus,probeProject,
-// probeCodexHooks,probeMcpAuth,probeSessionDiagnostics,analyzeCodexSessionFile,
+// probeCodexHooks,probeCanonicalAuth,probeSessionDiagnostics,analyzeCodexSessionFile,
 // resolveCodexSession}.cjs. All reads; no writes.
 
 import * as fs from 'fs';
@@ -9,6 +9,8 @@ import * as path from 'path';
 
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { OPENCODE_MCP_SERVER_KEY, OPENCODE_MCP_SHIM_PATH } from '../../config/opencode-mcp';
+import { readSimpleAuth } from '../../shared/auth';
+import { oneSettingsPath } from '../../shared/one-settings';
 import { stableBinDir } from '../../shared/runner-shims';
 import { applyGlobalCodeGraphProvider, effectiveState, normalizeState, projectPrefsPath, readProjectPrefs, stripLocalPreferenceFields } from '../../shared/state';
 import { managedNpmBin } from '../../shared/toolchain-paths';
@@ -20,13 +22,10 @@ import {
   type NvmNode22,
 } from '../gitnexus';
 import {
-  authProbeForSession,
-  type AuthProbe,
   codexConfigPath,
   codexSessionsDir,
   commandLooksMutating,
   getPayloadText,
-  mcpConfigPath,
   parseCodexConfigToml,
   readFirstJsonlObject,
   safeJsonParse,
@@ -328,31 +327,21 @@ export function probeCodexHooks(cwd: string, env: NodeJS.ProcessEnv = process.en
   };
 }
 
-export interface McpAuthProbe {
-  configPath: string;
-  configExists: boolean;
-  configured: boolean;
-  type: string | null;
-  url: string | null;
-  credentialPath: string | null;
+export interface CanonicalAuthProbe {
+  filePath: string;
+  present: boolean;
+  valid: boolean;
+  updatedAt: string | null;
 }
-export function probeMcpAuth(env: NodeJS.ProcessEnv = process.env): McpAuthProbe {
-  const configPath = mcpConfigPath();
-  const raw = safeRead(configPath);
-  const config = raw ? safeJsonParse(raw, null) : null;
-  const servers = config && config.mcpServers && typeof config.mcpServers === 'object'
-    ? (config.mcpServers as Rec)
-    : null;
-  const server = servers && servers['mcp-auth'] && typeof servers['mcp-auth'] === 'object'
-    ? (servers['mcp-auth'] as Rec)
-    : null;
+
+// Redacted by construction: the stored API key never enters the probe output.
+export function probeCanonicalAuth(env: NodeJS.ProcessEnv = process.env): CanonicalAuthProbe {
+  const state = readSimpleAuth(env);
   return {
-    configPath,
-    configExists: Boolean(raw),
-    configured: Boolean(server),
-    type: server && typeof server.type === 'string' ? server.type : null,
-    url: server && typeof server.url === 'string' ? server.url : null,
-    credentialPath: env.TRAFFIC_ONE_AUTH_CREDENTIAL_STORE_PATH || null,
+    filePath: oneSettingsPath(env),
+    present: state !== null,
+    valid: Boolean(state && state.authenticated === true && state.apiKey.trim()),
+    updatedAt: state && state.updatedAt ? state.updatedAt : null,
   };
 }
 
@@ -364,15 +353,10 @@ export interface SessionDiagnostics {
   hookPayloadCount: number;
   promptRequestCount: number;
   permissionDecisionCount: number;
-  trafficOneAuthPromptCount: number;
   trafficOneInstructionInjected: boolean;
   baseInstructionsMentionTrafficOne: boolean;
   toolCallCount: number;
   mutatingToolCallCount: number;
-  firstAuthGateAt: string | null;
-  firstMutatingToolAt: string | null;
-  mutatingToolBeforeAuthGate: boolean;
-  authState: AuthProbe | null;
 }
 
 export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv = process.env): SessionDiagnostics | null {
@@ -387,15 +371,10 @@ export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv
     hookPayloadCount: 0,
     promptRequestCount: 0,
     permissionDecisionCount: 0,
-    trafficOneAuthPromptCount: 0,
     trafficOneInstructionInjected: false,
     baseInstructionsMentionTrafficOne: false,
     toolCallCount: 0,
     mutatingToolCallCount: 0,
-    firstAuthGateAt: null,
-    firstMutatingToolAt: null,
-    mutatingToolBeforeAuthGate: false,
-    authState: null,
   };
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -408,10 +387,6 @@ export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv
     if (serialized.includes('hookSpecificOutput')) diagnostics.hookPayloadCount += 1;
     if (serialized.includes('promptRequest')) diagnostics.promptRequestCount += 1;
     if (serialized.includes('permissionDecision')) diagnostics.permissionDecisionCount += 1;
-    if (serialized.includes('traffic-one.auth.choice')) {
-      diagnostics.trafficOneAuthPromptCount += 1;
-      if (!diagnostics.firstAuthGateAt) diagnostics.firstAuthGateAt = timestamp;
-    }
 
     if (parsed.type === 'session_meta') {
       const payload = parsed.payload && typeof parsed.payload === 'object' ? (parsed.payload as Rec) : {};
@@ -420,7 +395,7 @@ export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv
       diagnostics.startedAt = (typeof payload.timestamp === 'string' ? payload.timestamp : null) || timestamp || diagnostics.startedAt;
       const instructionText = getPayloadText(payload);
       diagnostics.baseInstructionsMentionTrafficOne = /Traffic One|traffic-one|\.traffic-one/.test(instructionText);
-      diagnostics.trafficOneInstructionInjected = /Traffic One Codex Instructions|\.traffic-one\/rules\/common\/auth-gate\.md|Authenticate with the `mcp-auth` server/.test(instructionText);
+      diagnostics.trafficOneInstructionInjected = /Traffic One Codex Instructions|\.traffic-one\/rules\/common\/auth-gate\.md/.test(instructionText);
       continue;
     }
 
@@ -432,18 +407,8 @@ export function analyzeCodexSessionFile(filePath: string, env: NodeJS.ProcessEnv
     const rawArgs = payload.arguments || payload.input || '';
     if (commandLooksMutating(name, rawArgs)) {
       diagnostics.mutatingToolCallCount += 1;
-      if (!diagnostics.firstMutatingToolAt) diagnostics.firstMutatingToolAt = timestamp;
     }
   }
-
-  diagnostics.authState = authProbeForSession(diagnostics.startedAt, env);
-  diagnostics.mutatingToolBeforeAuthGate = Boolean(
-    diagnostics.firstMutatingToolAt
-    && (
-      !diagnostics.firstAuthGateAt
-      || diagnostics.firstMutatingToolAt < diagnostics.firstAuthGateAt
-    ),
-  );
   return diagnostics;
 }
 

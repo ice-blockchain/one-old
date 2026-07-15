@@ -7,13 +7,14 @@ import * as path from 'path';
 import { runClaudeHook } from '../claude-entry';
 import { handlersForSubcommand } from '../../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../../core/registry';
+import { writeOneSection } from '../../shared/one-settings';
 
 const REAL_HANDLERS = collectHandlers(loadModules(defaultModulesDir()));
 function idsFor(sub: string): string[] {
   return handlersForSubcommand(REAL_HANDLERS, sub).map((h) => h.id).sort();
 }
 
-// ── Routing: each subcommand → exactly its legacy-equivalent handler set ──────
+// ── Routing: each subcommand → exactly its handler set ────────────────────────
 test('subcommand routing maps each hook entry point to the right handlers', () => {
   assert.deepEqual(idsFor('session-start'), ['agent-model.cursor-failure-session-reconcile', 'session.session-start']);
   // agent-model.opencode-subagent-bind rides user-prompt-submit to bind a spawned
@@ -24,8 +25,8 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
     'agent-model.opencode-subagent-bind',
     'session.prompt-submit',
   ]);
-  // The PreToolUse gate subcommands each include the priority-0 auth gate
-  // (so the pipeline checks auth first, matching the legacy per-gate auth check).
+  // The PreToolUse gate subcommands each include the priority-0 auth gate so the
+  // pipeline checks auth first.
   // The authoring write-guard (priority 5) piggybacks the two write-gate
   // pipelines so model-steered .traffic-one writes into the plugin repo deny.
   assert.deepEqual(idsFor('check-onboarding-gate'), ['onboarding-gate', 'session.auth', 'session.authoring-guard', 'session.workspace-boundary']);
@@ -55,25 +56,24 @@ test('an unknown subcommand routes to no handlers', () => {
 async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-claude-entry-'));
   const env = process.env;
-  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
+  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN, authFlag: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // unit tests must never spawn a real wizard server
   env.TRAFFIC_ONE_AUTH = '1'; // pin auth enforcement on regardless of the committed AUTH_ENABLED default
   if (opts.authed) {
-    // The web-entered-key boolean model: a flat auth.json record beside one.json.
-    fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+    // The sole wizard-validated auth record lives under one.json.auth.
+    writeOneSection('auth', {
       version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
-    }), 'utf8');
+    }, env);
   }
   try {
     await fn(dir);
   } finally {
     for (const [k, v] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
-      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs, TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
+      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn, TRAFFIC_ONE_AUTH: saved.authFlag,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }
     fs.rmSync(dir, { recursive: true, force: true });
@@ -111,7 +111,7 @@ test('session-start UNAUTHED points at the wizard (api-key page), no host prompt
     const r = await runClaudeHook('session-start', JSON.stringify({ hook_event_name: 'SessionStart', cwd }));
     assert.equal(r.exitCode, 0);
     const out = JSON.parse(r.stdout);
-    // The web-key model surfaces the wizard (which shows the api-key page because
+    // Missing canonical auth surfaces the wizard (which shows the api-key page because
     // computeOnboarding returns it while unauthenticated) — no host prompt request.
     assert.match(String(out.systemMessage), /authentication required/);
     assert.equal(out.promptRequest, undefined);
@@ -120,10 +120,8 @@ test('session-start UNAUTHED points at the wizard (api-key page), no host prompt
 });
 
 test('session-start AUTHED plumbs through to valid JSON, exit 0 (never throws to host)', async () => {
-  // SessionStart runs a forced remote auth check + rule packing + materialization;
-  // the auth-decision nuances (3 flows, remote-check fail-closed) are covered by
-  // the session module's own unit tests. The entry's contract here is simply:
-  // it routes session-start through the pipeline and always returns valid output.
+  // The entry routes session-start through the pipeline and always returns valid
+  // output; canonical-auth gate behavior is covered by the session module tests.
   await withEnv({ authed: true }, async (cwd) => {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ mode: 'existing-codebase' }), 'utf8');

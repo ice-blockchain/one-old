@@ -172,32 +172,37 @@ export function parseTimestamp(value: unknown): number {
   return Number.isFinite(time) ? time : 0;
 }
 
-// ms-stripped ISO timestamp (matches the legacy nowIso in this runner).
+// Compact, millisecond-stripped persisted timestamp.
 export { nowIsoNoMs as nowIso } from '../../shared/text';
 
 export function stateForReport(root: string, options: { state?: unknown } = {}): Rec {
   return options.state && typeof options.state === 'object' ? (options.state as Rec) : readProjectState(root);
 }
 
-// Fire-and-forget MCP tools/call POST. Resolves the response body on 2xx,
-// rejects on non-2xx / error response / timeout. Ported 1:1 from
-// one-mcp-report/_helpers.cjs (mcpRequest).
-export function mcpRequest(endpoint: string, payload: unknown, timeoutMs = 15000): Promise<string> {
+// Fire-and-forget MCP tools/call POST. Resolves the response body on 2xx and
+// rejects on a non-2xx response, MCP error, or timeout.
+export function mcpRequest(
+  endpoint: string,
+  payload: unknown,
+  timeoutMs = 15000,
+  env: NodeJS.ProcessEnv = process.env,
+  requestImpl: typeof https.request = https.request,
+): Promise<string> {
   return new Promise((resolve, reject) => {
     const url = new URL(endpoint);
     const body = JSON.stringify(buildMcpPayload(payload));
-    // Carry the web-entered API key as a Bearer token so the server can validate
+    // Carry the wizard-validated API key as a Bearer token so the server can validate
     // it: a rejected/invalid key returns 401, which runReport turns into a local
-    // auth reset (re-opening the wizard's api-key page next session). The key is a
-    // telemetry key, not a secret; the report endpoint is HTTPS.
-    const apiKey = readSimpleAuth()?.apiKey || '';
+    // auth reset (re-opening the wizard's api-key page next session). The report
+    // endpoint is HTTPS and the key is never added to the payload or logs.
+    const apiKey = readSimpleAuth(env)?.apiKey || '';
     const headers: Record<string, string | number> = {
       accept: 'application/json, text/event-stream',
       'content-type': 'application/json',
       'content-length': Buffer.byteLength(body),
     };
     if (apiKey) headers.authorization = `Bearer ${apiKey}`;
-    const req = https.request({
+    const req = requestImpl({
       method: 'POST',
       hostname: url.hostname,
       path: `${url.pathname}${url.search}`,
@@ -210,8 +215,8 @@ export function mcpRequest(endpoint: string, payload: unknown, timeoutMs = 15000
       res.on('data', (chunk) => { responseBody += chunk; });
       res.on('end', () => {
         if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
-          // Surface the numeric status on the error so runReport can detect a 401
-          // (invalid/rejected key) and flip the local auth flag to false. Keep the
+          // Surface the numeric status so runReport can detect a rejected key
+          // and remove canonical auth. Keep the
           // `HTTP <n>` message intact — the status-file records it verbatim.
           const err = new Error(`HTTP ${res.statusCode || 'unknown'}`) as Error & { statusCode?: number };
           if (res.statusCode) err.statusCode = res.statusCode;

@@ -6,7 +6,8 @@
 
 import type { IncomingMessage, ServerResponse } from 'http';
 
-import { applyAnswer, computeOnboarding } from '../../shared/onboarding-server/flow';
+import { writeSimpleAuth } from '../../shared/auth';
+import { applyAnswer, computeOnboarding, type AnswerOutcome } from '../../shared/onboarding-server/flow';
 import { obj } from '../../shared/obj';
 import { validateApiKey } from '../auth/validate-key';
 import { probeOnboardingToolchain } from '../toolchain/onboarding';
@@ -87,7 +88,7 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
   }
 
   if (method === 'GET' && pathname === '/state') {
-    sendJson(res, 200, computeOnboarding(ctx.cwd));
+    sendJson(res, 200, computeOnboarding(ctx.cwd, ctx.env));
     return;
   }
 
@@ -98,10 +99,12 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
       sendJson(res, 400, { ok: false, error: 'missing step' });
       return;
     }
+    let outcome: AnswerOutcome;
     // The API key is VALIDATED against the auth endpoint before it is stored — a
     // rejected or unverifiable key never lets onboarding proceed (fail-closed).
     if (step === 'api-key') {
-      const key = String((obj(body.value)?.apiKey ?? body.value ?? '')).trim();
+      const answer = obj(body.value);
+      const key = typeof answer?.apiKey === 'string' ? answer.apiKey.trim() : '';
       if (!key) {
         sendJson(res, 400, { ok: false, error: 'Enter your API key to continue.' });
         return;
@@ -114,13 +117,16 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, url: U
         sendJson(res, 400, { ok: false, error });
         return;
       }
+      writeSimpleAuth(key, ctx.env);
+      outcome = { ok: true };
+    } else {
+      outcome = applyAnswer(ctx.cwd, step, body.value);
     }
-    const outcome = applyAnswer(ctx.cwd, step, body.value);
     if (!outcome.ok) {
       sendJson(res, 400, { ok: false, error: outcome.error || 'invalid answer' });
       return;
     }
-    const view = computeOnboarding(ctx.cwd);
+    const view = computeOnboarding(ctx.cwd, ctx.env);
     if (outcome.task) {
       const taskId = startInstallTask(ctx.cwd, ctx.env);
       sendJson(res, 200, { ok: true, taskId, view });

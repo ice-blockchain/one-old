@@ -29,7 +29,7 @@ export function defaultConfig(): RootTestConfig {
     // layer runs. Host-CLI E2E (real LLM spend) is opt-in via --e2e.
     includeHostE2E: false,
     build: { refreshDist: true, updateHosts: true },
-    auth: 'off', // shipped default AUTH_ENABLED=false; tests run with auth off
+    auth: 'off', // explicit harness opt-out; production AUTH_ENABLED defaults to true
     verdictHost: 'none',
     concurrency: 1, // in-process state isolation (withCaseEnv) assumes serial; see README
     // A full senior-team orchestrated build (scaffold + install + build + review)

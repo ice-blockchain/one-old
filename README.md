@@ -9,15 +9,19 @@ No slash commands required. Compatible with **Claude Code**, **Codex CLI**, **Cu
 
 ---
 
-## First action: choose auth mode
+## First action: choose whether to use Traffic One
 
-Traffic One is gated by the separate `mcp-auth` MCP server. Before onboarding,
-materialization, background reporting, or normal plugin work, the agent presents
-a two-option modal selector: authenticate Traffic One (recommended) or continue
-without Traffic One. If the user authenticates, the agent asks for the API key
-using a secure host input/modal; the hook runs the auth client internally, then
-verifies status itself. Users should not be asked to run shell commands for the
-normal auth flow.
+Before onboarding starts, Traffic One asks in the host chat whether the user
+wants to use the plugin for that project. The answer is stored as the durable
+per-project `pluginUse` preference outside the repository. A decline leaves the
+project untouched and makes every Traffic One hook stand down until the user
+explicitly asks to enable it again.
+
+After an opt-in, the local setup wizard opens. If this machine is not yet
+authenticated, the wizard's first and only unresolved step is the Traffic One
+API key. The wizard validates the key through an authenticated MCP `tools/list`
+request; rejected or unreachable validation writes no auth state. Users are not
+asked to pass keys to shell commands or host chat prompts.
 
 Optional endpoint override for local testing:
 
@@ -25,30 +29,32 @@ Optional endpoint override for local testing:
 export TRAFFIC_ONE_MCP_KEY_ENDPOINT=http://127.0.0.1:8787/mcp
 ```
 
-Remote auth endpoints must use HTTPS. The auth client refuses to send API keys
-or session tokens to plain HTTP except for loopback local development
+Remote auth endpoints must use HTTPS. The validator refuses to send API keys to
+plain HTTP except for loopback local development
 (`localhost`, `127.0.0.1`, or `::1`).
 
-The API key is exchanged for a short-lived session token stored in user-level
-state (`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`,
-or `~/.traffic-one/auth.json`). The raw API key is stored outside `auth.json` in
-the OS credential manager when available; `auth.json` stores only session
-metadata plus a credential reference. Do not commit keys or session tokens.
-When a stored session expires, the auth client automatically calls `refresh`
-with the OS credential manager key. If no credential is available or refresh is
-rejected, the client returns a reauthentication error and keeps Traffic One
-gated.
+After validation, the sole auth record is stored in the top-level `auth` section
+of the consolidated user settings file (`$TRAFFIC_ONE_STATE_PATH`,
+`$XDG_STATE_HOME/traffic-one/one.json`, or `~/.traffic-one/one.json`):
 
-Codex and Claude Code hooks call `auth_status` remotely at every new session
-start and again at most once per day during ongoing sessions through the local
-auth client. The assistant must not call the exposed `mcp-auth` MCP tools
-(`mcp__mcp_auth__auth_status`, `mcp__mcp_auth__refresh`,
-`mcp__mcp_auth__authenticate`, or `mcp__mcp_auth__logout`) for routine auth gate
-checks; status and refresh should stay silent behind the hook/client boundary.
-If auth is missing, expired, remotely rejected, or the remote status check
-cannot be verified, Traffic One shows the login instruction and then stays
-inactive; the user's request continues without Traffic One features unless they
-login.
+```json
+{
+  "schemaVersion": 3,
+  "auth": {
+    "version": 1,
+    "authenticated": true,
+    "apiKey": "…",
+    "updatedAt": "2026-07-15T12:00:00Z"
+  },
+  "codeGraphProvider": null,
+  "hosts": {}
+}
+```
+
+The file is mode `0600`; never commit or copy it into a project. The stored key
+is also the Bearer token for the background report. A report response of 401 or
+403 deletes only `one.json.auth`, preserving hosts and code-graph settings, and
+the wizard reopens on the API-key step.
 
 Codex only invokes plugin hooks inside trusted workspaces. If a project is
 created in an untrusted folder, Traffic One cannot fail closed from inside the
@@ -63,33 +69,9 @@ If Traffic One skills are visible but hooks or root instructions were not
 injected, do not treat that as a safe inactive state. Run
 `node dist/scripts/doctor.cjs --session <session-id>` from this source checkout
 to inspect the Codex transcript.
-Traffic One implementation must remain gated until the user authenticates or
-explicitly chooses to continue ordinary work without Traffic One.
-
-Auth-choice state writes are best-effort. If the user-level auth-choice file is
-not writable, hooks still return the auth prompt and keep Traffic One inactive
-instead of downgrading to unknown plugin mode; doctor will surface the storage or
-hook activation problem.
-
-The plugin also declares `mcp-auth` in `.mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "mcp-auth": {
-      "type": "http",
-      "url": "http://127.0.0.1:8787/mcp"
-    }
-  }
-}
-```
-
-Authentication does not depend on the exposed `mcp-auth` MCP tools. The auth
-gate runs `scripts/traffic-one-auth.cjs login` internally with the key the user
-pastes at the prompt, passes that key to the auth client through stdin, stores
-the raw key in the OS credential manager when available, mints a session into
-`~/.traffic-one/auth.json`, and reads that session on every host (Claude Code,
-Codex, Cursor, OpenCode, Kilo, Windsurf) via the shared hooks.
+Traffic One implementation remains gated until the project has `pluginUse`
+enabled and the canonical API-key record is valid. If the user declines the
+plugin, ordinary work continues without Traffic One features.
 
 ---
 
@@ -111,13 +93,12 @@ Codex, Cursor, OpenCode, Kilo, Windsurf) via the shared hooks.
 │   ├── hooks/hooks-copilot.json ← GitHub Copilot hooks
 │   ├── hooks/hooks-windsurf.json ← Windsurf Cascade hooks template
 │   ├── plugin.json          ← GitHub Copilot plugin manifest
-│   ├── .mcp.json            ← mcp-auth server declaration
+│   ├── .mcp.json            ← bundled OpenCode worker declaration
 │   ├── scripts/hook-runtime.cjs
 │   ├── scripts/copilot-hook-runtime.cjs
 │   ├── scripts/opencode-host.cjs
 │   ├── scripts/kilo-host.cjs
 │   ├── scripts/windsurf-host.cjs
-│   ├── scripts/traffic-one-auth.cjs
 │   ├── .cursor/rules/*.mdc  ← Cursor mirrors
 │   ├── .devin/rules/*.md    ← Windsurf / Cascade workspace rule mirrors
 │   ├── .claude-plugin/
@@ -386,7 +367,7 @@ node /absolute/path/to/traffic-one/dist/scripts/kilo-host.cjs uninstall
 ### Windsurf / Devin Desktop Cascade
 
 The Windsurf integration mutates user-level Cascade config at
-`~/.codeium/windsurf/hooks.json`, `~/.codeium/windsurf/mcp_config.json`, and
+`~/.codeium/windsurf/hooks.json` and
 `~/.codeium/windsurf/memories/global_rules.md`, so install it only with explicit
 consent:
 

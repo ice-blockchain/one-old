@@ -68,7 +68,6 @@ import {
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { strayRunIdInText } from '../../shared/run-id-paths';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
 import { inferTrafficOneSpawnRole } from './role-infer';
@@ -551,7 +550,7 @@ function maybeModelAdvisory(ctx: Ctx, cwd: string, runId: string, level: string,
 // Task tool's `resume` continuation field (with `agentId` accepted for older
 // docs/models); a resume Task call is allowed straight through the reuse gate.
 export function agentModelGate(ctx: Ctx): HookResult {
-  if (authChoiceAllowsContinue(ctx.cwd) || pluginUseDeclined(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
   const toolName = ctx.input.tool?.rawName || asString(raw.tool_name ?? raw.toolName);

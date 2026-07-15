@@ -1,11 +1,11 @@
 // src/modules/session/prompt-submit.ts
-// UserPromptSubmit handler: drives the auth gate / auth-choice flow on every
+// UserPromptSubmit handler: respects the durable plugin-use choice on every
 // prompt, records/clears the team-mode-change approval, and — once a project is a
 // Traffic One project but onboarding is incomplete — points the user at the local
 // setup wizard (the wizard owns the questions now; this only surfaces its URL and
 // converges materialization). A deterministic coding-intent heuristic suppresses
 // premature activation on a brand-new project when the prompt is clearly not a
-// coding/implementation request. Auth flow ported 1:1 from runUserPromptSubmit.
+// coding/implementation request. API-key intake belongs to the wizard.
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';

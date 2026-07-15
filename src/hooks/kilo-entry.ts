@@ -8,9 +8,9 @@
 import { makeKiloAdapter } from '../adapters/kilo';
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
-import { authRequiredMessage } from '../shared/auth';
 import { obj } from '../shared/obj';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
@@ -19,8 +19,8 @@ const KILO_NOOP = JSON.stringify({ kind: 'noop' });
 const KILO_PRE_TOOL_FAIL_CLOSED = wrapperPreToolDeny('Kilo');
 const KILO_PROMPT_FAIL_CONTEXT = 'Traffic One Kilo hook failed before it could provide project context. Run Traffic One doctor, then restart Kilo/WebStorm so the plugin reloads.';
 
-function sessionStartFallback(env: NodeJS.ProcessEnv): string {
-  return JSON.stringify({ kind: 'context', context: authRequiredMessage(env) });
+function sessionStartFallback(message: string): string {
+  return JSON.stringify({ kind: 'context', context: message });
 }
 
 function subcommandFromArgs(args: readonly string[]): string | undefined {
@@ -57,8 +57,10 @@ export async function runKiloHook(
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand, '--host=kilo'] });
     return { stdout: stdout || KILO_NOOP, exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) return { stdout: KILO_NOOP, exitCode: 0 };
     if (subcommand === 'session-start' || subcommand === 'system-transform') {
-      return { stdout: sessionStartFallback(env), exitCode: 0 };
+      const message = authFallbackMessage(stdin, env);
+      return { stdout: message ? sessionStartFallback(message) : KILO_NOOP, exitCode: 0 };
     }
     if (subcommand === 'before-tool-use') {
       return { stdout: KILO_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };

@@ -77,10 +77,11 @@ export function modelForRoleHost(
   host: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
   if (!tier) return null;
   return planCtx
-    ? currentModelForTier(tier, host, planCtx.plan)
+    ? currentModelForTier(tier, host, planCtx.plan, env)
     : resolveModel(tier, host);
 }

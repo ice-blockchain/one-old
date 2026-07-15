@@ -9,9 +9,9 @@
 import { makeOpenCodeAdapter } from '../adapters/opencode';
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
-import { authRequiredMessage } from '../shared/auth';
 import { obj } from '../shared/obj';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { wrapperPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
@@ -19,8 +19,8 @@ export interface HookOutput { stdout: string; exitCode: number; }
 const OPENCODE_NOOP = JSON.stringify({ kind: 'noop' });
 const OPENCODE_PRE_TOOL_FAIL_CLOSED = wrapperPreToolDeny('OpenCode');
 
-function sessionStartFallback(env: NodeJS.ProcessEnv): string {
-  return JSON.stringify({ kind: 'context', context: authRequiredMessage(env) });
+function sessionStartFallback(message: string): string {
+  return JSON.stringify({ kind: 'context', context: message });
 }
 
 function subcommandFromArgs(args: readonly string[]): string | undefined {
@@ -57,8 +57,10 @@ export async function runOpenCodeHook(
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand, '--host=opencode'] });
     return { stdout: stdout || OPENCODE_NOOP, exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) return { stdout: OPENCODE_NOOP, exitCode: 0 };
     if (subcommand === 'session-start' || subcommand === 'system-transform') {
-      return { stdout: sessionStartFallback(env), exitCode: 0 };
+      const message = authFallbackMessage(stdin, env);
+      return { stdout: message ? sessionStartFallback(message) : OPENCODE_NOOP, exitCode: 0 };
     }
     if (subcommand === 'before-tool-use') {
       return { stdout: OPENCODE_PRE_TOOL_FAIL_CLOSED, exitCode: 0 };

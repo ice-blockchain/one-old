@@ -66,7 +66,7 @@ export function clearLegacyOnboardingRuntime(cwd: string, env: NodeJS.ProcessEnv
   }
 }
 
-// 0700 dir + 0600 file, matching the auth-choice state writer — the token grants
+// 0700 dir + 0600 file — the token grants
 // access to the wizard, so keep it readable only by the owning user. Written
 // atomically (temp + rename) so a concurrent reader never sees a half-written or
 // last-writer-torn record (the onboarding-server port-churn race).

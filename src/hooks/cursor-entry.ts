@@ -13,7 +13,7 @@
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { makeCursorAdapter } from '../adapters/cursor';
-import { authRequiredMessage } from '../shared/auth';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 import { cursorPreToolDeny, isCursorPreToolSubcommand } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
@@ -21,8 +21,8 @@ export interface HookOutput { stdout: string; exitCode: number; }
 // Cursor's empty/no-op output is the empty JSON object (not an empty string).
 const CURSOR_NOOP = '{}';
 
-function sessionStartFallback(env: NodeJS.ProcessEnv): string {
-  return JSON.stringify({ additional_context: authRequiredMessage(env) });
+function sessionStartFallback(message: string): string {
+  return JSON.stringify({ additional_context: message });
 }
 
 export async function runCursorHook(
@@ -37,8 +37,10 @@ export async function runCursorHook(
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand] });
     return { stdout: stdout || CURSOR_NOOP, exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) return { stdout: CURSOR_NOOP, exitCode: 0 };
     if (subcommand === 'session-start') {
-      return { stdout: sessionStartFallback(env), exitCode: 0 };
+      const message = authFallbackMessage(stdin, env);
+      return { stdout: message ? sessionStartFallback(message) : CURSOR_NOOP, exitCode: 0 };
     }
     if (isCursorPreToolSubcommand(subcommand)) {
       return { stdout: cursorPreToolDeny(), exitCode: 0 };

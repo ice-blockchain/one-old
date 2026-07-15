@@ -4,6 +4,7 @@ import * as http from 'http';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import type { AddressInfo } from 'net';
 
 import { startOnboardingServer, type RunningServer } from '../server';
 
@@ -61,10 +62,12 @@ async function withServer(
   const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
   const prevTask = process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD;
+  const prevAuth = process.env.TRAFFIC_ONE_AUTH;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   // code-graph answers write the machine-wide provider — isolate one.json.
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD = taskCmd;
+  process.env.TRAFFIC_ONE_AUTH = 'off';
   if (committed) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(committed), 'utf8');
@@ -80,6 +83,8 @@ async function withServer(
     else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevTask === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD;
     else process.env.TRAFFIC_ONE_ONBOARDING_TASK_CMD = prevTask;
+    if (prevAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+    else process.env.TRAFFIC_ONE_AUTH = prevAuth;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -113,6 +118,68 @@ test('routes: /state reports the first unresolved step', async () => {
     assert.equal(rec(res.json).step, 'open-code');
     assert.equal(rec(res.json).done, false);
   });
+});
+
+test('routes: validated API key persists through the server ctx.env custom state path', async () => {
+  const authServer = http.createServer((req, res) => {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      const method = (() => { try { return JSON.parse(body).method; } catch { return ''; } })();
+      if (req.headers.authorization !== 'Bearer sk-custom' || method !== 'tools/list') {
+        res.writeHead(401, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'invalid_token' } }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [] } }));
+    });
+  });
+  await new Promise<void>((resolve) => authServer.listen(0, '127.0.0.1', resolve));
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-routes-auth-env-'));
+  const customState = path.join(dir, 'custom', 'one.json');
+  const processState = path.join(dir, 'process', 'one.json');
+  const previousProcessState = process.env.TRAFFIC_ONE_STATE_PATH;
+  process.env.TRAFFIC_ONE_STATE_PATH = processState;
+  const authPort = (authServer.address() as AddressInfo).port;
+  const customEnv = {
+    ...process.env,
+    TRAFFIC_ONE_AUTH: '1',
+    TRAFFIC_ONE_STATE_PATH: customState,
+    TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'preferences.json'),
+    TRAFFIC_ONE_MCP_KEY_ENDPOINT: `http://127.0.0.1:${authPort}/mcp`,
+  } as NodeJS.ProcessEnv;
+  const server = await startOnboardingServer({
+    cwd: dir,
+    env: customEnv,
+    token: 'secret',
+    standalone: false,
+    idleMs: 60_000,
+  });
+
+  try {
+    const malformed = await call(server.port, 'POST', '/answer', { step: 'api-key', value: 'sk-custom' });
+    assert.equal(malformed.status, 400);
+    assert.equal(fs.existsSync(customState), false, 'non-canonical answer shape writes no auth state');
+
+    const rejected = await call(server.port, 'POST', '/answer', { step: 'api-key', value: { apiKey: 'sk-rejected' } });
+    assert.equal(rejected.status, 400);
+    assert.equal(fs.existsSync(customState), false, 'rejected validation writes no auth state');
+
+    const response = await call(server.port, 'POST', '/answer', { step: 'api-key', value: { apiKey: 'sk-custom' } });
+    assert.equal(response.status, 200);
+    const stored = JSON.parse(fs.readFileSync(customState, 'utf8')) as Record<string, unknown>;
+    assert.equal((stored.auth as Record<string, unknown>).apiKey, 'sk-custom');
+    assert.equal(fs.existsSync(processState), false, 'server never falls back to process.env state');
+  } finally {
+    await server.close();
+    await new Promise<void>((resolve) => authServer.close(() => resolve()));
+    if (previousProcessState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
+    else process.env.TRAFFIC_ONE_STATE_PATH = previousProcessState;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('routes: answering steps advances; code-graph runs a task; complete acknowledges', async () => {

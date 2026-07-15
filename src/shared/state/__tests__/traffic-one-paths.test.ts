@@ -30,7 +30,7 @@ test('removeStrayProjectArtifactsFromGlobalDir purges project artifacts, keeps m
     // Machine-owned entries that must survive.
     fs.mkdirSync(path.join(dir, 'bin'), { recursive: true });
     fs.mkdirSync(path.join(dir, 'toolchains'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'one.json'), '{"schemaVersion":2}', 'utf8');
+    fs.writeFileSync(path.join(dir, 'one.json'), '{"schemaVersion":3}', 'utf8');
     fs.writeFileSync(path.join(dir, 'windsurf-plugin-root'), 'x', 'utf8');
     // The bogus "$HOME project" prefs bucket vs a real project's bucket.
     const homeHash = sha256(path.resolve(home));

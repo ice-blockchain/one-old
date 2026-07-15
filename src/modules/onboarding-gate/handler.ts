@@ -30,7 +30,6 @@ import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
 import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { canonicalToolName, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
@@ -63,11 +62,10 @@ export function onboardingGate(ctx: Ctx): HookResult {
   if (isNonProjectRoot(root)) return noop();
   initializeTrafficOneEnv(root, ctx.host);
 
-  if (authChoiceAllowsContinue(root) || pluginUseDeclined(root)) return noop();
-  // Auth is enforced HERE now (the separate priority-0 auth PreToolUse gate is
-  // retired): computeOnboarding below returns the 'api-key' step while the web
-  // API key is unentered, so this gate opens the wizard on that page and blocks
-  // mutating tools until the key is entered.
+  if (pluginUseDeclined(root)) return noop();
+  // computeOnboarding returns the 'api-key' step while the API key is missing,
+  // so this gate opens the wizard on that page and blocks mutating tools until
+  // the key is validated and stored.
 
   const state = readEffectiveState(root);
   const mode = (state.mode as string) || detectMode(root);

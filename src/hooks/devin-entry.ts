@@ -4,7 +4,6 @@
 import { makeDevinAdapter } from '../adapters/devin';
 import { dispatchSubcommand } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
-import { authRequiredMessage } from '../shared/auth';
 import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, asString } from '../adapters/coerce';
@@ -15,6 +14,7 @@ import { resolveProjectRoot } from '../shared/hook-paths';
 import { isNonProjectRoot } from '../shared/authoring-root';
 import { stampWindsurfBackend } from '../shared/windsurf-backend';
 import { devinPreToolDeny, isGatePreToolSubcommand } from './fail-closed';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
@@ -58,12 +58,15 @@ export async function runDevinHook(
     const stdout = await dispatchSubcommand(makeDevinAdapter(), handlers, subcommand, { stdin, argv: [subcommand, '--host=windsurf'] });
     return { stdout, exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
     if (subcommand === 'session-start' || subcommand === 'user-prompt-submit') {
+      const message = authFallbackMessage(stdin, env);
+      if (!message) return { stdout: '', exitCode: 0 };
       return {
         stdout: JSON.stringify({
           hookSpecificOutput: {
             hookEventName: subcommand === 'session-start' ? 'SessionStart' : 'UserPromptSubmit',
-            additionalContext: authRequiredMessage(env),
+            additionalContext: message,
           },
         }),
         exitCode: 0,

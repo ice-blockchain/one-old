@@ -11,6 +11,7 @@ import { readJson } from '../fsjson';
 import { readOneSettings, updateOneSettings, type OneSettingsPatch } from '../one-settings';
 import { obj, type Rec } from '../obj';
 import {
+  LOCAL_PREF_KEYS,
   normalizeProjectPrefs,
   readProjectPrefs,
   writeProjectPrefs,
@@ -35,10 +36,27 @@ function mergeMissingCanonicalValues(canonical: unknown, legacy: unknown): unkno
   return merged;
 }
 
+// The project-local bridge is intentionally an allowlist. Older runtimes could
+// leave arbitrary top-level fields in preferences.json, and normal preference
+// reads preserve unknown canonical fields for forward compatibility. That
+// forward-compatible behavior must not turn this one-time bridge into a path
+// for obsolete project-local state to enter the canonical per-user store.
+const MIGRATABLE_PROJECT_PREF_KEYS = new Set<string>([
+  ...LOCAL_PREF_KEYS,
+  'pluginUse',
+]);
+
+function migratableProjectPrefs(value: unknown): Rec {
+  const normalized = normalizeProjectPrefs(value);
+  return Object.fromEntries(
+    Object.entries(normalized).filter(([key]) => MIGRATABLE_PROJECT_PREF_KEYS.has(key)),
+  );
+}
+
 function migrateLegacyProjectPrefs(cwd: string, env: NodeJS.ProcessEnv): void {
   const legacyPath = projectLocalPrefsPath(cwd);
   if (!fs.existsSync(legacyPath)) return;
-  const legacy = normalizeProjectPrefs(readJson(legacyPath, {}));
+  const legacy = migratableProjectPrefs(readJson(legacyPath, {}));
   const canonical = readProjectPrefs(cwd, env);
   const merged = mergeMissingCanonicalValues(canonical, legacy);
   writeProjectPrefs(cwd, merged, env);
@@ -51,8 +69,6 @@ function migrateLegacyMachineSettings(cwd: string, env: NodeJS.ProcessEnv): void
   const canonical = readOneSettings(env);
   const patch: OneSettingsPatch = {};
 
-  if (!canonical.auth && legacy.auth) patch.auth = legacy.auth;
-  if (!canonical.authChoice && legacy.authChoice) patch.authChoice = legacy.authChoice;
   if (!canonical.codeGraphProvider && legacy.codeGraphProvider) {
     patch.codeGraphProvider = legacy.codeGraphProvider;
   }

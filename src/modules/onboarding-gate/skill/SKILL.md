@@ -138,8 +138,9 @@ and saves stay on this machine). Share that link with the user when it appears.
 Until then only read-only orientation is in effect: do not scaffold, install, or
 write feature code, do not invoke build/design skills, and do NOT try to ask these
 setup questions yourself in chat — setup happens in the browser. Do not tell the user
-to restart the host. If the user would rather not use Traffic One, they can choose
-"Continue without Traffic One" from the auth prompt.
+to restart the host. The durable per-project `pluginUse` question is asked before
+the wizard opens; if the user declines there, Traffic One remains silent for this
+project until they explicitly ask to enable it again.
 <!-- T1BLOCK:END setup-pending -->
 
 <!-- T1BLOCK:BEGIN repaired-materialization -->

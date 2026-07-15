@@ -2,8 +2,8 @@
 // Runtime build: compile src/ -> <outDir> (normally dist/scripts, the nested
 // core/shared/modules/adapters/hooks/runners tree), copy module descriptors, and
 // write the legacy-named .cjs SHIMS at the output root so host configs + skills
-// + spawns keep invoking scripts/hook-runtime.cjs, scripts/traffic-one-auth.cjs,
-// and friends relative to the generated plugin root. Each shim is a 1-liner that require()s the
+// + spawns keep invoking scripts/hook-runtime.cjs and other supported runners
+// relative to the generated plugin root. Each shim is a 1-liner that require()s the
 // real compiled entry and calls its main() - needed because the entry's own
 // `require.main === module` guard does not fire when it is require()d.
 //
@@ -32,7 +32,6 @@ export const SHIMS: Readonly<Record<string, string>> = {
   'opencode-host.cjs': './runners/opencode-host/index.js',
   'kilo-host.cjs': './runners/kilo-host/index.js',
   'windsurf-host.cjs': './runners/windsurf-host/index.js',
-  'traffic-one-auth.cjs': './runners/auth/index.js',
   'doctor.cjs': './runners/doctor/index.js',
   'security-check-runner.cjs': './runners/security-check/index.js',
   'token-report.cjs': './runners/token-report/index.js',
@@ -113,16 +112,25 @@ export function buildLighthouse(outDir: string): void {
 export interface BuildResult { modulesCopied: number; assetsCopied: string[]; shimsWritten: string[]; lighthouseEmitted: boolean; }
 
 export function buildRuntime(outDir: string): BuildResult {
-  const tsc = spawnSync('npx', ['tsc', '-p', 'tsconfig.build.json', '--outDir', outDir], {
+  const resolvedOutDir = path.resolve(outDir);
+  if (resolvedOutDir === path.parse(resolvedOutDir).root || resolvedOutDir === REPO_ROOT) {
+    throw new Error(`refusing to clean unsafe runtime output directory: ${resolvedOutDir}`);
+  }
+  // TypeScript never removes outputs whose source files were deleted. Rebuild
+  // the complete scripts tree so no retired module or shim can survive an
+  // incremental build merely because its old JavaScript file already exists.
+  fs.rmSync(resolvedOutDir, { recursive: true, force: true });
+  fs.mkdirSync(resolvedOutDir, { recursive: true });
+  const tsc = spawnSync('npx', ['tsc', '-p', 'tsconfig.build.json', '--outDir', resolvedOutDir], {
     cwd: REPO_ROOT, encoding: 'utf8', timeout: 180000,
   });
   if (tsc.status !== 0) {
     throw new Error(`tsc failed:\n${tsc.stdout || ''}${tsc.stderr || ''}`);
   }
-  const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(outDir, 'modules'));
-  const assetsCopied = copyRunnerAssets(outDir);
-  const shimsWritten = writeShims(outDir);
-  buildLighthouse(outDir);
+  const { copied } = copyModuleDescriptors(path.join(REPO_ROOT, 'src', 'modules'), path.join(resolvedOutDir, 'modules'));
+  const assetsCopied = copyRunnerAssets(resolvedOutDir);
+  const shimsWritten = writeShims(resolvedOutDir);
+  buildLighthouse(resolvedOutDir);
   return { modulesCopied: copied.length, assetsCopied, shimsWritten, lighthouseEmitted: true };
 }
 

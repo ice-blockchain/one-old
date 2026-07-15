@@ -11,25 +11,21 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
   const env = process.env;
   const saved = {
     ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT,
-    auth: env.TRAFFIC_ONE_AUTH_STATE_PATH,
+    state: env.TRAFFIC_ONE_STATE_PATH,
     prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
-    choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH,
     noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
     authFlag: env.TRAFFIC_ONE_AUTH,
   };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   env.TRAFFIC_ONE_AUTH = '1';
   if (opts.authed) {
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1,
-      endpoint: 'http://127.0.0.1:8787/mcp',
-      sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z',
-      lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+    fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+      schemaVersion: 3,
+      auth: { version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z' },
+      hosts: {},
     }), 'utf8');
   }
   try {
@@ -37,9 +33,8 @@ async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<v
   } finally {
     for (const [key, value] of Object.entries({
       TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep,
-      TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
-      TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
       TRAFFIC_ONE_AUTH: saved.authFlag,
     })) {
@@ -72,4 +67,3 @@ test('before-tool-use authed fresh project denies in OpenCode wrapper protocol',
     assert.match(out.reason || '', /setup wizard|Traffic One/i);
   });
 });
-

@@ -11,6 +11,7 @@ import {
 } from '../index';
 import type { CodeGraphResult } from '../post-build';
 import type { Ctx, HookInput } from '../../../core/types';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 
 function withProject(
   opts: { provider?: string; mode?: string; onboardingComplete?: boolean; authed?: boolean; freshArtefact?: boolean },
@@ -18,21 +19,19 @@ function withProject(
 ): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cgpost-'));
   const env = process.env;
-  const saved = { auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, endpoint: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH };
+  const saved = { state: env.TRAFFIC_ONE_STATE_PATH, endpoint: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, auth: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
-  // one.json (the TRAFFIC_ONE_AUTH_STATE_PATH alias) holds BOTH the auth session and
-  // the machine-wide codeGraphProvider now.
-  const oneSettings: Record<string, unknown> = { version: 1 };
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_AUTH = '1';
+  const oneSettings: Record<string, unknown> = { schemaVersion: 3, hosts: {} };
   if (opts.authed !== false) {
     oneSettings.auth = {
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+      version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
     };
   }
   if (opts.provider) oneSettings.codeGraphProvider = opts.provider;
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify(oneSettings), 'utf8');
+  fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify(oneSettings), 'utf8');
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   const state: Record<string, unknown> = {
     stack: 'default',
@@ -48,9 +47,10 @@ function withProject(
     fn(dir);
   } finally {
     __resetCodeGraphBootstraps();
-    if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = saved.auth;
+    if (saved.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = saved.state;
     if (saved.endpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = saved.endpoint;
     if (saved.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = saved.prefs;
+    if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = saved.auth;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -70,6 +70,14 @@ test('post-build code-graph hint is silent for non-build commands', () => {
   });
 });
 
+test('post-build code-graph hint stands down when pluginUse is declined', () => {
+  withProject({ provider: 'graphify' }, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'test');
+    __setCodeGraphBootstraps({ graphify: () => { throw new Error('should not run'); } });
+    assert.equal(postBuildCodeGraphHint(ctxFor(cwd, 'npm run build')).kind, 'noop');
+  });
+});
+
 test('post-build code-graph hint is silent when unauthenticated AND auth is enforced', () => {
   withProject({ provider: 'graphify', authed: false }, (cwd) => {
     const saved = process.env.TRAFFIC_ONE_AUTH;
@@ -83,11 +91,8 @@ test('post-build code-graph hint is silent when unauthenticated AND auth is enfo
   });
 });
 
-// AUTH_ENABLED=false builds mint no tokens anywhere, so gating on raw token
-// freshness dead-coded this hook on every install (observed live: a full Codex
-// build finished with a 0-node graph because the rescan never fired). With
-// enforcement off, the hook must run without tokens.
-test('post-build code-graph hint RUNS without tokens when auth is not enforced', () => {
+// The explicit enforcement override remains useful for hermetic development.
+test('post-build code-graph hint runs without canonical auth when enforcement is explicitly off', () => {
   withProject({ provider: 'graphify', authed: false }, (cwd) => {
     const saved = process.env.TRAFFIC_ONE_AUTH;
     process.env.TRAFFIC_ONE_AUTH = '0';

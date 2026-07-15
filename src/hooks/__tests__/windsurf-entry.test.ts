@@ -11,24 +11,21 @@ import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 async function withEnv(fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-entry-'));
   const saved = {
-    auth: process.env.TRAFFIC_ONE_AUTH_STATE_PATH,
+    state: process.env.TRAFFIC_ONE_STATE_PATH,
     prefs: process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
-    choice: process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH,
     noSpawn: process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
     authEnabled: process.env.TRAFFIC_ONE_AUTH,
   };
   process.env.TRAFFIC_ONE_AUTH = 'on';
-  process.env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'choice.json');
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
     await fn(dir);
   } finally {
     for (const [key, value] of Object.entries({
-      TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
-      TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
       TRAFFIC_ONE_AUTH: saved.authEnabled,
     })) {

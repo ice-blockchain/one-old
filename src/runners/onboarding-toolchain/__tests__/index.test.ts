@@ -39,7 +39,9 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
   const { codeGraphProvider, mode, ...projectPrefs } = prefs;
   fs.writeFileSync(prefsPath, JSON.stringify(projectPrefs), 'utf8');
   // codeGraphProvider is machine-wide → one.json (TRAFFIC_ONE_STATE_PATH).
-  if (codeGraphProvider) fs.writeFileSync(onePath, JSON.stringify({ version: 1, codeGraphProvider }), 'utf8');
+  if (codeGraphProvider) {
+    fs.writeFileSync(onePath, JSON.stringify({ schemaVersion: 3, codeGraphProvider, hosts: {} }), 'utf8');
+  }
   // mode is a per-PROJECT state field → cwd/.traffic-one/.one.json.
   if (mode) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });

@@ -13,6 +13,7 @@ import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
+import { writeSimpleAuth } from '../../../shared/auth';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -77,13 +78,16 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  const prevAuth = env.TRAFFIC_ONE_AUTH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
+  // Canonical auth and codeGraphProvider are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   // Never spawn a real wizard server from a unit test; ensure() hands back a
   // deterministic placeholder URL instead.
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  env.TRAFFIC_ONE_AUTH = '1';
+  writeSimpleAuth('sk-test');
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
@@ -104,6 +108,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevAuth;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }

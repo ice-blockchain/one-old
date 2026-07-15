@@ -7,14 +7,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { DEFAULT_ENDPOINT } from '../../config/auth';
 import {
   WINDSURF_HOOK_EVENTS,
   WINDSURF_HOST_CONFIG_DIR_REL,
   WINDSURF_HOST_GLOBAL_RULES_REL,
   WINDSURF_HOST_HOOKS_FILE,
   WINDSURF_HOST_INSIDERS_CONFIG_DIR_REL,
-  WINDSURF_HOST_MCP_FILE,
   WINDSURF_HOST_NEXT_CONFIG_DIR_REL,
   DEVIN_HOST_CONFIG_REL,
   DEVIN_NATIVE_HOOKS,
@@ -58,10 +56,6 @@ export function windsurfConfigDir(env: NodeJS.ProcessEnv = process.env, args: re
 
 export function windsurfHooksPath(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = []): string {
   return path.join(windsurfConfigDir(env, args), WINDSURF_HOST_HOOKS_FILE);
-}
-
-export function windsurfMcpPath(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = []): string {
-  return path.join(windsurfConfigDir(env, args), WINDSURF_HOST_MCP_FILE);
 }
 
 export function windsurfGlobalRulesPath(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = []): string {
@@ -238,38 +232,6 @@ function removeDevinHooks(file: string): boolean {
   return changed;
 }
 
-function ownedMcpEntry(entry: unknown): boolean {
-  if (!entry || typeof entry !== 'object') return false;
-  const rec = entry as Rec;
-  return rec.serverUrl === DEFAULT_ENDPOINT || rec.url === DEFAULT_ENDPOINT;
-}
-
-function ensureMcp(file: string): boolean {
-  const config = readJsonObject(file);
-  const servers = config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers)
-    ? config.mcpServers as Rec
-    : {};
-  const next = { serverUrl: DEFAULT_ENDPOINT };
-  const changed = config.mcpServers !== servers || JSON.stringify(servers['mcp-auth']) !== JSON.stringify(next);
-  config.mcpServers = servers;
-  servers['mcp-auth'] = next;
-  if (changed) writeJson(file, config);
-  return changed;
-}
-
-function removeMcp(file: string): boolean {
-  if (!fs.existsSync(file)) return false;
-  const config = readJsonObject(file);
-  const servers = config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers)
-    ? config.mcpServers as Rec
-    : {};
-  if (!ownedMcpEntry(servers['mcp-auth'])) return false;
-  delete servers['mcp-auth'];
-  config.mcpServers = servers;
-  writeJson(file, config);
-  return true;
-}
-
 function globalRulesBlock(pluginRoot: string): string {
   return [
     OWNER_START,
@@ -279,7 +241,6 @@ function globalRulesBlock(pluginRoot: string): string {
     '',
     '- Traffic One project context is loaded from root `AGENTS.md`, `.devin/rules/*.md`, and `.traffic-one/skills/*/SKILL.md`.',
     '- Hooks enforce Traffic One authentication, setup, workspace, and write gates. If a hook blocks, follow its message before continuing.',
-    '- Do not call the exposed `mcp-auth` MCP tools for routine Traffic One auth checks; hooks run the auth client silently.',
     '- The Traffic One plugin source repository and installed plugin root are never end-user projects.',
     OWNER_END,
     '',
@@ -323,12 +284,10 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: reado
   }
   const pluginRoot = runtimePluginRoot(env);
   const hooksFile = windsurfHooksPath(env, args);
-  const mcpFile = windsurfMcpPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
   const hooksChanged = ensureHooks(hooksFile, pluginRoot);
   const devinChanged = ensureDevinHooks(devinFile, pluginRoot);
-  const mcpChanged = ensureMcp(mcpFile);
   const globalRules = ensureGlobalRules(rulesFile, pluginRoot);
   writeWindsurfPluginRootStamp(pluginRoot, env);
   return {
@@ -336,11 +295,10 @@ export function installWrapper(env: NodeJS.ProcessEnv = process.env, args: reado
     stdout: [
       `ok: Cascade hooks ${hooksChanged ? 'updated' : 'already current'} at ${hooksFile}`,
       `ok: Devin Local hooks ${devinChanged ? 'updated' : 'already current'} at ${devinFile}`,
-      `ok: Windsurf MCP ${mcpChanged ? 'updated' : 'already current'} at ${mcpFile}`,
       globalRules.skipped
         ? `warn: global_rules.md is over ${GLOBAL_RULE_LIMIT} characters with the Traffic One block; skipped ${rulesFile}`
         : `ok: Windsurf global rule ${globalRules.changed ? 'updated' : 'already current'} at ${rulesFile}`,
-      'Restart Windsurf / Devin Desktop for hook and MCP config changes to load.',
+      'Restart Windsurf / Devin Desktop for hook and rule changes to load.',
     ].join('\n') + '\n',
   };
 }
@@ -350,19 +308,16 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, args: rea
     return { code: 2, stdout: 'Traffic One Windsurf uninstall mutates user-level Windsurf config. Re-run with --yes to confirm.\n' };
   }
   const hooksFile = windsurfHooksPath(env, args);
-  const mcpFile = windsurfMcpPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
   const hooksChanged = removeHooks(hooksFile);
   const devinChanged = removeDevinHooks(devinFile);
-  const mcpChanged = removeMcp(mcpFile);
   const rulesChanged = removeGlobalRules(rulesFile);
   return {
     code: 0,
     stdout: [
       `ok: hooks ${hooksChanged ? 'removed' : 'not present'} at ${hooksFile}`,
       `ok: Devin Local hooks ${devinChanged ? 'removed' : 'not present'} at ${devinFile}`,
-      `ok: MCP ${mcpChanged ? 'removed' : 'not present'} at ${mcpFile}`,
       `ok: global rule ${rulesChanged ? 'removed' : 'not present'} at ${rulesFile}`,
     ].join('\n') + '\n',
   };
@@ -370,7 +325,6 @@ export function uninstallWrapper(env: NodeJS.ProcessEnv = process.env, args: rea
 
 export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readonly string[] = process.argv.slice(2)): RunnerOutput {
   const hooksFile = windsurfHooksPath(env, args);
-  const mcpFile = windsurfMcpPath(env, args);
   const rulesFile = windsurfGlobalRulesPath(env, args);
   const devinFile = devinConfigPath(env);
   const issues: string[] = [];
@@ -401,13 +355,6 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   } catch (error) {
     issues.push(`Devin Local config unreadable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  try {
-    const mcpConfig = readJsonObject(mcpFile);
-    const servers = mcpConfig.mcpServers && typeof mcpConfig.mcpServers === 'object' && !Array.isArray(mcpConfig.mcpServers) ? mcpConfig.mcpServers as Rec : {};
-    if (!ownedMcpEntry(servers['mcp-auth'])) issues.push('missing mcp-auth server');
-  } catch (error) {
-    issues.push(`MCP config unreadable: ${error instanceof Error ? error.message : String(error)}`);
-  }
   let global = 'missing';
   try {
     global = fs.readFileSync(rulesFile, 'utf8').includes(OWNER_START) ? 'ok' : 'missing';
@@ -417,7 +364,7 @@ export function doctorWrapper(env: NodeJS.ProcessEnv = process.env, args: readon
   if (issues.length > 0) {
     return { code: 1, stdout: `not ok: ${issues.join('; ')}\nglobalRule: ${global}\n` };
   }
-  return { code: 0, stdout: `ok: Windsurf Traffic One integration active\ncascadeHooks: ${hooksFile}\ndevinHooks: ${devinFile}\nmcp: ${mcpFile}\nglobalRule: ${global}\n` };
+  return { code: 0, stdout: `ok: Windsurf Traffic One integration active\ncascadeHooks: ${hooksFile}\ndevinHooks: ${devinFile}\nglobalRule: ${global}\n` };
 }
 
 export function main(argv: string[] = process.argv.slice(2)): number {

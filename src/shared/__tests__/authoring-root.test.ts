@@ -23,7 +23,6 @@ function makeSourceRepo(dir: string): void {
 function makeGeneratedTree(base: string): void {
   fs.mkdirSync(path.join(base, 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(base, 'scripts', 'hook-runtime.cjs'), '// runtime', 'utf8');
-  fs.writeFileSync(path.join(base, 'scripts', 'traffic-one-auth.cjs'), '// auth', 'utf8');
   fs.mkdirSync(path.join(base, '.claude-plugin'), { recursive: true });
   fs.writeFileSync(path.join(base, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
 }
@@ -125,7 +124,7 @@ test('prepareReport refuses an authoring root before minting anything', async ()
   const { prepareReport } = await import('../../runners/one-mcp-report/prepareReport');
   withTmp((dir) => {
     makeSourceRepo(dir);
-    const result = prepareReport(dir, { spawn: false, allowUnauthenticated: true });
+    const result = prepareReport(dir, { spawn: false });
     assert.equal(result.started, false);
     assert.equal(result.reason, 'plugin-authoring-root');
     assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);

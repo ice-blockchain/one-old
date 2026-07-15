@@ -6,18 +6,16 @@ import * as path from 'path';
 
 import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
-import { writeAuthChoice } from '../../session/auth-choice';
 import { writeModelChoice } from '../../agent-model/model-choice';
 import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  const prevChoice = env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   const { team: teamExtra, performance: performanceExtra, ...sharedExtra } = stateExtra;
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
@@ -49,7 +47,6 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
     fn(dir);
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
-    if (prevChoice === undefined) delete env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH; else env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = prevChoice;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -386,10 +383,10 @@ test('non-file, non-feature shell command in a clean project → noop', () => {
   });
 });
 
-test('continue-without-Traffic-One choice bypasses the plan gate', () => {
+test('pluginUse decline bypasses the plan gate', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     fs.rmSync(path.join(cwd, '.traffic-one', 'plan.md'), { force: true });
-    writeAuthChoice('continue-without-traffic-one', cwd);
+    recordPluginUseChoice(cwd, false, 'command');
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'apps/web/src/x.ts', content: 'export const x = 1;',
     }));

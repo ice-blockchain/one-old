@@ -10,6 +10,7 @@ import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
+import { writeSimpleAuth } from '../../../shared/auth';
 
 // These tests exercise the setup-wizard flow itself, which under the shipped
 // ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
@@ -27,8 +28,9 @@ function ctxHost(cwd: string, host: HookInput['host']): Ctx {
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
-// A temp project with isolated prefs. The post-auth body (runSessionStartAuthed)
-// needs no auth — SessionStart's forced remote probe is tested separately.
+// A temp project with isolated prefs. Tests that exercise the full SessionStart
+// entry write canonical auth explicitly; runSessionStartAuthed tests only the
+// post-gate body.
 function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sstart-'));
   const env = process.env;
@@ -36,7 +38,7 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
+  // Canonical auth and codeGraphProvider are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   if (state) {
@@ -161,6 +163,7 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
 
 test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-coding prompt stays dormant', () => {
   withProject(null, (cwd) => {
+    writeSimpleAuth('sk-session-start');
     // SessionStart fires before any prompt; on a fresh dir it must NOT activate
     // Traffic One. Codex opens a scratch dir per task, so every session would
     // otherwise look like a new project and trip the onboarding gate even for a
@@ -180,6 +183,7 @@ test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-c
 
 test('main SessionStart removes only a recognized legacy Cursor capture before deferring', () => {
   withProject(null, (cwd) => {
+    writeSimpleAuth('sk-session-start');
     const legacy = path.join(cwd, '.traffic-one', 'cursor-models.json');
     fs.mkdirSync(path.dirname(legacy), { recursive: true });
     fs.writeFileSync(legacy, JSON.stringify({ models: ['composer-2.5-fast'] }), 'utf8');
@@ -475,7 +479,7 @@ function materializeFixture(cwd: string, stack = 'minimal'): void {
   fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'see agents', 'utf8');
 }
 
-test('subagent: never runs onboarding/auth on an un-onboarded project (no setup-required, no auth prompt)', () => {
+test('subagent: never opens setup or the API-key wizard for an un-onboarded project', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
     // A MAIN agent here would hit the auth gate / setup directive; the subagent must not.
     const r = runSessionStart(subagentCtx(cwd));
@@ -499,7 +503,7 @@ test('Codex transcript-thread mismatch takes the child fast path before model re
     assert.equal(
       fs.existsSync(globalSettings),
       false,
-      'a child SessionStart must not write a bundled model snapshot or auth choice',
+      'a child SessionStart must not write machine settings',
     );
   });
 });
