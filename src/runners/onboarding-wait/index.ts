@@ -422,10 +422,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
   const alreadyDone = onboardingDone(cwd);
   let launchError: unknown;
   let ensuredUrl = '';
+  let ensuredDashboardUrl = '';
   try {
     if (!alreadyDone) {
       const server = ensureOnboardingServer(cwd, { host });
-      if (server.url && !server.url.includes(':0/')) ensuredUrl = server.url;
+      if (server.url && !server.url.includes(':0/')) {
+        ensuredUrl = server.url;
+        ensuredDashboardUrl = server.dashboardUrl;
+      }
     }
   } catch (error) {
     launchError = error;
@@ -445,7 +449,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): void {
       process.stdout.write(`TRAFFIC_ONE_SETUP_BOOTSTRAP_FAILED\n\n${onboardingStartFailureReason(failure, host)}\n`);
       process.exit(2);
     }
-    process.stdout.write(`TRAFFIC_ONE_SETUP_READY\nSetup link: ${ensuredUrl}\n`);
+    // `Setup link:` must carry the traffic.io dashboard deep link — the same URL
+    // every other setup surface shows (observed on OpenCode: printing the raw
+    // loopback URL here made the agent repost 127.0.0.1 instead of traffic.io).
+    // The loopback wizard stays named as the fallback for a 404ing dashboard (A4).
+    const localFallback = ensuredDashboardUrl && ensuredDashboardUrl !== ensuredUrl
+      ? `If that page fails to load (404), use the local wizard instead: ${ensuredUrl}\n`
+      : '';
+    process.stdout.write(`TRAFFIC_ONE_SETUP_READY\nSetup link: ${ensuredDashboardUrl || ensuredUrl}\n${localFallback}`);
     process.exit(0);
   }
   // Windsurf opens the wizard before the prompt and runs this waiter inside the
