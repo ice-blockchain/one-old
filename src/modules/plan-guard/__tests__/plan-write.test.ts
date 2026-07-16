@@ -353,6 +353,35 @@ test('subagents project: assignment manifest routes writes by scope end-to-end',
   });
 });
 
+test('subagents project: run-state heredocs pass; feature-source heredocs still deny (B1/B5)', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    // reviewer digest heredoc whose BODY cites feature-source paths → allowed
+    const digest = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "mkdir -p .traffic-one/digests/run-1 && cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'\n## Touched\n- apps/web/src/features/catalog.tsx\nEOF",
+    }, { session_id: 'reviewer-session' }));
+    assert.equal(digest.kind, 'noop');
+    // orchestrator fix-cycle note → allowed
+    const fixCycle = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "cat > .traffic-one/fix-cycles/run-1/senior-frontend-fix-1.md <<'EOF'\nfix src/app.ts dead code\nEOF",
+    }, { session_id: 'orchestrator' }));
+    assert.equal(fixCycle.kind, 'noop');
+    // read-only interpreter inspection of feature paths → allowed (was the B5 false-positive)
+    const inspect = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'echo "=== keys ===" && python3 -c "import json;print(sorted(json.load(open(\'packages/i18n/src/locales/en/common.json\'))))"',
+    }, { session_id: 'reviewer-session' }));
+    assert.equal(inspect.kind, 'noop');
+    // feature-source heredoc is still an unverifiable shell write → deny
+    const feature = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "cat > apps/web/src/x.ts <<'EOF'\nexport {};\nEOF",
+    }, { session_id: 'orchestrator' }));
+    assert.equal(feature.kind, 'deny');
+    if (feature.kind === 'deny') assert.ok(feature.reason.includes('shell command'));
+  });
+});
+
 test('static layout violation is denied even in a clean main-agent project', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {

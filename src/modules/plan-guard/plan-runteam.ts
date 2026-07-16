@@ -5,7 +5,7 @@
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
 import { obj, type Rec } from '../../shared/obj';
-import { roleCanWriteFeatureSource } from '../../shared/feature-source';
+import { isTestScopePath, roleCanWriteFeatureSource } from '../../shared/feature-source';
 import { matchesScope } from '../../shared/scope';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import {
@@ -159,7 +159,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   // Shell writes can't be ownership-verified from a command line.
   if (writingFeatureSourceViaCommand || writingBuildArtifactViaCommand) {
     return deny(block('run-team-shell',
-      'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
+      'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.'));
   }
 
   const nativeAnonymousDevinWrite = args.host === 'windsurf'
@@ -219,6 +219,15 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const ownershipTargets = featureTargetPaths.length > 0
     ? featureTargetPaths
     : (assignedTargets.length > 0 ? assignedTargets : writeTargetPaths);
+
+  // Tester test-path overlay: tests are interleaved inside implementer scopes
+  // (the assignments manifest only carries frontend/backend), so a tester write
+  // whose EVERY target is a test-scope path is owned by the tester regardless
+  // of which assignment covers the surrounding directory. Deliberately
+  // all-or-nothing: a patch mixing a test file with real feature source falls
+  // through and still denies on the source target.
+  if (acRole === 'senior-tester' && ownershipTargets.length > 0
+    && ownershipTargets.every(isTestScopePath)) return null;
 
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);

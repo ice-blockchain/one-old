@@ -38,6 +38,10 @@ Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-arc
 Plan gate: .traffic-one/plan.md is missing on a new project in Low/main-agent mode. Do NOT call `run_subagent`, `Task`, `spawn_agent`, `task`, or another subagent tool. You are the architect in this thread: write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config, workspace scaffold, or feature-source writes; then resume the same ordered phases. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.
 <!-- T1BLOCK:END plan-main-agent-gate -->
 
+<!-- T1BLOCK:BEGIN plan-architect-self-gate -->
+Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md` (and the `.traffic-one/` project-memory baseline) BEFORE any feature-source file; do not spawn another architect. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README, empty `packages/*/src/index.ts` barrels, and the shared Tailwind globals baseline.
+<!-- T1BLOCK:END plan-architect-self-gate -->
+
 <!-- T1BLOCK:BEGIN architect-scaffold-gate -->
 Architect completion gate: do not write `PLAN_READY` until the required Traffic One workspace scaffold exists. Missing: {{MISSING}}. Write the missing baseline files, then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
 <!-- T1BLOCK:END architect-scaffold-gate -->
@@ -99,7 +103,7 @@ Assignments gate: `.traffic-one/runs/<runId>/assignments.json` is architect/orch
 <!-- T1BLOCK:END assignments-owner-gate -->
 
 <!-- T1BLOCK:BEGIN run-team-shell -->
-Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.
+Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.
 <!-- T1BLOCK:END run-team-shell -->
 
 <!-- T1BLOCK:BEGIN opencode-external-temp-shell -->

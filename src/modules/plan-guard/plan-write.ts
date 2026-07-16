@@ -27,6 +27,7 @@ import {
   commandAppearsToWriteExternalTemp,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
+  shellWriteTargetsStateDir,
 } from '../../shared/feature-source';
 import { projectRelativeHookPath, resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded, migrateArchitectureDocsToPlan } from '../../shared/materialize';
@@ -107,8 +108,15 @@ export function planWriteGate(ctx: Ctx): HookResult {
     if (FEATURE_SOURCE_RE.test(rel) && !featureTargetPaths.includes(rel)) featureTargetPaths.push(rel);
     if (BUILD_ARTIFACT_RE.test(rel) && !buildArtifactTargetPaths.includes(rel)) buildArtifactTargetPaths.push(rel);
   }
-  const writingFeatureSourceViaCommand = isShellToolName(toolName) && commandAppearsToWriteFeatureSource(rawCommand);
-  const writingBuildArtifactViaCommand = isShellToolName(toolName) && commandAppearsToWriteBuildArtifact(rawCommand);
+  // Run-state carve-out: a heredoc/redirect whose only write targets are under
+  // `.traffic-one/{digests,fix-cycles,runs}/` is state bookkeeping (reviewer
+  // digests, fix-cycle notes), not an implementation write — even when its BODY
+  // cites feature-source paths. Mirrors the Write/Edit target-path exemption.
+  const shellStateDirWrite = isShellToolName(toolName) && shellWriteTargetsStateDir(rawCommand);
+  const writingFeatureSourceViaCommand = isShellToolName(toolName) && !shellStateDirWrite
+    && commandAppearsToWriteFeatureSource(rawCommand);
+  const writingBuildArtifactViaCommand = isShellToolName(toolName) && !shellStateDirWrite
+    && commandAppearsToWriteBuildArtifact(rawCommand);
   const writingExternalTempViaCommand = isShellToolName(toolName) && commandAppearsToWriteExternalTemp(rawCommand);
   const writingFeatureSource = featureTargetPaths.length > 0 || writingFeatureSourceViaCommand;
   const writingBuildArtifact = buildArtifactTargetPaths.length > 0 || writingBuildArtifactViaCommand;
