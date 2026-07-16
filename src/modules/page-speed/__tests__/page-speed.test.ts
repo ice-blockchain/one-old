@@ -78,6 +78,26 @@ test('page-speed surfaces structured Lighthouse blocked statuses after runner ca
   });
 });
 
+test('page-speed surfaces a Lighthouse runner timeout as blocked:timeout', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    const runnerOutput = JSON.stringify({
+      status: 'blocked:timeout',
+      error: 'Lighthouse runner exceeded 240000ms budget; aborting to avoid a silent hang.',
+    }, null, 2);
+    const r = postBuildPageSpeed(ctxFor(
+      cwd,
+      'node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
+      { tool_response: { stdout: `${runnerOutput}\n` } },
+    ));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('blocked:timeout'));
+      assert.ok(r.context.includes('unverified'));
+      assert.equal(r.systemMessage, 'traffic-one page-speed blocked:timeout');
+    }
+  });
+});
+
 test('page-speed is silent for non-build commands', () => {
   withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
     assert.equal(postBuildPageSpeed(ctxFor(cwd, 'pnpm install build-tools')).kind, 'noop');

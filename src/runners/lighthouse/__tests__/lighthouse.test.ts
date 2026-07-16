@@ -5,6 +5,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import {
+  DEFAULTS,
+  classifyBlockedStatus,
   createAuditUrl,
   detectPackageManager,
   dlxArgs,
@@ -37,6 +39,27 @@ test('parseArgs reads flags, valued options, and a positional http url', () => {
   assert.equal(parseArgs(['http://127.0.0.1:4173/']).url, 'http://127.0.0.1:4173/');
   assert.equal(parseArgs([]).route, '/');
   assert.equal(parseArgs(['-h']).help, true);
+});
+
+test('parseArgs reads the runner budgets and falls back on invalid values', () => {
+  const a = parseArgs(['--lighthouse-timeout', '60000', '--max-runtime', '300000']);
+  assert.equal(a.lighthouseTimeoutMs, 60000);
+  assert.equal(a.maxRuntimeMs, 300000);
+  const bad = parseArgs(['--lighthouse-timeout', 'soon', '--max-runtime', '0']);
+  assert.equal(bad.lighthouseTimeoutMs, DEFAULTS.lighthouseTimeoutMs);
+  assert.equal(bad.maxRuntimeMs, DEFAULTS.maxRuntimeMs);
+  assert.equal(parseArgs([]).lighthouseTimeoutMs, DEFAULTS.lighthouseTimeoutMs);
+  assert.equal(parseArgs([]).maxRuntimeMs, DEFAULTS.maxRuntimeMs);
+});
+
+test('classifyBlockedStatus maps sandbox, usage-limit, and timeout failures', () => {
+  assert.equal(classifyBlockedStatus('listen EPERM: operation not permitted "127.0.0.1"'), 'blocked:sandbox');
+  assert.equal(classifyBlockedStatus('fetch failed: ECONNREFUSED'), 'blocked:sandbox');
+  assert.equal(classifyBlockedStatus('You have hit your usage limit'), 'blocked:usage-limit');
+  assert.equal(classifyBlockedStatus('API quota exceeded'), 'blocked:usage-limit');
+  assert.equal(classifyBlockedStatus('lighthouse http://x timed out after 120000ms'), 'blocked:timeout');
+  assert.equal(classifyBlockedStatus('Lighthouse runner exceeded 240000ms budget; aborting to avoid a silent hang.'), 'blocked:timeout');
+  assert.equal(classifyBlockedStatus('Could not read Lighthouse report'), null);
 });
 
 test('usage describes the runner', () => {

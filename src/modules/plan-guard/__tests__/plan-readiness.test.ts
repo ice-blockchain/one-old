@@ -215,6 +215,47 @@ test('plan-main-agent-gate: Low/main-agent writes the plan in the current thread
   });
 });
 
+test('plan-architect-self-gate: the architect is told to write the plan itself, never to spawn one (B8)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: false,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    const v = planReadinessViolations({
+      filePath: 'apps/web/src/main.tsx', content: 'import React from "react";\n', projectRoot: dir,
+      state, writingFeatureSource: true, block: names,
+    });
+    assert.ok(v.includes('plan-architect-self-gate'), `got: ${v.join(', ')}`);
+    assert.ok(!v.includes('plan-gate'), 'the self-referential plan-gate message must not be shown to the architect');
+  });
+});
+
+test('plan gates: architect baseline scaffold writes never trip the plan-missing gate (B8)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: false,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    for (const [filePath, content] of [
+      ['packages/ui/src/index.ts', 'export {};\n'],
+      ['packages/tailwind-config/src/globals.css', '@import "tailwindcss";\n'],
+    ] as const) {
+      const v = planReadinessViolations({
+        filePath, content, projectRoot: dir,
+        state, writingFeatureSource: true, block: names,
+      });
+      assert.ok(!v.includes('plan-gate') && !v.includes('plan-architect-self-gate'), `${filePath}: ${v.join(', ')}`);
+      assert.ok(!v.includes('architect-pre-ready-feature'), `${filePath}: ${v.join(', ')}`);
+    }
+  });
+});
+
 test('plan-gate: legacy architecture.md does not satisfy readiness', () => {
   withProject((dir) => {
     fs.writeFileSync(path.join(dir, 'architecture.md'), '# Legacy architecture', 'utf8');

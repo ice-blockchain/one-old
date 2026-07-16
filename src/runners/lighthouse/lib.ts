@@ -21,6 +21,8 @@ export const DEFAULTS = {
   clsMax: 0.1,
   route: '/',
   timeoutMs: 30000,
+  lighthouseTimeoutMs: 120000,
+  maxRuntimeMs: 240000,
 } as const;
 
 export interface LighthouseArgs {
@@ -34,6 +36,8 @@ export interface LighthouseArgs {
   clsMax: number;
   route: string;
   timeoutMs: number;
+  lighthouseTimeoutMs: number;
+  maxRuntimeMs: number;
   build: boolean;
   preview: boolean;
   url?: string;
@@ -90,6 +94,20 @@ export function parseArgs(argv: string[]): LighthouseArgs {
         }
         index += 1;
         break;
+      case '--lighthouse-timeout':
+        {
+          const parsed = Number(next);
+          args.lighthouseTimeoutMs = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULTS.lighthouseTimeoutMs;
+        }
+        index += 1;
+        break;
+      case '--max-runtime':
+        {
+          const parsed = Number(next);
+          args.maxRuntimeMs = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULTS.maxRuntimeMs;
+        }
+        index += 1;
+        break;
       case '--skip-build':
         args.build = false;
         break;
@@ -131,9 +149,25 @@ export function usage(): string {
     '  --tbt-max <ms>              Maximum TBT in ms (default 200)',
     '  --cls-max <value>           Maximum CLS (default 0.1)',
     '  --timeout <ms>              Preview readiness timeout (default 30000; Next uses at least 90000)',
+    '  --lighthouse-timeout <ms>   Lighthouse audit child timeout (default 120000)',
+    '  --max-runtime <ms>          Overall runner budget before it aborts with blocked:timeout (default 240000)',
     '  --skip-build                Do not run the build script',
     '  --skip-preview              Do not start preview; requires --url',
   ].join('\n');
+}
+
+export type BlockedStatus = 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout';
+
+// Maps a runner failure message to the structured status the page-speed hook
+// parses. Sandbox and usage-limit keep priority over the timeout branch so a
+// bind-denial that also mentions a timeout still reads as blocked:sandbox.
+export function classifyBlockedStatus(message: string): BlockedStatus | null {
+  if (/listen EPERM|EACCES|operation not permitted|Chrome.*(failed|sandbox)|No usable sandbox|ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(message)) {
+    return 'blocked:sandbox';
+  }
+  if (/usage limit|rate limit|quota/i.test(message)) return 'blocked:usage-limit';
+  if (/timed out|timeout|exceeded .*budget/i.test(message)) return 'blocked:timeout';
+  return null;
 }
 
 export function readJson(filePath: string): Rec | null {

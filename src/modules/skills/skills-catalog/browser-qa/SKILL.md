@@ -125,6 +125,17 @@ Coverage and iteration rules:
   audit at zero extra cost — treat an a11y warning as a real finding for the
   fix cycle, not noise.
 
+The runner is time-bounded: it self-terminates within its runtime budget
+(~4 min by default; `--max-runtime <ms>` / `--lighthouse-timeout <ms>` to
+override) and ALWAYS prints one final JSON line — either the summary or a
+structured `blocked:*` status (`blocked:sandbox`, `blocked:usage-limit`, or
+`blocked:timeout`). It will not hang, so if your harness auto-backgrounds long
+commands, poll the background task with the harness's non-blocking wait
+mechanism (an until-loop / Monitor-style tool) — NOT a foreground
+`sleep ...; tail`, which the sandbox sleep-guard may block. A `blocked:timeout`
+means the audit or preview hung — treat page speed as unverified and report it;
+do not silently retry forever.
+
 ### Phase 1: Smoke Test
 ```
 1. Navigate to target URL

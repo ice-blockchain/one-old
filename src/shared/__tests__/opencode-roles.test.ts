@@ -7,12 +7,14 @@ import * as path from 'path';
 import {
   deriveBatchOutcomeFromUnits,
   hasFreshArchitectQueueForRun,
+  markOpenCodeGatewayOutage,
   markOpenCodePlanBatchComplete,
   markOpenCodePlanBatchRunning,
   markOpenCodePlanBatchTerminal,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
+  openCodeGatewayOutageActive,
   openCodePlanBatchComplete,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
@@ -235,6 +237,27 @@ test('opencode role attempt marker: write then detect (per run + role)', () => {
     // scoped per role + per run
     assert.equal(openCodeRoleAttempted(dir, 'run1', 'senior-frontend'), false);
     assert.equal(openCodeRoleAttempted(dir, 'run2', 'senior-tester'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('gateway outage breaker: mark then detect within TTL; stale/missing/unscoped → inactive', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocgw-'));
+  try {
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 60_000), false); // no marker yet
+    markOpenCodeGatewayOutage(dir, 'r1');
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 60_000), true);
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 0), false);      // ttl 0 → always stale
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 1_000, Date.now() + 2_000), false); // past the TTL
+    assert.equal(openCodeGatewayOutageActive(dir, '', 60_000), false);   // no runId → never active
+    assert.equal(openCodeGatewayOutageActive(dir, 'r2', 60_000), false); // scoped per run
+    // unparseable marker → inactive (fail open to a normal probe)
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'r1', 'opencode-gateway-down'), 'not json', 'utf8');
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 60_000), false);
+    // a no-runId mark is a no-op, never a stray file
+    markOpenCodeGatewayOutage(dir, '');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', '', 'opencode-gateway-down')), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

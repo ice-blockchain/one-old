@@ -6,6 +6,7 @@
 // so a missing block never disables a check.
 
 import type { SkillBlockFn } from '../../core/types';
+import { isTestScopePath } from '../../shared/feature-source';
 
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
@@ -94,7 +95,11 @@ export function planStaticViolations(filePath: string, content: string, isNative
     }
   }
 
-  if ((filePath.endsWith('.ts') || filePath.endsWith('.tsx')) && /:\s*any\b/.test(content)) {
+  // Test files are exempt from the no-any rule (B12): coarse typing of mocks,
+  // fixtures, and harness plumbing is idiomatic in tests and blocking it stalls
+  // the tester role over style, not correctness.
+  if ((filePath.endsWith('.ts') || filePath.endsWith('.tsx')) && /:\s*any\b/.test(content)
+    && !isTestScopePath(filePath)) {
     violations.push(block('no-any',
       'Avoid the any type — use unknown and narrow types, or define a discriminated union.'));
   }

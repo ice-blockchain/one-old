@@ -463,18 +463,26 @@ export function planReadinessViolations(args: ReadinessArgs): string[] {
   const planMissing = !fs.existsSync(path.join(projectRoot, '.traffic-one', 'plan.md'));
   const writingPlan = PLAN_FILE_RE.test(filePath);
   const writingDoc = ADR_OR_DOC_RE.test(filePath);
+  const writerRole = assignmentWriterRole(projectRoot, state, rawData);
 
-  if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc) {
+  if (isNewProject && planMissing && writingFeatureSource && !writingPlan && !writingDoc
+    // The architect's own baseline scaffold (empty barrels, Tailwind globals) is
+    // legitimate pre-plan work — architect-pre-ready-feature below governs it.
+    && !(writerRole === 'senior-architect' && filePath && isArchitectBaselineFeatureWrite(filePath, content))) {
     if (usesMainAgentTeam(state)) {
       violations.push(block('plan-main-agent-gate',
         'Plan gate: .traffic-one/plan.md is missing on a new project in Low/main-agent mode. Do NOT call `run_subagent`, `Task`, `spawn_agent`, `task`, or another subagent tool. You are the architect in this thread: write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config, workspace scaffold, or feature-source writes; then resume the same ordered phases. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
+    } else if (writerRole === 'senior-architect') {
+      // Never tell the architect to "run the senior-architect subagent" (B8) —
+      // it IS that subagent. Tell it to write the plan itself.
+      violations.push(block('plan-architect-self-gate',
+        'Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md` (and the `.traffic-one/` project-memory baseline) BEFORE any feature-source file; do not spawn another architect. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README, empty `packages/*/src/index.ts` barrels, and the shared Tailwind globals baseline.'));
     } else {
       violations.push(block('plan-gate',
         'Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.'));
     }
   }
 
-  const writerRole = assignmentWriterRole(projectRoot, state, rawData);
   if (isNewProject
     && writingFeatureSource
     && writerRole === 'senior-architect'

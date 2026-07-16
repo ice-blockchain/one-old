@@ -506,6 +506,39 @@ export function recordOpenCodeAttemptOutcome(
   }
 }
 
+// Run-scoped gateway-outage circuit breaker. The delegation runner trips this
+// the moment a free-chain walk concludes the gateway ITSELF is down (repeated
+// back-to-back stalls), so every later unit — and every later per-role runner
+// PROCESS — in the same run can fast-fail to the paid fallback instead of
+// re-burning the full unit timeout re-detecting the outage. On disk (not in
+// memory) because the MCP layer shards the plan batch across processes.
+// Run-scoped: a new runId gets a fresh path, so the breaker clears naturally.
+function gatewayBreakerPath(cwd: string, runId: string): string {
+  return path.join(cwd, '.traffic-one', 'runs', runId, 'opencode-gateway-down');
+}
+
+export function markOpenCodeGatewayOutage(cwd: string, runId: string): void {
+  if (!runId) return;
+  try {
+    const p = gatewayBreakerPath(cwd, runId);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, `${JSON.stringify({ trippedAt: new Date().toISOString() })}\n`, 'utf8');
+  } catch {
+    // best-effort; a missing breaker only costs one more full outage detection
+  }
+}
+
+export function openCodeGatewayOutageActive(cwd: string, runId: string, ttlMs: number, nowMs: number = Date.now()): boolean {
+  if (!runId) return false;
+  try {
+    const raw = fs.readFileSync(gatewayBreakerPath(cwd, runId), 'utf8');
+    const trippedAt = Date.parse(String(obj(JSON.parse(raw))?.trippedAt ?? ''));
+    return Number.isFinite(trippedAt) && nowMs - trippedAt < ttlMs;
+  } catch {
+    return false;
+  }
+}
+
 // Per-run marker that the GATE has already denied a paid spawn of this role
 // once. The deny → delegate → re-spawn loop assumes the delegate tool CAN run;
 // on Codex the host's safety reviewer can reject the opencode_delegate call

@@ -111,7 +111,17 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
     }
 
     if (runId) markModelGatePrompted(cwd, runId);
-    process.stdout.write('traffic-one model-gate: STOP — model choice required.\n');
+    // No unavailable captured picks → this pause came from a RUNTIME failure
+    // (API/usage limit) on a spawned role. Name the recovery inline (A7): the
+    // bare "model choice required" line sent agents exploring --help/model-status
+    // instead of just relaying the one-word reply to the user.
+    process.stdout.write(
+      'traffic-one model-gate: STOP — model choice required (build paused).\n'
+      + 'A spawned role hit an API/usage-limit or model-availability failure this run. Ask the user to reply in chat with ONE word:\n'
+      + '- `fallback` — proceed now on the surfaced fallback/Composer model\n'
+      + '- `enable` — after restoring API budget / enabling the model in Cursor Settings → Models; the role retries on it\n'
+      + 'Do not re-run model-gate or explore its flags — the chat reply itself unblocks spawning.\n',
+    );
     return 2;
   } catch {
     process.stdout.write(`${modelGateFailedStop()}\n`);

@@ -17,6 +17,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import {
   DEFAULTS,
   type PackageManager,
+  classifyBlockedStatus,
   createAuditUrl,
   detectPackageManager,
   dlxArgs,
@@ -34,7 +35,7 @@ import {
   usage,
 } from './lib.js';
 
-interface RunOptions { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: 'pipe' | Array<'ignore' | 'pipe'>; forwardOutput?: boolean }
+interface RunOptions { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: 'pipe' | Array<'ignore' | 'pipe'>; forwardOutput?: boolean; timeoutMs?: number }
 type PreviewHandle = ChildProcess | Server;
 
 function runCommand(command: string, args: string[], options: RunOptions = {}): Promise<{ stdout: string; stderr: string }> {
@@ -47,6 +48,15 @@ function runCommand(command: string, args: string[], options: RunOptions = {}): 
     });
     let stdout = '';
     let stderr = '';
+    // A hung child (headless Chrome that never exits) would otherwise leave
+    // this Promise pending forever — the observed indefinite runner hang.
+    let timedOut = false;
+    const timer = options.timeoutMs && options.timeoutMs > 0
+      ? setTimeout(() => {
+        timedOut = true;
+        child.kill('SIGKILL');
+      }, options.timeoutMs)
+      : null;
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();
       if (options.forwardOutput) process.stdout.write(chunk);
@@ -55,8 +65,16 @@ function runCommand(command: string, args: string[], options: RunOptions = {}): 
       stderr += chunk.toString();
       if (options.forwardOutput) process.stderr.write(chunk);
     });
-    child.on('error', rejectPromise);
+    child.on('error', (error) => {
+      if (timer) clearTimeout(timer);
+      rejectPromise(error);
+    });
     child.on('close', (code) => {
+      if (timer) clearTimeout(timer);
+      if (timedOut) {
+        rejectPromise(new Error(`${command} ${args.join(' ')} timed out after ${options.timeoutMs}ms`));
+        return;
+      }
       if (code === 0) {
         resolvePromise({ stdout, stderr });
         return;
@@ -194,8 +212,8 @@ async function waitForHttp(url: string, timeoutMs: number): Promise<void> {
   throw new Error(`Preview did not become ready within ${timeoutMs}ms: ${url}`);
 }
 
-async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lighthouseVersion }: {
-  appDir: string; rootDir: string; packageManager: PackageManager; url: string; outDir: string; lighthouseVersion: string;
+async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lighthouseVersion, lighthouseTimeoutMs }: {
+  appDir: string; rootDir: string; packageManager: PackageManager; url: string; outDir: string; lighthouseVersion: string; lighthouseTimeoutMs: number;
 }): Promise<{ jsonPath: string; htmlPath: string | null }> {
   mkdirSync(outDir, { recursive: true });
   const baseName = reportBaseName(url);
@@ -214,10 +232,11 @@ async function runLighthouse({ appDir, rootDir, packageManager, url, outDir, lig
   ];
   const localBin = localLighthouseBin(rootDir, appDir);
   if (localBin) {
-    await runCommand(localBin, lighthouseArgs, { cwd: appDir });
+    await runCommand(localBin, lighthouseArgs, { cwd: appDir, timeoutMs: lighthouseTimeoutMs });
   } else {
     await runCommand(packageManager, dlxArgs(packageManager, `lighthouse@${lighthouseVersion}`, lighthouseArgs), {
       cwd: rootDir,
+      timeoutMs: lighthouseTimeoutMs,
     });
   }
 
@@ -260,6 +279,20 @@ async function main(): Promise<void> {
   const appDir = frontendApp.appDir;
   const packageManager = detectPackageManager(rootDir);
   let previewProcess: PreviewHandle | null = null;
+  // Last-resort watchdog: even if some await below never settles, the runner
+  // must NEVER exit without one final JSON status line — a silently hung run
+  // used to be killed externally with a 0-byte output file. Unref'd so a fast
+  // successful run is never kept alive (or exited non-zero) by it.
+  const watchdog = setTimeout(() => {
+    const line = `${JSON.stringify({ status: 'blocked:timeout', error: `Lighthouse runner exceeded ${args.maxRuntimeMs}ms budget; aborting to avoid a silent hang.` }, null, 2)}\n`;
+    closePreview(previewProcess);
+    process.stderr.write('[traffic-one lighthouse] hard runtime budget exceeded; aborting\n');
+    // Exit from the write callback so the status line is flushed first; the
+    // unref'd fallback covers stdout pipe backpressure.
+    process.stdout.write(line, () => process.exit(1));
+    setTimeout(() => process.exit(1), 500).unref();
+  }, args.maxRuntimeMs);
+  watchdog.unref();
 
   try {
     if (args.build) {
@@ -292,6 +325,7 @@ async function main(): Promise<void> {
       url: auditUrl,
       outDir,
       lighthouseVersion: args.lighthouseVersion,
+      lighthouseTimeoutMs: args.lighthouseTimeoutMs,
     });
     const report = readJson(reportPaths.jsonPath);
     if (!report) {
@@ -314,15 +348,14 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
+    clearTimeout(watchdog);
     closePreview(previewProcess);
   }
 }
 
 main().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  const status = /listen EPERM|EACCES|operation not permitted|Chrome.*(failed|sandbox)|No usable sandbox|ECONNREFUSED|ERR_CONNECTION_REFUSED/i.test(message)
-    ? 'blocked:sandbox'
-    : (/usage limit|rate limit|quota/i.test(message) ? 'blocked:usage-limit' : null);
+  const status = classifyBlockedStatus(message);
   if (status) {
     process.stdout.write(`${JSON.stringify({ status, error: message }, null, 2)}\n`);
   }

@@ -21,6 +21,7 @@ live in `frontend/react/performance.md`.
   non-zero below the default thresholds.
 - Run the audit for the primary generated route and any route whose above-the-fold content, media, or third-party scripts changed.
 - Use Lighthouse findings to fix avoidable page-speed regressions before delivery.
+- The runner is time-bounded and always emits one final JSON status line; a `blocked:timeout` (or other `blocked:*`) result means page speed is UNVERIFIED — report it with concrete risks, do not invent scores, and do not poll the runner with a foreground sleep loop.
 - If Lighthouse cannot be run, report page speed as unverified and list concrete risks such as heavy initial JS, unoptimized media, blocking fonts, third-party scripts, or layout shifts.
 
 ## Web Vitals targets (4G mid-range device)

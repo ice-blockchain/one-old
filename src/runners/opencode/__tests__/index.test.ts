@@ -7,7 +7,7 @@ import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
 import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
-import { openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -251,7 +251,7 @@ if (model === ${JSON.stringify(OPENCODE_FREE_MODELS[0])}) {
 }
 `,
     // gateway-wide outage: EVERY model hangs until the spawn timeout kills it.
-    // The walk must stop after MAX_CONSECUTIVE_STALLS probes, not burn the unit
+    // The walk must stop after maxConsecutiveStalls() probes, not burn the unit
     // timeout on the entire chain.
     stallall: `#!/usr/bin/env node
 const fs = require('fs'); const path = require('path');
@@ -857,6 +857,69 @@ test('delegate stops after two back-to-back stalls (gateway-wide outage) with a 
     } finally {
       if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
     }
+  });
+});
+
+test('gateway breaker short-circuits later units in the same run without re-probing', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stallall'); // every model hangs
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    const savedBreaker = process.env.T1_OC_GATEWAY_BREAKER_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1200';
+    process.env.T1_OC_GATEWAY_BREAKER_MS = '600000';
+    try {
+      const r = delegate(dir, { role: 'frontend', task: 'do it', runId: 'brk-1' });
+      assert.equal(r.action, 'failed');
+      assert.equal(r.failureKind, 'provider-timeout');
+      // the outage detection tripped the run-scoped breaker on disk
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'brk-1', 'opencode-gateway-down')), true);
+      const probed = modelsSeen(bin).length;
+      // a later unit in the SAME run fast-fails without a single new probe
+      const r2 = delegate(dir, { role: 'tester', task: 'another unit', runId: 'brk-1' });
+      assert.equal(r2.ok, false);
+      assert.equal(r2.action, 'failed');
+      assert.equal(r2.failureKind, 'provider-timeout');
+      assert.match(r2.error || '', /breaker/);
+      assert.equal(modelsSeen(bin).length, probed, 'breaker short-circuit must not probe any model');
+      // the short-circuit still marks the role attempted, so the spawn gate
+      // lets the paid fallback through without a deny round-trip
+      assert.equal(openCodeRoleAttempted(dir, 'brk-1', 'tester'), true);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+      if (savedBreaker === undefined) delete process.env.T1_OC_GATEWAY_BREAKER_MS; else process.env.T1_OC_GATEWAY_BREAKER_MS = savedBreaker;
+    }
+  });
+});
+
+test('gateway breaker TTL expiry re-probes the chain (a recovered gateway is not wedged out)', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stallall');
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    const savedBreaker = process.env.T1_OC_GATEWAY_BREAKER_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1200';
+    process.env.T1_OC_GATEWAY_BREAKER_MS = '1'; // expires before the next delegation
+    try {
+      delegate(dir, { role: 'frontend', task: 'do it', runId: 'brk-ttl' });
+      const probed = modelsSeen(bin).length;
+      const r2 = delegate(dir, { role: 'frontend', task: 'do it again', runId: 'brk-ttl' });
+      assert.equal(r2.ok, false);
+      assert.ok(modelsSeen(bin).length > probed, 'an expired breaker must probe the gateway again');
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+      if (savedBreaker === undefined) delete process.env.T1_OC_GATEWAY_BREAKER_MS; else process.env.T1_OC_GATEWAY_BREAKER_MS = savedBreaker;
+    }
+  });
+});
+
+test('gateway breaker never skips an explicitly pinned model (user choice always probes)', () => {
+  withRepo({ openCode: { enabled: true, model: 'opencode/custom-x' } }, (dir) => {
+    stubOpencode('model');
+    // Another delegation in this run already tripped the breaker.
+    markOpenCodeGatewayOutage(dir, 'brk-pin');
+    const r = delegate(dir, { role: 'frontend', task: 'echo model', runId: 'brk-pin' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'delegated');
+    assert.equal(fs.readFileSync(path.join(dir, 'model.txt'), 'utf8').trim(), 'opencode/custom-x');
   });
 });
 

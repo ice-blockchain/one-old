@@ -293,10 +293,16 @@ export function announceWizardUrl(
       return;
     }
     stampEmitMarker(cwd, 'wizard-url-shown');
+    // A4: the dashboard deep link can 404 (external service) — always name the
+    // local wizard as the fallback so setup never dead-ends on the public URL.
+    const localFallback = link !== rec.url
+      ? `  If that page fails to load (404), use the local wizard instead: ${rec.url}\n`
+      : '';
     write(
       '\n════════════════════════════════════════════════════════════════\n'
       + '  TRAFFIC ONE SETUP — open this link in your browser to finish setup:\n\n'
       + `  ${link}\n\n`
+      + localFallback
       + '  Enter your API key and complete the setup steps.\n'
       + `  Setup link: ${link}\n`
       + '  Waiting for setup to complete (this command keeps the turn open)…\n'
@@ -308,21 +314,22 @@ export function announceWizardUrl(
 }
 
 // Cursor's Browser editor is not a script-opened browser window, so page JavaScript
-// cannot close its tab. Cursor does expose that operation to the current agent via
-// browser_tabs. Emit the exact, index-safe sequence at SETUP_COMPLETE so cleanup is
-// automatic in the same turn and never targets an unrelated active browser tab.
+// cannot close its tab. Cursor exposes that operation to the current agent via
+// browser_tabs — but only when the Browser feature is active, and only when setup
+// actually ran in the in-app Browser (the dashboard flow opens an EXTERNAL browser
+// that browser_tabs cannot see). Emit a tolerant sequence at SETUP_COMPLETE so
+// cleanup is automatic when possible and silently skipped when it is not (A5:
+// the hard 5-step directive sent agents hunting for a tool that did not exist).
 export function cursorSetupCloseDirective(wizardUrl: string, host: string = detectHost()): string {
   if (host !== 'cursor') return '';
   const primary = wizardUrl && !wizardUrl.includes(':0/')
     ? `the tab whose URL is exactly \`${wizardUrl}\``
     : 'the tab titled "Traffic One — Setup" on 127.0.0.1';
   return [
-    '[traffic-one] Cursor — close the setup browser tab NOW, before any model-gate or build command:',
-    '1. Call the built-in `browser_tabs` tool with `{"action":"list"}`.',
-    `2. Find ${primary} — if no exact URL match, match the tab titled "Traffic One — Setup" on 127.0.0.1 instead.`,
-    '3. Call `browser_tabs` with `{"action":"close","index":<matching index>}`.',
-    '4. Re-list once to VERIFY the setup tab is gone; if it is still open, close it by the title match before moving on.',
-    '5. Continue the original request immediately. Do not ask the user to close the tab.',
+    '[traffic-one] Cursor — if the setup tab is open in Cursor\'s in-app Browser, close it before the next build command:',
+    `1. If a \`browser_tabs\` tool is available in this session, call it with \`{"action":"list"}\`, find ${primary} (fall back to the tab titled "Traffic One — Setup" on 127.0.0.1), close it with \`{"action":"close","index":<matching index>}\`, and re-list once to verify.`,
+    '2. If no `browser_tabs` tool exists, or no matching tab is listed (setup ran in the external browser), skip this cleanup silently — do not hunt for other tools and do not ask the user to close anything.',
+    '3. Continue the original request immediately.',
   ].join('\n');
 }
 
