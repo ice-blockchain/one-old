@@ -50,9 +50,11 @@ import {
   shouldRunRoleOnOpenCode,
 } from '../../shared/opencode-roles';
 import {
+  captureClaimDebug,
   ensureCurrentRunId,
   ensureRunAgentClaim,
   continuationAgentId,
+  type CodexLiveAgentValidation,
   hookSessionIdentity,
   isMaintenancePhase,
   isTeamApproved,
@@ -62,7 +64,9 @@ import {
   refreshCursorRunAgentFromTranscriptCache,
   readEffectiveState,
   REPLACE_AGENT_MARKER,
+  retireUnverifiedCodexRunAgent,
   subagentContinuationAvailable,
+  validateCodexLiveRunAgent,
   verdictAgentConflict,
 } from '../../shared/state';
 import { ensureRunnerShims } from '../../shared/runner-shims';
@@ -70,7 +74,7 @@ import { strayRunIdInText } from '../../shared/run-id-paths';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isCompletedTrafficOneMaterialization, materializeIfNeeded } from './converge';
-import { inferTrafficOneSpawnRole } from './role-infer';
+import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import {
   correlatedCursorFailureGate,
   CURSOR_FAILURE_BLOCK_FALLBACKS,
@@ -559,12 +563,31 @@ export function agentModelGate(ctx: Ctx): HookResult {
   if (toolName && !/^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i.test(stripToolNamespace(toolName))) return noop();
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
-  const role = inferTrafficOneSpawnRole(toolInput);
-  if (!role) return noop();
-
+  const roleResolution = inferTrafficOneSpawnRoleEvidence(toolInput);
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
   const state = readEffectiveState(cwd);
   if (!state || typeof state !== 'object') return noop();
+  if (roleResolution.kind === 'conflict') {
+    const runId = typeof state.currentRunId === 'string' ? state.currentRunId : null;
+    const conflictCandidates = Array.from(new Map(
+      roleResolution.candidates.map(({ role, source }) => [
+        `${role}\u0000${source}`,
+        { role, source },
+      ]),
+    ).values()).slice(0, 8);
+    const candidateList = conflictCandidates
+      .map(({ role, source }) => `\`${role}\` (${source})`)
+      .join(', ');
+    captureClaimDebug(cwd, runId, 'spawn-role-conflict', {
+      host: ctx.host,
+      candidates: conflictCandidates,
+    });
+    return deny(block('spawn-role-conflict', { CANDIDATES: candidateList },
+      `Traffic One spawn identity gate: this spawn carries conflicting valid Traffic One role evidence in the same highest-priority tier: ${candidateList}. The spawn was blocked before a child started. Do not retry it unchanged and do not guess which role won. Correct or remove the stale identity field or marker so every valid item in that tier agrees on exactly one canonical role, then retry the same task. On Codex, keep one exact canonical task_name and ensure higher-tier agent_path/agent_type metadata, when present, names the same role.`));
+  }
+  if (roleResolution.kind !== 'evidence') return noop();
+  const roleEvidence = roleResolution.evidence;
+  const role = roleEvidence.role;
 
   // A role spawn is imminent → make sure the version-stable runner shims exist
   // BEFORE any subagent runs prose that references ~/.traffic-one/bin. This is
@@ -706,13 +729,28 @@ export function agentModelGate(ctx: Ctx): HookResult {
       // `agentId`; accept both. On Codex/Claude the continuation is a different tool
       // (followup_task/send_message / SendMessage), so spawn_agent/Task normally never carries these.
       const parentSessionId = hookSessionIdentity(raw).sessionId;
+      let codexValidation: CodexLiveAgentValidation | null = null;
       const currentLive = (): ReturnType<typeof liveRunAgent> => {
         const live = liveRunAgent(cwd, runId, role, parentSessionId);
+        if (ctx.host === 'codex' && live) {
+          codexValidation = validateCodexLiveRunAgent(cwd, state, raw, runId, role, live);
+          return codexValidation.status === 'verified-match' ? codexValidation.entry : null;
+        }
         if (ctx.host !== 'cursor') return live;
         const resumeId = live ? continuationAgentId(live, ctx.host) : '';
         return resumeId
           ? live
           : (refreshCursorRunAgentFromTranscriptCache(cwd, state, raw, runId, role, parentSessionId) || live);
+      };
+      const codexValidationDeny = (): HookResult | null => {
+        if (!codexValidation || (codexValidation.status !== 'unverified' && codexValidation.status !== 'conflict')) return null;
+        return deny(block('agent-reuse-await-codex-meta', {
+          ROLE: role,
+          RUN_ID: runId,
+          AGENT_ID: codexValidation.entry.agentId,
+          REASON: codexValidation.reason,
+          MARKER: REPLACE_AGENT_MARKER,
+        }, `Agent-reuse gate: run ${runId} has a fresh Codex ${role} registry row for ${codexValidation.entry.agentId}, but Traffic One cannot verify that child's role from line-zero session metadata (${codexValidation.reason}). It will not route continuation to an unverified child or start a duplicate. Retry after the rollout is flushed, or use ${REPLACE_AGENT_MARKER} only when the child is genuinely unusable.`));
       };
       const concurrentCursorReplacementDeny = (): HookResult | null => {
         const concurrent = currentLive();
@@ -748,6 +786,18 @@ export function agentModelGate(ctx: Ctx): HookResult {
         const live = currentLive();
         const resumeTarget = live ? continuationAgentId(live, ctx.host) : '';
         const markerJustified = replacementJustified(spawnPromptText, ctx.host);
+        const currentCodexValidation = codexValidation as CodexLiveAgentValidation | null;
+        if (ctx.host === 'codex' && currentCodexValidation?.status === 'unverified') {
+          if (!markerJustified || !retireUnverifiedCodexRunAgent(cwd, runId, role, currentCodexValidation.entry)) {
+            const validationDeny = codexValidationDeny();
+            if (validationDeny) return validationDeny;
+          }
+          codexValidation = null;
+        }
+        if (ctx.host === 'codex' && currentCodexValidation?.status === 'conflict') {
+          const validationDeny = codexValidationDeny();
+          if (validationDeny) return validationDeny;
+        }
         const cursorAwaitingResume = ctx.host === 'cursor' && Boolean(live) && !resumeTarget;
         const liveModel = live && typeof live.model === 'string' ? live.model.trim() : '';
         // A retry prompt is orchestrator-authored and therefore can corroborate
@@ -805,6 +855,10 @@ export function agentModelGate(ctx: Ctx): HookResult {
         }
       } else if (!isResume) {
         const live = currentLive();
+        if (ctx.host === 'codex') {
+          const validationDeny = codexValidationDeny();
+          if (validationDeny) return validationDeny;
+        }
         if (live) {
           const resumeTarget = continuationAgentId(live, ctx.host);
           if (!resumeTarget && ctx.host === 'cursor') {
@@ -863,6 +917,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       toolName,
       agentType: spawnAgentType(toolInput) || undefined,
       model: passedModel || expected || '',
+      roleSource: roleEvidence.source,
     });
     return noop();
   }
@@ -939,6 +994,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
       toolName,
       agentType: spawnAgentType(toolInput) || undefined,
       model: passedModel || expected,
+      roleSource: roleEvidence.source,
     });
     return noop();
   }
@@ -974,6 +1030,7 @@ export function agentModelGate(ctx: Ctx): HookResult {
     toolName,
     agentType: spawnAgentType(toolInput) || undefined,
     model: passedModel,
+    roleSource: roleEvidence.source,
   });
   return advisory ?? noop();
 }

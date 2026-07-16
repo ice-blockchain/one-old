@@ -194,7 +194,8 @@ test('Windsurf first-run architect directive uses the always-registered general 
     }));
     const directive = preSpawnArchitectDirective(dir, 'windsurf');
     assert.match(directive, /profile `subagent_general`/);
-    assert.match(directive, /\[t1-role: senior-architect\]/);
+    assert.match(directive, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(directive, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
     assert.match(directive, /\.devin\/agents\/senior-architect\/AGENT\.md/);
     assert.doesNotMatch(directive, /profile `senior-architect`/);
   } finally {

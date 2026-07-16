@@ -178,6 +178,12 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const acRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
   const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, state) && isSubagentSession(state));
   const role = acRole || activeAgentRole(state) || 'main agent';
+  const unresolvedIdentity = hookSessionIdentity(rawData);
+  const unresolvedChild = unresolvedIdentity.isSubagent || Boolean(
+    unresolvedIdentity.threadId
+    && unresolvedIdentity.sessionId
+    && unresolvedIdentity.threadId !== unresolvedIdentity.sessionId,
+  );
 
   // DIAGNOSTIC (best-effort): record the raw payload of every feature-source write
   // attempt in subagents mode so we can see how Claude agent-teams role agents
@@ -201,9 +207,12 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // directive, not this build-time gate. (When a claim DOES resolve, the scope
     // checks below still run, so a real feature run stays coordinated.)
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
+    const recovery = unresolvedChild
+      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract: `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry it. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.'
+      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract: `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.';
     return deny(block('run-team-not-subagent',
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
-      { ROLE: role }));
+      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
+      { ROLE: role, RECOVERY: recovery }));
   }
 
   const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;

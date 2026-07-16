@@ -90,7 +90,8 @@ test('buildOrchestrationDirective: Kilo uses general with the senior-architect r
     assert.match(d, /subagent_type: "general"/);
     assert.doesNotMatch(d, /subagent_type: "senior-architect"/);
     assert.match(d, /\.kilo\/agents\/senior-architect\.md/);
-    assert.match(d, /\[t1-role: senior-architect\]/);
+    assert.match(d, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(d, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
     assert.match(d, /real subagent/i);
     assert.match(d, /read `.kilo\/agents\/senior-architect\.md` before acting/i);
     assert.match(d, /apps\/web/i);
@@ -109,7 +110,8 @@ test('buildOrchestrationDirective: names the project-scoped global architect, no
     assert.match(d, /subagent_type: "traffic-one-[a-f0-9]{12}-senior-architect"/);
     assert.doesNotMatch(d, /subagent_type: "general"/);
     assert.match(d, /\.config\/opencode\/agents\/traffic-one-[a-f0-9]{12}-senior-architect\.md/);
-    assert.match(d, /\[t1-role: senior-architect\]/);
+    assert.match(d, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(d, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
   });
 });
 

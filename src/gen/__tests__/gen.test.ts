@@ -102,6 +102,48 @@ test('runGen writes a generated plugin root and --check round-trips', () => {
   }
 });
 
+test('generated non-test documentation contains no concrete claimable Traffic One role marker', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-role-markers-'));
+  const concreteMarker = /\[t1-role:\s*(?:(?:senior[-_](?:architect|frontend|backend|reviewer|tester|shipper)|quick[-_]fix)(?:[-_]\d+)?)\s*\]/i;
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const docs = write.written.filter((relPath) => /\.(?:md|mdc)$/i.test(relPath));
+    assert.ok(docs.length > 0, 'expected generated documentation to scan');
+    for (const relPath of docs) {
+      const content = fs.readFileSync(path.join(dir, relPath), 'utf8');
+      assert.doesNotMatch(content, concreteMarker, `${relPath} contains a claimable concrete role marker`);
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('generated orchestrator contract preserves every canonical Codex task name and incident motivation', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-gen-codex-role-contract-'));
+  try {
+    const write = runGen({ check: false, root: dir, sourceRoot: REPO_ROOT });
+    const relPath = write.written.find((candidate) => (
+      candidate.endsWith('senior-eng-orchestrator/SKILL.md')
+    ));
+    assert.ok(relPath, 'expected the orchestrator skill in generated output');
+    const content = fs.readFileSync(path.join(dir, relPath!), 'utf8');
+    for (const taskName of [
+      'senior_architect',
+      'senior_frontend',
+      'senior_backend',
+      'senior_reviewer',
+      'senior_tester',
+      'senior_shipper',
+    ]) assert.match(content, new RegExp(`\\b${taskName}\\b`));
+    assert.match(content, /spawn `message` is encrypted at rest/i);
+    assert.match(content, /only usable Codex identity evidence/i);
+    assert.match(content, /incident already used `task_name: "senior_architect"`/i);
+    assert.match(content, /codifies existing orchestrator behavior/i);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('Cursor hook commands resolve the installed runtime from a foreign cwd and fail closed without token replacement', () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-hook-command-')));
   const pluginRoot = path.join(dir, 'installed plugin with spaces');

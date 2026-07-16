@@ -193,7 +193,7 @@ export function preSpawnArchitectDirective(cwd: string, host: string = detectHos
       '   `create-next-app` / `create-react-app`; the React/Vite app lives under `apps/web` (Vite), per the plan.',
       '2. Spawn the architect FIRST with `run_subagent` profile `subagent_general` (custom profiles materialized',
       '   during onboarding are not registered until a new Devin session). The task MUST start with',
-      '   `[t1-role: senior-architect]`, then tell the child to read `.devin/agents/senior-architect/AGENT.md`.',
+      '   `[t1-role: senior-<role>]` (substitute the spawned role; architect here), then tell the child to read `.devin/agents/senior-architect/AGENT.md`.',
       '   It writes',
       '   `.traffic-one/plan.md` (PLAN_READY) + the `apps/web` monorepo scaffold. Development is BLOCKED until',
       '   `.traffic-one/plan.md` exists (the scaffolder + plan gates deny premature/off-stack commands).',

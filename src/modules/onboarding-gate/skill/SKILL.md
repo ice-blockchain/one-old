@@ -155,7 +155,7 @@ rerun the same tool now; the canonical `.traffic-one/.one.json` and project-loca
 DO NOT write feature source, scaffold app files, or run package installs yourself in this thread.
 Your FIRST action: spawn `senior-architect` via the host `{{TASK_TOOL}}` tool:
 - `subagent_type: "{{SUBAGENT_TYPE}}"` — {{SPAWN_RULE}}
-- prompt line 1 MUST be: `[t1-role: senior-architect]`
+- prompt line 1 MUST be: `[t1-role: senior-<role>]` (substitute the spawned role; architect here)
 - {{ROLE_CONTRACT_INSTRUCTION}}
 - include `Run ID: {{RUN_ID}}` and the user's original request
 - omit `model` on {{HOST}} unless the host documents a subagent model parameter
@@ -174,7 +174,7 @@ Missing architect deliverables: {{MISSING}}
 
 Respawn `senior-architect` via `{{TASK_TOOL}}` with:
 - `subagent_type: "{{SUBAGENT_TYPE}}"` — {{SPAWN_RULE}}
-- prompt line 1: `[t1-role: senior-architect]`
+- prompt line 1: `[t1-role: senior-<role>]` (substitute the spawned role; architect here)
 - {{ROLE_CONTRACT_INSTRUCTION}}
 - `Run ID: {{RUN_ID}}`
 - instruct the architect to finish the missing files, write `.traffic-one/runs/{{RUN_ID}}/assignments.json`, then `.traffic-one/digests/{{RUN_ID}}/architect.md` with `PLAN_READY`

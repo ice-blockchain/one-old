@@ -111,7 +111,7 @@ OpenCode/Kilo external-path gate: do not write scratch logs or build output unde
 <!-- T1BLOCK:END opencode-external-temp-shell -->
 
 <!-- T1BLOCK:BEGIN run-team-not-subagent -->
-Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.
+Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. {{RECOVERY}} Do NOT fall back to delegating from inside a worker or rewriting team preferences.
 <!-- T1BLOCK:END run-team-not-subagent -->
 
 <!-- T1BLOCK:BEGIN run-team-not-owned -->

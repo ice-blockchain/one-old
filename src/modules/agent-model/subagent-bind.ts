@@ -6,18 +6,59 @@
 
 import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
-import { deny, noop } from '../../core/result';
+import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { cursorModelsFresh } from '../../shared/materialize/cursor-models';
 import { effectiveTierForRole, modelForRoleHost } from '../../shared/performance';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
-import { captureClaimDebug, claimThreadRole, ensureCurrentRunId, hookSessionIdentity, inferRoleFromTranscript, readEffectiveState, recordCursorSpawnObservation, recordRunAgent, transcriptThreadId } from '../../shared/state';
+import {
+  captureClaimDebug,
+  claimThreadRole,
+  ensureCurrentRunId,
+  hookSessionIdentity,
+  inferRoleEvidenceFromTranscript,
+  readCodexSessionMetaIdentity,
+  readEffectiveState,
+  recordCursorSpawnObservation,
+  recordRunAgent,
+  transcriptThreadId,
+  type RoleEvidence,
+  type RoleEvidenceResolution,
+} from '../../shared/state';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from './model-choice';
-import { inferTrafficOneSpawnRole } from './role-infer';
+import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { settleCorrelatedCursorRetryOnStart } from './cursor-failures';
+
+function evidenceTier(evidence: RoleEvidence): number {
+  if (evidence.source.startsWith('codex-session-meta-') || evidence.source.startsWith('host-')) return 1;
+  if (evidence.source === 'spawn-task-name') return 2;
+  if (evidence.authority === 'explicit') return 3;
+  return 4;
+}
+
+function resolutionTier(resolution: RoleEvidenceResolution): number {
+  if (resolution.kind === 'none') return Number.POSITIVE_INFINITY;
+  const items = resolution.kind === 'evidence' ? [resolution.evidence] : resolution.candidates;
+  return Math.min(...items.map(evidenceTier));
+}
+
+function combineRoleEvidence(...resolutions: RoleEvidenceResolution[]): RoleEvidenceResolution {
+  const bestTier = Math.min(...resolutions.map(resolutionTier));
+  if (!Number.isFinite(bestTier)) return { kind: 'none' };
+  const relevant = resolutions.filter((resolution) => resolutionTier(resolution) === bestTier);
+  const candidates = relevant.flatMap((resolution) => (
+    resolution.kind === 'evidence' ? [resolution.evidence]
+      : resolution.kind === 'conflict' ? resolution.candidates
+        : []
+  ));
+  const roles = new Set(candidates.map((candidate) => candidate.role));
+  return roles.size === 1
+    ? { kind: 'evidence', evidence: candidates[0]! }
+    : { kind: 'conflict', candidates };
+}
 
 export function subagentStartBind(ctx: Ctx): HookResult {
   // Cursor may fire SubagentStart from a nested package (or one of its own
@@ -60,28 +101,74 @@ export function subagentStartBind(ctx: Ctx): HookResult {
 
   // SubagentStart fires in the spawner's context, so session_id is the parent id.
   const identity = hookSessionIdentity(raw);
-  const transcriptPath = asString(raw.transcript_path ?? raw.transcriptPath);
+  const transcriptPath = identity.transcriptPath || '';
+  const transcriptThread = transcriptThreadId(transcriptPath);
+  const transcriptIsChildOwned = Boolean(
+    transcriptThread && (!identity.sessionId || transcriptThread !== identity.sessionId),
+  );
   // Role: Claude declares it via agent_type, Cursor via subagent_type (both resolved
   // by hookSessionIdentity.declaredRole). Cursor may also send a generic
-  // subagent_type and put the real `[t1-role: senior-x]` marker in the task body;
-  // Codex carries no role, so infer from the child transcript when present.
-  const taskText = asString(raw.task ?? raw.prompt ?? raw.message ?? raw.instructions ?? raw.description);
-  const role = identity.declaredRole || inferTrafficOneSpawnRole({
-    subagent_type: raw.subagent_type,
-    subagentType: raw.subagentType,
-    agent_type: raw.agent_type,
-    agentType: raw.agentType,
-    agent: raw.agent,
-    agentName: raw.agentName,
-    agent_name: raw.agent_name,
-    role: raw.role,
-    type: raw.type,
-    prompt: taskText,
-    message: raw.message,
-    instructions: raw.instructions,
-    description: raw.description,
-  }) || (transcriptPath ? inferRoleFromTranscript(transcriptPath) : '');
-  if (!role) return noop();
+  // subagent_type and put the real role marker in the task body. Codex identity
+  // comes from exact task_name when the hook carries it or line-zero child
+  // session_meta; encrypted task content is never treated as role evidence.
+  const inputResolution = inferTrafficOneSpawnRoleEvidence(raw);
+  // Cursor SubagentStart normally points at the parent's transcript. Never let
+  // historical user records there grant the new child a role; the task body or
+  // the later child-owned transcript remains available. Other hosts retain their
+  // established readable-transcript compatibility.
+  const mayUseTranscript = Boolean(
+    transcriptPath && (ctx.host !== 'cursor' || transcriptIsChildOwned),
+  );
+  const codexMeta = ctx.host === 'codex' && transcriptPath
+    ? readCodexSessionMetaIdentity(transcriptPath)
+    : null;
+  const codexIdentityMismatch = Boolean(codexMeta && (
+    (codexMeta.threadId && transcriptThread && codexMeta.threadId.toLowerCase() !== transcriptThread.toLowerCase())
+    || (codexMeta.threadId && identity.agentId && codexMeta.threadId.toLowerCase() !== identity.agentId.toLowerCase())
+    || (codexMeta.parentThreadId && identity.sessionId && codexMeta.parentThreadId !== identity.sessionId)
+  ));
+  const transcriptResolution = mayUseTranscript
+    ? inferRoleEvidenceFromTranscript(transcriptPath)
+    : { kind: 'none' } as const;
+  const resolvedEvidence = codexIdentityMismatch
+    ? { kind: 'conflict', candidates: [] } as RoleEvidenceResolution
+    : combineRoleEvidence(inputResolution, transcriptResolution);
+  const evidence = resolvedEvidence.kind === 'evidence' ? resolvedEvidence.evidence : null;
+  const role = evidence?.role || '';
+  if (!role) {
+    // Do not silently let an unbound Traffic One child proceed toward its first
+    // write. Keep this diagnostic deliberately structural/bounded: the general
+    // SubagentStart capture above already truncates raw strings, while this row
+    // records only the identity fields needed to diagnose attribution drift.
+    // Returning context is non-blocking (SubagentStart is not a PreToolUse
+    // permission event) and, critically, happens before run-id minting or any
+    // claim/registry mutation below.
+    const diagnosticRunId = runId || ensureCurrentRunId(cwd, state);
+    captureClaimDebug(cwd, diagnosticRunId, 'subagent-start-role-unresolved', {
+      host: ctx.host,
+      agentId: identity.agentId,
+      sessionId: identity.sessionId,
+      parentSessionId: identity.parentSessionId,
+      threadId: identity.threadId,
+      declaredRole: identity.declaredRole,
+      hasTranscriptPath: Boolean(transcriptPath),
+      transcriptIdentityMismatch: codexIdentityMismatch,
+      taskName: asString(raw.task_name ?? raw.taskName).slice(0, 96),
+      conflicts: resolvedEvidence.kind === 'conflict'
+        ? resolvedEvidence.candidates.map(({ role: candidateRole, source }) => ({ role: candidateRole, source }))
+        : [],
+    });
+    return context(
+      'Traffic One could not bind this child thread to a senior role, so no per-run role claim was created. '
+      + 'Do not write files from this child until the parent/orchestrator repairs the spawn. '
+      + 'Parent/orchestrator: stop or replace this child and retry the same role. On Codex use the exact canonical '
+      + '`task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
+      + '`senior_tester`, or `senior_shipper`). Current Codex encrypts the spawn message in the child rollout, '
+      + 'so task name and line-zero `session_meta`—not prompt prose—carry identity. On hosts with readable task '
+      + 'records, retain the unclaimable documentation placeholder `[t1-role: senior-<role>]` and substitute the '
+      + 'actual role in the task message; marker position is not an identity requirement. Do not self-assert a role in assistant prose.',
+    );
+  }
 
   // PERSISTING RUN-ID MINT: Codex fires no PreToolUse for spawns, so the
   // ensureCurrentRunId self-heal inside agentModelGate never runs there —
@@ -167,6 +254,8 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       model: asString(raw.subagent_model ?? raw.subagentModel ?? raw.model) || null,
       agentType: asString(raw.subagent_type) || null,
       parentSessionId: parentSession,
+      roleSource: evidence?.source || null,
+      transcriptPath: transcriptPath || null,
     });
   }
 
@@ -180,6 +269,8 @@ export function subagentStartBind(ctx: Ctx): HookResult {
       model: asString(raw.model) || null,
       agentType: asString(raw.agentName ?? raw.agent_name ?? raw.agent_type ?? raw.agentType) || null,
       parentSessionId: identity.sessionId,
+      roleSource: evidence?.source || null,
+      transcriptPath: transcriptPath || null,
     });
   }
 
@@ -190,10 +281,13 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // duplicate claim the child can never resolve. For Cursor, only bind when the
   // transcript filename yields a child id distinct from the parent session; otherwise
   // resolveRunAgentContext will bind from Cursor's child transcript cache on first write.
-  const transcriptThread = transcriptThreadId(transcriptPath);
   const threadId = ctx.host === 'cursor' ? transcriptThread : (identity.agentId || transcriptThread);
   if (threadId && transcriptPath && threadId !== identity.sessionId) {
-    claimThreadRole(cwd, state, threadId, role, { parentSessionId: identity.sessionId });
+    claimThreadRole(cwd, state, threadId, role, {
+      parentSessionId: identity.sessionId,
+      transcriptPath,
+      evidence: evidence || undefined,
+    });
   }
   return noop();
 }

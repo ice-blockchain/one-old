@@ -32,7 +32,7 @@ import {
   recordRunAgent,
   subagentContinuationAvailable,
 } from '../../shared/state';
-import { inferTrafficOneSpawnRole } from './role-infer';
+import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 import { markModelChoicePrompted, readModelChoice } from './model-choice';
 import { persistCorrelatedCursorPostToolFailure } from './cursor-failures';
 
@@ -212,8 +212,9 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
   if (toolName && !/^(Task|Agent|spawn_agent|run_subagent|spawn_subagent)$/i.test(stripToolNamespace(toolName))) return noop();
 
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || {};
-  const role = inferTrafficOneSpawnRole(toolInput);
-  if (!role) return noop();
+  const roleResolution = inferTrafficOneSpawnRoleEvidence(toolInput);
+  if (roleResolution.kind !== 'evidence') return noop();
+  const role = roleResolution.evidence.role;
 
   // Prefer the named response fields; when a host uses a different field name
   // for the spawn result, fall back to scanning the whole payload — the
@@ -334,6 +335,7 @@ export function recordSpawnedAgent(ctx: Ctx): HookResult {
     model: asString(toolInput.model) || null,
     agentType: asString(toolInput.agent_type ?? toolInput.agentType ?? toolInput.subagent_type ?? toolInput.type) || null,
     parentSessionId: hookSessionIdentity(raw).sessionId,
+    roleSource: roleResolution.evidence.source,
   });
   return noop();
 }

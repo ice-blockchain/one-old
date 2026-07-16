@@ -137,7 +137,136 @@ test('subagents project: a feature write outside any role session is denied (run
     if (r.kind === 'deny') {
       assert.ok(r.reason.includes('Run-team enforcement gate'));
       assert.ok(r.reason.includes('team.mode'));
+      assert.match(r.reason, /PARENT\/orchestrator/);
+      assert.match(r.reason, /`senior_architect`/);
+      assert.match(r.reason, /`senior_frontend`/);
+      assert.doesNotMatch(r.reason, /state your role explicitly/i);
     }
+  });
+});
+
+test('roleless Codex child write is denied with parent-owned canonical task-name recovery', () => {
+  withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+    const child = '019f69fe-e335-7de0-be43-1ee45e3535cc';
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/featureThing.ts', content: 'export const x = 1;',
+    }, {
+      session_id: 'parent-thread',
+      transcript_path: path.join(cwd, `rollout-2026-07-16T11-15-39-${child}.jsonl`),
+    }, 'codex'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /No write was made/);
+      assert.match(r.reason, /PARENT\/orchestrator must stop or replace this child/);
+      assert.match(r.reason, /`senior_architect`/);
+      assert.match(r.reason, /`senior_frontend`/);
+      assert.match(r.reason, /encrypts the child spawn message/i);
+      assert.doesNotMatch(r.reason, /state your role explicitly/i);
+      assert.doesNotMatch(r.reason, /message line 1/i);
+    }
+  });
+});
+
+test('Codex 31-file architect scaffold is attributed to architect and steered to .traffic-one/plan.md', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    fs.rmSync(path.join(cwd, '.traffic-one', 'plan.md'), { force: true });
+
+    const threadId = '019f69fe-e335-7de0-be43-1ee45e3535c4';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${threadId}.jsonl`);
+    fs.writeFileSync(transcript, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: threadId,
+          thread_source: 'subagent',
+          agent_path: '/root/senior_architect',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: 'orchestrator-parent',
+                agent_path: '/root/senior_architect',
+              },
+            },
+          },
+        },
+      }),
+      // Reproduce the misleading evidence from the incident: a tool result in
+      // the architect rollout contains a concrete frontend marker. It must not
+      // override the authoritative session identity.
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          output: '[t1-role: senior-frontend] example copied from documentation',
+        },
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    const scaffoldFiles = [
+      'package.json',
+      'pnpm-workspace.yaml',
+      'turbo.json',
+      'tsconfig.base.json',
+      '.gitignore',
+      'README.md',
+      'apps/web/package.json',
+      'apps/web/tsconfig.json',
+      'apps/web/vite.config.ts',
+      'apps/web/index.html',
+      'apps/web/src/main.tsx',
+      'apps/web/src/App.tsx',
+      'apps/web/src/styles.css',
+      'packages/ui/package.json',
+      'packages/ui/tsconfig.json',
+      'packages/ui/src/index.ts',
+      'packages/ui/src/Button.tsx',
+      'packages/i18n/package.json',
+      'packages/i18n/tsconfig.json',
+      'packages/i18n/src/index.ts',
+      'packages/i18n/src/en.ts',
+      'packages/types/package.json',
+      'packages/types/tsconfig.json',
+      'packages/types/src/index.ts',
+      'packages/api-client/package.json',
+      'packages/api-client/tsconfig.json',
+      'packages/api-client/src/index.ts',
+      'supabase/config.toml',
+      'supabase/migrations/001_init.sql',
+      'eslint.config.js',
+      'prettier.config.js',
+    ];
+    assert.equal(scaffoldFiles.length, 31, 'fixture must retain the incident-sized patch');
+    const patchText = [
+      '*** Begin Patch',
+      ...scaffoldFiles.flatMap((filePath) => [`*** Add File: ${filePath}`, '+scaffold']),
+      '*** End Patch',
+    ].join('\n');
+
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', {
+      patchText,
+    }, {
+      session_id: 'orchestrator-parent',
+      transcript_path: transcript,
+    }, 'codex'));
+
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /active Traffic One role `senior-architect`/);
+      assert.match(result.reason, /You ARE the `senior-architect`/);
+      assert.match(result.reason, /write `\.traffic-one\/plan\.md`/);
+      assert.match(result.reason, /do not spawn another architect/);
+      assert.doesNotMatch(result.reason, /Run the `senior-architect` subagent/);
+      assert.doesNotMatch(result.reason, /active Traffic One role `senior-frontend`/);
+    }
+
+    const claim = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-1', `${threadId}.json`),
+      'utf8',
+    ));
+    assert.equal(claim.role, 'senior-architect');
   });
 });
 

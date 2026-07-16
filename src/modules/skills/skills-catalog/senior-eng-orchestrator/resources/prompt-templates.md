@@ -1,15 +1,25 @@
 # Synthetic-prompt templates for senior-eng-orchestrator
 
 > **Marker contract:** every spawn/continuation prompt built from these
-> templates MUST begin with `[t1-role: senior-<role>]` as its own first line
-> (e.g. `[t1-role: senior-frontend]`). Traffic One's gates and the agent
-> registry parse this marker; do not omit or paraphrase it.
+> templates MUST include `[t1-role: senior-<role>]`. These templates put it on
+> the first line for consistency, but role parsing accepts it anywhere in a
+> recognized user/task record because shipped continuation and retry prompts do
+> not all place it first. Substitute the actual role before calling the host
+> tool; never copy the `<role>` placeholder literally.
 
 
 These are the canonical templates the orchestrator uses when spawning each
 subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's
 context stays clean. The ONE exception is `<run-id>` — see below.
+
+On Codex, structured task identity is mandatory. Current Desktop rollouts store
+the spawn message encrypted in the child transcript, so the marker cannot be
+role evidence there. Use the exact underscore-form task name (`senior_architect`,
+`senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or
+`senior_shipper`); line-zero `session_meta` is the child-side corroboration. Keep
+the matching marker in the message for other hosts, but never rely on its
+position or visibility for Codex identity.
 
 ## Per-role model / profile mapping
 

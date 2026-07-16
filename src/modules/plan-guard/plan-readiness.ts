@@ -299,7 +299,7 @@ export function architectPlanReadyOnDisk(projectRoot: string, state: Rec): boole
 }
 
 function assignmentWriterRole(projectRoot: string, state: Rec, rawData: unknown): string | null {
-  const ctx = rawData ? resolveRunAgentContext(projectRoot, state, rawData, { claimPending: false }) : null;
+  const ctx = rawData ? resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true }) : null;
   return (ctx && typeof ctx.role === 'string' ? ctx.role : null) || activeAgentRole(state);
 }
 

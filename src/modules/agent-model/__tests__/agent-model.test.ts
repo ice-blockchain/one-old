@@ -8,13 +8,13 @@ import { agentModelGate } from '../handler';
 import { classifySubagentStop, extractSpawnedAgentId, recordSpawnedAgent } from '../record-agent';
 import { subagentStartBind } from '../subagent-bind';
 import { opencodeSubagentBind } from '../opencode-subagent-bind';
-import { inferTrafficOneSpawnRole } from '../role-infer';
+import { inferTrafficOneSpawnRole, inferTrafficOneSpawnRoleEvidence } from '../role-infer';
 import { GENERATED_MARKER } from '../../../shared/materialize';
 import { writeArchitectPhaseComplete } from '../../plan-guard/__tests__/architect-phase-fixtures';
 import { modelChoicePrompted, writeModelChoice } from '../model-choice';
 import { exhaustedModelsForRole, recordExhaustedModel } from '../exhausted-models';
 import { markOpenCodePlanBatchComplete, markOpenCodePlanBatchTerminal, markOpenCodePlanRoleCompleted, markOpenCodeRoleAttempted } from '../../../shared/opencode-roles';
-import { ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
+import { claimThreadRole, ensureRunAgentClaim, hookSessionIdentity, listCursorSpawnObservations, markCursorSpawnObservationRetryHandled, readEffectiveState, readRunAgentRegistry, recordCursorSpawnObservation, recordRunAgent, resolveRunAgentContext } from '../../../shared/state';
 import { isForeignOnboardingThread } from '../../../shared/onboarding-server/onboarding-session';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
 import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
@@ -28,6 +28,90 @@ test('inferTrafficOneSpawnRole reads subagent_type, namespaced ids, agentName, a
   assert.equal(inferTrafficOneSpawnRole({ agent_name: 'senior-reviewer' }), 'senior-reviewer');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'You are the Traffic One senior-tester role.' }), 'senior-tester');
   assert.equal(inferTrafficOneSpawnRole({ prompt: 'just do something' }), null);
+});
+
+test('inferTrafficOneSpawnRole normalizes exact Codex task-name leaves and replacement suffixes', () => {
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'senior_architect' }), 'senior-architect');
+  assert.equal(inferTrafficOneSpawnRole({ taskName: '/root/senior_frontend' }), 'senior-frontend');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'traffic-one:workers/senior_backend_2' }), 'senior-backend');
+  assert.equal(inferTrafficOneSpawnRole({ taskName: '/root/senior-reviewer-12' }), 'senior-reviewer');
+  assert.equal(inferTrafficOneSpawnRole({ taskName: '  /ROOT/SENIOR_SHIPPER_4  ' }), 'senior-shipper');
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'quick_fix' }), 'quick-fix');
+  assert.equal(
+    inferTrafficOneSpawnRole({ agent_type: 'worker', task_name: '/root/senior_tester_3' }),
+    'senior-tester',
+    'a generic host type must not hide a role-bearing task name',
+  );
+
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'worker' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ task_name: '/root/worker_2' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ task_name: '/root/senior_architect_helper' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ task_name: '/root/senior_architect2' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ task_name: '/root/senior_architect/worker' }), null);
+  assert.equal(inferTrafficOneSpawnRole({ task_name: 'build_senior_architect' }), null);
+});
+
+test('inferTrafficOneSpawnRole filters non-candidates and fails closed only within the winning tier', () => {
+  assert.equal(
+    inferTrafficOneSpawnRole({ agent_type: 'default', agent_path: '/root/senior_architect' }),
+    'senior-architect',
+  );
+  assert.equal(
+    inferTrafficOneSpawnRole({ subagent_type: 'general', prompt: 'Continue. [t1-role: senior-backend]' }),
+    'senior-backend',
+  );
+  assert.equal(
+    inferTrafficOneSpawnRole({ agent_type: 'senior-frontend', agent_path: '/root/senior_architect' }),
+    null,
+    'different valid peer host fields are an authoritative conflict',
+  );
+  assert.equal(
+    inferTrafficOneSpawnRole({ agent_type: 'senior-backend', task_name: 'senior_architect' }),
+    'senior-backend',
+    'host metadata outranks the lower task-name tier',
+  );
+  assert.equal(
+    inferTrafficOneSpawnRole({ task_name: 'senior_architect', message: '[t1-role: senior-frontend]' }),
+    'senior-architect',
+    'task name outranks readable prompt evidence',
+  );
+});
+
+test('inferTrafficOneSpawnRole inspects both source envelopes and accepts outer threadSpawn camelCase', () => {
+  const nestedPayload = inferTrafficOneSpawnRoleEvidence({
+    source: { event: 'subagent-start' },
+    payload: {
+      source: {
+        subagent: {
+          threadSpawn: { agentPath: '/root/senior_architect' },
+        },
+      },
+    },
+  });
+  assert.equal(nestedPayload.kind, 'evidence');
+  if (nestedPayload.kind === 'evidence') {
+    assert.equal(nestedPayload.evidence.role, 'senior-architect');
+    assert.equal(nestedPayload.evidence.source, 'host-agent-path');
+  }
+
+  assert.equal(
+    inferTrafficOneSpawnRole({
+      source: { subagent: { threadSpawn: { taskName: '/root/senior_reviewer' } } },
+    }),
+    'senior-reviewer',
+  );
+
+  const conflictingSources = inferTrafficOneSpawnRoleEvidence({
+    source: { subagent: { thread_spawn: { agent_path: '/root/senior_architect' } } },
+    payload: { source: { subagent: { threadSpawn: { agentPath: '/root/senior_frontend' } } } },
+  });
+  assert.equal(conflictingSources.kind, 'conflict', 'neither source envelope may mask the other');
+  if (conflictingSources.kind === 'conflict') {
+    assert.deepEqual(
+      new Set(conflictingSources.candidates.map((candidate) => candidate.role)),
+      new Set(['senior-architect', 'senior-frontend']),
+    );
+  }
 });
 
 test('verifier roles cannot resume or bind an implementer agent id', () => {
@@ -207,6 +291,39 @@ test('non-spawn tools are ignored', () => {
   const input: HookInput = { event: 'PreToolUse', host: 'claude', cwd, raw: { tool_name: 'Bash' }, tool: { class: 'shell' as ToolClass, rawName: 'Bash', command: 'ls' } };
   const ctx = { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
   assert.equal(agentModelGate(ctx).kind, 'noop');
+});
+
+test('spawn identity conflict is denied before any role claim is staked', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const result = agentModelGate(spawnCtx(cwd, {
+      agent_type: 'senior-frontend',
+      agent_path: '/root/senior_architect',
+      model: 'opus',
+    }));
+
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /spawn identity gate/i);
+      assert.match(result.reason, /`senior-frontend` \(host-agent-type\)/);
+      assert.match(result.reason, /`senior-architect` \(host-agent-path\)/);
+      assert.match(result.reason, /blocked before a child started/i);
+      assert.match(result.reason, /correct or remove the stale identity field or marker/i);
+    }
+
+    const pendingDir = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'pending');
+    const pending = fs.existsSync(pendingDir)
+      ? fs.readdirSync(pendingDir).filter((name) => name.endsWith('.json'))
+      : [];
+    assert.deepEqual(pending, [], 'an ambiguous spawn cannot create a role claim');
+
+    const debugFile = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'debug', 'claim-capture.jsonl');
+    const diagnostic = fs.readFileSync(debugFile, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { label?: string; raw?: { candidates?: unknown[] } })
+      .find((entry) => entry.label === 'spawn-role-conflict');
+    assert.equal(diagnostic?.raw?.candidates?.length, 2, 'the conflict diagnostic is structural and bounded');
+  });
 });
 
 test('team not approved → deny with the Team Confirmation prose', () => {
@@ -1179,6 +1296,27 @@ function subagentStartCtx(cwd: string, raw: Record<string, unknown>, host: 'code
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
+function codexSessionMeta(childThread: string, parentThread: string, agentPath: string): Record<string, unknown> {
+  return {
+    timestamp: '2026-07-16T08:15:39.909Z',
+    type: 'session_meta',
+    payload: {
+      id: childThread,
+      parent_thread_id: parentThread,
+      thread_source: 'subagent',
+      agent_path: agentPath,
+      source: {
+        subagent: {
+          thread_spawn: {
+            parent_thread_id: parentThread,
+            agent_path: agentPath,
+          },
+        },
+      },
+    },
+  };
+}
+
 test('codex: namespaced spawn omits the unsupported model field and still stakes a senior-frontend claim', () => {
   withMaterialized({ teamApproved: true }, (cwd) => {
     const ok = agentModelGate(codexSpawnCtx(cwd, { message: 'You are `senior-frontend` for Traffic One.' }));
@@ -1230,6 +1368,152 @@ test('codex end-to-end: SubagentStart infers role from the child rollout, claims
     // The orchestrator (its own transcript, no claim) resolves no role → main-agent writes stay blocked.
     const mainTranscript = path.join(cwd, 'rollout-2026-05-29T14-00-00-019e7389-8edd-7e50-b566-2e9a0d52b9d9.jsonl');
     assert.equal(resolveRunAgentContext(cwd, state, { session_id: 'orchestrator-parent', transcript_path: mainTranscript }, { claimPending: false }), null);
+  });
+});
+
+test('codex unresolved SubagentStart reports canonical recovery and creates no claim for missing or short rollouts', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const cases = [
+      { label: 'missing', childThread: '019f69fe-e335-7de0-be43-1ee45e3535c4', contents: null },
+      { label: 'short', childThread: '019f69fe-e335-7de0-be43-1ee45e3535c5', contents: '{"type":"session_' },
+    ] as const;
+
+    for (const item of cases) {
+      const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${item.childThread}.jsonl`);
+      if (item.contents !== null) fs.writeFileSync(transcript, item.contents, 'utf8');
+      const result = subagentStartBind(subagentStartCtx(cwd, {
+        hook_event_name: 'SubagentStart',
+        agent_id: item.childThread,
+        session_id: parentThread,
+        transcript_path: transcript,
+      }));
+
+      assert.equal(result.kind, 'context', `${item.label} rollout is unresolved but SubagentStart stays non-blocking`);
+      if (result.kind === 'context') {
+        assert.match(result.context, /no per-run role claim was created/i);
+        assert.match(result.context, /Do not write files from this child/i);
+        assert.match(result.context, /stop or replace this child and retry the same role/i);
+        assert.match(result.context, /`senior_architect`/);
+        assert.match(result.context, /`senior_frontend`/);
+        assert.match(result.context, /encrypts the spawn message/i);
+        assert.match(result.context, /marker position is not an identity requirement/i);
+        assert.match(result.context, /Do not self-assert a role in assistant prose/i);
+      }
+      assert.equal(
+        fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${item.childThread}.json`)),
+        false,
+        `${item.label} rollout must not create a guessed child claim`,
+      );
+    }
+
+    assert.deepEqual(readRunAgentRegistry(cwd, 'run-test'), {}, 'unresolved starts do not create reusable agent rows');
+    const captureFile = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'debug', 'claim-capture.jsonl');
+    const unresolved = fs.readFileSync(captureFile, 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { label?: string; raw?: Record<string, unknown> })
+      .filter((entry) => entry.label === 'subagent-start-role-unresolved');
+    assert.equal(unresolved.length, 2, 'both attribution races emit a bounded structural diagnostic');
+    assert.deepEqual(unresolved.map((entry) => entry.raw?.threadId), cases.map((item) => item.childThread));
+    assert.ok(unresolved.every((entry) => entry.raw?.hasTranscriptPath === true));
+  });
+});
+
+test('codex unresolved start without a current run still persists its bounded diagnostic', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const onePath = path.join(cwd, '.traffic-one', '.one.json');
+    const one = JSON.parse(fs.readFileSync(onePath, 'utf8'));
+    delete one.currentRunId;
+    fs.writeFileSync(onePath, JSON.stringify(one), 'utf8');
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e3535c9';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+
+    const result = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart',
+      agent_id: childThread,
+      session_id: 'orchestrator-parent',
+      transcript_path: transcript,
+    }));
+    assert.equal(result.kind, 'context');
+    const runId = String(JSON.parse(fs.readFileSync(onePath, 'utf8')).currentRunId || '');
+    assert.ok(runId);
+    const runDir = path.join(cwd, '.traffic-one', 'runs', runId);
+    assert.equal(fs.existsSync(path.join(runDir, `${childThread}.json`)), false);
+    const capture = fs.readFileSync(path.join(runDir, 'debug', 'claim-capture.jsonl'), 'utf8');
+    assert.match(capture, /subagent-start-role-unresolved/);
+  });
+});
+
+test('codex first child write self-heals once line-zero session_meta appears after an unresolved start', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e3535c6';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+
+    const unresolved = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart',
+      agent_id: childThread,
+      session_id: parentThread,
+      transcript_path: transcript,
+    }));
+    assert.equal(unresolved.kind, 'context');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`)), false);
+
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_architect'))}\n`,
+      'utf8',
+    );
+    const state = readEffectiveState(cwd);
+    const firstWrite = resolveRunAgentContext(cwd, state, {
+      session_id: parentThread,
+      transcript_path: transcript,
+    });
+
+    assert.ok(firstWrite, 'the first child write binds after the rollout flushes line-zero metadata');
+    assert.equal(firstWrite?.role, 'senior-architect');
+    assert.equal(firstWrite?.sessionId, childThread);
+    const claim = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-test', `${childThread}.json`),
+      'utf8',
+    )) as Record<string, unknown>;
+    assert.equal(claim.role, 'senior-architect');
+    assert.equal(claim.parentSessionId, parentThread);
+    assert.equal(claim.roleSource, 'codex-session-meta-agent-path');
+    assert.equal(claim.transcriptPath, transcript);
+  });
+});
+
+test('codex SubagentStart fails closed when line-zero child identity does not match the hook', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const parentThread = '019f69fb-334a-7351-8e94-66c97c3fa908';
+    const hookChild = '019f69fe-e335-7de0-be43-1ee45e3535c7';
+    const metadataChild = '019f69fe-e335-7de0-be43-1ee45e3535c8';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${hookChild}.jsonl`);
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(metadataChild, parentThread, '/root/senior_architect'))}\n`,
+      'utf8',
+    );
+
+    const result = subagentStartBind(subagentStartCtx(cwd, {
+      hook_event_name: 'SubagentStart',
+      agent_id: hookChild,
+      session_id: parentThread,
+      transcript_path: transcript,
+      task_name: 'senior_architect',
+    }));
+    assert.equal(result.kind, 'context');
+    assert.equal(fs.existsSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-test', `${hookChild}.json`),
+    ), false);
+    const captureFile = path.join(cwd, '.traffic-one', 'runs', 'run-test', 'debug', 'claim-capture.jsonl');
+    const captures = fs.readFileSync(captureFile, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+    const diagnostic = captures.find((entry) => entry.label === 'subagent-start-role-unresolved');
+    assert.equal(diagnostic?.raw?.transcriptIdentityMismatch, true);
   });
 });
 
@@ -2063,6 +2347,137 @@ test('reuse (Codex): duplicate spawn routes to current collaboration continuatio
       assert.ok(duplicate.reason.includes('send_message'));
       assert.ok(!duplicate.reason.includes('send_input'));
     }
+  });
+});
+
+test('reuse (Codex): matching line-zero metadata verifies continuation while a fresh unverified row stays blocked', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const runId = 'run-codex-meta-match';
+    const parentThread = 'parent-thread-1';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e3535c7';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_architect'))}\n`,
+      'utf8',
+    );
+    setCurrentRunId(cwd, runId);
+    recordRunAgent(cwd, runId, 'senior-architect', {
+      agentId: childThread,
+      parentSessionId: parentThread,
+      transcriptPath: transcript,
+    });
+
+    const duplicate = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_architect',
+      message: '[t1-role: senior-architect]\nContinue the bounded architecture task.',
+    }));
+    assert.equal(duplicate.kind, 'deny');
+    if (duplicate.kind === 'deny') {
+      assert.match(duplicate.reason, /already has a LIVE `senior-architect` agent/i);
+      assert.match(duplicate.reason, new RegExp(childThread));
+      assert.match(duplicate.reason, /Call `followup_task`/);
+      assert.match(duplicate.reason, /use `send_message`/);
+      assert.doesNotMatch(duplicate.reason, /cannot verify that child's role/i);
+    }
+    const verified = readRunAgentRegistry(cwd, runId)['senior-architect'];
+    assert.equal(verified?.roleSource, 'codex-session-meta-agent-path');
+    assert.equal(verified?.transcriptPath, transcript);
+  });
+
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const runId = 'run-codex-meta-unverified';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e3535c8';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(transcript, '{"type":"session_', 'utf8');
+    setCurrentRunId(cwd, runId);
+    recordRunAgent(cwd, runId, 'senior-architect', {
+      agentId: childThread,
+      parentSessionId: 'parent-thread-1',
+      transcriptPath: transcript,
+    });
+
+    const duplicate = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_architect',
+      message: '[t1-role: senior-architect]\nContinue the bounded architecture task.',
+    }));
+    assert.equal(duplicate.kind, 'deny');
+    if (duplicate.kind === 'deny') {
+      assert.match(duplicate.reason, /fresh Codex `senior-architect` registry row/);
+      assert.ok(duplicate.reason.includes(`child \`${childThread}\``));
+      assert.match(duplicate.reason, /line-zero `session_meta` \(codex-session-meta-missing-or-mismatched\)/);
+      assert.match(duplicate.reason, /Do not route `followup_task`\/`send_message` to this unverified id/);
+      assert.match(duplicate.reason, /do not start a duplicate/i);
+      assert.match(duplicate.reason, /Retry after the child rollout is flushed/);
+      assert.match(duplicate.reason, /use `\[t1-replace-agent\]` with the concrete failure reason/);
+      assert.match(duplicate.reason, /exact task-name contract/);
+      assert.match(duplicate.reason, /`senior_architect`/);
+      assert.match(duplicate.reason, /encrypt spawn-message content/i);
+      assert.doesNotMatch(duplicate.reason, /Continue the SAME Codex agent/i);
+    }
+    const stillFresh = readRunAgentRegistry(cwd, runId)['senior-architect'];
+    assert.equal(stillFresh?.replaced, false, 'an unresolved fresh row is preserved while metadata may still flush');
+    assert.equal(stillFresh?.roleSource, null);
+  });
+});
+
+test('reuse (Codex): authoritative dead-child conflict rebinds before continuation and allows a fresh requested role', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const runId = 'run-codex-dead-reuse-rebind';
+    const parentThread = 'parent-thread-1';
+    const childThread = '019f69fe-e335-7de0-be43-1ee45e3535d9';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${childThread}.jsonl`);
+    fs.writeFileSync(
+      transcript,
+      `${JSON.stringify(codexSessionMeta(childThread, parentThread, '/root/senior_architect'))}\n`,
+      'utf8',
+    );
+    setCurrentRunId(cwd, runId);
+    const state = readEffectiveState(cwd);
+    writeArchitectPhaseComplete(cwd, runId, state as Record<string, unknown>);
+    assert.ok(claimThreadRole(cwd, state, childThread, 'senior-frontend', {
+      parentSessionId: parentThread,
+      recordAgent: false,
+    }));
+    recordRunAgent(cwd, runId, 'senior-frontend', {
+      agentId: childThread,
+      parentSessionId: parentThread,
+      transcriptPath: transcript,
+    });
+
+    const freshFrontend = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_frontend',
+      message: '[t1-role: senior-frontend]\nImplement the next bounded frontend unit.',
+    }));
+    assert.equal(freshFrontend.kind, 'noop', 'the poisoned frontend key is freed instead of continuing the architect');
+    const registry = readRunAgentRegistry(cwd, runId);
+    assert.equal(registry['senior-frontend'], undefined);
+    assert.equal(registry['senior-architect']?.agentId, childThread);
+    const corrected = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', runId, `${childThread}.json`),
+      'utf8',
+    ));
+    assert.equal(corrected.role, 'senior-architect');
+    assert.equal(corrected.correctedFromRole, 'senior-frontend');
+  });
+});
+
+test('reuse (Codex): a registry row from another parent session cannot block a fresh spawn', () => {
+  withMaterialized({ teamApproved: true }, (cwd) => {
+    const runId = 'run-codex-parent-mismatch';
+    setCurrentRunId(cwd, runId);
+    writeArchitectPhaseComplete(cwd, runId, readEffectiveState(cwd) as Record<string, unknown>);
+    recordRunAgent(cwd, runId, 'senior-frontend', {
+      agentId: '019f69fe-e335-7de0-be43-1ee45e3535ea',
+      parentSessionId: 'dead-parent-thread',
+      roleSource: 'spawn-task-name',
+    });
+    const fresh = agentModelGate(codexSpawnCtx(cwd, {
+      task_name: 'senior_frontend',
+      message: '[t1-role: senior-frontend]\nImplement the bounded frontend unit.',
+    }));
+    assert.equal(fresh.kind, 'noop');
+    assert.equal(readRunAgentRegistry(cwd, runId)['senior-frontend']?.parentSessionId, 'dead-parent-thread');
   });
 });
 
