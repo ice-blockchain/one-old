@@ -9,7 +9,8 @@ import { firstEmitThisSession } from '../../shared/once';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { pluginUseDeclined } from '../../shared/state/plugin-use';
-import { hookSessionIdentity, readEffectiveState } from '../../shared/state';
+import { hookSessionIdentity, readEffectiveState, resolveRunAgentContext } from '../../shared/state';
+import { cursorUnavailablePicks } from '../../shared/materialize/cursor-eligibility';
 import {
   canonicalToolName,
   isModelGateCommand,
@@ -17,6 +18,7 @@ import {
   isReadOnlyOrientationToolUse,
   parsedToolInput,
 } from '../../shared/tool-classify';
+import { rolesAwaitingModelChoice } from '../agent-model/cursor-failures';
 import { modelChoiceReplyPending } from '../agent-model/model-choice';
 
 const skillBlock = makeSkillBlock(pluginRoot);
@@ -39,6 +41,20 @@ export function modelChoiceGate(ctx: Ctx): HookResult {
   if (!state || !modelChoiceReplyPending(root, state as Record<string, unknown>)) return noop();
 
   if (isModelGateCommand(toolName, toolInput) || isOnboardingWaitCommand(toolName, toolInput)) return noop();
+
+  // Scope the pause (A2): an api-limit failure is caused by specific role(s) —
+  // a healthy in-flight subagent whose claimed role has no pending failure of
+  // its own keeps working. Only the failed role, the orchestrator (which would
+  // spawn new roles), and sessions with unresolved identity stay paused (fail
+  // closed). Unavailable CAPTURED picks stay run-level: the "models disabled"
+  // toggle is account-wide, so every role honors that pause (model-choice.ts).
+  const runId = typeof (state as Record<string, unknown>).currentRunId === 'string'
+    ? ((state as Record<string, unknown>).currentRunId as string).trim() : '';
+  if (runId && cursorUnavailablePicks(root, state as Record<string, unknown>).length === 0) {
+    const agentContext = resolveRunAgentContext(root, state as Record<string, unknown>, raw, { claimPending: false });
+    const sessionRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
+    if (sessionRole && !rolesAwaitingModelChoice(root, runId).has(sessionRole)) return noop();
+  }
 
   const table = formatModelChoiceRequiredStop(root, state as Record<string, unknown>)
     || 'traffic-one model-gate: STOP — model choice required (build paused). Reply `fallback` or `enable`.';

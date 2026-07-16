@@ -33,8 +33,7 @@ import { obj } from '../../shared/obj';
 import { firstEmitThisSession, stampEmitMarker } from '../../shared/once';
 import { maintenanceTriageDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
-import { modelChoiceReplyPending, parseModelChoice, writeModelChoice } from '../agent-model/model-choice';
-import { clearExhaustedModels } from '../agent-model/exhausted-models';
+import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
@@ -99,23 +98,12 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // When picked tier models aren't offered (or the spawn gate surfaced a degradation choice),
   // the user's reply lands here. Honor it before any other handling. Fail closed: nothing
   // records `use-fallback` except this explicit chat reply (or a future host modal).
+  // NOTE: pending may only be armed by the failure reconcile at priority 35 on this same
+  // event — the agent-model.model-choice-reply sweep (priority 45) re-runs this recorder
+  // after the reconcile so the FIRST reply is never dropped.
   {
-    const choiceState = readEffectiveState(cwd);
-    const choiceRunId = typeof choiceState.currentRunId === 'string' && choiceState.currentRunId.trim()
-      ? choiceState.currentRunId.trim() : '';
-    if (choiceRunId && modelChoiceReplyPending(cwd, choiceState as Record<string, unknown>)) {
-      const modelChoice = parseModelChoice(promptText);
-      if (modelChoice) {
-        writeModelChoice(cwd, choiceRunId, modelChoice);
-        // "enable" means the user fixed the budget / re-enabled the model — the
-        // run's exhausted-model condemnations are stale by definition. Clearing
-        // them lets the restored model actually be retried; keeping them would
-        // immediately re-rotate the role off the model the user just restored.
-        if (modelChoice === 'enable-retry') clearExhaustedModels(cwd, choiceRunId);
-        const recordedBlock = modelChoice === 'enable-retry' ? 'model-choice-recorded-enable' : 'model-choice-recorded-fallback';
-        return context(skillBlock('agent-model', recordedBlock, {}), { systemMessage: 'traffic-one: model choice recorded' });
-      }
-    }
+    const recorded = recordPendingModelChoiceReply(cwd, promptText);
+    if (recorded) return recorded;
   }
 
   const uninitialized = !fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd));

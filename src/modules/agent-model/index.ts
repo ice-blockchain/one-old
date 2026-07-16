@@ -1,6 +1,7 @@
 // src/modules/agent-model/index.ts
 import type { Handler } from '../../core/types';
 import { agentModelGate } from './handler';
+import { modelChoiceReplySweep } from './choice-reply';
 import { modelGateAfterShell, modelGateShell } from './model-gate';
 import { opencodeSubagentBind } from './opencode-subagent-bind';
 import { recordSpawnedAgent } from './record-agent';
@@ -74,6 +75,18 @@ export const handlers: Handler[] = [
     subcommands: ['user-prompt-submit'],
     priority: 35,
     run: (ctx) => cursorFailureReconcileHook(ctx),
+  },
+  {
+    // Late model-choice reply sweep: the reconcile above (priority 35) may be
+    // what ARMS the pending choice on this very prompt — after session
+    // prompt-submit (priority 0) already evaluated the reply. Re-run the
+    // recorder after the reconcile so the user's FIRST enable/fallback reply
+    // is never dropped.
+    id: 'agent-model.model-choice-reply',
+    event: 'UserPromptSubmit',
+    subcommands: ['user-prompt-submit'],
+    priority: 45,
+    run: (ctx) => modelChoiceReplySweep(ctx),
   },
   {
     id: 'agent-model.cursor-failure-session-reconcile',

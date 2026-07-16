@@ -20,8 +20,13 @@ test('subcommand routing maps each hook entry point to the right handlers', () =
   // agent-model.opencode-subagent-bind rides user-prompt-submit to bind a spawned
   // OpenCode role subagent's claim from its first prompt's [t1-role:] marker
   // (OpenCode has no SubagentStart); inert on other hosts.
+  // agent-model.model-choice-reply is the post-reconcile sweep: the reconcile
+  // (priority 35) may arm the pending model choice on the same prompt AFTER
+  // session.prompt-submit (priority 0) evaluated the reply, so the sweep
+  // (priority 45) re-runs the recorder so the first reply is never dropped.
   assert.deepEqual(idsFor('user-prompt-submit'), [
     'agent-model.cursor-failure-prompt-reconcile',
+    'agent-model.model-choice-reply',
     'agent-model.opencode-subagent-bind',
     'session.prompt-submit',
   ]);

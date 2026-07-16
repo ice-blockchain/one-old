@@ -198,6 +198,22 @@ function sameExactSlug(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
+// Roles whose spawn failed into the enable/fallback decision this run. The
+// model-choice gate uses this to SCOPE the pause: a healthy in-flight sibling
+// role (no pending failure of its own) keeps working while the user decides.
+// Consumed-ness is irrelevant here — the pause outlives observation consumption;
+// only an applied retry (retryHandled) releases the role.
+export function rolesAwaitingModelChoice(cwd: string, runId: string): Set<string> {
+  const roles = new Set<string>();
+  for (const observation of listCursorSpawnObservations(cwd, runId)) {
+    if (observation.retryHandled) continue;
+    if (observation.outcome === 'api-limit' || observation.outcome === 'model-unavailable') {
+      roles.add(observation.role);
+    }
+  }
+  return roles;
+}
+
 function unavailableModelsForRun(cwd: string, runId: string): string[] {
   // An explicit enable-retry choice means the user has fixed availability. Until
   // then, positive unavailable outcomes remain run-level exclusions so parallel
