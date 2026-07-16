@@ -6,12 +6,15 @@ import * as path from 'path';
 
 import {
   deriveBatchOutcomeFromUnits,
+  hasFreshArchitectQueueForRun,
+  markOpenCodeGatewayOutage,
   markOpenCodePlanBatchComplete,
   markOpenCodePlanBatchRunning,
   markOpenCodePlanBatchTerminal,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
   openCodeDelegateRoles,
+  openCodeGatewayOutageActive,
   openCodePlanBatchComplete,
   openCodePlanRoleCompleted,
   openCodeRoleAttempted,
@@ -239,6 +242,27 @@ test('opencode role attempt marker: write then detect (per run + role)', () => {
   }
 });
 
+test('gateway outage breaker: mark then detect within TTL; stale/missing/unscoped → inactive', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocgw-'));
+  try {
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 60_000), false); // no marker yet
+    markOpenCodeGatewayOutage(dir, 'r1');
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 60_000), true);
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 0), false);      // ttl 0 → always stale
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 1_000, Date.now() + 2_000), false); // past the TTL
+    assert.equal(openCodeGatewayOutageActive(dir, '', 60_000), false);   // no runId → never active
+    assert.equal(openCodeGatewayOutageActive(dir, 'r2', 60_000), false); // scoped per run
+    // unparseable marker → inactive (fail open to a normal probe)
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'r1', 'opencode-gateway-down'), 'not json', 'utf8');
+    assert.equal(openCodeGatewayOutageActive(dir, 'r1', 60_000), false);
+    // a no-runId mark is a no-op, never a stray file
+    markOpenCodeGatewayOutage(dir, '');
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', '', 'opencode-gateway-down')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The plan batch marks queue labels ("frontend") while the spawn gate checks
 // role ids ("senior-frontend") — markers are normalized so both agree, and
 // legacy raw-named markers from older builds still count.
@@ -268,7 +292,7 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
       + '- role: frontend | files: a | task: t\n'
       + '- role: backend | files: b | task: t\n'
       + '<!-- opencode-delegate:end -->\n', 'utf8');
-    const state = { openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
+    const state = { mode: 'new-project', openCode: { enabled: true }, toolchain: { opencode: { installedVersion: '1.0.0' } } };
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'opencode'), []);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state, 'kilo'), []);
@@ -282,6 +306,40 @@ test('plan-batch completion markers: queued roles stay pending until terminal ma
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run2', state), ['frontend', 'backend']);
     assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', { openCode: { enabled: false } }), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('maintenance plan-batch requires a fresh run-scoped architect queue (assignments.json)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-ocmaint-'));
+  try {
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, 'plan.md'),
+      '<!-- opencode-delegate:start -->\n'
+      + '- role: frontend | files: a | task: t\n'
+      + '<!-- opencode-delegate:end -->\n', 'utf8');
+    const state = {
+      mode: 'existing-codebase',
+      lifecycle: { phase: 'maintenance' },
+      openCode: { enabled: true },
+      toolchain: { opencode: { installedVersion: '1.0.0' } },
+    };
+
+    // No run-scoped assignments.json → the durable plan.md is treated as stale
+    // (small/triage maintenance work), so the plan-batch stays suppressed.
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run1'), false);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), false);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), []);
+
+    // The architect wrote a fresh run-scoped queue THIS run → plan-batch is live.
+    fs.mkdirSync(path.join(t1, 'runs', 'run1'), { recursive: true });
+    fs.writeFileSync(path.join(t1, 'runs', 'run1', 'assignments.json'),
+      JSON.stringify({ version: 1, runId: 'run1', createdBy: 'senior-architect', assignments: [] }), 'utf8');
+    assert.equal(hasFreshArchitectQueueForRun(dir, 'run1'), true);
+    assert.equal(shouldBlockImplementerForPlanBatch(dir, 'run1', state), true);
+    assert.deepEqual(pendingOpenCodePlanRoles(dir, 'run1', state), ['frontend']);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -477,7 +535,7 @@ test('orchestrator + team prose: a denied/"Couldn\'t start" first spawn must RE-
   }
 });
 
-test('Kilo prose uses built-in general task subagents when named senior agents are absent', () => {
+test('Kilo prose requires built-in general plus the marker-bound project role contract', () => {
   const modules = path.join(__dirname, '..', '..', 'modules');
   const skill = fs.readFileSync(path.join(modules, 'skills', 'skills-catalog', 'senior-eng-orchestrator', 'SKILL.md'), 'utf8');
   const teamRule = fs.readFileSync(path.join(modules, 'rules', 'rules', 'common', 'senior-engineer-team.md'), 'utf8');
@@ -487,10 +545,11 @@ test('Kilo prose uses built-in general task subagents when named senior agents a
   );
   for (const [name, doc] of [['orchestrator SKILL', skill], ['team rule', teamRule], ['prompt templates', promptTemplates]] as const) {
     assert.match(doc, /Kilo/i, `${name} must name Kilo`);
-    assert.match(doc, /general.*explore|explore.*general/i, `${name} must name Kilo's built-in task choices`);
+    assert.match(doc, /\.kilo\/agents/, `${name} must name Kilo's project role directory`);
     assert.match(doc, /\[t1-role: senior-<role>\]/, `${name} must require the marker-bound role contract`);
     assert.match(doc, /not|do not|never/i, `${name} must include a negative guard`);
-    assert.match(doc, /\.traffic-one\/agents|named `senior-\*`|named senior/i, `${name} must prevent missing named agents from causing fallback`);
+    assert.match(doc, /general/i, `${name} must use Kilo's writable built-in general worker`);
+    assert.match(doc, /explore/i, `${name} must explicitly reject explore`);
   }
 });
 

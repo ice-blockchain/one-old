@@ -5,7 +5,7 @@
 // from skill/SKILL.md via skillBlock with verbatim fallbacks.
 
 import { obj, type Rec } from '../../shared/obj';
-import { roleCanWriteFeatureSource } from '../../shared/feature-source';
+import { isTestScopePath, roleCanWriteFeatureSource } from '../../shared/feature-source';
 import { matchesScope } from '../../shared/scope';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
 import {
@@ -27,8 +27,10 @@ import {
 
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
+const CANONICAL_TAILWIND_GLOBALS_PATH = 'packages/tailwind-config/src/globals.css';
 
 export interface RunTeamArgs {
+  host?: string;
   projectRoot: string;
   filePath: string;          // project-relative target path
   state: Rec;
@@ -38,6 +40,9 @@ export interface RunTeamArgs {
   featureTargetPaths: string[];
   writingFeatureSource: boolean;
   writingFeatureSourceViaCommand: boolean;
+  writingBuildArtifact?: boolean;
+  writingBuildArtifactViaCommand?: boolean;
+  recordFallbackClaims?: boolean;
   block: Block;
 }
 
@@ -60,8 +65,20 @@ function isArchitectScaffoldBarrelWrite(role: string | null, targets: string[], 
     && isEmptyBarrelContent(content || '');
 }
 
+function isArchitectTailwindGlobalsTarget(filePath: string): boolean {
+  return filePath === CANONICAL_TAILWIND_GLOBALS_PATH || filePath === 'packages/tailwind-config/globals.css';
+}
+
+function isArchitectScaffoldBaselineWrite(role: string | null, targets: string[], content: string | undefined): boolean {
+  if (isArchitectScaffoldBarrelWrite(role, targets, content)) return true;
+  return role === 'senior-architect'
+    && targets.length > 0
+    && targets.every(isArchitectTailwindGlobalsTarget);
+}
+
 function isArchitectScaffoldReservation(role: string | null | undefined, target: string): boolean {
-  return role === 'senior-architect' && isArchitectEmptyPackageBarrelTarget(target);
+  return role === 'senior-architect'
+    && (isArchitectEmptyPackageBarrelTarget(target) || isArchitectTailwindGlobalsTarget(target));
 }
 
 // Cursor scope-attribution fallback. A spawned worker's write can carry NO role/parent/
@@ -104,7 +121,19 @@ function attributeForeignWriteBySpawnScope(
 
 // Returns the run-team deny reason, or null when the write is allowed.
 export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
-  const { projectRoot, filePath, state, rawData, content, featureTargetPaths, writingFeatureSource, writingFeatureSourceViaCommand, block } = args;
+  const {
+    projectRoot,
+    filePath,
+    state,
+    rawData,
+    content,
+    featureTargetPaths,
+    writingFeatureSource,
+    writingFeatureSourceViaCommand,
+    writingBuildArtifact,
+    writingBuildArtifactViaCommand,
+    block,
+  } = args;
   const team = obj(state.team);
   if (!team || team.mode !== 'subagents') return null;
 
@@ -116,20 +145,30 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const assignedTargets = preManifest
     ? writeTargetPaths.filter((target) => preManifest.assignments.some((assignment) => matchesScope(target, assignment.scope)))
     : [];
-  const writingRunTeamTarget = writingFeatureSource || assignedTargets.length > 0;
+  const writingRunTeamTarget = writingFeatureSource || Boolean(writingBuildArtifact) || assignedTargets.length > 0;
   if (!writingRunTeamTarget) return null;
 
   const suffix = block('run-team-suffix',
     'If subagents are genuinely unavailable or the user changes their mind, ask the user to explicitly say they no longer want subagents and want Low/main-agent mode before rewriting local Traffic One preferences; `team.source="unavailable"` does not bypass `team.mode="subagents"`.');
   const deny = (reason: string): string => `${reason} ${suffix}`;
+  const recordFallbackClaims = args.recordFallbackClaims !== false;
+  const fallbackClaim = (ctx: RunAgentContext, target: string): { blocked: boolean; holder?: string } => (
+    recordFallbackClaims ? tryFallbackClaim(projectRoot, ctx, target) : { blocked: false }
+  );
 
   // Shell writes can't be ownership-verified from a command line.
-  if (writingFeatureSourceViaCommand) {
+  if (writingFeatureSourceViaCommand || writingBuildArtifactViaCommand) {
     return deny(block('run-team-shell',
-      'Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.'));
+      'Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.'));
   }
 
-  const agentContext = resolveRunAgentContext(projectRoot, state, rawData, { claimPending: true })
+  const nativeAnonymousDevinWrite = args.host === 'windsurf'
+    && obj(rawData)?.hook_event_name === 'PreToolUse'
+    && !obj(rawData)?.agent_action_name;
+  const agentContext = resolveRunAgentContext(projectRoot, state, rawData, {
+    claimPending: true,
+    allowSoleAnonymousPending: nativeAnonymousDevinWrite,
+  })
     || (!hasRunAgentState(projectRoot, state) ? legacyRunAgentContext(state) : null)
     // Last resort for a Cursor worker whose write carries no role/parent/transcript linkage:
     // attribute by assigned scope (see attributeForeignWriteBySpawnScope). Uses the same
@@ -139,6 +178,12 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const acRole = agentContext && typeof agentContext.role === 'string' ? agentContext.role : null;
   const inSubagent = Boolean(agentContext) || (!hasRunAgentState(projectRoot, state) && isSubagentSession(state));
   const role = acRole || activeAgentRole(state) || 'main agent';
+  const unresolvedIdentity = hookSessionIdentity(rawData);
+  const unresolvedChild = unresolvedIdentity.isSubagent || Boolean(
+    unresolvedIdentity.threadId
+    && unresolvedIdentity.sessionId
+    && unresolvedIdentity.threadId !== unresolvedIdentity.sessionId,
+  );
 
   // DIAGNOSTIC (best-effort): record the raw payload of every feature-source write
   // attempt in subagents mode so we can see how Claude agent-teams role agents
@@ -162,13 +207,16 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     // directive, not this build-time gate. (When a claim DOES resolve, the scope
     // checks below still run, so a real feature run stays coordinated.)
     if (isMaintenancePhase(state, (state as Record<string, unknown>).mode)) return null;
+    const recovery = unresolvedChild
+      ? 'This appears to be a spawned child, but its per-run role claim did not resolve. No write was made. Do not retry the edit and do not self-assert a role in assistant prose. The PARENT/orchestrator must stop or replace this child and retry the same role. On Codex, use the exact `task_name` contract: `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`. Current Codex encrypts the child spawn message, so prompt prose cannot repair identity; task name and line-zero `session_meta` must carry it. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.'
+      : 'You are the PARENT/orchestrator: do not edit owned implementation artifacts yourself. Spawn the owning role, or message its already-live agent. On Codex, use the exact `task_name` contract: `senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`; task name and line-zero `session_meta`, not encrypted prompt prose, carry the child identity. On other hosts use the canonical `senior-<role>` agent/type and substitute the actual role for `[t1-role: senior-<role>]` anywhere in a recognized task message.';
     return deny(block('run-team-not-subagent',
-      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
-      { ROLE: role }));
+      `Run-team enforcement gate: this project was onboarded with \`team.mode="subagents"\`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not ${role}. ${recovery} Do NOT fall back to delegating from inside a worker or rewriting team preferences.`,
+      { ROLE: role, RECOVERY: recovery }));
   }
 
   const scaffoldTargets = featureTargetPaths.length > 0 ? featureTargetPaths : writeTargetPaths;
-  if (isArchitectScaffoldBarrelWrite(acRole, scaffoldTargets, content)) return null;
+  if (isArchitectScaffoldBaselineWrite(acRole, scaffoldTargets, content)) return null;
 
   // Preferred path: explicit per-run assignment manifest authored by the architect.
   // Ownership is by assigned SCOPE, not by guessed path-kind — stack-agnostic.
@@ -180,6 +228,15 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
   const ownershipTargets = featureTargetPaths.length > 0
     ? featureTargetPaths
     : (assignedTargets.length > 0 ? assignedTargets : writeTargetPaths);
+
+  // Tester test-path overlay: tests are interleaved inside implementer scopes
+  // (the assignments manifest only carries frontend/backend), so a tester write
+  // whose EVERY target is a test-scope path is owned by the tester regardless
+  // of which assignment covers the surrounding directory. Deliberately
+  // all-or-nothing: a patch mixing a test file with real feature source falls
+  // through and still denies on the source target.
+  if (acRole === 'senior-tester' && ownershipTargets.length > 0
+    && ownershipTargets.every(isTestScopePath)) return null;
 
   if (manifest && agentContext) {
     const mine = assignmentForContext(manifest, agentContext);
@@ -195,7 +252,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
           { TARGET: target, OWNER: String(conflict.agentKey || conflict.role), ROLE: String(myKey) }));
       }
       // Outside every assignment -> dynamic first-write claim (no hard deadlock).
-      const decision = tryFallbackClaim(projectRoot, agentContext, target);
+      const decision = fallbackClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every role's assigned scope and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path, or add it to an assignment in \`.traffic-one/runs/<runId>/assignments.json\`.`,
@@ -224,7 +281,7 @@ export function runTeamEnforcementViolation(args: RunTeamArgs): string | null {
     }
     // Owned by no role -> dynamic first-write claim (was the run-team-not-owned deadlock).
     if (agentContext) {
-      const decision = tryFallbackClaim(projectRoot, agentContext, target);
+      const decision = fallbackClaim(agentContext, target);
       if (decision.blocked) {
         return deny(block('run-team-fallback-taken',
           `Run-team enforcement gate: \`${target}\` is outside every Traffic One role's owned paths and is already being written by \`${decision.holder}\` in this run. Coordinate so a single role owns this path.`,

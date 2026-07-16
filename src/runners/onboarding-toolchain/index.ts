@@ -28,6 +28,7 @@ import { ensureOpenCodeTool } from '../toolchain/onboarding';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { resolvePython, resolveNode } from '../../shared/runtime-resolve';
 import { managedRuntimeAvailable } from '../../shared/managed-runtime';
+import { detectHost } from '../../shared/host';
 
 type GraphProvider = 'graphify' | 'gitnexus';
 
@@ -118,7 +119,8 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
   // the first scan is REQUIRED before "Setup complete"; new/empty projects defer.
   const requireScan = mode === 'existing-codebase' || mode === 'existing-with-supabase';
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
-  const openCodeEnabled = openCode?.enabled === true;
+  const host = detectHost();
+  const openCodeEnabled = host !== 'opencode' && host !== 'kilo' && openCode?.enabled === true;
 
   const results: ToolOutcome[] = [];
 
@@ -226,7 +228,8 @@ export function ensureOnboardingToolchain(cwd: string = process.cwd()): Onboardi
 export function ensureOpenCodeOnly(cwd: string = process.cwd()): OnboardingToolchainResult {
   const state = readEffectiveState(cwd);
   const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
-  const openCodeEnabled = openCode?.enabled === true;
+  const host = detectHost();
+  const openCodeEnabled = host !== 'opencode' && host !== 'kilo' && openCode?.enabled === true;
   const results: ToolOutcome[] = [];
   if (openCodeEnabled) {
     reconcileManagedToolStamp(cwd, 'opencode');

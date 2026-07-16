@@ -25,10 +25,11 @@ import { isInsidePluginAuthoringRoot, isPluginAuthoringRoot } from '../../shared
 import { pluginRoot } from '../../shared/paths';
 import { logToolUse } from '../../shared/token-logger';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isOnboardingWaitCommand, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isMaintenancePhase, readEffectiveState } from '../../shared/state';
 import { resolveProjectRoot } from '../../shared/hook-paths';
-import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { ensureOpenCodeDelegationReady } from '../session/session-start-lib';
 import { maybeFlipToMaintenance } from './build-complete';
 import { buildPostPlanReadyOpenCodeDirective } from '../../shared/opencode-plan-directive';
@@ -42,7 +43,7 @@ import { materializeFromProjectMemoryWrite, materializeFromToolInputHints, type 
 import { DIGEST_HARD_BYTES, DIGEST_PATH_RE, FUNCTION_PATH_RE, projectRootFromStateFilePath } from './post-helpers';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|send_input|wait_agent)$/i;
+const SPAWN_TOOL_RE = /^(Task|Agent|spawn_agent|followup_task|send_message|send_input|wait_agent)$/i;
 
 export interface PostStackSetupDeps {
   logTokenUse?: (cwd: string, payload: unknown) => void;
@@ -78,6 +79,13 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // parsedToolInput lifts ctx.input.tool.command on Cursor (no raw.tool_input) so the
   // shell command-hint convergence (materializeFromToolInputHints) sees the command.
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
+  const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
+  // Devin Local backgrounds long exec calls after ~5 seconds and emits
+  // PostToolUse while onboarding-wait is still running. Converging at that
+  // moment reads the intentionally incomplete state and injects a stale
+  // "rewrite .one.json" directive, causing the model to overwrite wizard
+  // answers. The wait runner owns setup completion + materialization.
+  if (isOnboardingWaitCommand(toolName, toolInput)) return noop();
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path);
   const workdir = ctx.input.tool?.workdir || asString(toolInput.workdir ?? toolInput.cwd);
   const pathBase = workdir
@@ -100,14 +108,27 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   const reportRoot = digestRoot || resolveProjectRoot(cwd, targetPath || filePath, { ceiling: ctx.input.workspaceRoot });
   // digestRoot bypasses resolveProjectRoot's authoring filter — re-check the result.
   if (isPluginAuthoringRoot(reportRoot)) return noop();
+  // The user declined Traffic One for this project — every hook stands down.
+  // Critically, computeOnboarding reports done:true for a declined project (so
+  // waiters unblock), which would otherwise satisfy the one-mcp report gate
+  // below and mint a one-uid .one.json into a repo the user said no to.
+  if (pluginUseDeclined(reportRoot)) return noop();
   const state = readEffectiveState(reportRoot);
+  // Ask-first pending on a never-onboarded project: nothing may be written
+  // before the user's answer. A pristine EXISTING codebase also computes
+  // done:true (no stack → no required local prefs), so without this the report
+  // gate would mint a one-uid pre-decision. A mode-bearing state means the
+  // project was genuinely onboarded (possibly before ask-first existed) — those
+  // keep reporting/flipping/converging normally.
+  const onboardedState = typeof state.mode === 'string' && state.mode.trim() !== '';
+  if (!onboardedState && usePluginQuestionPending(reportRoot)) return noop();
   const isSpawnAgentLifecycleTool = ctx.input.tool?.class === 'spawn-agent' || SPAWN_TOOL_RE.test(asString(raw.tool_name ?? raw.toolName));
 
   // Single one-mcp report gate: fire ONLY once onboarding is finalized — new-project
   // (canonical state committed) or existing-project (local prefs resolved), via
-  // computeOnboarding(...).done. Runs BEFORE the auth gate below so an
-  // AUTH_ENABLED=false dev/test run still reports. prepareReport then enforces
-  // real-codebase + auth (bypassed when auth isn't enforced) + once-per-project.
+  // computeOnboarding(...).done. Runs before the auth gate below so an explicit
+  // TRAFFIC_ONE_AUTH=off dev/test run still reports; prepareReport owns the
+  // real-codebase, canonical-auth, and once-per-project checks.
   const oneUidMissing = !(typeof state[ONE_UID_FIELD] === 'string' && state[ONE_UID_FIELD]);
   if (reportOneMcp && oneUidMissing && computeOnboarding(reportRoot).done) {
     reportOneMcp(reportRoot, state, 'onboarding-complete');
@@ -118,7 +139,7 @@ export function runPostStackSetup(ctx: Ctx, deps: PostStackSetupDeps = {}): Hook
   // guards first so computeOnboarding + the disk scans inside maybeFlipToMaintenance
   // only run for a new-project still in the building window — once flipped,
   // isMaintenancePhase short-circuits. Independent of one-mcp; runs before the auth
-  // gate so it also works in AUTH_ENABLED=false dev/test.
+  // gate so it also works in explicit auth-bypass dev/test runs.
   if (!isSpawnAgentLifecycleTool
     && state.mode === 'new-project'
     && !isMaintenancePhase(state, 'new-project')

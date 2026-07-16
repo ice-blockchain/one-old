@@ -13,7 +13,9 @@ import * as path from 'path';
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
+import { stampEmitMarker } from '../../shared/once';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { isKnownStack } from '../../shared/config';
 import { detectMode, detectStackFromCodebase, reconcileStackFromArtifacts } from '../../shared/detection';
 import { hasMaterializedProjectAssets, materializeProjectAssets } from '../../shared/materialize';
@@ -25,13 +27,17 @@ import { nextLocalPreferenceStep } from '../../shared/onboarding/local-prefs';
 import { packBundle, packFixCycleHeader, packRuleIndex } from '../../shared/packing';
 import { pluginRoot } from '../../shared/paths';
 import { cleanActiveSkills, copyActiveSkills, listAllSkills, pruneSkillsDirective, roleSkillsDirective } from '../../shared/skill-filters';
-import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
-import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
+import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
+import { windsurfSetupReason } from '../../shared/onboarding-server/windsurf-setup';
+import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { roleScopedRules, STACKS, stackSpecForState } from '../../shared/stacks';
 import {
   hasRunAgentState,
-  hookSessionIdentity,
+  isSubagentThread,
   legacyRunAgentContext,
   legacyStatePath,
   maintenanceLifecycle,
@@ -52,51 +58,69 @@ import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { ensureAgentTeamsEnv, ensureCodeGraphForExistingProject, ensureOpenCodeDelegationReady, ensureSessionMaterialization, readGraphPreview, sweepOldDigests, tokenEconomyBanner } from './session-start-lib';
 import { ensureRunnerShims } from '../../shared/runner-shims';
 import { sweepTrafficOneRetention } from '../../shared/retention';
+import { refreshModelStatusForSession } from './model-status-refresh';
+import { cleanupLegacyCursorModels } from '../../shared/materialize/cursor-models';
+import { sessionPerformanceContext } from '../../shared/session-performance-context';
+import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+import { removeStrayProjectArtifactsFromGlobalDir } from '../../shared/state/traffic-one-paths';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
-  skillBlock('onboarding-gate', name, vars);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
+  skillBlock('onboarding-gate', name, vars, fallback);
 
-// Surface the dashboard setup link in the setup banner. The onboarding UI now lives
-// on traffic.io and opens in an external browser on every host, so all hosts surface
-// the link (formatWizardBanner appends it when non-empty). Spawning up front is
-// idempotent (the PreToolUse gate reuses it). Best-effort: a spawn failure falls back
-// to the plain banner (the PreToolUse deny still carries the URL).
+// Surface the dashboard setup link without bypassing ask-first or the approved
+// bootstrap path when a host sandbox cannot write canonical user-local state.
 function setupPendingBanner(ctx: Ctx, cwd: string, banner: string): string {
-  try {
-    return formatWizardBanner(ctx.host, ensureOnboardingServer(cwd, { host: ctx.host }).dashboardUrl, banner);
-  } catch {
-    return banner;
-  }
+  // Ask-first: the user has not said yes — never launch the wizard server (or
+  // leak its URL) just to decorate the banner. The plain banner is enough.
+  if (usePluginQuestionPending(cwd)) return banner;
+  const prepared = prepareOnboardingServer(cwd, ctx.host);
+  return prepared.kind === 'ready'
+    ? formatWizardBanner(ctx.host, prepared.server.dashboardUrl, banner)
+    : banner;
 }
 
-// The AGENT-FACING setup directive (additional_context). On Cursor/Windsurf the user-facing
-// channel (systemMessage→user_message) is NOT rendered on user-prompt-submit, so the
-// URL-less `setup-pending` prose leaves the agent with no link and no instruction to
-// post one — the user gets stuck (the 5b first-prompt failure). For those hosts, emit the
-// full `server-deny-reason` recipe instead: it carries the live URL AND the explicit
-// "post the wizard URL FIRST, before the wait command" instruction. Other hosts keep
-// the plain `setup-pending` note (Claude opens via its preview pane, Codex via node_repl
-// — both driven by the PreToolUse deny recipe, neither needs the link surfaced in chat).
-// Best-effort: a server-spawn failure falls back to the plain note (the PreToolUse deny
-// still carries the URL). Single source for every SessionStart/Flow-3 setup-pending path.
+// The prompt that triggered this hook run, when the event carries one (the
+// UserPromptSubmit path re-runs the authed SessionStart body with its Ctx).
+// SessionStart events have no prompt — the ask-first question is then emitted
+// without a seed and the wizard's no-signal floor covers stack derivation.
+function ctxPromptText(ctx: Ctx): string {
+  return ctx.input.prompt || promptTextFromSubmit(ctx.input.raw) || '';
+}
+
+// The agent-facing setup directive. Every host receives either a live wizard URL
+// plus waiter, or an exact approved bootstrap command when its hook sandbox cannot
+// write the canonical user-local runtime. OpenCode/Kilo/Windsurf keep compact,
+// host-safe prose; Claude/Codex/Cursor/Copilot receive the full walkthrough.
 function setupPendingDirective(ctx: Ctx, cwd: string): string {
-  let dashboardUrl = '';
-  try {
-    dashboardUrl = ensureOnboardingServer(cwd, { host: ctx.host }).dashboardUrl;
-  } catch {
-    // best-effort — the PreToolUse deny still carries the URL
-  }
-  // OpenCode/Kilo: the full setup-pending block (with "do NOT…" behavioral
-  // overrides) can trigger prompt-injection safety training when injected via
-  // system prompt. Use a minimal, factual message instead.
+  // Ask-first: relay the host-chat question — no wizard server, no URL, and no
+  // state writes anywhere until the user says whether this project uses Traffic
+  // One at all. The triggering prompt rides the yes command as the seed.
+  if (usePluginQuestionPending(cwd)) return usePluginQuestion(cwd, ctx.host, ctxPromptText(ctx));
+  const prepared = prepareOnboardingServer(cwd, ctx.host);
+  if (prepared.kind !== 'ready') return prepared.reason;
+  const { server, waitCommand } = prepared;
+  if (!server.dashboardUrl) return block('setup-pending');
+  // Stamp the shared URL marker so the wait runner's terminal banner doesn't
+  // print the same link a second time in the same turn (observed on Cursor).
+  stampEmitMarker(cwd, 'wizard-url-shown');
+  // OpenCode/Kilo: keep this factual and compact so their prompt-injection
+  // filters do not reject a multi-host walkthrough. The live URL and executable
+  // waiter are still present on the first prompt.
   if (ctx.host === 'opencode' || ctx.host === 'kilo') {
-    return dashboardUrl
-      ? `Traffic One project setup is required. Share this setup link with the user: ${dashboardUrl} — building is blocked until setup completes.`
-      : 'Traffic One project setup is required. A setup page will open — share the link with the user when available. Building is blocked until setup completes.';
+    return [
+      'Traffic One project setup is required before building.',
+      `Setup link: ${server.dashboardUrl}`,
+      `Wait command: ${waitCommand}`,
+      'Show the setup link, then immediately run the wait command and keep this turn active until setup completes.',
+      `If the user does not want Traffic One for this project, run instead: ${onboardingDeclineCommand(cwd, ctx.host)}`,
+    ].join('\n\n');
   }
-  if (!dashboardUrl) return block('setup-pending');
-  return block('server-deny-reason', { URL: dashboardUrl, WAIT_CMD: onboardingWaitCommand(cwd, ctx.host) });
+  if (ctx.host === 'windsurf') {
+    const vars = { URL: server.dashboardUrl, WAIT_CMD: waitCommand };
+    return block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, waitCommand));
+  }
+  return block('server-deny-reason', { URL: server.dashboardUrl, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) });
 }
 const STACK_IDS = new Set(Object.keys(STACKS));
 
@@ -129,7 +153,7 @@ function subagentRoleContext(ctx: Ctx, state: Rec, agentContext: RunAgentContext
     ? roleSkillsDirective(state, role, listAllSkills())
     : pruneSkillsDirective(state, listAllSkills());
   const { body } = packRuleIndex(root, rules);
-  const graphPreview = readGraphPreview(cwd);
+  const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
   const roleLabel = role || 'subagent';
   const header = `═══ traffic-one — ${roleLabel} (run ${runId}) ═══\n`
     + '[subagent] Full rules already loaded by parent session and materialized to '
@@ -145,7 +169,7 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
   const cwd = sessionProjectRoot(ctx);
   const root = pluginRoot();
   const raw = ctx.input.raw;
-  const state = readEffectiveState(cwd);
+  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
 
   cleanActiveSkills();
   try {
@@ -173,19 +197,34 @@ export function runSubagentSessionStart(ctx: Ctx): HookResult {
 }
 
 function runSessionStartInner(ctx: Ctx): HookResult {
-  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
+  // Self-heal machines the pre-guard bug touched: project artifacts materialized
+  // into the machine dir (session cwd = $HOME) are never legitimate there.
+  // Deletes only never-legitimate names; runs before the stand-down guard so a
+  // $HOME session still heals itself.
+  removeStrayProjectArtifactsFromGlobalDir();
+  if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = sessionProjectRoot(ctx);
+  initializeTrafficOneEnv(cwd, ctx.host);
+  // The user chose not to use Traffic One for this project — stay silent.
+  // (UserPromptSubmit offers re-enabling when the user explicitly names it.)
+  if (pluginUseDeclined(cwd)) return noop();
 
   // A subagent must never run the full session-start hook (auth gate + onboarding +
   // mode routing). Onboarding belongs to the parent/main agent; the subagent only
   // needs its role-scoped rules. Intercept BEFORE auth + onboarding so a subagent
   // can never re-trigger onboarding while the team is building.
-  if (hookSessionIdentity(ctx.input.raw).isSubagent) {
+  if (isSubagentThread(ctx.input.raw)) {
     return runSubagentSessionStart(ctx);
   }
 
+  cleanupLegacyCursorModels(cwd);
+
+  // Public, auth-independent catalog reconciliation. The child runner is
+  // bounded to 2s and fail-open; only the active host snapshot can change.
+  refreshModelStatusForSession(cwd, ctx.host);
+
   // Auth gate: a pure local boolean read — no per-session remote check. When auth
-  // is enforced but the web API key isn't entered yet, point at the wizard (the
+  // is enforced but the API key isn't entered yet, point at the wizard (the
   // same setup-pending surface onboarding uses). The wizard shows the api-key page
   // because computeOnboarding returns the 'api-key' step while unauthenticated —
   // covering both a fresh project and an already-onboarded one a 401 invalidated.
@@ -212,13 +251,14 @@ function runSessionStartInner(ctx: Ctx): HookResult {
 
 // The post-auth SessionStart body: skill sweep + digest retention + session
 // materialization → subagent fast path → mode-routed rule bundle / directive.
-// Exported so it can be tested without the forced remote auth probe.
+// Exported so its post-gate behavior can be tested directly.
 export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const cwd = sessionProjectRoot(ctx);
+  initializeTrafficOneEnv(cwd, ctx.host);
   const root = pluginRoot();
   const raw = ctx.input.raw;
 
-  const state = readEffectiveState(cwd);
+  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
 
   // Multi-project safety: reset to the 3-skill baseline before copying THIS
   // project's set. Digest retention sweep. Best-effort session materialization.
@@ -293,13 +333,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
     ensureCodeGraphForExistingProject(cwd, state); // self-heal: build the code graph if an existing project is missing it
 
     let header = `═══ traffic-one — stack: ${stackId} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
+    header += sessionPerformanceContext(state, ctx.host);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     header += ensureAgentTeamsEnv(cwd, ctx.host); // zero-touch: enable senior-team continuation (one agent per role)
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
-    const graphPreview = readGraphPreview(cwd);
+    const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
     const orchestration = buildOrchestrationDirective(cwd, ctx.host, state);
     if (orchestration) header += `${orchestration}\n`;
     writeState(cwd, state);
@@ -308,6 +349,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
   // ── Flow 2 — existing project with detectable stack → auto-write + prune ──
   if (mode === 'existing-codebase' || mode === 'existing-with-supabase') {
+    // Ask-first: the user has not said whether this project uses Traffic One.
+    // Emit ONLY the question — no auto-detected state write, no materialization,
+    // no code graph — so a "no" leaves the repo byte-identical.
+    if (usePluginQuestionPending(cwd)) {
+      return context(setupPendingDirective(ctx, cwd), {
+        systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
+      });
+    }
     const detected = detectStackFromCodebase(cwd);
     if (!detected.stack) {
       detected.stack = 'minimal';
@@ -347,13 +396,14 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
 
     const banner = autoDetectedAnnouncement(detected as never);
     let header = `═══ traffic-one — stack: ${state.stack} · mode: ${mode} · frontend: ${state.frontend || 'none'} · backend: ${state.backend || 'none'} ═══\n`;
+    header += sessionPerformanceContext(state, ctx.host);
     if (copied > 0) header += `[skills] ${copied} stack-specific skills activated. Fully visible in next session; available now via the active-skills directive above.\n`;
     header += tokenEconomyBanner(cwd);
     header += ensureOpenCodeDelegationReady(cwd, state); // zero-touch: Codex MCP registration + missing-CLI self-heal
     header += ensureAgentTeamsEnv(cwd, ctx.host); // zero-touch: enable senior-team continuation (one agent per role)
     ensureRunnerShims(); // version-stable runner paths under ~/.traffic-one/bin (host approvals survive plugin bumps)
     if (skillDirective) header += skillDirective;
-    const graphPreview = readGraphPreview(cwd);
+    const graphPreview = readGraphPreview(cwd, state.codeGraphProvider);
     if (nextLocalPreferenceStep(state, ctx.host)) {
       return context(`${banner}\n\n${setupPendingDirective(ctx, cwd)}`, {
         systemMessage: setupPendingBanner(ctx, cwd, `traffic-one [${state.stack || mode}] setup required`),
@@ -374,8 +424,13 @@ export function runSessionStartAuthed(ctx: Ctx): HookResult {
   const directive = setupPendingDirective(ctx, cwd);
   const spec = STACKS.minimal;
   const { body } = packBundle(root, spec.mandatory, spec.optional);
-  if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();
-  writeState(cwd, state);
+  // Ask-first: no writes until the user answers — the yes command (`--use`)
+  // creates the project state; a no leaves the project untouched. Otherwise
+  // stamp the stub state (mode + toolchain skeleton) exactly as before.
+  if (!usePluginQuestionPending(cwd)) {
+    if (!obj(state.toolchain)) state.toolchain = initializeToolchainState();
+    writeState(cwd, state);
+  }
   return context(`${directive}\n\n═══ Baseline rules (in effect until onboarding completes) ═══\n${body}`, {
     systemMessage: setupPendingBanner(ctx, cwd, 'traffic-one [setup required]'),
   });

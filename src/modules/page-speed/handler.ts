@@ -9,6 +9,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { authSatisfied } from '../../shared/auth';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, isWebState, readEffectiveState } from '../../shared/state';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { logToolUse } from '../../shared/token-logger';
 
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
@@ -68,15 +69,15 @@ function jsonObjectCandidates(text: string): string[] {
   return out;
 }
 
-function lighthouseBlockedStatus(raw: unknown): { status: 'blocked:sandbox' | 'blocked:usage-limit'; error: string | null } | null {
+function lighthouseBlockedStatus(raw: unknown): { status: 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout'; error: string | null } | null {
   const text = collectText(responsePayload(raw)).join('\n');
   if (!text) return null;
-  const parseCandidate = (candidate: string): { status: 'blocked:sandbox' | 'blocked:usage-limit'; error: string | null } | null => {
+  const parseCandidate = (candidate: string): { status: 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout'; error: string | null } | null => {
     try {
       const parsed = JSON.parse(candidate) as unknown;
       const obj = parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Rec : null;
       const status = obj && typeof obj.status === 'string' ? obj.status : '';
-      if (status !== 'blocked:sandbox' && status !== 'blocked:usage-limit') return null;
+      if (status !== 'blocked:sandbox' && status !== 'blocked:usage-limit' && status !== 'blocked:timeout') return null;
       return { status, error: obj && typeof obj.error === 'string' ? obj.error : null };
     } catch {
       return null;
@@ -94,20 +95,25 @@ function lighthouseBlockedStatus(raw: unknown): { status: 'blocked:sandbox' | 'b
     const parsed = parseCandidate(lines[i] as string);
     if (parsed) return parsed;
   }
-  const match = text.match(/"status"\s*:\s*"(blocked:sandbox|blocked:usage-limit)"/);
+  const match = text.match(/"status"\s*:\s*"(blocked:sandbox|blocked:usage-limit|blocked:timeout)"/);
   if (!match) return null;
   const error = text.match(/"error"\s*:\s*"([^"]{1,500})"/);
-  return { status: match[1] as 'blocked:sandbox' | 'blocked:usage-limit', error: error ? error[1] as string : null };
+  return { status: match[1] as 'blocked:sandbox' | 'blocked:usage-limit' | 'blocked:timeout', error: error ? error[1] as string : null };
 }
 
 export function postBuildPageSpeed(ctx: Ctx): HookResult {
+  if (pluginUseDeclined(ctx.cwd)) return noop();
   if (!authSatisfied()) return noop();
   logToolUse(ctx.cwd, ctx.input.raw && typeof ctx.input.raw === 'object' ? (ctx.input.raw as Record<string, unknown>) : null);
   const command = ctx.input.tool?.command ?? '';
   if (LIGHTHOUSE_COMMAND_RE.test(command)) {
     const blocked = lighthouseBlockedStatus(ctx.input.raw);
     if (blocked) {
-      const label = blocked.status === 'blocked:sandbox' ? 'sandbox blocked Lighthouse' : 'usage limit blocked Lighthouse';
+      const label = blocked.status === 'blocked:sandbox'
+        ? 'sandbox blocked Lighthouse'
+        : blocked.status === 'blocked:timeout'
+          ? 'the Lighthouse runner timed out'
+          : 'usage limit blocked Lighthouse';
       return context(
         `[traffic-one] Lighthouse mobile gate reported ${blocked.status}: ${blocked.error || label}. Treat page speed as unverified, list concrete page-speed risks, and use a staging/already-running URL if available.`,
         { systemMessage: `traffic-one page-speed ${blocked.status}` },
@@ -134,7 +140,7 @@ export function postBuildPageSpeed(ctx: Ctx): HookResult {
       '',
       'Audit `/` plus the 1-2 heaviest public routes (catalog/listing pages — rerun with `--route <path>`); the home route alone hides heavy-route regressions. A metric flagged `withinTolerance` passed the gate — do NOT iterate on it. A confirmation re-run with no code changes in between may add `--skip-build`. If the local sandbox blocks preview binding, use an already-running or staging URL with `--url ... --skip-preview`. The summary also carries Accessibility/Best-Practices/SEO scores from the same audit — surface a11y warnings to the team.',
       '',
-      'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. If the environment blocks Lighthouse, report the structured status (`blocked:sandbox` or `blocked:usage-limit`) with concrete risks; never imply page speed was verified.',
+      'If the runner fails, use the reported Lighthouse opportunities to make targeted fixes, then rerun once or twice before reporting the result. If the environment blocks Lighthouse, report the structured status (`blocked:sandbox`, `blocked:usage-limit`, or `blocked:timeout`) with concrete risks; never imply page speed was verified.',
     ].join('\n'),
     { systemMessage: 'traffic-one page-speed gate pending after build' },
   );

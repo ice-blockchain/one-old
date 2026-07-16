@@ -26,6 +26,8 @@ function completeState(extra: Record<string, unknown> = {}): Record<string, unkn
 
 test('isNewProjectOnboardingIncomplete: a fully-resolved new project is complete (false)', () => {
   assert.equal(isNewProjectOnboardingIncomplete(completeState()), false);
+  assert.equal(isNewProjectOnboardingIncomplete(completeState({ openCode: undefined }), 'opencode'), false);
+  assert.equal(isNewProjectOnboardingIncomplete(completeState({ openCode: undefined }), 'kilo'), false);
 });
 
 test('isNewProjectOnboardingIncomplete: only applies to new-project mode', () => {

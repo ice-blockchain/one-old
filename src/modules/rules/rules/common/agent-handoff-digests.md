@@ -176,5 +176,8 @@ as the audit needs.
   digest entirely.
 - Never put credentials, env values, or full file contents in a digest.
 - The digest path is exempt from the plan-gate hook (it's under
-  `.traffic-one/`); architect can write `digests/<run-id>/architect.md`
-  before `plan.md` exists if needed, but normal order is plan first.
+  `.traffic-one/`) — for the Write/Edit tools AND for Bash heredocs/redirects
+  whose only write targets are `.traffic-one/digests/`, `fix-cycles/`, or
+  `runs/` paths (read-only roles persist digests this way); architect can
+  write `digests/<run-id>/architect.md` before `plan.md` exists if needed,
+  but normal order is plan first.

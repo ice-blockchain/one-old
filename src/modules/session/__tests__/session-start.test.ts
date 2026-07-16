@@ -9,6 +9,14 @@ import type { Ctx, HookInput } from '../../../core/types';
 import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
+import { writeSimpleAuth } from '../../../shared/auth';
+
+// These tests exercise the setup-wizard flow itself, which under the shipped
+// ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
+// recorded yes. Pin the runtime override off so the wizard paths stay directly
+// testable; the ask-first question has dedicated tests that set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 
 function ctx(cwd: string): Ctx {
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: {} };
@@ -20,16 +28,19 @@ function ctxHost(cwd: string, host: HookInput['host']): Ctx {
   return { input, host, cwd, now: () => 'x' } as unknown as Ctx;
 }
 
-// A temp project with isolated prefs. The post-auth body (runSessionStartAuthed)
-// needs no auth — SessionStart's forced remote probe is tested separately.
+// A temp project with isolated prefs. Tests that exercise the full SessionStart
+// entry write canonical auth explicitly; runSessionStartAuthed tests only the
+// post-gate body.
 function withProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-sstart-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  // codeGraphProvider + auth-choice are machine-wide (one.json) — isolate it.
+  // Canonical auth and codeGraphProvider are machine-wide (one.json) — isolate it.
   env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
@@ -37,17 +48,26 @@ function withProject(state: Record<string, unknown> | null, fn: (cwd: string) =>
   try { fn(dir); } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 function localPrefs(extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const {
+    performance = { level: 'low', source: 'prompted' },
+    team = { mode: 'main-agent', source: 'prompted' },
+    ...rest
+  } = extra;
   return {
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    performance: { level: 'low', source: 'prompted' },
-    team: { mode: 'main-agent', source: 'prompted' },
+    ...hostScopedPerformancePrefs(
+      performance as Record<string, unknown>,
+      team as Record<string, unknown>,
+      'pro',
+    ),
     toolchain: initializeToolchainState({}),
-    ...extra,
+    ...rest,
   };
 }
 
@@ -125,12 +145,11 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
     onboardingComplete: true,
     confirmed: true,
     materializedStack: 'default|react-vite|supabase|none',
-    openCode: { enabled: false },
-    performance: { level: 'high' },
-    team: { mode: 'subagents', approved: true },
-    codeGraphProvider: 'gitnexus',
-    toolchain: initializeToolchainState(),
   }, (cwd) => {
+    writeLocalPrefs({
+      performance: { level: 'high', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+    });
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ private: true, packageManager: 'pnpm@9.0.0', workspaces: ['apps/*'] }), 'utf8');
     const app = path.join(cwd, 'apps', 'web');
     fs.mkdirSync(app, { recursive: true });
@@ -144,6 +163,7 @@ test('runSessionStartAuthed from a workspace package resolves to the ancestor pr
 
 test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-coding prompt stays dormant', () => {
   withProject(null, (cwd) => {
+    writeSimpleAuth('sk-session-start');
     // SessionStart fires before any prompt; on a fresh dir it must NOT activate
     // Traffic One. Codex opens a scratch dir per task, so every session would
     // otherwise look like a new project and trip the onboarding gate even for a
@@ -158,6 +178,21 @@ test('runSessionStart DEFERS a pristine new-project (writes no state) so a non-c
     // global disable.
     assert.equal(runSessionStartAuthed(ctx(cwd)).kind, 'context');
     assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', '.one.json')), true, 'authed body activates + writes state');
+  });
+});
+
+test('main SessionStart removes only a recognized legacy Cursor capture before deferring', () => {
+  withProject(null, (cwd) => {
+    writeSimpleAuth('sk-session-start');
+    const legacy = path.join(cwd, '.traffic-one', 'cursor-models.json');
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, JSON.stringify({ models: ['composer-2.5-fast'] }), 'utf8');
+    assert.equal(runSessionStart(ctxHost(cwd, 'cursor')).kind, 'noop');
+    assert.equal(fs.existsSync(legacy), false);
+
+    fs.writeFileSync(legacy, JSON.stringify({ models: ['custom'], owner: 'user' }), 'utf8');
+    runSessionStart(ctxHost(cwd, 'cursor'));
+    assert.equal(fs.existsSync(legacy), true, 'unknown/user-authored shape is preserved');
   });
 });
 
@@ -295,12 +330,35 @@ test('cursor: a pending new project surfaces the dashboard setup URL in the user
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // never spawn a real detached server in tests
   try {
     withProject({ mode: 'new-project' }, (cwd) => {
-      // A live server record → ensureOnboardingServer reuses it (no spawn) + builds the deep link.
-      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' });
+      // A live server record → ensureOnboardingServer reuses its URL (no spawn).
+      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' }, process.env, 'cursor');
       const r = runSessionStartAuthed(ctxHost(cwd, 'cursor'));
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') {
         assert.ok(r.systemMessage?.includes(DASH_URL_51999), 'cursor user_message carries the dashboard setup URL');
+      }
+    });
+  } finally {
+    if (prev === undefined) delete process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prev;
+  }
+});
+
+test('windsurf: a pending new project surfaces a compact host-only wizard directive', () => {
+  const prev = process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
+  process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
+  try {
+    withProject({ mode: 'new-project' }, (cwd) => {
+      const url = 'http://127.0.0.1:51998/?t=windsurf';
+      const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51998&t=windsurf';
+      writeServerRecord(cwd, { pid: process.pid, port: 51998, token: 'windsurf', url, startedAt: 'x' }, process.env, 'windsurf');
+      const r = runSessionStartAuthed(ctxHost(cwd, 'windsurf'));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.ok(r.systemMessage?.includes(dashboardUrl), 'Windsurf user_message carries the dashboard setup URL');
+        assert.ok(r.context.includes('standalone clickable setup link'));
+        for (const foreign of ['Claude Code', 'Cursor:', 'Codex Desktop', '.claude/launch.json', 'preview_start', 'node_repl']) {
+          assert.ok(!r.context.includes(foreign), `Windsurf setup must not include ${foreign}`);
+        }
       }
     });
   } finally {
@@ -313,7 +371,7 @@ test('all hosts now surface the dashboard setup URL in the banner (onboarding UI
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
     withProject({ mode: 'new-project' }, (cwd) => {
-      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' });
+      writeServerRecord(cwd, { pid: process.pid, port: 51999, token: 't', url: 'http://127.0.0.1:51999/?t=t', startedAt: 'x' }, process.env, 'claude');
       const r = runSessionStartAuthed(ctx(cwd)); // host=claude
       assert.equal(r.kind, 'context');
       if (r.kind === 'context') {
@@ -345,10 +403,69 @@ test('Flow 2: an existing codebase with no state auto-detects, writes state, the
   });
 });
 
+test('ask-first: a pristine new project gets ONLY the question — no state, no prefs, no wizard', () => {
+  withProject(null, (cwd) => {
+    const prevAsk = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+    try {
+      const r = runSessionStartAuthed(ctx(cwd));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.match(r.context, /Do you want to use the Traffic One plugin/);
+        assert.ok(!r.context.includes('http://127.0.0.1'), 'NO wizard URL before the user says yes');
+      }
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'no project .traffic-one before the answer');
+      assert.equal(fs.existsSync(path.join(cwd, 'prefs.json')), false, 'no per-user prefs before the answer');
+    } finally {
+      if (prevAsk === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+      else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
+    }
+  });
+});
+
+test('ask-first Flow 2: an existing codebase is NOT auto-detected or materialized before the yes', () => {
+  withProject(null, (cwd) => {
+    const prevAsk = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+    try {
+      writeExistingNextCodebase(cwd);
+      const r = runSessionStartAuthed(ctx(cwd));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.match(r.context, /Do you want to use the Traffic One plugin/);
+        assert.ok(!r.context.includes('auto-detected'), 'no auto-detect announcement pre-decision');
+        assert.ok(!r.context.includes('http://127.0.0.1'), 'NO wizard URL before the user says yes');
+      }
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'a "no" must leave the repo byte-identical');
+      assert.equal(fs.existsSync(path.join(cwd, 'prefs.json')), false, 'no per-user prefs before the answer');
+    } finally {
+      if (prevAsk === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+      else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
+    }
+  });
+});
+
 function subagentCtx(cwd: string): Ctx {
   // parent_session_id ⇒ hookSessionIdentity().isSubagent === true
   const input: HookInput = { event: 'SessionStart', host: 'claude', cwd, raw: { parent_session_id: 'parent-abc', session_id: 'child-xyz' } };
   return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function codexTranscriptSubagentCtx(cwd: string): Ctx {
+  const parentThread = '11111111-1111-4111-8111-111111111111';
+  const childThread = '22222222-2222-4222-8222-222222222222';
+  const input: HookInput = {
+    event: 'SessionStart',
+    host: 'codex',
+    cwd,
+    raw: {
+      // Codex reports the parent session id in child hooks. The rollout filename
+      // is the only reliable child-thread discriminator in this payload shape.
+      session_id: parentThread,
+      transcript_path: path.join(cwd, 'sessions', `${childThread}.jsonl`),
+    },
+  };
+  return { input, host: 'codex', cwd, now: () => 'x' } as unknown as Ctx;
 }
 
 function materializeFixture(cwd: string, stack = 'minimal'): void {
@@ -362,7 +479,7 @@ function materializeFixture(cwd: string, stack = 'minimal'): void {
   fs.writeFileSync(path.join(cwd, 'CLAUDE.md'), 'see agents', 'utf8');
 }
 
-test('subagent: never runs onboarding/auth on an un-onboarded project (no setup-required, no auth prompt)', () => {
+test('subagent: never opens setup or the API-key wizard for an un-onboarded project', () => {
   withProject({ mode: 'new-project' }, (cwd) => {
     // A MAIN agent here would hit the auth gate / setup directive; the subagent must not.
     const r = runSessionStart(subagentCtx(cwd));
@@ -372,6 +489,22 @@ test('subagent: never runs onboarding/auth on an un-onboarded project (no setup-
       assert.equal(r.kind, 'noop');
     }
     assert.ok(!/authenticat/i.test(String((r as { systemMessage?: string }).systemMessage || '')), 'subagent must not be asked to authenticate');
+  });
+});
+
+test('Codex transcript-thread mismatch takes the child fast path before model refresh, auth, or onboarding', () => {
+  withProject({ mode: 'new-project' }, (cwd) => {
+    const globalSettings = process.env.TRAFFIC_ONE_STATE_PATH;
+    assert.ok(globalSettings);
+
+    const r = runSessionStart(codexTranscriptSubagentCtx(cwd));
+
+    assert.equal(r.kind, 'noop');
+    assert.equal(
+      fs.existsSync(globalSettings),
+      false,
+      'a child SessionStart must not write machine settings',
+    );
   });
 });
 

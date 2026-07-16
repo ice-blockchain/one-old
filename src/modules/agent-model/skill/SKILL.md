@@ -22,57 +22,111 @@ Run `node "${TRAFFIC_ONE_PLUGIN_ROOT:-${CURSOR_PLUGIN_ROOT:-${CODEX_PLUGIN_ROOT:
 <!-- T1BLOCK:END agent-materialization-missing -->
 
 <!-- T1BLOCK:BEGIN performance-main-agent -->
-Performance gate: local Traffic One preferences record performance.level="{{LEVEL}}" (main-agent only), but you are spawning the `{{ROLE}}` subagent. If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn passing the `model` parameter. If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.
+Performance gate: local Traffic One preferences record performance.level="{{LEVEL}}" (main-agent only), but you are spawning the `{{ROLE}}` subagent. If the user chose Balanced or High, first correct local preferences (`performance.level` plus matching `team.mode="subagents"`) so the right model tier applies, then re-spawn (pass `model` only when this host's spawn schema exposes it; current Codex `spawn_agent` does not). If the user really chose Low, do NOT spawn subagents — run the roles in this thread as the role roadmap checklist.
 <!-- T1BLOCK:END performance-main-agent -->
 
 <!-- T1BLOCK:BEGIN team-confirmation -->
-Team gate: spawning subagents needs `team.approved: true`, which the Traffic One setup wizard sets AUTOMATICALLY from the performance choice (performance.level="{{LEVEL}}" ⇒ subagents). Local preferences currently have `team.approved !== true`, which means the wizard's performance/team step was not completed for this project — not that the user must approve a line-up in chat. Do NOT pop a chat "approve the team?" prompt and do NOT hand-edit preferences to set the flag. Re-open the Traffic One setup wizard and finish the performance/team step (it writes `team.approved: true` and shows the role→model line-up), then re-spawn passing the per-role `model` parameter. If the user wants Low/main-agent mode instead, they re-pick performance in the wizard; never bypass this gate for `team.mode="subagents"`.
+Team gate: spawning subagents needs `team.approved: true`, which the Traffic One setup wizard sets AUTOMATICALLY from the performance choice (performance.level="{{LEVEL}}" ⇒ subagents). Local preferences currently have `team.approved !== true`, which means the wizard's performance/team step was not completed for this project — not that the user must approve a line-up in chat. Do NOT pop a chat "approve the team?" prompt and do NOT hand-edit preferences to set the flag. Re-open the Traffic One setup wizard and finish the performance/team step (it writes `team.approved: true` and shows the role→model line-up), then re-spawn; pass the per-role `model` only on hosts whose spawn schema supports it (Claude/Cursor, not current Codex). If the user wants Low/main-agent mode instead, they re-pick performance in the wizard; never bypass this gate for `team.mode="subagents"`.
 <!-- T1BLOCK:END team-confirmation -->
 
+<!-- T1BLOCK:BEGIN spawn-role-conflict -->
+Traffic One spawn identity gate: this spawn carries conflicting valid Traffic One role evidence in the same highest-priority tier: {{CANDIDATES}}. The spawn was blocked before a child started. Do not retry it unchanged and do not guess which role won. Correct or remove the stale identity field or marker so every valid item in that tier agrees on exactly one canonical role, then retry the same task. On Codex, keep one exact canonical task_name and ensure higher-tier agent_path/agent_type metadata, when present, names the same role.
+<!-- T1BLOCK:END spawn-role-conflict -->
+
 <!-- T1BLOCK:BEGIN performance-model-param -->
-Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in the prompt text has no effect, and on Cursor the `.cursor/agents/{{ROLE}}.md` frontmatter is NOT auto-applied: without this `model` parameter the subagent INHERITS the parent (orchestrator) model, so you MUST pass `model` per role (the correct value is also pinned in `.cursor/agents/{{ROLE}}.md`).{{ALTERNATES}} Per-role model tiers are defined by the plugin's model-tiers config (`scripts/config/model-tiers.js` in the installed plugin).
+Performance gate (level={{LEVEL}}, host={{HOST}}): spawning `{{ROLE}}` requires the `model` tool parameter set to "{{EXPECTED}}". {{PASSED_NOTE}}Re-issue the spawn with `model: "{{EXPECTED}}"`. The model is set ONLY by this parameter — a model name in prompt text or a model-agnostic project agent contract has no effect. On Cursor, use the exact role→model value printed by model-gate; without the parameter the subagent inherits the parent model.{{ALTERNATES}} The runtime lineup comes from the active host snapshot in local Traffic One settings.
 <!-- T1BLOCK:END performance-model-param -->
 
 <!-- T1BLOCK:BEGIN cursor-exact-model-required -->
 Cursor model gate (level={{LEVEL}}): spawning `{{ROLE}}` passed `model: "{{PASSED}}"`, which matches the right Traffic One tier family but is not an exact Cursor Task model id from the fresh captured list. Cursor can create a visible "New subagent / Couldn't start" card when Task receives a family alias, so do NOT attempt the spawn with this value. Re-issue the same Task spawn with `model: "{{EXPECTED}}"` (or another exact captured id from the same tier). Captured ids for this build: {{CAPTURED}}.
 <!-- T1BLOCK:END cursor-exact-model-required -->
 
+<!-- T1BLOCK:BEGIN opencode-named-agent-required -->
+{{HOST}} agent gate: `{{ROLE}}` must be spawned with the project-scoped global {{HOST}} subagent `{{EXPECTED_AGENT}}`, not `{{AGENT_TYPE}}`.
+
+Traffic One materialized `{{AGENT_PATH}}`. {{MODEL_NOTE}}
+
+Re-issue the same `task` spawn with the project-scoped global subagent name `{{EXPECTED_AGENT}}` and keep `[t1-role: {{ROLE}}]` as the FIRST line of the prompt. Do NOT pass `model` unless this exact host build documents a Task `model` field. If `{{EXPECTED_AGENT}}` is not offered after materialization, stop and tell the user to restart {{HOST}} so the global agent at `{{AGENT_PATH}}` is loaded; do not fall back to `general` and do not build the role inline.
+<!-- T1BLOCK:END opencode-named-agent-required -->
+
+<!-- T1BLOCK:BEGIN kilo-general-agent-required -->
+Kilo agent gate: `{{ROLE}}` must use Kilo's built-in writable Task subagent type `general`, not `{{AGENT_TYPE}}`.
+
+Traffic One materialized `{{AGENT_PATH}}` as the full role contract. This Kilo Task API exposes the built-in `general`/`explore` types, while `.kilo/agents/*.md` files are role-contract files rather than registered Task type names.
+
+Re-issue the same `task` spawn with `subagent_type: "general"`. Keep `[t1-role: {{ROLE}}]` as the FIRST line, immediately tell the child to read `{{AGENT_PATH}}` before acting, and omit `model` so it inherits the user's active Kilo model. Do NOT use `explore`, and do NOT fall back to main-agent mode: `general` is the supported Kilo subagent path for this role.
+<!-- T1BLOCK:END kilo-general-agent-required -->
+
+<!-- T1BLOCK:BEGIN absolute-traffic-one-path -->
+Spawn prompt path gate: the prompt references `.traffic-one` run/digest/fix-cycle paths outside this project root (`{{PROJECT_ROOT}}`): {{BAD_PATHS}}. Re-issue the same spawn using project-relative paths such as `.traffic-one/digests/<runId>/frontend.md` and `.traffic-one/fix-cycles/<runId>/<role>-fix-1.md`; do not paste absolute paths from another folder or a corrupted root.
+<!-- T1BLOCK:END absolute-traffic-one-path -->
+
 <!-- T1BLOCK:BEGIN cursor-models-capture -->
 Cursor model-capture gate (asked once per run, run {{RUN_ID}}). Capture is OPTIONAL and you are NOT blocked.
 **To proceed RIGHT NOW: RE-ISSUE THE SAME `Task` spawn, unchanged.** Traffic One then falls back to family-aware matching and the spawn goes through — pass any model whose family fits the tier (an `claude-opus-4-8…` slug for highest, a `claude-4.6-sonnet…`/`gpt-5.5…` slug for balanced, a `composer-2.5…` slug for cheapest).
 To pin the EXACT slugs your build offers FIRST (recommended — it avoids a silent downgrade where a balanced/highest role drops to the Composer floor), do this once before re-issuing:
 1. List the model ids your `Task` tool offers for spawning subagents (the same list Cursor shows when you pick a subagent model).
-2. Write them to `.traffic-one/cursor-models.json` (in {{PROJECT_ROOT}}) as exactly `{ "models": ["<id-1>", "<id-2>", "..."] }`, using the EXACT ids with their reasoning suffixes (e.g. `claude-opus-4-8-thinking-max-fast`, `gpt-5.5-extra-high`, `composer-2.5-fast`). Include at least one id per tier the team needs — highest + balanced + cheapest — so no tier silently degrades; do not invent ids, list only what your Task tool actually offers.
-3. Re-issue the spawn. Traffic One re-materializes `.cursor/agents/<role>.md` with the real slug for each role's tier.
+2. Run `{{CAPTURE_CMD}}`, replacing the placeholders with those EXACT ids and their reasoning suffixes (e.g. `claude-opus-4-8-thinking-max-fast`, `gpt-5.5-extra-high`, `composer-2.5-fast`). Include at least one id per tier the team needs — highest + balanced + cheapest. This internal command writes only your local per-user/project Cursor preferences; do not create `.traffic-one/cursor-models.json`.
+3. Re-issue the spawn and pass the exact role→model values printed by model-gate. Project `.cursor/agents` contracts remain model-agnostic.
 Either way the very next spawn proceeds — NEVER build the project inline because of this gate.
 <!-- T1BLOCK:END cursor-models-capture -->
 
 <!-- T1BLOCK:BEGIN model-unavailable-choice -->
-Model tier gate (level={{LEVEL}}, host={{HOST}}): `{{ROLE}}` should run on the recommended model "{{EXPECTED}}", but this Cursor build is about to use "{{FALLBACK}}" instead. Cursor does not report WHY to a plugin, so it is one of the two cases below. Reply with the number or the word:
-1. **enable** — fix the cause, then re-run and I will use "{{EXPECTED}}":
-   • **API budget exhausted** (most common): your premium/API usage is spent, so Cursor marks "{{EXPECTED}}" unavailable and drops to Composer. Turn on usage-based / on-demand spend, or upgrade your plan, in Cursor → Settings (Billing) — or wait for the budget to reset. Then reply `enable`.
-   • **Model disabled**: "{{EXPECTED}}" is toggled off in your model list. Open Cursor Settings (Cmd/Ctrl+Shift+J) → Models and enable it (or click "Add Model" if it isn't listed). Then reply `enable`.
-2. **fallback** — proceed now on "{{FALLBACK}}" (available immediately; it may be a same-tier alternate or the Composer floor depending on what Cursor offers).
-Do not proceed until the user replies `fallback` or `enable` in chat. End your turn after showing this choice.
+Model availability gate (level={{LEVEL}}, host={{HOST}}): Cursor's fresh captured model list does not offer the recommended model **{{EXPECTED}}** for `{{ROLE}}`. Do not silently switch models.
+
+**enable** — Open Cursor Settings → Models, enable **{{EXPECTED}}**, then reply **enable**; I’ll retry on the recommended model.
+
+**fallback** — Proceed now on **{{FALLBACK}}**.
+
+Do not proceed until the user replies **enable** or **fallback**. The fallback is the next exact captured slug in this role's original tier; reaching the Composer floor for a highest/balanced role still requires this explicit choice.
 <!-- T1BLOCK:END model-unavailable-choice -->
 
+<!-- T1BLOCK:BEGIN cursor-api-limit-auto-retry -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to an API/usage-limit failure on **{{FAILED}}**. The failed agent is retired. Retry the same role now, without asking the user, on `model: "{{NEXT}}"` — the next exact captured slug from this role's original tier. Never announce or attempt a fallback named only by Cursor error prose. The next model is authoritative only when Traffic One supplies its exact slug. Issue the prescribed Task without a pre-tool model announcement, and do not say the replacement is running until a real `subagentStart` proves it.
+<!-- T1BLOCK:END cursor-api-limit-auto-retry -->
+
+<!-- T1BLOCK:BEGIN cursor-api-limit-composer-choice -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to an API/usage-limit failure. The next eligible model in this highest/balanced role's original tier is the Composer floor, so pause once for the user's choice:
+
+**enable** — Restore API budget for **{{RECOMMENDED}}**, then reply **enable**; I’ll retry on the recommended model.
+
+**fallback** — Proceed now on **{{FALLBACK}}**.
+
+Do not start Composer until the user replies **fallback**. A cheapest-tier role treats Composer as its normal tier model and rotates automatically to its next candidate instead of showing this downgrade choice.
+<!-- T1BLOCK:END cursor-api-limit-composer-choice -->
+
+<!-- T1BLOCK:BEGIN cursor-model-unavailable-runtime-choice -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to an explicit model-unavailable failure for **{{FAILED}}**. This Settings prompt is valid only when the error text explicitly ties a model to “not enabled”, “disabled”, “unavailable”, “invalid”, “unsupported”, “unknown”, or “not found”.
+
+**enable** — Open Cursor Settings → Models, enable **{{FAILED}}**, then reply **enable**; I’ll retry on the recommended model.
+
+**fallback** — Proceed now on **{{FALLBACK}}**.
+
+Do not proceed until the user replies **enable** or **fallback**. The fallback is the next exact captured slug from this role's original tier.
+<!-- T1BLOCK:END cursor-model-unavailable-runtime-choice -->
+
+<!-- T1BLOCK:BEGIN cursor-model-failure-generic -->
+Traffic One correlated `{{ROLE}}`'s Cursor child transcript to a non-API failure on **{{FAILED}}**. Use generic recovery and preserve the actual error; do not tell the user to enable a model. Authentication, network, user abort/cancel, context exhaustion, and generic API errors are not evidence that a model is disabled.
+<!-- T1BLOCK:END cursor-model-failure-generic -->
+
+<!-- T1BLOCK:BEGIN cursor-api-limit-terminal -->
+Traffic One model rotation is terminal for `{{ROLE}}` in this run: every eligible model that was actually started from the role's original tier reached an API/usage limit ({{TRIED}}). Stop retrying this role. The terminal marker remains after individual limit entries expire and clears only when the user replies **enable** or a new run starts; a model absent from Cursor's captured list never counts as API-limited.
+<!-- T1BLOCK:END cursor-api-limit-terminal -->
+
 <!-- T1BLOCK:BEGIN model-choice-enable-required -->
-Model tier gate (level={{LEVEL}}, host={{HOST}}): the user chose **enable/retry**, so do NOT proceed on a fallback for `{{ROLE}}`. {{PASSED_NOTE}} Stop the fallback spawn, enable or re-capture "{{EXPECTED}}" in Cursor Settings → Models, then re-run the model capture/model-gate step and spawn with the recommended model. Do not advertise fallback alternates again for this build unless the user explicitly replies `fallback`.
+Model tier gate (level={{LEVEL}}, host={{HOST}}): the user chose **enable/retry**, so do NOT proceed on a fallback for `{{ROLE}}`. {{PASSED_NOTE}} Finish the selected remedy — restore API budget after an API-limit result, or enable/re-capture "{{EXPECTED}}" in Cursor Settings → Models after an availability result — then re-run the model-gate step and spawn with the recommended model. Do not advertise fallback alternates again for this build unless the user explicitly replies `fallback`.
 <!-- T1BLOCK:END model-choice-enable-required -->
 
 <!-- T1BLOCK:BEGIN model-availability-advisory -->
-Traffic One — heads up before the team spawns: this build will pass these Cursor models to its subagents: {{MODELS}}. Cursor may SILENTLY fall back from a passed model (usually to Composer) with NO error and NO signal a plugin can read when one of these applies:
-  • **API budget exhausted** (most common): once your premium/API usage is spent, Cursor makes the premium models unavailable and runs subagents on Composer instead. Restore it via Cursor → Settings (Billing) — enable usage-based / on-demand spend, or upgrade, or wait for the reset.
-  • **Model disabled / not on plan**: enable it in Cursor Settings (Cmd/Ctrl+Shift+J) → Models (or "Add Model" if it isn't listed).
-If a role ends up running on Composer despite the pin above, it is almost always the budget case — top it up to run the team on the intended models.
+Traffic One — this build will pass these exact Cursor models to its subagents: {{MODELS}}. A correlated API/usage-limit failure rotates automatically through the role's original tier; restore API budget to retry the recommended model, and a highest/balanced drop to the Composer floor requires an explicit **enable**/**fallback** choice. An explicit model-not-enabled/unavailable error offers Cursor Settings → Models or the next tier candidate. Authentication, network, abort/cancel, context exhaustion, and other generic failures use generic recovery and are never presented as a disabled model.
 <!-- T1BLOCK:END model-availability-advisory -->
 
 <!-- T1BLOCK:BEGIN model-availability-banner -->
-traffic-one — team models: {{MODELS}}. If a role runs on Composer instead, your Cursor premium/API budget is likely exhausted → enable usage-based spend / upgrade / wait for reset (Cursor → Settings → Billing) to run on the pinned models.
+traffic-one — team models: {{MODELS}}. Correlated API limits rotate within each role's original tier; restore API budget for the recommended model, and Composer-floor downgrades require your explicit choice.
 <!-- T1BLOCK:END model-availability-banner -->
 
 <!-- T1BLOCK:BEGIN model-choice-recorded-enable -->
-Recorded: you'll use the recommended model. Enable it now in Cursor Settings → Models (Cmd/Ctrl+Shift+J → Models; click "Add Model" if it isn't listed), then re-run your request — the team will spawn on the recommended model and I won't ask again this build.
+Recorded: you'll retry on the recommended model. Traffic One cleared this run's API-limit ledger and pending model decisions. Re-run your request after completing the remedy you selected — restored API budget or Cursor Settings → Models — and the team will use the recommended model.
 <!-- T1BLOCK:END model-choice-recorded-enable -->
 
 <!-- T1BLOCK:BEGIN model-choice-recorded-fallback -->
@@ -133,3 +187,7 @@ Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` agent — id `{{A
 <!-- T1BLOCK:BEGIN agent-reuse-await-cursor-id -->
 Agent-reuse gate: run {{RUN_ID}} already has a LIVE `{{ROLE}}` Cursor subagent, but Cursor has not exposed a valid Task `resume` UUID for it yet. The recorded `tool_*` id is only the subagentStart tool-call id and cannot resume the agent. Do NOT spawn a replacement and do NOT use `[t1-replace-agent]` unless the existing agent has actually failed or exhausted context. Wait for the current `{{ROLE}}` subagent to finish or produce a child transcript, then retry the same continuation; Traffic One will upgrade the registry to the real Cursor conversation id automatically.
 <!-- T1BLOCK:END agent-reuse-await-cursor-id -->
+
+<!-- T1BLOCK:BEGIN agent-reuse-await-codex-meta -->
+Agent-reuse gate: run {{RUN_ID}} has a fresh Codex `{{ROLE}}` registry row for child `{{AGENT_ID}}`, but Traffic One cannot verify that child's role from line-zero `session_meta` ({{REASON}}). Do not route `followup_task`/`send_message` to this unverified id and do not start a duplicate. Retry after the child rollout is flushed. If the child is genuinely unusable, use `{{MARKER}}` with the concrete failure reason to retire it and spawn a replacement using the exact task-name contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or `senior_shipper`). Current Codex child rollouts encrypt spawn-message content, so prompt prose cannot substitute for `task_name` plus line-zero `session_meta` identity.
+<!-- T1BLOCK:END agent-reuse-await-codex-meta -->

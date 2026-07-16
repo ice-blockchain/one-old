@@ -10,7 +10,8 @@ import { HOST_COMMANDS } from './hosts';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 
-export const ALL_HOSTS: HostId[] = ['claude', 'codex', 'cursor'];
+export const ALL_HOSTS: HostId[] = ['claude', 'codex', 'cursor', 'opencode', 'copilot', 'windsurf', 'kilo'];
+const DEFAULT_E2E_HOSTS: HostId[] = ['claude', 'codex', 'cursor'];
 
 export const ALL_CATEGORIES: Category[] = [
   'new-project',
@@ -22,13 +23,13 @@ export const ALL_CATEGORIES: Category[] = [
 
 export function defaultConfig(): RootTestConfig {
   return {
-    enabledHosts: [...ALL_HOSTS],
+    enabledHosts: [...DEFAULT_E2E_HOSTS],
     enabledCategories: [...ALL_CATEGORIES],
     // Fast deterministic default: only the free, fully-deterministic pure-node
     // layer runs. Host-CLI E2E (real LLM spend) is opt-in via --e2e.
     includeHostE2E: false,
     build: { refreshDist: true, updateHosts: true },
-    auth: 'off', // shipped default AUTH_ENABLED=false; tests run with auth off
+    auth: 'off', // explicit harness opt-out; production AUTH_ENABLED defaults to true
     verdictHost: 'none',
     concurrency: 1, // in-process state isolation (withCaseEnv) assumes serial; see README
     // A full senior-team orchestrated build (scaffold + install + build + review)

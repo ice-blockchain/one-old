@@ -12,11 +12,8 @@ if (process.env.TRAFFIC_ONE_MANAGED_RUNTIME_OFF === undefined) {
   process.env.TRAFFIC_ONE_MANAGED_RUNTIME_OFF = '1';
 }
 
-// Default auth ENFORCEMENT off for the suite (config/auth.ts AUTH_ENABLED is now
-// the committed `true`). The existing tests were written against the old
-// bypassed baseline; keeping the suite default at `off` preserves that baseline,
-// and the auth-flow tests opt IN explicitly with TRAFFIC_ONE_AUTH='1'. Same
-// `??=`-style guard so a test that sets it beforehand is not clobbered.
-if (process.env.TRAFFIC_ONE_AUTH === undefined) {
-  process.env.TRAFFIC_ONE_AUTH = '0';
+// SessionStart's public model catalog refresh is intentionally live in a real
+// install. Keep the test suite hermetic; focused client tests inject a transport.
+if (process.env.TRAFFIC_ONE_MODEL_STATUS_OFF === undefined) {
+  process.env.TRAFFIC_ONE_MODEL_STATUS_OFF = '1';
 }

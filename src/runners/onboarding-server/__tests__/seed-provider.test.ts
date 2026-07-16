@@ -56,7 +56,11 @@ test('seed: nothing installed → returns null and leaves the global unset', () 
 
 test('seed: an installed graphify binary is detected + seeded (no gitnexus on PATH)', () => {
   const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-seedbin-'));
-  fs.writeFileSync(path.join(binDir, 'graphify'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  fs.writeFileSync(
+    path.join(binDir, 'graphify'),
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "graphify 0.9.13"; fi\nexit 0\n',
+    { mode: 0o755 },
+  );
   try {
     withSeedEnv(binDir, (cwd) => {
       assert.equal(seedGlobalCodeGraphProviderIfInstalled(cwd), 'graphify');

@@ -5,7 +5,9 @@ import {
   applyPatchTargetPaths,
   commandAppearsToWriteFeatureSource,
   FEATURE_SOURCE_RE,
+  isTestScopePath,
   roleCanWriteFeatureSource,
+  shellWriteTargetsStateDir,
   subagentMayWriteFeatureSource,
 } from '../feature-source';
 
@@ -81,6 +83,7 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource('sed -i s/a/b/ packages/ui/src/x.ts'), true);
   assert.equal(commandAppearsToWriteFeatureSource("find /tmp/project/apps/web/src -name '*.js' -delete"), true);
   assert.equal(commandAppearsToWriteFeatureSource('rm -f apps/web/src/stale.js'), true);
+  assert.equal(commandAppearsToWriteFeatureSource('mkdir -p packages/ui/src'), false);
   assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts 2>&1'), false);
   // write primitive but no feature path
   assert.equal(commandAppearsToWriteFeatureSource('echo hi > README.md'), false);
@@ -88,6 +91,66 @@ test('commandAppearsToWriteFeatureSource needs both a write primitive and a feat
   assert.equal(commandAppearsToWriteFeatureSource('cat apps/web/src/x.ts'), false);
   assert.equal(commandAppearsToWriteFeatureSource(''), false);
   assert.equal(commandAppearsToWriteFeatureSource(undefined), false);
+});
+
+test('bare interpreter reads are not writes; eval writes still are (B5)', () => {
+  // read-only inspection commands that previously false-positived
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'python3 -c "import json;print(sorted(json.load(open(\'apps/web/src/locales/en.json\'))))"'), false);
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'echo "=== en/common.json ===" && cat packages/i18n/src/locales/en/common.json'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('node --version && ls src/'), false);
+  assert.equal(commandAppearsToWriteFeatureSource('node -e "console.log(require(\'./src/config.ts\'))"'), false);
+  // interpreter eval writes remain gated
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'python3 -c "open(\'src/x.ts\',\'w\').write(\'x\')"'), true);
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'node -e "require(\'fs\').writeFileSync(\'src/x.ts\',\'x\')"'), true);
+  assert.equal(commandAppearsToWriteFeatureSource(
+    'perl -e "open(FH,\'>\',\'src/x.ts\')"'), true);
+  // redirected interpreter output still gated via the redirect primitive
+  assert.equal(commandAppearsToWriteFeatureSource('python3 gen.py > src/out.ts'), true);
+});
+
+test('shellWriteTargetsStateDir carves out run-state heredocs only', () => {
+  // reviewer digest heredoc whose body cites feature paths
+  assert.equal(shellWriteTargetsStateDir(
+    "mkdir -p .traffic-one/digests/123 && cat > .traffic-one/digests/123/reviewer.md <<'EOF'\n## Touched\n- apps/web/src/features/courses/catalog.tsx\nEOF"), true);
+  // orchestrator fix-cycle note
+  assert.equal(shellWriteTargetsStateDir(
+    "cat > .traffic-one/fix-cycles/123/senior-frontend-fix-1.md <<'EOF'\nfix src/app.ts\nEOF"), true);
+  assert.equal(shellWriteTargetsStateDir('echo done >> ./.traffic-one/runs/123/log.txt'), true);
+  // feature-source targets are never carved out
+  assert.equal(shellWriteTargetsStateDir('cat > apps/web/src/x.ts <<EOF\nx\nEOF'), false);
+  // mixed state-dir + feature target -> no carve-out
+  assert.equal(shellWriteTargetsStateDir(
+    'cat > .traffic-one/digests/123/r.md <<EOF\nx\nEOF\ncat > src/x.ts <<EOF\ny\nEOF'), false);
+  // other write primitive classes disable the carve-out entirely
+  assert.equal(shellWriteTargetsStateDir(
+    'rm apps/web/src/x.ts && cat > .traffic-one/digests/123/r.md <<EOF\nx\nEOF'), false);
+  assert.equal(shellWriteTargetsStateDir(
+    'sed -i s/a/b/ src/x.ts > .traffic-one/runs/123/log.txt'), false);
+  // plan.md is intentionally not carved out
+  assert.equal(shellWriteTargetsStateDir('cat > .traffic-one/plan.md <<EOF\nplan\nEOF'), false);
+  // no write target at all
+  assert.equal(shellWriteTargetsStateDir('cat .traffic-one/digests/123/reviewer.md'), false);
+  assert.equal(shellWriteTargetsStateDir(''), false);
+  assert.equal(shellWriteTargetsStateDir(undefined), false);
+});
+
+test('isTestScopePath classifies test files and conventional test dirs', () => {
+  assert.equal(isTestScopePath('apps/web/src/services/courses.test.ts'), true);
+  assert.equal(isTestScopePath('src/components/Button.spec.tsx'), true);
+  assert.equal(isTestScopePath('packages/ui/src/__tests__/btn.ts'), true);
+  assert.equal(isTestScopePath('tests/i18n-integration.test.ts'), true);
+  assert.equal(isTestScopePath('e2e/checkout.ts'), true);
+  assert.equal(isTestScopePath('src/test/java/FooTest.java'), true);
+  assert.equal(isTestScopePath('./tests/setup.ts'), true);
+  assert.equal(isTestScopePath('apps/web/src/services/courses.ts'), false);
+  assert.equal(isTestScopePath('src/latest/x.ts'), false);
+  assert.equal(isTestScopePath('src/test-utils/render.tsx'), false);
+  assert.equal(isTestScopePath(''), false);
+  assert.equal(isTestScopePath(undefined), false);
 });
 
 test('applyPatchTargetPaths extracts Add/Update/Delete/Move targets, normalized', () => {

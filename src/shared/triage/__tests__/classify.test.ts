@@ -49,6 +49,21 @@ test('weak feature/refactor signals → complex/low (escalate, uncertain)', () =
   }
 });
 
+test('a single new page is small unless another signal makes it cross-cutting', () => {
+  const page = classifyPromptComplexity('create a new page named news using the existing data seam');
+  assert.equal(page.tier, 'small');
+  assert.equal(page.confidence, 'high');
+  assert.ok(page.signals.includes('new-page'));
+
+  const schemaPage = classifyPromptComplexity('create a new news page with a new table and migration');
+  assert.equal(schemaPage.tier, 'complex');
+  assert.ok(schemaPage.signals.includes('data-model'));
+
+  const featurePage = classifyPromptComplexity('create a new page as part of a new feature');
+  assert.equal(featurePage.tier, 'complex');
+  assert.ok(featurePage.signals.includes('feature'));
+});
+
 test('escalation bias: a strong signal overrides trivial-looking words', () => {
   // "login" anchors auth even though it mentions color — the hint biases complex;
   // the agent decides authoritatively.

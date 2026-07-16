@@ -20,12 +20,17 @@ import {
   NAME,
 } from '../../config/plugin-identity';
 
-export function claudePluginManifest(version: string): Record<string, unknown> {
+export function claudePluginManifest(version: string, agentPaths: string[]): Record<string, unknown> {
   return {
     name: NAME,
     version,
     description: CLAUDE_PLUGIN_DESCRIPTION,
     author: { ...AUTHOR },
+    // Explicit file list, NOT './agents/': declaring `agents` suppresses Claude's
+    // conventional agents/ directory scan, which would also pick up the Copilot
+    // *.agent.md twins (they end in .md too) and register every role twice with
+    // a load-order-dependent winner.
+    agents: [...agentPaths],
     skills: './skills/',
     mcpServers: './.mcp.json',
   };
@@ -100,7 +105,7 @@ export function agentsMarketplaceManifest(): Record<string, unknown> {
       {
         name: NAME,
         source: { source: 'local', path: './.' },
-        policy: { installation: 'AVAILABLE', authentication: 'ON_INSTALL' },
+        policy: { installation: 'AVAILABLE' },
         category: 'Engineering',
       },
     ],

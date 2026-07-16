@@ -27,11 +27,10 @@ function mockAuthServer(): Promise<{ url: string; close: () => Promise<void> }> 
           res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'report_codebase_metadata' }] } }));
           return;
         }
-        // The retired `authenticate` tool: the real server answers tools/call for
-        // an unknown tool with a 200 "Tool not found" — validation must never
-        // depend on it (the bug: a VALID key read as "endpoint unreachable").
+        // The wizard must use tools/list. Return a harmless MCP error for any
+        // other method so the test catches a validation-method regression.
         res.writeHead(200, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { content: [{ type: 'text', text: 'MCP error -32602: Tool authenticate not found' }], isError: true } }));
+        res.end(JSON.stringify({ jsonrpc: '2.0', id: 1, error: { code: -32601, message: 'Unexpected validation method' } }));
       });
     });
     server.listen(0, '127.0.0.1', () => {

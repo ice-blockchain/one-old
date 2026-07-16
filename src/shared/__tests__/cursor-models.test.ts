@@ -6,6 +6,9 @@ import * as path from 'path';
 
 import {
   CURSOR_MODELS_TTL_MS,
+  LEGACY_CURSOR_MODELS_REL,
+  captureCursorModels,
+  cleanupLegacyCursorModels,
   cursorModelsCapturePrompted,
   cursorModelsFresh,
   freshCursorModels,
@@ -13,99 +16,119 @@ import {
   markCursorModelsCapturePrompted,
   pickCursorSlug,
   readCursorModels,
-  stampCursorModels,
 } from '../materialize/cursor-models';
+import { hostModelSnapshot } from '../model-tiers';
+import { readProjectPrefs } from '../state/local-prefs';
+import { writeOneHostSettings } from '../one-settings';
 
-function tmp(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'cm-'));
+function fixture(): { cwd: string; env: NodeJS.ProcessEnv; cleanup(): void } {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'cm-'));
+  const env = {
+    TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
+    TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'one.json'),
+  } as NodeJS.ProcessEnv;
+  writeOneHostSettings('cursor', hostModelSnapshot('cursor', 'pro'), env);
+  return { cwd, env, cleanup: () => fs.rmSync(cwd, { recursive: true, force: true }) };
 }
-function writeModels(cwd: string, models: unknown, extra: Record<string, unknown> = {}): void {
-  fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-  fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({ models, ...extra }), 'utf8');
-}
 
-test('readCursorModels: missing → []; malformed → []; valid trims + filters', () => {
-  const cwd = tmp();
+test('Cursor capture is stored in local per-project/per-host preferences, never project memory', () => {
+  const f = fixture();
   try {
-    assert.deepEqual(readCursorModels(cwd), []);
-    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), '{ not json', 'utf8');
-    assert.deepEqual(readCursorModels(cwd), []);
-    writeModels(cwd, ['  gpt-5.5-extra-high  ', '', 42, 'composer-2.5-fast']);
-    assert.deepEqual(readCursorModels(cwd), ['gpt-5.5-extra-high', 'composer-2.5-fast']);
+    const catalogUpdatedAt = hostModelSnapshot('cursor', 'pro').updatedAt;
+    assert.deepEqual(readCursorModels(f.cwd, f.env), []);
+    assert.equal(captureCursorModels(
+      f.cwd,
+      ['  gpt-5.5-extra-high  ', '', 'composer-2.5-fast'],
+      'pro',
+      '2026-07-12T12:00:00Z',
+      f.env,
+    ), true);
+    assert.deepEqual(readCursorModels(f.cwd, f.env), ['gpt-5.5-extra-high', 'composer-2.5-fast']);
+    const prefs = readProjectPrefs(f.cwd, f.env) as { hosts?: { cursor?: { availableModels?: Record<string, unknown> } } };
+    assert.deepEqual(prefs.hosts?.cursor?.availableModels, {
+      models: ['gpt-5.5-extra-high', 'composer-2.5-fast'],
+      plan: 'pro',
+      modelsUpdatedAt: catalogUpdatedAt,
+      capturedAt: '2026-07-12T12:00:00Z',
+    });
+    assert.equal(fs.existsSync(path.join(f.cwd, LEGACY_CURSOR_MODELS_REL)), false);
   } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
+    f.cleanup();
   }
 });
 
-test('cursorModelsFresh: self-heals on plan change + TTL; unstamped is fresh (just captured)', () => {
-  const cwd = tmp();
+test('Cursor capture rejects an unedited command template', () => {
+  const f = fixture();
   try {
-    // No file → not fresh.
-    assert.equal(cursorModelsFresh(cwd, 'pro'), false);
-    // Agent wrote raw models, not yet stamped → treated as FRESH (just captured this moment).
-    writeModels(cwd, ['claude-opus-4-8-thinking-high', 'composer-2.5-fast']);
-    assert.equal(cursorModelsFresh(cwd, 'max'), true, 'unstamped capture is fresh');
-    assert.equal(hasFreshCursorModels(cwd, 'max'), true);
-
-    // Stamp it under plan "pro" → fresh for pro, STALE for max/business (plan changed).
-    assert.equal(stampCursorModels(cwd, 'pro', new Date().toISOString()), true);
-    assert.equal(cursorModelsFresh(cwd, 'pro'), true, 'same plan → fresh');
-    assert.equal(cursorModelsFresh(cwd, 'max'), false, 'plan upgraded (pro→max) → stale → re-capture');
-    assert.equal(cursorModelsFresh(cwd, 'business'), false, 'plan changed → stale');
-    assert.deepEqual(freshCursorModels(cwd, 'max'), [], 'stale → consumers get [] (fall back to family)');
-    assert.equal(freshCursorModels(cwd, 'pro').length, 2, 'fresh → models returned');
-
-    // TTL: an old capturedAt (same plan) is stale.
-    const old = new Date(Date.now() - CURSOR_MODELS_TTL_MS - 1000).toISOString();
-    assert.equal(stampCursorModels(cwd, 'pro', old), true);
-    assert.equal(cursorModelsFresh(cwd, 'pro'), false, 'expired TTL → stale even on same plan');
-    // Explicit nowMs/ttlMs args honored.
-    assert.equal(cursorModelsFresh(cwd, 'pro', Date.parse(old) + 1000, CURSOR_MODELS_TTL_MS), true);
+    assert.equal(captureCursorModels(
+      f.cwd,
+      ['EXACT_MODEL_ID_1', 'EXACT_MODEL_ID_2', 'MORE_EXACT_MODEL_IDS'],
+      'pro',
+      '2026-07-12T12:00:00Z',
+      f.env,
+    ), false);
+    assert.deepEqual(readCursorModels(f.cwd, f.env), []);
   } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
+    f.cleanup();
   }
 });
 
-test('stampCursorModels: no-op without models; preserves models + adds plan/capturedAt', () => {
-  const cwd = tmp();
+test('capture freshness invalidates on plan, catalog date, and seven-day TTL', () => {
+  const f = fixture();
   try {
-    assert.equal(stampCursorModels(cwd, 'pro', new Date().toISOString()), false, 'no file → no-op');
-    writeModels(cwd, ['composer-2.5-fast']);
-    assert.equal(stampCursorModels(cwd, 'pro', '2026-06-20T00:00:00Z'), true);
-    const raw = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), 'utf8'));
-    assert.deepEqual(raw.models, ['composer-2.5-fast']);
-    assert.equal(raw.plan, 'pro');
-    assert.equal(raw.capturedAt, '2026-06-20T00:00:00Z');
+    const capturedAt = '2026-07-12T12:00:00Z';
+    captureCursorModels(f.cwd, ['composer-2.5-fast'], 'pro', capturedAt, f.env);
+    const now = Date.parse(capturedAt) + 1_000;
+    assert.equal(cursorModelsFresh(f.cwd, 'pro', now, CURSOR_MODELS_TTL_MS, f.env), true);
+    assert.equal(hasFreshCursorModels(f.cwd, 'pro', now, CURSOR_MODELS_TTL_MS, f.env), true);
+    assert.equal(cursorModelsFresh(f.cwd, 'max', now, CURSOR_MODELS_TTL_MS, f.env), false);
+    assert.deepEqual(freshCursorModels(f.cwd, 'max', now, CURSOR_MODELS_TTL_MS, f.env), []);
+    assert.equal(cursorModelsFresh(f.cwd, 'pro', now + CURSOR_MODELS_TTL_MS + 1, CURSOR_MODELS_TTL_MS, f.env), false);
+
+    const current = hostModelSnapshot('cursor', 'pro');
+    const nextCatalogDate = new Date(Date.parse(`${current.updatedAt}T00:00:00Z`) + 24 * 60 * 60 * 1000)
+      .toISOString().slice(0, 10);
+    writeOneHostSettings('cursor', { ...current, updatedAt: nextCatalogDate }, f.env);
+    assert.equal(cursorModelsFresh(f.cwd, 'pro', now, CURSOR_MODELS_TTL_MS, f.env), false);
   } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
+    f.cleanup();
   }
 });
 
-test('pickCursorSlug: family-aware, preferred-first, composer floor, null when nothing fits', () => {
-  // Screenshot-style higher-plan build: opus-4-8 present with a -thinking-max-fast suffix.
+test('legacy project capture is never imported and cleanup removes only the known Traffic One shape', () => {
+  const f = fixture();
+  try {
+    const legacy = path.join(f.cwd, LEGACY_CURSOR_MODELS_REL);
+    fs.mkdirSync(path.dirname(legacy), { recursive: true });
+    fs.writeFileSync(legacy, JSON.stringify({ models: ['composer-2.5-fast'], plan: 'pro', capturedAt: '2026-07-12T00:00:00Z' }));
+    assert.deepEqual(readCursorModels(f.cwd, f.env), [], 'legacy capture is not imported');
+    assert.equal(cleanupLegacyCursorModels(f.cwd), true);
+    assert.equal(fs.existsSync(legacy), false);
+
+    fs.writeFileSync(legacy, JSON.stringify({ models: ['custom'], owner: 'user' }));
+    assert.equal(cleanupLegacyCursorModels(f.cwd), false);
+    assert.equal(fs.existsSync(legacy), true, 'unknown/user-authored shape is preserved');
+  } finally {
+    f.cleanup();
+  }
+});
+
+test('pickCursorSlug is family-aware and preferred-first', () => {
   const build = ['claude-opus-4-8-thinking-max-fast', 'claude-fable-5-thinking-max', 'gpt-5.5-extra-high', 'composer-2.5-fast'];
-  // highest chain (claude-opus-4-8 → opus-4-7 → fable → composer): picks the opus-4-8 variant.
   assert.equal(pickCursorSlug(['claude-opus-4-8', 'claude-opus-4-7', 'claude-fable-5', 'composer-2.5'], build), 'claude-opus-4-8-thinking-max-fast');
-  // balanced chain (claude-4.6-sonnet → gpt-5.5 → composer): no sonnet → falls to gpt-5.5 variant.
   assert.equal(pickCursorSlug(['claude-4.6-sonnet', 'gpt-5.5', 'composer-2.5'], build), 'gpt-5.5-extra-high');
-  // composer is the universal floor.
   assert.equal(pickCursorSlug(['composer-2.5'], build), 'composer-2.5-fast');
-  // Nothing in the chain offered → null.
   assert.equal(pickCursorSlug(['gemini-3'], build), null);
-  assert.equal(pickCursorSlug([], build), null);
 });
 
-test('cursor-models capture once-marker is run-scoped and no-ops on empty runId', () => {
-  const cwd = tmp();
+test('cursor-models capture once-marker remains run-scoped', () => {
+  const f = fixture();
   try {
-    assert.equal(cursorModelsCapturePrompted(cwd, 'r1'), false);
-    markCursorModelsCapturePrompted(cwd, 'r1');
-    assert.equal(cursorModelsCapturePrompted(cwd, 'r1'), true);
-    assert.equal(cursorModelsCapturePrompted(cwd, 'r2'), false);
-    markCursorModelsCapturePrompted(cwd, '');
-    assert.equal(cursorModelsCapturePrompted(cwd, ''), false);
+    assert.equal(cursorModelsCapturePrompted(f.cwd, 'r1'), false);
+    markCursorModelsCapturePrompted(f.cwd, 'r1');
+    assert.equal(cursorModelsCapturePrompted(f.cwd, 'r1'), true);
+    assert.equal(cursorModelsCapturePrompted(f.cwd, 'r2'), false);
   } finally {
-    fs.rmSync(cwd, { recursive: true, force: true });
+    f.cleanup();
   }
 });

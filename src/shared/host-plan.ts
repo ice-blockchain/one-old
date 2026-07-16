@@ -15,9 +15,11 @@
 //   - copilot: ~/.copilot/settings.json plan-like fields when present; otherwise
 //             ~/.copilot/data.db app_state['copilot-available-models'] as a capability
 //             fallback (enabled medium/powerful models imply at least Pro capability).
-//   - windsurf: no stable documented local plan store; Devin Desktop docs point to
-//             the in-app Plan Info/model selector for truth, so default to Free unless
-//             TRAFFIC_ONE_USER_PLAN explicitly overrides it.
+//   - windsurf: Devin Desktop's VS Code-style global-storage SQLite
+//             (state.vscdb) -> ItemTable['windsurf.reactSettings.cachedPlanInfoData:*']
+//             -> planName (Free / Pro / Max / Team / Enterprise). This is a cached
+//             Plan Info view, so the in-app model selector remains authoritative for
+//             specific paid models.
 //   - kilo: no stable documented local plan store for CLI plugins yet, so v1 defaults
 //           to Free unless TRAFFIC_ONE_USER_PLAN resolves to a Kilo-supported plan.
 // Home/config dirs resolve cross-OS (HOME → USERPROFILE → os.homedir(); APPDATA /
@@ -101,12 +103,79 @@ function detectClaudePlan(env: NodeJS.ProcessEnv): string | null {
   return null;
 }
 
-function detectCodexPlan(env: NodeJS.ProcessEnv): string | null {
+function codexTokenClaims(env: NodeJS.ProcessEnv): Record<string, unknown> | null {
   const home = env.CODEX_HOME || path.join(homeDir(env), '.codex');
   const tokens = obj(obj(readJson<unknown>(path.join(home, 'auth.json'), null))?.tokens);
   if (!tokens) return null;
-  const claims = decodeJwtClaims(tokens.id_token) ?? decodeJwtClaims(tokens.access_token);
-  const auth = obj(claims?.['https://api.openai.com/auth']);
+  return decodeJwtClaims(tokens.id_token) ?? decodeJwtClaims(tokens.access_token);
+}
+
+// Newest-first bounded scan of Codex session rollouts. Every session writes
+// server-reported rate-limit snapshots that carry the account's CURRENT
+// `plan_type` — this tracks a plan change automatically (verified live: the
+// telemetry flipped the same day the user changed plans), whereas the
+// auth.json JWT claim is only re-minted at `codex login` and lags for weeks
+// (the CLI refreshes tokens on a ~28-day window; `login status` does not).
+const CODEX_SESSION_SCAN_FILES = 8;
+const CODEX_SESSION_SCAN_DAYS = 3;
+const CODEX_SESSION_TAIL_BYTES = 128 * 1024;
+const CODEX_PLAN_TYPE_RE = /"plan_type"\s*:\s*"([a-z][a-z0-9_-]{0,31})"/g;
+
+function newestDirEntries(dir: string): string[] {
+  try {
+    return fs.readdirSync(dir).filter((n) => !n.startsWith('.')).sort().reverse();
+  } catch {
+    return [];
+  }
+}
+
+function lastPlanTypeInTail(file: string): string | null {
+  try {
+    const fd = fs.openSync(file, 'r');
+    try {
+      const size = fs.fstatSync(fd).size;
+      const len = Math.min(size, CODEX_SESSION_TAIL_BYTES);
+      const buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      const text = buf.toString('utf8');
+      let last: string | null = null;
+      for (const match of text.matchAll(CODEX_PLAN_TYPE_RE)) last = match[1] ?? last;
+      return last;
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+}
+
+function detectCodexSessionPlan(env: NodeJS.ProcessEnv): string | null {
+  const sessions = path.join(env.CODEX_HOME || path.join(homeDir(env), '.codex'), 'sessions');
+  let scanned = 0;
+  let daysSeen = 0;
+  for (const year of newestDirEntries(sessions)) {
+    for (const month of newestDirEntries(path.join(sessions, year))) {
+      for (const day of newestDirEntries(path.join(sessions, year, month))) {
+        if (daysSeen >= CODEX_SESSION_SCAN_DAYS) return null;
+        daysSeen += 1;
+        const dayDir = path.join(sessions, year, month, day);
+        for (const file of newestDirEntries(dayDir)) {
+          if (!file.endsWith('.jsonl')) continue;
+          if (scanned >= CODEX_SESSION_SCAN_FILES) return null;
+          scanned += 1;
+          const plan = lastPlanTypeInTail(path.join(dayDir, file));
+          if (plan) return plan;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function detectCodexPlan(env: NodeJS.ProcessEnv): string | null {
+  const fromSessions = detectCodexSessionPlan(env);
+  if (fromSessions) return fromSessions;
+  const auth = obj(codexTokenClaims(env)?.['https://api.openai.com/auth']);
   return typeof auth?.chatgpt_plan_type === 'string' ? auth.chatgpt_plan_type : null;
 }
 
@@ -171,20 +240,88 @@ function detectCursorPlan(env: NodeJS.ProcessEnv): string | null {
   return raw ? raw.replace(/^"|"$/g, '') : null; // strip optional JSON quotes
 }
 
+// Windsurf/Devin Desktop uses the VS Code global-storage layout too, but persists
+// plan metadata as a JSON object keyed by the signed-in user id. The key suffix is
+// deliberately opaque; the value's planName is the stable capability signal.
+function windsurfStateDb(env: NodeJS.ProcessEnv): string {
+  const home = homeDir(env);
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'Devin', 'User', 'globalStorage', 'state.vscdb');
+  }
+  if (process.platform === 'win32') {
+    return path.join(env.APPDATA || path.join(home, 'AppData', 'Roaming'), 'Devin', 'User', 'globalStorage', 'state.vscdb');
+  }
+  return path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'Devin', 'User', 'globalStorage', 'state.vscdb');
+}
+
+const WINDSURF_PLAN_SQL = "SELECT value FROM ItemTable WHERE key LIKE 'windsurf.reactSettings.cachedPlanInfoData:%' LIMIT 1";
+
+function windsurfPlanViaCli(db: string): string | null {
+  try {
+    const out = spawnSync('sqlite3', ['-readonly', db, `${WINDSURF_PLAN_SQL};`], { encoding: 'utf8', timeout: 2000 });
+    if (out.status === 0 && typeof out.stdout === 'string' && out.stdout.trim()) return out.stdout.trim();
+  } catch {
+    /* binary missing / spawn error */
+  }
+  return null;
+}
+
+function windsurfPlanViaNodeSqlite(db: string): string | null {
+  try {
+    const sqlite = require('node:sqlite') as SqliteModule;
+    const handle = new sqlite.DatabaseSync(db, { readOnly: true });
+    try {
+      const row = handle.prepare(WINDSURF_PLAN_SQL).get() as { value?: unknown } | undefined;
+      const value = row?.value;
+      if (typeof value === 'string') return value;
+      if (value instanceof Uint8Array) return Buffer.from(value).toString('utf8');
+    } finally {
+      handle.close();
+    }
+  } catch {
+    /* module unavailable (old/flagless node), locked db, etc. */
+  }
+  return null;
+}
+
+function windsurfPlanFromCachedInfo(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const info = obj(JSON.parse(raw));
+    if (!info) return null;
+    const named = planFromTierString(info.planName ?? info.plan ?? info.subscription ?? info.tier);
+    if (named) return named;
+    return info.isFreeOrTrial === true || info.isDevinFree === true ? 'free' : null;
+  } catch {
+    return null;
+  }
+}
+
+function detectWindsurfPlan(env: NodeJS.ProcessEnv): string | null {
+  const db = windsurfStateDb(env);
+  if (!fs.existsSync(db)) return null;
+  return windsurfPlanFromCachedInfo(windsurfPlanViaCli(db) ?? windsurfPlanViaNodeSqlite(db));
+}
+
 // OpenCode persists provider auth at $XDG_DATA_HOME|~/.local/share/opencode/auth.json.
 // A PAID subscription appears as a provider key like "opencode-go" (the free zero-auth
 // gateway is the keyless "opencode" provider, or no key at all). Any "opencode-<tier>"
 // key ⇒ paid; we return "go" → canonicalPlan maps it to `plus` (the only paid plan
 // HOST_PLAN_IDS.opencode exposes). Best-effort; never throws (absent/unreadable → free).
 function detectOpenCodePlan(env: NodeJS.ProcessEnv): string | null {
-  const dataHome = env.XDG_DATA_HOME || path.join(homeDir(env), '.local', 'share');
+  const authPath = openCodeAuthPath(env);
   try {
-    const auth = JSON.parse(fs.readFileSync(path.join(dataHome, 'opencode', 'auth.json'), 'utf8'));
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'));
     if (auth && typeof auth === 'object' && Object.keys(auth).some((k) => /^opencode-\w/.test(k))) return 'go';
   } catch {
     // auth.json absent / unreadable / not JSON → no detectable paid plan
   }
   return null;
+}
+
+function openCodeAuthPath(env: NodeJS.ProcessEnv): string {
+  const dataHome = env.XDG_DATA_HOME || path.join(homeDir(env), '.local', 'share');
+  return path.join(dataHome, 'opencode', 'auth.json');
 }
 
 function copilotSettingsPath(env: NodeJS.ProcessEnv): string {
@@ -287,7 +424,7 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
     else if (host === 'cursor') raw = detectCursorPlan(env);
     else if (host === 'opencode') raw = detectOpenCodePlan(env);
     else if (host === 'copilot') raw = detectCopilotPlan(env);
-    else if (host === 'windsurf') raw = null;
+    else if (host === 'windsurf') raw = detectWindsurfPlan(env);
     else if (host === 'kilo') raw = null;
   } catch {
     raw = null;
@@ -295,7 +432,7 @@ function computePlan(host: HostModelKey, env: NodeJS.ProcessEnv): UserPlan {
   // Some host plan strings are app-specific (Cursor stripeMembershipType, Copilot's
   // product-label strings). An unrecognized value silently collapses to DEFAULT_HOST_PLAN
   // (usually free). Flag it opt-in so a real install's string can be added to PLAN_ALIASES.
-  if ((host === 'cursor' || host === 'copilot') && raw && !planIsRecognized(raw) && env.TRAFFIC_ONE_DEBUG) {
+  if ((host === 'cursor' || host === 'copilot' || host === 'windsurf') && raw && !planIsRecognized(raw) && env.TRAFFIC_ONE_DEBUG) {
     try {
       process.stderr.write(`[traffic-one] ${host}: unrecognized plan string ${JSON.stringify(raw)} → treated as "${DEFAULT_HOST_PLAN[host]}". Add an alias in config/model-tiers.ts PLAN_ALIASES.\n`);
     } catch {
@@ -316,6 +453,9 @@ export function detectHostPlan(host: unknown, env: NodeJS.ProcessEnv = process.e
     env.COPILOT_HOME ?? '',
     env.APPDATA ?? '',
     env.XDG_CONFIG_HOME ?? '',
+    env.XDG_DATA_HOME ?? '',
+    ...(h === 'opencode' ? [fileMtimeKey(openCodeAuthPath(env))] : []),
+    ...(h === 'windsurf' ? [fileMtimeKey(windsurfStateDb(env))] : []),
     ...(h === 'copilot' ? [fileMtimeKey(copilotSettingsPath(env)), fileMtimeKey(copilotDataDbPath(env))] : []),
   ].join('\u0000');
   const hit = cache.get(key);

@@ -200,7 +200,7 @@
     </div>
     <div class="body" id="view"><div class="loading"><span class="spinner"></span> Loading setup…</div></div>
     <div class="actions hidden" id="actions"></div>
-    <div class="foot"><span class="lock">●</span> Runs locally on 127.0.0.1 — close this window when setup finishes.</div>
+    <div class="foot"><span class="lock">●</span> Runs locally on 127.0.0.1 — closes automatically when setup finishes.</div>
   </main>
 
   <script>
@@ -226,11 +226,28 @@
     // shown by default, so "Start the build" sends only the roles the user changed.
     let teamSelections = {};
     let teamDefaults = {};
+    let completionStarted = false;
 
     async function api(path, opts = {}) {
       const headers = Object.assign({ "x-t1-token": T1_TOKEN }, opts.headers || {});
       if (opts.body) headers["content-type"] = "application/json";
-      const res = await fetch(path, Object.assign({}, opts, { headers }));
+      // A network-level failure (fetch itself rejects) usually means the setup
+      // server died and was respawned on a NEW port+token — this tab can never
+      // reach it again. Retry once for a transient blip, then tag the error so
+      // callers can show the "server restarted" guidance instead of a generic one.
+      let res;
+      try {
+        res = await fetch(path, Object.assign({}, opts, { headers }));
+      } catch (_) {
+        await new Promise((r) => setTimeout(r, 1000));
+        try {
+          res = await fetch(path, Object.assign({}, opts, { headers }));
+        } catch (_) {
+          const gone = new Error("The setup server is not responding.");
+          gone.serverGone = true;
+          throw gone;
+        }
+      }
       const text = await res.text();
       let json = null;
       try { json = text ? JSON.parse(text) : null; } catch (_) {}
@@ -293,12 +310,26 @@
       view.appendChild(el("div", { className: "err" }, [message || "Something went wrong."]));
     }
 
+    // The old tab cannot rejoin a respawned server (new port + new token) — send
+    // the user back to the editor, where the waiter announces the fresh link.
+    function renderServerLost() {
+      setActions(null);
+      view.innerHTML = "";
+      view.appendChild(el("div", { className: "step-title" }, ["Setup server restarted"]));
+      view.appendChild(el("p", { className: "step-desc" }, [
+        "This tab is no longer connected. Return to your editor and open the fresh setup link shown there — answers you already submitted are saved.",
+      ]));
+    }
+
     async function submitAnswer(step, value, loadingText) {
       showLoading(loadingText || "Saving…");
       let resp;
       try {
         resp = await api("/answer", { method: "POST", body: JSON.stringify({ step, value }) });
-      } catch (err) { return render({ error: err.message }); }
+      } catch (err) {
+        if (err && err.serverGone) return renderServerLost();
+        return render({ error: err.message });
+      }
       if (resp && resp.taskId) {
         showLoading("Installing — this can take a minute…");
         const task = await pollTask(resp.taskId);
@@ -357,9 +388,11 @@
         const dot = el("span", { className: "tier-dot tier-" + (m.tier || "balanced") });
         const sel = el("select", {});
         sel.setAttribute("aria-label", (m.label || m.role) + " model");
-        const list = choices.length ? choices : [{ tier: m.tier, model: m.model || m.tier }];
+        const list = choices.length ? choices : [{ tier: m.tier, model: m.model || m.tier, label: m.modelLabel }];
         list.forEach((c) => {
-          const opt = el("option", { value: c.tier }, [c.model || c.tier]);
+          // Prefer the server's friendly label ("Opus 4.8") — alias values like
+          // "opus" stay the underlying selection but read ambiguously.
+          const opt = el("option", { value: c.tier }, [c.label || c.model || c.tier]);
           if (c.tier === m.tier) opt.selected = true;
           sel.appendChild(opt);
         });
@@ -540,28 +573,59 @@
     async function verifyThenDone() {
       showLoading("Checking your toolchain…");
       let probe = null;
-      try { probe = await api("/verify-toolchain"); } catch (_) { probe = null; }
+      try { probe = await api("/verify-toolchain"); }
+      catch (err) {
+        if (err && err.serverGone) return renderServerLost();
+        probe = null;
+      }
       if (probe && probe.graphMissing && probe.provider) {
         return submitAnswer("code-graph", probe.provider, "Installing required tools…");
       }
       renderDone();
     }
 
-    function renderDone() {
+    async function renderDone() {
+      if (completionStarted) return;
+      completionStarted = true;
+      showLoading("Finishing setup…");
+      try {
+        const completed = await api("/complete", { method: "POST", body: "{}" });
+        if (!completed || completed.ok !== true) throw new Error("Setup completion was not acknowledged.");
+      } catch (err) {
+        // The build is NOT blocked by this: every answer was persisted as it was
+        // submitted and the editor waiter re-derives completion from that state.
+        // Only the tab-close acknowledgement to the setup server failed.
+        completionStarted = false;
+        setActions(null);
+        view.innerHTML = "";
+        view.appendChild(el("div", { className: "done-state" }, [
+          el("div", { className: "check" }, ["✓"]),
+          el("div", { className: "step-title" }, ["Setup saved — your editor is unblocked"]),
+          el("p", { className: "step-desc" }, [
+            "Your answers are saved and development continues in the editor. This tab couldn't send its close signal to the setup server — close it manually, or retry.",
+          ]),
+        ]));
+        if (!(err && err.serverGone)) {
+          const retry = el("button", { className: "btn", type: "button" }, ["Retry close signal"]);
+          retry.addEventListener("click", () => renderDone());
+          setActions(el("div", { className: "bar-row" }, [el("div", {}), retry]));
+        }
+        return;
+      }
+
       setActions(null);
       view.innerHTML = "";
+      const closeHint = el("p", { className: "hint" }, ["Closing this tab…"]);
       view.appendChild(el("div", { className: "done-state" }, [
         el("div", { className: "check" }, ["✓"]),
         el("div", { className: "step-title" }, ["Setup complete"]),
-        el("p", { className: "step-desc" }, ["Traffic One is configured. Return to your editor — the build will continue."]),
-        el("p", { className: "hint" }, ["You can close this tab now."]),
+        el("p", { className: "step-desc" }, ["Traffic One is configured and the build has been released in your editor."]),
+        closeHint,
       ]));
-      api("/complete", { method: "POST", body: "{}" }).catch(() => {});
-      // Try to auto-close. window.close() only works where the tab is
-      // script-controlled (Claude/Codex in-app panes the agent opened); a Cursor
-      // Simple Browser or an OS-browser tab ignores it, so the hint line above
-      // tells the user they can close it themselves.
-      setTimeout(() => { try { window.close(); } catch (_) { /* blocked by browser */ } }, 1500);
+      // Preserve the page-level auto-close for hosts that expose it. Cursor's
+      // editor tab is closed by the same agent turn via its browser_tabs tool as
+      // soon as the acknowledged /complete call releases the setup waiter.
+      setTimeout(() => { try { window.close(); } catch (_) { /* host closes it */ } }, 1500);
     }
 
     function render(v) {
@@ -576,7 +640,10 @@
 
     (async function start() {
       try { render(await api("/state")); }
-      catch (err) { setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Connection issue"])); showError(err.message); }
+      catch (err) {
+        if (err && err.serverGone) return renderServerLost();
+        setActions(null); view.innerHTML = ""; view.appendChild(el("div", { className: "step-title" }, ["Connection issue"])); showError(err.message);
+      }
     })();
   </script>
 </body>

@@ -58,7 +58,7 @@ function writeRequiredScaffold(dir: string): void {
   for (const rel of [
     'apps/web',
     'packages/ui/src',
-    'packages/tailwind-config',
+    'packages/tailwind-config/src',
     'packages/i18n/src',
   ]) {
     fs.mkdirSync(path.join(dir, rel), { recursive: true });
@@ -67,7 +67,7 @@ function writeRequiredScaffold(dir: string): void {
   fs.writeFileSync(path.join(dir, 'packages/ui/package.json'), '{"name":"@app/ui","private":true}', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/ui/src/index.ts'), '', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/tailwind-config/package.json'), '{"name":"@app/tailwind-config","private":true}', 'utf8');
-  fs.writeFileSync(path.join(dir, 'packages/tailwind-config/tailwind.config.ts'), 'export default {};', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/tailwind-config/src/globals.css'), '@import "tailwindcss";\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/i18n/package.json'), '{"name":"@app/i18n","private":true}', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/i18n/src/index.ts'), '', 'utf8');
 }
@@ -157,6 +157,11 @@ test('monorepo-root-flat-scaffold: root tsconfig files on a monorepo stack are b
       });
       assert.ok(v.includes('monorepo-root-flat-scaffold'), filePath);
     }
+    const base = planReadinessViolations({
+      filePath: 'tsconfig.base.json', content: '{}', projectRoot: dir,
+      state: { ...DEFAULT_STATE }, writingFeatureSource: false, block: names,
+    });
+    assert.deepEqual(base, []);
   });
 });
 
@@ -190,6 +195,64 @@ test('plan-gate: new project, no plan.md, writing feature source', () => {
       state: { ...DEFAULT_STATE, onboardingComplete: false }, writingFeatureSource: true, block: names,
     });
     assert.deepEqual(v, ['plan-gate']);
+  });
+});
+
+test('plan-main-agent-gate: Low/main-agent writes the plan in the current thread instead of spawning', () => {
+  withProject((dir) => {
+    const v = planReadinessViolations({
+      filePath: 'apps/web/src/x.ts', content: '', projectRoot: dir,
+      state: {
+        ...DEFAULT_STATE,
+        onboardingComplete: false,
+        team: { mode: 'main-agent' },
+        performance: { level: 'low' },
+      },
+      writingFeatureSource: true,
+      block: names,
+    });
+    assert.deepEqual(v, ['plan-main-agent-gate']);
+  });
+});
+
+test('plan-architect-self-gate: the architect is told to write the plan itself, never to spawn one (B8)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: false,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    const v = planReadinessViolations({
+      filePath: 'apps/web/src/main.tsx', content: 'import React from "react";\n', projectRoot: dir,
+      state, writingFeatureSource: true, block: names,
+    });
+    assert.ok(v.includes('plan-architect-self-gate'), `got: ${v.join(', ')}`);
+    assert.ok(!v.includes('plan-gate'), 'the self-referential plan-gate message must not be shown to the architect');
+  });
+});
+
+test('plan gates: architect baseline scaffold writes never trip the plan-missing gate (B8)', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: false,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    for (const [filePath, content] of [
+      ['packages/ui/src/index.ts', 'export {};\n'],
+      ['packages/tailwind-config/src/globals.css', '@import "tailwindcss";\n'],
+    ] as const) {
+      const v = planReadinessViolations({
+        filePath, content, projectRoot: dir,
+        state, writingFeatureSource: true, block: names,
+      });
+      assert.ok(!v.includes('plan-gate') && !v.includes('plan-architect-self-gate'), `${filePath}: ${v.join(', ')}`);
+      assert.ok(!v.includes('architect-pre-ready-feature'), `${filePath}: ${v.join(', ')}`);
+    }
   });
 });
 
@@ -635,6 +698,31 @@ test('isArchitectPhaseComplete: true when scaffold, memory, assignments, and dig
   });
 });
 
+test('isArchitectPhaseComplete: ignores PLAN_READY from a stale run id', () => {
+  withProject((dir) => {
+    const state = { ...DEFAULT_STATE, onboardingComplete: true, currentRunId: 'R2' };
+    writeStateFile(dir, state);
+    writePlan(dir);
+    writeRequiredScaffold(dir);
+    writeRequiredMemory(dir, state);
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'runs', 'R2'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'runs', 'R2', 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId: 'R2',
+      assignments: [
+        { role: 'senior-frontend', scope: { include: ['apps/web/**', 'packages/ui/**', 'packages/i18n/**', 'packages/tailwind-config/**'] } },
+        { role: 'senior-backend', scope: { include: ['supabase/**', 'packages/api-client/**'] } },
+      ],
+    }), 'utf8');
+    fs.mkdirSync(path.join(dir, '.traffic-one', 'digests', 'R1'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', 'digests', 'R1', 'architect.md'), 'verdict: PLAN_READY\n', 'utf8');
+
+    const missing = architectPhaseIncompleteReasons(dir, state);
+    assert.equal(isArchitectPhaseComplete(dir, state), false);
+    assert.ok(missing.some((m) => m.includes('.traffic-one/digests/R2/architect.md')), missing.join(', '));
+  });
+});
+
 test('architect-pre-ready-feature: denies senior-architect app implementation before PLAN_READY', () => {
   withProject((dir) => {
     const state = {
@@ -657,6 +745,31 @@ test('architect-pre-ready-feature: denies senior-architect app implementation be
       block: names,
     });
     assert.deepEqual(v, ['architect-pre-ready-feature']);
+  });
+});
+
+test('architect-pre-ready-feature: allows senior-architect Tailwind globals baseline before PLAN_READY', () => {
+  withProject((dir) => {
+    const state = {
+      ...DEFAULT_STATE,
+      onboardingComplete: true,
+      materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: 'R',
+      activeAgentRole: 'senior-architect',
+    };
+    writeStateFile(dir, state);
+    writePlan(dir);
+    writeMaterialized(dir);
+    writeRequiredScaffold(dir);
+    const v = planReadinessViolations({
+      filePath: 'packages/tailwind-config/src/globals.css',
+      content: '@import "tailwindcss";\n:root { color-scheme: light; }\n',
+      projectRoot: dir,
+      state,
+      writingFeatureSource: true,
+      block: names,
+    });
+    assert.deepEqual(v, []);
   });
 });
 

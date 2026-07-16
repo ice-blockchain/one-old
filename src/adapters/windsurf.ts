@@ -23,10 +23,14 @@ const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: Tool
   post_mcp_tool_use: { event: 'PostToolUse', tool: 'other' },
 };
 
+// Manual runtime actions are not Cascade hook events. They need a canonical
+// PreToolUse context with no tool so their dedicated handler can run.
+const MANUAL_ACTIONS = new Set(['materialize-project']);
+
 function actionName(data: Record<string, unknown>, argv: readonly string[]): string {
   const explicit = firstString(data.agent_action_name, data.action, data.event);
   if (explicit) return explicit;
-  return argv.find((arg) => Object.prototype.hasOwnProperty.call(SUB_TO_EVENT, arg)) || '';
+  return argv.find((arg) => Object.prototype.hasOwnProperty.call(SUB_TO_EVENT, arg) || MANUAL_ACTIONS.has(arg)) || '';
 }
 
 function stripFileUri(p: string): string {
@@ -68,6 +72,7 @@ function cwdFor(data: Record<string, unknown>, info: Record<string, unknown>, fi
 }
 
 function toolFor(action: string, info: Record<string, unknown>): ToolInput | undefined {
+  if (MANUAL_ACTIONS.has(action)) return undefined;
   const mapping = SUB_TO_EVENT[action] ?? { event: 'PreToolUse' as CanonicalEvent };
   if (mapping.event !== 'PreToolUse' && mapping.event !== 'PostToolUse') return undefined;
 

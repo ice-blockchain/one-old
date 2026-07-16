@@ -2,7 +2,7 @@
 // Proactive diagnostic for traffic-one (compiles to scripts/doctor.cjs).
 // Inspects the environment for the known-fragile spots (Node version, nvm
 // default, gitnexus binary location, project `.nvmrc`, `.git/`, traffic-one
-// state file, Codex hook trust, mcp-auth config, and — with `--session <id>` —
+// state file, canonical API-key auth, Codex hook trust, and — with `--session <id>` —
 // a specific Codex transcript) and prints a structured JSON report.
 //
 // The report is purely informational: doctor never writes to the project,
@@ -16,7 +16,7 @@ import { resolveProjectRoot } from '../../shared/hook-paths';
 import {
   probeCodexHooks,
   probeGitnexus,
-  probeMcpAuth,
+  probeCanonicalAuth,
   probeNode,
   probeNvm,
   probeOpenCodeMcp,
@@ -31,7 +31,7 @@ export {
   analyzeCodexSessionFile,
   probeCodexHooks,
   probeGitnexus,
-  probeMcpAuth,
+  probeCanonicalAuth,
   probeNode,
   probeNvm,
   probeOpenCodeMcp,
@@ -48,10 +48,10 @@ export function main(): void {
   const gitnexus = probeGitnexus();
   const project = probeProject(cwd);
   const codexHooks = probeCodexHooks(cwd);
-  const mcpAuth = probeMcpAuth();
+  const auth = probeCanonicalAuth();
   const openCodeMcp = probeOpenCodeMcp();
   const sessionDiagnostics = probeSessionDiagnostics(args.session);
-  const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, mcpAuth, openCodeMcp, sessionDiagnostics });
+  const findings = buildFindings({ node, nvm, gitnexus, project, codexHooks, auth, openCodeMcp, sessionDiagnostics });
   const summary = findings.some((f) => f.severity === 'fix-needed')
     ? 'ACTION_NEEDED'
     : (findings.length > 0 ? 'INFO_ONLY' : 'HEALTHY');
@@ -60,7 +60,7 @@ export function main(): void {
   process.stdout.write(`${JSON.stringify({
     summary,
     findings,
-    probes: { node, nvm, gitnexus, project, codexHooks, mcpAuth, openCodeMcp, sessionDiagnostics },
+    probes: { node, nvm, gitnexus, project, codexHooks, auth, openCodeMcp, sessionDiagnostics },
     version,
   }, null, 2)}\n`);
 }

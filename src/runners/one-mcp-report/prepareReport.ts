@@ -1,16 +1,16 @@
 // src/runners/one-mcp-report/prepareReport.ts
 // Decide whether to queue + spawn the fire-and-forget one-mcp report, and do so.
-// Ported 1:1 from one-mcp-report/prepareReport.cjs. Skips unless authed locally
-// (except for explicit architect PLAN_READY reports), the cwd is a real
-// codebase, and no report id is registered yet. The detached child runs the
-// compiled scripts/one-mcp-report.cjs.
+// Skips unless authed locally, the cwd is a real codebase, and no report id is
+// registered yet. The detached child runs the compiled
+// scripts/one-mcp-report.cjs.
 
 import { spawn } from 'child_process';
 import * as path from 'path';
 
 import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { pluginRoot } from '../../shared/paths';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { hasRealCodebase } from './hasRealCodebase';
 import { MCP_REPORT_ENDPOINT, REPORTING_ACTIVE, SAVE_MCP_REPORT, STATUS_FILE } from '../../config/reporting';
 import { nowIso, readJson, stateForReport, writeJson } from './lib';
@@ -23,10 +23,10 @@ import { stageReportId } from './stageReportId';
 type Rec = Record<string, unknown>;
 export interface PrepareOptions {
   endpoint?: string;
+  env?: NodeJS.ProcessEnv;
   trigger?: string;
   state?: unknown;
   spawn?: boolean;
-  allowUnauthenticated?: boolean;
 }
 export interface PrepareResult {
   started: boolean;
@@ -37,16 +37,18 @@ export interface PrepareResult {
 }
 
 export function prepareReport(cwd: string, options: PrepareOptions = {}): PrepareResult {
+  const env = options.env ?? process.env;
   if (!REPORTING_ACTIVE) return { started: false, reason: 'reporting-inactive' };
-  if (process.env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') return { started: false, reason: 'disabled' };
+  if (env.TRAFFIC_ONE_DISABLE_ONE_MCP === '1') return { started: false, reason: 'disabled' };
+  const root = path.resolve(cwd);
+  if (pluginUseDeclined(root, env)) return { started: false, reason: 'plugin-use-declined' };
+  // The plugin's own repo/install is never reported on. Check this before auth:
+  // authoring roots must remain inert without requiring a test-only auth bypass.
+  if (isNonProjectRoot(root)) return { started: false, reason: 'plugin-authoring-root' };
   // Auth-required ONLY when auth is actually enforced (config/auth AUTH_ENABLED /
   // TRAFFIC_ONE_AUTH). When enforcement is off, treat as authenticated — so the
   // first-look report fires in dev/test runs without a real token.
-  if (!options.allowUnauthenticated && !isLocallyAuthenticated() && authEnforced()) return { started: false, reason: 'auth-required' };
-  const root = path.resolve(cwd);
-  // The plugin's own repo/install is never reported on — this writer is reachable
-  // outside the (guarded) post-stack-setup dispatcher, so it must refuse itself.
-  if (isPluginAuthoringRoot(root)) return { started: false, reason: 'plugin-authoring-root' };
+  if (!isLocallyAuthenticated(env) && authEnforced(env)) return { started: false, reason: 'auth-required' };
   if (!hasRealCodebase(root)) return { started: false, reason: 'no-codebase' };
 
   const existingIdState = readReportIdState(root);
@@ -84,7 +86,7 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     writeJson(statusPath, nextStatus);
   }
 
-  if (options.spawn === false || process.env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN === '1') {
+  if (options.spawn === false || env.TRAFFIC_ONE_ONE_MCP_NO_SPAWN === '1') {
     return { started: true, reportId: idState.id, spawned: false };
   }
 
@@ -93,8 +95,8 @@ export function prepareReport(cwd: string, options: PrepareOptions = {}): Prepar
     detached: true,
     stdio: 'ignore',
     env: {
-      ...process.env,
-      TRAFFIC_ONE_ONE_MCP_ENDPOINT: options.endpoint || process.env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || MCP_REPORT_ENDPOINT,
+      ...env,
+      TRAFFIC_ONE_ONE_MCP_ENDPOINT: options.endpoint || env.TRAFFIC_ONE_ONE_MCP_ENDPOINT || MCP_REPORT_ENDPOINT,
     },
   });
   child.unref();

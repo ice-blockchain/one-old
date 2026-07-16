@@ -1,16 +1,14 @@
 // src/shared/materialize/windsurf-agents.ts
 // Devin Local / Windsurf native custom subagents:
-// `.devin/agents/<role>/AGENT.md` with a model pinned from the project's
-// performance level and detected Windsurf plan.
+// `.devin/agents/<role>/AGENT.md`. Project files contain contracts only; the
+// active user's plan and model routing stay in local preferences/runtime state.
 
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { TEAM_ROLES } from '../../config/onboarding';
 import { writeTextIfChanged } from '../fs-text';
 import { readText } from '../fsjson';
-import { detectHostPlan } from '../host-plan';
-import { buildTeamLineup } from '../onboarding-server/flow';
-import { openCodeDelegationActive } from '../performance';
 import { roleAgentBody } from '../skill-filters';
 
 type Rec = Record<string, unknown>;
@@ -66,12 +64,11 @@ function roleSpecificLines(role: string): string[] {
   ];
 }
 
-function agentFile(role: string, label: string, blurb: string, model: string): string {
+function agentFile(role: string, label: string, blurb: string): string {
   const lines = [
     '---',
     `name: ${yamlString(role)}`,
     `description: ${yamlString(blurb || label)}`,
-    ...(model ? [`model: ${yamlString(model)}`] : []),
     'allowed-tools:',
     ...toolsForRole(role).map((tool) => `  - ${tool}`),
     ...(role === 'senior-reviewer'
@@ -112,38 +109,22 @@ function agentFile(role: string, label: string, blurb: string, model: string): s
   return lines.join('\n');
 }
 
-export function writeWindsurfAgentFiles(cwd: string, state: Rec): number {
-  const team = state.team && typeof state.team === 'object' ? (state.team as Rec) : null;
-  const performance = state.performance && typeof state.performance === 'object' ? (state.performance as Rec) : null;
-  const mode = team && typeof team.mode === 'string' ? team.mode : null;
-  const level = performance && typeof performance.level === 'string' ? performance.level : null;
+export function writeWindsurfAgentFiles(cwd: string, _state: Rec): number {
   const dir = path.join(cwd, WINDSURF_AGENTS_REL);
-  if (mode !== 'subagents' || !level) return cleanupGeneratedAgents(dir, new Set());
-
-  const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
-  let lineup;
-  try {
-    const planCtx = { host: 'windsurf', plan: detectHostPlan('windsurf'), useOpenCode: openCodeDelegationActive(state, 'windsurf') };
-    lineup = buildTeamLineup(level, 'windsurf', overrides, planCtx);
-  } catch {
-    return 0;
-  }
-  if (!lineup || lineup.length === 0) return cleanupGeneratedAgents(dir, new Set());
-
-  const keep = new Set(lineup.map((member) => member.role));
+  const keep = new Set(TEAM_ROLES.map((member) => member.role));
   let written = cleanupGeneratedAgents(dir, keep);
   try {
     fs.mkdirSync(dir, { recursive: true });
   } catch {
     return written;
   }
-  for (const member of lineup) {
+  for (const member of TEAM_ROLES) {
     const roleDir = path.join(dir, member.role);
     const target = path.join(roleDir, 'AGENT.md');
     if (fs.existsSync(target) && !isGeneratedWindsurfAgent(target)) continue;
     try {
       fs.mkdirSync(roleDir, { recursive: true });
-      if (writeTextIfChanged(target, agentFile(member.role, member.label, member.blurb, member.model))) written += 1;
+      if (writeTextIfChanged(target, agentFile(member.role, member.label, member.blurb))) written += 1;
     } catch {
       // best-effort per role
     }

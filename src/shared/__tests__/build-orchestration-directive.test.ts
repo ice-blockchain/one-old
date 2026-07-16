@@ -62,7 +62,23 @@ test('shouldEmitBuildOrchestration: false once plan.md exists', () => {
   });
 });
 
-test('buildOrchestrationDirective: names task/general spawn-first steps for Kilo', () => {
+test('build-start architect directive is never emitted for a maintenance project', () => {
+  withProject((dir) => {
+    const state = {
+      ...subagentsState(),
+      lifecycle: { phase: 'maintenance', source: 'orchestrator', completedAt: '2026-07-10T00:00:00Z' },
+    };
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'kilo'), false);
+    assert.equal(shouldEmitBuildOrchestration(dir, state, 'opencode'), false);
+    assert.equal(shouldEmitArchitectCompletionReminder(dir, state, 'kilo'), false);
+    assert.equal(buildOrchestrationDirective(dir, 'kilo', state), '');
+  });
+});
+
+test('buildOrchestrationDirective: Kilo uses general with the senior-architect role contract', () => {
   withProject((dir) => {
     const state = subagentsState();
     const t1 = path.join(dir, '.traffic-one');
@@ -71,10 +87,31 @@ test('buildOrchestrationDirective: names task/general spawn-first steps for Kilo
     const d = buildOrchestrationDirective(dir, 'kilo', state);
     assert.match(d, /senior-architect/i);
     assert.match(d, /subagent_type/i);
-    assert.match(d, /general/i);
-    assert.match(d, /\[t1-role: senior-architect\]/);
+    assert.match(d, /subagent_type: "general"/);
+    assert.doesNotMatch(d, /subagent_type: "senior-architect"/);
+    assert.match(d, /\.kilo\/agents\/senior-architect\.md/);
+    assert.match(d, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(d, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
+    assert.match(d, /real subagent/i);
+    assert.match(d, /read `.kilo\/agents\/senior-architect\.md` before acting/i);
     assert.match(d, /apps\/web/i);
     assert.match(d, /root `tsconfig/i);
+  });
+});
+
+test('buildOrchestrationDirective: names the project-scoped global architect, not general, for OpenCode', () => {
+  withProject((dir) => {
+    const state = subagentsState();
+    const t1 = path.join(dir, '.traffic-one');
+    fs.mkdirSync(t1, { recursive: true });
+    fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify(state), 'utf8');
+    const d = buildOrchestrationDirective(dir, 'opencode', state);
+    assert.match(d, /OpenCode build start/i);
+    assert.match(d, /subagent_type: "traffic-one-[a-f0-9]{12}-senior-architect"/);
+    assert.doesNotMatch(d, /subagent_type: "general"/);
+    assert.match(d, /\.config\/opencode\/agents\/traffic-one-[a-f0-9]{12}-senior-architect\.md/);
+    assert.match(d, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(d, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
   });
 });
 
@@ -116,6 +153,7 @@ test('buildOrchestrationDirective: architect-incomplete reminder when plan exist
     assert.match(d, /architect phase is INCOMPLETE/i);
     assert.match(d, /coding\.md/);
     assert.match(d, /senior-architect/i);
+    assert.match(d, /subagent_type: "general"/);
   });
 });
 

@@ -69,12 +69,15 @@ export function roleDigestName(role: unknown): string {
 export function packFixCycleHeader(_cwd: string, role: string, runId: string, spawnIndex: number): PackResult {
   const fixCycleFile = `.traffic-one/fix-cycles/${runId}/${role}-fix-${spawnIndex - 1}.md`;
   const digestFile = `.traffic-one/digests/${runId}/${roleDigestName(role)}.md`;
+  const hasFixCycleFile = _cwd ? fs.existsSync(path.join(_cwd, fixCycleFile)) : false;
   const lines = [
     `═══ traffic-one — ${role} FIX-CYCLE #${spawnIndex - 1} (run ${runId}) ═══`,
     '',
     '[fix-cycle] You previously ran in this orchestrator run; apply only the targeted fixes below.',
     '',
-    '1. Read the fix-cycle context (exact reviewer findings with file:line):',
+    hasFixCycleFile
+      ? '1. Read the fix-cycle context (exact reviewer findings with file:line):'
+      : '1. No fix-cycle context file exists on disk for this replacement. Use ONLY the spawn prompt/new message for exact findings; do not fabricate or read a missing fix-cycle path:',
     `   ${fixCycleFile}`,
     '',
     '2. Recall your prior work from your previous digest:',

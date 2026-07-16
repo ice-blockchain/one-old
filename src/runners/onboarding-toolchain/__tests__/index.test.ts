@@ -23,6 +23,7 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
   const savedCodexOriginator = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   const savedCodexThreadId = env.CODEX_THREAD_ID;
   const savedCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
+  const savedHost = env.TRAFFIC_ONE_HOST;
   const prefsPath = path.join(dir, 'prefs.json');
   const onePath = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
@@ -34,10 +35,13 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
   delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   delete env.CODEX_THREAD_ID;
   delete env.CURSOR_PLUGIN_ROOT;
+  delete env.TRAFFIC_ONE_HOST;
   const { codeGraphProvider, mode, ...projectPrefs } = prefs;
   fs.writeFileSync(prefsPath, JSON.stringify(projectPrefs), 'utf8');
   // codeGraphProvider is machine-wide → one.json (TRAFFIC_ONE_STATE_PATH).
-  if (codeGraphProvider) fs.writeFileSync(onePath, JSON.stringify({ version: 1, codeGraphProvider }), 'utf8');
+  if (codeGraphProvider) {
+    fs.writeFileSync(onePath, JSON.stringify({ schemaVersion: 3, codeGraphProvider, hosts: {} }), 'utf8');
+  }
   // mode is a per-PROJECT state field → cwd/.traffic-one/.one.json.
   if (mode) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -56,6 +60,7 @@ function withTemp(prefs: Record<string, unknown>, fn: (cwd: string) => void): vo
     if (savedCodexOriginator === undefined) delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = savedCodexOriginator;
     if (savedCodexThreadId === undefined) delete env.CODEX_THREAD_ID; else env.CODEX_THREAD_ID = savedCodexThreadId;
     if (savedCursorPluginRoot === undefined) delete env.CURSOR_PLUGIN_ROOT; else env.CURSOR_PLUGIN_ROOT = savedCursorPluginRoot;
+    if (savedHost === undefined) delete env.TRAFFIC_ONE_HOST; else env.TRAFFIC_ONE_HOST = savedHost;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -360,4 +365,15 @@ test('no provider chosen → ok=true (nothing required to install)', () => {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }
   });
+});
+
+test('OpenCode-compatible self hosts never install the optional OpenCode delegation tool', () => {
+  for (const host of ['opencode', 'kilo'] as const) {
+    withTemp({ openCode: { enabled: true, source: 'prompted' } }, (cwd) => {
+      process.env.TRAFFIC_ONE_HOST = host;
+      const r = ensureOnboardingToolchain(cwd);
+      assert.equal(r.openCodeEnabled, false, host);
+      assert.equal(r.results.some((entry) => entry.tool === 'opencode'), false, host);
+    });
+  }
 });

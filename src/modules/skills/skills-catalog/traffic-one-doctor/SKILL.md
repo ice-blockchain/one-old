@@ -35,12 +35,13 @@ Runs `scripts/doctor.cjs` (read-only). The script probes:
    `SyntaxError: Cannot use import statement`).
 4. **Project** — `.traffic-one/.one.json` state, `.nvmrc`, `.git/` presence,
    `.traffic-one/.gitnexus/` and `.traffic-one/graphify-out/GRAPH_REPORT.md` artefact ages.
-5. **Codex/MCP activation** — plugin enabled flag, trusted hook state, trusted
-   workspace coverage, and whether `mcp-auth` is configured.
+5. **Codex/auth activation** — plugin enabled flag, trusted hook state, trusted
+   workspace coverage, and a redacted canonical-auth probe reporting the
+   `one.json` path, validity, and update time without exposing the API key.
 6. **Session incident debug** — with `--session <id>`, resolves the Codex JSONL
    transcript and reports hook payload count, prompt requests, Traffic One root
-   instruction injection, auth expiry at session start, and mutating tool use
-   before the auth gate.
+   instruction injection, canonical auth state at session start, and mutating
+   tool use before the auth gate.
 
 It outputs a JSON report with one of three summaries:
 

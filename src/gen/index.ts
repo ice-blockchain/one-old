@@ -48,7 +48,7 @@ export function distRoot(sourceRoot: string = sourceRepoRoot()): string {
 // Output dirs gen owns end-to-end: files inside them that no emitter produced
 // are stale copies of deleted source content and get swept. skills/ stays out —
 // the session-start surgery populates it at runtime.
-export const MANAGED_OUTPUT_DIRS = ['agents', 'rules', 'skills-catalog', path.join('.cursor', 'rules'), path.join('.devin', 'rules')] as const;
+export const MANAGED_OUTPUT_DIRS = ['agents', 'public', 'rules', 'skills-catalog', path.join('.cursor', 'rules'), path.join('.devin', 'rules')] as const;
 
 export function runGen(opts: { check: boolean; root?: string; sourceRoot?: string }): GenRun {
   const sourceRoot = opts.sourceRoot ?? sourceRepoRoot();

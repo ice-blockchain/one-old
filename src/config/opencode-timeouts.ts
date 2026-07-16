@@ -11,6 +11,26 @@ export function opencodeUnitTimeoutMs(): number {
   return Number.isFinite(v) && v > 0 ? v : 90_000;
 }
 
+/** Run-scoped gateway-outage circuit-breaker TTL (env: T1_OC_GATEWAY_BREAKER_MS). Once a
+ *  delegation concludes the free gateway itself is down (maxConsecutiveStalls back-to-back
+ *  stalls), every later unit — and later per-role runner process — in the same run
+ *  fast-fails to the paid fallback for this long instead of re-burning the unit timeout
+ *  re-detecting the outage. Long enough to span the rest of a Step-0 batch; short enough
+ *  that a later same-run retry re-probes a recovered gateway. */
+export function gatewayBreakerMs(): number {
+  const v = Number(process.env.T1_OC_GATEWAY_BREAKER_MS || '');
+  return Number.isFinite(v) && v > 0 ? v : 120_000;
+}
+
+/** Back-to-back stall probes before the free-model walk declares a gateway-wide outage
+ *  (env: T1_OC_MAX_STALLS). Each stall burns the FULL unit timeout, so this bounds the
+ *  outage-detection cost; set 1 for faster detection at the risk of one hung model
+ *  tripping the breaker. Clamped to >= 1. */
+export function maxConsecutiveStalls(): number {
+  const v = Number(process.env.T1_OC_MAX_STALLS || '');
+  return Number.isFinite(v) && v >= 1 ? Math.floor(v) : 2;
+}
+
 /** Cancel background delegation when orchestrator stops polling (env: T1_OC_ABANDON_MS). */
 export function abandonAfterMs(): number {
   const v = Number(process.env.T1_OC_ABANDON_MS || '');

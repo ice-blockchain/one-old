@@ -1,7 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { openCodeRestartWarning, waitForOnboarding } from '../index';
+import { cursorSetupCloseDirective, openCodeRestartWarning, preSpawnArchitectDirective, waitForOnboarding } from '../index';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 // Deterministic seams: a fake clock that advances `step` ms per read, and a no-op
 // sleep — so the polling loop is exercised without a real timer or state IO.
@@ -47,6 +48,163 @@ test('openCodeRestartWarning tells the user to restart before continuing develop
   assert.doesNotMatch(warning, /Ctrl\+C/i);
 });
 
+test('Cursor setup completion closes the exact wizard tab through browser_tabs', () => {
+  const url = 'http://127.0.0.1:55174/?t=tok';
+  const directive = cursorSetupCloseDirective(url, 'cursor');
+  assert.ok(directive.includes('`browser_tabs`'));
+  assert.ok(directive.includes('{"action":"list"}'));
+  assert.ok(directive.includes('{"action":"close","index":<matching index>}'));
+  assert.ok(directive.includes(url), 'the exact tokenized wizard URL is used for index-safe matching');
+  assert.match(directive, /Traffic One — Setup/, 'title fallback when the exact URL does not match');
+  assert.match(directive, /VERIFY/i, 're-list to confirm the tab actually closed');
+  assert.match(directive, /Do not ask the user to close/i);
+  assert.equal(cursorSetupCloseDirective(url, 'claude'), '', 'other hosts keep their native close path');
+});
+
+test('declineOutput records the opt-out and closes an already-open cursor wizard tab', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { declineOutput } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+  const { pluginUseDeclined } = await import('../../../shared/state/plugin-use');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-decline-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    // Flag-off flow: the wizard link was already shown → its tab gets closed.
+    const url = 'http://127.0.0.1:55177/?t=tok';
+    writeServerRecord(dir, { pid: process.pid, port: 55177, token: 'tok', url, startedAt: 'x' }, process.env, 'cursor');
+    const out = declineOutput(dir, 'cursor');
+    assert.match(out, /^TRAFFIC_ONE_DISABLED/, 'terminal disable marker');
+    assert.ok(out.includes('`browser_tabs`'), 'closes the open wizard tab');
+    assert.ok(out.includes(url), 'matches the tab by its exact URL');
+    assert.equal(pluginUseDeclined(dir), true, 'choice recorded durably');
+
+    // Ask-first flow: no wizard was ever opened → no tab-close noise. Own prefs
+    // path so the first project's server record cannot leak into this one.
+    const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-decline2-')));
+    env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(fresh, 'prefs.json');
+    try {
+      const quiet = declineOutput(fresh, 'cursor');
+      assert.match(quiet, /^TRAFFIC_ONE_DISABLED/);
+      assert.ok(!quiet.includes('browser_tabs'), 'no close directive without an open tab');
+    } finally {
+      env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('applyUseChoice records the yes and seeds originalPrompt at decision time (ask-first: first-ever write)', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { applyUseChoice } = await import('../index');
+  const { readPluginUseChoice } = await import('../../../shared/state/plugin-use');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-seed-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    const statePath = path.join(dir, '.traffic-one', '.one.json');
+    assert.equal(fs.existsSync(statePath), false, 'ask-first: nothing exists before the yes');
+    const seed = 'create a modern learning platform with courses for web development';
+    applyUseChoice(dir, ['--use', '--bootstrap-only', dir, '--host=cursor', `--seed-prompt=${seed}`]);
+    assert.equal(readPluginUseChoice(dir)?.enabled, true, 'yes recorded durably');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    assert.equal(state.originalPrompt, seed, 'the triggering request is seeded at decision time');
+
+    // Idempotent: a later --use never overwrites the seeded description.
+    applyUseChoice(dir, ['--use', dir, '--seed-prompt=ok build it now please']);
+    const after = JSON.parse(fs.readFileSync(statePath, 'utf8')) as Record<string, unknown>;
+    assert.equal(after.originalPrompt, seed, 'existing seed preserved');
+
+    // Without a seed argument the yes is recorded and nothing else is written.
+    const fresh = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-use-seedless-')));
+    env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(fresh, 'prefs.json');
+    try {
+      applyUseChoice(fresh, ['--use', fresh]);
+      assert.equal(readPluginUseChoice(fresh)?.enabled, true);
+      assert.equal(fs.existsSync(path.join(fresh, '.traffic-one')), false, 'no seed → no project write from the choice itself');
+    } finally {
+      env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+      fs.rmSync(fresh, { recursive: true, force: true });
+    }
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('awaitWizardCompletionAck: returns immediately once the server record is gone, bounded otherwise', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const { awaitWizardCompletionAck } = await import('../index');
+  const { writeServerRecord } = await import('../../../shared/onboarding-server/registry');
+
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-ack-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    // No record (server already shut down after /complete) → no wait at all.
+    let started = Date.now();
+    awaitWizardCompletionAck(dir, 'cursor', 2000);
+    assert.ok(Date.now() - started < 500, 'gone record returns immediately');
+
+    // Live record that never clears → the grace is BOUNDED (never stalls the build).
+    writeServerRecord(dir, { pid: process.pid, port: 55175, token: 'tok', url: 'http://127.0.0.1:55175/?t=tok', startedAt: 'x' }, process.env, 'cursor');
+    started = Date.now();
+    awaitWizardCompletionAck(dir, 'cursor', 400);
+    const elapsed = Date.now() - started;
+    assert.ok(elapsed >= 350 && elapsed < 2000, `bounded grace (got ${elapsed}ms)`);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Windsurf first-run architect directive uses the always-registered general profile', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-prespawn-')));
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fs.writeFileSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
+    }));
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
+      mode: 'new-project', stack: 'custom-frontend', frontend: 'nextjs', backend: 'supabase',
+      confirmed: true, onboardingComplete: true,
+    }));
+    const directive = preSpawnArchitectDirective(dir, 'windsurf');
+    assert.match(directive, /profile `subagent_general`/);
+    assert.match(directive, /\[t1-role: senior-<role>\]/);
+    assert.doesNotMatch(directive, /\[t1-role: senior-(?:architect|frontend|backend|reviewer|tester|shipper)\]/);
+    assert.match(directive, /\.devin\/agents\/senior-architect\/AGENT\.md/);
+    assert.doesNotMatch(directive, /profile `senior-architect`/);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ── postSetupTriage: the SETUP-COMPLETE continuation gets the routing rubric ──
 
 test('postSetupTriage emits the subagents triage (with OpenCode-first) for the seeded original request', async () => {
@@ -64,8 +222,11 @@ test('postSetupTriage emits the subagents triage (with OpenCode-first) for the s
     // subagents + OpenCode enabled/installed via local prefs, prompt seeded by
     // the setup-required branch.
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'balanced', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
       openCode: { enabled: true, source: 'prompted' },
       toolchain: { opencode: { installedVersion: '1.15.13' } },
     }), 'utf8');
@@ -107,8 +268,11 @@ test('preSpawnOpenCodeDirective: new-project subagents + OpenCode → Step 0 bat
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'high', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
       openCode: { enabled: true, source: 'prompted' },
       toolchain: { opencode: { installedVersion: '1.17.8' } },
     }), 'utf8');
@@ -145,8 +309,11 @@ test('preSpawnRunIdDirective: new-project → mints currentRunId and prints exac
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'high', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
     }), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
@@ -195,8 +362,11 @@ test('preSpawnOrchestrationDirective: kilo subagents new-project emits spawn-fir
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   try {
     fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'balanced', source: 'prompted' },
+      ...hostScopedPerformancePrefs(
+        { level: 'balanced', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
     }), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
@@ -231,10 +401,13 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     // tests/22 shape: high level, subagents, frontend overridden to highest.
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-frontend': 'highest' } },
-      performance: { level: 'high', source: 'prompted' },
-    }), 'utf8');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-frontend': 'highest' } },
+        'pro',
+      ),
+    ), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
@@ -257,10 +430,13 @@ test('preSpawnModelDirective: Cursor new-project subagents → capture + per-rol
     assert.equal(preSpawnModelDirective(dir, 'codex'), '', 'codex → no directive');
 
     // A main-agent level (no subagents) → silent.
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'low', source: 'prompted' },
-    }), 'utf8');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(
+        { level: 'low', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true },
+        'pro',
+      ),
+    ), 'utf8');
     assert.equal(preSpawnModelDirective(dir, 'cursor'), '', 'low/main-agent level → no directive');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
@@ -282,19 +458,17 @@ test('preSpawnModelDirective: with capture, lists exact build slugs not bare fam
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      team: { mode: 'subagents', source: 'prompted', approved: true },
-      performance: { level: 'high', source: 'prompted' },
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       confirmed: true, onboardingComplete: true,
-    }), 'utf8');
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
-      plan: 'pro',
-      capturedAt: new Date().toISOString(),
     }), 'utf8');
 
     const d = preSpawnModelDirective(dir, 'cursor');
@@ -325,17 +499,16 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
   try {
     // No record yet → prints nothing.
     let out = '';
-    announceWizardUrl(dir, (s) => { out += s; });
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
     assert.equal(out, '', 'no server record → no banner');
 
-    // Live record → the DASHBOARD setup link (port+token in the fragment) is printed,
-    // matching the link surfaced in chat.
-    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' });
+    // Live record → the dashboard setup link is printed for the user to click.
+    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' }, process.env, 'cursor');
     out = '';
     const prevDash = env.TRAFFIC_ONE_DASHBOARD_URL;
     env.TRAFFIC_ONE_DASHBOARD_URL = 'https://dash.example.test';
     try {
-      announceWizardUrl(dir, (s) => { out += s; });
+      announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
     } finally {
       if (prevDash === undefined) delete env.TRAFFIC_ONE_DASHBOARD_URL; else env.TRAFFIC_ONE_DASHBOARD_URL = prevDash;
     }
@@ -344,10 +517,18 @@ test('announceWizardUrl prints the live wizard URL from the server record (and s
     assert.equal(out.split(dashLink).length - 1, 2, 'banner repeats the URL near the waiting line for compact terminals');
     assert.match(out, /TRAFFIC ONE SETUP/i, 'banner is recognizable to the user');
 
-    // Placeholder (:0/) → never surfaced.
-    writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' });
+    // Another surface already showed the link (the first banner stamped the shared
+    // marker) → the runner prints a compact wait line, never the URL twice.
+    writeServerRecord(dir, { pid: process.pid, port: 55174, token: 'tok', url: 'http://127.0.0.1:55174/?t=tok', startedAt: 'x' }, process.env, 'cursor');
     out = '';
-    announceWizardUrl(dir, (s) => { out += s; });
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
+    assert.ok(!out.includes('http://127.0.0.1:55174'), 'duplicate banner suppressed after the first emission');
+    assert.match(out, /Waiting for Traffic One setup/i, 'compact wait line still explains the block');
+
+    // Placeholder (:0/) → never surfaced.
+    writeServerRecord(dir, { pid: process.pid, port: 0, token: '', url: 'http://127.0.0.1:0/?t=pending', startedAt: 'x' }, process.env, 'cursor');
+    out = '';
+    announceWizardUrl(dir, (s) => { out += s; }, 'cursor');
     assert.equal(out, '', 'placeholder URL is not surfaced');
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;

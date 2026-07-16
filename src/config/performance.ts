@@ -53,7 +53,7 @@ export type PerformanceLevelId = 'low' | 'balanced' | 'high';
 // The senior roster, in roster order. A strict subset of VALID_AGENT_ROLES
 // (config/state): the `quick-fix` maintenance worker is a valid spawn role but is
 // deliberately NOT part of the roster or the plan-aware tier tables — it is pinned
-// to `cheapest` via PERFORMANCE_CONFIG and never tier-shifts with plan/OpenCode.
+// to `cheapest` via PERFORMANCE_CONFIG and never varies with the host plan.
 export const AGENT_ROLES = [
   'senior-architect',
   'senior-frontend',
@@ -64,65 +64,69 @@ export const AGENT_ROLES = [
 ] as const;
 export type AgentRole = (typeof AGENT_ROLES)[number];
 
-// `base` = OpenCode delegation off; `withOpenCode` = on (usually one step up).
-export interface PlanTier { readonly base: TierId; readonly withOpenCode: TierId; }
-
 // Levels that run a subagent team (low is solo main-agent, no per-role tiers).
 export type TeamLevel = 'balanced' | 'high';
 
-// Plan → recommended performance level (what the wizard pre-selects). base =
-// OpenCode off; withOpenCode = on. Edit freely; DEFAULT_HOST_PLAN is always present.
+// Plan → recommended performance level (what the wizard pre-selects). Model and
+// performance selection depend only on the active host plan; OpenCode remains an
+// independent delegation preference. DEFAULT_HOST_PLAN is always present.
 export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
-  Record<HostModelKey, Partial<Record<UserPlan, { base: PerformanceLevelId; withOpenCode: PerformanceLevelId }>>>
+  Record<HostModelKey, Partial<Record<UserPlan, PerformanceLevelId>>>
 > = {
   claude: {
-    free: { base: 'low', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'high' },
-    max: { base: 'high', withOpenCode: 'high' },
-    team: { base: 'high', withOpenCode: 'high' },
-    enterprise: { base: 'high', withOpenCode: 'high' },
+    // `free` is the undetectable-metadata fallback (DEFAULT_HOST_PLAN.claude),
+    // not a real Claude Code plan — assume nothing about paid capacity and
+    // recommend the conservative solo mode, like every other host's free plan.
+    free: 'low',
+    pro: 'balanced',
+    max: 'high',
+    // Standard/unknown Team and Enterprise seats follow Claude Code's Sonnet
+    // daily-driver guidance. The local metadata does not reliably distinguish
+    // a Team Premium seat, so generic Team must not assume Premium/Opus.
+    team: 'balanced',
+    enterprise: 'balanced',
   },
   codex: {
-    free: { base: 'low', withOpenCode: 'balanced' },
-    plus: { base: 'balanced', withOpenCode: 'high' },
-    pro: { base: 'balanced', withOpenCode: 'high' },
-    business: { base: 'high', withOpenCode: 'high' },
-    enterprise: { base: 'high', withOpenCode: 'high' },
-    team: { base: 'high', withOpenCode: 'high' },
+    free: 'low',
+    plus: 'balanced',
+    pro: 'balanced',
+    business: 'high',
+    enterprise: 'high',
+    team: 'high',
   },
   cursor: {
-    free: { base: 'low', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'high' },
+    free: 'low',
+    pro: 'balanced',
     // Pro+(plus) / Ultra(max) / Teams(team or business) / Enterprise: larger usage
     // budgets than Pro (same model set) → recommend the full High team by default.
-    plus: { base: 'high', withOpenCode: 'high' },
-    max: { base: 'high', withOpenCode: 'high' },
-    business: { base: 'high', withOpenCode: 'high' },
-    team: { base: 'high', withOpenCode: 'high' },
-    enterprise: { base: 'high', withOpenCode: 'high' },
+    plus: 'high',
+    max: 'high',
+    business: 'high',
+    team: 'high',
+    enterprise: 'high',
   },
   opencode: {
-    free: { base: 'low', withOpenCode: 'low' },
-    plus: { base: 'balanced', withOpenCode: 'balanced' },
+    free: 'low',
+    plus: 'balanced',
   },
   kilo: {
-    free: { base: 'low', withOpenCode: 'low' },
+    free: 'low',
   },
   copilot: {
-    free: { base: 'low', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'high' },
-    plus: { base: 'high', withOpenCode: 'high' },
-    max: { base: 'high', withOpenCode: 'high' },
-    business: { base: 'high', withOpenCode: 'high' },
-    team: { base: 'high', withOpenCode: 'high' },
-    enterprise: { base: 'high', withOpenCode: 'high' },
+    free: 'low',
+    pro: 'balanced',
+    plus: 'high',
+    max: 'high',
+    business: 'high',
+    team: 'high',
+    enterprise: 'high',
   },
   windsurf: {
-    free: { base: 'low', withOpenCode: 'balanced' },
-    pro: { base: 'balanced', withOpenCode: 'high' },
-    max: { base: 'high', withOpenCode: 'high' },
-    team: { base: 'high', withOpenCode: 'high' },
-    enterprise: { base: 'high', withOpenCode: 'high' },
+    free: 'low',
+    pro: 'balanced',
+    max: 'high',
+    team: 'high',
+    enterprise: 'high',
   },
 };
 
@@ -131,68 +135,59 @@ export const PLAN_PERFORMANCE_RECOMMENDATIONS: Readonly<
 // so the generous default (max plan / undetected host) is a no-op versus today.
 // Lower a single subagent here (e.g. senior-tester) and it applies everywhere
 // unless a plan overrides it in PLAN_AGENT_TIERS below.
-// `withOpenCode` is DISABLED for now: it equals `base` for every role/level, so
-// enabling OpenCode delegation no longer bumps the paid team up a tier. The field is
-// kept (not removed) so the bump can be re-enabled later by editing these values —
-// set a role's `withOpenCode` above its `base`. Why disabled: the bump made the
-// performance choice meaningless when OpenCode was on (balanced.withOpenCode='highest'
-// === high → "balanced" silently ran the seniors on the highest model, Opus), and it
-// diverged from what the wizard's Team-Confirmation line-up showed the user. Note High
-// keeps `withOpenCode: 'highest'` (= its base) — equal-to-base, NOT 'balanced', so
-// OpenCode never DOWNGRADES a High run below its chosen tier.
-export const DEFAULT_AGENT_TIERS: Readonly<Record<TeamLevel, Record<AgentRole, PlanTier>>> = {
+export const DEFAULT_AGENT_TIERS: Readonly<Record<TeamLevel, Record<AgentRole, TierId>>> = {
   balanced: {
-    'senior-architect': { base: 'balanced', withOpenCode: 'balanced' },
-    'senior-frontend': { base: 'balanced', withOpenCode: 'balanced' },
-    'senior-backend': { base: 'balanced', withOpenCode: 'balanced' },
-    'senior-reviewer': { base: 'balanced', withOpenCode: 'balanced' },
-    'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
-    'senior-shipper': { base: 'balanced', withOpenCode: 'balanced' },
+    'senior-architect': 'balanced',
+    'senior-frontend': 'balanced',
+    'senior-backend': 'balanced',
+    'senior-reviewer': 'balanced',
+    'senior-tester': 'cheapest',
+    'senior-shipper': 'balanced',
   },
   high: {
-    'senior-architect': { base: 'highest', withOpenCode: 'highest' },
-    'senior-frontend': { base: 'highest', withOpenCode: 'highest' },
-    'senior-backend': { base: 'highest', withOpenCode: 'highest' },
-    'senior-reviewer': { base: 'highest', withOpenCode: 'highest' },
-    'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
-    'senior-shipper': { base: 'balanced', withOpenCode: 'balanced' },
+    'senior-architect': 'highest',
+    'senior-frontend': 'highest',
+    'senior-backend': 'highest',
+    'senior-reviewer': 'highest',
+    'senior-tester': 'cheapest',
+    'senior-shipper': 'balanced',
   },
 };
 
 // Free plans run the team a step cheaper than the (max-shaped) default. Shared
 // across hosts; replace a host's entry with an inline object to diverge one host.
 // internal: consumed by PLAN_AGENT_TIERS below.
-export const FREE_BALANCED: Readonly<Partial<Record<AgentRole, PlanTier>>> = {
-  'senior-architect': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-frontend': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-backend': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-reviewer': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-shipper': { base: 'cheapest', withOpenCode: 'cheapest' },
+export const FREE_BALANCED: Readonly<Partial<Record<AgentRole, TierId>>> = {
+  'senior-architect': 'cheapest',
+  'senior-frontend': 'cheapest',
+  'senior-backend': 'cheapest',
+  'senior-reviewer': 'cheapest',
+  'senior-shipper': 'cheapest',
 };
 // internal: consumed by PLAN_AGENT_TIERS below.
-export const FREE_HIGH: Readonly<Partial<Record<AgentRole, PlanTier>>> = {
-  'senior-architect': { base: 'balanced', withOpenCode: 'balanced' },
-  'senior-frontend': { base: 'balanced', withOpenCode: 'balanced' },
-  'senior-backend': { base: 'balanced', withOpenCode: 'balanced' },
-  'senior-reviewer': { base: 'balanced', withOpenCode: 'balanced' },
+export const FREE_HIGH: Readonly<Partial<Record<AgentRole, TierId>>> = {
+  'senior-architect': 'balanced',
+  'senior-frontend': 'balanced',
+  'senior-backend': 'balanced',
+  'senior-reviewer': 'balanced',
 };
 
-const WINDSURF_FREE_ALL_CHEAPEST: Readonly<Record<AgentRole, PlanTier>> = {
-  'senior-architect': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-frontend': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-backend': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-reviewer': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-tester': { base: 'cheapest', withOpenCode: 'cheapest' },
-  'senior-shipper': { base: 'cheapest', withOpenCode: 'cheapest' },
+const WINDSURF_FREE_ALL_CHEAPEST: Readonly<Record<AgentRole, TierId>> = {
+  'senior-architect': 'cheapest',
+  'senior-frontend': 'cheapest',
+  'senior-backend': 'cheapest',
+  'senior-reviewer': 'cheapest',
+  'senior-tester': 'cheapest',
+  'senior-shipper': 'cheapest',
 };
 
 // Sparse per-(host, plan, level) deviations from DEFAULT_AGENT_TIERS. List only the
 // roles that differ; omit a plan/level/role to inherit the default. Paid plans
 // mostly inherit (empty); free is cheaper.
 export const PLAN_AGENT_TIERS: Readonly<
-  Record<HostModelKey, Partial<Record<UserPlan, Partial<Record<TeamLevel, Partial<Record<AgentRole, PlanTier>>>>>>>
+  Record<HostModelKey, Partial<Record<UserPlan, Partial<Record<TeamLevel, Partial<Record<AgentRole, TierId>>>>>>>
 > = {
-  claude: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
+  claude: {},
   codex: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   cursor: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },
   opencode: { free: { balanced: FREE_BALANCED, high: FREE_HIGH } },

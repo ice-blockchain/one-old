@@ -20,13 +20,22 @@ export { shouldBlockImplementerForPlanBatch as shouldWaitForOpenCodePlanBatch } 
 function orchestratorSubagentsBuild(state: unknown): boolean {
   const s = obj(state);
   if (!s || s.mode !== 'new-project') return false;
+  return subagentsTeamActive(state);
+}
+
+// Phase-independent: is the orchestrator running the senior team in subagents
+// mode? The plan-batch phase gate (new-project OR fresh maintenance queue) lives
+// in `shouldBlockImplementerForPlanBatch`, so this only asks about team mode.
+function subagentsTeamActive(state: unknown): boolean {
+  const s = obj(state);
+  if (!s) return false;
   const performance = obj(s.performance);
   const level = performance && typeof performance.level === 'string' ? performance.level : '';
   return Boolean(level && teamModeForLevel(level) === 'subagents');
 }
 
 function planBatchContext(cwd: string, state: unknown, host: string = detectHost()): { runId: string; pendingRoles: string[] } | null {
-  if (!orchestratorSubagentsBuild(state) || !openCodeDelegationActive(state, host)) return null;
+  if (!subagentsTeamActive(state) || !openCodeDelegationActive(state, host)) return null;
   const runId = ensureCurrentRunId(cwd, state);
   if (!runId || !shouldBlockImplementerForPlanBatch(cwd, runId, state, host)) return null;
   const pendingRoles = pendingOpenCodePlanRoles(cwd, runId, state, host);

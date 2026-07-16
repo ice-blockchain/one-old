@@ -20,13 +20,13 @@ import { asString } from '../../adapters/coerce';
 import { noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
-import { captureClaimDebug, claimThreadRole, readEffectiveState } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
-import { inferTrafficOneSpawnRole } from './role-infer';
+import { captureClaimDebug, claimThreadRole, readEffectiveState, recordRunAgent } from '../../shared/state';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
 
 export function opencodeSubagentBind(ctx: Ctx): HookResult {
   if (ctx.host !== 'opencode' && ctx.host !== 'kilo') return noop();
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
   const sessionId = asString(raw.session_id ?? raw.sessionID ?? raw.sessionId);
@@ -41,12 +41,22 @@ export function opencodeSubagentBind(ctx: Ctx): HookResult {
   // The marker (or "Traffic One <role>" declaration) is the contract; a prompt
   // without one is the orchestrator's own message (the user's request never carries
   // it), so no claim is staked for the parent. See inferTrafficOneSpawnRole.
-  const role = inferTrafficOneSpawnRole({ prompt, message: prompt });
-  if (!role) return noop();
+  const roleResolution = inferTrafficOneSpawnRoleEvidence({ prompt, message: prompt });
+  if (roleResolution.kind !== 'evidence') return noop();
+  const evidence = roleResolution.evidence;
+  const role = evidence.role;
 
   const stateObj = obj(state);
   const runId = stateObj && typeof stateObj.currentRunId === 'string' ? stateObj.currentRunId : null;
   captureClaimDebug(ctx.cwd, runId, 'opencode-subagent-prompt', { sessionId, role });
-  claimThreadRole(ctx.cwd, state, sessionId, role, {});
+  claimThreadRole(ctx.cwd, state, sessionId, role, { recordAgent: false, evidence });
+  if (runId) {
+    recordRunAgent(ctx.cwd, runId, role, {
+      agentId: sessionId,
+      agentType: role,
+      parentSessionId: null,
+      roleSource: evidence.source,
+    });
+  }
   return noop();
 }

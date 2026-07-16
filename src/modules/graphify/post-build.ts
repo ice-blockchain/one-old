@@ -19,6 +19,7 @@ import { bootstrap as gitnexusBootstrapImpl, gitnexusGraphIsEmpty } from '../../
 import { bootstrap as graphifyBootstrapImpl, graphifyGraphIsEmpty } from '../../runners/graphify';
 import { authSatisfied } from '../../shared/auth';
 import { mergeProjectPrefs, readEffectiveState } from '../../shared/state';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { nowIso } from '../../shared/text';
 
 const BUILD_COMMAND_RE = /(^|[\s;&|])(pnpm|npm|yarn|bun|turbo|vite)(\s[^;&|]*?)?\s+build(\s|$)/;
@@ -50,6 +51,7 @@ export function __resetCodeGraphBootstraps(): void {
 }
 
 export function postBuildCodeGraphHint(ctx: Ctx): HookResult {
+  if (pluginUseDeclined(ctx.cwd)) return noop();
   if (!authSatisfied()) return noop();
 
   const command = ctx.input.tool?.command ?? '';

@@ -125,7 +125,7 @@ function runCommand(cfg: HostCommandConfig, ctx: HostRunContext): Promise<HostRu
 export function createDriver(id: HostId): HostDriver {
   return {
     id,
-    isAvailable: (cfg) => hostIsAvailable(cfg),
+    isAvailable: (cfg, env) => hostIsAvailable(cfg, env),
     run: (cfg, ctx) => runCommand(cfg, ctx),
   };
 }

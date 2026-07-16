@@ -14,6 +14,7 @@ import { authSatisfied } from '../../shared/auth';
 import { GITNEXUS_REL, GRAPHIFY_REPORT_REL } from '../../shared/codegraph';
 import { firstEmitThisSession } from '../../shared/once';
 import { hookSessionIdentity, readEffectiveState } from '../../shared/state';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 
 let graphifyHintSentForCwd: string | null = null;
 
@@ -23,6 +24,7 @@ export function resetGraphifyHintThrottle(): void {
 }
 
 export function preGraphifyHint(ctx: Ctx): HookResult {
+  if (pluginUseDeclined(ctx.cwd)) return noop();
   if (!authSatisfied()) return noop();
   const cwd = ctx.cwd;
   if (graphifyHintSentForCwd === cwd) return noop();

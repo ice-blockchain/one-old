@@ -19,14 +19,14 @@ export function writeRequiredScaffold(dir: string): void {
     packageManager: 'pnpm@10.12.1',
     workspaces: ['apps/*', 'packages/*'],
   }), 'utf8');
-  for (const rel of ['apps/web', 'packages/ui/src', 'packages/tailwind-config', 'packages/i18n/src']) {
+  for (const rel of ['apps/web', 'packages/ui/src', 'packages/tailwind-config/src', 'packages/i18n/src']) {
     fs.mkdirSync(path.join(dir, rel), { recursive: true });
   }
   fs.writeFileSync(path.join(dir, 'apps/web/package.json'), '{"name":"web","private":true}', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/ui/package.json'), '{"name":"@app/ui","private":true}', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/ui/src/index.ts'), '', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/tailwind-config/package.json'), '{"name":"@app/tailwind-config","private":true}', 'utf8');
-  fs.writeFileSync(path.join(dir, 'packages/tailwind-config/tailwind.config.ts'), 'export default {};', 'utf8');
+  fs.writeFileSync(path.join(dir, 'packages/tailwind-config/src/globals.css'), '@import "tailwindcss";\n', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/i18n/package.json'), '{"name":"@app/i18n","private":true}', 'utf8');
   fs.writeFileSync(path.join(dir, 'packages/i18n/src/index.ts'), '', 'utf8');
 }

@@ -51,7 +51,7 @@ test('generated skills carry no Traffic One governance boilerplate', () => {
 
 test('all host manifests read the managed ./skills/ dir (per-stack filtering)', () => {
   const version = '0.0.0-test';
-  for (const m of [claudePluginManifest(version), codexPluginManifest(version), cursorPluginManifest(version)]) {
+  for (const m of [claudePluginManifest(version, []), codexPluginManifest(version), cursorPluginManifest(version)]) {
     assert.equal(m.skills, './skills/');
   }
 });

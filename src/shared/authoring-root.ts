@@ -3,7 +3,7 @@
 // never act on it. Two independent signals, so detection survives layout changes:
 //   1. the SOURCE repo — identified by the TypeScript generator/build entries plus
 //      package.json name (independent of where the build emits), and
-//   2. a GENERATED plugin tree — hook-runtime + auth shim + a plugin manifest named
+//   2. a GENERATED plugin tree — hook-runtime + a plugin manifest named
 //      traffic-one, which since the dist/ refactor lives under dist/ (older layouts
 //      kept it at the repo root).
 // Detection walks UP (bounded, stopping at $HOME) so a session cwd or write
@@ -16,6 +16,7 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { pluginRoot } from './paths';
+import { globalTrafficOneDir } from './state/traffic-one-paths';
 
 function manifestNameIsTrafficOne(manifestPath: string): boolean {
   try {
@@ -27,13 +28,12 @@ function manifestNameIsTrafficOne(manifestPath: string): boolean {
   }
 }
 
-// A generated/installed plugin tree rooted at `base`: hook-runtime + auth shim + a
+// A generated/installed plugin tree rooted at `base`: hook-runtime + a
 // plugin manifest named traffic-one. Covers both the legacy root layout (base =
 // repo root) and the current dist/ layout (base = <repo>/dist).
 function hasGeneratedPluginTree(base: string): boolean {
   const hookRuntime = path.join(base, 'scripts', 'hook-runtime.cjs');
-  const authScript = path.join(base, 'scripts', 'traffic-one-auth.cjs');
-  if (!fs.existsSync(hookRuntime) || !fs.existsSync(authScript)) return false;
+  if (!fs.existsSync(hookRuntime)) return false;
   const claudeManifest = path.join(base, '.claude-plugin', 'plugin.json');
   const codexManifest = path.join(base, '.codex-plugin', 'plugin.json');
   return manifestNameIsTrafficOne(fs.existsSync(claudeManifest) ? claudeManifest : codexManifest);
@@ -110,4 +110,56 @@ export function isInsidePluginAuthoringRoot(p: string): boolean {
 
 export function isPluginAuthoringRoot(cwd: string): boolean {
   return isInsidePluginAuthoringRoot(cwd);
+}
+
+// Machine-config space is never an end-user project: $HOME itself, the
+// filesystem root, and the machine-wide state dir (~/.traffic-one or
+// $XDG_STATE_HOME/traffic-one) including anything inside it. Without this, a
+// session whose cwd is $HOME (an editor opened with no folder) onboards home as
+// an "existing codebase" and materializes the project tree INTO the machine
+// dir — <$HOME>/.traffic-one IS ~/.traffic-one — interleaving project
+// artifacts (.one.json, manifest.json, rules/, skills/) with machine state.
+// Symlink-resolved compare (best-effort): macOS spells the same dir /var/… and
+// /private/var/…, and a symlinked $HOME must not dodge the guard on spelling.
+function realResolve(p: string): string {
+  const resolved = path.resolve(p);
+  try {
+    return fs.realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+export function isMachineConfigRoot(p: string): boolean {
+  const resolved = realResolve(p);
+  if (resolved === path.parse(resolved).root) return true; // filesystem root
+  let home = '';
+  try { home = realResolve(os.homedir()); } catch { /* no home */ }
+  if (home && resolved === home) return true;
+  const envHome = process.env.HOME ? realResolve(process.env.HOME) : '';
+  if (envHome && resolved === envHome) return true;
+  // System temp ROOTS are shared scratch space, never a project root themselves:
+  // a stray `.traffic-one` minted into a /tmp-family dir (a scratch write with a
+  // temp cwd) must not make every later temp-path hook adopt e.g. /private/tmp
+  // as an onboarded project (the stale-bootstrap incident: reads of harness
+  // task-output files re-served the use-plugin question from that root).
+  // EXACT roots only — a real (or test) project in a temp SUBDIRECTORY stays
+  // fully eligible.
+  for (const tmp of [safeTmpDir(), '/tmp', '/private/tmp', '/var/tmp']) {
+    if (tmp && resolved === realResolve(tmp)) return true;
+  }
+  const globalDir = realResolve(globalTrafficOneDir());
+  return resolved === globalDir || resolved.startsWith(globalDir + path.sep);
+}
+
+function safeTmpDir(): string {
+  try { return os.tmpdir(); } catch { return ''; }
+}
+
+// The single stand-down predicate for "never treat this dir as an end-user
+// project": machine-config space, the plugin's own repo, or a generated plugin
+// tree. Every gate/materializer/state writer that adopts a project root guards
+// on this — not on isPluginAuthoringRoot alone.
+export function isNonProjectRoot(cwd: string): boolean {
+  return isMachineConfigRoot(cwd) || isInsidePluginAuthoringRoot(cwd);
 }

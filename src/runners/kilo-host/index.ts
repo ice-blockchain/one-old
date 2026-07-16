@@ -6,6 +6,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../hooks/fail-closed';
 import {
   KILO_HOOK_CHAT_MESSAGE,
   KILO_HOOK_EVENT,
@@ -400,39 +401,6 @@ function permissionRequestFromEvent(input) {
   return { event, props };
 }
 
-async function maybeThen(value) {
-  if (value && typeof value.then === 'function') return value;
-  return value;
-}
-
-async function rejectPermission(pluginCtx, permission, projectRoot, reason) {
-  const client = asObject(pluginCtx.client);
-  const requestID = firstString(permission.id, permission.requestID, permission.permissionID);
-  const sessionID = firstString(permission.sessionID, permission.sessionId, permission.session_id);
-  if (!requestID) return false;
-  const message = firstString(reason).slice(0, 4000);
-  const permissionClient = asObject(client.permission);
-  if (permissionClient && typeof permissionClient.reply === 'function') {
-    await maybeThen(permissionClient.reply({
-      requestID,
-      directory: projectRoot,
-      workspace: projectRoot,
-      reply: 'reject',
-      ...(message ? { message } : {}),
-    }));
-    return true;
-  }
-  if (sessionID && typeof client.postSessionIdPermissionsPermissionId === 'function') {
-    await maybeThen(client.postSessionIdPermissionsPermissionId({
-      path: { id: sessionID, permissionID: requestID },
-      query: { directory: projectRoot },
-      body: { response: 'reject' },
-    }));
-    return true;
-  }
-  return false;
-}
-
 function trafficOneConfigDir() {
   try { return path.dirname(path.dirname(fileURLToPath(import.meta.url))); } catch { return ''; }
 }
@@ -547,7 +515,7 @@ function runTrafficOne(subcommand, payload) {
   if (!projectRoot) { debugLog('skip-no-root', { subcommand, cwd: payload.cwd || null }); return { kind: 'noop' }; }
   const nodePath = resolveNodeExecutable();
   if (!nodePath) {
-    const reason = 'Traffic One Kilo pre-tool gate could not find a Node.js runtime, so this tool call is blocked fail-closed.';
+    const reason = ${JSON.stringify(`Traffic One Kilo pre-tool gate could not find a Node.js runtime, so this tool call is blocked fail-closed. ${PRE_TOOL_REMEDIATION}`)};
     return subcommand === 'before-tool-use' ? { kind: 'deny', reason } : { kind: 'noop' };
   }
   const input = JSON.stringify({ ...payload, cwd: projectRoot, projectRoot, workspaceRoot: projectRoot });
@@ -560,7 +528,7 @@ function runTrafficOne(subcommand, payload) {
   if (result.error || result.status !== 0) {
     debugLog('spawn-fail', { subcommand, projectRoot, execPath: process.execPath, nodePath, status: result.status, error: result.error ? String(result.error.message || result.error) : null, stderr: String(result.stderr || '').slice(0, 500) });
     if (subcommand === 'before-tool-use') {
-      return { kind: 'deny', reason: 'Traffic One Kilo pre-tool gate failed before it could make a decision, so this tool call is blocked fail-closed.' };
+      return { kind: 'deny', reason: ${JSON.stringify(preToolFailureReason('Kilo'))} };
     }
     return { kind: 'noop' };
   }
@@ -629,8 +597,12 @@ async function permissionAsk(input, output, pluginCtx) {
   const result = runTrafficOne('before-tool-use', normalizePermissionPayload(${jsString(KILO_HOOK_PERMISSION_ASK)}, input, output, pluginCtx));
   if (result && result.kind === 'deny') {
     const out = asObject(output);
-    out.status = 'deny';
-    debugLog('permission-deny', { reason: denyMessage(result).slice(0, 300) });
+    // Do not answer Kilo's permission prompt on behalf of the user. Kilo renders an
+    // automatic reject as "The user rejected permission", even when Traffic One
+    // was the caller. The canonical tool.execute.before gate still blocks the tool
+    // with its actionable reason; this hook only leaves the diagnostic for the host.
+    out.metadata = { ...asObject(out.metadata), trafficOneWarning: denyMessage(result) };
+    debugLog('permission-advisory', { reason: denyMessage(result).slice(0, 300) });
   }
 }
 
@@ -663,18 +635,15 @@ async function event(input, pluginCtx) {
   const payload = normalizePermissionPayload('permission.asked', permission.props, {}, pluginCtx);
   const result = runTrafficOne('before-tool-use', payload);
   if (!result || result.kind !== 'deny') return;
-  const reason = denyMessage(result) || 'Traffic One denied this Kilo tool call.';
-  try {
-    const projectRoot = trafficOneRootFor(payload.cwd || process.cwd());
-    const rejected = await rejectPermission(pluginCtx, permission.props, projectRoot, reason);
-    debugLog(rejected ? 'permission-event-deny' : 'permission-event-deny-unanswered', {
-      sessionID: firstString(permission.props.sessionID),
-      requestID: firstString(permission.props.id),
-      reason: reason.slice(0, 300),
-    });
-  } catch (err) {
-    debugLog('permission-event-deny-failed', { err: String(err && err.message || err), reason: reason.slice(0, 300) });
-  }
+  // This event can arrive after a tool preflight has already made the correct
+  // decision. Never call client.permission.reply({ reply: 'reject' }) here: that
+  // makes Kilo attribute the rejection to the user. The pre-tool hook remains the
+  // enforcement point; retain an advisory trace for diagnosing payload drift.
+  debugLog('permission-event-advisory', {
+    sessionID: firstString(permission.props.sessionID),
+    requestID: firstString(permission.props.id),
+    reason: denyMessage(result).slice(0, 300),
+  });
 }
 
 export const TrafficOne = async (ctx = {}) => {

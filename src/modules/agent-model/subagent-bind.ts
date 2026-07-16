@@ -6,21 +6,70 @@
 
 import { asString } from '../../adapters/coerce';
 import { obj } from '../../shared/obj';
-import { deny, noop } from '../../core/result';
+import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { detectHostPlan } from '../../shared/host-plan';
 import { cursorModelsFresh } from '../../shared/materialize/cursor-models';
+import { effectiveTierForRole, modelForRoleHost } from '../../shared/performance';
 import { recordMainOnboardingSession } from '../../shared/onboarding-server/onboarding-session';
-import { captureClaimDebug, claimThreadRole, hookSessionIdentity, inferRoleFromTranscript, readEffectiveState, recordRunAgent, transcriptThreadId } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
+import {
+  captureClaimDebug,
+  claimThreadRole,
+  ensureCurrentRunId,
+  hookSessionIdentity,
+  inferRoleEvidenceFromTranscript,
+  readCodexSessionMetaIdentity,
+  readEffectiveState,
+  recordCursorSpawnObservation,
+  recordRunAgent,
+  transcriptThreadId,
+  type RoleEvidence,
+  type RoleEvidenceResolution,
+} from '../../shared/state';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { modelChoiceReplyPending } from './model-choice';
-import { inferTrafficOneSpawnRole } from './role-infer';
+import { inferTrafficOneSpawnRoleEvidence } from './role-infer';
+import { settleCorrelatedCursorRetryOnStart } from './cursor-failures';
+
+function evidenceTier(evidence: RoleEvidence): number {
+  if (evidence.source.startsWith('codex-session-meta-') || evidence.source.startsWith('host-')) return 1;
+  if (evidence.source === 'spawn-task-name') return 2;
+  if (evidence.authority === 'explicit') return 3;
+  return 4;
+}
+
+function resolutionTier(resolution: RoleEvidenceResolution): number {
+  if (resolution.kind === 'none') return Number.POSITIVE_INFINITY;
+  const items = resolution.kind === 'evidence' ? [resolution.evidence] : resolution.candidates;
+  return Math.min(...items.map(evidenceTier));
+}
+
+function combineRoleEvidence(...resolutions: RoleEvidenceResolution[]): RoleEvidenceResolution {
+  const bestTier = Math.min(...resolutions.map(resolutionTier));
+  if (!Number.isFinite(bestTier)) return { kind: 'none' };
+  const relevant = resolutions.filter((resolution) => resolutionTier(resolution) === bestTier);
+  const candidates = relevant.flatMap((resolution) => (
+    resolution.kind === 'evidence' ? [resolution.evidence]
+      : resolution.kind === 'conflict' ? resolution.candidates
+        : []
+  ));
+  const roles = new Set(candidates.map((candidate) => candidate.role));
+  return roles.size === 1
+    ? { kind: 'evidence', evidence: candidates[0]! }
+    : { kind: 'conflict', candidates };
+}
 
 export function subagentStartBind(ctx: Ctx): HookResult {
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+  // Cursor may fire SubagentStart from a nested package (or one of its own
+  // internal working directories). Resolve the authoritative project root once
+  // and use it for every state read/write below; otherwise a start event can
+  // split the run across nested `.traffic-one` trees.
+  const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  if (pluginUseDeclined(cwd)) return noop();
 
   const raw = obj(ctx.input.raw) || {};
+  const payload = obj(raw.payload) || {};
 
   // Record the PARENT (orchestrator) session as a known MAIN onboarding session. subagentStart
   // fires in the spawner's context (its session_id / parent_conversation_id IS the orchestrator)
@@ -28,12 +77,17 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // the subagent's own (differently-id'd) events as foreign. Done EARLY, before the subagents-mode
   // guard below — an onboarding-incomplete build has no team prefs yet, but this is exactly when a
   // prematurely-spawned subagent must NOT be sent to the wizard. Root-resolved to match the gate.
-  const parentSession = asString(raw.parent_conversation_id) || hookSessionIdentity(raw).sessionId;
+  const parentSession = asString(
+    raw.parent_conversation_id
+    ?? raw.parentConversationId
+    ?? payload.parent_conversation_id
+    ?? payload.parentConversationId,
+  ) || hookSessionIdentity(raw).sessionId;
   if (parentSession) {
-    recordMainOnboardingSession(resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot }), parentSession);
+    recordMainOnboardingSession(cwd, parentSession);
   }
 
-  const state = readEffectiveState(ctx.cwd);
+  const state = readEffectiveState(cwd, { ...process.env, TRAFFIC_ONE_HOST: ctx.host });
   const team = obj(obj(state)?.team);
   const stateObj = obj(state);
   const runId = stateObj && typeof stateObj.currentRunId === 'string' ? stateObj.currentRunId : null;
@@ -42,46 +96,88 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // mode — captured BEFORE the field guards so we learn whether agent-teams even
   // fires SubagentStart and what identity it carries (see
   // project_agent_teams_claim_deadlock). Does NOT affect the binding below.
-  if (team && team.mode === 'subagents') captureClaimDebug(ctx.cwd, runId, 'subagent-start', raw);
+  if (team && team.mode === 'subagents') captureClaimDebug(cwd, runId, 'subagent-start', raw);
   if (!team || team.mode !== 'subagents') return noop();
 
   // SubagentStart fires in the spawner's context, so session_id is the parent id.
   const identity = hookSessionIdentity(raw);
-  const transcriptPath = asString(raw.transcript_path ?? raw.transcriptPath);
+  const transcriptPath = identity.transcriptPath || '';
+  const transcriptThread = transcriptThreadId(transcriptPath);
+  const transcriptIsChildOwned = Boolean(
+    transcriptThread && (!identity.sessionId || transcriptThread !== identity.sessionId),
+  );
   // Role: Claude declares it via agent_type, Cursor via subagent_type (both resolved
   // by hookSessionIdentity.declaredRole). Cursor may also send a generic
-  // subagent_type and put the real `[t1-role: senior-x]` marker in the task body;
-  // Codex carries no role, so infer from the child transcript when present.
-  const taskText = asString(raw.task ?? raw.prompt ?? raw.message ?? raw.instructions ?? raw.description);
-  const role = identity.declaredRole || inferTrafficOneSpawnRole({
-    subagent_type: raw.subagent_type,
-    subagentType: raw.subagentType,
-    agent_type: raw.agent_type,
-    agentType: raw.agentType,
-    agent: raw.agent,
-    agentName: raw.agentName,
-    agent_name: raw.agent_name,
-    role: raw.role,
-    type: raw.type,
-    prompt: taskText,
-    message: raw.message,
-    instructions: raw.instructions,
-    description: raw.description,
-  }) || (transcriptPath ? inferRoleFromTranscript(transcriptPath) : '');
-  if (!role) return noop();
-
-  if (ctx.host === 'cursor' && stateObj) {
-    const captureMissing = stateObj.mode === 'new-project' && !cursorModelsFresh(ctx.cwd, detectHostPlan('cursor'));
-    const choicePending = modelChoiceReplyPending(ctx.cwd, stateObj);
-    if (captureMissing || choicePending) {
-      const reason = captureMissing
-        ? 'traffic-one — STOP: Cursor model capture is required before starting the senior team. Write `.traffic-one/cursor-models.json`, then rerun model-gate. This subagent must stop now and must not write files.'
-        : 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
-      return deny(`${reason}\nBlocked role: ${role}.`, {
-        agentMessage: `${reason} Blocked role: ${role}.`,
-      });
-    }
+  // subagent_type and put the real role marker in the task body. Codex identity
+  // comes from exact task_name when the hook carries it or line-zero child
+  // session_meta; encrypted task content is never treated as role evidence.
+  const inputResolution = inferTrafficOneSpawnRoleEvidence(raw);
+  // Cursor SubagentStart normally points at the parent's transcript. Never let
+  // historical user records there grant the new child a role; the task body or
+  // the later child-owned transcript remains available. Other hosts retain their
+  // established readable-transcript compatibility.
+  const mayUseTranscript = Boolean(
+    transcriptPath && (ctx.host !== 'cursor' || transcriptIsChildOwned),
+  );
+  const codexMeta = ctx.host === 'codex' && transcriptPath
+    ? readCodexSessionMetaIdentity(transcriptPath)
+    : null;
+  const codexIdentityMismatch = Boolean(codexMeta && (
+    (codexMeta.threadId && transcriptThread && codexMeta.threadId.toLowerCase() !== transcriptThread.toLowerCase())
+    || (codexMeta.threadId && identity.agentId && codexMeta.threadId.toLowerCase() !== identity.agentId.toLowerCase())
+    || (codexMeta.parentThreadId && identity.sessionId && codexMeta.parentThreadId !== identity.sessionId)
+  ));
+  const transcriptResolution = mayUseTranscript
+    ? inferRoleEvidenceFromTranscript(transcriptPath)
+    : { kind: 'none' } as const;
+  const resolvedEvidence = codexIdentityMismatch
+    ? { kind: 'conflict', candidates: [] } as RoleEvidenceResolution
+    : combineRoleEvidence(inputResolution, transcriptResolution);
+  const evidence = resolvedEvidence.kind === 'evidence' ? resolvedEvidence.evidence : null;
+  const role = evidence?.role || '';
+  if (!role) {
+    // Do not silently let an unbound Traffic One child proceed toward its first
+    // write. Keep this diagnostic deliberately structural/bounded: the general
+    // SubagentStart capture above already truncates raw strings, while this row
+    // records only the identity fields needed to diagnose attribution drift.
+    // Returning context is non-blocking (SubagentStart is not a PreToolUse
+    // permission event) and, critically, happens before run-id minting or any
+    // claim/registry mutation below.
+    const diagnosticRunId = runId || ensureCurrentRunId(cwd, state);
+    captureClaimDebug(cwd, diagnosticRunId, 'subagent-start-role-unresolved', {
+      host: ctx.host,
+      agentId: identity.agentId,
+      sessionId: identity.sessionId,
+      parentSessionId: identity.parentSessionId,
+      threadId: identity.threadId,
+      declaredRole: identity.declaredRole,
+      hasTranscriptPath: Boolean(transcriptPath),
+      transcriptIdentityMismatch: codexIdentityMismatch,
+      taskName: asString(raw.task_name ?? raw.taskName).slice(0, 96),
+      conflicts: resolvedEvidence.kind === 'conflict'
+        ? resolvedEvidence.candidates.map(({ role: candidateRole, source }) => ({ role: candidateRole, source }))
+        : [],
+    });
+    return context(
+      'Traffic One could not bind this child thread to a senior role, so no per-run role claim was created. '
+      + 'Do not write files from this child until the parent/orchestrator repairs the spawn. '
+      + 'Parent/orchestrator: stop or replace this child and retry the same role. On Codex use the exact canonical '
+      + '`task_name` contract (`senior_architect`, `senior_frontend`, `senior_backend`, `senior_reviewer`, '
+      + '`senior_tester`, or `senior_shipper`). Current Codex encrypts the spawn message in the child rollout, '
+      + 'so task name and line-zero `session_meta`—not prompt prose—carry identity. On hosts with readable task '
+      + 'records, retain the unclaimable documentation placeholder `[t1-role: senior-<role>]` and substitute the '
+      + 'actual role in the task message; marker position is not an identity requirement. Do not self-assert a role in assistant prose.',
+    );
   }
+
+  // PERSISTING RUN-ID MINT: Codex fires no PreToolUse for spawns, so the
+  // ensureCurrentRunId self-heal inside agentModelGate never runs there —
+  // SubagentStart is that host's spawn signal. Without this, an existing-codebase
+  // Codex build finishes setup with NO currentRunId in project state, and the
+  // run-team write gate denies the architect's first coordination write
+  // (run-team-not-subagent) against a run id that was never persisted.
+  // Idempotent everywhere else (returns the existing id unchanged).
+  const boundRunId = runId || ensureCurrentRunId(cwd, state);
 
   // REUSE REGISTRY (Cursor): Cursor surfaces the spawned subagent id on subagent-start
   // as `subagent_id` (= tool_<uuid>) — the PostToolUse(Task) recorder never sees it, so
@@ -92,26 +188,89 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // Cursor-only (gated on the subagent_id field; Claude/Codex record via the PostToolUse
   // recorder, which sees their agent_id in the tool result).
   const cursorSubagentId = asString(raw.subagent_id);
-  if (cursorSubagentId && runId) {
-    recordRunAgent(ctx.cwd, runId, role, {
+  if (ctx.host === 'cursor' && cursorSubagentId && boundRunId) {
+    const level = typeof stateObj?.performance === 'object'
+      && stateObj.performance !== null
+      && typeof (stateObj.performance as Record<string, unknown>).level === 'string'
+      ? String((stateObj.performance as Record<string, unknown>).level)
+      : '';
+    const overrides = team && obj(team.overrides) ? team.overrides as Record<string, unknown> : null;
+    const planCtx = { host: 'cursor', plan: detectHostPlan('cursor') };
+    const tier = effectiveTierForRole(level, role, overrides, planCtx);
+    const expectedModel = modelForRoleHost(level, role, 'cursor', overrides, planCtx);
+    const requestedModel = asString(raw.subagent_model ?? raw.subagentModel ?? raw.model);
+    const rawStartedAt = raw.started_at ?? raw.startedAt ?? raw.timestamp ?? raw.created_at ?? raw.createdAt;
+    const parsedStartedAt = typeof rawStartedAt === 'number' && Number.isFinite(rawStartedAt)
+      ? (rawStartedAt < 1_000_000_000_000 ? rawStartedAt * 1000 : rawStartedAt)
+      : Date.parse(asString(rawStartedAt));
+
+    // Immutable spawn evidence survives even when the child fails before Cursor
+    // emits postToolUse/subagentStop and the live-agent registry is later retired.
+    // Task attempts denied in preToolUse never reach SubagentStart, so they create
+    // no observation and cannot be mistaken for a model that actually ran.
+    let recordedCursorStart = false;
+    if (tier && expectedModel && requestedModel && parentSession) {
+      recordedCursorStart = Boolean(recordCursorSpawnObservation(cwd, boundRunId, {
+        parentSessionId: parentSession,
+        toolCallId: cursorSubagentId,
+        role,
+        requestedModel,
+        tier,
+        expectedModel,
+        ...(Number.isFinite(parsedStartedAt) ? { startedAtMs: parsedStartedAt } : {}),
+      }));
+    }
+    if (recordedCursorStart && requestedModel && parentSession) {
+      settleCorrelatedCursorRetryOnStart(cwd, boundRunId, {
+        parentSessionId: parentSession,
+        role,
+        startedToolCallId: cursorSubagentId,
+        startedModel: requestedModel,
+      });
+    }
+  }
+
+  if (ctx.host === 'cursor' && stateObj) {
+    const captureMissing = stateObj.mode === 'new-project' && !cursorModelsFresh(cwd, detectHostPlan('cursor'));
+    const choicePending = modelChoiceReplyPending(cwd, stateObj);
+    if (captureMissing || choicePending) {
+      const reason = captureMissing
+        ? 'traffic-one — STOP: Cursor model capture is required before starting the senior team. Run the internal model-gate `--capture-models` command with the exact offered ids, then rerun model-gate. This subagent must stop now and must not write files.'
+        : 'traffic-one — STOP: model choice required before starting the senior team. Reply `fallback` to use the listed fallback model(s), or `enable` to enable the picked model(s) and retry. Do not spawn subagents, scaffold directly, or edit project files until the user replies. This subagent must stop now and must not write files.';
+      return deny(`${reason}\nBlocked role: ${role}.`, {
+        agentMessage: `${reason} Blocked role: ${role}.`,
+      });
+    }
+  }
+
+  // Keep the immutable start observation above even when the already-started
+  // child must be stopped for a pending choice. The reusable live-agent slot,
+  // however, is written only after that guard passes; a denied child must not
+  // block the replacement as falsely live.
+  if (ctx.host === 'cursor' && cursorSubagentId && boundRunId) {
+    recordRunAgent(cwd, boundRunId, role, {
       agentId: cursorSubagentId,
       toolCallId: cursorSubagentId,
-      model: asString(raw.subagent_model) || null,
+      model: asString(raw.subagent_model ?? raw.subagentModel ?? raw.model) || null,
       agentType: asString(raw.subagent_type) || null,
-      parentSessionId: identity.sessionId,
+      parentSessionId: parentSession,
+      roleSource: evidence?.source || null,
+      transcriptPath: transcriptPath || null,
     });
   }
 
   const copilotAgentId = ctx.host === 'copilot'
     ? asString(raw.agent_id ?? raw.agentId ?? raw.agentDisplayName ?? raw.agent_display_name ?? raw.name)
     : '';
-  if (copilotAgentId && runId) {
-    recordRunAgent(ctx.cwd, runId, role, {
+  if (copilotAgentId && boundRunId) {
+    recordRunAgent(cwd, boundRunId, role, {
       agentId: copilotAgentId,
       resumeId: copilotAgentId,
       model: asString(raw.model) || null,
       agentType: asString(raw.agentName ?? raw.agent_name ?? raw.agent_type ?? raw.agentType) || null,
       parentSessionId: identity.sessionId,
+      roleSource: evidence?.source || null,
+      transcriptPath: transcriptPath || null,
     });
   }
 
@@ -122,10 +281,13 @@ export function subagentStartBind(ctx: Ctx): HookResult {
   // duplicate claim the child can never resolve. For Cursor, only bind when the
   // transcript filename yields a child id distinct from the parent session; otherwise
   // resolveRunAgentContext will bind from Cursor's child transcript cache on first write.
-  const transcriptThread = transcriptThreadId(transcriptPath);
   const threadId = ctx.host === 'cursor' ? transcriptThread : (identity.agentId || transcriptThread);
   if (threadId && transcriptPath && threadId !== identity.sessionId) {
-    claimThreadRole(ctx.cwd, state, threadId, role, { parentSessionId: identity.sessionId });
+    claimThreadRole(cwd, state, threadId, role, {
+      parentSessionId: identity.sessionId,
+      transcriptPath,
+      evidence: evidence || undefined,
+    });
   }
   return noop();
 }

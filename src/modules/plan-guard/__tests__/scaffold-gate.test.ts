@@ -6,14 +6,27 @@ import * as path from 'path';
 
 import { SCAFFOLD_RE, scaffoldGate } from '../scaffold-gate';
 import type { Ctx, HookInput, HostId, ToolClass } from '../../../core/types';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
 
 function withProject(state: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-scaffold-'));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  const { team: teamExtra, performance: performanceExtra, ...sharedState } = state;
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+  fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(sharedState), 'utf8');
+  if (teamExtra || performanceExtra) {
+    const team = teamExtra && typeof teamExtra === 'object'
+      ? teamExtra as Record<string, unknown>
+      : { mode: 'main-agent', source: 'prompted' };
+    const performance = performanceExtra && typeof performanceExtra === 'object'
+      ? performanceExtra as Record<string, unknown>
+      : { level: team.mode === 'subagents' ? 'high' : 'low', source: 'prompted' };
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(performance, team, 'pro'),
+    ), 'utf8');
+  }
   try {
     fn(dir);
   } finally {
@@ -76,6 +89,22 @@ test('scaffold gate: an on-stack scaffolder before plan.md is denied (architect-
     const r = scaffoldGate(ctxFor(cwd, 'npm create vite@latest apps/web -- --template react-ts'));
     assert.equal(r.kind, 'deny');
     if (r.kind === 'deny') assert.ok(/senior-architect|plan\.md/.test(r.reason));
+  });
+});
+
+test('scaffold gate: Low/main-agent projects are told to write the plan locally, never to spawn Windsurf profiles', () => {
+  withProject({
+    ...NEW_REACT_VITE,
+    team: { mode: 'main-agent' },
+    performance: { level: 'low' },
+  }, (cwd) => {
+    const r = scaffoldGate(ctxFor(cwd, 'npm create vite@latest apps/web -- --template react-ts'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /Low\/main-agent mode/);
+      assert.match(r.reason, /Do NOT call `run_subagent`/);
+      assert.doesNotMatch(r.reason, /profile `senior-architect`/);
+    }
   });
 });
 

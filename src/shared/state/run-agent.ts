@@ -4,11 +4,12 @@
 // scripts/hook-runtime/state/run-agent.cjs.
 
 import { obj, type Rec } from '../obj';
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import { parseJson, readJson, writeJson } from '../fsjson';
 import { normalizeRelPath, type AssignedScope } from '../scope';
 import {
@@ -17,6 +18,7 @@ import {
   SUBAGENT_STALE_MS,
   VALID_AGENT_ROLES,
 } from '../../config/state';
+import { TIER_IDS, type TierId } from '../../config/model-tiers';
 import { stateTimestamp } from './io';
 import { activeAgentRole, getSpawnIndex, isSubagentSession, stackFingerprint } from './materialization';
 import { writeState } from './normalize';
@@ -81,9 +83,12 @@ function fallbackClaimsDir(cwd: string, runId: string): string {
 function fallbackClaimFile(cwd: string, runId: string, target: string): string {
   return path.join(fallbackClaimsDir(cwd, runId), `${safePathSegment(target)}.json`);
 }
+function authoritativeRebindJournalFile(cwd: string, runId: string, threadId: string): string {
+  return path.join(runDir(cwd, runId), 'transactions', `rebind-${safePathSegment(threadId)}.json`);
+}
 
 export function ensureRunLedger(cwd: string, runId: unknown, patch: Rec = {}): Rec | null {
-  if (isPluginAuthoringRoot(cwd)) return null;
+  if (isNonProjectRoot(cwd)) return null;
   if (typeof runId !== 'string' || !runId.trim()) return null;
   const id = runId.trim();
   const now = stateTimestamp();
@@ -151,25 +156,182 @@ export function transcriptThreadId(transcriptPath: unknown): string | null {
   return match ? (match[1] as string).toLowerCase() : null;
 }
 
-// Infer the Traffic One role assigned to a subagent by reading its rollout
-// (transcript_path) and matching the spawn assignment. Two anchored shapes cover
-// the prompts orchestrators actually write (observed live on Codex):
-//   - "You are … senior-X" (within one clause), and
-//   - "Traffic One senior-X role / fix-cycle / second pass / fallback …" — the
-//     dominant real-world phrasing; without it every Codex worker failed the
-//     per-thread self-heal and fell through to racy pending-claim matching.
-// Both are clause-anchored so a prompt that ALSO names other roles (e.g. "you are
-// senior-frontend … senior-backend owns the API") still resolves the assigned
-// role, not a cross-referenced one. Best-effort: returns null if the file is
-// unreadable or the assignment isn't present yet (SubagentStart can fire before
-// the rollout is flushed; the child's first write re-attempts when it is).
-const SPAWN_ROLE_RES = [
-  // Structured marker first — the contract every template-driven prompt carries
-  // (`[t1-role: senior-x]`); phrasing heuristics below are the fallback.
-  /\[t1-role:\s*(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\s*\]/i,
+export type RoleEvidenceAuthority = 'authoritative' | 'explicit' | 'heuristic';
+
+export interface RoleEvidence {
+  role: string;
+  source: string;
+  authority: RoleEvidenceAuthority;
+}
+
+// Evidence is persisted across hooks, so precedence must survive beyond the
+// resolver invocation that first saw it. Host/session metadata is the strongest
+// correction tier; an exact task_name may repair only weaker legacy evidence,
+// while readable prompt evidence is compatibility-only.
+function roleSourceTier(source: unknown): number {
+  if (typeof source !== 'string' || !source) return 0;
+  if (source.startsWith('codex-session-meta-') && source !== 'spawn-task-name') return 3;
+  if (source === 'host-declared-role'
+    || source === 'host-agent-role'
+    || source === 'host-agent-path'
+    || source === 'host-agent-type'
+    || source === 'host-subagent-type'
+    || source === 'host-profile'
+    || source === 'host-agent-name') return 3;
+  if (source === 'spawn-task-name') return 2;
+  if (source.includes('marker') || source.includes('declaration')) return 1;
+  return 0;
+}
+
+function isCorrectionGradeEvidence(
+  evidence: RoleEvidence | null | undefined,
+  existingSource?: unknown,
+): evidence is RoleEvidence {
+  if (!evidence || evidence.authority !== 'authoritative') return false;
+  const incomingTier = roleSourceTier(evidence.source);
+  // Correction requires strictly stronger evidence. Conflicting host/session
+  // metadata — or two exact task_name values — is an unresolved same-tier
+  // conflict, never a last-writer-wins rebind.
+  return incomingTier >= 2 && roleSourceTier(existingSource) < incomingTier;
+}
+
+function strongestRoleSource(incoming: unknown, existing: unknown): string | null {
+  const next = firstString(incoming);
+  const prior = firstString(existing);
+  if (!next) return prior;
+  if (!prior) return next;
+  return roleSourceTier(next) >= roleSourceTier(prior) ? next : prior;
+}
+
+export type RoleEvidenceResolution =
+  | { kind: 'evidence'; evidence: RoleEvidence }
+  | { kind: 'conflict'; candidates: RoleEvidence[] }
+  | { kind: 'none' };
+
+export interface CodexSessionMetaIdentity {
+  threadId: string | null;
+  parentThreadId: string | null;
+  role: RoleEvidenceResolution;
+}
+
+const ROLE_MARKER_RE = /\[t1-role:\s*((?:senior[-_](?:architect|frontend|backend|reviewer|tester|shipper)|quick[-_]fix)(?:[-_]\d+)?)\s*\]/ig;
+const ROLE_DECLARATION_RES = [
   /\byou are\b[^.\n]{0,40}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
   /\btraffic[\s-]?one\b[^.\n]{0,60}?\b(senior-(?:architect|frontend|backend|reviewer|tester|shipper))\b/i,
 ] as const;
+
+// Normalize only an exact role-shaped namespace/path leaf. Host-generic values
+// such as `default`, `worker`, or `general` are absent evidence, not conflicts.
+export function normalizeRoleIdentity(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const leaf = (value.trim().replace(/\\/g, '/').split(/[/:]/).pop() || '').trim().toLowerCase();
+  const withoutReplacement = leaf.replace(/(?:_|-)([1-9]\d*)$/, '');
+  const role = withoutReplacement.replace(/_/g, '-');
+  return VALID_AGENT_ROLES.has(role) ? role : null;
+}
+
+function resolveRoleCandidates(candidates: RoleEvidence[]): RoleEvidenceResolution {
+  if (!candidates.length) return { kind: 'none' };
+  const roles = new Set(candidates.map((candidate) => candidate.role));
+  return roles.size === 1
+    ? { kind: 'evidence', evidence: candidates[0]! }
+    : { kind: 'conflict', candidates };
+}
+
+function roleCandidate(value: unknown, source: string, authority: RoleEvidenceAuthority): RoleEvidence | null {
+  const role = normalizeRoleIdentity(value);
+  return role ? { role, source, authority } : null;
+}
+
+function compactCandidates(values: Array<RoleEvidence | null>): RoleEvidence[] {
+  return values.filter((value): value is RoleEvidence => Boolean(value));
+}
+
+function codexSessionMetaIdentityFromRecord(parsed: unknown): CodexSessionMetaIdentity | null {
+  const record = obj(parsed);
+  if (!record || record.type !== 'session_meta') return null;
+  const payload = obj(record.payload) || {};
+  const source = obj(payload.source) || {};
+  const subagent = obj(source.subagent) || {};
+  const spawn = obj(subagent.thread_spawn) || obj(subagent.threadSpawn) || {};
+  const threadSource = firstString(payload.thread_source, payload.threadSource);
+  if (threadSource !== 'subagent' && !obj(source.subagent)) return null;
+
+  const hostCandidates = compactCandidates([
+    roleCandidate(payload.agent_type, 'codex-session-meta-agent-type', 'authoritative'),
+    roleCandidate(payload.agentType, 'codex-session-meta-agent-type', 'authoritative'),
+    roleCandidate(payload.subagent_type, 'codex-session-meta-subagent-type', 'authoritative'),
+    roleCandidate(payload.subagentType, 'codex-session-meta-subagent-type', 'authoritative'),
+    roleCandidate(spawn.agent_type, 'codex-session-meta-agent-type', 'authoritative'),
+    roleCandidate(spawn.agentType, 'codex-session-meta-agent-type', 'authoritative'),
+    roleCandidate(spawn.subagent_type, 'codex-session-meta-subagent-type', 'authoritative'),
+    roleCandidate(spawn.subagentType, 'codex-session-meta-subagent-type', 'authoritative'),
+    roleCandidate(payload.agent_role, 'codex-session-meta-agent-role', 'authoritative'),
+    roleCandidate(payload.agentRole, 'codex-session-meta-agent-role', 'authoritative'),
+    roleCandidate(spawn.agent_role, 'codex-session-meta-spawn-role', 'authoritative'),
+    roleCandidate(spawn.agentRole, 'codex-session-meta-spawn-role', 'authoritative'),
+    roleCandidate(payload.agent_path, 'codex-session-meta-agent-path', 'authoritative'),
+    roleCandidate(payload.agentPath, 'codex-session-meta-agent-path', 'authoritative'),
+    roleCandidate(spawn.agent_path, 'codex-session-meta-spawn-path', 'authoritative'),
+    roleCandidate(spawn.agentPath, 'codex-session-meta-spawn-path', 'authoritative'),
+  ]);
+  const hostResolution = resolveRoleCandidates(hostCandidates);
+  const taskNameResolution = resolveRoleCandidates(compactCandidates([
+    roleCandidate(payload.task_name, 'spawn-task-name', 'authoritative'),
+    roleCandidate(payload.taskName, 'spawn-task-name', 'authoritative'),
+    roleCandidate(spawn.task_name, 'spawn-task-name', 'authoritative'),
+    roleCandidate(spawn.taskName, 'spawn-task-name', 'authoritative'),
+  ]));
+  return {
+    threadId: firstString(payload.id, payload.thread_id, payload.threadId),
+    parentThreadId: firstString(
+      payload.parent_thread_id, payload.parentThreadId,
+      spawn.parent_thread_id, spawn.parentThreadId,
+      spawn.parent_session_id, spawn.parentSessionId,
+    ),
+    role: hostResolution.kind !== 'none' ? hostResolution : taskNameResolution,
+  };
+}
+
+const CODEX_SESSION_META_LINE_MAX_BYTES = 128 * 1024;
+
+function readFirstLineCapped(filePath: string, maxBytes: number = CODEX_SESSION_META_LINE_MAX_BYTES): string {
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const chunks: Buffer[] = [];
+    let offset = 0;
+    while (offset < maxBytes) {
+      const size = Math.min(16 * 1024, maxBytes - offset);
+      const buffer = Buffer.alloc(size);
+      const bytesRead = fs.readSync(fd, buffer, 0, size, offset);
+      if (bytesRead <= 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      const newline = chunk.indexOf(10);
+      chunks.push(newline >= 0 ? chunk.subarray(0, newline) : Buffer.from(chunk));
+      if (newline >= 0) break;
+      offset += bytesRead;
+    }
+    return Buffer.concat(chunks).toString('utf8');
+  } catch {
+    return '';
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* best-effort */ }
+    }
+  }
+}
+
+export function readCodexSessionMetaIdentity(transcriptPath: unknown): CodexSessionMetaIdentity | null {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
+  const line = readFirstLineCapped(transcriptPath).trim();
+  if (!line) return null;
+  try {
+    return codexSessionMetaIdentityFromRecord(JSON.parse(line));
+  } catch {
+    return null;
+  }
+}
 // Pull the text of a user-authored line from EITHER host transcript shape:
 //   - Codex: { payload?: { type:'message', role:'user', content:[{type:'input_text',text}] } }
 //   - Cursor: { role:'user', message:'<string>' }  (or message:{ content:'<string>'|[{text}] })
@@ -206,14 +368,20 @@ function userLineText(parsed: unknown): string {
   return '';
 }
 
-export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
-  if (typeof transcriptPath !== 'string' || !transcriptPath) return null;
+export function inferRoleEvidenceFromTranscript(transcriptPath: unknown): RoleEvidenceResolution {
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return { kind: 'none' };
+  // Current Codex rollouts are decided from capped line zero without loading the
+  // (potentially very large) encrypted rollout. Only hosts/legacy transcripts
+  // without a recognized session_meta record need the readable-record scan.
+  const currentCodexMeta = readCodexSessionMetaIdentity(transcriptPath);
+  if (currentCodexMeta) return currentCodexMeta.role;
   let raw: string;
   try {
     raw = fs.readFileSync(transcriptPath, 'utf8');
   } catch {
-    return null;
+    return { kind: 'none' };
   }
+
   const userTexts: string[] = [];
   for (const line of raw.split('\n')) {
     if (!line.includes('"user"')) continue; // cheap prefilter before JSON.parse
@@ -226,19 +394,32 @@ export function inferRoleFromTranscript(transcriptPath: unknown): string | null 
     const text = userLineText(parsed);
     if (text) userTexts.push(text);
   }
-  for (let i = userTexts.length - 1; i >= 0; i -= 1) {
-    for (const re of SPAWN_ROLE_RES) {
-      const match = (userTexts[i] || '').match(re);
-      const role = match ? (match[1] as string).toLowerCase() : null;
-      if (role && VALID_AGENT_ROLES.has(role)) return role;
+
+  const markerCandidates: RoleEvidence[] = [];
+  for (const text of userTexts) {
+    ROLE_MARKER_RE.lastIndex = 0;
+    for (let match = ROLE_MARKER_RE.exec(text); match; match = ROLE_MARKER_RE.exec(text)) {
+      const candidate = roleCandidate(match[1], 'user-role-marker', 'explicit');
+      if (candidate) markerCandidates.push(candidate);
     }
   }
-  // Last resort: the unambiguous structured marker can appear in a line shape the
-  // per-line parser above didn't recognize (host transcript drift). It is unique to
-  // the spawn prompt, so a raw scan can't cross-match another role's prose.
-  const marker = raw.match(SPAWN_ROLE_RES[0]);
-  const markerRole = marker ? (marker[1] as string).toLowerCase() : null;
-  return markerRole && VALID_AGENT_ROLES.has(markerRole) ? markerRole : null;
+  const markerResolution = resolveRoleCandidates(markerCandidates);
+  if (markerResolution.kind !== 'none') return markerResolution;
+
+  const declarationCandidates: RoleEvidence[] = [];
+  for (const text of userTexts) {
+    for (const re of ROLE_DECLARATION_RES) {
+      const match = text.match(re);
+      const candidate = match ? roleCandidate(match[1], 'user-role-declaration', 'heuristic') : null;
+      if (candidate) declarationCandidates.push(candidate);
+    }
+  }
+  return resolveRoleCandidates(declarationCandidates);
+}
+
+export function inferRoleFromTranscript(transcriptPath: unknown): string | null {
+  const resolution = inferRoleEvidenceFromTranscript(transcriptPath);
+  return resolution && resolution.kind === 'evidence' ? resolution.evidence.role : null;
 }
 
 export interface SessionIdentity {
@@ -258,6 +439,10 @@ export interface SessionIdentity {
   // Traffic One role; null when absent or not a role. Lets a team worker bind its
   // claim without transcript inference. See project_agent_teams_claim_deadlock.
   declaredRole: string | null;
+  // Two role-bearing host identity fields named different valid roles. Generic
+  // fields are filtered before this check; a real conflict must never fall
+  // through to pending-claim correlation.
+  declaredRoleConflict: boolean;
   // Best-effort model id from the hook payload. Cursor child writes can arrive
   // after multiple failed/retried Task spawns for the same role; matching by model
   // lets the binder consume the successful exact-slug pending claim instead of an
@@ -265,24 +450,25 @@ export interface SessionIdentity {
   model: string | null;
 }
 
-// Map a host `agent_type` (e.g. "traffic-one:senior-frontend" or "senior-frontend")
-// to a canonical Traffic One role, or null when it is not one.
-function roleFromAgentType(agentType: string | null): string | null {
-  if (!agentType) return null;
-  const role = (agentType.split(':').pop() || '').trim().toLowerCase();
-  return VALID_AGENT_ROLES.has(role) ? role : null;
-}
-
 export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   const data = (rawInput && typeof rawInput === 'object'
     ? (rawInput as Rec)
     : parseJson<Rec>(typeof rawInput === 'string' ? rawInput : '', {}));
   const payload = obj(data.payload) || {};
-  const source = obj(data.source) || obj(payload.source) || {};
-  const threadSpawn = (nestedValue(source, ['subagent', 'thread_spawn'])
-    || nestedValue(data, ['subagent', 'thread_spawn'])
-    || nestedValue(payload, ['subagent', 'thread_spawn'])
-    || {}) as Rec;
+  const topSource = obj(data.source);
+  const payloadSource = obj(payload.source);
+  const sourceCandidates = [topSource, payloadSource].filter((value): value is Rec => Boolean(value));
+  const threadSpawnCandidates = [
+    ...sourceCandidates.flatMap((source) => {
+      const subagent = obj(source.subagent);
+      return subagent ? [obj(subagent.thread_spawn), obj(subagent.threadSpawn)] : [];
+    }),
+    obj(nestedValue(data, ['subagent', 'thread_spawn'])),
+    obj(nestedValue(data, ['subagent', 'threadSpawn'])),
+    obj(nestedValue(payload, ['subagent', 'thread_spawn'])),
+    obj(nestedValue(payload, ['subagent', 'threadSpawn'])),
+  ].filter((value): value is Rec => Boolean(value));
+  const threadSpawn = threadSpawnCandidates[0] || {};
 
   // Cursor usually sends session_id (== conversation_id), but some event shapes have
   // drifted across versions. Treat conversation_id as a fallback so child-session
@@ -311,7 +497,23 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   // Codex carries neither). Read Cursor's spellings too so a Cursor subagent is
   // recognized as a subagent and its reuse id + role are captured.
   const agentId = firstString(data.agent_id, data.agentId, payload.agent_id, payload.agentId, data.subagent_id, payload.subagent_id);
-  const declaredRole = roleFromAgentType(firstString(data.agent_type, data.agentType, payload.agent_type, payload.agentType, data.subagent_type, payload.subagent_type));
+  const declaredRoles = uniqueStrings([
+    data.agent_type, data.agentType, payload.agent_type, payload.agentType,
+    data.subagent_type, data.subagentType, payload.subagent_type, payload.subagentType,
+    data.agent_role, data.agentRole, payload.agent_role, payload.agentRole,
+    data.agent_path, data.agentPath, payload.agent_path, payload.agentPath,
+    threadSpawn.agent_type, threadSpawn.agentType,
+    threadSpawn.subagent_type, threadSpawn.subagentType,
+    threadSpawn.agent_role, threadSpawn.agentRole,
+    ...threadSpawnCandidates.flatMap((spawn) => [
+      spawn.agent_type, spawn.agentType,
+      spawn.subagent_type, spawn.subagentType,
+      spawn.agent_role, spawn.agentRole,
+      spawn.agent_path, spawn.agentPath,
+    ]),
+  ].map(normalizeRoleIdentity).filter((role): role is string => Boolean(role)));
+  const declaredRole = declaredRoles.length === 1 ? declaredRoles[0]! : null;
+  const declaredRoleConflict = declaredRoles.length > 1;
   const model = firstString(
     data.model, payload.model,
     data.subagent_model, data.subagentModel,
@@ -322,13 +524,23 @@ export function hookSessionIdentity(rawInput: unknown): SessionIdentity {
   const isSubagent = Boolean(
     threadSource === 'subagent'
     || parentSessionId
-    || (agentId && declaredRole)
-    || nestedValue(source, ['subagent'])
+    || (agentId && (declaredRole || declaredRoleConflict))
+    || sourceCandidates.some((source) => Boolean(obj(source.subagent)))
     || nestedValue(data, ['subagent'])
     || nestedValue(payload, ['subagent']),
   );
 
-  return { sessionId, parentSessionId, isSubagent, threadId, transcriptPath, agentId, declaredRole, model };
+  return {
+    sessionId,
+    parentSessionId,
+    isSubagent,
+    threadId,
+    transcriptPath,
+    agentId,
+    declaredRole,
+    declaredRoleConflict,
+    model,
+  };
 }
 
 // True when the hook is firing inside a SUBAGENT thread (not the parent/main
@@ -485,6 +697,34 @@ function matchingPendingClaim(
     || newestPending(pending);
 }
 
+// A roleless child may correlate to one pending spawn by immutable parent/model
+// metadata, but it must never choose between roles by timestamp. Inspect the
+// strongest available bucket first; an ambiguous non-empty bucket fails closed.
+function uniquelyCorrelatedPendingClaim(
+  pending: PendingClaim[],
+  parentSessionId: string | null,
+  model: string | null,
+): PendingClaim | null {
+  if (parentSessionId && model) {
+    const exact = pending.filter(({ claim }) => (
+      claim.parentSessionId === parentSessionId && claimModel(claim) === model
+    ));
+    // Both facts were supplied, so an empty or ambiguous intersection is a
+    // failed correlation. Do not weaken it to parent-only/model-only and bind a
+    // claim that contradicts one of the child's immutable facts.
+    return exact.length === 1 ? exact[0]! : null;
+  }
+  if (parentSessionId) {
+    const sameParent = pending.filter(({ claim }) => claim.parentSessionId === parentSessionId);
+    return sameParent.length === 1 ? sameParent[0]! : null;
+  }
+  if (model) {
+    const sameModel = pending.filter(({ claim }) => claimModel(claim) === model);
+    return sameModel.length === 1 ? sameModel[0]! : null;
+  }
+  return null;
+}
+
 function removePendingClaim(filePath: string): void {
   try {
     fs.rmSync(filePath, { force: true });
@@ -508,6 +748,682 @@ function removeSiblingPendingClaims(
     .filter(({ claim }) => claim.parentSessionId === parentSessionId)
     .filter(({ claim }) => !keepClaimId || claim.claimId !== keepClaimId);
   for (const item of pending) removePendingClaim(item.filePath);
+}
+
+// --- Cursor spawn observations ---------------------------------------------
+//
+// Cursor can emit `subagentStart` without ever emitting a matching Task result or
+// subagentStop. Keep the immutable facts known at spawn time in a separate,
+// run-scoped ledger so a later child transcript can be correlated even after the
+// live-agent registry entry has been retired. Classification deliberately lives in
+// the agent-model layer; this module only owns the one-to-one persistence
+// primitives and accepts the classifier's eventual outcome/directive.
+
+export const CURSOR_SPAWN_OBSERVATION_LIMIT = 128;
+
+export type CursorSpawnObservationOutcome = 'api-limit' | 'model-unavailable' | 'generic';
+export type CursorFollowupSuppressionReason =
+  | 'stop-user-abort'
+  | 'subagent-stop-user-abort'
+  | 'subagent-stop-parent-user-abort'
+  | 'parent-transcript-user-abort';
+
+export interface CursorSpawnObservationInput {
+  parentSessionId: string;
+  toolCallId: string;
+  role: string;
+  requestedModel: string;
+  tier: TierId;
+  expectedModel: string;
+  startedAtMs?: number;
+}
+
+export interface CursorSpawnObservation {
+  parentSessionId: string;
+  toolCallId: string;
+  role: string;
+  requestedModel: string;
+  tier: TierId;
+  expectedModel: string;
+  startedAtMs: number;
+  childTranscriptId: string | null;
+  outcome: CursorSpawnObservationOutcome | null;
+  error: string | null;
+  directive: string | null;
+  prescribedModel: string | null;
+  followupEmitted: boolean;
+  followupSuppressed: boolean;
+  followupSuppressedAtMs: number | null;
+  followupSuppressionReason: CursorFollowupSuppressionReason | null;
+  retryHandled: boolean;
+  claimedAtMs: number | null;
+  consumedAtMs: number | null;
+  updatedAtMs: number;
+}
+
+export interface CursorSpawnObservationUpdate {
+  outcome?: CursorSpawnObservationOutcome | null;
+  error?: string | null;
+  directive?: string | null;
+  prescribedModel?: string | null;
+  followupEmitted?: boolean;
+  retryHandled?: boolean;
+}
+
+// Snapshot produced by the agent-model selector immediately before a lifecycle
+// continuation is claimed. `expectedLatest*` fingerprints the newest immutable
+// SubagentStart for this parent+role, which may be a newer no-resume attempt the
+// selector has already allowed to age past the 90/270-second liveness window.
+// A start recorded after selection changes that fingerprint and invalidates the
+// whole parent batch instead of letting concurrent Stop hooks split it.
+export interface CursorFollowupClaimRequest {
+  parentSessionId: string;
+  expectedParentFingerprint: string;
+  role: string;
+  childTranscriptId: string;
+  toolCallId: string;
+  expectedLatestToolCallId: string;
+  expectedLatestStartedAtMs: number;
+  directive: string;
+  prescribedModel: string | null;
+}
+
+export interface CursorParentObservationSnapshot {
+  parentSessionId: string;
+  fingerprint: string;
+  observations: CursorSpawnObservation[];
+}
+
+export interface CursorParentFollowupSuppressionRequest {
+  scope: 'parent';
+  parentSessionId: string;
+  observedAtMs: number;
+  reason:
+    | 'stop-user-abort'
+    | 'subagent-stop-parent-user-abort'
+    | 'parent-transcript-user-abort';
+}
+
+export interface CursorChildFollowupSuppressionRequest {
+  scope: 'child';
+  toolCallId: string;
+  parentSessionId?: string;
+  observedAtMs: number;
+  reason: 'subagent-stop-user-abort';
+}
+
+export type CursorFollowupSuppressionRequest =
+  | CursorParentFollowupSuppressionRequest
+  | CursorChildFollowupSuppressionRequest;
+
+interface CursorSpawnObservationStore {
+  version: 1;
+  observations: CursorSpawnObservation[];
+}
+
+const CURSOR_SPAWN_OUTCOMES: ReadonlySet<string> = new Set(['api-limit', 'model-unavailable', 'generic']);
+const CURSOR_FOLLOWUP_SUPPRESSION_REASONS: ReadonlySet<string> = new Set([
+  'stop-user-abort',
+  'subagent-stop-user-abort',
+  'subagent-stop-parent-user-abort',
+  'parent-transcript-user-abort',
+]);
+const CURSOR_PARENT_FOLLOWUP_SUPPRESSION_REASONS: ReadonlySet<string> = new Set([
+  'stop-user-abort',
+  'subagent-stop-parent-user-abort',
+  'parent-transcript-user-abort',
+]);
+const CURSOR_SPAWN_LOCK_TIMEOUT_MS = 2_000;
+const CURSOR_SPAWN_LOCK_STALE_MS = 15_000;
+const CURSOR_SPAWN_LOCK_RETRY_MS = 10;
+const CURSOR_TRANSCRIPT_EARLY_TOLERANCE_MS = 1_500;
+const CURSOR_SPAWN_LOCK_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function cursorSpawnObservationFile(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), 'cursor-spawns.json');
+}
+
+function cursorSpawnObservationLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.cursor-spawns.lock');
+}
+
+function validCursorTranscriptId(value: unknown): string | null {
+  const id = firstString(value);
+  if (!id || id.includes('..') || /[\\/]/.test(id)) return null;
+  return id.slice(0, 200);
+}
+
+function finiteMs(...values: unknown[]): number | null {
+  for (const value of values) {
+    if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value;
+    if (typeof value === 'string' && value.trim()) {
+      const parsed = Date.parse(value);
+      if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    }
+  }
+  return null;
+}
+
+function boundedCursorSpawnText(value: unknown, maxLength: number): string | null {
+  const text = firstString(value);
+  return text ? text.slice(0, maxLength) : null;
+}
+
+function normalizeCursorSpawnObservation(value: unknown): CursorSpawnObservation | null {
+  const item = obj(value);
+  if (!item) return null;
+  const parentSessionId = firstString(item.parentSessionId, item.parent_session_id);
+  const toolCallId = firstString(item.toolCallId, item.tool_call_id, item.observationId);
+  const role = firstString(item.role);
+  const requestedModel = firstString(item.requestedModel, item.requested_model, item.model);
+  const expectedModel = firstString(item.expectedModel, item.expected_model, item.expected);
+  const rawTier = firstString(item.tier);
+  const tier = rawTier && (TIER_IDS as readonly string[]).includes(rawTier) ? rawTier as TierId : null;
+  const startedAtMs = finiteMs(item.startedAtMs, item.started_at_ms, item.startedAt, item.createdAt);
+  if (!parentSessionId || !toolCallId || !role || !VALID_AGENT_ROLES.has(role)
+    || !requestedModel || !tier || !expectedModel || !startedAtMs) return null;
+
+  const childTranscriptId = validCursorTranscriptId(item.childTranscriptId ?? item.child_transcript_id);
+  const rawOutcome = firstString(item.outcome);
+  const outcome = rawOutcome && CURSOR_SPAWN_OUTCOMES.has(rawOutcome)
+    ? rawOutcome as CursorSpawnObservationOutcome
+    : null;
+  const error = boundedCursorSpawnText(item.error, 8_192);
+  const directive = boundedCursorSpawnText(item.directive, 8_192);
+  const prescribedModel = boundedCursorSpawnText(item.prescribedModel ?? item.prescribed_model, 300);
+  const claimedAtMs = finiteMs(item.claimedAtMs, item.claimed_at_ms, item.claimedAt);
+  const consumedAtMs = finiteMs(item.consumedAtMs, item.consumed_at_ms, item.consumedAt);
+  const followupSuppressed = item.followupSuppressed === true || item.followup_suppressed === true;
+  const rawSuppressionReason = firstString(item.followupSuppressionReason, item.followup_suppression_reason);
+  const followupSuppressionReason = rawSuppressionReason
+    && CURSOR_FOLLOWUP_SUPPRESSION_REASONS.has(rawSuppressionReason)
+    ? rawSuppressionReason as CursorFollowupSuppressionReason
+    : null;
+  const followupSuppressedAtMs = followupSuppressed
+    ? finiteMs(
+      item.followupSuppressedAtMs,
+      item.followup_suppressed_at_ms,
+      item.followupSuppressedAt,
+      item.followup_suppressed_at,
+    )
+    : null;
+  const updatedAtMs = finiteMs(item.updatedAtMs, item.updated_at_ms, item.updatedAt)
+    || followupSuppressedAtMs || consumedAtMs || claimedAtMs || startedAtMs;
+  return {
+    parentSessionId,
+    toolCallId,
+    role,
+    requestedModel,
+    tier,
+    expectedModel,
+    startedAtMs,
+    childTranscriptId,
+    outcome,
+    error,
+    directive,
+    prescribedModel,
+    followupEmitted: item.followupEmitted === true || item.followup_emitted === true,
+    followupSuppressed,
+    followupSuppressedAtMs: followupSuppressed ? (followupSuppressedAtMs || updatedAtMs) : null,
+    followupSuppressionReason: followupSuppressed ? followupSuppressionReason : null,
+    retryHandled: item.retryHandled === true || item.retry_handled === true,
+    claimedAtMs,
+    consumedAtMs,
+    updatedAtMs,
+  };
+}
+
+function readCursorSpawnObservationStore(cwd: string, runId: string): CursorSpawnObservationStore {
+  const raw = readJson<unknown>(cursorSpawnObservationFile(cwd, runId), null);
+  const record = obj(raw);
+  // Tolerate the pre-versioned array and the early `spawns` key so an in-flight
+  // run survives a plugin upgrade. Invalid/duplicate rows are ignored rather than
+  // weakening the child-transcript one-to-one invariant.
+  const values = Array.isArray(raw)
+    ? raw
+    : (Array.isArray(record?.observations) ? record.observations : (Array.isArray(record?.spawns) ? record.spawns : []));
+  const seenTools = new Set<string>();
+  const seenChildren = new Set<string>();
+  const observations: CursorSpawnObservation[] = [];
+  for (const value of values) {
+    const observation = normalizeCursorSpawnObservation(value);
+    if (!observation || seenTools.has(observation.toolCallId)) continue;
+    if (observation.childTranscriptId && seenChildren.has(observation.childTranscriptId)) continue;
+    seenTools.add(observation.toolCallId);
+    if (observation.childTranscriptId) seenChildren.add(observation.childTranscriptId);
+    observations.push(observation);
+  }
+  observations.sort((a, b) => a.startedAtMs - b.startedAtMs || a.toolCallId.localeCompare(b.toolCallId));
+  return { version: 1, observations: observations.slice(-CURSOR_SPAWN_OBSERVATION_LIMIT) };
+}
+
+function cursorParentObservationFingerprint(
+  observations: readonly CursorSpawnObservation[],
+  parentSessionId: string,
+): string {
+  const rows = observations
+    .filter((observation) => observation.parentSessionId === parentSessionId)
+    .sort((left, right) => (
+      left.startedAtMs - right.startedAtMs || left.toolCallId.localeCompare(right.toolCallId)
+    ))
+    .map((observation) => [
+      observation.parentSessionId,
+      observation.role,
+      observation.toolCallId,
+      observation.startedAtMs,
+      observation.requestedModel,
+      observation.tier,
+      observation.expectedModel,
+      observation.childTranscriptId,
+      observation.claimedAtMs,
+      observation.outcome,
+      observation.error,
+      observation.directive,
+      observation.prescribedModel,
+      observation.consumedAtMs,
+      observation.followupEmitted,
+      observation.followupSuppressed,
+      observation.followupSuppressedAtMs,
+      observation.followupSuppressionReason,
+      observation.retryHandled,
+    ]);
+  return createHash('sha256').update(JSON.stringify(rows)).digest('hex');
+}
+
+function writeCursorSpawnObservationStore(cwd: string, runId: string, observations: CursorSpawnObservation[]): void {
+  const store: CursorSpawnObservationStore = {
+    version: 1,
+    observations: [...observations]
+      .sort((a, b) => a.startedAtMs - b.startedAtMs || a.toolCallId.localeCompare(b.toolCallId))
+      .slice(-CURSOR_SPAWN_OBSERVATION_LIMIT),
+  };
+  writeJson(cursorSpawnObservationFile(cwd, runId), store);
+}
+
+function withCursorSpawnObservationLock<T>(cwd: string, runId: string, mutate: () => T): T | null {
+  const lockDir = cursorSpawnObservationLockDir(cwd, runId);
+  const deadline = Date.now() + CURSOR_SPAWN_LOCK_TIMEOUT_MS;
+  try { fs.mkdirSync(path.dirname(lockDir), { recursive: true }); } catch { return null; }
+  while (true) {
+    try {
+      fs.mkdirSync(lockDir);
+      break;
+    } catch {
+      try {
+        const age = Date.now() - fs.statSync(lockDir).mtimeMs;
+        if (age > CURSOR_SPAWN_LOCK_STALE_MS) {
+          fs.rmSync(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      } catch {
+        continue;
+      }
+      if (Date.now() >= deadline) return null;
+      Atomics.wait(CURSOR_SPAWN_LOCK_WAIT, 0, 0, CURSOR_SPAWN_LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return mutate();
+  } finally {
+    try { fs.rmSync(lockDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+  }
+}
+
+export function listCursorSpawnObservations(cwd: string, runId: string): CursorSpawnObservation[] {
+  if (!runId || isNonProjectRoot(cwd)) return [];
+  return readCursorSpawnObservationStore(cwd, runId).observations;
+}
+
+/**
+ * One-read snapshot for a parent lifecycle pass. The caller derives its complete
+ * role set and selection from these rows, then supplies the fingerprint to the
+ * batch CAS. Any start/result/action transition after this read invalidates the
+ * complete continuation instead of allowing a stale subset to be emitted.
+ */
+export function cursorParentObservationSnapshot(
+  cwd: string,
+  runId: string,
+  parentSessionId: string,
+): CursorParentObservationSnapshot | null {
+  const parentId = firstString(parentSessionId);
+  if (!runId || !parentId || isNonProjectRoot(cwd)) return null;
+  const observations = readCursorSpawnObservationStore(cwd, runId).observations
+    .filter((observation) => observation.parentSessionId === parentId)
+    .map((observation) => ({ ...observation }));
+  return {
+    parentSessionId: parentId,
+    fingerprint: cursorParentObservationFingerprint(observations, parentId),
+    observations,
+  };
+}
+
+// Record the facts known at subagentStart. A repeated tool-call id is idempotent
+// and never rewrites the immutable spawn anchor, even if a later hook carries
+// different metadata.
+export function recordCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  input: CursorSpawnObservationInput,
+): CursorSpawnObservation | null {
+  if (!runId || isNonProjectRoot(cwd)) return null;
+  const startedAtMs = finiteMs(input.startedAtMs) || Date.now();
+  const candidate = normalizeCursorSpawnObservation({
+    ...input,
+    startedAtMs,
+    childTranscriptId: null,
+    outcome: null,
+    error: null,
+    directive: null,
+    prescribedModel: null,
+    followupEmitted: false,
+    followupSuppressed: false,
+    followupSuppressedAtMs: null,
+    followupSuppressionReason: null,
+    retryHandled: false,
+    claimedAtMs: null,
+    consumedAtMs: null,
+    updatedAtMs: startedAtMs,
+  });
+  if (!candidate) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const existing = store.observations.find((item) => item.toolCallId === candidate.toolCallId);
+    if (existing) return existing;
+    store.observations.push(candidate);
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return candidate;
+  });
+}
+
+// Attach one child transcript to one spawn observation. Both directions are
+// unique: a transcript can never be claimed by two starts, and a start can never
+// be rebound to a different transcript. Repeating the same claim is idempotent.
+export function claimCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  toolCallId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  const toolId = firstString(toolCallId);
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !toolId || !childId || isNonProjectRoot(cwd)) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.toolCallId === toolId);
+    if (!target) return null;
+    const claimedElsewhere = store.observations.some((item) => (
+      item.toolCallId !== toolId && item.childTranscriptId === childId
+    ));
+    if (claimedElsewhere || (target.childTranscriptId && target.childTranscriptId !== childId)) return null;
+    if (target.childTranscriptId === childId) return target;
+    target.childTranscriptId = childId;
+    target.claimedAtMs = finiteMs(nowMs) || Date.now();
+    target.updatedAtMs = target.claimedAtMs;
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
+export function cursorSpawnObservationForChild(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  return readCursorSpawnObservationStore(cwd, runId).observations
+    .find((item) => item.childTranscriptId === childId) || null;
+}
+
+export function updateCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  patch: CursorSpawnObservationUpdate,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  if (patch.outcome !== undefined && patch.outcome !== null && !CURSOR_SPAWN_OUTCOMES.has(patch.outcome)) return null;
+  if (patch.error !== undefined && patch.error !== null && typeof patch.error !== 'string') return null;
+  if (patch.directive !== undefined && patch.directive !== null && typeof patch.directive !== 'string') return null;
+  if (patch.prescribedModel !== undefined && patch.prescribedModel !== null && typeof patch.prescribedModel !== 'string') return null;
+  if (patch.followupEmitted !== undefined && typeof patch.followupEmitted !== 'boolean') return null;
+  if (patch.retryHandled !== undefined && typeof patch.retryHandled !== 'boolean') return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.childTranscriptId === childId);
+    if (!target) return null;
+    if (patch.outcome !== undefined) target.outcome = patch.outcome;
+    if (patch.error !== undefined) target.error = boundedCursorSpawnText(patch.error, 8_192);
+    if (patch.directive !== undefined) target.directive = boundedCursorSpawnText(patch.directive, 8_192);
+    if (patch.prescribedModel !== undefined) target.prescribedModel = boundedCursorSpawnText(patch.prescribedModel, 300);
+    // Action ownership is monotonic. A generic patch may set the marker, but it
+    // can never reopen a one-shot follow-up/retry already claimed by another hook.
+    if (patch.followupEmitted === true) target.followupEmitted = true;
+    if (patch.retryHandled === true) target.retryHandled = true;
+    target.updatedAtMs = finiteMs(nowMs) || Date.now();
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
+function cursorObservationComesAfter(
+  left: CursorSpawnObservation,
+  right: CursorSpawnObservation,
+): boolean {
+  return left.startedAtMs > right.startedAtMs
+    || (left.startedAtMs === right.startedAtMs && left.toolCallId > right.toolCallId);
+}
+
+function latestCursorObservation(
+  observations: readonly CursorSpawnObservation[],
+  predicate: (observation: CursorSpawnObservation) => boolean,
+): CursorSpawnObservation | null {
+  let latest: CursorSpawnObservation | null = null;
+  for (const observation of observations) {
+    if (!predicate(observation)) continue;
+    if (!latest || cursorObservationComesAfter(observation, latest)) latest = observation;
+  }
+  return latest;
+}
+
+function validCursorFollowupClaimRequest(request: CursorFollowupClaimRequest): boolean {
+  return Boolean(
+    firstString(request.parentSessionId)
+    && /^[a-f0-9]{64}$/.test(request.expectedParentFingerprint)
+    && firstString(request.toolCallId)
+    && firstString(request.expectedLatestToolCallId)
+    && VALID_AGENT_ROLES.has(request.role)
+    && validCursorTranscriptId(request.childTranscriptId)
+    && typeof request.expectedLatestStartedAtMs === 'number'
+    && Number.isFinite(request.expectedLatestStartedAtMs)
+    && request.expectedLatestStartedAtMs > 0
+    && typeof request.directive === 'string'
+    && request.directive.length > 0
+    && request.directive.length <= 8_192
+    && (request.prescribedModel === null
+      || (typeof request.prescribedModel === 'string' && request.prescribedModel.length <= 300)),
+  );
+}
+
+/**
+ * Atomically owns one complete parent lifecycle continuation batch.
+ *
+ * The selector refreshes directives and computes liveness outside this lock,
+ * then supplies an immutable fingerprint for each role. This function performs
+ * no nested state calls: one unlocked store read, validation of the entire
+ * batch, and one unlocked store write. Any stale row makes the whole batch lose
+ * the CAS so concurrent Stop/subagentStop hooks can never partition roles.
+ */
+export function claimCursorFollowupsBatch(
+  cwd: string,
+  runId: string,
+  requests: readonly CursorFollowupClaimRequest[],
+  nowMs: number = Date.now(),
+): CursorSpawnObservation[] {
+  if (!runId || !requests.length || isNonProjectRoot(cwd)) return [];
+  if (!requests.every(validCursorFollowupClaimRequest)) return [];
+  const parentSessionId = requests[0]!.parentSessionId;
+  if (requests.some((request) => request.parentSessionId !== parentSessionId)) return [];
+  const expectedParentFingerprint = requests[0]!.expectedParentFingerprint;
+  if (requests.some((request) => request.expectedParentFingerprint !== expectedParentFingerprint)) return [];
+  if (new Set(requests.map((request) => request.role)).size !== requests.length) return [];
+  if (new Set(requests.map((request) => request.childTranscriptId)).size !== requests.length) return [];
+  const claimedAtMs = finiteMs(nowMs) || Date.now();
+
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    if (cursorParentObservationFingerprint(store.observations, parentSessionId)
+      !== expectedParentFingerprint) return [];
+    const claimed: CursorSpawnObservation[] = [];
+
+    for (const request of requests) {
+      const target = store.observations.find((observation) => (
+        observation.parentSessionId === request.parentSessionId
+        && observation.role === request.role
+        && observation.toolCallId === request.toolCallId
+        && observation.childTranscriptId === request.childTranscriptId
+      ));
+      if (!target || !target.outcome || !target.consumedAtMs || !target.directive
+        || target.retryHandled || target.followupEmitted || target.followupSuppressed
+        || target.directive !== request.directive
+        || target.prescribedModel !== request.prescribedModel) return [];
+
+      const latestFinalized = latestCursorObservation(store.observations, (observation) => (
+        observation.parentSessionId === request.parentSessionId
+        && observation.role === request.role
+        && observation.consumedAtMs !== null
+      ));
+      if (!latestFinalized || latestFinalized.toolCallId !== target.toolCallId
+        || latestFinalized.childTranscriptId !== target.childTranscriptId) return [];
+
+      const latest = latestCursorObservation(store.observations, (observation) => (
+        observation.parentSessionId === request.parentSessionId
+        && observation.role === request.role
+      ));
+      if (!latest || latest.toolCallId !== request.expectedLatestToolCallId
+        || latest.startedAtMs !== request.expectedLatestStartedAtMs) return [];
+      claimed.push(target);
+    }
+
+    for (const target of claimed) {
+      target.followupEmitted = true;
+      target.updatedAtMs = claimedAtMs;
+    }
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return claimed.map((observation) => ({ ...observation }));
+  }) || [];
+}
+
+function validCursorFollowupSuppressionRequest(request: CursorFollowupSuppressionRequest): boolean {
+  if (!Number.isFinite(request.observedAtMs) || request.observedAtMs <= 0) return false;
+  if (request.scope === 'child') {
+    return request.reason === 'subagent-stop-user-abort'
+      && Boolean(firstString(request.toolCallId))
+      && (request.parentSessionId === undefined || Boolean(firstString(request.parentSessionId)));
+  }
+  return Boolean(firstString(request.parentSessionId))
+    && CURSOR_PARENT_FOLLOWUP_SUPPRESSION_REASONS.has(request.reason);
+}
+
+/**
+ * Durably suppress lifecycle continuation for observations that existed when a
+ * user-abort signal was observed. Parent scope covers every pre-event row for
+ * that parent; child scope is exact by immutable SubagentStart tool id. Future
+ * starts are deliberately outside the observedAtMs watermark. First evidence
+ * wins so duplicate lifecycle hooks cannot rewrite the audit reason/timestamp.
+ */
+export function suppressCursorFollowupsBatch(
+  cwd: string,
+  runId: string,
+  request: CursorFollowupSuppressionRequest,
+): CursorSpawnObservation[] {
+  if (!runId || isNonProjectRoot(cwd) || !validCursorFollowupSuppressionRequest(request)) return [];
+  const suppressedAtMs = request.observedAtMs;
+
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const changed = store.observations.filter((observation) => {
+      if (observation.followupSuppressed || observation.startedAtMs > request.observedAtMs) return false;
+      if (request.scope === 'child') {
+        return observation.toolCallId === request.toolCallId
+          && (!request.parentSessionId || observation.parentSessionId === request.parentSessionId);
+      }
+      return observation.parentSessionId === request.parentSessionId;
+    });
+    if (!changed.length) return [];
+    for (const observation of changed) {
+      observation.followupSuppressed = true;
+      observation.followupSuppressedAtMs = suppressedAtMs;
+      observation.followupSuppressionReason = request.reason;
+      observation.updatedAtMs = suppressedAtMs;
+    }
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return changed.map((observation) => ({ ...observation }));
+  }) || [];
+}
+
+function markCursorSpawnObservationOnce(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  field: 'followupEmitted' | 'retryHandled',
+  nowMs: number,
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.childTranscriptId === childId);
+    if (!target || target[field]
+      || (field === 'followupEmitted' && (target.retryHandled || target.followupSuppressed))) return null;
+    target[field] = true;
+    target.updatedAtMs = finiteMs(nowMs) || Date.now();
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
+}
+
+// Atomic compare-and-set markers for hooks that may race. A null return means the
+// transcript is unknown or another hook already owns the follow-up/retry action.
+export function markCursorSpawnObservationFollowupEmitted(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  return markCursorSpawnObservationOnce(cwd, runId, childTranscriptId, 'followupEmitted', nowMs);
+}
+
+export function markCursorSpawnObservationRetryHandled(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  return markCursorSpawnObservationOnce(cwd, runId, childTranscriptId, 'retryHandled', nowMs);
+}
+
+export function consumeCursorSpawnObservation(
+  cwd: string,
+  runId: string,
+  childTranscriptId: string,
+  nowMs: number = Date.now(),
+): CursorSpawnObservation | null {
+  const childId = validCursorTranscriptId(childTranscriptId);
+  if (!runId || !childId || isNonProjectRoot(cwd)) return null;
+  return withCursorSpawnObservationLock(cwd, runId, () => {
+    const store = readCursorSpawnObservationStore(cwd, runId);
+    const target = store.observations.find((item) => item.childTranscriptId === childId);
+    if (!target) return null;
+    if (target.consumedAtMs) return target;
+    target.consumedAtMs = finiteMs(nowMs) || Date.now();
+    target.updatedAtMs = target.consumedAtMs;
+    writeCursorSpawnObservationStore(cwd, runId, store.observations);
+    return target;
+  });
 }
 
 function cursorProjectsRoot(): string | null {
@@ -543,10 +1459,50 @@ function workspaceRootsForCursorLookup(cwd: string, rawInput: unknown): string[]
   ]);
 }
 
-interface CursorTranscriptCandidate {
+export interface CursorTranscriptCandidate {
   filePath: string;
   parentSessionId: string;
+  childTranscriptId: string;
+  birthtimeMs: number;
   mtimeMs: number;
+}
+
+// Cursor appends to child transcripts, so mtime reflects the last write rather
+// than the spawn. birthtime is the correlation anchor when the filesystem
+// exposes it; mtime remains available (and is the fallback on filesystems whose
+// birthtime is zero/invalid).
+export function cursorTranscriptCandidateTimeMs(candidate: CursorTranscriptCandidate): number {
+  return Number.isFinite(candidate.birthtimeMs) && candidate.birthtimeMs > 0
+    ? candidate.birthtimeMs
+    : candidate.mtimeMs;
+}
+
+function cursorTranscriptCandidate(
+  filePath: string,
+  parentSessionId: string,
+  childTranscriptId: string,
+): CursorTranscriptCandidate | null {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return null;
+    return {
+      filePath,
+      parentSessionId,
+      childTranscriptId,
+      birthtimeMs: Number.isFinite(stat.birthtimeMs) && stat.birthtimeMs > 0 ? stat.birthtimeMs : 0,
+      mtimeMs: stat.mtimeMs,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function sortCursorTranscriptCandidates(candidates: CursorTranscriptCandidate[]): CursorTranscriptCandidate[] {
+  return candidates.sort((a, b) => (
+    cursorTranscriptCandidateTimeMs(b) - cursorTranscriptCandidateTimeMs(a)
+    || b.mtimeMs - a.mtimeMs
+    || a.filePath.localeCompare(b.filePath)
+  ));
 }
 
 function subagentTranscriptCandidates(projectDir: string, sessionId: string): CursorTranscriptCandidate[] {
@@ -556,12 +1512,8 @@ function subagentTranscriptCandidates(projectDir: string, sessionId: string): Cu
     for (const parent of fs.readdirSync(agentTranscriptsDir, { withFileTypes: true })) {
       if (!parent.isDirectory()) continue;
       const filePath = path.join(agentTranscriptsDir, parent.name, 'subagents', `${sessionId}.jsonl`);
-      try {
-        const stat = fs.statSync(filePath);
-        if (stat.isFile()) out.push({ filePath, parentSessionId: parent.name, mtimeMs: stat.mtimeMs });
-      } catch {
-        // no subagent transcript under this parent
-      }
+      const candidate = cursorTranscriptCandidate(filePath, parent.name, sessionId);
+      if (candidate) out.push(candidate);
     }
   } catch {
     // no Cursor transcript cache for this project
@@ -586,18 +1538,65 @@ function allSubagentTranscriptCandidates(projectDir: string, parentSessionId?: s
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith('.jsonl')) continue;
         const filePath = path.join(dir, entry.name);
-        try {
-          const stat = fs.statSync(filePath);
-          if (stat.isFile()) out.push({ filePath, parentSessionId: parent.name, mtimeMs: stat.mtimeMs });
-        } catch {
-          // transcript disappeared mid-scan
-        }
+        const childTranscriptId = entry.name.slice(0, -'.jsonl'.length);
+        const candidate = cursorTranscriptCandidate(filePath, parent.name, childTranscriptId);
+        if (candidate) out.push(candidate);
       }
     }
   } catch {
     // no Cursor transcript cache for this project
   }
   return out;
+}
+
+// List Cursor CHILD transcripts for the current workspace (optionally one parent
+// session). The traversal is intentionally rooted at `subagents/`; it never reads
+// or returns the parent `<session>.jsonl`, whose terminal error can be an unrelated
+// "User aborted request". Paths are de-duplicated because workspace_roots can name
+// the same project through both a symlink and its real path.
+export function listCursorSubagentTranscriptCandidates(
+  cwd: string,
+  rawInput: unknown,
+  parentSessionId?: string | null,
+): CursorTranscriptCandidate[] {
+  if (isNonProjectRoot(cwd)) return [];
+  const root = cursorProjectsRoot();
+  if (!root) return [];
+
+  const projectRoots = workspaceRootsForCursorLookup(cwd, rawInput);
+  const projectDirs: string[] = [];
+  for (const projectRoot of projectRoots) {
+    for (const dirName of cursorProjectDirNames(projectRoot)) {
+      projectDirs.push(path.join(root, dirName));
+    }
+  }
+
+  const candidates: CursorTranscriptCandidate[] = [];
+  for (const projectDir of uniqueStrings(projectDirs)) {
+    candidates.push(...allSubagentTranscriptCandidates(projectDir, parentSessionId));
+  }
+
+  // Cursor has changed project-key encoding before. Fall back to directories
+  // ending in the workspace basename only when exact keys yield no candidates.
+  if (candidates.length === 0) {
+    const basenames = uniqueStrings(projectRoots.map((projectRoot) => path.basename(projectRoot)).filter(Boolean));
+    try {
+      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        if (!basenames.some((base) => entry.name === base || entry.name.endsWith(`-${base}`))) continue;
+        candidates.push(...allSubagentTranscriptCandidates(path.join(root, entry.name), parentSessionId));
+      }
+    } catch {
+      // no Cursor projects root
+    }
+  }
+
+  const unique = new Map<string, CursorTranscriptCandidate>();
+  for (const candidate of candidates) {
+    const key = path.resolve(candidate.filePath);
+    if (!unique.has(key)) unique.set(key, candidate);
+  }
+  return sortCursorTranscriptCandidates([...unique.values()]);
 }
 
 // Cursor child tool events currently report only the child conversation/session id
@@ -641,8 +1640,7 @@ function cursorSubagentTranscript(cwd: string, rawInput: unknown, sessionId: str
   }
 
   if (candidates.length === 0) return null;
-  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
-  return candidates[0]!;
+  return sortCursorTranscriptCandidates(candidates)[0]!;
 }
 
 function cursorSubagentTranscriptsForRole(
@@ -652,43 +1650,13 @@ function cursorSubagentTranscriptsForRole(
   parentSessionId?: string | null,
 ): CursorTranscriptCandidate[] {
   if (!VALID_AGENT_ROLES.has(role)) return [];
-  const root = cursorProjectsRoot();
-  if (!root) return [];
-
-  const projectRoots = workspaceRootsForCursorLookup(cwd, rawInput);
-  const projectDirs: string[] = [];
-  for (const projectRoot of projectRoots) {
-    for (const dirName of cursorProjectDirNames(projectRoot)) {
-      projectDirs.push(path.join(root, dirName));
-    }
-  }
-
-  const candidates: CursorTranscriptCandidate[] = [];
-  for (const projectDir of uniqueStrings(projectDirs)) {
-    candidates.push(...allSubagentTranscriptCandidates(projectDir, parentSessionId));
-  }
-
-  if (candidates.length === 0) {
-    const basenames = uniqueStrings(projectRoots.map((projectRoot) => path.basename(projectRoot)).filter(Boolean));
-    try {
-      for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
-        if (!entry.isDirectory()) continue;
-        if (!basenames.some((base) => entry.name === base || entry.name.endsWith(`-${base}`))) continue;
-        candidates.push(...allSubagentTranscriptCandidates(path.join(root, entry.name), parentSessionId));
-      }
-    } catch {
-      // no Cursor projects root
-    }
-  }
-
-  return candidates
+  return listCursorSubagentTranscriptCandidates(cwd, rawInput, parentSessionId)
     .filter((candidate) => inferRoleFromTranscript(candidate.filePath) === role)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+    .sort((a, b) => cursorTranscriptCandidateTimeMs(b) - cursorTranscriptCandidateTimeMs(a));
 }
 
 function candidateThreadId(candidate: CursorTranscriptCandidate): string | null {
-  const base = path.basename(candidate.filePath).replace(/\.jsonl$/i, '');
-  return isResumeCapableAgentId(base) ? base : null;
+  return isResumeCapableAgentId(candidate.childTranscriptId) ? candidate.childTranscriptId : null;
 }
 
 function listClaimedAgents(cwd: string, runId: string): Rec[] {
@@ -720,45 +1688,71 @@ function nextSpawnIndex(cwd: string, state: unknown, runId: string, role: string
   return Math.max(stateIndex, diskIndex, 1);
 }
 
+const RUN_AGENT_CLAIMS_LOCK_TIMEOUT_MS = 2_000;
+const RUN_AGENT_CLAIMS_LOCK_STALE_MS = 15_000;
+const RUN_AGENT_CLAIMS_LOCK_RETRY_MS = 10;
+const RUN_AGENT_CLAIMS_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function runAgentClaimsLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.agent-claims.lock');
+}
+
+function withRunAgentClaimsLock(cwd: string, runId: string, mutate: () => void): boolean {
+  return withOwnedDirLock(
+    runAgentClaimsLockDir(cwd, runId),
+    RUN_AGENT_CLAIMS_LOCK_TIMEOUT_MS,
+    RUN_AGENT_CLAIMS_LOCK_STALE_MS,
+    RUN_AGENT_CLAIMS_LOCK_RETRY_MS,
+    RUN_AGENT_CLAIMS_WAIT,
+    mutate,
+  );
+}
+
 export function ensureRunAgentClaim(
   cwd: string,
   state: unknown,
   role: string,
   rawInput: unknown,
-  metadata: { toolName?: string; agentType?: string; model?: string } = {},
+  metadata: { toolName?: string; agentType?: string; model?: string; roleSource?: string } = {},
 ): Rec | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
-  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
-  const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
   const identity = hookSessionIdentity(rawInput);
-  const claimId = `${role}-${spawnIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const claim: Rec = {
-    version: 1,
-    runId,
-    claimId,
-    role,
-    spawnIndex,
-    status: 'pending',
-    parentSessionId: identity.sessionId || null,
-    createdAt: stateTimestamp(),
-    stackFingerprint: stackFingerprint(source),
-    toolName: metadata.toolName || null,
-    agentType: metadata.agentType || null,
-    model: metadata.model || null,
-  };
-
-  fs.mkdirSync(pendingDir(cwd, runId), { recursive: true });
-  ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
-  writeJson(path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`), claim);
+  let claim: Rec | null = null;
+  const locked = withRunAgentClaimsLock(cwd, runId, () => {
+    const spawnIndex = nextSpawnIndex(cwd, source, runId, role);
+    const claimId = `${role}-${spawnIndex}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    claim = {
+      version: 1,
+      runId,
+      claimId,
+      role,
+      spawnIndex,
+      status: 'pending',
+      parentSessionId: identity.sessionId || null,
+      createdAt: stateTimestamp(),
+      stackFingerprint: stackFingerprint(source),
+      toolName: metadata.toolName || null,
+      agentType: metadata.agentType || null,
+      model: metadata.model || null,
+      roleSource: metadata.roleSource || 'spawn-input',
+    };
+    fs.mkdirSync(pendingDir(cwd, runId), { recursive: true });
+    ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
+    writeJson(path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`), claim);
+  });
+  const persistedClaim = claim as Rec | null;
+  if (!locked || !persistedClaim) return null;
 
   source.currentRunId = runId;
   const existingSpawn = obj(source.spawnIndex);
-  source.spawnIndex = existingSpawn ? { ...existingSpawn, [role]: spawnIndex } : { [role]: spawnIndex };
+  const claimedSpawnIndex = typeof persistedClaim.spawnIndex === 'number' ? persistedClaim.spawnIndex : 1;
+  source.spawnIndex = existingSpawn ? { ...existingSpawn, [role]: claimedSpawnIndex } : { [role]: claimedSpawnIndex };
   writeState(cwd, source);
 
-  return claim;
+  return persistedClaim;
 }
 
 export interface RunAgentContext {
@@ -783,13 +1777,61 @@ function contextFromClaim(claim: Rec, source: string): RunAgentContext {
   };
 }
 
+function annotateClaimRoleSource(
+  cwd: string,
+  runId: string,
+  key: string,
+  expected: Rec,
+  evidence: RoleEvidence,
+): Rec | null {
+  if (expected.roleSource === evidence.source) return expected;
+  let result: Rec | null = null;
+  const locked = withRunAgentClaimsLock(cwd, runId, () => {
+    const file = runAgentFile(cwd, runId, key);
+    const current = readClaimFile(file);
+    if (!current || current.role !== expected.role || current.claimId !== expected.claimId) return;
+    const source = strongestRoleSource(evidence.source, current.roleSource);
+    const next = source === current.roleSource ? current : { ...current, roleSource: source };
+    try {
+      if (next !== current) writeJson(file, next);
+      result = next;
+    } catch {
+      result = null;
+    }
+  });
+  return locked ? result : null;
+}
+
 export function resolveRunAgentContext(
   cwd: string,
   state: unknown,
   rawInput: unknown,
-  options: { claimPending?: boolean } = {},
+  options: { claimPending?: boolean; allowSoleAnonymousPending?: boolean } = {},
 ): RunAgentContext | null {
   const identity = hookSessionIdentity(rawInput);
+  if (identity.declaredRoleConflict) return null;
+  const hookCodexMeta = identity.transcriptPath
+    ? readCodexSessionMetaIdentity(identity.transcriptPath)
+    : null;
+  if (hookCodexMeta?.role.kind === 'conflict') return null;
+  const transcriptIdentifiesChild = Boolean(
+    identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId,
+  );
+  const effectiveParentSessionId = identity.parentSessionId
+    || hookCodexMeta?.parentThreadId
+    || (transcriptIdentifiesChild ? identity.sessionId : null);
+  const effectiveIsSubagent = identity.isSubagent || transcriptIdentifiesChild;
+  // Before any exact-claim reuse, first-write self-heal, or pending correlation,
+  // bind the line-zero metadata to the hook's actual child and parent. A copied
+  // rollout must not grant its authoritative role to another thread.
+  if (hookCodexMeta?.threadId && identity.threadId
+    && hookCodexMeta.threadId.toLowerCase() !== identity.threadId.toLowerCase()) return null;
+  if (hookCodexMeta?.parentThreadId && effectiveParentSessionId
+    && hookCodexMeta.parentThreadId !== effectiveParentSessionId) return null;
+  if (identity.declaredRole
+    && hookCodexMeta?.role.kind === 'evidence'
+    && hookCodexMeta.role.evidence.source !== 'spawn-task-name'
+    && hookCodexMeta.role.evidence.role !== identity.declaredRole) return null;
   const shouldClaimPending = options.claimPending !== false;
   const runIds = runIdsForLookup(cwd, state);
 
@@ -799,8 +1841,35 @@ export function resolveRunAgentContext(
   const exactKeys = [identity.agentId, identity.threadId, identity.sessionId].filter((v): v is string => Boolean(v));
   for (const runId of runIds) {
     for (const key of exactKeys) {
-      const claim = readClaimFile(runAgentFile(cwd, runId, key));
+      // A crash may leave the claim already corrected while exact-holder or
+      // pending cleanup is incomplete. Gate every exact reuse (including hosts
+      // with no transcript) on durable transaction replay before returning it.
+      const replay = replayAuthoritativeRebindJournal(cwd, state, runId, key);
+      if (replay.status === 'blocked') return null;
+      const claim = replay.status === 'complete'
+        ? replay.claim
+        : readClaimFile(runAgentFile(cwd, runId, key));
       if (claim && claimAllowsState(state, claim)) {
+        // Legacy Codex claims can carry the wrong role while remaining fresh. When
+        // this exact hook supplies the child rollout, inspect ONLY line zero
+        // (session_meta). Prompt/tool content is never consulted for correction.
+        if (identity.transcriptPath && identity.threadId === key) {
+          const meta = readCodexSessionMetaIdentity(identity.transcriptPath);
+          if (meta && meta.role.kind === 'conflict') return null;
+          if (meta && meta.role.kind === 'evidence') {
+            if (meta.threadId && meta.threadId.toLowerCase() !== key.toLowerCase()) return null;
+            if (meta.parentThreadId && identity.sessionId && meta.parentThreadId !== identity.sessionId) return null;
+            if (claim.role !== meta.role.evidence.role) {
+              return authoritativeRebindThreadRole(cwd, state, runId, key, claim, meta.role.evidence, {
+                transcriptPath: identity.transcriptPath,
+                parentSessionId: meta.parentThreadId || identity.sessionId,
+                model: identity.model,
+              });
+            }
+            const annotated = annotateClaimRoleSource(cwd, runId, key, claim, meta.role.evidence);
+            return annotated ? contextFromClaim(annotated, 'run-agent') : null;
+          }
+        }
         return contextFromClaim(claim, 'run-agent');
       }
     }
@@ -812,8 +1881,31 @@ export function resolveRunAgentContext(
   // with the declared role — no inference needed. This is what unblocks team
   // workers' feature-source writes (see project_agent_teams_claim_deadlock).
   if (shouldClaimPending && identity.agentId && identity.declaredRole) {
-    const ctx = claimThreadRole(cwd, state, identity.agentId, identity.declaredRole, { parentSessionId: identity.sessionId, model: identity.model });
+    const ctx = claimThreadRole(cwd, state, identity.agentId, identity.declaredRole, {
+      parentSessionId: identity.sessionId,
+      model: identity.model,
+      evidence: { role: identity.declaredRole, source: 'host-declared-role', authority: 'authoritative' },
+    });
     if (ctx) return ctx;
+  }
+
+  // Hosts with a per-child session id can bind the same authoritative role
+  // without a separate agent_id. Keep this behind an explicit subagent signal
+  // so a parent spawn payload can never claim its own session.
+  if (shouldClaimPending && !identity.agentId && identity.isSubagent && identity.declaredRole) {
+    const declaredThreadId = identity.threadId || identity.sessionId;
+    const declaredParentId = identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId
+      ? identity.sessionId
+      : identity.parentSessionId;
+    if (declaredThreadId) {
+      const ctx = claimThreadRole(cwd, state, declaredThreadId, identity.declaredRole, {
+        parentSessionId: declaredParentId || effectiveParentSessionId,
+        model: identity.model,
+        transcriptPath: identity.transcriptPath,
+        evidence: { role: identity.declaredRole, source: 'host-declared-role', authority: 'authoritative' },
+      });
+      if (ctx) return ctx;
+    }
   }
 
   // Codex/Cursor self-heal: a subagent thread with no claim yet can still bind from
@@ -824,24 +1916,26 @@ export function resolveRunAgentContext(
     : null;
   const cursorTranscriptPath = cursorTranscript ? cursorTranscript.filePath : null;
   const inferenceTranscriptPath = identity.transcriptPath || cursorTranscriptPath;
-  const inferredRole = shouldClaimPending && inferenceTranscriptPath
-    ? inferRoleFromTranscript(inferenceTranscriptPath)
-    : null;
+  const inferredResolution = shouldClaimPending && inferenceTranscriptPath
+    ? inferRoleEvidenceFromTranscript(inferenceTranscriptPath)
+    : { kind: 'none' } as RoleEvidenceResolution;
+  const inferredEvidence = inferredResolution.kind === 'evidence' ? inferredResolution.evidence : null;
+  const inferredRole = inferredEvidence?.role || null;
   const inferredThreadId = identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId
     ? identity.threadId
     : (cursorTranscriptPath && identity.sessionId ? identity.sessionId : null);
   if (shouldClaimPending && inferredThreadId && inferredRole) {
-    const parentSessionId = identity.threadId && identity.sessionId && identity.threadId !== identity.sessionId
-      ? identity.sessionId
-      : (identity.parentSessionId || cursorTranscript?.parentSessionId || null);
+    const parentSessionId = effectiveParentSessionId || cursorTranscript?.parentSessionId || null;
     const ctx = claimThreadRole(cwd, state, inferredThreadId, inferredRole, {
       parentSessionId,
       model: identity.model,
+      transcriptPath: inferenceTranscriptPath,
+      evidence: inferredEvidence || undefined,
     });
     if (ctx) return ctx;
   }
 
-  if (shouldClaimPending && identity.isSubagent) {
+  if (shouldClaimPending && effectiveIsSubagent && inferredResolution.kind !== 'conflict') {
     for (const runId of runIds) {
       // When the thread's transcript reveals its role, never claim a different
       // role's pending file: parallel fix-cycle workers spawn near-simultaneously
@@ -849,18 +1943,10 @@ export function resolveRunAgentContext(
       // live — the misclaimed worker then fails every scope check and the run
       // deadlocks until the orchestrator improvises).
       const pending = listPendingClaims(cwd, runId)
-        .filter(({ claim }) => claimAllowsState(state, claim))
-        .filter(({ claim }) => !inferredRole || claim.role === inferredRole);
-      const sameParent = pending.filter(({ claim }) => (
-        identity.parentSessionId && claim.parentSessionId && claim.parentSessionId === identity.parentSessionId
-      ));
-      const sameModel = (items: PendingClaim[]) => identity.model
-        ? items.filter(({ claim }) => claimModel(claim) === identity.model)
-        : [];
-      const matched = newestPending(sameModel(sameParent))
-        || newestPending(sameModel(pending))
-        || newestPending(sameParent)
-        || newestPending(pending);
+        .filter(({ claim }) => claimAllowsState(state, claim));
+      const matched = inferredRole
+        ? matchingPendingClaim(cwd, state, runId, inferredRole, effectiveParentSessionId, identity.model)
+        : uniquelyCorrelatedPendingClaim(pending, effectiveParentSessionId, identity.model);
       if (!matched) continue;
 
       // Key the claimed file by the PER-THREAD id when we have one. On Codex,
@@ -868,24 +1954,50 @@ export function resolveRunAgentContext(
       // it as the key made all parallel workers collide on one claim file (each
       // overwrite re-pointed every worker's resolution at the last-claimed role).
       const sessionId = identity.threadId || identity.sessionId || (matched.claim.sessionId as string) || (matched.claim.claimId as string);
-      const claimed: Rec = {
-        ...matched.claim,
-        status: 'claimed',
-        sessionId,
-        parentSessionId: identity.parentSessionId || matched.claim.parentSessionId || null,
-        claimedAt: stateTimestamp(),
-      };
-      fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-      ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(state) });
-      writeJson(runAgentFile(cwd, runId, sessionId), claimed);
-      try {
-        fs.rmSync(matched.filePath, { force: true });
-      } catch {
-        // a leftover pending file is harmless; freshness expires it
-      }
-      removeSiblingPendingClaims(cwd, state, runId, String(claimed.role || ''), claimed.parentSessionId as string | null, claimed.claimId as string | null);
-      return contextFromClaim(claimed, 'run-agent');
+      let claimed: Rec | null = null;
+      const claimedUnderLock = withRunAgentClaimsLock(cwd, runId, () => {
+        const currentPending = readClaimFile(matched.filePath);
+        if (!currentPending
+          || currentPending.claimId !== matched.claim.claimId
+          || currentPending.role !== matched.claim.role
+          || !claimAllowsState(state, currentPending)) return;
+        const existingThreadClaim = readClaimFile(runAgentFile(cwd, runId, sessionId));
+        if (existingThreadClaim && claimAllowsState(state, existingThreadClaim)) return;
+        claimed = {
+          ...currentPending,
+          status: 'claimed',
+          sessionId,
+          parentSessionId: effectiveParentSessionId || currentPending.parentSessionId || null,
+          claimedAt: stateTimestamp(),
+          roleSource: strongestRoleSource(inferredEvidence?.source, currentPending.roleSource) || 'pending-correlation',
+          transcriptPath: inferenceTranscriptPath || null,
+        };
+        fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+        ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(state) });
+        writeJson(runAgentFile(cwd, runId, sessionId), claimed);
+        removePendingClaim(matched.filePath);
+        removeSiblingPendingClaims(
+          cwd, state, runId, String(claimed!.role || ''),
+          claimed!.parentSessionId as string | null,
+          claimed!.claimId as string | null,
+        );
+      });
+      if (claimedUnderLock && claimed) return contextFromClaim(claimed, 'run-agent');
     }
+  }
+
+  // Devin Local's native PreToolUse payload currently contains no session,
+  // parent, transcript, or subagent marker. `run_subagent` is foreground-only:
+  // while it is running the parent is suspended, so one fresh pending claim is
+  // unambiguously the active child. Keep the pending file in place so every
+  // subsequent child write resolves the same role; PostToolUse owns completion.
+  // This fallback is opt-in because it would be unsafe on hosts with background
+  // or parallel anonymous workers.
+  if (shouldClaimPending && options.allowSoleAnonymousPending && exactKeys.length === 0) {
+    const pending = runIds
+      .flatMap((runId) => listPendingClaims(cwd, runId))
+      .filter(({ claim }) => claimAllowsState(state, claim));
+    if (pending.length === 1) return contextFromClaim(pending[0]!.claim, 'sole-foreground-pending');
   }
 
   return null;
@@ -903,48 +2015,94 @@ export function claimThreadRole(
   state: unknown,
   threadId: string,
   role: string,
-  options: { parentSessionId?: string | null; recordAgent?: boolean; model?: string | null } = {},
+  options: {
+    parentSessionId?: string | null;
+    recordAgent?: boolean;
+    model?: string | null;
+    transcriptPath?: string | null;
+    evidence?: RoleEvidence;
+  } = {},
 ): RunAgentContext | null {
   if (!VALID_AGENT_ROLES.has(role)) return null;
   if (typeof threadId !== 'string' || !threadId.trim()) return null;
-  if (isPluginAuthoringRoot(cwd)) return null; // never claim runs in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return null; // never claim runs in the plugin's own repo
   const id = threadId.trim();
   const source: Rec = obj(state) ? { ...(state as Rec) } : {};
   const runId = typeof source.currentRunId === 'string' && source.currentRunId ? source.currentRunId : runIdNow();
   const parentSessionId = firstString(options.parentSessionId);
   const model = firstString(options.model);
+  const transcriptPath = firstString(options.transcriptPath);
+  const evidence = options.evidence && options.evidence.role === role ? options.evidence : null;
+  let claim: Rec | null = null;
+  let rebindExpected: Rec | null = null;
+  let created = false;
+  const replay = replayAuthoritativeRebindJournal(cwd, state, runId, id);
+  if (replay.status === 'blocked') return null;
+  const locked = withRunAgentClaimsLock(cwd, runId, () => {
+    const existing = readClaimFile(runAgentFile(cwd, runId, id));
+    if (existing && claimAllowsState(state, existing)) {
+      if (existing.role !== role) {
+        if (isCorrectionGradeEvidence(evidence, existing.roleSource)) rebindExpected = existing;
+        return;
+      }
+      const nextSource = strongestRoleSource(evidence?.source, existing.roleSource);
+      const next: Rec = {
+        ...existing,
+        ...(nextSource ? { roleSource: nextSource } : {}),
+        ...(transcriptPath ? { transcriptPath } : {}),
+      };
+      if (nextSource !== existing.roleSource || (transcriptPath && transcriptPath !== existing.transcriptPath)) {
+        try { writeJson(runAgentFile(cwd, runId, id), next); } catch { return; }
+      }
+      removeSiblingPendingClaims(
+        cwd, source, runId, role,
+        parentSessionId || firstString(existing.parentSessionId),
+        firstString(existing.claimId),
+      );
+      claim = next;
+      return;
+    }
 
-  const existing = readClaimFile(runAgentFile(cwd, runId, id));
-  if (existing && claimAllowsState(state, existing)) {
-    removeSiblingPendingClaims(cwd, source, runId, role, parentSessionId || firstString(existing.parentSessionId), firstString(existing.claimId));
-    return contextFromClaim(existing, 'subagent-start');
+    const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
+    const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
+      ? pending.claim.spawnIndex
+      : nextSpawnIndex(cwd, source, runId, role);
+    const now = stateTimestamp();
+    claim = {
+      ...(pending ? pending.claim : {}),
+      version: pending && typeof pending.claim.version === 'number' ? pending.claim.version : 1,
+      runId: pending && typeof pending.claim.runId === 'string' ? pending.claim.runId : runId,
+      claimId: pending && typeof pending.claim.claimId === 'string' ? pending.claim.claimId : `${role}-${spawnIndex}-${id.slice(-8)}`,
+      role,
+      spawnIndex,
+      status: 'claimed',
+      sessionId: id,
+      parentSessionId: parentSessionId || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null),
+      createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
+      claimedAt: now,
+      stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
+      model: model || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null),
+      roleSource: strongestRoleSource(evidence?.source, pending?.claim.roleSource) || 'explicit-bind',
+      transcriptPath: transcriptPath || (pending && typeof pending.claim.transcriptPath === 'string' ? pending.claim.transcriptPath : null),
+    };
+    fs.mkdirSync(runDir(cwd, runId), { recursive: true });
+    ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
+    writeJson(runAgentFile(cwd, runId, id), claim);
+    if (pending) removePendingClaim(pending.filePath);
+    removeSiblingPendingClaims(cwd, source, runId, role, claim!.parentSessionId as string | null, claim!.claimId as string | null);
+    created = true;
+  });
+  if (!locked) return null;
+  const expectedForRebind = rebindExpected as Rec | null;
+  if (expectedForRebind && isCorrectionGradeEvidence(evidence, expectedForRebind.roleSource)) {
+    return authoritativeRebindThreadRole(cwd, state, runId, id, expectedForRebind, evidence, {
+      parentSessionId,
+      model,
+      transcriptPath,
+    });
   }
-
-  const pending = matchingPendingClaim(cwd, source, runId, role, parentSessionId, model);
-  const spawnIndex = pending && typeof pending.claim.spawnIndex === 'number'
-    ? pending.claim.spawnIndex
-    : nextSpawnIndex(cwd, source, runId, role);
-  const now = stateTimestamp();
-  const claim: Rec = {
-    ...(pending ? pending.claim : {}),
-    version: pending && typeof pending.claim.version === 'number' ? pending.claim.version : 1,
-    runId: pending && typeof pending.claim.runId === 'string' ? pending.claim.runId : runId,
-    claimId: pending && typeof pending.claim.claimId === 'string' ? pending.claim.claimId : `${role}-${spawnIndex}-${id.slice(-8)}`,
-    role: pending && typeof pending.claim.role === 'string' ? pending.claim.role : role,
-    spawnIndex,
-    status: 'claimed',
-    sessionId: id,
-    parentSessionId: parentSessionId || (pending && typeof pending.claim.parentSessionId === 'string' ? pending.claim.parentSessionId : null),
-    createdAt: pending && typeof pending.claim.createdAt === 'string' ? pending.claim.createdAt : now,
-    claimedAt: now,
-    stackFingerprint: pending && typeof pending.claim.stackFingerprint === 'string' ? pending.claim.stackFingerprint : stackFingerprint(source),
-    model: model || (pending && typeof pending.claim.model === 'string' ? pending.claim.model : null),
-  };
-  fs.mkdirSync(runDir(cwd, runId), { recursive: true });
-  ensureRunLedger(cwd, runId, { status: 'active', kind: 'agent-claim', stackFingerprint: stackFingerprint(source) });
-  writeJson(runAgentFile(cwd, runId, id), claim);
-  if (pending) removePendingClaim(pending.filePath);
-  removeSiblingPendingClaims(cwd, source, runId, role, claim.parentSessionId as string | null, claim.claimId as string | null);
+  const boundClaim = claim as Rec | null;
+  if (!boundClaim) return null;
   // Mirror the bind into the role-keyed reuse registry (agents.json), so the spawn
   // dedup gate sees a LIVE agent for the role and routes the next same-role task to
   // the host's continuation primitive — one agent per role instead of a fresh rule-reloading
@@ -952,8 +2110,14 @@ export function claimThreadRole(
   // hosts that bind here (Codex SubagentStart; Claude agent-teams, whose workers
   // carry agent_id/agent_type but no separately-recorded spawn result). Gated on
   // continuation (the registry is dead weight without it) and best-effort.
-  if (options.recordAgent !== false && subagentContinuationAvailable()) {
-    recordRunAgent(cwd, runId, role, { agentId: id, parentSessionId, model: claim.model as string | null });
+  if (created && options.recordAgent !== false && subagentContinuationAvailable()) {
+    recordRunAgent(cwd, runId, role, {
+      agentId: id,
+      parentSessionId,
+      model: boundClaim.model as string | null,
+      roleSource: boundClaim.roleSource as string | null,
+      transcriptPath: boundClaim.transcriptPath as string | null,
+    });
   }
   // Deliberately NOT writeState() here. Parallel subagents self-heal their claims
   // near-simultaneously on their first writes, and writeState does a non-atomic
@@ -962,7 +2126,526 @@ export function claimThreadRole(
   // runIdsForLookup() scans the runs/ dir on disk, so resolution needs no
   // currentRunId/spawnIndex stamp (the orchestrator already stamps currentRunId
   // during onboarding; nextSpawnIndex counts claim files on disk).
-  return contextFromClaim(claim, 'subagent-start');
+  return contextFromClaim(boundClaim, 'subagent-start');
+}
+
+function strictPendingForRoleRebind(
+  cwd: string,
+  state: unknown,
+  runId: string,
+  role: string,
+  parentSessionId: string | null,
+  model: string | null,
+): { match: PendingClaim | null; ambiguous: boolean } {
+  if (!parentSessionId || !model) return { match: null, ambiguous: false };
+  const matches = listPendingClaims(cwd, runId)
+    .filter(({ claim }) => claimAllowsState(state, claim))
+    .filter(({ claim }) => claim.role === role)
+    .filter(({ claim }) => claim.parentSessionId === parentSessionId)
+    .filter(({ claim }) => claimModel(claim) === model);
+  return matches.length === 1
+    ? { match: matches[0]!, ambiguous: false }
+    : { match: null, ambiguous: matches.length > 1 };
+}
+
+function activeClaimForOtherThread(
+  cwd: string,
+  state: unknown,
+  runId: string,
+  role: string,
+  threadId: string,
+): Rec | null {
+  return listClaimedAgents(cwd, runId).find((claim) => (
+    claimAllowsState(state, claim)
+    && claim.role === role
+    && firstString(claim.sessionId) !== threadId
+  )) || null;
+}
+
+const AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES = 32 * 1024;
+const AUTHORITATIVE_REBIND_PENDING_LIMIT = 8;
+
+interface AuthoritativeRebindJournal {
+  version: 1;
+  kind: 'authoritative-role-rebind';
+  runId: string;
+  threadId: string;
+  oldRole: string;
+  targetRole: string;
+  sourceClaimId: string;
+  sourceClaimWasPresent: boolean;
+  targetClaimId: string;
+  targetClaim: Rec;
+  registryEntry: Rec;
+  pendingClaimIds: string[];
+  createdAt: string;
+}
+
+type AuthoritativeRebindReplay =
+  | { status: 'none' }
+  | { status: 'complete'; claim: Rec }
+  | { status: 'blocked' };
+
+function boundedRebindRegistryEntry(entry: Rec, threadId: string): Rec {
+  return {
+    agentId: threadId,
+    resumeId: firstString(entry.resumeId),
+    toolCallId: firstString(entry.toolCallId),
+    model: firstString(entry.model),
+    agentType: firstString(entry.agentType),
+    parentSessionId: firstString(entry.parentSessionId),
+    recordedAt: firstString(entry.recordedAt) || stateTimestamp(),
+    tasks: typeof entry.tasks === 'number' && Number.isInteger(entry.tasks) && entry.tasks > 0
+      ? Math.min(entry.tasks, 1_000_000)
+      : 1,
+    replaced: false,
+    roleSource: firstString(entry.roleSource),
+    transcriptPath: firstString(entry.transcriptPath),
+  };
+}
+
+function boundedRebindTargetClaim(claim: Rec, runId: string, threadId: string, targetRole: string): Rec {
+  return {
+    version: typeof claim.version === 'number' ? claim.version : 1,
+    runId,
+    claimId: firstString(claim.claimId),
+    role: targetRole,
+    spawnIndex: typeof claim.spawnIndex === 'number' && Number.isInteger(claim.spawnIndex) && claim.spawnIndex > 0
+      ? claim.spawnIndex
+      : 1,
+    status: 'claimed',
+    sessionId: threadId,
+    parentSessionId: firstString(claim.parentSessionId),
+    createdAt: firstString(claim.createdAt) || stateTimestamp(),
+    claimedAt: firstString(claim.claimedAt) || stateTimestamp(),
+    stackFingerprint: firstString(claim.stackFingerprint),
+    toolName: firstString(claim.toolName),
+    agentType: firstString(claim.agentType),
+    model: firstString(claim.model),
+    roleSource: firstString(claim.roleSource),
+    transcriptPath: firstString(claim.transcriptPath),
+    correctedAt: firstString(claim.correctedAt),
+    correctedFromRole: firstString(claim.correctedFromRole),
+  };
+}
+
+function readAuthoritativeRebindJournal(
+  cwd: string,
+  runId: string,
+  threadId: string,
+): AuthoritativeRebindJournal | null {
+  const file = authoritativeRebindJournalFile(cwd, runId, threadId);
+  try {
+    if (fs.statSync(file).size > AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES) return null;
+  } catch {
+    return null;
+  }
+  const raw = obj(readJson(file, null));
+  const registryEntry = obj(raw?.registryEntry);
+  const targetClaim = obj(raw?.targetClaim);
+  const oldRole = firstString(raw?.oldRole);
+  const targetRole = firstString(raw?.targetRole);
+  const sourceClaimId = firstString(raw?.sourceClaimId);
+  const targetClaimId = firstString(raw?.targetClaimId);
+  const storedThreadId = firstString(raw?.threadId);
+  const storedRunId = firstString(raw?.runId);
+  const pendingRaw = Array.isArray(raw?.pendingClaimIds) ? raw.pendingClaimIds : [];
+  if (!raw
+    || raw.version !== 1
+    || raw.kind !== 'authoritative-role-rebind'
+    || storedRunId !== runId
+    || storedThreadId !== threadId
+    || !oldRole || !VALID_AGENT_ROLES.has(oldRole)
+    || !targetRole || !VALID_AGENT_ROLES.has(targetRole) || targetRole === oldRole
+    || !sourceClaimId || !targetClaimId
+    || !targetClaim
+    || firstString(targetClaim.runId) !== runId
+    || firstString(targetClaim.sessionId) !== threadId
+    || firstString(targetClaim.role) !== targetRole
+    || firstString(targetClaim.claimId) !== targetClaimId
+    || !registryEntry || firstString(registryEntry.agentId) !== threadId
+    || pendingRaw.length > AUTHORITATIVE_REBIND_PENDING_LIMIT
+    || pendingRaw.some((value) => typeof value !== 'string' || !value.trim())) return null;
+  return {
+    version: 1,
+    kind: 'authoritative-role-rebind',
+    runId,
+    threadId,
+    oldRole,
+    targetRole,
+    sourceClaimId,
+    sourceClaimWasPresent: raw.sourceClaimWasPresent === true,
+    targetClaimId,
+    targetClaim: boundedRebindTargetClaim(targetClaim, runId, threadId, targetRole),
+    registryEntry: boundedRebindRegistryEntry(registryEntry, threadId),
+    pendingClaimIds: uniqueStrings(pendingRaw.map((value) => String(value).trim()))
+      .slice(0, AUTHORITATIVE_REBIND_PENDING_LIMIT),
+    createdAt: firstString(raw.createdAt) || stateTimestamp(),
+  };
+}
+
+function removePendingClaimsByIdUnlocked(
+  cwd: string,
+  runId: string,
+  claimIds: readonly string[],
+): boolean {
+  for (const claimId of new Set(claimIds.filter(Boolean))) {
+    const file = path.join(pendingDir(cwd, runId), `${safePathSegment(claimId)}.json`);
+    if (!fs.existsSync(file)) continue;
+    const claim = readClaimFile(file);
+    // The filename and payload form the pending-claim CAS. If either cannot be
+    // verified, retain the journal instead of declaring cleanup complete.
+    if (!claim || firstString(claim.claimId) !== claimId) return false;
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
+function completeAuthoritativeRebindJournalUnlocked(
+  cwd: string,
+  state: unknown,
+  journal: AuthoritativeRebindJournal,
+): AuthoritativeRebindReplay {
+  const claimFile = runAgentFile(cwd, journal.runId, journal.threadId);
+  const currentClaim = readClaimFile(claimFile);
+  const currentClaimSessionId = firstString(currentClaim?.sessionId);
+  const currentClaimThreadMatches = !currentClaimSessionId || currentClaimSessionId === journal.threadId;
+  const targetClaimMatches = Boolean(
+    currentClaim
+    && firstString(currentClaim.runId) === journal.runId
+    && currentClaimThreadMatches
+    && firstString(currentClaim.role) === journal.targetRole
+    && firstString(currentClaim.claimId) === journal.targetClaimId,
+  );
+  const sourceClaimMatches = Boolean(
+    currentClaim
+    && firstString(currentClaim.runId) === journal.runId
+    && currentClaimThreadMatches
+    && firstString(currentClaim.role) === journal.oldRole
+    && firstString(currentClaim.claimId) === journal.sourceClaimId,
+  );
+  if (!targetClaimMatches && !sourceClaimMatches
+    && (currentClaim || journal.sourceClaimWasPresent)) return { status: 'blocked' };
+
+  const registryFile = agentRegistryFile(cwd, journal.runId);
+  const registry = obj(readJson(registryFile, null)) || {};
+  const agents = obj(registry.agents) || {};
+  const targetEntry = obj(agents[journal.targetRole]);
+  const targetMatches = Boolean(targetEntry && idsForRunAgent(targetEntry).includes(journal.threadId));
+  if ((targetEntry && !targetMatches)
+    || activeClaimForOtherThread(cwd, state, journal.runId, journal.targetRole, journal.threadId)) {
+    return { status: 'blocked' };
+  }
+
+  const oldEntry = obj(agents[journal.oldRole]);
+  const oldMatches = Boolean(oldEntry && idsForRunAgent(oldEntry).includes(journal.threadId));
+  // A registry-only repair may legitimately start without a claim, but it must
+  // still retain one exact registry identity as its source CAS until the target
+  // claim is durable. Never invent both sides from an orphaned journal.
+  if (!targetClaimMatches && !sourceClaimMatches && !oldMatches && !targetMatches) {
+    return { status: 'blocked' };
+  }
+
+  if (!targetClaimMatches) {
+    try {
+      fs.mkdirSync(runDir(cwd, journal.runId), { recursive: true });
+      writeJson(claimFile, journal.targetClaim);
+    } catch {
+      return { status: 'blocked' };
+    }
+  }
+
+  let registryDirty = false;
+  if (oldMatches) {
+    delete agents[journal.oldRole];
+    registryDirty = true;
+  }
+  if (!targetMatches) {
+    agents[journal.targetRole] = journal.registryEntry;
+    registryDirty = true;
+  }
+  if (registryDirty) {
+    const history = Array.isArray(registry.history)
+      ? registry.history.filter((item) => item && typeof item === 'object')
+      : [];
+    const alreadyRecorded = history.some((item) => {
+      const record = obj(item);
+      return record?.replacementReason === 'authoritative-role-rebind'
+        && record.agentId === journal.threadId
+        && record.oldRole === journal.oldRole
+        && record.role === journal.targetRole;
+    });
+    if (!alreadyRecorded) {
+      history.push({
+        role: journal.targetRole,
+        oldRole: journal.oldRole,
+        agentId: journal.threadId,
+        correctedAt: journal.createdAt,
+        replacementReason: 'authoritative-role-rebind',
+      });
+    }
+    try {
+      writeJson(registryFile, {
+        ...registry,
+        version: 1,
+        agents,
+        history: history.slice(-100),
+      });
+    } catch {
+      return { status: 'blocked' };
+    }
+  }
+
+  const released = releaseFallbackClaimsForHolderUnlocked(cwd, journal.runId, journal.threadId);
+  if (!released.ok) return { status: 'blocked' };
+  if (!removePendingClaimsByIdUnlocked(cwd, journal.runId, journal.pendingClaimIds)) {
+    return { status: 'blocked' };
+  }
+  try {
+    fs.rmSync(authoritativeRebindJournalFile(cwd, journal.runId, journal.threadId), { force: true });
+  } catch {
+    return { status: 'blocked' };
+  }
+  const correctedClaim = readClaimFile(claimFile);
+  return correctedClaim
+    ? { status: 'complete', claim: correctedClaim }
+    : { status: 'blocked' };
+}
+
+function replayAuthoritativeRebindJournal(
+  cwd: string,
+  state: unknown,
+  runId: string,
+  threadId: string,
+): AuthoritativeRebindReplay {
+  const journalFile = authoritativeRebindJournalFile(cwd, runId, threadId);
+  if (!fs.existsSync(journalFile)) return { status: 'none' };
+  let result: AuthoritativeRebindReplay = { status: 'blocked' };
+  const identityLocked = withRunAgentClaimsLock(cwd, runId, () => {
+    const registryLocked = withAgentRegistryLock(cwd, runId, () => {
+      const fallbackLocked = withFallbackClaimsLock(cwd, runId, () => {
+        if (!fs.existsSync(journalFile)) {
+          result = { status: 'none' };
+          return;
+        }
+        const journal = readAuthoritativeRebindJournal(cwd, runId, threadId);
+        result = journal
+          ? completeAuthoritativeRebindJournalUnlocked(cwd, state, journal)
+          : { status: 'blocked' };
+      });
+      if (!fallbackLocked) result = { status: 'blocked' };
+    });
+    if (!registryLocked) result = { status: 'blocked' };
+  });
+  return identityLocked ? result : { status: 'blocked' };
+}
+
+function authoritativeRebindThreadRole(
+  cwd: string,
+  state: unknown,
+  runId: string,
+  threadId: string,
+  expectedClaim: Rec,
+  evidence: RoleEvidence,
+  options: {
+    parentSessionId?: string | null;
+    model?: string | null;
+    transcriptPath?: string | null;
+    expectedRegistryRole?: string | null;
+    expectedRegistryIds?: string[];
+  } = {},
+): RunAgentContext | null {
+  if (!VALID_AGENT_ROLES.has(evidence.role)) return null;
+  const targetRole = evidence.role;
+  const claimRole = firstString(expectedClaim.role);
+  const expectedRegistryRole = firstString(options.expectedRegistryRole);
+  // A crash can occur after the claim was corrected but before the registry row
+  // was re-keyed. Finishing that exact, stamped transaction is convergence, not
+  // a second same-tier correction: the claim already carries this role/source
+  // and records the registry role it was corrected from.
+  const convergesInterruptedCorrection = Boolean(
+    evidence.authority === 'authoritative'
+    && claimRole === targetRole
+    && expectedRegistryRole
+    && firstString(expectedClaim.correctedFromRole) === expectedRegistryRole
+    && firstString(expectedClaim.roleSource) === evidence.source,
+  );
+  if (!convergesInterruptedCorrection
+    && !isCorrectionGradeEvidence(evidence, expectedClaim.roleSource)) return null;
+  const oldRole = claimRole && claimRole !== targetRole
+    ? claimRole
+    : (expectedRegistryRole && expectedRegistryRole !== targetRole ? expectedRegistryRole : null);
+  if (!oldRole) return null;
+  const id = threadId.trim();
+  const parentSessionId = firstString(options.parentSessionId, expectedClaim.parentSessionId);
+  const model = firstString(options.model, expectedClaim.model);
+  const transcriptPath = firstString(options.transcriptPath, expectedClaim.transcriptPath);
+  let corrected: Rec | null = null;
+
+  // Canonical mutation order: identity claim -> role registry -> fallback path
+  // claims. Every other claim mutation uses the first lock only, so no caller can
+  // overwrite a corrected claim from a stale pre-rebind snapshot.
+  const identityLocked = withRunAgentClaimsLock(cwd, runId, () => {
+    const registryLocked = withAgentRegistryLock(cwd, runId, () => {
+      const claimsLocked = withFallbackClaimsLock(cwd, runId, () => {
+      const claimFile = runAgentFile(cwd, runId, id);
+      const current = readClaimFile(claimFile);
+      const base = current || expectedClaim;
+      if (current && expectedClaim.claimId && current.claimId !== expectedClaim.claimId) return;
+      if (current && current.role !== oldRole && current.role !== targetRole) return;
+
+      const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+      const agents = obj(registry.agents) || {};
+      const history = Array.isArray(registry.history)
+        ? registry.history.filter((item) => item && typeof item === 'object')
+        : [];
+      const conflicts = Array.isArray(registry.conflicts)
+        ? registry.conflicts.filter((item) => item && typeof item === 'object')
+        : [];
+      if (options.expectedRegistryRole) {
+        const inspected = obj(agents[options.expectedRegistryRole]);
+        const expectedIds = new Set(options.expectedRegistryIds || [id]);
+        if (!inspected || !idsForRunAgent(inspected).some((candidate) => expectedIds.has(candidate))) return;
+      }
+      const oldEntry = obj(agents[oldRole]);
+      const oldEntryMatches = Boolean(oldEntry && idsForRunAgent(oldEntry).includes(id));
+      // Registry-only legacy repair must CAS the exact inspected row. A child-hook
+      // correction may legitimately have a claim but no registry row yet; however,
+      // a newer row under the old role is never overwritten or re-keyed.
+      if (!current && !oldEntryMatches) return;
+      const targetEntry = obj(agents[targetRole]);
+      const targetIds = idsForRunAgent(targetEntry);
+      const targetParentMatches = !targetEntry
+        || !parentSessionId
+        || !firstString(targetEntry.parentSessionId)
+        || firstString(targetEntry.parentSessionId) === parentSessionId;
+      const targetIsLive = Boolean(
+        targetEntry
+        && targetEntry.replaced !== true
+        && targetParentMatches
+        && isFreshTimestamp(targetEntry.recordedAt, SUBAGENT_STALE_MS),
+      );
+      const occupiedTarget = targetIsLive && !targetIds.includes(id);
+      const otherClaim = activeClaimForOtherThread(cwd, state, runId, targetRole, id);
+      const pending = strictPendingForRoleRebind(cwd, state, runId, targetRole, parentSessionId, model);
+      if (occupiedTarget || otherClaim || pending.ambiguous) {
+        conflicts.push({
+          role: targetRole,
+          conflictingRole: oldRole,
+          rejectedAgentId: id,
+          conflictingAgentId: occupiedTarget ? firstString(targetEntry?.agentId) : firstString(otherClaim?.sessionId),
+          recordedAt: stateTimestamp(),
+          reason: pending.ambiguous
+            ? 'authoritative-role-rebind-ambiguous-pending'
+            : 'authoritative-role-rebind-target-occupied',
+        });
+        try {
+          writeJson(agentRegistryFile(cwd, runId), {
+            ...registry,
+            version: 1,
+            agents,
+            history: history.slice(-100),
+            conflicts: conflicts.slice(-50),
+          });
+        } catch {
+          // best-effort conflict diagnostic
+        }
+        return;
+      }
+
+      const claimAlreadyCorrected = current?.role === targetRole;
+      const matchingPending = claimAlreadyCorrected ? null : pending.match;
+      const spawnIndex = claimAlreadyCorrected && typeof current.spawnIndex === 'number'
+        ? current.spawnIndex
+        : (matchingPending && typeof matchingPending.claim.spawnIndex === 'number'
+          ? matchingPending.claim.spawnIndex
+          : nextSpawnIndex(cwd, state, runId, targetRole));
+      const claimId = claimAlreadyCorrected && typeof current.claimId === 'string'
+        ? current.claimId
+        : (matchingPending && typeof matchingPending.claim.claimId === 'string'
+          ? matchingPending.claim.claimId
+          : `${targetRole}-${spawnIndex}-${id.slice(-8)}`);
+      const now = stateTimestamp();
+      const nextClaim: Rec = {
+        ...base,
+        version: typeof base.version === 'number' ? base.version : 1,
+        runId,
+        claimId,
+        role: targetRole,
+        spawnIndex,
+        status: 'claimed',
+        sessionId: id,
+        parentSessionId,
+        createdAt: typeof base.createdAt === 'string' ? base.createdAt : now,
+        claimedAt: typeof base.claimedAt === 'string' ? base.claimedAt : now,
+        stackFingerprint: typeof base.stackFingerprint === 'string' ? base.stackFingerprint : stackFingerprint(state),
+        model,
+        roleSource: evidence.source,
+        transcriptPath,
+        correctedAt: firstString(base.correctedAt, now),
+        correctedFromRole: firstString(base.correctedFromRole, oldRole),
+      };
+
+      const sourceEntry = oldEntryMatches ? oldEntry : null;
+      const preserved = sourceEntry || (targetEntry && targetIds.includes(id) ? targetEntry : null) || {};
+      const nextEntry: Rec = {
+        ...preserved,
+        agentId: id,
+        resumeId: firstString(preserved.resumeId),
+        toolCallId: firstString(preserved.toolCallId),
+        model: firstString(preserved.model, model),
+        agentType: firstString(preserved.agentType),
+        parentSessionId: firstString(parentSessionId, preserved.parentSessionId),
+        recordedAt: firstString(preserved.recordedAt, base.createdAt, now) || now,
+        tasks: typeof preserved.tasks === 'number' && preserved.tasks > 0 ? preserved.tasks : 1,
+        replaced: false,
+        roleSource: evidence.source,
+        transcriptPath,
+      };
+      const sourceClaimId = firstString(expectedClaim.claimId, base.claimId);
+      if (!sourceClaimId) return;
+      const journal: AuthoritativeRebindJournal = {
+        version: 1,
+        kind: 'authoritative-role-rebind',
+        runId,
+        threadId: id,
+        oldRole,
+        targetRole,
+        sourceClaimId,
+        sourceClaimWasPresent: Boolean(current),
+        targetClaimId: claimId,
+        targetClaim: boundedRebindTargetClaim(nextClaim, runId, id, targetRole),
+        registryEntry: boundedRebindRegistryEntry(nextEntry, id),
+        pendingClaimIds: uniqueStrings([
+          firstString(matchingPending?.claim.claimId),
+          firstString(base.claimId),
+        ].filter((value): value is string => Boolean(value)))
+          .slice(0, AUTHORITATIVE_REBIND_PENDING_LIMIT),
+        createdAt: now,
+      };
+      // `writeJson` emits pretty JSON. Refuse the correction before its first
+      // mutation when the durable transaction would exceed replay's hard cap;
+      // never write a journal that the next process must reject as malformed.
+      if (Buffer.byteLength(`${JSON.stringify(journal, null, 2)}\n`, 'utf8')
+        > AUTHORITATIVE_REBIND_JOURNAL_MAX_BYTES) return;
+      try {
+        writeJson(authoritativeRebindJournalFile(cwd, runId, id), journal);
+      } catch {
+        return;
+      }
+      const completed = completeAuthoritativeRebindJournalUnlocked(cwd, state, journal);
+      if (completed.status === 'complete') corrected = completed.claim;
+      });
+      if (!claimsLocked) corrected = null;
+    });
+    if (!registryLocked) corrected = null;
+  });
+  if (!identityLocked || !corrected) return null;
+  return contextFromClaim(corrected, 'authoritative-role-rebind');
 }
 
 export function hasRunAgentState(cwd: string, state: unknown): boolean {
@@ -1389,6 +3072,197 @@ export function assignmentForContext(manifest: RunManifest, ctx: RunAgentContext
 // totality guarantee — no feature path can be "owned by nobody -> hard block". Per-path
 // file (never the shared .one.json) so parallel agents on different paths don't contend.
 // Best-effort: if the lock can't be written, the writer is allowed.
+const FALLBACK_CLAIMS_LOCK_TIMEOUT_MS = 2_000;
+const FALLBACK_CLAIMS_LOCK_STALE_MS = 15_000;
+const FALLBACK_CLAIMS_LOCK_RETRY_MS = 10;
+const FALLBACK_CLAIMS_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+interface OwnedDirLock {
+  dir: string;
+  ownerFile: string;
+}
+
+function processDefinitelyDead(pid: unknown): boolean {
+  if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return obj(error)?.code === 'ESRCH';
+  }
+}
+
+function readOwnedLock(filePath: string): { pid: number; acquiredAt: number } | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as unknown;
+    const record = obj(parsed);
+    if (!record || typeof record.pid !== 'number' || typeof record.acquiredAt !== 'number') return null;
+    return { pid: record.pid, acquiredAt: record.acquiredAt };
+  } catch {
+    return null;
+  }
+}
+
+// Reclaim only the exact owner sentinel observed in a stale directory. The
+// successful unlink is the CAS: only that reaper may remove the now-empty
+// directory, and neither an old owner nor a competing reaper can delete a new
+// owner's replacement lease.
+function reclaimStaleOwnedDirLock(lockDir: string, staleMs: number): boolean {
+  let entries: string[];
+  try { entries = fs.readdirSync(lockDir); } catch { return false; }
+  const owners = entries.filter((name) => name.startsWith('.owner-') && name.endsWith('.json'));
+  if (owners.length === 1) {
+    const ownerFile = path.join(lockDir, owners[0]!);
+    const owner = readOwnedLock(ownerFile);
+    if (!owner || Date.now() - owner.acquiredAt <= staleMs || !processDefinitelyDead(owner.pid)) return false;
+    try {
+      fs.unlinkSync(ownerFile);
+      fs.rmdirSync(lockDir);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  if (owners.length > 1) return false;
+
+  // Compatibility with lock directories left by older builds/tests, which had
+  // no owner sentinel. Serialize empty-directory reclamation with a fixed file;
+  // malformed/non-empty directories are conservatively left to time out.
+  let stat: fs.Stats;
+  try { stat = fs.statSync(lockDir); } catch { return false; }
+  if (Date.now() - stat.mtimeMs <= staleMs || entries.length !== 0) return false;
+  const reaper = path.join(lockDir, '.reaper');
+  let fd: number | undefined;
+  try {
+    fd = fs.openSync(reaper, 'wx');
+    fs.closeSync(fd);
+    fd = undefined;
+    const after = fs.readdirSync(lockDir);
+    if (after.length !== 1 || after[0] !== '.reaper') return false;
+    fs.unlinkSync(reaper);
+    fs.rmdirSync(lockDir);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) try { fs.closeSync(fd); } catch { /* best-effort */ }
+    try { fs.unlinkSync(reaper); } catch { /* not ours or already removed */ }
+  }
+}
+
+function acquireOwnedDirLock(
+  lockDir: string,
+  timeoutMs: number,
+  staleMs: number,
+  retryMs: number,
+  waitArray: Int32Array,
+): OwnedDirLock | null {
+  const deadline = Date.now() + timeoutMs;
+  const token = `${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const ownerFile = path.join(lockDir, `.owner-${token}.json`);
+  try { fs.mkdirSync(path.dirname(lockDir), { recursive: true }); } catch { return null; }
+  while (true) {
+    let madeDir = false;
+    try {
+      fs.mkdirSync(lockDir);
+      madeDir = true;
+      fs.writeFileSync(ownerFile, JSON.stringify({ pid: process.pid, acquiredAt: Date.now() }), { flag: 'wx' });
+      return { dir: lockDir, ownerFile };
+    } catch {
+      if (madeDir) {
+        try { fs.unlinkSync(ownerFile); } catch { /* best-effort */ }
+        try { fs.rmdirSync(lockDir); } catch { /* best-effort */ }
+      }
+      if (reclaimStaleOwnedDirLock(lockDir, staleMs)) continue;
+      if (Date.now() >= deadline) return null;
+      Atomics.wait(waitArray, 0, 0, retryMs);
+    }
+  }
+}
+
+function releaseOwnedDirLock(lease: OwnedDirLock): void {
+  try {
+    // The unique sentinel is the ownership token. If it vanished, this process
+    // no longer owns the directory and must not remove anything else.
+    fs.unlinkSync(lease.ownerFile);
+  } catch {
+    return;
+  }
+  try { fs.rmdirSync(lease.dir); } catch { /* a foreign/malformed entry stays fail-closed */ }
+}
+
+function withOwnedDirLock(
+  lockDir: string,
+  timeoutMs: number,
+  staleMs: number,
+  retryMs: number,
+  waitArray: Int32Array,
+  mutate: () => void,
+): boolean {
+  const lease = acquireOwnedDirLock(lockDir, timeoutMs, staleMs, retryMs, waitArray);
+  if (!lease) return false;
+  try {
+    mutate();
+    return true;
+  } finally {
+    releaseOwnedDirLock(lease);
+  }
+}
+
+function fallbackClaimsLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.claims.lock');
+}
+
+function withFallbackClaimsLock(cwd: string, runId: string, mutate: () => void): boolean {
+  return withOwnedDirLock(
+    fallbackClaimsLockDir(cwd, runId),
+    FALLBACK_CLAIMS_LOCK_TIMEOUT_MS,
+    FALLBACK_CLAIMS_LOCK_STALE_MS,
+    FALLBACK_CLAIMS_LOCK_RETRY_MS,
+    FALLBACK_CLAIMS_WAIT,
+    mutate,
+  );
+}
+
+interface FallbackClaimBackup {
+  filePath: string;
+  raw: string;
+}
+
+function releaseFallbackClaimsForHolderUnlocked(
+  cwd: string,
+  runId: string,
+  holder: string,
+): { ok: boolean; removed: FallbackClaimBackup[] } {
+  const dir = fallbackClaimsDir(cwd, runId);
+  const removed: FallbackClaimBackup[] = [];
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (error) {
+    return obj(error)?.code === 'ENOENT'
+      ? { ok: true, removed }
+      : { ok: false, removed };
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) continue;
+    const file = path.join(dir, entry.name);
+    const claim = obj(readJson(file, null));
+    if (!claim || String(claim.runId || '') !== runId || claim.holder !== holder) continue;
+    try {
+      const raw = fs.readFileSync(file, 'utf8');
+      fs.rmSync(file, { force: true });
+      removed.push({ filePath: file, raw });
+    } catch {
+      // The durable rebind journal owns forward recovery. Report the exact
+      // partial deletion set instead of attempting rollback: restoring a subset
+      // can itself fail and would erase the accounting needed for a safe retry.
+      return { ok: false, removed };
+    }
+  }
+  return { ok: true, removed };
+}
+
 export function tryFallbackClaim(
   cwd: string,
   ctx: RunAgentContext,
@@ -1396,32 +3270,36 @@ export function tryFallbackClaim(
 ): { blocked: boolean; holder?: string } {
   const runId = ctx && ctx.runId != null ? String(ctx.runId) : '';
   if (!runId) return { blocked: false };
-  if (isPluginAuthoringRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return { blocked: false }; // no claim files in the plugin's own repo
   const myKey = String(ctx.sessionId || ctx.claimId || ctx.role || '');
   const file = fallbackClaimFile(cwd, runId, normalizeRelPath(target));
-  const existing = obj(readJson(file, null));
-  if (existing
-    && isFreshTimestamp(existing.createdAt, SUBAGENT_STALE_MS)
-    && typeof existing.holder === 'string' && existing.holder
-    && existing.holder !== myKey) {
-    return { blocked: true, holder: existing.holder };
-  }
-  const claim: Rec = {
-    version: 1,
-    runId,
-    path: normalizeRelPath(target),
-    holder: myKey,
-    role: typeof ctx.role === 'string' ? ctx.role : null,
-    sessionId: ctx.sessionId || null,
-    createdAt: stateTimestamp(),
-  };
-  try {
-    fs.mkdirSync(fallbackClaimsDir(cwd, runId), { recursive: true });
-    writeJson(file, claim);
-  } catch {
-    // best-effort lock; never block the writer on a lock-write failure
-  }
-  return { blocked: false };
+  let result: { blocked: boolean; holder?: string } = { blocked: false };
+  const locked = withFallbackClaimsLock(cwd, runId, () => {
+    const existing = obj(readJson(file, null));
+    if (existing
+      && isFreshTimestamp(existing.createdAt, SUBAGENT_STALE_MS)
+      && typeof existing.holder === 'string' && existing.holder
+      && existing.holder !== myKey) {
+      result = { blocked: true, holder: existing.holder };
+      return;
+    }
+    const claim: Rec = {
+      version: 1,
+      runId,
+      path: normalizeRelPath(target),
+      holder: myKey,
+      role: typeof ctx.role === 'string' ? ctx.role : null,
+      sessionId: ctx.sessionId || null,
+      createdAt: stateTimestamp(),
+    };
+    try {
+      fs.mkdirSync(fallbackClaimsDir(cwd, runId), { recursive: true });
+      writeJson(file, claim);
+    } catch {
+      // best-effort lock; never block the writer on a lock-write failure
+    }
+  });
+  return locked ? result : { blocked: false };
 }
 
 // ── Per-run live-agent registry (subagent reuse) ──────────────────────────────
@@ -1435,8 +3313,8 @@ export function tryFallbackClaim(
 
 export const REPLACE_AGENT_MARKER = '[t1-replace-agent]';
 
-// Continuation needs the host's send-to-agent tool. On Codex that is
-// send_input — native to the multi_agent toolset, always present, no flag (so
+// Continuation needs the host's send-to-agent tool. On current Codex that is
+// followup_task/send_message — native to the collaboration toolset, with no flag (so
 // the one-live-agent registry/dedup must be ON there by default; keying only on
 // the Claude flag silently disabled the whole regime on Codex). Cursor and
 // Copilot expose continuation through their native task/background-agent tools.
@@ -1450,15 +3328,15 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   const flag = String(env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS ?? '').trim().toLowerCase();
   if (flag === '0' || flag === 'false' || flag === 'off') return false;
   if (host) {
-    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf') return true;
+    if (host === 'codex' || host === 'cursor' || host === 'copilot' || host === 'windsurf' || host === 'opencode' || host === 'kilo') return true;
     return flag !== '';
   }
   const envHost = String(env.TRAFFIC_ONE_HOST ?? '').trim().toLowerCase();
-  // Codex: send_input (native to the multi_agent toolset, always present).
+  // Codex: followup_task/send_message (native to the collaboration toolset).
   if (envHost === 'codex' || env.CODEX_PLUGIN_ROOT || env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE || env.CODEX_THREAD_ID) return true;
   // Cursor: live Cursor builds surface Task continuation as `resume` to resume a
   // previous subagent with full context preserved — the analogue of
-  // send_input/SendMessage. Older docs/models may say `agentId`, so the gate
+  // followup_task/SendMessage. Older docs/models may say `agentId`, so the gate
   // accepts both fields.
   // Without this every Cursor role task re-spawned a fresh subagent, re-loading rules+skills.
   if (envHost === 'cursor' || env.CURSOR_PLUGIN_ROOT) return true;
@@ -1467,12 +3345,44 @@ export function subagentContinuationAvailable(env: NodeJS.ProcessEnv = process.e
   if (envHost === 'copilot') return true;
   // Windsurf/Devin Local: run_subagent + read_subagent (native custom profiles).
   if (envHost === 'windsurf') return true;
+  // OpenCode has no resumable Task field in current builds, but Traffic One still
+  // records the active role session so duplicate same-role spawns are routed to
+  // wait/explicit replacement instead of silently creating another live role.
+  if (envHost === 'opencode') return true;
+  // Kilo has no true Task resume field, but the live-role registry still prevents
+  // duplicate general workers and requires an explicit replacement after completion.
+  if (envHost === 'kilo') return true;
   // Claude: SendMessage, gated by the agent-teams flag set at session start.
   return flag !== '';
 }
 
 function agentRegistryFile(cwd: string, runId: string): string {
   return path.join(runDir(cwd, runId), 'agents.json');
+}
+
+const AGENT_REGISTRY_LOCK_TIMEOUT_MS = 2_000;
+const AGENT_REGISTRY_LOCK_STALE_MS = 15_000;
+const AGENT_REGISTRY_LOCK_RETRY_MS = 10;
+const AGENT_REGISTRY_WAIT = new Int32Array(new SharedArrayBuffer(4));
+
+function agentRegistryLockDir(cwd: string, runId: string): string {
+  return path.join(runDir(cwd, runId), '.agents.lock');
+}
+
+// agents.json is updated by independent PostToolUse/SubagentStart hook processes.
+// Atomic rename prevents torn JSON but not lost read-modify-write updates, so
+// serialize the tiny registry mutation behind a bounded mkdir lock. A stale lock
+// from a crashed hook is reclaimed; on timeout we skip the best-effort registry
+// write rather than overwrite another role with stale state.
+function withAgentRegistryLock(cwd: string, runId: string, mutate: () => void): boolean {
+  return withOwnedDirLock(
+    agentRegistryLockDir(cwd, runId),
+    AGENT_REGISTRY_LOCK_TIMEOUT_MS,
+    AGENT_REGISTRY_LOCK_STALE_MS,
+    AGENT_REGISTRY_LOCK_RETRY_MS,
+    AGENT_REGISTRY_WAIT,
+    mutate,
+  );
 }
 
 export interface RunAgentEntry {
@@ -1488,6 +3398,8 @@ export interface RunAgentEntry {
   recordedAt: string;
   tasks: number;
   replaced: boolean;
+  roleSource?: string | null;
+  transcriptPath?: string | null;
 }
 
 const VERDICT_AGENT_ROLES = new Set(['senior-reviewer', 'senior-tester']);
@@ -1570,26 +3482,37 @@ export function readRunAgentRegistry(cwd: string, runId: string): Record<string,
       recordedAt: typeof entry.recordedAt === 'string' ? entry.recordedAt : '',
       tasks: typeof entry.tasks === 'number' && Number.isInteger(entry.tasks) && entry.tasks > 0 ? entry.tasks : 1,
       replaced: entry.replaced === true,
+      roleSource: typeof entry.roleSource === 'string' ? entry.roleSource : null,
+      transcriptPath: typeof entry.transcriptPath === 'string' ? entry.transcriptPath : null,
     };
   }
   return out;
 }
 
+type RunAgentRecordInput = {
+  agentId: string;
+  resumeId?: string | null;
+  toolCallId?: string | null;
+  model?: string | null;
+  agentType?: string | null;
+  parentSessionId?: string | null;
+  roleSource?: string | null;
+  transcriptPath?: string | null;
+};
+
 export function recordRunAgent(
   cwd: string,
   runId: string,
   role: string,
-  entry: {
-    agentId: string;
-    resumeId?: string | null;
-    toolCallId?: string | null;
-    model?: string | null;
-    agentType?: string | null;
-    parentSessionId?: string | null;
-  },
+  entry: RunAgentRecordInput,
 ): void {
   if (!VALID_AGENT_ROLES.has(role)) return;
-  if (isPluginAuthoringRoot(cwd)) return; // never write run state in the plugin's own repo
+  if (isNonProjectRoot(cwd)) return; // never write run state in the plugin's own repo
+  if (typeof entry.agentId !== 'string' || !entry.agentId.trim()) return;
+  withAgentRegistryLock(cwd, runId, () => recordRunAgentUnlocked(cwd, runId, role, entry));
+}
+
+function recordRunAgentUnlocked(cwd: string, runId: string, role: string, entry: RunAgentRecordInput): void {
   const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
   const agents = obj(registry.agents) || {};
   const history = Array.isArray(registry.history) ? registry.history.filter((item) => item && typeof item === 'object') : [];
@@ -1642,6 +3565,8 @@ export function recordRunAgent(
   const priorModel = prior && typeof prior.model === 'string' && prior.model ? prior.model : null;
   const priorAgentType = prior && typeof prior.agentType === 'string' && prior.agentType ? prior.agentType : null;
   const priorParentSessionId = prior && typeof prior.parentSessionId === 'string' && prior.parentSessionId ? prior.parentSessionId : null;
+  const priorRoleSource = prior && typeof prior.roleSource === 'string' && prior.roleSource ? prior.roleSource : null;
+  const priorTranscriptPath = prior && typeof prior.transcriptPath === 'string' && prior.transcriptPath ? prior.transcriptPath : null;
   const recordedAt = stateTimestamp();
   const nextHistory = history.slice(-99);
   if (prior && !sameAgent) {
@@ -1663,6 +3588,8 @@ export function recordRunAgent(
     model: firstString(entry.model, sameAgent ? priorModel : null),
     agentType: firstString(entry.agentType, sameAgent ? priorAgentType : null),
     parentSessionId: firstString(entry.parentSessionId, sameAgent ? priorParentSessionId : null),
+    roleSource: strongestRoleSource(entry.roleSource, sameAgent ? priorRoleSource : null),
+    transcriptPath: firstString(entry.transcriptPath, sameAgent ? priorTranscriptPath : null),
     recordedAt,
     tasks: sameAgent && typeof prior?.tasks === 'number' ? (prior.tasks as number) + 1 : 1,
     replaced: false,
@@ -1690,21 +3617,79 @@ export function refreshCursorRunAgentFromTranscriptCache(
   role: string,
   parentSessionId: string | null,
 ): RunAgentEntry | null {
-  if (!runId || !VALID_AGENT_ROLES.has(role)) return null;
-  const candidates = cursorSubagentTranscriptsForRole(cwd, rawInput, role, parentSessionId);
+  if (!runId || !VALID_AGENT_ROLES.has(role) || isNonProjectRoot(cwd)) return null;
+  const expected = readRunAgentRegistry(cwd, runId)[role];
+  if (!expected || expected.replaced) return null;
+  if (expected.parentSessionId && parentSessionId
+    && expected.parentSessionId !== parentSessionId) return null;
+  const boundParentSessionId = expected.parentSessionId || parentSessionId;
+  if (!boundParentSessionId) return null;
+  if (continuationAgentId(expected, 'cursor')) return expected;
+
+  const expectedIds = new Set(idsForRunAgent(expected));
+  const candidates = cursorSubagentTranscriptsForRole(cwd, rawInput, role, boundParentSessionId);
   for (const candidate of candidates) {
     const childId = candidateThreadId(candidate);
     if (!childId) continue;
-    claimThreadRole(cwd, state, childId, role, {
-      parentSessionId: candidate.parentSessionId || parentSessionId || null,
+    const candidateParentId = candidate.parentSessionId || boundParentSessionId;
+
+    // Hold the observation lock while validating transcript ownership and
+    // conditionally upgrading agents.json. A concurrent transcript claim cannot
+    // turn an apparently-unclaimed old child into another spawn's result between
+    // those two operations, and the registry identity CAS prevents a late cache
+    // scan from overwriting a newer tool_* start for the same role.
+    const upgraded = withCursorSpawnObservationLock(cwd, runId, () => {
+      const store = readCursorSpawnObservationStore(cwd, runId);
+      const currentObservation = latestCursorObservation(store.observations, (observation) => (
+        observation.parentSessionId === boundParentSessionId
+        && observation.role === role
+        && (expectedIds.has(observation.toolCallId)
+          || Boolean(observation.childTranscriptId && expectedIds.has(observation.childTranscriptId)))
+      ));
+      const claimedObservation = store.observations.find((observation) => (
+        observation.childTranscriptId === childId
+      ));
+      if (claimedObservation) {
+        const belongsToCurrent = currentObservation
+          ? claimedObservation.toolCallId === currentObservation.toolCallId
+          : (expectedIds.has(claimedObservation.toolCallId)
+            || Boolean(claimedObservation.childTranscriptId
+              && expectedIds.has(claimedObservation.childTranscriptId)));
+        if (!belongsToCurrent) return null;
+      } else {
+        const currentStartedAtMs = currentObservation?.startedAtMs || finiteMs(expected.recordedAt);
+        const candidateStartedAtMs = cursorTranscriptCandidateTimeMs(candidate);
+        if (!currentStartedAtMs
+          || candidateStartedAtMs < currentStartedAtMs - CURSOR_TRANSCRIPT_EARLY_TOLERANCE_MS) return null;
+      }
+
+      let result: RunAgentEntry | null = null;
+      withAgentRegistryLock(cwd, runId, () => {
+        const latest = readRunAgentRegistry(cwd, runId)[role];
+        if (!latest || latest.replaced) return;
+        const sameExpectedStart = latest.agentId === expected.agentId
+          && (latest.resumeId || null) === (expected.resumeId || null)
+          && (latest.toolCallId || null) === (expected.toolCallId || null)
+          && (latest.parentSessionId || null) === (expected.parentSessionId || null);
+        if (!sameExpectedStart) {
+          if ((latest.toolCallId || null) === (expected.toolCallId || null)
+            && continuationAgentId(latest, 'cursor') === childId) result = latest;
+          return;
+        }
+        recordRunAgentUnlocked(cwd, runId, role, {
+          agentId: childId,
+          resumeId: childId,
+          parentSessionId: candidateParentId,
+        });
+        const next = readRunAgentRegistry(cwd, runId)[role];
+        if (next && (next.toolCallId || null) === (expected.toolCallId || null)
+          && continuationAgentId(next, 'cursor') === childId) result = next;
+      });
+      return result;
     });
-    recordRunAgent(cwd, runId, role, {
-      agentId: childId,
-      resumeId: childId,
-      parentSessionId: candidate.parentSessionId || parentSessionId || null,
-    });
-    const upgraded = readRunAgentRegistry(cwd, runId)[role];
-    if (upgraded) return upgraded;
+    if (!upgraded) continue;
+    claimThreadRole(cwd, state, childId, role, { parentSessionId: candidateParentId });
+    return upgraded;
   }
   return null;
 }
@@ -1728,10 +3713,287 @@ export function liveRunAgent(
   return isFreshTimestamp(entry.recordedAt, SUBAGENT_STALE_MS) ? entry : null;
 }
 
+export type CodexLiveAgentValidation =
+  | { status: 'verified-match'; entry: RunAgentEntry }
+  | { status: 'rebound' }
+  | { status: 'stale-retired' }
+  | { status: 'unverified'; entry: RunAgentEntry; reason: string }
+  | { status: 'conflict'; entry: RunAgentEntry; reason: string };
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function uuidV7TimestampMs(value: string): number {
+  if (!UUID_RE.test(value)) return 0;
+  const raw = value.replace(/-/g, '').slice(0, 12);
+  const parsed = Number.parseInt(raw, 16);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function codexSessionsRoot(env: NodeJS.ProcessEnv = process.env): string {
+  const home = firstString(env.CODEX_HOME) || path.join(os.homedir(), '.codex');
+  return path.join(home, 'sessions');
+}
+
+function codexDateDirs(root: string, timestampMs: number): string[] {
+  if (!Number.isFinite(timestampMs) || timestampMs <= 0) return [];
+  const dirs: string[] = [];
+  for (const delta of [-86_400_000, 0, 86_400_000]) {
+    const date = new Date(timestampMs + delta);
+    const local = [
+      String(date.getFullYear()).padStart(4, '0'),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+    ];
+    const utc = [
+      String(date.getUTCFullYear()).padStart(4, '0'),
+      String(date.getUTCMonth() + 1).padStart(2, '0'),
+      String(date.getUTCDate()).padStart(2, '0'),
+    ];
+    dirs.push(path.join(root, ...local), path.join(root, ...utc));
+  }
+  return uniqueStrings(dirs);
+}
+
+function claimForRunAgentEntry(cwd: string, runId: string, entry: RunAgentEntry): { key: string; claim: Rec } | null {
+  for (const key of idsForRunAgent(entry)) {
+    const claim = readClaimFile(runAgentFile(cwd, runId, key));
+    if (claim) return { key, claim };
+  }
+  return null;
+}
+
+function findCodexTranscriptForEntry(
+  entry: RunAgentEntry,
+  claim: Rec | null,
+  rawInput: unknown,
+): string | null {
+  const ids = uniqueStrings(idsForRunAgent(entry).filter((id) => UUID_RE.test(id.toLowerCase())));
+  if (!ids.length) return null;
+  for (const candidate of [entry.transcriptPath, firstString(claim?.transcriptPath)]) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+
+  const raw = obj(rawInput) || {};
+  const payload = obj(raw.payload) || {};
+  const currentTranscript = firstString(raw.transcript_path, raw.transcriptPath, payload.transcript_path, payload.transcriptPath);
+  const root = codexSessionsRoot();
+  const dirs: string[] = [];
+  if (currentTranscript) dirs.push(path.dirname(currentTranscript));
+  const recordedAtMs = Date.parse(entry.recordedAt || '');
+  dirs.push(...codexDateDirs(root, recordedAtMs));
+  for (const id of ids) dirs.push(...codexDateDirs(root, uuidV7TimestampMs(id)));
+
+  for (const dir of uniqueStrings(dirs)) {
+    let entries: fs.Dirent[];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const item of entries) {
+      if (!item.isFile() || !item.name.endsWith('.jsonl')) continue;
+      if (!ids.some((id) => item.name.endsWith(`${id}.jsonl`))) continue;
+      return path.join(dir, item.name);
+    }
+  }
+  return null;
+}
+
+function annotateCodexRegistryEvidence(
+  cwd: string,
+  runId: string,
+  role: string,
+  expected: RunAgentEntry,
+  source: string,
+  transcriptPath: string,
+  parentSessionId: string | null,
+): RunAgentEntry | null {
+  let result: RunAgentEntry | null = null;
+  withAgentRegistryLock(cwd, runId, () => {
+    const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+    const agents = obj(registry.agents) || {};
+    const current = obj(agents[role]);
+    if (!current || current.replaced === true) return;
+    const expectedIds = new Set(idsForRunAgent(expected));
+    if (!idsForRunAgent(current).some((id) => expectedIds.has(id))) return;
+    current.roleSource = strongestRoleSource(source, current.roleSource);
+    current.transcriptPath = transcriptPath;
+    if (parentSessionId) current.parentSessionId = parentSessionId;
+    try {
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
+      result = readRunAgentRegistry(cwd, runId)[role] || null;
+    } catch {
+      result = null;
+    }
+  });
+  return result;
+}
+
+function retireCodexRegistryEntryIfMatches(
+  cwd: string,
+  runId: string,
+  role: string,
+  expected: RunAgentEntry,
+  reason: string,
+): boolean {
+  let retired = false;
+  withAgentRegistryLock(cwd, runId, () => {
+    const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+    const agents = obj(registry.agents) || {};
+    const current = obj(agents[role]);
+    if (!current || current.replaced === true) return;
+    const expectedIds = new Set(idsForRunAgent(expected));
+    if (!idsForRunAgent(current).some((id) => expectedIds.has(id))) return;
+    current.replaced = true;
+    current.replacedAt = stateTimestamp();
+    current.replacementReason = reason;
+    try {
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
+      retired = true;
+    } catch {
+      retired = false;
+    }
+  });
+  return retired;
+}
+
+export function retireUnverifiedCodexRunAgent(
+  cwd: string,
+  runId: string,
+  role: string,
+  entry: RunAgentEntry,
+  reason: string = 'explicit-unverified-codex-replacement',
+): boolean {
+  return retireCodexRegistryEntryIfMatches(cwd, runId, role, entry, reason);
+}
+
+export function validateCodexLiveRunAgent(
+  cwd: string,
+  state: unknown,
+  rawInput: unknown,
+  runId: string,
+  requestedRole: string,
+  entry: RunAgentEntry,
+): CodexLiveAgentValidation {
+  let claimed = claimForRunAgentEntry(cwd, runId, entry);
+  const transcriptPath = findCodexTranscriptForEntry(entry, claimed?.claim || null, rawInput);
+  const meta = transcriptPath ? readCodexSessionMetaIdentity(transcriptPath) : null;
+  const hookIdentity = hookSessionIdentity(rawInput);
+  const currentParentSessionId = hookIdentity.parentSessionId || hookIdentity.sessionId;
+
+  const childId = idsForRunAgent(entry).find((id) => UUID_RE.test(id)) || entry.agentId;
+  const invalidIdentity = !meta
+    || !meta.threadId
+    || meta.threadId.toLowerCase() !== childId.toLowerCase()
+    || Boolean(meta.parentThreadId && entry.parentSessionId && meta.parentThreadId !== entry.parentSessionId)
+    || Boolean(meta.parentThreadId && currentParentSessionId && meta.parentThreadId !== currentParentSessionId);
+
+  if (!invalidIdentity && meta!.role.kind === 'evidence') {
+    const evidence = meta!.role.evidence;
+    if (evidence.role === requestedRole) {
+      const replay = replayAuthoritativeRebindJournal(cwd, state, runId, childId);
+      if (replay.status === 'blocked') {
+        return { status: 'conflict', entry, reason: 'codex-authoritative-rebind-cleanup-pending' };
+      }
+      if (replay.status === 'complete') claimed = claimForRunAgentEntry(cwd, runId, entry);
+      if (claimed && claimed.claim.role !== requestedRole) {
+        const rebound = authoritativeRebindThreadRole(cwd, state, runId, childId, claimed.claim, evidence, {
+          parentSessionId: meta!.parentThreadId || currentParentSessionId || entry.parentSessionId,
+          model: entry.model,
+          transcriptPath,
+          expectedRegistryRole: requestedRole,
+          expectedRegistryIds: idsForRunAgent(entry),
+        });
+        return rebound
+          ? { status: 'verified-match', entry: readRunAgentRegistry(cwd, runId)[requestedRole] || entry }
+          : { status: 'conflict', entry, reason: 'codex-claim-registry-role-split' };
+      }
+      if (claimed && !annotateClaimRoleSource(cwd, runId, claimed.key, claimed.claim, evidence)) {
+        return { status: 'conflict', entry, reason: 'codex-claim-evidence-cas-lost' };
+      }
+      const annotated = annotateCodexRegistryEvidence(
+        cwd, runId, requestedRole, entry, evidence.source, transcriptPath!,
+        meta!.parentThreadId || currentParentSessionId || entry.parentSessionId,
+      );
+      return annotated
+        ? { status: 'verified-match', entry: annotated }
+        : { status: 'conflict', entry, reason: 'codex-registry-evidence-cas-lost' };
+    }
+
+    const baseClaim: Rec = claimed?.claim || {
+      version: 1,
+      runId,
+      claimId: `${requestedRole}-1-${childId.slice(-8)}`,
+      role: requestedRole,
+      spawnIndex: 1,
+      status: 'claimed',
+      sessionId: childId,
+      parentSessionId: entry.parentSessionId,
+      createdAt: entry.recordedAt || stateTimestamp(),
+      claimedAt: entry.recordedAt || stateTimestamp(),
+      stackFingerprint: stackFingerprint(state),
+      model: entry.model,
+    };
+    const rebound = authoritativeRebindThreadRole(cwd, state, runId, childId, baseClaim, evidence, {
+      parentSessionId: meta!.parentThreadId || currentParentSessionId || entry.parentSessionId,
+      model: entry.model,
+      transcriptPath,
+      expectedRegistryRole: requestedRole,
+      expectedRegistryIds: idsForRunAgent(entry),
+    });
+    return rebound
+      ? { status: 'rebound' }
+      : { status: 'conflict', entry, reason: 'codex-authoritative-role-rebind-failed' };
+  }
+
+  if (!invalidIdentity && meta!.role.kind === 'conflict') {
+    return { status: 'conflict', entry, reason: 'codex-session-meta-role-conflict' };
+  }
+
+  const reason = invalidIdentity
+    ? 'codex-session-meta-missing-or-mismatched'
+    : 'codex-session-meta-role-absent';
+  if (timestampAgeMs(entry.recordedAt) > SUBAGENT_STALE_MS) {
+    return retireCodexRegistryEntryIfMatches(cwd, runId, requestedRole, entry, 'codex-session-meta-missing-stale')
+      ? { status: 'stale-retired' }
+      : { status: 'conflict', entry, reason: 'codex-stale-retire-cas-lost' };
+  }
+  return { status: 'unverified', entry, reason };
+}
+
 // Mark the role's current agent as replaced (exhausted/dead): the next spawn
 // for the role is allowed and the recorder overwrites the entry.
 export function markRunAgentReplaced(cwd: string, runId: string, role: string): void {
-  if (isPluginAuthoringRoot(cwd)) return;
+  if (isNonProjectRoot(cwd)) return;
+  withAgentRegistryLock(cwd, runId, () => markRunAgentReplacedUnlocked(cwd, runId, role));
+}
+
+// Transcript reconciliation knows the failed SubagentStart tool-call id. Retire
+// the registry entry only while it still represents that spawn; a delayed child
+// transcript must never retire a newer retry that already took over the role.
+export function markRunAgentReplacedIfMatches(
+  cwd: string,
+  runId: string,
+  role: string,
+  expectedId: string,
+): boolean {
+  if (!expectedId || isNonProjectRoot(cwd)) return false;
+  let replaced = false;
+  withAgentRegistryLock(cwd, runId, () => {
+    const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
+    const agents = obj(registry.agents) || {};
+    const entry = obj(agents[role]);
+    if (!entry || entry.replaced === true || !idsForRunAgent(entry).includes(expectedId)) return;
+    entry.replaced = true;
+    entry.replacedAt = stateTimestamp();
+    entry.replacementReason = 'correlated-cursor-transcript-failure';
+    try {
+      writeJson(agentRegistryFile(cwd, runId), { ...registry, version: 1, agents });
+      replaced = true;
+    } catch {
+      // best-effort; existing grace/hard timers remain the deadlock backstop
+    }
+  });
+  return replaced;
+}
+
+function markRunAgentReplacedUnlocked(cwd: string, runId: string, role: string): void {
   const registry = obj(readJson(agentRegistryFile(cwd, runId), null)) || {};
   const agents = obj(registry.agents) || {};
   const entry = obj(agents[role]);

@@ -11,7 +11,7 @@ import { deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
 import { computeProjectFingerprint } from '../../runners/security-check';
 import { readEffectiveState } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 
 type Rec = Record<string, unknown>;
 
@@ -59,7 +59,7 @@ export function checkSecurityDeployStamp(state: Rec, cwd: string): StampCheck {
 }
 
 export function deployGate(ctx: Ctx): HookResult {
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!DEPLOY_RE.test(command)) return noop();

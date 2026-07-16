@@ -10,7 +10,7 @@
 
 import { isKnownStack } from '../config';
 import { postWriteIncompleteWarning } from '../directives';
-import { isPluginAuthoringRoot } from '../authoring-root';
+import { isNonProjectRoot } from '../authoring-root';
 import { ensureRunnerShims } from '../runner-shims';
 import { isUnclaimedWorkspaceSubPackage } from '../hook-paths';
 import { detectMode } from '../detection';
@@ -68,7 +68,7 @@ export function materializeProjectFromState(cwd: string, opts: ConvergeOptions =
   const trigger = opts.trigger || 'manual materialize-project';
   const reportOneMcp = opts.reportOneMcp || noopReporter;
 
-  if (isPluginAuthoringRoot(cwd)) {
+  if (isNonProjectRoot(cwd)) {
     return outcome(
       'authoring-root',
       'traffic-one — plugin authoring root detected; project materialization skipped',
@@ -165,7 +165,7 @@ export function materializeProjectIfNeeded(cwd: string, opts: ConvergeOptions = 
   const trigger = opts.trigger || 'generic hook convergence';
   const reportOneMcp = opts.reportOneMcp || noopReporter;
 
-  if (isPluginAuthoringRoot(cwd)) return null;
+  if (isNonProjectRoot(cwd)) return null;
 
   // Never auto-converge a monorepo SUB-PACKAGE as its own project. When `cwd` owns
   // no Traffic One state but sits inside a workspace (an ancestor declares

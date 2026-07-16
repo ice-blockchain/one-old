@@ -38,6 +38,8 @@ const SUB_TO_EVENT: Readonly<Record<string, { event: CanonicalEvent; tool?: Tool
   'before-tool-use': { event: 'PreToolUse' },
   'after-tool-use': { event: 'PostToolUse' },
   'subagent-start': { event: 'SubagentStart' },
+  'cursor-subagent-stop': { event: 'SubagentStop' },
+  'cursor-stop': { event: 'Stop' },
 };
 
 // Classes the GENERIC preToolUse/postToolUse path may emit. The rest are owned by a
@@ -58,10 +60,10 @@ function stripFileUri(p: string): string {
 }
 
 // Cursor sends the project root(s) as `workspace_roots` (an array of path strings
-// — or {path|uri|fsPath} objects on some versions), NOT a `cwd` field. Without
-// reading it, cwd falls through to process.cwd(), which under Cursor is the
-// PLUGIN directory — so every gate (onboarding included) inspects the wrong
-// folder and silently returns {}. Accept string or object elements, strip file://.
+// — or {path|uri|fsPath} objects on some versions), NOT a `cwd` field. A plugin
+// hook's process.cwd() is event-dependent: currently the plugin directory for
+// most events, but the workspace for Stop/SubagentStop. It therefore cannot be
+// the project identity contract. Accept string or object elements, strip file://.
 function firstWorkspaceRoot(data: Record<string, unknown>): string | undefined {
   const roots = data.workspace_roots ?? data.workspaceRoots ?? data.workspace_root ?? data.workspaceFolders;
   const list = Array.isArray(roots) ? roots : (roots != null ? [roots] : []);
@@ -163,8 +165,8 @@ export function makeCursorAdapter(): HostAdapter {
       // project-root resolver can use it as a ceiling and never re-root above it.
       const wsRoot = firstWorkspaceRoot(data);
       // Only an ABSOLUTE workspace root is a usable ceiling: a relative value would
-      // path.resolve() against the hook's process.cwd() (the plugin dir under Cursor),
-      // yielding a bogus boundary. Cursor always sends absolute paths, so this just
+      // path.resolve() against Cursor's event-dependent hook process.cwd(), yielding
+      // a bogus boundary. Cursor always sends absolute paths, so this just
       // keeps the ceiling unset (→ safe unbounded fallback) rather than wrong if a
       // future/edge payload ever sends a relative root.
       const wsCeiling = wsRoot && path.isAbsolute(wsRoot) ? wsRoot : undefined;
@@ -172,7 +174,8 @@ export function makeCursorAdapter(): HostAdapter {
         event: mapping.event,
         host: 'cursor',
         // Cursor provides `workspace_roots`, not `cwd`; consult it before falling
-        // back to process.cwd() (which under Cursor is the plugin dir, not the project).
+        // back to its event-dependent process.cwd() (plugin dir for most plugin
+        // hooks, workspace for Stop/SubagentStop).
         // If Cursor reports a tool cwd OUTSIDE workspace_roots (for example its
         // internal terminal metadata dir), keep Traffic One anchored at the workspace.
         cwd: cursorCwd(data, wsRoot),
@@ -184,7 +187,17 @@ export function makeCursorAdapter(): HostAdapter {
     },
 
     serialize(result, input) {
+      // stop/subagentStop are the only Cursor events that consume followup_message.
+      // Keep the wire output exact: additional context/user messages are not valid
+      // continuation fields here and could prevent Cursor from enqueueing the turn.
+      if (result.kind === 'context'
+        && (input?.event === 'Stop' || input?.event === 'SubagentStop')
+        && result.followupMessage !== undefined) {
+        return JSON.stringify({ followup_message: result.followupMessage });
+      }
+
       // Cursor has no promptRequest equivalent — drop it; map systemMessage → user_message.
+      // followupMessage is deliberately ignored on every non-stop event.
       if (result.kind === 'noop') return '{}';
       if (result.kind === 'context') {
         return JSON.stringify({

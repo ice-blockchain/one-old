@@ -8,7 +8,7 @@
 
 import { markModelGatePrompted, readModelChoice } from '../../modules/agent-model/model-choice';
 import { cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
-import { hasFreshCursorModels } from '../../shared/materialize/cursor-models';
+import { captureCursorModels, hasFreshCursorModels } from '../../shared/materialize/cursor-models';
 import { buildCursorSpawnModelMap, formatCursorSpawnMapBlock, syncCursorSpawnAgentFiles } from '../../shared/materialize/cursor-spawn-map';
 import { detectHostPlan } from '../../shared/host-plan';
 import { obj } from '../../shared/obj';
@@ -17,9 +17,9 @@ import { ensureCurrentRunId, readEffectiveState } from '../../shared/state';
 function cursorModelCaptureStop(): string {
   return (
     'traffic-one model-gate: STOP — Cursor model capture is missing or stale.\n'
-    + 'The build is paused before spawning the senior team because `.traffic-one/cursor-models.json` '
-    + 'is not fresh for your current Cursor plan.\n'
-    + 'Enumerate the Cursor Task/Subagent model list, write `.traffic-one/cursor-models.json`, then run model-gate again. '
+    + 'The build is paused before spawning the senior team because the local Cursor model capture '
+    + 'is not fresh for your current plan/catalog.\n'
+    + 'Enumerate the Cursor Task/Subagent model list, run model-gate with `--capture-models <exact ids...>`, then run model-gate again. '
     + 'Do not spawn subagents yet.'
   );
 }
@@ -42,6 +42,25 @@ function writeSpawnReady(cwd: string, state: Record<string, unknown>, headline: 
 export function runModelGate(argv: readonly string[] = process.argv.slice(2)): number {
   const cwd = argv.find((a) => !a.startsWith('--')) || process.cwd();
   try {
+    const captureAt = argv.indexOf('--capture-models');
+    if (captureAt >= 0) {
+      let models: unknown[] = argv.slice(captureAt + 1).filter((value) => !value.startsWith('--host='));
+      if (models.length === 1 && typeof models[0] === 'string' && models[0].trim().startsWith('[')) {
+        try {
+          const parsed = JSON.parse(models[0]);
+          if (Array.isArray(parsed)) models = parsed;
+        } catch {
+          // The normal repeated-argument format below will reject the invalid id.
+        }
+      }
+      if (!captureCursorModels(cwd, models, detectHostPlan('cursor'))) {
+        process.stdout.write('traffic-one model-gate: STOP — no valid Cursor model ids were captured.\n');
+        return 2;
+      }
+      process.stdout.write('traffic-one model-gate: Cursor model list saved to local per-user project preferences.\n');
+      return 0;
+    }
+
     const state = readEffectiveState(cwd) as Record<string, unknown> | null;
     if (!state) {
       process.stdout.write(`${modelGateFailedStop()}\n`);
@@ -77,7 +96,7 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
       const models = Array.from(new Set(picks.map((p) => p.expected))).join(', ');
       process.stdout.write(
         `traffic-one model-gate: STOP — you chose enable/retry. Enable ${models} in Cursor Settings → Models, `
-        + 're-capture `.traffic-one/cursor-models.json`, clear model-choice if needed, then re-run.\n',
+        + 're-run the internal `--capture-models` command, clear model-choice if needed, then re-run.\n',
       );
       return 2;
     }
@@ -92,7 +111,17 @@ export function runModelGate(argv: readonly string[] = process.argv.slice(2)): n
     }
 
     if (runId) markModelGatePrompted(cwd, runId);
-    process.stdout.write('traffic-one model-gate: STOP — model choice required.\n');
+    // No unavailable captured picks → this pause came from a RUNTIME failure
+    // (API/usage limit) on a spawned role. Name the recovery inline (A7): the
+    // bare "model choice required" line sent agents exploring --help/model-status
+    // instead of just relaying the one-word reply to the user.
+    process.stdout.write(
+      'traffic-one model-gate: STOP — model choice required (build paused).\n'
+      + 'A spawned role hit an API/usage-limit or model-availability failure this run. Ask the user to reply in chat with ONE word:\n'
+      + '- `fallback` — proceed now on the surfaced fallback/Composer model\n'
+      + '- `enable` — after restoring API budget / enabling the model in Cursor Settings → Models; the role retries on it\n'
+      + 'Do not re-run model-gate or explore its flags — the chat reply itself unblocks spawning.\n',
+    );
     return 2;
   } catch {
     process.stdout.write(`${modelGateFailedStop()}\n`);

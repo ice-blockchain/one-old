@@ -4,93 +4,79 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import {
-  authChoiceRequiredDenyReason,
-  authEnforced,
-  authGateForHook,
-  parseTrafficOneApiKey,
-  parseUnauthenticatedAuthChoice,
-} from '../auth-gate';
-import { AUTH_ENABLED } from '../../../config/auth';
+import type { Ctx, HookInput } from '../../../core/types';
+import { writeSimpleAuth } from '../../../shared/auth';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { authPreToolGate } from '../auth-gate';
 
-// The gate is now a pure boolean read of the web-entered API key (the flat
-// auth.json record beside one.json). A fresh entered key → authenticated
-// true, no CLI spawn, no remote check. Mutates process.env because authGateForHook
-// reads it directly; restored after.
-function withFreshAuth<T>(fn: (dir: string) => T): T {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authgate-'));
+function ctx(cwd: string): Ctx {
+  const input: HookInput = {
+    event: 'PreToolUse',
+    host: 'claude',
+    cwd,
+    raw: { tool_name: 'Write', tool_input: { file_path: 'src/app.ts' } },
+    tool: { class: 'file-write', rawName: 'Write', filePath: 'src/app.ts' },
+  };
+  return { input, host: 'claude', cwd, now: () => 'x' } as unknown as Ctx;
+}
+
+function withEnv(fn: (cwd: string) => void): void {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 't1-auth-gate-'));
   const env = process.env;
-  const prevState = env.TRAFFIC_ONE_AUTH_STATE_PATH;
-  const prevAuthFlag = env.TRAFFIC_ONE_AUTH;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
-  env.TRAFFIC_ONE_AUTH = '1'; // these tests exercise the real authed path; pin enforcement on
-  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
-    version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
-  }), 'utf8');
+  const saved = {
+    auth: env.TRAFFIC_ONE_AUTH,
+    state: env.TRAFFIC_ONE_STATE_PATH,
+    prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
+    askFirst: env.TRAFFIC_ONE_ASK_USE_PLUGIN,
+    noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
+  };
+  env.TRAFFIC_ONE_AUTH = '1';
+  env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, 'one.json');
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(cwd, 'preferences.json');
+  env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+  env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
-    return fn(dir);
+    fn(cwd);
   } finally {
-    if (prevState === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevState;
-    if (prevAuthFlag === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevAuthFlag;
-    fs.rmSync(dir, { recursive: true, force: true });
+    for (const [key, value] of Object.entries({
+      TRAFFIC_ONE_AUTH: saved.auth,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
+      TRAFFIC_ONE_ASK_USE_PLUGIN: saved.askFirst,
+      TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
+    })) {
+      if (value === undefined) delete env[key];
+      else env[key] = value;
+    }
+    fs.rmSync(cwd, { recursive: true, force: true });
   }
 }
 
-test('authGateForHook returns authenticated (no spawn) when the API key is entered', () => {
-  withFreshAuth(() => {
-    const gate = authGateForHook();
-    assert.equal(gate.authenticated, true);
-    assert.equal(gate.checkedRemote, false);
+test('canonical one.json.auth clears the pre-tool auth gate', () => {
+  withEnv((cwd) => {
+    recordPluginUseChoice(cwd, true, 'test');
+    writeSimpleAuth('sk-validated');
+    assert.equal(authPreToolGate(ctx(cwd)).kind, 'noop');
   });
 });
 
-test('authGateForHook returns unauthenticated when enforced but no key is entered', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authgate-none-'));
-  const env = process.env;
-  const prevState = env.TRAFFIC_ONE_AUTH_STATE_PATH;
-  const prevFlag = env.TRAFFIC_ONE_AUTH;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json'); // no file → no key
-  env.TRAFFIC_ONE_AUTH = '1';
-  try {
-    assert.equal(authGateForHook().authenticated, false);
-  } finally {
-    if (prevState === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevState;
-    if (prevFlag === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevFlag;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('missing canonical auth stays gated after pluginUse opt-in', () => {
+  withEnv((cwd) => {
+    recordPluginUseChoice(cwd, true, 'test');
+    assert.notEqual(authPreToolGate(ctx(cwd)).kind, 'noop');
+  });
 });
 
-test('parse helpers + deny reason', () => {
-  assert.equal(parseUnauthenticatedAuthChoice('1', { allowNumeric: true }), 'authenticate');
-  assert.equal(parseUnauthenticatedAuthChoice('continue without traffic one'), 'continue-without-traffic-one');
-  assert.equal(parseUnauthenticatedAuthChoice('build me an app'), null);
-  assert.equal(parseTrafficOneApiKey('my key is abc12345'), 'abc12345');
-  assert.equal(parseTrafficOneApiKey('hello world here'), null);
-  assert.ok(authChoiceRequiredDenyReason().includes('Traffic One authentication choice required'));
+test('pluginUse decline stands down before auth or onboarding', () => {
+  withEnv((cwd) => {
+    recordPluginUseChoice(cwd, false, 'test');
+    assert.equal(authPreToolGate(ctx(cwd)).kind, 'noop');
+  });
 });
 
-test('authEnforced honors TRAFFIC_ONE_AUTH; falls back to the AUTH_ENABLED default', () => {
-  assert.equal(authEnforced({ TRAFFIC_ONE_AUTH: '1' } as NodeJS.ProcessEnv), true);
-  assert.equal(authEnforced({ TRAFFIC_ONE_AUTH: 'true' } as NodeJS.ProcessEnv), true);
-  assert.equal(authEnforced({ TRAFFIC_ONE_AUTH: 'off' } as NodeJS.ProcessEnv), false);
-  assert.equal(authEnforced({ TRAFFIC_ONE_AUTH: '0' } as NodeJS.ProcessEnv), false);
-  assert.equal(authEnforced({} as NodeJS.ProcessEnv), AUTH_ENABLED);
-});
-
-test('authGateForHook bypasses (authenticated) when enforcement is disabled — no auth state needed', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-authoff-'));
-  const env = process.env;
-  const prevFlag = env.TRAFFIC_ONE_AUTH;
-  const prevState = env.TRAFFIC_ONE_AUTH_STATE_PATH;
-  env.TRAFFIC_ONE_AUTH = 'off';
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'nope.json'); // no file → unauthenticated
-  try {
-    const gate = authGateForHook();
-    assert.equal(gate.authenticated, true);
-    assert.equal(gate.checkedRemote, false);
-  } finally {
-    if (prevFlag === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevFlag;
-    if (prevState === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevState;
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
+test('TRAFFIC_ONE_AUTH=off explicitly disables enforcement', () => {
+  withEnv((cwd) => {
+    process.env.TRAFFIC_ONE_AUTH = 'off';
+    assert.equal(authPreToolGate(ctx(cwd)).kind, 'noop');
+  });
 });

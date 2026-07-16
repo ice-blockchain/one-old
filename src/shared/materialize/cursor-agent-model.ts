@@ -9,10 +9,9 @@ import * as path from 'path';
 
 export const CURSOR_AGENTS_REL = path.join('.cursor', 'agents');
 
-// The per-role model the orchestrator must read from `.cursor/agents/<role>.md` and pass as the
-// Task `model` parameter. Cursor does NOT reliably auto-apply this frontmatter on spawn; the
-// spawn gate validates the passed tool parameter. Returns null when there's no agent file or no
-// `model:` line.
+// Legacy inspection helper. Traffic One-generated project contracts are now
+// model-agnostic and runtime routing comes from local preferences/the spawn map;
+// this returns a value only for an older or user-authored profile with `model:`.
 export function cursorAgentModel(cwd: string, role: string): string | null {
   if (!role) return null;
   try {

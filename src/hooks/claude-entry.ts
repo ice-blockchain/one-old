@@ -11,18 +11,19 @@
 import { dispatchSubcommand } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { selectAdapter } from '../adapters/select';
-import { authRequiredMessage } from '../shared/auth';
 import { detectHost } from '../shared/host';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
+import { isGatePreToolSubcommand, nestedPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
 // Fail-closed SessionStart fallback: a crashed session-start must still surface
 // the auth gate (fail toward "unverified") rather than emit nothing.
-function sessionStartFallback(env: NodeJS.ProcessEnv): string {
+function sessionStartFallback(message: string): string {
   return JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'SessionStart',
-      additionalContext: authRequiredMessage(env),
+      additionalContext: message,
     },
   });
 }
@@ -36,14 +37,19 @@ export async function runClaudeHook(
 ): Promise<HookOutput> {
   if (!subcommand) return { stdout: '', exitCode: 0 };
   const host = detectHost(env, ['--host', subcommand]); // never cursor here
-  const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const adapter = selectAdapter(host === 'codex' ? 'codex' : 'claude');
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatchSubcommand(adapter, handlers, subcommand, { stdin, argv: [subcommand] });
     return { stdout, exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) return { stdout: '', exitCode: 0 };
     if (subcommand === 'session-start') {
-      return { stdout: sessionStartFallback(env), exitCode: 0 };
+      const message = authFallbackMessage(stdin, env);
+      return { stdout: message ? sessionStartFallback(message) : '', exitCode: 0 };
+    }
+    if (isGatePreToolSubcommand(subcommand)) {
+      return { stdout: nestedPreToolDeny(host === 'codex' ? 'Codex' : 'Claude'), exitCode: 0 };
     }
     return { stdout: '', exitCode: 0 };
   }

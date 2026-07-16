@@ -19,7 +19,7 @@ New-project monorepo gate: root Vite app files are not allowed for this stack. U
 <!-- T1BLOCK:END monorepo-root-vite -->
 
 <!-- T1BLOCK:BEGIN monorepo-root-flat-scaffold -->
-New-project monorepo gate: root-level TypeScript config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. The architect scaffolds the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) under `apps/web/` — spawn `senior-architect` first instead of creating a flat root Vite layout.
+New-project monorepo gate: root-level TypeScript app config files (`tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, etc.) are not allowed for this stack. Complete the architect phase and scaffold the Turborepo workspace (`pnpm-workspace.yaml`, `apps/web/`, `packages/*`, `tsconfig.base.json`) instead of creating a flat root Vite layout.
 <!-- T1BLOCK:END monorepo-root-flat-scaffold -->
 
 <!-- T1BLOCK:BEGIN state-gate -->
@@ -34,6 +34,14 @@ Materialization gate: stack context for {{FINGERPRINT}} has not been materialize
 Plan gate: .traffic-one/plan.md is missing on a new project. Run the `senior-architect` subagent (or the `senior-eng-orchestrator` skill) to produce the plan before writing feature source files. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.
 <!-- T1BLOCK:END plan-gate -->
 
+<!-- T1BLOCK:BEGIN plan-main-agent-gate -->
+Plan gate: .traffic-one/plan.md is missing on a new project in Low/main-agent mode. Do NOT call `run_subagent`, `Task`, `spawn_agent`, `task`, or another subagent tool. You are the architect in this thread: write `.traffic-one/plan.md` and required `.traffic-one/` project memory before root config, workspace scaffold, or feature-source writes; then resume the same ordered phases. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README.
+<!-- T1BLOCK:END plan-main-agent-gate -->
+
+<!-- T1BLOCK:BEGIN plan-architect-self-gate -->
+Plan gate: .traffic-one/plan.md is missing on this new project. You ARE the `senior-architect` for this run — write `.traffic-one/plan.md` (and the `.traffic-one/` project-memory baseline) BEFORE any feature-source file; do not spawn another architect. Allowed without a plan: .traffic-one/plan.md itself, .traffic-one/ project memory, root docs, legacy docs/, README, empty `packages/*/src/index.ts` barrels, and the shared Tailwind globals baseline.
+<!-- T1BLOCK:END plan-architect-self-gate -->
+
 <!-- T1BLOCK:BEGIN architect-scaffold-gate -->
 Architect completion gate: do not write `PLAN_READY` until the required Traffic One workspace scaffold exists. Missing: {{MISSING}}. Write the missing baseline files, then update `.traffic-one/digests/<runId>/architect.md` and only then emit `PLAN_READY`.
 <!-- T1BLOCK:END architect-scaffold-gate -->
@@ -43,7 +51,7 @@ Architect completion gate: do not write `PLAN_READY` until the required `.traffi
 <!-- T1BLOCK:END architect-memory-baseline-gate -->
 
 <!-- T1BLOCK:BEGIN architect-pre-ready-feature -->
-Architect scope gate: `senior-architect` may write only workspace scaffold and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files such as `{{TARGET}}`.
+Architect scope gate: `senior-architect` may write only workspace scaffold, the shared Tailwind globals baseline, and empty `packages/*/src/index.ts` barrels before `PLAN_READY`. Finish the project-memory baseline, `.traffic-one/runs/<runId>/assignments.json`, and `.traffic-one/digests/<runId>/architect.md` with `PLAN_READY` before writing app or package implementation files such as `{{TARGET}}`.
 <!-- T1BLOCK:END architect-pre-ready-feature -->
 
 <!-- T1BLOCK:BEGIN architect-opencode-queue-gate -->
@@ -78,8 +86,12 @@ Stack gate: this project's stack is React/Vite (Traffic One does not use Next.js
 Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); it writes the `apps/web` Turborepo monorepo scaffold per the plan. Do not run `create-*` app scaffolders — build on the plan the architect produces.
 <!-- T1BLOCK:END scaffold-plan-gate -->
 
+<!-- T1BLOCK:BEGIN scaffold-main-agent-plan-gate -->
+Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-agent mode. Do NOT call `run_subagent` or another subagent tool. You are the architect in this thread: write the plan and required `.traffic-one/` project memory before root config or workspace scaffolding, then continue with the same ordered phases. Do not run `create-*` app scaffolders before the plan exists.
+<!-- T1BLOCK:END scaffold-main-agent-plan-gate -->
+
 <!-- T1BLOCK:BEGIN assignments-shape-gate -->
-Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. See `agents/senior-architect.md` § Assignments manifest.
+Assignments gate: `.traffic-one/runs/<runId>/assignments.json` must use the canonical shape with a top-level `assignments` ARRAY of `{ role, scope: { include, exclude? } }` entries — not a `roles` object or `ownedPaths` fields. Rewrite it as `{ "version": 1, "runId": "<currentRunId>", "assignments": [{ "role": "senior-frontend", "scope": { "include": ["apps/web/**", "packages/ui/**", "packages/i18n/**", "packages/tailwind-config/**"], "exclude": [] } }, { "role": "senior-backend", "scope": { "include": ["supabase/**", "packages/api-client/**"], "exclude": [] } }] }` and adjust paths to the real Module map.
 <!-- T1BLOCK:END assignments-shape-gate -->
 
 <!-- T1BLOCK:BEGIN assignments-roles-gate -->
@@ -91,11 +103,15 @@ Assignments gate: `.traffic-one/runs/<runId>/assignments.json` is architect/orch
 <!-- T1BLOCK:END assignments-owner-gate -->
 
 <!-- T1BLOCK:BEGIN run-team-shell -->
-Run-team enforcement gate: feature-source writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python`, `node`, `perl`, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead.
+Run-team enforcement gate: implementation writes via shell command (`>`, `>>`, `tee`, `cat <<`, `python -c`/`node -e` eval writes, `sed -i`, `rm`, `mv`, `cp`, `find -delete`) are denied because the hook cannot verify role ownership from a shell line — use the role-scoped Write/Edit tools instead. Run-state bookkeeping (heredocs targeting `.traffic-one/digests/`, `fix-cycles/`, or `runs/`) is exempt.
 <!-- T1BLOCK:END run-team-shell -->
 
+<!-- T1BLOCK:BEGIN opencode-external-temp-shell -->
+OpenCode/Kilo external-path gate: do not write scratch logs or build output under `/tmp`, `/private/tmp`, or `/var/tmp` from a model command. Those paths trigger host external-directory permission prompts and can stall the run. Write temporary diagnostics inside the project, for example `.traffic-one/tmp/<runId>/`, or print the output to stdout.
+<!-- T1BLOCK:END opencode-external-temp-shell -->
+
 <!-- T1BLOCK:BEGIN run-team-not-subagent -->
-Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. If you are the PARENT/orchestrator: do not edit owned implementation artifacts yourself — spawn (or message) the owning role. If you ARE a spawned role session whose claim did not resolve: state your role explicitly (reply or note "Traffic One senior-<role> role, run <runId>") and retry this same edit — the gate re-reads your transcript and stakes the claim on the next attempt. Do NOT fall back to delegating from inside a worker or rewriting team preferences.
+Run-team enforcement gate: this project was onboarded with `team.mode="subagents"`, so feature-source and assigned build-artifact writes must come from a spawned Traffic One role session with a per-agent run claim, not {{ROLE}}. {{RECOVERY}} Do NOT fall back to delegating from inside a worker or rewriting team preferences.
 <!-- T1BLOCK:END run-team-not-subagent -->
 
 <!-- T1BLOCK:BEGIN run-team-not-owned -->
@@ -173,3 +189,7 @@ Avoid `any` — use `unknown` and narrow types, or define a discriminated union.
 <!-- T1BLOCK:BEGIN websocket-location -->
 Open WebSocket connections only inside packages/ws-client/ or src/services/ws/. Components must subscribe via hooks.
 <!-- T1BLOCK:END websocket-location -->
+
+<!-- T1BLOCK:BEGIN asset-extension-mismatch -->
+Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.
+<!-- T1BLOCK:END asset-extension-mismatch -->

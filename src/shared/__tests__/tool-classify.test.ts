@@ -5,6 +5,7 @@ import {
   canonicalToolName,
   commandFromToolInput,
   isMutatingPreToolUse,
+  isOnboardingBootstrapCommand,
   isOnboardingWaitCommand,
   isReadOnlyOrientationToolUse,
   isShellToolName,
@@ -15,6 +16,7 @@ import {
   parsedToolInput,
 } from '../tool-classify';
 import type { ToolInput } from '../../core/types';
+import { onboardingDeclineCommand, onboardingReconsiderCommand, onboardingUseBootstrapCommand, onboardingUseCommand, onboardingWaitCommand } from '../onboarding-server/wait-command';
 
 test('tool-name classification (host-prefixed names normalized)', () => {
   assert.equal(normalizedToolName('mcp.Bash'), 'Bash');
@@ -31,7 +33,7 @@ test('tool-name classification (host-prefixed names normalized)', () => {
 });
 
 test('isOnboardingWaitCommand recognizes the wait command from Windsurf command_line shape', () => {
-  const waitCmd = 'node "/x/dist/scripts/onboarding-wait.cjs" "/proj" "--host=windsurf"';
+  const waitCmd = onboardingWaitCommand('/proj', 'windsurf');
   // Windsurf shape: the onboarding gate passes canonicalToolName (→ "Bash") + the
   // raw tool_input, which carries the command as `command_line`. Previously the empty
   // command extraction made this false, wrongly denying the wait command.
@@ -39,6 +41,55 @@ test('isOnboardingWaitCommand recognizes the wait command from Windsurf command_
   // Claude shape (command) still works.
   assert.equal(isOnboardingWaitCommand('Bash', { command: waitCmd }), true);
   assert.equal(isOnboardingWaitCommand('Bash', { command: 'npm run dev' }), false);
+});
+
+test('the use/decline/reconsider choice commands share the wait allow-list grammar', () => {
+  for (const cmd of [
+    onboardingUseCommand('/proj', 'claude'),
+    onboardingDeclineCommand('/proj', 'cursor'),
+    onboardingReconsiderCommand('/proj', 'codex'),
+  ]) {
+    assert.equal(isOnboardingWaitCommand('Bash', { command: cmd }), true, cmd);
+  }
+  // The exit-fast modes never take the wait-only flags.
+  const declineBase = onboardingDeclineCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${declineBase} '--quiet-url'` }), false);
+  // Arbitrary flags stay rejected.
+  assert.equal(isOnboardingWaitCommand('Bash', { command: declineBase.replace('--decline', '--nuke') }), false);
+});
+
+test('--use --bootstrap-only parses as an exit-fast bootstrap invocation', () => {
+  const useBootstrap = onboardingUseBootstrapCommand('/proj', 'claude');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: useBootstrap }), true);
+  assert.equal(isOnboardingBootstrapCommand('Bash', { command: useBootstrap }), true);
+  // The plain yes command stays a waiter, not a bootstrap.
+  assert.equal(isOnboardingBootstrapCommand('Bash', { command: onboardingUseCommand('/proj', 'claude') }), false);
+  // Exit-fast: the wait-only flags stay rejected on the combined form.
+  assert.equal(isOnboardingWaitCommand('Bash', { command: `${useBootstrap} '--quiet-url'` }), false);
+  // Only --use composes with --bootstrap-only, and only in that order.
+  assert.equal(isOnboardingWaitCommand('Bash', { command: useBootstrap.replace('--use', '--decline') }), false);
+  assert.equal(isOnboardingWaitCommand('Bash', { command: useBootstrap.replace("'--use' '--bootstrap-only'", "'--bootstrap-only' '--use'") }), false);
+});
+
+test('--seed-prompt rides the yes commands, inertly quoted, and only there', () => {
+  // The ask-first flow writes nothing pre-decision: the triggering request is
+  // carried on the yes command and seeded by the runner AFTER the recorded yes.
+  const seed = "build the user's learning platform (v2); make it responsive";
+  const seeded = onboardingUseBootstrapCommand('/proj', 'claude', seed);
+  assert.ok(seeded.includes('--seed-prompt='), 'seed argument is embedded');
+  assert.equal(isOnboardingWaitCommand('Bash', { command: seeded }), true);
+  assert.equal(isOnboardingBootstrapCommand('Bash', { command: seeded }), true);
+  const seededUse = onboardingUseCommand('/proj', 'cursor', seed);
+  assert.equal(isOnboardingWaitCommand('Bash', { command: seededUse }), true);
+  // A non-coding control prompt is never embedded — the command stays seedless.
+  assert.equal(onboardingUseBootstrapCommand('/proj', 'claude', 'ok').includes('--seed-prompt='), false);
+  // The seed is only valid on a --use invocation, at most once.
+  const declineSeeded = `${onboardingDeclineCommand('/proj', 'claude')} '--seed-prompt=x'`;
+  assert.equal(isOnboardingWaitCommand('Bash', { command: declineSeeded }), false);
+  const waitSeeded = `${onboardingWaitCommand('/proj', 'claude')} '--seed-prompt=x'`;
+  assert.equal(isOnboardingWaitCommand('Bash', { command: waitSeeded }), false);
+  const doubleSeed = `${seeded} '--seed-prompt=again'`;
+  assert.equal(isOnboardingWaitCommand('Bash', { command: doubleSeed }), false);
 });
 
 test('isStateFilePath matches the .one.json state files anywhere', () => {
@@ -74,6 +125,16 @@ test('isMutatingPreToolUse flags writes/edits/mutating shell, allows read-only',
   // Inline interpreter eval (the named bypass): writes without a visible redirect.
   assert.equal(isMutatingPreToolUse('Bash', { command: `python -c "open('x','w').write('y')"` }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: `node -e "require('fs').writeFileSync('x','y')"` }), true);
+
+  // fd-to-fd and discard redirects are NOT writes (B6): `ls -la … 2>/dev/null`
+  // is routine read-only orientation and was falsely denied during onboarding.
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'ls -la /p 2>/dev/null' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'cat f 2>&1' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', {
+    command: 'ls -la /p 2>/dev/null; echo "---"; ls -la /p/.traffic-one 2>/dev/null | head -40',
+  }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'ls > out.txt' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'make build 2>/dev/null > log.txt' }), true);
 
   // Read-only diagnostics MUST still pass (the WebStorm-style investigation case).
   assert.equal(isMutatingPreToolUse('Bash', { command: 'cat /var/log/app.log' }), false);
@@ -120,7 +181,7 @@ test('parsedToolInput lifts command/path/content off the parsed tool (Cursor has
 });
 
 test('REGRESSION: a Cursor wait command + orientation read now classify as allowed', () => {
-  const waitTool = cursorTool({ command: 'node "/x/scripts/onboarding-wait.cjs" "/proj"' });
+  const waitTool = cursorTool({ command: onboardingWaitCommand('/proj', 'cursor') });
   assert.equal(isOnboardingWaitCommand(canonicalToolName(waitTool), parsedToolInput(waitTool) || {}), true);
   const readTool = cursorTool({ class: 'file-read', rawName: 'before-read-file', filePath: '/proj/x.ts' });
   assert.equal(isReadOnlyOrientationToolUse(canonicalToolName(readTool), parsedToolInput(readTool) || {}), true);

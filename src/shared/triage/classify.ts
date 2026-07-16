@@ -34,7 +34,14 @@ const WEAK_COMPLEX: Signal[] = [
   { re: /\b(new|add(ing)?|build|implement|creat\w+|introduc\w+)\b[^.]{0,30}\bfeature\b/i, tag: 'feature' },
   { re: /\bacross\b[^.]{0,30}\b(app|codebase|pages?|files?|screens?|modules?|components?)\b/i, tag: 'cross-cutting' },
   { re: /\b(refactor\w*|restructur\w*|re[\s-]?architect\w*|rewrit\w*)\b/i, tag: 'refactor' },
-  { re: /\bnew\b[^.]{0,20}\b(pages?|screens?|routes?|views?)\b/i, tag: 'new-page' },
+];
+
+// A single page/route is a bounded implementation surface, not a greenfield
+// feature by itself. It stays `small` unless another signal proves that it also
+// crosses an architectural boundary (schema/auth/integration) or asks for a
+// broader feature/refactor.
+const SCOPED_SMALL: Signal[] = [
+  { re: /\b(?:add|build|create|implement|introduc\w+)\b[^.]{0,30}\b(?:new\s+)?(?:pages?|screens?|routes?|views?)\b/i, tag: 'new-page' },
 ];
 
 // Concrete, low-risk edits.
@@ -64,6 +71,7 @@ export function classifyPromptComplexity(prompt: unknown): TriageHint {
   const text = typeof prompt === 'string' ? prompt : '';
   const strong = fired(STRONG_COMPLEX, text);
   const weak = fired(WEAK_COMPLEX, text);
+  const scopedSmall = fired(SCOPED_SMALL, text);
   const trivial = fired(TRIVIAL, text);
   const explicitSmall = EXPLICIT_SMALL.test(text);
 
@@ -76,7 +84,7 @@ export function classifyPromptComplexity(prompt: unknown): TriageHint {
   // sees the actual repo — weigh them, instead of anchoring it with a confident label.
   if (strong.length > 0) {
     const mixed = trivial.length > 0 || explicitSmall;
-    return { tier: 'complex', confidence: mixed ? 'low' : 'high', signals: [...strong, ...weak, ...trivial] };
+    return { tier: 'complex', confidence: mixed ? 'low' : 'high', signals: [...strong, ...weak, ...scopedSmall, ...trivial] };
   }
 
   // Weak complexity (a feature/refactor/cross-cut with no strong domain anchor):
@@ -84,9 +92,13 @@ export function classifyPromptComplexity(prompt: unknown): TriageHint {
   // trivial signal downgrades it to trivial; otherwise escalate at low confidence.
   if (weak.length > 0) {
     if (explicitSmall && trivial.length > 0) {
-      return { tier: 'trivial', confidence: 'low', signals: [...trivial, ...weak] };
+      return { tier: 'trivial', confidence: 'low', signals: [...trivial, ...weak, ...scopedSmall] };
     }
-    return { tier: 'complex', confidence: 'low', signals: [...weak, ...trivial] };
+    return { tier: 'complex', confidence: 'low', signals: [...weak, ...scopedSmall, ...trivial] };
+  }
+
+  if (scopedSmall.length > 0) {
+    return { tier: 'small', confidence: 'high', signals: [...scopedSmall, ...trivial] };
   }
 
   if (trivial.length > 0) {

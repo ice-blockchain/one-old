@@ -14,26 +14,29 @@ import { asString } from '../../adapters/coerce';
 import { obj, type Rec } from '../../shared/obj';
 import { context, deny, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode } from '../../shared/detection';
 import { isOnboardedProjectRoot, resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { buildOrchestrationDirective } from '../../shared/build-orchestration-directive';
-import { ensureOnboardingServer } from '../../shared/onboarding-server/ensure';
+import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
 import { computeOnboarding } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
-import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { teamModeDowngradeViolation, teamModeMarkerWriteViolation } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
-import { firstEmitThisSession } from '../../shared/once';
+import { firstEmitThisSession, stampEmitMarker } from '../../shared/once';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { ensureCurrentRunId, hookSessionIdentity, isSubagentThread, normalizeState, readEffectiveState } from '../../shared/state';
-import { canonicalToolName, isMutatingPreToolUse, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
+import { canonicalToolName, isMutatingPreToolUse, isOnboardingBootstrapCommand, isOnboardingWaitCommand, isReadOnlyOrientationToolUse, isStateFileOnlyPatch, isStateFilePath, parsedToolInput } from '../../shared/tool-classify';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { usePluginQuestionPending } from '../../shared/onboarding-server/flow';
+import { onboardingDeclineCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
-  skillBlock('onboarding-gate', name, vars);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
+  skillBlock('onboarding-gate', name, vars, fallback);
 
 export function onboardingGate(ctx: Ctx): HookResult {
   const raw = obj(ctx.input.raw) || {};
@@ -46,7 +49,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   const cwd = ctx.cwd;
 
-  if (isPluginAuthoringRoot(cwd)) return noop();
+  if (isNonProjectRoot(cwd)) return noop();
 
   const filePath = ctx.input.tool?.filePath || asString(toolInput.file_path ?? toolInput.filePath ?? toolInput.path);
   // Monorepo safety: a scaffolder may run from a sub-package cwd or target a
@@ -56,13 +59,13 @@ export function onboardingGate(ctx: Ctx): HookResult {
   const root = resolveProjectRoot(cwd, filePath, { ceiling: ctx.input.workspaceRoot });
   // The resolver skips authoring roots, but its fallback can still return cwd /
   // a hint dir inside the plugin repo — never gate or materialize there.
-  if (isPluginAuthoringRoot(root)) return noop();
+  if (isNonProjectRoot(root)) return noop();
+  initializeTrafficOneEnv(root, ctx.host);
 
-  if (authChoiceAllowsContinue(root)) return noop();
-  // Auth is enforced HERE now (the separate priority-0 auth PreToolUse gate is
-  // retired): computeOnboarding below returns the 'api-key' step while the web
-  // API key is unentered, so this gate opens the wizard on that page and blocks
-  // mutating tools until the key is entered.
+  if (pluginUseDeclined(root)) return noop();
+  // computeOnboarding returns the 'api-key' step while the API key is missing,
+  // so this gate opens the wizard on that page and blocks mutating tools until
+  // the key is validated and stored.
 
   const state = readEffectiveState(root);
   const mode = (state.mode as string) || detectMode(root);
@@ -104,22 +107,52 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // Cursor does not reliably render UserPromptSubmit user_message, and agents sometimes skip
     // reposting the URL before running the wait command. Force one visible, clickable link at the
     // shell boundary, then allow the retry so setup can block normally.
+    // The approved bootstrap is the only way a sandboxed hook can start an
+    // unsandboxed wizard that owns ~/.traffic-one/projects. Admit it before the
+    // Cursor URL-repost path, which necessarily calls the same failing launcher.
+    if (isOnboardingBootstrapCommand(toolName, toolInput)) return noop();
     if (isOnboardingWaitCommand(toolName, toolInput)) {
+      // Ask-first pending: the runner invocation IS the answer path (--use /
+      // --decline) — let it run without pre-launching the wizard or reposting
+      // a URL the user has not said yes to.
+      if (usePluginQuestionPending(root)) return noop();
       if (ctx.host === 'cursor') {
-        const server = ensureOnboardingServer(root, { host: ctx.host });
+        const prepared = prepareOnboardingServer(root, ctx.host);
+        // The wait command is the recovery path when the hook sandbox itself
+        // cannot launch the wizard. Never deny that recovery command merely
+        // because the same restricted hook cannot pre-create its URL.
+        if (prepared.kind !== 'ready') return noop();
+        const { server, waitCommand } = prepared;
         const id = hookSessionIdentity(raw).sessionId;
         if (server.dashboardUrl
           && firstEmitThisSession(root, 'cursor-onboarding-wait-link', id)) {
+          stampEmitMarker(root, 'wizard-url-shown');
           return deny(block('cursor-wait-link-first', {
             URL: server.dashboardUrl,
-            WAIT_CMD: onboardingWaitCommand(root, ctx.host),
+            WAIT_CMD: waitCommand,
           }));
         }
       }
       return noop();
     }
-    const server = ensureOnboardingServer(root, { host: ctx.host });
-    const vars = { URL: server.dashboardUrl, WAIT_CMD: onboardingWaitCommand(root, ctx.host) };
+    // Ask-first: the user has not said whether this project uses Traffic One.
+    // Deny mutating work with the HOST-CHAT question — no wizard server, no
+    // setup URL, until the user answers (yes → --use runs the normal wait).
+    if (usePluginQuestionPending(root)) {
+      return deny(usePluginQuestion(root, ctx.host));
+    }
+    const declineCmd = onboardingDeclineCommand(root, ctx.host);
+    const prepared = prepareOnboardingServer(root, ctx.host);
+    if (prepared.kind !== 'ready') {
+      // Windsurf renders a denied read as a failed tool card. Its prompt hook
+      // already carries this bootstrap recipe, so preserve harmless orientation
+      // and repeat the actionable block on the first mutation. Other hosts need
+      // the first tool denial because that is their most reliable visible channel.
+      if (ctx.host === 'windsurf' && isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+      return deny(prepared.reason);
+    }
+    const { server, waitCommand } = prepared;
+    const vars = { URL: server.dashboardUrl, WAIT_CMD: waitCommand, DECLINE_CMD: declineCmd };
     // OpenCode: the full multi-host deny block (URLs + shell commands + JavaScript
     // code blocks + "do NOT…" behavioral overrides) triggers the model's prompt-
     // injection safety training — it reads as a third-party hijack attempt and
@@ -131,8 +164,20 @@ export function onboardingGate(ctx: Ctx): HookResult {
         + `Show this setup link to the user: ${vars.URL}\n\n`
         + `Then immediately run this wait command in the current turn (timeout ~9 minutes); do not wait for another user message first:\n${vars.WAIT_CMD}\n\n`
         + `If it prints TRAFFIC_ONE_RESTART_OPENCODE_REQUIRED, stop and tell the user to restart OpenCode, `
-        + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.`,
+        + `then type "continue" or "resume" after restart to continue development. Development resumes only after the restarted OpenCode process loads the new settings.\n\n`
+        + `If the user does not want Traffic One for this project, run instead: ${declineCmd}`,
       );
+    }
+    if (ctx.host === 'windsurf') {
+      // Windsurf renders an exit-2 pre-hook as a failed tool card. Never spend
+      // that blocking surface on harmless orientation (`ls`, reads, grep): let
+      // the agent inspect while the user completes the already-open wizard.
+      // The host entry turns the first mutation deny into an inline setup wait,
+      // then releases that SAME tool after onboarding completes.
+      if (isReadOnlyOrientationToolUse(toolName, toolInput)) return noop();
+      const first = firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId);
+      if (first) return deny(block('windsurf-server-deny-reason', vars, windsurfSetupReason(vars.URL, vars.WAIT_CMD)));
+      return deny(block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(vars.URL, vars.WAIT_CMD)));
     }
     // Deliver the FULL preview-pane walkthrough on the first GATED tool of the
     // session — INCLUDING a read-only orientation call. On Codex the PreToolUse
@@ -146,6 +191,7 @@ export function onboardingGate(ctx: Ctx): HookResult {
     // itself says orientation is allowed and to open the wizard, so the agent
     // pivots immediately.
     if (firstEmitThisSession(root, 'onboarding-deny-tool', hookSessionIdentity(raw).sessionId)) {
+      stampEmitMarker(root, 'wizard-url-shown');
       return deny(block('server-deny-reason', vars));
     }
     // Recipe already delivered this session → orientation flows; every further

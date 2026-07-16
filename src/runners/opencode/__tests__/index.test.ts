@@ -6,8 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { delegate, delegateFromPlan, normalizePlanRole, parsePlanDelegationQueue, postApplyTypecheck, resetOpenCodeModelMemo, stageExcludePathspecs } from '../index';
-import { OPENCODE_FREE_MODELS } from '../../../config/opencode-delegation';
-import { openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
+import { OPENCODE_FREE_MODELS } from '../../../config/model-tiers';
+import { markOpenCodeGatewayOutage, openCodePlanBatchComplete, openCodePlanRoleCompleted, openCodeRoleAttempted, readOpenCodePlanBatchState } from '../../../shared/opencode-roles';
 
 function sh(cwd: string, cmd: string, args: string[]): void {
   spawnSync(cmd, args, { cwd, encoding: 'utf8', stdio: 'ignore' });
@@ -53,7 +53,7 @@ function withRepo(prefs: Record<string, unknown>, fn: (dir: string) => void, opt
   }
 }
 
-type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
+type StubBehavior = 'edit' | 'append' | 'conflict' | 'error' | 'noop' | 'retry' | 'multi' | 'model' | 'chain' | 'stall' | 'stallall' | 'neterr' | 'modelerr' | 'env' | 'commit' | 'junk' | 'artifacts' | 'scopeleak' | 'assignmentchange' | 'editts';
 
 function stubOpencode(behavior: StubBehavior): string {
   const bin = path.join(process.env.TRAFFIC_ONE_TOOLCHAIN_ROOT || '', 'opencode', 'npm-prefix', 'bin');
@@ -229,6 +229,36 @@ const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 
 fs.writeFileSync(counter, String(n));
 process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'model ' + model } }) + '\\n');
 fs.writeFileSync(path.join(dir, 'oc-' + n + '.txt'), model + '\\n');
+`,
+    // gateway behavior when a promo model STALLS (the live `spawnSync … opencode
+    // ETIMEDOUT` failure): the chain head hangs silently until the runner's spawn
+    // timeout kills it; every other model succeeds. Records -m per invocation and
+    // writes a UNIQUE file per success so back-to-back delegations apply cleanly.
+    stall: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const a = process.argv;
+const dir = a.indexOf('--dir') >= 0 ? a[a.indexOf('--dir') + 1] : process.env.PWD;
+const model = a.indexOf('-m') >= 0 ? a[a.indexOf('-m') + 1] : '(none)';
+fs.appendFileSync(path.join(__dirname, 'models-seen'), model + '\\n');
+if (model === ${JSON.stringify(OPENCODE_FREE_MODELS[0])}) {
+  setInterval(() => {}, 1000); // hang with no output until SIGTERM'd (ETIMEDOUT)
+} else {
+  const counter = path.join(__dirname, 'stall-wins');
+  const n = (fs.existsSync(counter) ? Number(fs.readFileSync(counter, 'utf8')) || 0 : 0) + 1;
+  fs.writeFileSync(counter, String(n));
+  process.stdout.write(JSON.stringify({ type: 'text', part: { type: 'text', text: 'model ' + model } }) + '\\n');
+  fs.writeFileSync(path.join(dir, 'oc-stall-' + n + '.txt'), model + '\\n');
+}
+`,
+    // gateway-wide outage: EVERY model hangs until the spawn timeout kills it.
+    // The walk must stop after maxConsecutiveStalls() probes, not burn the unit
+    // timeout on the entire chain.
+    stallall: `#!/usr/bin/env node
+const fs = require('fs'); const path = require('path');
+const a = process.argv;
+const model = a.indexOf('-m') >= 0 ? a[a.indexOf('-m') + 1] : '(none)';
+fs.appendFileSync(path.join(__dirname, 'models-seen'), model + '\\n');
+setInterval(() => {}, 1000);
 `,
     // network down: NOT a model-class error — must fail fast without walking the
     // chain. Also records -m so the no-advance assertion can count invocations.
@@ -702,6 +732,41 @@ test('delegateFromPlan ignores stale plan queues in maintenance runs', () => {
   });
 });
 
+test('delegateFromPlan delegates in maintenance when the architect wrote a fresh run-scoped queue', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    stubOpencode('multi');
+    const memoryDir = '.traffic' + '-one';
+    fs.mkdirSync(path.join(dir, memoryDir), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, '.one.json'), JSON.stringify({
+      mode: 'existing-codebase',
+      onboardingComplete: true,
+      lifecycle: { phase: 'maintenance' },
+      currentRunId: 'maint-fresh',
+    }), 'utf8');
+    fs.writeFileSync(path.join(dir, memoryDir, 'plan.md'), [
+      '<!-- opencode-delegate:start -->',
+      '- id: revamp-ui | role: frontend | files: unit-1.txt | task: build a revamp unit',
+      '<!-- opencode-delegate:end -->',
+    ].join('\n'), 'utf8');
+    // A run-scoped assignments.json is the architect's freshness proof: its
+    // presence flips `hasFreshArchitectQueueForRun` true so the maintenance
+    // from-plan batch delegates THIS run's queue instead of suppressing it.
+    fs.mkdirSync(path.join(dir, memoryDir, 'runs', 'maint-fresh'), { recursive: true });
+    fs.writeFileSync(path.join(dir, memoryDir, 'runs', 'maint-fresh', 'assignments.json'), JSON.stringify({
+      version: 1,
+      runId: 'maint-fresh',
+      createdBy: 'senior-architect',
+      assignments: [{ role: 'senior-frontend', scope: { include: ['unit-1.txt'], exclude: [] } }],
+    }), 'utf8');
+
+    const r = delegateFromPlan(dir);
+
+    assert.equal(r.total, 1);
+    assert.equal(r.delegated, 1);
+    assert.notEqual(r.units[0]?.id, '__no_units__');
+  });
+});
+
 test('maintenance ad-hoc delegation writes a terminal maintenance marker with failureKind', () => {
   withRepo({ openCode: { enabled: true } }, (dir) => {
     stubOpencode('error');
@@ -749,6 +814,112 @@ test('delegate walks the free chain when the gateway retires a promo model, and 
     assert.equal(r2.ok, true);
     assert.equal(r2.model, OPENCODE_FREE_MODELS[1]);
     assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1], OPENCODE_FREE_MODELS[1]]);
+  });
+});
+
+test('delegate advances the free chain past a STALLED model (spawn timeout) and memoizes the skip', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stall'); // chain[0] hangs until the spawn timeout; the rest succeed
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1500';
+    try {
+      const r = delegate(dir, { role: 'frontend', task: 'create a file', runId: 'stall-1' });
+      assert.equal(r.ok, true);
+      assert.equal(r.action, 'delegated');
+      assert.equal(r.model, OPENCODE_FREE_MODELS[1]);
+      assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1]]);
+      // the stalling id is memoized away: the next delegation in this process
+      // starts at the survivor instead of re-burning the unit timeout
+      const r2 = delegate(dir, { role: 'frontend', task: 'create another file', runId: 'stall-2' });
+      assert.equal(r2.ok, true);
+      assert.equal(r2.model, OPENCODE_FREE_MODELS[1]);
+      assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1], OPENCODE_FREE_MODELS[1]]);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+    }
+  });
+});
+
+test('delegate stops after two back-to-back stalls (gateway-wide outage) with a provider-timeout failure', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stallall'); // every model hangs
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1200';
+    try {
+      const r = delegate(dir, { role: 'frontend', task: 'do it', runId: 'stall-all-1' });
+      assert.equal(r.ok, false);
+      assert.equal(r.action, 'failed');
+      assert.equal(r.failureKind, 'provider-timeout');
+      assert.match(r.error || '', /stalled/);
+      // exactly TWO probes: the walk stops instead of burning the unit timeout
+      // on every remaining chain entry before the paid fallback
+      assert.deepEqual(modelsSeen(bin), [OPENCODE_FREE_MODELS[0], OPENCODE_FREE_MODELS[1]]);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+    }
+  });
+});
+
+test('gateway breaker short-circuits later units in the same run without re-probing', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stallall'); // every model hangs
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    const savedBreaker = process.env.T1_OC_GATEWAY_BREAKER_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1200';
+    process.env.T1_OC_GATEWAY_BREAKER_MS = '600000';
+    try {
+      const r = delegate(dir, { role: 'frontend', task: 'do it', runId: 'brk-1' });
+      assert.equal(r.action, 'failed');
+      assert.equal(r.failureKind, 'provider-timeout');
+      // the outage detection tripped the run-scoped breaker on disk
+      assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', 'brk-1', 'opencode-gateway-down')), true);
+      const probed = modelsSeen(bin).length;
+      // a later unit in the SAME run fast-fails without a single new probe
+      const r2 = delegate(dir, { role: 'tester', task: 'another unit', runId: 'brk-1' });
+      assert.equal(r2.ok, false);
+      assert.equal(r2.action, 'failed');
+      assert.equal(r2.failureKind, 'provider-timeout');
+      assert.match(r2.error || '', /breaker/);
+      assert.equal(modelsSeen(bin).length, probed, 'breaker short-circuit must not probe any model');
+      // the short-circuit still marks the role attempted, so the spawn gate
+      // lets the paid fallback through without a deny round-trip
+      assert.equal(openCodeRoleAttempted(dir, 'brk-1', 'tester'), true);
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+      if (savedBreaker === undefined) delete process.env.T1_OC_GATEWAY_BREAKER_MS; else process.env.T1_OC_GATEWAY_BREAKER_MS = savedBreaker;
+    }
+  });
+});
+
+test('gateway breaker TTL expiry re-probes the chain (a recovered gateway is not wedged out)', () => {
+  withRepo({ openCode: { enabled: true } }, (dir) => {
+    const bin = stubOpencode('stallall');
+    const savedTimeout = process.env.T1_OC_UNIT_TIMEOUT_MS;
+    const savedBreaker = process.env.T1_OC_GATEWAY_BREAKER_MS;
+    process.env.T1_OC_UNIT_TIMEOUT_MS = '1200';
+    process.env.T1_OC_GATEWAY_BREAKER_MS = '1'; // expires before the next delegation
+    try {
+      delegate(dir, { role: 'frontend', task: 'do it', runId: 'brk-ttl' });
+      const probed = modelsSeen(bin).length;
+      const r2 = delegate(dir, { role: 'frontend', task: 'do it again', runId: 'brk-ttl' });
+      assert.equal(r2.ok, false);
+      assert.ok(modelsSeen(bin).length > probed, 'an expired breaker must probe the gateway again');
+    } finally {
+      if (savedTimeout === undefined) delete process.env.T1_OC_UNIT_TIMEOUT_MS; else process.env.T1_OC_UNIT_TIMEOUT_MS = savedTimeout;
+      if (savedBreaker === undefined) delete process.env.T1_OC_GATEWAY_BREAKER_MS; else process.env.T1_OC_GATEWAY_BREAKER_MS = savedBreaker;
+    }
+  });
+});
+
+test('gateway breaker never skips an explicitly pinned model (user choice always probes)', () => {
+  withRepo({ openCode: { enabled: true, model: 'opencode/custom-x' } }, (dir) => {
+    stubOpencode('model');
+    // Another delegation in this run already tripped the breaker.
+    markOpenCodeGatewayOutage(dir, 'brk-pin');
+    const r = delegate(dir, { role: 'frontend', task: 'echo model', runId: 'brk-pin' });
+    assert.equal(r.ok, true);
+    assert.equal(r.action, 'delegated');
+    assert.equal(fs.readFileSync(path.join(dir, 'model.txt'), 'utf8').trim(), 'opencode/custom-x');
   });
 });
 

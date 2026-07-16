@@ -1,7 +1,7 @@
 // src/modules/session/index.ts
 // The session module's runtime handlers: the SessionStart auth gate + rule
 // bundle / onboarding directive, the priority-0 auth PreToolUse gate (blocks
-// tool use until the web API key is entered), and the UserPromptSubmit auth /
+// tool use until the wizard validates an API key), and the UserPromptSubmit auth /
 // onboarding-reminder / convergence handler.
 
 import type { Handler } from '../../core/types';

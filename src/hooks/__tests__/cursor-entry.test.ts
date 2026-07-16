@@ -7,27 +7,33 @@ import * as path from 'path';
 import { runCursorHook } from '../cursor-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
 
+// These tests exercise the setup-wizard flow itself, which under the shipped
+// ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
+// recorded yes. Pin the runtime override off so the wizard paths stay directly
+// testable; the ask-first question has dedicated tests that set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
+
 async function withEnv(opts: { authed: boolean }, fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-entry-'));
   const env = process.env;
-  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, choice: env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN };
+  const saved = { ep: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, state: env.TRAFFIC_ONE_STATE_PATH, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, noSpawn: env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1'; // unit tests must never spawn a real wizard server
   if (opts.authed) {
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+    fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+      schemaVersion: 3,
+      auth: { version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z' },
+      hosts: {},
     }), 'utf8');
   }
   try {
     await fn(dir);
   } finally {
     for (const [k, v] of Object.entries({
-      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
-      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs, TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
+      TRAFFIC_ONE_MCP_KEY_ENDPOINT: saved.ep, TRAFFIC_ONE_STATE_PATH: saved.state,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
     })) { if (v === undefined) delete env[k]; else env[k] = v; }
     fs.rmSync(dir, { recursive: true, force: true });
@@ -67,7 +73,7 @@ test('beforeShellExecution AUTHED + benign command on an existing codebase → n
 test('beforeShellExecution AUTHED on a fresh new-project dir → onboarding gate denies', async () => {
   await withEnv({ authed: true }, async (cwd) => {
     // Seed a live server record so the gate (NO_SPAWN) surfaces a real dashboard link.
-    writeServerRecord(cwd, { pid: process.pid, port: 55555, token: 'tok', url: 'http://127.0.0.1:55555/?t=tok', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 55555, token: 'tok', url: 'http://127.0.0.1:55555/?t=tok', startedAt: 'x' }, process.env, 'cursor');
     const stdin = JSON.stringify({ cwd, command: 'npm run build' });
     const r = await runCursorHook('before-shell-execution', stdin);
     const out = JSON.parse(r.stdout);

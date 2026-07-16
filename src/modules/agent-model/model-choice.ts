@@ -1,11 +1,12 @@
 // src/modules/agent-model/model-choice.ts
 // Run-scoped, project-local store for the "recommended model is disabled/unavailable"
-// spawn decision, plus the one-time proactive-advisory marker. Cursor gives NO runtime
-// signal that a model is disabled (it silently falls back), so this can't be triggered
-// by detecting a failure — the agent-model gate prompts when it cannot VALIDATE the
-// spawn model against the tier, and the user's reply (parsed in prompt-submit) lands
-// here. The "models disabled" toggle is account-wide, so the decision is a RUN-level
-// policy (one prompt per build; every role honors it), not per-role.
+// spawn decision, plus the one-time proactive-advisory marker. Cursor's captured model
+// list remains the primary availability signal. A correlated runtime failure may enter
+// the same choice flow only when its text explicitly links `model` to positive
+// unavailable vocabulary; generic auth/network/API failures never do. The user's reply
+// (parsed in prompt-submit) lands here. The "models disabled" toggle is account-wide,
+// so the decision is a RUN-level policy (one prompt per build; every role honors it),
+// not per-role.
 //
 // Storage mirrors the opencode-roles marker style: tiny files under
 // `.traffic-one/runs/<runId>/`, best-effort, never throwing. Run-scoped means a new
@@ -14,6 +15,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isNonProjectRoot } from '../../shared/authoring-root';
+import { writeJson } from '../../shared/fsjson';
 import { cursorUnavailablePicks } from '../../shared/materialize/cursor-eligibility';
 import { ensureCurrentRunId } from '../../shared/state';
 
@@ -41,6 +44,9 @@ function modelGatePromptPath(cwd: string, runId: string): string {
 // Covers unavailable picked models (capture list) and the Composer-floor degradation path
 // (modelChoicePrompted marker set by the spawn gate on first deny).
 export function modelChoiceReplyPending(cwd: string, state: Record<string, unknown>): boolean {
+  // This reader may mint a run id when unavailable captured picks exist, so it
+  // shares the same authoring/generated-root stand-down as explicit writers.
+  if (isNonProjectRoot(cwd)) return false;
   let runId = typeof state.currentRunId === 'string' ? state.currentRunId.trim() : '';
   const unavailable = cursorUnavailablePicks(cwd, state).length > 0;
   if (!runId && unavailable) runId = ensureCurrentRunId(cwd, state);
@@ -63,11 +69,10 @@ export function readModelChoice(cwd: string, runId: string): ModelChoiceStatus |
 }
 
 export function writeModelChoice(cwd: string, runId: string, status: ModelChoiceStatus): boolean {
-  if (!runId || !VALID.has(status)) return false;
+  if (!runId || !VALID.has(status) || isNonProjectRoot(cwd)) return false;
   try {
     const p = choicePath(cwd, runId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, `${JSON.stringify({ status, updatedAt: new Date().toISOString() }, null, 2)}\n`, 'utf8');
+    writeJson(p, { status, updatedAt: new Date().toISOString() });
     return true;
   } catch {
     return false;
@@ -75,7 +80,7 @@ export function writeModelChoice(cwd: string, runId: string, status: ModelChoice
 }
 
 export function clearModelChoice(cwd: string, runId: string): void {
-  if (!runId) return;
+  if (!runId || isNonProjectRoot(cwd)) return;
   try {
     fs.unlinkSync(choicePath(cwd, runId));
   } catch {
@@ -96,11 +101,10 @@ export function modelChoicePrompted(cwd: string, runId: string): boolean {
 }
 
 export function markModelChoicePrompted(cwd: string, runId: string): void {
-  if (!runId) return;
+  if (!runId || isNonProjectRoot(cwd)) return;
   try {
     const p = promptedPath(cwd, runId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, '', 'utf8');
+    writeJson(p, { promptedAt: new Date().toISOString() });
   } catch {
     // best-effort; a missing marker only risks one extra (harmless) prompt
   }
@@ -117,22 +121,20 @@ export function modelAdvisoryShown(cwd: string, runId: string): boolean {
 }
 
 export function markModelAdvisoryShown(cwd: string, runId: string): void {
-  if (!runId) return;
+  if (!runId || isNonProjectRoot(cwd)) return;
   try {
     const p = advisoryPath(cwd, runId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, '', 'utf8');
+    writeJson(p, { shownAt: new Date().toISOString() });
   } catch {
     // best-effort; a failed write only risks the advisory showing again
   }
 }
 
 export function markModelGatePrompted(cwd: string, runId: string): void {
-  if (!runId) return;
+  if (!runId || isNonProjectRoot(cwd)) return;
   try {
     const p = modelGatePromptPath(cwd, runId);
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, `${JSON.stringify({ promptedAt: new Date().toISOString() }, null, 2)}\n`, 'utf8');
+    writeJson(p, { promptedAt: new Date().toISOString() });
   } catch {
     // best-effort; without the marker the runner fails closed instead of assuming approval
   }
@@ -155,7 +157,7 @@ export function modelGatePromptFresh(
 }
 
 export function clearModelGatePrompted(cwd: string, runId: string): void {
-  if (!runId) return;
+  if (!runId || isNonProjectRoot(cwd)) return;
   try {
     fs.unlinkSync(modelGatePromptPath(cwd, runId));
   } catch {

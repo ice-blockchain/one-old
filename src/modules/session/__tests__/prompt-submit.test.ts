@@ -14,6 +14,15 @@ import { initializeToolchainState } from '../../../shared/state/toolchain';
 import { writeGlobalCodeGraphProvider } from '../../../shared/state';
 import { writeServerRecord } from '../../../shared/onboarding-server/registry';
 import { markModelChoicePrompted, readModelChoice } from '../../agent-model/model-choice';
+import { exhaustedModelsForRole, recordExhaustedModel } from '../../agent-model/exhausted-models';
+import { hostScopedPerformancePrefs } from '../../../test-support/host-prefs';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+
+// These tests exercise the setup-wizard flow itself, which under the shipped
+// ask-first default (ASK_USE_PLUGIN_FIRST) only starts after the user's
+// recorded yes. Pin the runtime override off so the wizard paths stay directly
+// testable; the ask-first question has dedicated tests that set the flag to '1'.
+process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '0';
 
 function ctx(cwd: string, prompt: string): Ctx {
   const input: HookInput = { event: 'UserPromptSubmit', host: 'claude', cwd, prompt, raw: { prompt } };
@@ -65,11 +74,11 @@ function assertOpenCodeSetupTextIsSanitized(text: string): void {
   }
 }
 
-// Fresh local auth → authGateForHook authenticated WITHOUT spawning the CLI.
+// Fresh canonical auth lets runtime gates continue without opening the wizard.
 function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-'));
   const env = process.env;
-  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
@@ -80,23 +89,25 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
   const prevCodexOriginator = env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   const prevCodexThreadId = env.CODEX_THREAD_ID;
   const prevCursorPluginRoot = env.CURSOR_PLUGIN_ROOT;
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   env.TRAFFIC_ONE_TOOLCHAIN_ROOT = path.join(dir, 'managed-tools');
   env.CODEX_HOME = path.join(dir, 'codex-home');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
   delete env.CODEX_PLUGIN_ROOT;
   delete env.TRAFFIC_ONE_PLUGIN_ROOT;
   delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
   delete env.CODEX_THREAD_ID;
   delete env.CURSOR_PLUGIN_ROOT;
-  fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-    version: 1,
+  fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+    schemaVersion: 3,
     auth: {
-      version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-      expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+      version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
     },
+    hosts: {},
   }), 'utf8');
   if (state) {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -106,10 +117,17 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     // of the inert placeholder. Not for null state — a bare/pristine dir must stay inert
     // so non-coding chit-chat still resolves to noop. Tests needing a specific port
     // re-seed their own record (it overwrites this).
-    writeServerRecord(dir, { pid: process.pid, port: 51900, token: 't', url: 'http://127.0.0.1:51900/?t=t', startedAt: 'x' });
+    for (const host of ['claude', 'codex', 'cursor', 'opencode', 'kilo', 'windsurf'] as const) {
+      writeServerRecord(
+        dir,
+        { pid: process.pid, port: 51900, token: 't', url: 'http://127.0.0.1:51900/?t=t', startedAt: 'x' },
+        process.env,
+        host,
+      );
+    }
   }
   try { fn(dir); } finally {
-    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
@@ -120,6 +138,7 @@ function withAuthedProject(state: Record<string, unknown> | null, fn: (cwd: stri
     if (prevCodexOriginator === undefined) delete env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE; else env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE = prevCodexOriginator;
     if (prevCodexThreadId === undefined) delete env.CODEX_THREAD_ID; else env.CODEX_THREAD_ID = prevCodexThreadId;
     if (prevCursorPluginRoot === undefined) delete env.CURSOR_PLUGIN_ROOT; else env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -155,14 +174,22 @@ function writeLocalPrefs(extra: Record<string, unknown> = {}): void {
   const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   assert.ok(prefsPath, 'test prefs path must be configured');
   fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
+  const {
+    performance = { level: 'high', source: 'prompted' },
+    team = { mode: 'subagents', source: 'prompted', approved: true },
+    ...rest
+  } = extra;
   fs.writeFileSync(prefsPath, JSON.stringify({
     openCode: { enabled: false, source: 'prompted', decidedAt: '2026-01-01T00:00:00Z' },
-    performance: { level: 'high', source: 'prompted' },
-    team: { mode: 'subagents', source: 'prompted', approved: true },
+    ...hostScopedPerformancePrefs(
+      performance as Record<string, unknown>,
+      team as Record<string, unknown>,
+      'pro',
+    ),
     toolchain: TOOLCHAIN,
-    ...extra,
+    ...rest,
   }), 'utf8');
-  // codeGraphProvider is machine-wide (one.json, the AUTH_STATE_PATH alias here).
+  // codeGraphProvider is machine-wide in the canonical one.json envelope.
   writeGlobalCodeGraphProvider('graphify');
 }
 
@@ -176,6 +203,23 @@ function writeExistingNextCodebase(cwd: string): void {
 
 test('noop inside the plugin authoring root', () => {
   assert.equal(runUserPromptSubmit(ctx(process.cwd(), 'hello')).kind, 'noop');
+});
+
+test('declined project: silent on normal prompts; an explicit Traffic One mention offers the reconsider command', () => {
+  withAuthedProject(null, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'command');
+    // Normal prompts: fully silent — no recipes, no banners, no wizard.
+    assert.equal(runUserPromptSubmit(ctx(cwd, 'build a todo app with auth')).kind, 'noop');
+    assert.equal(runUserPromptSubmit(ctx(cwd, 'fix the login bug')).kind, 'noop');
+    // The one re-entry signal: the user explicitly names Traffic One.
+    const r = runUserPromptSubmit(ctx(cwd, 'actually, I want to use Traffic One for this project'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.match(r.context, /DISABLED by the user's own earlier choice/);
+      assert.ok(r.context.includes('--reconsider'), 'offers the reconsider command');
+    }
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'still no project files');
+  });
 });
 
 test('authed + no state + a coding prompt → bootstraps new-project setup (mid-session auth)', () => {
@@ -199,6 +243,34 @@ test('seeds the user request into new-project state so the wizard can derive the
     const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
     assert.equal(state.mode, 'new-project');
     assert.ok(String(state.originalPrompt || '').includes('learning platform'), 'original prompt persisted for the wizard');
+  });
+});
+
+test('ask-first: the first coding prompt gets ONLY the question — nothing written, request rides the yes command', () => {
+  withAuthedProject(null, (cwd) => {
+    const prevAsk = process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+    process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = '1';
+    try {
+      const prompt = 'create a modern learning platform with courses for web development';
+      const r = runUserPromptSubmit(ctx(cwd, prompt));
+      assert.equal(r.kind, 'context');
+      if (r.kind === 'context') {
+        assert.match(r.context, /Do you want to use the Traffic One plugin/);
+        assert.ok(r.context.includes(`--seed-prompt=${prompt}`), 'the yes command carries the request so it is seeded AFTER the recorded yes');
+        assert.ok(!r.context.includes('http://127.0.0.1'), 'no wizard URL before the user says yes');
+      }
+      // The exact regression this guards: .one.json, per-user preferences.json,
+      // and the wizard server record were all created BEFORE the user answered.
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'no project .traffic-one before the answer');
+      assert.equal(fs.existsSync(process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string), false, 'no per-user prefs before the answer');
+      // Repeat prompts keep asking (still no writes) instead of seeding state.
+      const again = runUserPromptSubmit(ctx(cwd, prompt));
+      assert.equal(again.kind, 'context');
+      assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'still nothing after a repeat prompt');
+    } finally {
+      if (prevAsk === undefined) delete process.env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+      else process.env.TRAFFIC_ONE_ASK_USE_PLUGIN = prevAsk;
+    }
   });
 });
 
@@ -250,21 +322,21 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-promptsub-child-')));
   const child = path.join(root, 'one-nextjs');
   const env = process.env;
-  const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+  const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
   const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevNoSpawn = env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN;
   try {
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(root, 'auth.json');
+    env.TRAFFIC_ONE_STATE_PATH = path.join(root, 'one.json');
     env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
     env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(root, 'prefs.json');
     env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1,
+    fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+      schemaVersion: 3,
       auth: {
-        version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-        expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: new Date().toISOString(),
+        version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
       },
+      hosts: {},
     }), 'utf8');
 
     fs.mkdirSync(path.join(root, '.traffic-one'), { recursive: true });
@@ -290,7 +362,7 @@ test('codex prompt mentioning an inner app stays anchored at the ancestor Traffi
     assert.equal(rootStateAfter.rootMarker, true);
     assert.equal(rootStateAfter.stack, 'minimal');
   } finally {
-    if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+    if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
     if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevNoSpawn === undefined) delete env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN; else env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = prevNoSpawn;
@@ -314,6 +386,24 @@ test('opencode: incomplete onboarding prompt uses sanitized setup text', () => {
       // context, which stays sanitized below).
       assert.ok(r.systemMessage?.startsWith('traffic-one [setup required]'));
       assertOpenCodeSetupTextIsSanitized(r.context);
+    }
+  });
+});
+
+test('windsurf: incomplete onboarding prompt uses the compact host-only setup directive', () => {
+  withAuthedProject({ mode: 'new-project' }, (cwd) => {
+    const url = 'http://127.0.0.1:51235/?t=windsurf';
+    const dashboardUrl = 'https://traffic.io/onboarding/agent#p=51235&t=windsurf';
+    writeServerRecord(cwd, { pid: process.pid, port: 51235, token: 'windsurf', url, startedAt: 'x' }, process.env, 'windsurf');
+    const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'windsurf'));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.systemMessage?.includes(dashboardUrl), 'Windsurf banner carries the dashboard setup URL');
+      assert.ok(r.context.includes(`[Open Traffic One setup](${dashboardUrl})`));
+      assert.ok(r.context.includes('TRAFFIC_ONE_SETUP_COMPLETE'));
+      for (const foreign of ['Claude Code', 'Cursor:', 'Codex Desktop', '.claude/launch.json', 'preview_start', 'node_repl', 'const fs']) {
+        assert.ok(!r.context.includes(foreign), `Windsurf setup must not include ${foreign}`);
+      }
     }
   });
 });
@@ -351,7 +441,7 @@ test('cursor: incomplete onboarding puts the LIVE wizard URL in the USER-facing 
   withAuthedProject({ mode: 'new-project' }, (cwd) => {
     // Seed a live server record so ensureOnboardingServer returns a REAL url under
     // NO_SPAWN (the ':0/' placeholder is intentionally NOT surfaced — formatWizardBanner).
-    writeServerRecord(cwd, { pid: process.pid, port: 51234, token: 't', url: 'http://127.0.0.1:51234/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 51234, token: 't', url: 'http://127.0.0.1:51234/?t=t', startedAt: 'x' }, process.env, 'cursor');
     const r = runUserPromptSubmit(ctxHost(cwd, 'build a shop with checkout', 'cursor'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
@@ -384,7 +474,7 @@ test('cursor: PRISTINE first coding prompt (no .one.json) puts the URL + "post l
   withAuthedProject(null, (cwd) => {
     // Seed a live server record so ensureOnboardingServer returns a REAL url under
     // NO_SPAWN (the ':0/' placeholder is intentionally not surfaced).
-    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'cursor');
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'cursor'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
@@ -400,11 +490,12 @@ test('non-cursor PRISTINE first coding prompt now also carries the dashboard set
   // browser on every host, so Flow 3 surfaces the dashboard link for claude too (no
   // more preview-pane-only special-casing).
   withAuthedProject(null, (cwd) => {
-    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'claude');
     const r = runUserPromptSubmit(ctxHost(cwd, 'create a modern learning platform', 'claude'));
     assert.equal(r.kind, 'context');
     if (r.kind === 'context') {
       assert.ok(r.context.includes('https://traffic.io/onboarding/agent#p=56858&t=t'), 'claude agent context now carries the dashboard setup URL');
+      assert.ok(r.context.includes('onboarding-wait.cjs'), 'agent context carries the blocking waiter on the pristine first prompt');
     }
   });
 });
@@ -446,6 +537,25 @@ test('records a pending Cursor model-choice reply before normal prompt handling'
   });
 });
 
+test('an "enable" model-choice reply clears the run\'s exhausted-model ledger (restored model gets retried)', () => {
+  withAuthedProject(completeSharedState({ currentRunId: 'run-enable' }), (cwd) => {
+    writeLocalPrefs();
+    writeMaterialized(cwd, 'default');
+    markModelChoicePrompted(cwd, 'run-enable');
+    recordExhaustedModel(cwd, 'run-enable', 'senior-backend', 'gpt-5.6-terra-medium');
+    assert.deepEqual(exhaustedModelsForRole(cwd, 'run-enable', 'senior-backend'), ['gpt-5.6-terra-medium']);
+
+    const r = runUserPromptSubmit(ctxHost(cwd, 'enable', 'cursor'));
+    assert.equal(r.kind, 'context');
+    assert.equal(readModelChoice(cwd, 'run-enable'), 'enable-retry');
+    assert.deepEqual(
+      exhaustedModelsForRole(cwd, 'run-enable', 'senior-backend'),
+      [],
+      'the enable reply un-condemns the models the user just restored',
+    );
+  });
+});
+
 // ── Post-build maintenance triage ──
 
 test('maintenance (existing-codebase) + trivial coding prompt → subagents triage, trivial hint', () => {
@@ -458,9 +568,9 @@ test('maintenance (existing-codebase) + trivial coding prompt → subagents tria
       assert.ok(r.context.includes('MAINTENANCE PHASE'), 'directive present');
       assert.ok(r.context.includes('Keyword hint: trivial'), 'trivial hint');
       assert.ok(r.context.includes('quick-fix'), 'subagents variant routes to quick-fix');
-      // Prescriptive: force delegation + name the concrete cheapest model (host=claude → haiku).
+      // Prescriptive: force delegation + name the concrete cheapest model (host=claude → pinned Haiku id).
       assert.ok(r.context.includes('Do NOT make the edit yourself'), 'directive forbids inline work in subagents mode');
-      assert.ok(r.context.includes('model "haiku"'), 'names the concrete cheapest model');
+      assert.ok(r.context.includes('model "claude-haiku-4-5"'), 'names the concrete cheapest model');
     }
   });
 });
@@ -552,7 +662,8 @@ test('maintenance triage mints a fresh run id so stale OpenCode role attempts do
     assert.equal(triage.kind, 'context');
     if (triage.kind === 'context') {
       assert.ok(triage.context.includes('MAINTENANCE PHASE'), 'triage directive present');
-      assert.ok(triage.context.includes('role "senior-frontend"'), 'small single-role work is explicitly OpenCode-delegated first');
+      assert.ok(triage.context.includes('for each chosen role'), 'small work is explicitly OpenCode-delegated first for every owning role');
+      assert.ok(triage.context.includes('"senior-frontend" and/or "senior-backend"'), 'the direct-role route can cover a bounded page plus data seam');
     }
 
     const one = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));

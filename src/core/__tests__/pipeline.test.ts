@@ -52,6 +52,28 @@ test('pipeline filters by event and tool class', async () => {
   if (result.kind === 'context') assert.equal(result.context, 'read');
 });
 
+test('a throwing PreToolUse handler is denied fail-closed instead of escaping to a host fail-open wrapper', async () => {
+  const failure = Object.assign(new Error('sandbox denied global state'), { code: 'EPERM' });
+  const result = await runPipeline([
+    gate('onboarding', 10, () => { throw failure; }, ['shell']),
+  ], ctxFor('PreToolUse', 'exec_command'));
+  assert.equal(result.kind, 'deny');
+  if (result.kind === 'deny') {
+    assert.match(result.reason, /onboarding gate failed \(EPERM\)/);
+    assert.match(result.reason, /blocked fail-closed/);
+  }
+});
+
+test('a throwing non-tool handler still propagates to the host lifecycle fallback', async () => {
+  const handler: Handler = {
+    id: 'session',
+    event: 'SessionStart',
+    priority: 10,
+    run: () => { throw new Error('session failed'); },
+  };
+  await assert.rejects(runPipeline([handler], ctxFor('SessionStart')), /session failed/);
+});
+
 test('mergeResults concatenates contexts when no deny', () => {
   const merged = mergeResults([context('one'), noop(), context('two')]);
   assert.equal(merged.kind, 'context');
@@ -66,6 +88,11 @@ test('toolClassForRawName maps all three hosts to one vocabulary', () => {
   assert.equal(toolClassForRawName('multi_agent_v1.spawn_agent'), 'spawn-agent');
   assert.equal(toolClassForRawName('wait_agent'), 'spawn-agent');
   assert.equal(toolClassForRawName('multi_agent_v1.wait_agent'), 'spawn-agent');
+  assert.equal(toolClassForRawName('followup_task'), 'spawn-agent');
+  assert.equal(toolClassForRawName('collaboration.followup_task'), 'spawn-agent');
+  assert.equal(toolClassForRawName('send_message'), 'spawn-agent');
+  assert.equal(toolClassForRawName('collaboration.send_message'), 'spawn-agent');
+  assert.equal(toolClassForRawName('send_input'), 'spawn-agent');
   assert.equal(toolClassForRawName('Grep'), 'search');
   assert.equal(toolClassForRawName('SomethingElse'), 'other');
 });

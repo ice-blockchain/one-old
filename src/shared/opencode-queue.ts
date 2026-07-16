@@ -427,7 +427,23 @@ function stripNegatedDependencyPhrases(task: string): string {
     .replace(/\b(?:no|without)\s+(?:dependency|dependencies|deps?|package[- ]manager|lockfiles?)\s+(?:changes?|updates?|work|edits?|writes?)\b/gi, '');
 }
 
+function isDocumentationPath(p: string): boolean {
+  const stem = literalStem(p) || p;
+  return /\.(md|mdx|markdown|rst|adoc|txt)$/i.test(stem)
+    || /(^|\/)(readme|changelog|contributing|authors|notice|license)(\.[^/]*)?$/i.test(stem)
+    || /(^|\/)docs?(\/|$)/i.test(stem);
+}
+
+// A docs-only unit (README/CHANGELOG/docs/**) cannot perform dependency work —
+// its file allowlist is enforced downstream. Describing `npm install` steps in
+// prose is documentation, not package-manager work (the readme-draft unit was
+// falsely routed off OpenCode for documenting install commands).
+function isDocsOnlyUnit(unit: OpenCodeQueueUnit): boolean {
+  return unit.allowedFiles.length > 0 && unit.allowedFiles.every(isDocumentationPath);
+}
+
 function mentionsDependencyWork(unit: OpenCodeQueueUnit): boolean {
+  if (isDocsOnlyUnit(unit)) return false;
   const kind = unit.kind || '';
   const task = stripNegatedDependencyPhrases(unit.task || '');
   if (/\b(deps?|dependencies|package[- ]?manager|lockfiles?)\b/i.test(kind)) return true;

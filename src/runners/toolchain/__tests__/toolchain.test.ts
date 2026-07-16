@@ -22,7 +22,8 @@ import {
 test('loadSpec / getToolSpec read the curated spec (via __dirname)', () => {
   const spec = loadSpec();
   assert.ok(Object.keys(spec).length >= 4);
-  assert.equal(getToolSpec('gitnexus')?.recommended, '1.6.4');
+  assert.equal(getToolSpec('gitnexus')?.recommended, '1.6.9');
+  assert.equal(getToolSpec('graphify')?.recommended, '0.9.13');
   assert.equal(getToolSpec('graphify')?.minimum, '0.4.0');
   assert.equal(getToolSpec('opencode')?.npmPackage, 'opencode-ai');
   assert.equal(getToolSpec('opencode')?.recommended, '1.15.13');
@@ -98,7 +99,10 @@ test('compareSemver orders semvers and rejects non-semver', () => {
 });
 
 test('toolStatus classifies installed vs spec', () => {
-  assert.equal(toolStatus('gitnexus', '1.6.4').status, 'current');
+  assert.equal(toolStatus('gitnexus', '1.6.9').status, 'current');
+  assert.equal(toolStatus('gitnexus', '1.6.4').status, 'outdated');
+  assert.equal(toolStatus('graphify', '0.9.13').status, 'current');
+  assert.equal(toolStatus('graphify', '0.8.40').status, 'outdated');
   assert.equal(toolStatus('gitnexus', '2.0.0').status, 'current');
   assert.equal(toolStatus('gitnexus', '0.5.0').status, 'too-old'); // < minimum 1.0.0
   assert.equal(toolStatus('gitnexus', '1.2.0').status, 'outdated'); // >= min, < recommended

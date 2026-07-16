@@ -36,7 +36,9 @@ line-verifiable source files.
 - Generated Cursor rule mirrors: 76 files under `.cursor/rules/` after `npm run gen`.
 - Generated Windsurf / Devin Desktop Cascade rule mirrors: split-aware Markdown
   files under `.devin/rules/` after `npm run gen`.
-- Generated OpenCode project assets: `.opencode/agents/<role>.md` and `.opencode/skills/<skill>/SKILL.md` are materialized per onboarded project when OpenCode is the host.
+- External model-status API: maintained independently from plugin generation;
+  responses match the local `{ plan, updatedAt, tiers }` host snapshot exactly.
+- Generated OpenCode user-local agents: `~/.config/opencode/agents/traffic-one-<projectHash12>-<role>.md`; legacy generated project profiles are cleaned while user-authored files are preserved.
 - Generated Kilo wrapper support: `scripts/kilo-host.cjs` installs `~/.config/kilo/plugin/traffic-one.js`, and `.kilo/traffic-one.json` records explicit per-project enable/disable overrides.
 - Windsurf project assets: `.devin/rules/*.md` plus generated Devin Local profiles are materialized per onboarded project when Windsurf is the host; skills remain under the canonical `.traffic-one/skills/<skill>/SKILL.md` tree.
 - Hook/runtime script entrypoints plus compiled modules under `scripts/` after `npm run build`.
@@ -96,7 +98,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | --- | --- |
 | `rules/core.md` | Traffic One local core, inspired by ECC common/typescript layering: https://github.com/affaan-m/everything-claude-code/tree/main/rules |
 | `rules/common/agent-handoff-digests.md` | Traffic One local token-economy rule, inspired by ECC subagent/memory patterns: https://github.com/affaan-m/everything-claude-code |
-| `rules/common/auth-gate.md` | Traffic One local auth-gate rule (login / auth-choice flow). |
+| `rules/common/auth-gate.md` | Traffic One local auth-gate rule (wizard-validated API key in user-level `one.json.auth`; per-project opt-out is owned by `pluginUse`). |
 | `rules/common/clean-code.md` | Traffic One local baseline, inspired by ECC common rules and Karpathy simplicity guidance: https://github.com/forrestchang/andrej-karpathy-skills/blob/main/CLAUDE.md — **canonical owner** of the language-agnostic floor; `*-patterns`/`coding-standards` skills defer here. |
 | `rules/common/codebase-graph.md` | Traffic One local graphify cache rule, inspired by ECC memory/token optimization: https://github.com/affaan-m/everything-claude-code — **canonical owner** of graph artefact paths + read protocol; `agent-handoff-digests`/`project-memory` defer here. |
 | `rules/common/dependencies.md` | Traffic One local dependency gate, now topped up from ECC search-first behavior: https://github.com/affaan-m/everything-claude-code/blob/main/skills/search-first/SKILL.md |
@@ -345,7 +347,7 @@ Catalog conventions normalized by the audit: the activation heading is
 | `scripts/graphify-runner.cjs` | Codebase graph cache runner. |
 | `scripts/lighthouse-runner.mjs` | Mobile Lighthouse production-preview runner. |
 | `scripts/security-check-runner.cjs` | Traffic One pre-deployment security scanner. |
-| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, `.cursor/rules/*.mdc`, and `.devin/rules/*.md`. |
+| `src/gen/index.ts` | Generates manifests, hook configs, agents, rules, skills, `.cursor/rules/*.mdc`, and `.devin/rules/*.md`; it also prunes retired generated artifacts. |
 
 ## Generated Cursor Mirrors
 

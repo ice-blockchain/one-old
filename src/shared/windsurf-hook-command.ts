@@ -26,6 +26,12 @@ export function windsurfUserHookCommand(pluginRoot: string, event: WindsurfHookE
   return `${windsurfHookEnvPrefix(pluginRoot)} node ${shellQuote(runtime)} ${event} --host=windsurf`;
 }
 
+/** Current Windsurf Devin Local backend: native Claude-compatible lifecycle hooks. */
+export function devinUserHookCommand(pluginRoot: string, subcommand: string): string {
+  const runtime = path.join(pluginRoot, 'scripts', 'devin-hook-runtime.cjs');
+  return `${windsurfHookEnvPrefix(pluginRoot)} node ${shellQuote(runtime)} ${subcommand} --host=windsurf`;
+}
+
 /** Workspace-level hooks: stable shim path (written by ensureRunnerShims). */
 export function windsurfWorkspaceHookCommand(event: WindsurfHookEvent): string {
   return `${windsurfHookEnvPrefix()} node ${shellQuote(STABLE_SHIM)} ${event} --host=windsurf`;

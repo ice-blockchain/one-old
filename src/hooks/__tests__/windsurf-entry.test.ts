@@ -6,28 +6,26 @@ import * as path from 'path';
 
 import { runWindsurfHook } from '../windsurf-entry';
 import { writeServerRecord } from '../../shared/onboarding-server/registry';
+import { recordPluginUseChoice } from '../../shared/state/plugin-use';
 
 async function withEnv(fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-windsurf-entry-'));
   const saved = {
-    auth: process.env.TRAFFIC_ONE_AUTH_STATE_PATH,
+    state: process.env.TRAFFIC_ONE_STATE_PATH,
     prefs: process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH,
-    choice: process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH,
     noSpawn: process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN,
     authEnabled: process.env.TRAFFIC_ONE_AUTH,
   };
   process.env.TRAFFIC_ONE_AUTH = 'on';
-  process.env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  process.env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'choice.json');
   process.env.TRAFFIC_ONE_ONBOARDING_NO_SPAWN = '1';
   try {
     await fn(dir);
   } finally {
     for (const [key, value] of Object.entries({
-      TRAFFIC_ONE_AUTH_STATE_PATH: saved.auth,
+      TRAFFIC_ONE_STATE_PATH: saved.state,
       TRAFFIC_ONE_PROJECT_PREFS_PATH: saved.prefs,
-      TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH: saved.choice,
       TRAFFIC_ONE_ONBOARDING_NO_SPAWN: saved.noSpawn,
       TRAFFIC_ONE_AUTH: saved.authEnabled,
     })) {
@@ -48,10 +46,13 @@ test('windsurf entry: unauthenticated pre_run_command blocks with exit 2 stderr'
   });
 });
 
-test('windsurf entry: setup-required pre_user_prompt blocks with exit 2 stderr (Cascade ignores stdout)', async () => {
+test('windsurf entry: setup-required pre_user_prompt does not block native Devin prompt admission', async () => {
   await withEnv(async (cwd) => {
     process.env.TRAFFIC_ONE_AUTH = 'off';
-    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' });
+    // The wizard URL is only surfaced AFTER the user's recorded yes (ask-first);
+    // the live-server flow below is the post-consent state.
+    recordPluginUseChoice(cwd, true, 'command');
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
     const stdin = JSON.stringify({
       agent_action_name: 'pre_user_prompt',
       tool_info: {
@@ -60,10 +61,31 @@ test('windsurf entry: setup-required pre_user_prompt blocks with exit 2 stderr (
       },
     });
     const out = await runWindsurfHook('pre_user_prompt', stdin);
-    assert.equal(out.exitCode, 2);
-    assert.equal(out.stdout, '');
-    assert.match(out.stderr, /setup required/i);
-    assert.match(out.stderr, /onboarding\/agent#p=56858&t=t/i);
+    assert.equal(out.exitCode, 0);
+    assert.match(out.stdout, /setup required/i);
+    assert.match(out.stdout, /onboarding\/agent#p=56858&t=t/i);
+    assert.equal(out.stderr, '');
+  });
+});
+
+test('windsurf entry: ask-first pending pre_user_prompt asks the question and never leaks a wizard URL', async () => {
+  await withEnv(async (cwd) => {
+    process.env.TRAFFIC_ONE_AUTH = 'off';
+    // Even a stray live server record must not resurface its URL pre-decision.
+    writeServerRecord(cwd, { pid: process.pid, port: 56858, token: 't', url: 'http://127.0.0.1:56858/?t=t', startedAt: 'x' }, process.env, 'windsurf');
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_user_prompt',
+      tool_info: {
+        user_prompt: 'create a modern learning platform with courses for web development',
+        cwd,
+      },
+    });
+    const out = await runWindsurfHook('pre_user_prompt', stdin);
+    assert.equal(out.exitCode, 0);
+    assert.match(out.stdout, /Do you want to use the Traffic One plugin/);
+    assert.doesNotMatch(out.stdout, /127\.0\.0\.1:56858/i);
+    assert.doesNotMatch(out.stdout, /onboarding\/agent#p=56858&t=t/i);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'nothing written before the answer');
   });
 });
 
@@ -72,5 +94,31 @@ test('windsurf entry: post hooks never block', async () => {
     const stdin = JSON.stringify({ agent_action_name: 'post_run_command', tool_info: { command_line: 'npm test', cwd } });
     const out = await runWindsurfHook('post_run_command', stdin);
     assert.equal(out.exitCode, 0);
+  });
+});
+
+test('windsurf entry: synthetic empty-trajectory Devin bridge payload is ignored', async () => {
+  await withEnv(async (cwd) => {
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_run_command',
+      trajectory_id: '',
+      timestamp: '2026-07-12T09:00:00Z',
+      tool_info: { command_line: 'npm test', cwd },
+    });
+    const out = await runWindsurfHook('pre_run_command', stdin);
+    assert.deepEqual(out, { stdout: '', stderr: '', exitCode: 0 });
+  });
+});
+
+test('windsurf entry: genuine Cascade trajectory still runs Traffic One', async () => {
+  await withEnv(async (cwd) => {
+    const stdin = JSON.stringify({
+      agent_action_name: 'pre_run_command',
+      trajectory_id: 'cascade-trajectory-1',
+      tool_info: { command_line: 'npm test', cwd },
+    });
+    const out = await runWindsurfHook('pre_run_command', stdin);
+    assert.equal(out.exitCode, 2);
+    assert.match(out.stderr, /Traffic One/i);
   });
 });

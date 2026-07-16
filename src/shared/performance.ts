@@ -9,17 +9,15 @@ import { agentTierForPlan } from './performance-config';
 import { PERFORMANCE_CONFIG } from '../config/performance';
 import { detectHost } from './host';
 import { obj } from './obj';
+import { currentModelForTier } from './current-model-tiers';
 
 // Optional plan context. When present, the per-role tier becomes plan-aware (see
-// agentTierForPlan). Derived once at the call boundary (host + detected plan +
-// OpenCode flag) and threaded so the spawn gate and the wizard line-up agree.
-export interface PlanCtx { readonly host: string; readonly plan: string; readonly useOpenCode: boolean; }
+// agentTierForPlan). Derived once at the call boundary (host + detected plan) and
+// threaded so the spawn gate and the wizard line-up agree.
+export interface PlanCtx { readonly host: string; readonly plan: string; }
 
-// The OpenCode token-economy tier-shift (`withOpenCode`) must apply ONLY when
-// delegation can actually run — the user enabled it AND the CLI is installed
-// (stamped under `toolchain.opencode`). Otherwise the team would move to pricier
-// models / a higher level for an offload that never happens. Derive `useOpenCode`
-// through this everywhere so the wizard line-up and the spawn gate stay in sync.
+// OpenCode delegation is independent from performance/model selection. This helper
+// remains the canonical readiness gate for queueing, triage, and delegation flows.
 export function openCodeDelegationActive(state: unknown, host: unknown = detectHost()): boolean {
   const h = canonicalHost(host);
   if (h === 'opencode' || h === 'kilo') return false;
@@ -57,7 +55,7 @@ export function effectiveTierForRole(
     if (override) return override;
   }
   if (planCtx) {
-    const planned = agentTierForPlan(planCtx.host, planCtx.plan, level, role, planCtx.useOpenCode);
+    const planned = agentTierForPlan(planCtx.host, planCtx.plan, level, role);
     if (planned) return planned;
   }
   return agent.tier;
@@ -79,7 +77,11 @@ export function modelForRoleHost(
   host: string,
   overrides?: Record<string, unknown> | null,
   planCtx?: PlanCtx | null,
+  env: NodeJS.ProcessEnv = process.env,
 ): string | null {
   const tier = effectiveTierForRole(level, role, overrides, planCtx);
-  return tier ? resolveModel(tier, host, planCtx?.plan) : null;
+  if (!tier) return null;
+  return planCtx
+    ? currentModelForTier(tier, host, planCtx.plan, env)
+    : resolveModel(tier, host);
 }

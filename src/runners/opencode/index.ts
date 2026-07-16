@@ -4,8 +4,9 @@
 // to the installed OpenCode CLI INSTEAD of spawning a paid Traffic One subagent.
 // It runs headless via `opencode run --format json`. By default it walks the
 // free `opencode/*` gateway chain, advancing to the next free model when the
-// gateway rejects one (the free ids are promotional and rotate). When the
-// project pins `openCode.model`, that explicit model is tried alone.
+// gateway rejects one (the free ids are promotional and rotate) OR when a model
+// stalls past the per-attempt timeout (bounded — see maxConsecutiveStalls()).
+// When the project pins `openCode.model`, that explicit model is tried alone.
 //
 // Safety model: the task runs inside a throwaway git WORKTREE (sandbox cut from
 // HEAD). Only a clean, error-free, non-empty result is applied back to the real
@@ -22,16 +23,19 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { OPENCODE_FREE_MODELS } from '../../config/opencode-delegation';
-import { opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
+import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
+import { gatewayBreakerMs, maxConsecutiveStalls, opencodeUnitTimeoutMs } from '../../config/opencode-timeouts';
 import { exec } from '../../shared/exec';
 import { spawnTool } from '../../shared/spawn-tool';
 import { ensureInitialCommit } from '../../shared/git-init';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { matchesPattern, matchesScope, normalizeRelPath, type AssignedScope } from '../../shared/scope';
 import {
+  hasFreshArchitectQueueForRun,
+  markOpenCodeGatewayOutage,
   markOpenCodePlanRoleCompleted,
   markOpenCodeRoleAttempted,
+  openCodeGatewayOutageActive,
   type PlanDelegationUnit,
   parsePlanDelegationUnits,
   recordOpenCodeAttemptOutcome,
@@ -72,6 +76,14 @@ const DIGEST_HARD_BYTES = 3072;
 // editing. Allow ONE bounded retry (still free) on a clean no-op before falling
 // back to a paid subagent — this measurably raises the delegation hit-rate.
 const MAX_DELEGATE_ATTEMPTS = 2;
+// A stalled model (spawn timeout with no gateway response — observed live as
+// `spawnSync … opencode ETIMEDOUT` on the chain head) advances the chain like a
+// retired promo id, so one hung free model no longer kills the whole delegation.
+// But each stall burns the FULL unit timeout, so maxConsecutiveStalls()
+// back-to-back stalls are treated as a gateway/network-wide outage: the walk
+// stops AND the run-scoped gateway breaker trips (markOpenCodeGatewayOutage),
+// so later units/role shards in the same run fast-fail instead of re-burning
+// ~90s probes that would only delay the paid fallback the orchestrator has.
 
 // Headless hardening for the spawned CLI (verified against the pinned 1.15.13
 // binary, which supports all three env vars): never self-update mid-run, never
@@ -431,7 +443,7 @@ function classifyFailureKind(action: DelegateResult['action'], error: string | n
   if (action === 'skipped') return 'skipped';
   if (action === 'no-changes') return 'no-changes';
   const msg = error || '';
-  if (/\bETIMEDOUT\b|timed out/i.test(msg)) return 'provider-timeout';
+  if (/\bETIMEDOUT\b|timed out|stalled/i.test(msg)) return 'provider-timeout';
   if (/typecheck failed/i.test(msg)) return 'verification-failed';
   if (/outside|apply|delegated diff|assignment scope|generated\/internal/i.test(msg)) return 'diff-rejected';
   if (/opencode/i.test(msg)) return 'opencode-error';
@@ -813,6 +825,7 @@ function validateDelegatedDiff(paths: string[], policy: DelegatedDiffPolicy): st
 type ModelRunOutcome =
   | { kind: 'delegated'; touched: string[]; summary: string }
   | { kind: 'try-next'; error: string }      // server/model-side error → try the next model
+  | { kind: 'stalled'; error: string }       // spawn timeout / killed CLI → try the next model, capped at maxConsecutiveStalls()
   | { kind: 'failed'; error: string }        // terminal: environmental/process/apply failure
   | { kind: 'no-changes' };                  // terminal: model ran clean but produced nothing
 
@@ -840,6 +853,7 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
     // Pin both the explicit --dir flag and PWD to the worktree so the sandbox
     // actually contains the work.
     const runArgs = ['run', task, '--dir', wt, '-m', model, '--format', 'json'];
+    const timeoutMs = Math.min(opencodeUnitTimeoutMs(), RUN_TIMEOUT_MS);
     let summary = '';
     // Retry only a CLEAN no-op (the weak model occasionally produces nothing). A
     // gateway error or process failure won't fix itself on retry, so bail at once.
@@ -851,13 +865,24 @@ function runModel(cwd: string, bin: string, baseSha: string, model: string, task
         cwd: wt,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: Math.min(opencodeUnitTimeoutMs(), RUN_TIMEOUT_MS),
+        timeout: timeoutMs,
         env: { ...process.env, ...OPENCODE_RUN_ENV, PWD: wt },
       });
       if (run.error || run.status === null) {
-        // Process-level failure (incl. a deployment so slow it hits our timeout).
-        // Deliberately NOT model-class: the chain does not advance on stalls.
-        return { kind: 'failed', error: `opencode run failed: ${run.error ? run.error.message : 'timed out'}` };
+        // A stall — our spawn timeout fired (ETIMEDOUT) or the CLI died to a
+        // signal without ever answering — is MODEL-CLASS: the hosted free models
+        // hang individually (observed live: the chain head ETIMEDOUT while other
+        // free models answered), so the walk must advance instead of failing the
+        // whole delegation. delegate() caps back-to-back stalls at
+        // maxConsecutiveStalls() because a stalled GATEWAY makes every probe
+        // burn the full unit timeout.
+        const code = (run.error as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'ETIMEDOUT' || (!run.error && run.status === null)) {
+          const detail = run.error ? `ETIMEDOUT after ${timeoutMs}ms` : `killed with ${run.signal || 'unknown signal'}`;
+          return { kind: 'stalled', error: `opencode run stalled: ${detail}` };
+        }
+        // Genuine spawn failure (ENOENT/EACCES/…): a different model cannot help.
+        return { kind: 'failed', error: `opencode run failed: ${(run.error as Error).message}` };
       }
       const parsed = parseStream(run.stdout || '');
       if (parsed.errored) {
@@ -1020,9 +1045,31 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
     return enriched;
   };
 
+  // Gateway-outage circuit breaker: once a delegation in THIS run concluded the
+  // free gateway itself is down (maxConsecutiveStalls() back-to-back stalls),
+  // later units — and later per-role runner PROCESSES — must not re-burn the
+  // unit timeout re-detecting it. Fail instantly with the same provider-timeout
+  // contract the stall terminal returns; the attempt marker keeps the spawn
+  // gate from denying the paid fallback spawn. Free-chain only: an explicitly
+  // pinned model is the user's choice and is never breaker-skipped.
+  if (fromChain && openCodeGatewayOutageActive(cwd, runId, gatewayBreakerMs())) {
+    markCliAttempt();
+    return record({
+      ok: false,
+      action: 'failed',
+      digest: null,
+      touched: [],
+      error: 'OpenCode gateway breaker is active for this run (repeated stalls) — skipped the free-model probe; proceed with the paid fallback',
+      model: models[0] as string,
+      failureKind: 'provider-timeout',
+    });
+  }
+
   // Walk the models: a fresh worktree per model; advance on server/model-side
-  // errors (see shouldTryNextModel). Environmental failures are terminal.
+  // errors (see shouldTryNextModel) AND on per-model stalls (capped at
+  // maxConsecutiveStalls()). Environmental failures are terminal.
   const modelErrors: string[] = [];
+  let consecutiveStalls = 0;
   let lastModel = models[models.length - 1] as string;
   for (const model of models) {
     lastModel = model;
@@ -1035,14 +1082,34 @@ export function delegate(cwd: string = process.cwd(), opts: DelegateOpts = {}): 
       const digest = writeDigest(cwd, runId, role, model, outcome.touched, outcome.summary, { planUnit: Boolean(opts.unitId) });
       return record({ ok: true, action: 'delegated', digest, touched: outcome.touched, error: null, model });
     }
-    if (outcome.kind === 'try-next') {
+    if (outcome.kind === 'try-next' || outcome.kind === 'stalled') {
       modelErrors.push(`${model}: ${outcome.error}`);
       if (fromChain) {
         const idx = OPENCODE_FREE_MODELS.indexOf(model);
-        // Skip the dead id for the rest of this process, but always keep at
-        // least the LAST chain entry tryable so delegation degrades to one fast
+        // Skip the dead/stalling id for the rest of this process (a --from-plan
+        // batch must not burn the unit timeout on it per unit), but always keep
+        // at least the LAST chain entry tryable so delegation degrades to one
         // failing probe per unit instead of disappearing silently.
         if (idx >= 0) freeChainStart = Math.min(idx + 1, OPENCODE_FREE_MODELS.length - 1);
+      }
+      if (outcome.kind === 'stalled') {
+        consecutiveStalls += 1;
+        if (consecutiveStalls >= maxConsecutiveStalls()) {
+          // Gateway-wide outage concluded — trip the run-scoped breaker so
+          // every later unit/role shard in this run fast-fails (see the check
+          // above the walk) instead of paying this detection again.
+          markOpenCodeGatewayOutage(cwd, runId);
+          return record({
+            ok: false,
+            action: 'failed',
+            digest: null,
+            touched: [],
+            error: `OpenCode models stalled ${consecutiveStalls}x in a row (gateway or network likely down) — ${modelErrors.join('; ')}`,
+            model,
+          });
+        }
+      } else {
+        consecutiveStalls = 0;
       }
       continue;
     }
@@ -1100,9 +1167,15 @@ export function delegateFromPlan(cwd: string = process.cwd(), opts: { runId?: st
   const runId = (opts.runId || '').trim() || stateRunId;
   let planText = '';
   try { planText = fs.readFileSync(path.join(cwd, '.traffic-one', 'plan.md'), 'utf8'); } catch { /* no plan → empty queue */ }
-  const queue = isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined)
-    ? []
-    : parsePlanDelegationQueue(planText);
+  // In maintenance, plan.md is a durable artifact from the last build, so from-plan
+  // is a no-op — UNLESS the architect wrote a fresh run-scoped queue for THIS run
+  // (a complex maintenance build). `hasFreshArchitectQueueForRun` gates that: it is
+  // true only when `runs/<runId>/assignments.json` exists, which small/triage
+  // maintenance runs never produce, so a stale plan.md is never re-delegated.
+  const maintenanceQueueSuppressed =
+    isMaintenancePhase(state, typeof state.mode === 'string' ? state.mode : undefined) &&
+    !hasFreshArchitectQueueForRun(cwd, runId);
+  const queue = maintenanceQueueSuppressed ? [] : parsePlanDelegationQueue(planText);
   const formalQueue = buildOpenCodeQueue(cwd, runId, queue);
   writeOpenCodeQueue(cwd, formalQueue);
   let entries = queue.map((unit, index) => ({ unit, formal: formalQueue.units[index]! }));

@@ -6,22 +6,23 @@ import * as path from 'path';
 
 import { postBuildPageSpeed } from '../handler';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 
 function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-pagespeed-'));
   const env = process.env;
-  const saved = { auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, endpoint: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH };
+  const saved = { state: env.TRAFFIC_ONE_STATE_PATH, endpoint: env.TRAFFIC_ONE_MCP_KEY_ENDPOINT, prefs: env.TRAFFIC_ONE_PROJECT_PREFS_PATH, auth: env.TRAFFIC_ONE_AUTH };
   env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_AUTH = '1';
   if (authed) {
-    // Auth lives in the `auth` section of one.json (the AUTH_STATE_PATH alias).
-    fs.writeFileSync(env.TRAFFIC_ONE_AUTH_STATE_PATH, JSON.stringify({
-      version: 1,
+    fs.writeFileSync(env.TRAFFIC_ONE_STATE_PATH, JSON.stringify({
+      schemaVersion: 3,
       auth: {
-        version: 1, endpoint: 'http://127.0.0.1:8787/mcp', sessionToken: 'tok_x.sig',
-        expiresAt: '2099-01-01T00:00:00Z', lastRemoteCheckedAt: '2099-01-01T00:00:00Z',
+        version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
       },
+      hosts: {},
     }), 'utf8');
   }
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
@@ -29,9 +30,10 @@ function withProject(stateObj: Record<string, unknown>, authed: boolean, fn: (cw
   try {
     fn(dir);
   } finally {
-    if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = saved.auth;
+    if (saved.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = saved.state;
     if (saved.endpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = saved.endpoint;
     if (saved.prefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = saved.prefs;
+    if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = saved.auth;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -76,6 +78,26 @@ test('page-speed surfaces structured Lighthouse blocked statuses after runner ca
   });
 });
 
+test('page-speed surfaces a Lighthouse runner timeout as blocked:timeout', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    const runnerOutput = JSON.stringify({
+      status: 'blocked:timeout',
+      error: 'Lighthouse runner exceeded 240000ms budget; aborting to avoid a silent hang.',
+    }, null, 2);
+    const r = postBuildPageSpeed(ctxFor(
+      cwd,
+      'node ~/.traffic-one/bin/lighthouse-runner.cjs --route /',
+      { tool_response: { stdout: `${runnerOutput}\n` } },
+    ));
+    assert.equal(r.kind, 'context');
+    if (r.kind === 'context') {
+      assert.ok(r.context.includes('blocked:timeout'));
+      assert.ok(r.context.includes('unverified'));
+      assert.equal(r.systemMessage, 'traffic-one page-speed blocked:timeout');
+    }
+  });
+});
+
 test('page-speed is silent for non-build commands', () => {
   withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
     assert.equal(postBuildPageSpeed(ctxFor(cwd, 'pnpm install build-tools')).kind, 'noop');
@@ -89,15 +111,15 @@ test('page-speed is silent for React Native-only stacks', () => {
   });
 });
 
+test('page-speed stands down when pluginUse is declined', () => {
+  withProject({ stack: 'default', frontend: 'react-vite' }, true, (cwd) => {
+    recordPluginUseChoice(cwd, false, 'test');
+    assert.equal(postBuildPageSpeed(ctxFor(cwd, 'pnpm build')).kind, 'noop');
+  });
+});
+
 test('page-speed is silent when unauthenticated AND auth is enforced', () => {
-  const savedAuth = process.env.TRAFFIC_ONE_AUTH;
-  process.env.TRAFFIC_ONE_AUTH = '1';
-  try {
   withProject({ stack: 'default', frontend: 'react-vite' }, false, (cwd) => {
     assert.equal(postBuildPageSpeed(ctxFor(cwd, 'pnpm build')).kind, 'noop');
   });
-  } finally {
-    if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH;
-    else process.env.TRAFFIC_ONE_AUTH = savedAuth;
-  }
 });

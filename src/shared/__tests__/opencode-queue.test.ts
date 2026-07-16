@@ -109,6 +109,26 @@ test('openCodeQueuePolicyViolations routes dependency/package-manager units away
   assert.ok(errors.some((error) => /dependency\/package-manager work/.test(error)));
 });
 
+test('openCodeQueuePolicyViolations: a docs-only unit describing install steps stays on OpenCode (B9)', () => {
+  // The readme-draft incident: documenting `npm install` steps in prose is not
+  // dependency work — the unit's file allowlist is docs-only and enforced.
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: readme-draft | role: frontend | kind: docs | files: README.md, docs/** | task: draft the README with setup steps (npm install, pnpm dev) and usage examples',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.deepEqual(openCodeQueuePolicyViolations(units), []);
+});
+
+test('openCodeQueuePolicyViolations: a unit mixing docs with package.json still routes to paid', () => {
+  const units = parsePlanDelegationUnits([
+    '<!-- opencode-delegate:start -->',
+    '- id: readme-and-deps | role: backend | files: README.md, package.json | task: document setup and npm install the new packages',
+    '<!-- opencode-delegate:end -->',
+  ].join('\n'));
+  assert.ok(openCodeQueuePolicyViolations(units).some((error) => /dependency\/package-manager work/.test(error)));
+});
+
 test('openCodeQueuePolicyViolations allows package manifests for non-dependency config work', () => {
   const units = parsePlanDelegationUnits([
     '<!-- opencode-delegate:start -->',

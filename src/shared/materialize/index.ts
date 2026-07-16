@@ -6,6 +6,7 @@ export * from './has-assets';
 export * from './render-agents';
 export * from './cleanup';
 export * from './materialize';
+export * from './kilo-agents';
 export * from './opencode-assets';
 export * from './windsurf-agents';
 export * from './windsurf-assets';

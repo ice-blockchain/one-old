@@ -30,14 +30,15 @@ test('generated rules do not require architecture.md artifacts', () => {
   }
 });
 
-test('setup-gate rule makes local preferences blocking', () => {
+test('setup-gate evaluates pluginUse first, then makes auth and local preferences blocking', () => {
   const docs = generatedRuleTemplates(REPO_ROOT);
   const setup = docs.find((d) => d.relPath === path.join('rules', 'common', 'setup-gate.md'));
   const existing = docs.find((d) => d.relPath === path.join('rules', 'modes', 'existing-codebase.md'));
   assert.ok(setup);
   assert.ok(existing);
-  assert.match(setup.content, /Before mutating Traffic One work, the setup gate must be clear/);
-  assert.match(setup.content, /Existing-project order is OpenCode, Performance,\s*Team Confirmation for Balanced\/High, then Code Graph/);
+  assert.match(setup.content, /per-project `pluginUse` decision is evaluated before this gate/);
+  assert.match(setup.content, /Canonical wizard API-key auth is valid/);
+  assert.match(setup.content, /Existing-project order is\s*OpenCode, Performance,\s*Team Confirmation for Balanced\/High, then Code Graph/);
   assert.match(existing.content, /rules\/common\/setup-gate\.md/);
   assert.doesNotMatch(existing.content, /non-blocking popup/);
 });

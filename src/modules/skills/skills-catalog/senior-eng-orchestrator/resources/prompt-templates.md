@@ -1,9 +1,11 @@
 # Synthetic-prompt templates for senior-eng-orchestrator
 
 > **Marker contract:** every spawn/continuation prompt built from these
-> templates MUST begin with `[t1-role: senior-<role>]` as its own first line
-> (e.g. `[t1-role: senior-frontend]`). Traffic One's gates and the agent
-> registry parse this marker; do not omit or paraphrase it.
+> templates MUST include `[t1-role: senior-<role>]`. These templates put it on
+> the first line for consistency, but role parsing accepts it anywhere in a
+> recognized user/task record because shipped continuation and retry prompts do
+> not all place it first. Substitute the actual role before calling the host
+> tool; never copy the `<role>` placeholder literally.
 
 
 These are the canonical templates the orchestrator uses when spawning each
@@ -11,36 +13,49 @@ subagent via `Task`. Substituting placeholders (`<user-request>`, owned-paths,
 etc.) is the orchestrator's job; the templates stay lean so the subagent's
 context stays clean. The ONE exception is `<run-id>` — see below.
 
+On Codex, structured task identity is mandatory. Current Desktop rollouts store
+the spawn message encrypted in the child transcript, so the marker cannot be
+role evidence there. Use the exact underscore-form task name (`senior_architect`,
+`senior_frontend`, `senior_backend`, `senior_reviewer`, `senior_tester`, or
+`senior_shipper`); line-zero `session_meta` is the child-side corroboration. Keep
+the matching marker in the message for other hosts, but never rely on its
+position or visibility for Codex identity.
+
 ## Per-role model / profile mapping
 
 Each role runs at a specific model tier (it can be overridden per role in the wizard, e.g.
 frontend → balanced).
 
-On Cursor, the correct model for each role is pinned in
-`.cursor/agents/<role>.md` (`model:` line). **On Cursor you MUST pass that value in the `Task`
-`model` parameter for every spawn** — read `.cursor/agents/<role>.md` and set
-`model: "<that value>"`. Cursor does NOT auto-apply the `.cursor/agents` frontmatter: if you
-omit `model`, the subagent silently INHERITS YOUR (orchestrator) model — so an Opus orchestrator
-would run a balanced-tier frontend on Opus, ignoring the override. The spawn gate enforces this:
-a spawn whose `model` does not match the role's tier is DENIED with the exact value to pass. Do
-NOT put the model in the prompt text — only the `model` parameter sets it.
+On Cursor, model-gate prints the exact role→model spawn map from the active local host snapshot
+and the user's locally captured available model ids. **Pass that value in the `Task` `model`
+parameter for every spawn.** Project `.cursor/agents/<role>.md` files are model-agnostic role
+contracts and are not a model source. If you omit `model`, the subagent inherits the orchestrator
+model. The spawn gate denies a missing/wrong value and names the exact runtime value to pass.
 
-On Windsurf / Devin Local, Traffic One materializes native custom profiles at
-`.devin/agents/<role>/AGENT.md`, with the role's `model:` already pinned for the detected
-Windsurf plan. **Spawn each role by calling the `run_subagent` tool with the profile name
-equal to the role** (`senior-architect`, `senior-frontend`, etc.); the model is pinned in
-the profile frontmatter, so pass NO `model` argument (and never use Claude aliases like
-`opus`/`sonnet`/`haiku`). Read a background subagent's result with `read_subagent`. Do NOT
+On Windsurf / Devin Local, Traffic One materializes role contracts at
+`.devin/agents/<role>/AGENT.md`, but profiles created during onboarding are not registered
+until a new Devin session. **Spawn every role with `run_subagent` profile
+`subagent_general`**, put `[t1-role: senior-<role>]` on the FIRST task line, and immediately
+tell the child to read its matching `.devin/agents/<role>/AGENT.md` contract. Pass NO
+`model` argument. Read a background subagent's result with `read_subagent`. Do NOT
 use `opencode_delegate` to spawn a role — on Windsurf that MCP tool is only the optional
 free accelerator for bounded units (and requires `openCode.enabled`); `run_subagent` is the
 role-spawn path and does not depend on OpenCode.
 
-On Kilo, Traffic One v1 binds roles through the prompt marker instead of a
-project-local role-agent directory. If the `task` tool exposes only `general` and
-`explore`, spawn `general` for each senior role, omit `model`, and put
-`[t1-role: senior-<role>]` on the first line followed by the concise role
-contract. Do not inspect `.traffic-one/agents/` or switch to main-agent
-simulation because named `senior-*` types are absent.
+On OpenCode, Traffic One materializes project-scoped global markdown agents under
+`~/.config/opencode/agents/`, named `traffic-one-<projectHash12>-<role>`, with the local role
+model pinned in frontmatter. Spawn the exact generated name shown by SessionStart/the gate and
+pass no `model` argument unless this OpenCode build documents the field. Built-in `general`
+inherits the parent model and is not a safe fallback. If the generated agent is not listed,
+ensure materialization exists and restart OpenCode so its global agent registry reloads.
+
+On Kilo, Traffic One materializes project-local role contracts at
+`.kilo/agents/<role>.md`. Spawn the built-in writable `general` Task subagent,
+omit `model` so Kilo preserves the active session/per-agent model, and put
+`[t1-role: senior-<role>]` on the first line. Immediately tell the child to
+read `.kilo/agents/<role>.md` before acting. Do not use `explore` or switch to
+main-agent simulation: `general` plus the marker-and-contract protocol is the
+supported Kilo subagent path.
 
 ## Run-id format
 
@@ -58,6 +73,14 @@ template shows `<run-id>`, **read `currentRunId` from `.traffic-one/.one.json` a
 exact value** — the orchestrator does NOT substitute it; each subagent reads it itself. The
 claim files, `opencode-attempts`/`opencode-gate-denies` markers, `assignments.json`, and the
 digest folder all key off this one value.
+
+Use project-relative `.traffic-one/...` paths in all role prompts. Do not paste
+absolute `.traffic-one/runs`, `.traffic-one/digests`, or `.traffic-one/fix-cycles`
+paths; a copied or corrupted absolute root (for example an extra path segment)
+will make OpenCode ask for external-directory permission or read the wrong
+project. For scratch build logs, print to stdout or write under
+`.traffic-one/tmp/<run-id>/`; never write model-command logs under `/tmp`,
+`/private/tmp`, or `/var/tmp`.
 
 ## Phase 1 — Architect
 
@@ -114,7 +137,11 @@ plus the SEO and i18n baseline reconciliation, to create missing memory/docs,
 update existing files in place, fill missing web metadata, and extend any
 existing translation catalogs instead of creating parallel systems.
 
-Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json LAST: one entry
+Also write the assignments manifest to .traffic-one/runs/<run-id>/assignments.json LAST: its TOP-LEVEL
+key MUST be `assignments`, an ARRAY (never a `roles` object), and every entry MUST use
+`{ "role": "senior-...", "scope": { "include": ["..."], "exclude": [] } }` with no
+`ownedPaths`/`readOnlyPaths` aliases. Use the canonical JSON shape in the senior-architect
+instructions exactly; the plan gate rejects any other shape before the file reaches disk. One entry
 per implementer role (`senior-frontend`, `senior-backend`) with a DISJOINT set of owned path
 patterns (`scope.include` + optional `scope.exclude`), derived from the project's REAL
 directories — not guessed names. Do NOT include `senior-architect` in this manifest: the
@@ -238,8 +265,8 @@ Implement only the backend layer of the plan. The other implementer
 (senior-frontend) is running in parallel — assume their public contract from
 the plan; do not invent it. If you change a public contract, write the new
 signature in your digest's "Public contracts (delta only)" section.
-After migrations, refresh .traffic-one/schema.sql and note it in
-.traffic-one/agent-log.md.
+After migrations, refresh .traffic-one/schema.sql and note the schema refresh in
+your backend digest.
 
 On finish, write your digest to:
   .traffic-one/digests/<run-id>/backend.md

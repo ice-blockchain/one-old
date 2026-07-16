@@ -14,7 +14,7 @@ import type { Ctx, HookResult } from '../../core/types';
 import { obj } from '../../shared/obj';
 import { cursorPickedModelUnavailableNotice, cursorUnavailablePicks, formatModelChoiceRequiredStop } from '../../shared/materialize/cursor-eligibility';
 import { readEffectiveState } from '../../shared/state';
-import { canonicalToolName, isModelGateCommand, parsedToolInput } from '../../shared/tool-classify';
+import { canonicalToolName, isModelCaptureCommand, isModelGateCommand, parsedToolInput } from '../../shared/tool-classify';
 
 function shellExitFailed(raw: Record<string, unknown>): boolean {
   const code = raw.exit_code ?? raw.exitCode ?? raw.status ?? raw.code;
@@ -38,6 +38,7 @@ export function modelGateShell(ctx: Ctx): HookResult {
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   if (!isModelGateCommand(toolName, toolInput)) return noop();
+  if (isModelCaptureCommand(toolName, toolInput)) return noop();
 
   const state = readEffectiveState(ctx.cwd);
   if (!state || (state as Record<string, unknown>).mode !== 'new-project') return noop();
@@ -66,6 +67,7 @@ export function modelGateAfterShell(ctx: Ctx): HookResult {
   const toolName = canonicalToolName(ctx.input.tool) || asString(raw.tool_name ?? raw.toolName);
   const toolInput = obj(raw.tool_input) || obj(raw.toolInput) || parsedToolInput(ctx.input.tool) || {};
   if (!isModelGateCommand(toolName, toolInput)) return noop();
+  if (isModelCaptureCommand(toolName, toolInput)) return noop();
   if (!shellExitFailed(raw)) return noop();
 
   const state = readEffectiveState(ctx.cwd);

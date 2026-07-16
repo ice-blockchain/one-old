@@ -6,10 +6,14 @@
 import { makeWindsurfAdapter } from '../adapters/windsurf';
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
-import { authRequiredMessage } from '../shared/auth';
-import { applyTrafficOneEnv } from '../shared/state/traffic-one-paths';
+import { authEnforced, isLocallyAuthenticated } from '../shared/auth';
+import { initializeTrafficOneEnv } from '../shared/state/runtime-env';
+import { pluginUseDeclined } from '../shared/state/plugin-use';
 import { parseJson } from '../shared/fsjson';
 import { asRecord, firstString } from '../adapters/coerce';
+import { stampWindsurfBackend } from '../shared/windsurf-backend';
+import { isWindsurfPreToolAction, preToolFailureReason } from './fail-closed';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
 
 export interface HookOutput { stdout: string; stderr: string; exitCode: number; }
 
@@ -44,6 +48,19 @@ function cwdFrom(stdin: string): string {
   return firstString(info.cwd, info.working_directory, info.workingDirectory, data.cwd, data.workspace_root, data.workspaceRoot) || process.cwd();
 }
 
+// Devin Local currently also forwards each native lifecycle event through the
+// legacy Cascade hook bridge. Those synthetic Cascade payloads are identifiable
+// by an explicitly present but empty trajectory_id; genuine Cascade sessions
+// carry a real trajectory id (or older builds omit the field). Ignore only the
+// synthetic duplicate so both backends can stay installed without double gates.
+function isSyntheticDevinCascadeDuplicate(stdin: string): boolean {
+  const data = asRecord(parseJson<Record<string, unknown>>(stdin, {}));
+  return typeof data.agent_action_name === 'string'
+    && Object.prototype.hasOwnProperty.call(data, 'trajectory_id')
+    && typeof data.trajectory_id === 'string'
+    && data.trajectory_id.trim() === '';
+}
+
 function parseEnvelope(stdout: string): WindResult {
   try {
     const parsed = JSON.parse(stdout || '{"kind":"noop"}') as unknown;
@@ -60,26 +77,9 @@ function contextText(result: Extract<WindResult, { kind: 'context' }>): string {
   return [result.systemMessage, result.context].filter((value): value is string => typeof value === 'string' && value.trim().length > 0).join('\n\n');
 }
 
-function shouldBlockPromptForAuth(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes('traffic-one inactive')
-    || lower.includes('authentication is missing')
-    || lower.includes('authenticate traffic one')
-    || lower.includes('api key')
-    || lower.includes('session expired');
-}
-
-// Cascade pre_user_prompt ignores stdout and show_output — only exit 2 + stderr
-// reaches the agent (docs.devin.ai/desktop/cascade/hooks). Setup/auth/onboarding
-// context must block or Windsurf silently drops it and the agent freelances.
-function shouldBlockPreUserPromptContext(text: string): boolean {
-  if (shouldBlockPromptForAuth(text)) return true;
-  const lower = text.toLowerCase();
-  return lower.includes('[setup required]')
-    || lower.includes('setup required')
-    || lower.includes('open the setup wizard')
-    || lower.includes('traffic one needs a quick setup')
-    || lower.includes('project setup is required');
+function shouldBlockPromptForAuth(cwd: string, env: NodeJS.ProcessEnv): boolean {
+  if (pluginUseDeclined(cwd, env)) return false;
+  return authEnforced(env) && !isLocallyAuthenticated(env);
 }
 
 export async function runWindsurfHook(
@@ -87,15 +87,18 @@ export async function runWindsurfHook(
   stdin: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<HookOutput> {
+  stampWindsurfBackend('cascade', env);
+  if (isSyntheticDevinCascadeDuplicate(stdin)) {
+    return { stdout: '', stderr: '', exitCode: 0 };
+  }
   const action = actionName(stdin, subcommand);
   if (!action) return { stdout: '', stderr: '', exitCode: 0 };
-  const cwd = cwdFrom(stdin);
-  applyTrafficOneEnv(cwd, 'windsurf', env);
-  try { process.chdir(cwd); } catch { /* Cascade usually sets cwd; best-effort */ }
-
-  const adapter = makeWindsurfAdapter();
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const cwd = cwdFrom(stdin);
+    initializeTrafficOneEnv(cwd, 'windsurf', env);
+    try { process.chdir(cwd); } catch { /* Cascade usually sets cwd; best-effort */ }
+    const adapter = makeWindsurfAdapter();
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const rawOut = await dispatch(adapter, handlers, { stdin, argv: [action, '--host=windsurf'] });
     const result = parseEnvelope(rawOut);
     const isPre = PRE_HOOKS.has(action);
@@ -111,7 +114,13 @@ export async function runWindsurfHook(
 
     if (result.kind === 'context') {
       const message = contextText(result);
-      if (action === 'pre_user_prompt' && message && shouldBlockPreUserPromptContext(message)) {
+      // Current Windsurf/Devin Local loads both the legacy Cascade config and
+      // native Devin lifecycle hooks. Blocking setup here prevents the native
+      // UserPromptSubmit hook from ever admitting the user's prompt (the session
+      // contains no user node and therefore cannot run onboarding-wait). Native
+      // hooks inject setup context; legacy Cascade still gets the recipe on the
+      // first mutating tool gate. Authentication remains fail-closed here.
+      if (action === 'pre_user_prompt' && message && shouldBlockPromptForAuth(cwd, env)) {
         return { stdout: '', stderr: message, exitCode: 2 };
       }
       return { stdout: message, stderr: '', exitCode: 0 };
@@ -119,8 +128,17 @@ export async function runWindsurfHook(
 
     return { stdout: '', stderr: '', exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) {
+      return { stdout: '', stderr: '', exitCode: 0 };
+    }
     if (action === 'pre_user_prompt') {
-      return { stdout: '', stderr: authRequiredMessage(env), exitCode: 2 };
+      const message = authFallbackMessage(stdin, env);
+      return message
+        ? { stdout: '', stderr: message, exitCode: 2 }
+        : { stdout: '', stderr: '', exitCode: 0 };
+    }
+    if (isWindsurfPreToolAction(action)) {
+      return { stdout: '', stderr: preToolFailureReason('Windsurf'), exitCode: 2 };
     }
     return { stdout: '', stderr: '', exitCode: 0 };
   }

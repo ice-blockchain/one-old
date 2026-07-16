@@ -8,53 +8,12 @@ import * as path from 'path';
 
 import { readText } from '../fsjson';
 import { writeTextIfChanged } from '../fs-text';
-import { detectHost } from '../host';
-import { detectHostPlan } from '../host-plan';
-import { buildTeamLineup } from '../onboarding-server/flow';
 import { pluginRoot } from '../paths';
-import { openCodeDelegationActive } from '../performance';
 import { templatePath } from '../stacks';
 import { GENERATED_MARKER, isGenerated } from './generated';
 import { isLeanMaterialization } from './has-assets';
 
 type Rec = Record<string, unknown>;
-
-// Team / delegation / role→model lines for the Active State section. Without
-// these the orchestrator hash-hunts ~/.traffic-one/projects/ for its own team
-// mode and guesses spawn models until the performance gate corrects it
-// (observed live: 4 foreign pref files read + 2 gate-deny round-trips in one
-// build). Best-effort: renders nothing it can't resolve.
-function activeTeamLines(state: Rec): string[] {
-  const team = state.team && typeof state.team === 'object' ? (state.team as Rec) : null;
-  const performance = state.performance && typeof state.performance === 'object' ? (state.performance as Rec) : null;
-  const openCode = state.openCode && typeof state.openCode === 'object' ? (state.openCode as Rec) : null;
-  const lines: string[] = [];
-  const mode = team && typeof team.mode === 'string' ? team.mode : null;
-  const level = performance && typeof performance.level === 'string' ? performance.level : null;
-  const host = detectHost();
-  if (mode) {
-    const approved = team?.approved === true ? ', approved' : '';
-    lines.push(`- Team: ${mode}${level ? ` (${level}${approved})` : ''}`);
-  }
-  if (openCode) lines.push(`- OpenCode delegation: ${openCodeDelegationActive(state, host) ? 'enabled' : 'off'}`);
-  if (mode === 'subagents' && level) {
-    try {
-      if (host === 'kilo') {
-        lines.push('- Kilo subagents: use `task` with `subagent_type: "general"` when only `general`/`explore` are offered; put `[t1-role: senior-<role>]` first and omit `model` in v1.');
-        return lines;
-      }
-      const overrides = team && team.overrides && typeof team.overrides === 'object' ? (team.overrides as Rec) : null;
-      const planCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
-      const lineup = buildTeamLineup(level, host, overrides, planCtx);
-      if (lineup.length > 0) {
-        lines.push(`- Role models (pass as \`model\` when spawning): ${lineup.map((m) => `${m.role.replace(/^senior-/, '')}=${m.model}`).join(', ')}`);
-      }
-    } catch {
-      // best-effort; the performance gate still corrects a missing line-up
-    }
-  }
-  return lines;
-}
 
 interface RenderOptions {
   leanMode?: boolean;
@@ -87,6 +46,7 @@ function compactRuleKernel(): string[] {
     '- Security stays active: no secrets in source or memory, validate input at boundaries, enforce auth and authorization server-side, avoid credentialed wildcard CORS, use parameterized SQL, and keep production errors sanitized.',
     '- Traffic One setup gates are blocking before mutating work: shared project state plus per-user local preferences (`openCode`, `performance`/`team`, `codeGraphProvider`) must be complete. Existing projects skip new-project MVP/mobile prompts but still require local preferences.',
     '- When local preferences record `team.mode: "subagents"` with `team.approved: true`, AUTO-RUN the senior role team for multi-layer builds (architect first, frontend + backend in parallel, reviewer + tester after) without re-asking — and the parent/orchestrator never writes feature source itself. Read `rules/common/senior-engineer-team.md` before the first spawn.',
+    '- In `lifecycle.phase: "maintenance"`, run maintenance triage before that greenfield team flow: trivial/small work bypasses architect and feature plans, and goes directly to the owning frontend and/or backend role; architect is reserved for complex cross-layer work.',
     '- UI work must satisfy i18n, SEO for public routes, accessibility, responsive layout, real visual polish, stable dimensions, and verification screenshots when the change is visual.',
     '- Backend/data work must keep API contracts explicit, schema changes reviewed, migrations reversible where practical, RLS/storage policies safe, and generated clients or schema snapshots refreshed when applicable.',
     '- Verification should match risk: reproduce bugs when practical, run focused tests/build/lint for touched surfaces, and report any skipped check with the exact reason.',
@@ -144,7 +104,6 @@ export function renderAgents(state: Rec, rules: string[], skills: string[], opti
     `- Frontend: ${(state.frontend as string) || 'none'}`,
     `- Backend: ${(state.backend as string) || 'none'}`,
     `- Mobile: ${(mobile && (mobile.framework as string)) || 'none'}`,
-    ...activeTeamLines(state),
     '',
     // Lean mode lists the active rules exactly once — in the "Active Rule Index"
     // below (with read-on-demand guidance). Non-lean mode lists them here, where

@@ -2,8 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { autoLaunchesTeam, effectiveTierForRole, modelForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel } from '../performance';
-import { KILO_MODELS } from '../../config/model-tiers';
-import { OPENCODE_FREE_MODELS } from '../../config/opencode-delegation';
+import { OPENCODE_FREE_MODELS } from '../../config/model-tiers';
 
 test('teamModeForLevel maps levels (default main-agent)', () => {
   assert.equal(teamModeForLevel('low'), 'main-agent');
@@ -27,24 +26,24 @@ test('effectiveTierForRole honors config + overrides; null for low', () => {
 });
 
 test('modelForRoleHost resolves per host; modelForRole gives all columns', () => {
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude'), 'opus');
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude'), 'claude-opus-4-8');
   assert.equal(modelForRoleHost('high', 'senior-tester', 'codex'), 'gpt-5.4-mini'); // cheapest
-  assert.equal(modelForRoleHost('high', 'senior-tester', 'kilo'), KILO_MODELS.cheapest);
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf'), 'Claude Opus 4.8 Medium');
-  assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'opus');
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'kilo'), 'kilo/kilo-auto/free');
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf'), 'SWE-1.7 Beta');
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'claude', { 'senior-tester': 'highest' }), 'claude-opus-4-8');
   assert.equal(modelForRoleHost('low', 'senior-architect', 'claude'), null);
   assert.deepEqual(modelForRole('balanced', 'senior-frontend'), {
-    tier: 'balanced', claude: 'sonnet', codex: 'gpt-5.4', cursor: 'claude-4.6-sonnet', opencode: OPENCODE_FREE_MODELS[1], copilot: 'gpt-5.3-codex', windsurf: 'Claude Sonnet 5 Medium', kilo: KILO_MODELS.balanced,
+    tier: 'balanced', claude: 'claude-sonnet-5', codex: 'gpt-5.6-terra', cursor: 'gpt-5.6-terra', opencode: OPENCODE_FREE_MODELS[1], copilot: 'claude-sonnet-5', windsurf: 'SWE-1.7 Beta', kilo: 'kilo/kilo-auto/balanced',
   });
 });
 
 test('effectiveTierForRole: planCtx makes tiers plan-aware; overrides win; legacy unchanged', () => {
-  const free = { host: 'claude', plan: 'free', useOpenCode: false };
-  const max = { host: 'claude', plan: 'max', useOpenCode: false };
+  const free = { host: 'claude', plan: 'free' };
+  const max = { host: 'claude', plan: 'max' };
   // legacy (no planCtx) → PERFORMANCE_CONFIG default
   assert.equal(effectiveTierForRole('high', 'senior-architect'), 'highest');
-  // plan-aware: free high architect drops to balanced; max high architect stays highest
-  assert.equal(effectiveTierForRole('high', 'senior-architect', null, free), 'balanced');
+  // Claude Free is not a Claude Code plan, so it canonicalizes to Pro.
+  assert.equal(effectiveTierForRole('high', 'senior-architect', null, free), 'highest');
   assert.equal(effectiveTierForRole('high', 'senior-architect', null, max), 'highest');
   // a user override beats the plan
   assert.equal(effectiveTierForRole('high', 'senior-architect', { 'senior-architect': 'cheapest' }, max), 'cheapest');
@@ -53,15 +52,21 @@ test('effectiveTierForRole: planCtx makes tiers plan-aware; overrides win; legac
 });
 
 test('modelForRoleHost threads planCtx → plan-aware model id', () => {
-  const free = { host: 'claude', plan: 'free', useOpenCode: false };
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free), 'sonnet'); // free → balanced
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null), 'opus'); // legacy → highest
-  const windsurfFree = { host: 'windsurf', plan: 'free', useOpenCode: false };
+  const free = { host: 'claude', plan: 'free' };
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, free), 'claude-opus-4-8');
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'claude', null, null), 'claude-opus-4-8'); // legacy → highest
+  const windsurfFree = { host: 'windsurf', plan: 'free' };
+  // Windsurf Free pins every role to the cheapest tier (PLAN_AGENT_TIERS), whose
+  // preferred model stays the SWE-1.6 workhorse even though highest/balanced
+  // now prefer SWE-1.7.
   assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf', null, windsurfFree), 'SWE-1.6 Slow');
-  const kiloUndetected = { host: 'kilo', plan: 'free', useOpenCode: false };
-  assert.equal(modelForRoleHost('balanced', 'senior-architect', 'kilo', null, kiloUndetected), KILO_MODELS.balanced);
-  assert.equal(modelForRoleHost('high', 'senior-architect', 'kilo', null, kiloUndetected), KILO_MODELS.highest);
-  assert.equal(modelForRoleHost('high', 'senior-tester', 'kilo', null, kiloUndetected), KILO_MODELS.cheapest);
+  const windsurfPro = { host: 'windsurf', plan: 'pro' };
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'windsurf', null, windsurfPro), 'SWE-1.7 Beta');
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'windsurf', null, windsurfPro), 'SWE-1.6 Slow');
+  const kiloUndetected = { host: 'kilo', plan: 'free' };
+  assert.equal(modelForRoleHost('balanced', 'senior-architect', 'kilo', null, kiloUndetected), 'kilo/kilo-auto/balanced');
+  assert.equal(modelForRoleHost('high', 'senior-architect', 'kilo', null, kiloUndetected), 'kilo/kilo-auto/frontier');
+  assert.equal(modelForRoleHost('high', 'senior-tester', 'kilo', null, kiloUndetected), 'kilo/kilo-auto/free');
 });
 
 test('openCodeDelegationActive is disabled on OpenCode-compatible self hosts', () => {

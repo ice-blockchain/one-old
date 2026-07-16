@@ -14,9 +14,9 @@
 // completely unaffected — they keep relying on the agent following the rules.
 //
 // Architect-first is enforced INDIRECTLY: with scaffolders (and, via the plan
-// gate, feature-source writes) blocked until `plan.md` exists, the agent's only
-// path forward is to spawn `senior-architect` to produce the plan — matching the
-// flow other hosts follow.
+// gate, feature-source writes) blocked until `plan.md` exists, subagents mode
+// must spawn `senior-architect`; in main-agent mode the current thread creates
+// the plan itself before continuing.
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -26,10 +26,11 @@ import type { Ctx, HookResult } from '../../core/types';
 import { detectMode } from '../../shared/detection';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { canonicalHost } from '../../shared/model-tiers';
+import { obj } from '../../shared/obj';
 import { pluginRoot } from '../../shared/paths';
 import { makeSkillBlock } from '../../shared/skill-block';
 import { readEffectiveState } from '../../shared/state';
-import { authChoiceAllowsContinue } from '../session/auth-choice';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 import { allowsNextjs } from './forbidden';
 import { makePlanBlock } from './plan-static';
 
@@ -51,10 +52,14 @@ function planExists(root: string): boolean {
   }
 }
 
+function usesMainAgentTeam(state: Record<string, unknown>): boolean {
+  return obj(state.team)?.mode === 'main-agent';
+}
+
 export function scaffoldGate(ctx: Ctx): HookResult {
   // Windsurf/Devin only — never touch other hosts.
   if (canonicalHost(ctx.host) !== 'windsurf') return noop();
-  if (authChoiceAllowsContinue(ctx.cwd)) return noop();
+  if (pluginUseDeclined(ctx.cwd)) return noop();
 
   const command = ctx.input.tool?.command ?? '';
   if (!SCAFFOLD_RE.test(command)) return noop();
@@ -77,6 +82,10 @@ export function scaffoldGate(ctx: Ctx): HookResult {
 
   // (B) Architect-first: no app scaffolding before the architect writes plan.md.
   if (!planExists(root)) {
+    if (usesMainAgentTeam(state)) {
+      return deny(block('scaffold-main-agent-plan-gate',
+        'Plan gate: `.traffic-one/plan.md` is missing and this project is in Low/main-agent mode. Do NOT call `run_subagent` or another subagent tool. You are the architect in this thread: write the plan and required `.traffic-one/` project memory before root config or workspace scaffolding, then continue with the same ordered phases. Do not run `create-*` app scaffolders before the plan exists.'));
+    }
     return deny(block('scaffold-plan-gate',
       'Plan gate: run the `senior-architect` subagent FIRST to produce `.traffic-one/plan.md` before scaffolding a '
       + 'new project. On Windsurf/Devin spawn it with `run_subagent` (profile `senior-architect`); it writes the '

@@ -84,17 +84,27 @@ function editsContent(...values: readonly unknown[]): string {
   return chunks.join('\n');
 }
 
+function normalizeMacAbsolutePath(value: string): string {
+  // Kilo has emitted macOS absolute paths without their leading slash
+  // (`Users/name/project/...`). Treat that as absolute only when it is the
+  // unambiguous macOS home-path form; ordinary project-relative paths remain so.
+  return /^Users\/[^/]+\//.test(value) ? `/${value}` : value;
+}
+
 function firstPath(input: Record<string, unknown>, data: Record<string, unknown>, tool: Record<string, unknown>): string {
   const direct = firstString(
     input.file_path, input.filePath, input.path, input.uri, input.file,
     data.file_path, data.filePath, data.path, data.uri,
     tool.path, tool.file_path, tool.filePath,
   );
-  if (direct) return direct.startsWith('file://') ? decodeURIComponent(direct.slice('file://'.length)) : direct;
+  if (direct) {
+    const decoded = direct.startsWith('file://') ? decodeURIComponent(direct.slice('file://'.length)) : direct;
+    return normalizeMacAbsolutePath(decoded);
+  }
   for (const source of [input.files, data.files]) {
     if (!Array.isArray(source)) continue;
     const first = source.find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-    if (first) return first;
+    if (first) return normalizeMacAbsolutePath(first);
   }
   return '';
 }

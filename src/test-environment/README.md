@@ -32,7 +32,7 @@ npm run test:env:e2e
 | `--no-build` / `--no-install` | Skip refreshing `dist` / updating hosts (e2e only). |
 | `--concurrency=N` | Parallel case workers. **Keep at 1** unless you understand the env-isolation note below. |
 | `--timeout=900000` | Per host-e2e case timeout (ms). |
-| `--auth=on\|off` | Auth gate. Default `off` (shipped default is `AUTH_ENABLED=false`). |
+| `--auth=on\|off` | Auth gate. Harness default `off`; production defaults to enforced. |
 | `--strict` | Treat SKIP/INCONCLUSIVE as failure for the exit code. |
 | `--runs-dir=<path>` | Override where run folders are created (default `~/traffic-one-test-runs`). Must be **outside** this repo. |
 | `--reassert=<runDir>` | Re-evaluate a prior run's assertions against its **persisted** projects — no host calls, no token spend. For iterating on assertions or re-scoring a timed-out run. |

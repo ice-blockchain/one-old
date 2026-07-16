@@ -17,9 +17,8 @@ function writeGraphifyOut(cwd: string, files: Record<string, string>): void {
   for (const [name, body] of Object.entries(files)) fs.writeFileSync(path.join(out, name), body, 'utf8');
 }
 
-// A bare-PATH graphify stub whose `update` subcommand prints to stdout/stderr and
-// exits with `code`. A PATH graphify with no adjacent python is usable (version
-// falls back to the pinned recommended), so bootstrap runs it directly.
+// A current bare-PATH graphify stub whose `update` subcommand prints to
+// stdout/stderr and exits with `code`.
 function stubGraphify(cwd: string, body: { stdout?: string; stderr?: string; code: number }): string {
   const bin = path.join(cwd, 'gbin');
   fs.mkdirSync(bin, { recursive: true });
@@ -27,7 +26,7 @@ function stubGraphify(cwd: string, body: { stdout?: string; stderr?: string; cod
   const err = body.stderr ? `echo ${JSON.stringify(body.stderr)} >&2` : ':';
   fs.writeFileSync(
     path.join(bin, 'graphify'),
-    `#!/bin/sh\nif [ "$1" = "update" ]; then ${out}; ${err}; exit ${body.code}; fi\nexit 0\n`,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo "graphify 0.9.13"; exit 0; fi\nif [ "$1" = "update" ]; then ${out}; ${err}; exit ${body.code}; fi\nexit 0\n`,
     { mode: 0o755 },
   );
   return bin;
@@ -171,12 +170,12 @@ test('graphify bootstrap SWEEPS a stray root graphify-out/ when the scan exits n
     // Pre-existing GOOD graph under .traffic-one (must survive the failed re-scan).
     writeGraphifyOut(cwd, { 'GRAPH_REPORT.md': '# graph\n', 'graph.json': POPULATED_GRAPH });
     // Stub graphify on PATH that writes a PARTIAL root graphify-out/cache then exits
-    // NON-ZERO (graphify's "Nothing to update or rebuild failed"). A bare PATH graphify
-    // with no adjacent python is usable (version falls back to the pinned recommended),
-    // so bootstrap runs it directly. The fix must sweep the stray root output.
+    // NON-ZERO (graphify's "Nothing to update or rebuild failed"). The current
+    // PATH binary reports its version, so bootstrap runs it directly. The fix
+    // must sweep the stray root output.
     const bin = path.join(cwd, 'gbin');
     fs.mkdirSync(bin, { recursive: true });
-    fs.writeFileSync(path.join(bin, 'graphify'), '#!/bin/sh\nif [ "$1" = "update" ]; then mkdir -p graphify-out/cache; echo "Nothing to update or rebuild failed" >&2; exit 1; fi\nexit 0\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(bin, 'graphify'), '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "graphify 0.9.13"; exit 0; fi\nif [ "$1" = "update" ]; then mkdir -p graphify-out/cache; echo "Nothing to update or rebuild failed" >&2; exit 1; fi\nexit 0\n', { mode: 0o755 });
     const savedPath = process.env.PATH;
     process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
     try {
@@ -280,6 +279,7 @@ test('a project whose .gitignore covers all source still produces a graph (degen
     fs.writeFileSync(
       path.join(bin, 'graphify'),
       '#!/bin/sh\n'
+      + 'if [ "$1" = "--version" ]; then echo "graphify 0.9.13"; exit 0; fi\n'
       + 'if [ "$1" = "update" ]; then\n'
       + '  if grep -qE "^src/?$" .graphifyignore 2>/dev/null; then echo "No code files found - nothing to rebuild."; exit 1; fi\n'
       + '  mkdir -p graphify-out; printf "{\\"nodes\\":[{\\"id\\":\\"a\\"}],\\"links\\":[]}" > graphify-out/graph.json; printf "# graph\\n" > graphify-out/GRAPH_REPORT.md; exit 0\n'
@@ -314,6 +314,24 @@ test('graphify bootstrap returns install-skipped when graphify is absent + skipI
       assert.match(r.error || '', /missing or below the minimum supported version and skipInstall=true/);
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
+    }
+  });
+});
+
+test('an unversioned PATH graphify is not assumed current', () => {
+  withProject((cwd) => {
+    const bin = path.join(cwd, 'unknown-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(path.join(bin, 'graphify'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const savedPath = process.env.PATH;
+    process.env.PATH = [bin, '/bin', '/usr/bin'].join(path.delimiter);
+    try {
+      const result = ensureGraphifyTool(cwd, { skipInstall: true });
+      assert.equal(result.ok, false);
+      assert.match(result.error || '', /missing or below the minimum supported version/);
+    } finally {
+      if (savedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = savedPath;
     }
   });
 });
@@ -369,14 +387,14 @@ exit 1
       const r = ensureGraphifyTool(cwd);
       assert.equal(r.ok, true);
       assert.equal(r.action, 'installed-venv');
-      assert.equal(r.installedVersion, '0.7.10');
+      assert.equal(r.installedVersion, '0.9.13');
       assert.ok(r.binPath?.includes(path.join('graphify', 'venv', 'bin', 'graphify')));
       const logged = fs.readFileSync(log, 'utf8');
       assert.equal(logged.includes('--user'), false);
       // pip was upgraded inside the venv before the graphifyy install.
       assert.match(logged, /-m pip install --upgrade pip --quiet/);
       const saved = JSON.parse(fs.readFileSync(prefs, 'utf8'));
-      assert.equal(saved.toolchain?.graphify?.installedVersion, '0.7.10');
+      assert.equal(saved.toolchain?.graphify?.installedVersion, '0.9.13');
     } finally {
       if (savedPath === undefined) delete process.env.PATH; else process.env.PATH = savedPath;
     }

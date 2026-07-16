@@ -7,6 +7,15 @@
 // guesses pending an empirical check on the maintainer's installs (verified:false).
 
 import type { HostCommandConfig, HostId } from '../core/types';
+import { HOST_MODELS, type HostModelKey } from '../../config/model-tiers';
+
+function defaultModels(host: HostModelKey): HostCommandConfig['defaultModelByTier'] {
+  return {
+    highest: HOST_MODELS[host].tiers.highest[0],
+    balanced: HOST_MODELS[host].tiers.balanced[0],
+    cheapest: HOST_MODELS[host].tiers.cheapest[0],
+  };
+}
 
 export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
   claude: {
@@ -23,7 +32,7 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
       ['plugin', 'marketplace', 'add', '{DIST}'],
       ['plugin', 'install', 'traffic-one@traffic-one'],
     ],
-    defaultModelByTier: { highest: 'opus', balanced: 'sonnet', cheapest: 'haiku' },
+    defaultModelByTier: defaultModels('claude'),
     verified: true,
   },
 
@@ -39,7 +48,7 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
       ['plugin', 'marketplace', 'add', '{DIST}'],
       ['plugin', 'add', 'traffic-one@traffic-one-local'],
     ],
-    defaultModelByTier: { highest: 'gpt-5.5', balanced: 'gpt-5.4', cheapest: 'gpt-5.4-mini' },
+    defaultModelByTier: defaultModels('codex'),
     verified: false,
   },
 
@@ -59,11 +68,59 @@ export const HOST_COMMANDS: Record<HostId, HostCommandConfig> = {
     outputFormat: 'text',
     probeArgs: ['--version'],
     installArgs: [],
-    defaultModelByTier: { highest: 'claude-opus-4-8', balanced: 'claude-4.6-sonnet', cheapest: 'composer-2.5' },
-    // The tier slugs above are STALE in the plugin (none exist in Cursor's live
-    // catalog) — a bug this harness surfaced. Use 'auto' for runs so Cursor picks
-    // a valid model and the e2e exercises plugin behavior regardless.
+    defaultModelByTier: defaultModels('cursor'),
+    // Keep host smoke runs on Cursor's `auto`: the exact per-account selector
+    // variants are captured at onboarding and cannot be assumed by headless CI.
     testModel: 'auto',
+    verified: false,
+  },
+
+  opencode: {
+    bin: 'opencode',
+    promptVia: 'arg',
+    // Matches the same documented headless invocation used by the shipped
+    // delegation runner. Plugin loading in a standalone host run is still a
+    // maintainer verification item.
+    runArgs: ['run', '{PROMPT}', '--dir', '{CWD}', '-m', '{MODEL}', '--format', 'json'],
+    outputFormat: 'json',
+    probeArgs: ['--version'],
+    installArgs: [],
+    defaultModelByTier: defaultModels('opencode'),
+    verified: false,
+  },
+
+  kilo: {
+    bin: 'kilo',
+    promptVia: 'arg',
+    // `kilo run` is OpenCode-compatible; --auto is the non-interactive
+    // permission mode intended for autonomous/pipeline runs.
+    runArgs: ['run', '{PROMPT}', '--dir', '{CWD}', '-m', '{MODEL}', '--format', 'json', '--auto'],
+    outputFormat: 'json',
+    probeArgs: ['--version'],
+    installArgs: [],
+    defaultModelByTier: defaultModels('kilo'),
+    verified: false,
+  },
+
+  copilot: {
+    bin: 'copilot',
+    promptVia: 'arg',
+    runArgs: [],
+    probeArgs: ['--version'],
+    installArgs: [],
+    defaultModelByTier: defaultModels('copilot'),
+    e2eSupported: false,
+    verified: false,
+  },
+
+  windsurf: {
+    bin: 'windsurf',
+    promptVia: 'arg',
+    runArgs: [],
+    probeArgs: ['--version'],
+    installArgs: [],
+    defaultModelByTier: defaultModels('windsurf'),
+    e2eSupported: false,
     verified: false,
   },
 };

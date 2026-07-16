@@ -4,26 +4,27 @@ import assert from 'node:assert/strict';
 import { agentTierForPlan, recommendLevelForPlan } from '../performance-config';
 import { recommendTierForPlan } from '../model-tiers';
 import { HOST_PLAN_IDS, PLAN_TIER_RECOMMENDATIONS } from '../../config/model-tiers';
-import { PLAN_PERFORMANCE_RECOMMENDATIONS } from '../../config/performance';
+import {
+  DEFAULT_AGENT_TIERS,
+  PLAN_AGENT_TIERS,
+  PLAN_PERFORMANCE_RECOMMENDATIONS,
+} from '../../config/performance';
 
-test('recommendLevelForPlan maps plan → level, bumps with OpenCode, clamps at high', () => {
-  assert.equal(recommendLevelForPlan('claude', 'free'), 'low');
-  assert.equal(recommendLevelForPlan('claude', 'free', true), 'balanced');
+test('recommendLevelForPlan maps each plan directly to its configured level', () => {
+  assert.equal(recommendLevelForPlan('claude', 'free'), 'low'); // undetectable-metadata fallback → conservative solo
   assert.equal(recommendLevelForPlan('claude', 'pro'), 'balanced');
-  assert.equal(recommendLevelForPlan('claude', 'pro', true), 'high');
   assert.equal(recommendLevelForPlan('claude', 'max'), 'high');
-  assert.equal(recommendLevelForPlan('claude', 'max', true), 'high'); // already top
-  assert.equal(recommendLevelForPlan('codex', 'plus', true), 'high');
+  assert.equal(recommendLevelForPlan('claude', 'team'), 'balanced');
+  assert.equal(recommendLevelForPlan('claude', 'enterprise'), 'balanced');
+  assert.equal(recommendLevelForPlan('codex', 'plus'), 'balanced');
   assert.equal(recommendLevelForPlan('cursor', 'free'), 'low');
   assert.equal(recommendLevelForPlan('opencode', 'free'), 'low');
-  assert.equal(recommendLevelForPlan('opencode', 'free', true), 'low');
   assert.equal(recommendLevelForPlan('kilo', 'free'), 'low');
-  assert.equal(recommendLevelForPlan('kilo', 'free', true), 'low');
   assert.equal(recommendLevelForPlan('copilot', 'Copilot Pro'), 'balanced');
-  assert.equal(recommendLevelForPlan('copilot', 'GitHub Copilot Pro', true), 'high');
+  assert.equal(recommendLevelForPlan('copilot', 'GitHub Copilot Pro'), 'balanced');
   assert.equal(recommendLevelForPlan('windsurf', 'free'), 'low');
   assert.equal(recommendLevelForPlan('windsurf', 'max'), 'high');
-  // unknown plan → host default plan's level (claude default = free → low)
+  // unknown plan → host default plan's level (Claude default plan = free)
   assert.equal(recommendLevelForPlan('claude', 'mystery'), 'low');
 });
 
@@ -31,13 +32,28 @@ test('recommendLevelForPlan opencode Go (plus): Balanced, NOT Low (the missing-p
   // Before the fix, PLAN_PERFORMANCE_RECOMMENDATIONS.opencode had only `free`, so a Go
   // subscriber fell through DEFAULT_HOST_PLAN.opencode='free' → 'low' (the wizard kept
   // recommending Low to a paying user). plus + its `go` alias must both resolve Balanced,
-  // and stay Balanced under withOpenCode (delegation is inert on the opencode host).
+  // without depending on an unrelated delegation preference.
   assert.equal(recommendLevelForPlan('opencode', 'plus'), 'balanced');
-  assert.equal(recommendLevelForPlan('opencode', 'plus', true), 'balanced');
   assert.equal(recommendLevelForPlan('opencode', 'go'), 'balanced');
   // The level table and the tier table must agree for Go.
   assert.equal(recommendTierForPlan('opencode', 'go'), 'balanced');
   assert.equal(recommendTierForPlan('opencode', 'plus'), 'balanced');
+});
+
+test('performance recommendation and role-tier tables store direct scalar values', () => {
+  for (const plans of Object.values(PLAN_PERFORMANCE_RECOMMENDATIONS)) {
+    for (const level of Object.values(plans)) assert.equal(typeof level, 'string');
+  }
+  for (const roles of Object.values(DEFAULT_AGENT_TIERS)) {
+    for (const tier of Object.values(roles)) assert.equal(typeof tier, 'string');
+  }
+  for (const plans of Object.values(PLAN_AGENT_TIERS)) {
+    for (const levels of Object.values(plans)) {
+      for (const roles of Object.values(levels || {})) {
+        for (const tier of Object.values(roles || {})) assert.equal(typeof tier, 'string');
+      }
+    }
+  }
 });
 
 test('every recognized plan has an explicit entry in BOTH recommendation tables (no silent free-fallback)', () => {
@@ -83,32 +99,10 @@ test('agentTierForPlan: a sparse PLAN_AGENT_TIERS deviation overrides the defaul
   assert.equal(agentTierForPlan('kilo', 'free', 'high', 'senior-tester'), 'cheapest');
 });
 
-test('agentTierForPlan: the OpenCode tier bump is DISABLED — useOpenCode never changes the tier (withOpenCode === base)', () => {
-  // The bump was disabled (config/performance.ts): enabling OpenCode must NOT move a
-  // role up a tier. Before, balanced+OpenCode silently ran the seniors on `highest`
-  // (Opus) — making "balanced" === "high" and diverging from the wizard's displayed
-  // line-up. Core invariant: for every host/plan/level/role, OpenCode on === off.
-  const cases: ReadonlyArray<readonly [string, string, string, string]> = [
-    ['claude', 'max', 'balanced', 'senior-architect'],
-    ['cursor', 'max', 'balanced', 'senior-architect'],
-    ['codex', 'max', 'balanced', 'senior-frontend'],
-    ['opencode', 'free', 'balanced', 'senior-frontend'],
-    ['claude', 'free', 'high', 'senior-architect'],
-    ['cursor', 'free', 'balanced', 'senior-backend'],
-    ['claude', 'max', 'high', 'senior-architect'],
-    ['claude', 'max', 'high', 'senior-tester'],
-  ];
-  for (const [host, plan, level, role] of cases) {
-    assert.equal(
-      agentTierForPlan(host, plan, level, role, true),
-      agentTierForPlan(host, plan, level, role, false),
-      `${host}/${plan}/${level}/${role}: OpenCode must not change the tier`,
-    );
-  }
-  // The key regression: balanced architect resolves to 'balanced', NOT 'highest'.
-  assert.equal(agentTierForPlan('claude', 'max', 'balanced', 'senior-architect', true), 'balanced');
-  // High stays 'highest' with OpenCode (kept at base — NOT downgraded to balanced).
-  assert.equal(agentTierForPlan('claude', 'max', 'high', 'senior-architect', true), 'highest');
+test('agentTierForPlan has one deterministic tier per host/plan/level/role', () => {
+  assert.equal(agentTierForPlan('claude', 'max', 'balanced', 'senior-architect'), 'balanced');
+  assert.equal(agentTierForPlan('claude', 'max', 'high', 'senior-architect'), 'highest');
+  assert.equal(agentTierForPlan('claude', 'free', 'high', 'senior-architect'), 'highest');
 });
 
 test('agentTierForPlan: solo/unknown level → null; unconfigured role → null', () => {

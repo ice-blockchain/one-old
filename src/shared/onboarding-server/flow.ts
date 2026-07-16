@@ -8,14 +8,14 @@
 // install is returned as a `task` signal for the HTTP layer to run out-of-band.
 
 import { classifyPromptForStack, detectMode, promptHasStackSignal, reconcileStackFromArtifacts } from '../detection';
-import { authEnforced, isLocallyAuthenticated, writeSimpleAuth } from '../auth';
+import { authEnforced, isLocallyAuthenticated } from '../auth';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import { obj, type Rec } from '../obj';
 import { isNewProjectOnboardingIncomplete } from '../onboarding/predicates';
 import { nextOnboardingStep } from '../onboarding/prompts';
-import { nextLocalPreferenceStep } from '../onboarding/local-prefs';
+import { currentLocalPreferenceTarget, nextLocalPreferenceStep, type LocalPreferenceTarget } from '../onboarding/local-prefs';
 import {
   projectContextDomainQuestionLines,
   projectContextOriginalPrompt,
@@ -23,15 +23,20 @@ import {
 import { detectHost } from '../host';
 import { detectHostPlan } from '../host-plan';
 import { PERFORMANCE_CONFIG } from '../../config/performance';
-import { STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
+import { ASK_USE_PLUGIN_FIRST, STEP_COPY, TEAM_ROLES, type StepCopy, type WizardStepId } from '../../config/onboarding';
+import { readPluginUseChoice } from '../state/plugin-use';
 import { TIER_IDS } from '../../config/model-tiers';
-import { recommendTierForPlan, resolveModel } from '../model-tiers';
-import { effectiveTierForRole, modelForRoleHost, openCodeDelegationActive, teamModeForLevel, type PlanCtx } from '../performance';
+import { recommendTierForPlan } from '../model-tiers';
+import { currentModelForTier, currentModelsForTier } from '../current-model-tiers';
+import { effectiveTierForRole, modelForRoleHost, teamModeForLevel, type PlanCtx } from '../performance';
 import { recommendLevelForPlan } from '../performance-config';
 import { stateTimestamp } from '../state/io';
+import { windsurfBackend } from '../windsurf-backend';
 import {
   applyGlobalCodeGraphProvider,
+  clearProjectHostPrefs,
   effectiveState,
+  mergeProjectHostPrefs,
   mergeProjectPrefs,
   projectPrefsPath,
   readEffectiveState,
@@ -39,7 +44,6 @@ import {
   readProjectPrefs,
   readState,
   writeGlobalCodeGraphProvider,
-  writeProjectPrefs,
   writeState,
 } from '../state';
 
@@ -60,6 +64,8 @@ export interface TeamMember {
   blurb: string;
   tier: string;
   model: string;
+  // Display-only friendly name (e.g. "Opus 4.8") when `model` is a bare alias.
+  modelLabel?: string;
 }
 
 // The static step copy (kind/title/question/options/fields) is owned by
@@ -77,20 +83,61 @@ export interface StepMeta extends StepCopy {
   // capability tiers (highest/balanced/cheapest) resolved to concrete model ids
   // (opus/sonnet/haiku, gpt-5.x, …). The wizard renders one <select> per role
   // from this list; the chosen tier is sent back as a team.overrides entry.
-  modelChoices?: { tier: string; model: string }[];
+  modelChoices?: { tier: string; model: string; label?: string }[];
+  // True when the user declined Traffic One for this project — the wizard shows
+  // the "Traffic One disabled" view instead of "Setup complete".
+  declined?: boolean;
+}
+
+// Display label for a wizard model id. Anthropic ids read poorly raw, so both
+// forms get a friendly generation label: a concrete id parses directly
+// (claude-opus-4-8 → "Opus 4.8"), and a bare alias ("opus") resolves through
+// its tier row's first same-family versioned id. Ids on other hosts are
+// already readable and return null (no label).
+export function modelDisplayLabel(
+  model: string,
+  tier: string,
+  host: string,
+  plan?: string | null,
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  // Version = leading short numeric segments ('4-8' → '4.8'); anything longer
+  // (a dated build like 20251001) is a pin, not a display generation.
+  const claudeLabel = (id: string): string | null => {
+    const m = /^claude-([a-z]+)-([\d-]+)$/.exec(id);
+    const family = m?.[1];
+    const raw = m?.[2];
+    if (!family || !raw) return null;
+    const version = raw.split('-').filter((seg) => /^\d{1,2}$/.test(seg)).join('.');
+    if (!version) return null;
+    return `${family.charAt(0).toUpperCase()}${family.slice(1)} ${version}`;
+  };
+  const direct = claudeLabel(model);
+  if (direct) return direct;
+  if (!/^[a-z]+$/.test(model)) return null;
+  const row = currentModelsForTier(tier, host, plan ?? undefined, env);
+  const concrete = row.find((id) => id.startsWith(`claude-${model}-`));
+  return concrete ? claudeLabel(concrete) : null;
 }
 
 // Build the per-role line-up for a performance level + host. Empty for levels with
 // no subagent team (low / main-agent) or an unknown level.
-export function buildTeamLineup(level: string, host: string, overrides?: Rec | null, planCtx?: PlanCtx | null): TeamMember[] {
+export function buildTeamLineup(
+  level: string,
+  host: string,
+  overrides?: Rec | null,
+  planCtx?: PlanCtx | null,
+  env: NodeJS.ProcessEnv = process.env,
+): TeamMember[] {
   const cfg = PERFORMANCE_CONFIG[level];
   if (!cfg || cfg.teamMode !== 'subagents') return [];
   const out: TeamMember[] = [];
   for (const r of TEAM_ROLES) {
     const tier = effectiveTierForRole(level, r.role, overrides || null, planCtx || null);
     if (!tier) continue;
-    const model = modelForRoleHost(level, r.role, host, overrides || null, planCtx || null) || tier;
-    out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model });
+    const model = modelForRoleHost(level, r.role, host, overrides || null, planCtx || null, env) || tier;
+    const modelLabel = modelDisplayLabel(model, tier, host, planCtx?.plan, env);
+    out.push({ role: r.role, label: r.label, blurb: r.blurb, tier, model, ...(modelLabel ? { modelLabel } : {}) });
   }
   return out;
 }
@@ -170,8 +217,11 @@ function metaForStep(step: WizardStep, originalPrompt: string): StepMeta {
   return meta;
 }
 
-export function effectiveOnboardingState(cwd: string): { state: Rec; mode: string } {
-  const state = readEffectiveState(cwd);
+export function effectiveOnboardingState(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): { state: Rec; mode: string } {
+  const state = readEffectiveState(cwd, env);
   const mode = (typeof state.mode === 'string' && state.mode) || detectMode(cwd);
   return { state: { ...state, mode }, mode };
 }
@@ -179,22 +229,29 @@ export function effectiveOnboardingState(cwd: string): { state: Rec; mode: strin
 // Fail closed: shared .one.json can show onboardingComplete while per-user prefs
 // never landed on disk (observed on OpenCode/Electron when ~/.traffic-one is not
 // writable). Require the prefs file + effective fields before reporting done.
-function lacksDurableOnboardingState(cwd: string, state: Rec, host: string): boolean {
+function lacksDurableOnboardingState(
+  cwd: string,
+  state: Rec,
+  host: string,
+  env: NodeJS.ProcessEnv,
+  target: LocalPreferenceTarget,
+): boolean {
   // Sparse existing projects may have no stack yet — local prefs are not required then.
   if (typeof state.stack !== 'string' || !state.stack.trim()) return false;
   let prefsFileExists = false;
   try {
-    prefsFileExists = fs.existsSync(projectPrefsPath(cwd));
+    prefsFileExists = fs.existsSync(projectPrefsPath(cwd, env));
   } catch {
     prefsFileExists = false;
   }
-  const prefs = readProjectPrefs(cwd);
+  const prefs = readProjectPrefs(cwd, env);
   if (!prefsFileExists && Object.keys(prefs).length === 0) return true;
-  const effective = applyGlobalCodeGraphProvider(effectiveState(state, prefs), process.env, cwd);
+  const effective = applyGlobalCodeGraphProvider(effectiveState(state, prefs, host), env, cwd);
   if (!effective.openCode && state.openCode) effective.openCode = state.openCode;
   if (isNewProjectOnboardingIncomplete(effective, host)) return true;
-  if (nextLocalPreferenceStep(effective, host) != null) return true;
-  const provider = readGlobalCodeGraphProvider() || (typeof effective.codeGraphProvider === 'string' ? effective.codeGraphProvider : null);
+  if (nextLocalPreferenceStep(effective, host, target) != null) return true;
+  const provider = readGlobalCodeGraphProvider(env)
+    || (typeof effective.codeGraphProvider === 'string' ? effective.codeGraphProvider : null);
   return provider !== 'gitnexus' && provider !== 'graphify';
 }
 
@@ -210,35 +267,86 @@ function wizardStepFromRaw(raw: string | null): WizardStep {
   return raw as WizardStep;
 }
 
-function stepWhenDurablePrefsMissing(cwd: string, state: Rec, mode: string, host: string): WizardStep {
+function stepWhenDurablePrefsMissing(
+  cwd: string,
+  state: Rec,
+  mode: string,
+  host: string,
+  target: LocalPreferenceTarget,
+): WizardStep {
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {
       return wizardStepFromRaw(nextOnboardingStep(state, host));
     }
-    const raw = nextLocalPreferenceStep(state, host);
+    const raw = nextLocalPreferenceStep(state, host, target);
     return (raw as WizardStep) ?? 'performance';
   }
-  const raw = nextLocalPreferenceStep(state, host);
+  const raw = nextLocalPreferenceStep(state, host, target);
   return (raw as WizardStep) ?? 'performance';
 }
 
-function enrichStepMeta(meta: StepMeta, step: WizardStep, state: Rec): StepMeta {
-  if (step === 'team-confirmation') enrichTeamMeta(meta, state);
-  if (step === 'performance') enrichPerformanceMeta(meta, state);
+function enrichStepMeta(
+  meta: StepMeta,
+  step: WizardStep,
+  state: Rec,
+  env: NodeJS.ProcessEnv,
+): StepMeta {
+  if (step === 'team-confirmation') enrichTeamMeta(meta, state, env);
+  if (step === 'performance') enrichPerformanceMeta(meta, env);
   return meta;
 }
 
-export function computeOnboarding(cwd: string): OnboardingView {
-  const { state, mode } = effectiveOnboardingState(cwd);
+// Runtime override (TRAFFIC_ONE_ASK_USE_PLUGIN=1|0) over the bundled default so
+// the ask-first behavior can be toggled without rebuilding the plugin. When
+// active AND the project has no recorded use-plugin choice, the hooks ask the
+// question in the HOST CHAT (no wizard server, no URL) — see usePluginQuestion.
+export function askUsePluginFirst(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = env.TRAFFIC_ONE_ASK_USE_PLUGIN;
+  if (typeof raw === 'string' && raw.trim()) return /^(1|true|on|yes)$/i.test(raw.trim());
+  return ASK_USE_PLUGIN_FIRST;
+}
+
+// True when the ask-first chat question is still pending for this project: the
+// feature is on and the user has recorded no use-plugin choice yet. Gates deny
+// mutating work with the question; session/prompt hooks relay it — nothing
+// launches the wizard until the user answers yes.
+export function usePluginQuestionPending(cwd: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  return askUsePluginFirst(env) && readPluginUseChoice(cwd, env) === null;
+}
+
+export function computeOnboarding(
+  cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
+): OnboardingView {
+  const { state, mode } = effectiveOnboardingState(cwd, env);
   const originalPrompt = projectContextOriginalPrompt(state);
-  const host = detectHost();
+  const host = detectHost(env);
+
+  // The durable per-project opt-out is evaluated before auth or any onboarding
+  // step. A declined project is terminally done even when machine auth is absent
+  // or malformed, and the supplied environment owns both preference and auth
+  // path resolution.
+  if (readPluginUseChoice(cwd, env)?.enabled === false) {
+    const meta = metaForStep(null, originalPrompt);
+    meta.declined = true;
+    return {
+      mode,
+      stack: null,
+      step: null,
+      done: true,
+      originalPrompt,
+      meta,
+      hostname: deviceName(),
+      deviceId: deviceFingerprint(),
+    };
+  }
 
   // Web auth gate. Until the user enters the API key on the wizard's api-key page,
   // the ONLY unresolved step is 'api-key' — this is the FIRST wizard step on a
   // fresh project AND the ONLY step shown for an already-onboarded project whose
   // key a 401 invalidated (the api-key-only re-auth). Gated on authEnforced so
   // dev/test runs with TRAFFIC_ONE_AUTH=0 keep their existing onboarding flow.
-  if (authEnforced() && !isLocallyAuthenticated()) {
+  if (authEnforced(env) && !isLocallyAuthenticated(env)) {
     return {
       mode,
       stack: typeof state.stack === 'string' ? state.stack : null,
@@ -253,27 +361,28 @@ export function computeOnboarding(cwd: string): OnboardingView {
 
   let step: WizardStep;
   let done: boolean;
+  const localPreferenceTarget = currentLocalPreferenceTarget(host, env);
 
   if (mode === 'new-project') {
     if (isNewProjectOnboardingIncomplete(state, host)) {
       step = wizardStepFromRaw(nextOnboardingStep(state, host));
       done = false;
     } else {
-      const raw = nextLocalPreferenceStep(state, host);
+      const raw = nextLocalPreferenceStep(state, host, localPreferenceTarget);
       step = (raw as WizardStep) ?? null;
       done = raw == null;
     }
   } else {
-    const raw = nextLocalPreferenceStep(state, host);
+    const raw = nextLocalPreferenceStep(state, host, localPreferenceTarget);
     step = (raw as WizardStep) ?? null;
     done = raw == null;
   }
 
-  if (done && lacksDurableOnboardingState(cwd, state, host)) {
+  if (done && lacksDurableOnboardingState(cwd, state, host, env, localPreferenceTarget)) {
     done = false;
-    step = stepWhenDurablePrefsMissing(cwd, state, mode, host);
+    step = stepWhenDurablePrefsMissing(cwd, state, mode, host, localPreferenceTarget);
   }
-  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state);
+  const meta = enrichStepMeta(metaForStep(step, originalPrompt), step, state, env);
 
   return {
     mode,
@@ -289,52 +398,61 @@ export function computeOnboarding(cwd: string): OnboardingView {
 
 // Attach the resolved subagent line-up (role → tier → host model) so the wizard's
 // team step can SHOW who will build, instead of asking for a blind approval.
-function enrichTeamMeta(meta: StepMeta, state: Rec): void {
+function enrichTeamMeta(meta: StepMeta, state: Rec, env: NodeJS.ProcessEnv): void {
   const performance = obj(state.performance);
   const level = performance && typeof performance.level === 'string' ? performance.level : '';
   const team = obj(state.team);
   const overrides = team && obj(team.overrides) ? (team.overrides as Rec) : null;
-  const host = detectHost();
-  const planCtx: PlanCtx = { host, plan: detectHostPlan(host), useOpenCode: openCodeDelegationActive(state, host) };
-  meta.team = buildTeamLineup(level, host, overrides, planCtx);
+  const host = detectHost(env);
+  if (host === 'windsurf' && windsurfBackend(env) === 'cascade') {
+    meta.team = [];
+    meta.performanceLevel = 'low';
+    meta.recommendedTier = 'cheapest';
+    meta.modelChoices = [];
+    meta.host = host;
+    return;
+  }
+  const planCtx: PlanCtx = { host, plan: detectHostPlan(host, env) };
+  meta.team = buildTeamLineup(level, host, overrides, planCtx, env);
   meta.performanceLevel = level;
-  meta.recommendedTier = recommendTierForPlan(host, planCtx.plan, planCtx.useOpenCode);
+  meta.recommendedTier = recommendTierForPlan(host, planCtx.plan);
   meta.host = host;
   // The per-agent model menu: each tier resolved to the detected host's model id,
   // so the wizard can offer real model names (and the user's pick maps straight
-  // back to a tier override the spawn gate already understands).
-  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free' ? ['cheapest'] as const : TIER_IDS;
-  meta.modelChoices = choiceTiers.map((tier) => ({ tier, model: resolveModel(tier, host, planCtx.plan) || tier }));
+  // back to a tier override the spawn gate already understands). Windsurf Free
+  // exposes only its single verified selector model, so do not show three
+  // indistinguishable choices for that host/plan.
+  const choiceTiers = host === 'windsurf' && planCtx.plan === 'free'
+    ? ['cheapest'] as const
+    : TIER_IDS;
+  meta.modelChoices = choiceTiers.map((tier) => {
+    const model = currentModelForTier(tier, host, planCtx.plan, env) || tier;
+    const label = modelDisplayLabel(model, tier, host, planCtx.plan, env);
+    return { tier, model, ...(label ? { label } : {}) };
+  });
 }
 
-// Pre-select the wizard's recommended performance level from the detected plan +
-// the OpenCode opt-in: move it first and tag its hint "Recommended". Clones the
-// option objects so the shared STEP_META copy is never mutated.
-function enrichPerformanceMeta(meta: StepMeta, state: Rec): void {
-  const host = detectHost();
-  const plan = detectHostPlan(host);
-  const useOpenCode = openCodeDelegationActive(state, host);
-  const recommended = recommendLevelForPlan(host, plan, useOpenCode);
-  const options = (meta.options || []).map((o) => ({ ...o }));
+// Pre-select the wizard's plan recommendation: move it first and tag its hint
+// "Recommended". Clones option objects so STEP_META is never mutated.
+function enrichPerformanceMeta(meta: StepMeta, env: NodeJS.ProcessEnv): void {
+  const host = detectHost(env);
+  const plan = detectHostPlan(host, env);
+  const cascade = host === 'windsurf' && windsurfBackend(env) === 'cascade';
+  const recommended = cascade ? 'low' : recommendLevelForPlan(host, plan);
+  const options = (meta.options || []).filter((o) => !cascade || o.id === 'low').map((o) => ({ ...o }));
   for (const o of options) {
     if (o.id === recommended) o.hint = o.hint ? `Recommended — ${o.hint}` : 'Recommended';
   }
   options.sort((a, b) => (a.id === recommended ? -1 : b.id === recommended ? 1 : 0));
   meta.options = options;
   meta.recommendedLevel = recommended;
-  meta.recommendedTier = recommendTierForPlan(host, plan, useOpenCode);
+  meta.recommendedTier = recommendTierForPlan(host, plan);
   meta.host = host;
 }
 
 // ── Answer application ──────────────────────────────────────────────────────────
 function patchSharedState(cwd: string, patch: Rec): void {
   writeState(cwd, { ...readState(cwd), ...patch });
-}
-
-function clearPrefKeys(cwd: string, keys: string[]): void {
-  const prefs = readProjectPrefs(cwd);
-  for (const key of keys) delete prefs[key];
-  writeProjectPrefs(cwd, prefs);
 }
 
 function mobileFromChoice(value: unknown): { enabled: boolean; framework: string } | null {
@@ -404,25 +522,20 @@ function attachPendingInstallTask(cwd: string, step: string, outcome: AnswerOutc
   return { ...outcome, task: { kind: 'onboarding-toolchain' } };
 }
 
-export function applyAnswer(cwd: string, step: string, value: unknown): AnswerOutcome {
-  // The api-key answer only writes the auth flag — it is never a terminal
-  // onboarding answer, so it must not trigger the toolchain install task.
-  if (step === 'api-key') return applyAnswerStep(cwd, step, value);
+export function applyAnswer(
+  cwd: string,
+  step: string,
+  value: unknown,
+): AnswerOutcome {
   return attachPendingInstallTask(cwd, step, applyAnswerStep(cwd, step, value));
 }
 
-function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutcome {
+function applyAnswerStep(
+  cwd: string,
+  step: string,
+  value: unknown,
+): AnswerOutcome {
   switch (step) {
-    case 'api-key': {
-      // The key rides as { apiKey } (the wizard's text_input control) but tolerate
-      // a bare string. No remote validation — storing it + marking authenticated is
-      // "the only auth we need"; a bad key surfaces as a 401 on the next report call,
-      // which flips authenticated back to false and re-opens this page.
-      const key = String((obj(value)?.apiKey ?? value ?? '')).trim();
-      if (!key) return { ok: false, error: 'missing api key' };
-      writeSimpleAuth(key);
-      return { ok: true };
-    }
     case 'open-code': {
       const enabled = value === true || value === 'enable' || value === 'enabled';
       mergeProjectPrefs(cwd, { openCode: { enabled, source: 'prompted', decidedAt: stateTimestamp() } });
@@ -443,13 +556,21 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       if (level !== 'high' && level !== 'balanced' && level !== 'low') {
         return { ok: false, error: 'invalid performance level' };
       }
-      mergeProjectPrefs(cwd, {
+      const host = detectHost();
+      if (host === 'windsurf' && windsurfBackend() === 'cascade' && level !== 'low') {
+        return { ok: false, error: 'Cascade supports main-agent mode only' };
+      }
+      mergeProjectHostPrefs(cwd, host, {
         performance: { level, source: 'prompted' },
         team: { mode: teamModeForLevel(level), source: 'prompted' },
+        configuredFor: currentLocalPreferenceTarget(host),
       });
       return { ok: true };
     }
     case 'team-confirmation': {
+      if (detectHost() === 'windsurf' && windsurfBackend() === 'cascade') {
+        return { ok: false, error: 'Cascade does not expose a subagent runner' };
+      }
       const v = obj(value);
       const action = (v && typeof v.action === 'string' ? v.action : String(value));
       // "Start the build" confirms the line-up shown for the chosen performance.
@@ -458,13 +579,13 @@ function applyAnswerStep(cwd: string, step: string, value: unknown): AnswerOutco
       // performance" clears performance + team to choose again.
       if (action === 'approve' || action === 'continue' || action === 'customise') {
         const overrides = v && obj(v.overrides);
-        mergeProjectPrefs(cwd, {
+        mergeProjectHostPrefs(cwd, detectHost(), {
           team: { mode: 'subagents', source: 'prompted', approved: true, ...(overrides ? { overrides } : {}) },
         });
         return { ok: true };
       }
       if (action === 'repick_performance' || action === 'repick') {
-        clearPrefKeys(cwd, ['performance', 'team']);
+        clearProjectHostPrefs(cwd, detectHost(), ['performance', 'team', 'configuredFor']);
         return { ok: true };
       }
       return { ok: false, error: 'invalid team-confirmation action' };

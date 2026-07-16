@@ -5,7 +5,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { applyAnswer, computeOnboarding } from '../flow';
-import { clearAuthentication, isLocallyAuthenticated } from '../../auth';
+import { clearAuthentication, readSimpleAuth, writeSimpleAuth } from '../../auth';
+import { recordPluginUseChoice } from '../../state/plugin-use';
 
 const HOST_ENV_KEYS = ['TRAFFIC_ONE_HOST', 'CURSOR_PLUGIN_ROOT', 'CODEX_PLUGIN_ROOT', 'CODEX_INTERNAL_ORIGINATOR_OVERRIDE', 'CODEX_THREAD_ID'] as const;
 
@@ -56,41 +57,52 @@ test('enforced + no key → api-key is the FIRST step (text_input, not done)', (
   });
 });
 
-test('entering the key authenticates and clears the api-key step', () => {
+test('pluginUse decline is terminal before enforced auth and uses the explicit environment', () => {
   withProject({ committed: { mode: 'new-project' } }, (dir) => {
-    const out = applyAnswer(dir, 'api-key', { apiKey: 'sk-telemetry-123' });
-    assert.equal(out.ok, true);
-    assert.equal(out.task, undefined); // never fires the toolchain install task
-    assert.equal(isLocallyAuthenticated(), true);
-    assert.notEqual(computeOnboarding(dir).step, 'api-key');
+    const env = {
+      ...process.env,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(dir, 'declined-preferences.json'),
+      TRAFFIC_ONE_STATE_PATH: path.join(dir, 'declined-one.json'),
+      TRAFFIC_ONE_AUTH: '1',
+    } as NodeJS.ProcessEnv;
+    // Keep this explicit even if the suite helper later seeds process.env auth:
+    // the regression requires the supplied environment to be unauthenticated.
+    assert.equal(clearAuthentication(env), true);
+    assert.equal(readSimpleAuth(env), null);
+    recordPluginUseChoice(dir, false, 'test', env);
+
+    const view = computeOnboarding(dir, env);
+    assert.equal(view.done, true);
+    assert.equal(view.step, null);
+    assert.equal(view.meta.declined, true);
+    assert.equal(fs.existsSync(path.join(dir, 'declined-one.json')), false, 'auth is not read or written into a new state file');
   });
 });
 
-test('applyAnswer tolerates a bare string key and rejects an empty one', () => {
+test('generic answer flow cannot persist an unvalidated API key', () => {
   withProject({ committed: { mode: 'new-project' } }, (dir) => {
-    assert.equal(applyAnswer(dir, 'api-key', '   ').ok, false);
-    assert.equal(applyAnswer(dir, 'api-key', 'sk-bare-string').ok, true);
-    assert.equal(isLocallyAuthenticated(), true);
+    assert.equal(applyAnswer(dir, 'api-key', { apiKey: 'sk-unvalidated' }).ok, false);
+    assert.equal(computeOnboarding(dir).step, 'api-key');
   });
 });
 
-test('onboarded project + 401-invalidated key → api-key ONLY (re-auth), then done again', () => {
+test('onboarded project + invalidated auth → api-key ONLY (re-auth), then done again', () => {
   withProject({ committed: ONBOARDED }, (dir) => {
-    // Enter the key, then resolve the remaining local preferences → done.
-    applyAnswer(dir, 'api-key', { apiKey: 'sk-telemetry-123' });
+    // Seed the already-validated key, then resolve local preferences → done.
+    writeSimpleAuth('sk-telemetry-123');
     applyAnswer(dir, 'open-code', 'not_now');
     applyAnswer(dir, 'performance', 'low');
     applyAnswer(dir, 'code-graph', 'graphify');
     assert.equal(computeOnboarding(dir).done, true);
 
-    // A 401 clears the flag → the ONLY pending step is api-key (nothing else re-asked).
+    // A rejected report deletes auth → the ONLY pending step is api-key.
     clearAuthentication();
     const v = computeOnboarding(dir);
     assert.equal(v.step, 'api-key');
     assert.equal(v.done, false);
 
-    // Re-enter the key → onboarding is complete again (prefs were never lost).
-    applyAnswer(dir, 'api-key', { apiKey: 'sk-telemetry-123' });
+    // Store a newly validated key → onboarding is complete again (prefs remain).
+    writeSimpleAuth('sk-telemetry-123');
     assert.equal(computeOnboarding(dir).done, true);
   });
 });

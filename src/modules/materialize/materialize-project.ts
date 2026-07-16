@@ -11,10 +11,12 @@ import type { Ctx, HookResult } from '../../core/types';
 import { authEnforced, isLocallyAuthenticated } from '../../shared/auth';
 import { isPluginAuthoringRoot } from '../../shared/authoring-root';
 import { materializeProjectFromState } from '../../shared/materialize';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
 
 export function runMaterializeProject(ctx: Ctx): HookResult {
   const cwd = ctx.cwd;
   if (isPluginAuthoringRoot(cwd)) return noop();
+  if (pluginUseDeclined(cwd)) return noop();
 
   // Auth gate: a pure local boolean read. When auth is enforced but the web API
   // key isn't entered yet, do nothing — the session/onboarding gates surface the

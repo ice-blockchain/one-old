@@ -1,12 +1,22 @@
 // src/config/onboarding.ts
 // Onboarding + session-choice knobs: the canonical project-context answer keys,
 // the wizard's static question catalog (step copy, options, form fields, and the
-// senior-team roster), the team-mode-change approval TTL, and the auth-choice
-// state version + "continue without Traffic One" TTL. This file is data-only
+// senior-team roster), and the team-mode-change approval TTL. This file is data-only
 // (dependency-free). The dynamic assembly — step ordering, the per-host/plan
 // team line-up + model resolution, and answer application — reads these from
 // shared/onboarding-server/flow.ts; other knobs are read in
-// shared/onboarding/** and modules/session/auth-choice.ts.
+// shared/onboarding/**.
+
+// Ask "Do you want to use the Traffic One plugin for this development?" IN THE
+// HOST CHAT before anything else happens for an undecided project: no wizard
+// server is launched and no onboarding URL is shown until the user answers yes
+// (the agent records the answer via the runner's --use / --decline commands).
+// When false, onboarding opens directly as before, but the onboarding prompts
+// still carry a "don't use Traffic One" decline command. A decline is durable
+// per project (stored in the per-user prefs, never inside the repo) until the
+// user explicitly asks for Traffic One again. Runtime override:
+// TRAFFIC_ONE_ASK_USE_PLUGIN=1|0.
+export const ASK_USE_PLUGIN_FIRST = true;
 
 export const PROJECT_CONTEXT_ANSWER_KEYS = [
   'audience',
@@ -165,6 +175,3 @@ export const STEP_COPY: Record<WizardStepId, StepCopy> = {
 };
 
 export const TEAM_MODE_CHANGE_APPROVAL_TTL_MS = 10 * 60 * 1000;
-
-export const AUTH_CHOICE_STATE_VERSION = 3;
-export const AUTH_CHOICE_CONTINUE_TTL_MS = 4 * 60 * 60 * 1000;

@@ -6,17 +6,17 @@ import * as path from 'path';
 
 import { planWriteGate } from '../plan-write';
 import type { Ctx, HookInput, ToolClass, HostId } from '../../../core/types';
-import { writeAuthChoice } from '../../session/auth-choice';
 import { writeModelChoice } from '../../agent-model/model-choice';
-import { claimThreadRole } from '../../../shared/state/run-agent';
+import { claimThreadRole, ensureRunAgentClaim } from '../../../shared/state/run-agent';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
 
 function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-planwrite-'));
   const env = process.env;
   const prev = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
-  const prevChoice = env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
-  env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = path.join(dir, 'auth-choice.json');
+  const { team: teamExtra, performance: performanceExtra, ...sharedExtra } = stateExtra;
   const t1 = path.join(dir, '.traffic-one');
   fs.mkdirSync(path.join(t1, 'rules', 'common'), { recursive: true });
   fs.mkdirSync(path.join(t1, 'skills', 'project-memory'), { recursive: true });
@@ -30,13 +30,23 @@ function withMaterialized(stateExtra: Record<string, unknown>, fn: (cwd: string)
   fs.writeFileSync(path.join(t1, 'plan.md'), 'plan', 'utf8');
   fs.writeFileSync(path.join(t1, '.one.json'), JSON.stringify({
     mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase', mobile: { framework: 'none' },
-    onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none', ...stateExtra,
+    onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none', ...sharedExtra,
   }), 'utf8');
+  if (teamExtra || performanceExtra) {
+    const team = teamExtra && typeof teamExtra === 'object'
+      ? teamExtra as Record<string, unknown>
+      : { mode: 'main-agent', source: 'prompted' };
+    const performance = performanceExtra && typeof performanceExtra === 'object'
+      ? performanceExtra as Record<string, unknown>
+      : { level: team.mode === 'subagents' ? 'high' : 'low', source: 'prompted' };
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(
+      hostScopedPerformancePrefs(performance, team, 'pro'),
+    ), 'utf8');
+  }
   try {
     fn(dir);
   } finally {
     if (prev === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
-    if (prevChoice === undefined) delete env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH; else env.TRAFFIC_ONE_AUTH_CHOICE_STATE_PATH = prevChoice;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -91,6 +101,33 @@ test('Kilo write of root tsconfig.json is gated on monorepo stacks', () => {
   });
 });
 
+test('Kilo write of root tsconfig.base.json is allowed as monorepo baseline', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'tsconfig.base.json', content: '{"compilerOptions":{}}',
+    }, {}, 'kilo'));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Kilo rootless macOS absolute assignments path is normalized to the project manifest', () => {
+  withMaterialized({}, (cwd) => {
+    const target = path.join(cwd, '.traffic-one', 'runs', 'run-1', 'assignments.json').slice(1);
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: target,
+      content: JSON.stringify({
+        version: 1,
+        runId: 'run-1',
+        assignments: [
+          { role: 'senior-frontend', scope: { include: ['apps/web/**'], exclude: [] } },
+          { role: 'senior-backend', scope: { include: ['supabase/**'], exclude: [] } },
+        ],
+      }),
+    }, { session_id: 'kilo-architect' }, 'kilo'));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
 test('subagents project: a feature write outside any role session is denied (run-team)', () => {
   withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
@@ -100,7 +137,246 @@ test('subagents project: a feature write outside any role session is denied (run
     if (r.kind === 'deny') {
       assert.ok(r.reason.includes('Run-team enforcement gate'));
       assert.ok(r.reason.includes('team.mode'));
+      assert.match(r.reason, /PARENT\/orchestrator/);
+      assert.match(r.reason, /`senior_architect`/);
+      assert.match(r.reason, /`senior_frontend`/);
+      assert.doesNotMatch(r.reason, /state your role explicitly/i);
     }
+  });
+});
+
+test('roleless Codex child write is denied with parent-owned canonical task-name recovery', () => {
+  withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+    const child = '019f69fe-e335-7de0-be43-1ee45e3535cc';
+    const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
+      file_path: 'apps/web/src/featureThing.ts', content: 'export const x = 1;',
+    }, {
+      session_id: 'parent-thread',
+      transcript_path: path.join(cwd, `rollout-2026-07-16T11-15-39-${child}.jsonl`),
+    }, 'codex'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.match(r.reason, /No write was made/);
+      assert.match(r.reason, /PARENT\/orchestrator must stop or replace this child/);
+      assert.match(r.reason, /`senior_architect`/);
+      assert.match(r.reason, /`senior_frontend`/);
+      assert.match(r.reason, /encrypts the child spawn message/i);
+      assert.doesNotMatch(r.reason, /state your role explicitly/i);
+      assert.doesNotMatch(r.reason, /message line 1/i);
+    }
+  });
+});
+
+test('Codex 31-file architect scaffold is attributed to architect and steered to .traffic-one/plan.md', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    fs.rmSync(path.join(cwd, '.traffic-one', 'plan.md'), { force: true });
+
+    const threadId = '019f69fe-e335-7de0-be43-1ee45e3535c4';
+    const transcript = path.join(cwd, `rollout-2026-07-16T11-15-39-${threadId}.jsonl`);
+    fs.writeFileSync(transcript, [
+      JSON.stringify({
+        type: 'session_meta',
+        payload: {
+          id: threadId,
+          thread_source: 'subagent',
+          agent_path: '/root/senior_architect',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: 'orchestrator-parent',
+                agent_path: '/root/senior_architect',
+              },
+            },
+          },
+        },
+      }),
+      // Reproduce the misleading evidence from the incident: a tool result in
+      // the architect rollout contains a concrete frontend marker. It must not
+      // override the authoritative session identity.
+      JSON.stringify({
+        type: 'response_item',
+        payload: {
+          type: 'custom_tool_call_output',
+          output: '[t1-role: senior-frontend] example copied from documentation',
+        },
+      }),
+    ].join('\n') + '\n', 'utf8');
+
+    const scaffoldFiles = [
+      'package.json',
+      'pnpm-workspace.yaml',
+      'turbo.json',
+      'tsconfig.base.json',
+      '.gitignore',
+      'README.md',
+      'apps/web/package.json',
+      'apps/web/tsconfig.json',
+      'apps/web/vite.config.ts',
+      'apps/web/index.html',
+      'apps/web/src/main.tsx',
+      'apps/web/src/App.tsx',
+      'apps/web/src/styles.css',
+      'packages/ui/package.json',
+      'packages/ui/tsconfig.json',
+      'packages/ui/src/index.ts',
+      'packages/ui/src/Button.tsx',
+      'packages/i18n/package.json',
+      'packages/i18n/tsconfig.json',
+      'packages/i18n/src/index.ts',
+      'packages/i18n/src/en.ts',
+      'packages/types/package.json',
+      'packages/types/tsconfig.json',
+      'packages/types/src/index.ts',
+      'packages/api-client/package.json',
+      'packages/api-client/tsconfig.json',
+      'packages/api-client/src/index.ts',
+      'supabase/config.toml',
+      'supabase/migrations/001_init.sql',
+      'eslint.config.js',
+      'prettier.config.js',
+    ];
+    assert.equal(scaffoldFiles.length, 31, 'fixture must retain the incident-sized patch');
+    const patchText = [
+      '*** Begin Patch',
+      ...scaffoldFiles.flatMap((filePath) => [`*** Add File: ${filePath}`, '+scaffold']),
+      '*** End Patch',
+    ].join('\n');
+
+    const result = planWriteGate(writeCtx(cwd, 'apply_patch', 'file-edit', {
+      patchText,
+    }, {
+      session_id: 'orchestrator-parent',
+      transcript_path: transcript,
+    }, 'codex'));
+
+    assert.equal(result.kind, 'deny');
+    if (result.kind === 'deny') {
+      assert.match(result.reason, /active Traffic One role `senior-architect`/);
+      assert.match(result.reason, /You ARE the `senior-architect`/);
+      assert.match(result.reason, /write `\.traffic-one\/plan\.md`/);
+      assert.match(result.reason, /do not spawn another architect/);
+      assert.doesNotMatch(result.reason, /Run the `senior-architect` subagent/);
+      assert.doesNotMatch(result.reason, /active Traffic One role `senior-frontend`/);
+    }
+
+    const claim = JSON.parse(fs.readFileSync(
+      path.join(cwd, '.traffic-one', 'runs', 'run-1', `${threadId}.json`),
+      'utf8',
+    ));
+    assert.equal(claim.role, 'senior-architect');
+  });
+});
+
+test('subagents project: parent build-artifact write is denied even outside src', () => {
+  withMaterialized({ team: { mode: 'subagents', source: 'prompted', approved: true } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/api-client/tsconfig.json',
+      content: '{"extends":"../../tsconfig.base.json"}',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('Run-team enforcement gate'));
+      assert.ok(r.reason.includes('team.mode'));
+      assert.ok(r.reason.includes('assigned build-artifact') || r.reason.includes('implementation artifacts'));
+    }
+  });
+});
+
+test('subagents project: claimed role can write its package build artifact', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'frontend-child', 'senior-frontend', { parentSessionId: 'orchestrator' }));
+
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/i18n/package.json',
+      content: '{"name":"@app/i18n","type":"module"}',
+    }, { session_id: 'frontend-child' }, 'opencode'));
+    assert.equal(r.kind, 'noop');
+  });
+});
+
+test('Windsurf native foreground architect can write package.json from its sole pending claim', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(ensureRunAgentClaim(cwd, state, 'senior-architect', {}, {
+      toolName: 'run_subagent',
+      agentType: 'subagent_general',
+    }));
+
+    const result = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      file_path: path.join(cwd, 'package.json'),
+      content: '{"private":true,"packageManager":"pnpm@10.0.0","workspaces":["apps/*","packages/*"]}',
+    }, { hook_event_name: 'PreToolUse' }, 'windsurf'));
+    assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+  });
+});
+
+test('Windsurf architect may create baseline package directories with mkdir before plan.md', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const result = planWriteGate(writeCtx(cwd, 'exec', 'shell', {
+      command: 'mkdir -p packages/ui/src',
+    }, { hook_event_name: 'PreToolUse' }, 'windsurf'));
+    assert.equal(result.kind, 'noop', result.kind === 'deny' ? result.reason : undefined);
+  });
+});
+
+test('OpenCode shell write to external /tmp is denied before host permission prompt', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'bash', 'shell', {
+      command: 'npx tsc -p packages/i18n/tsconfig.json > /tmp/i18n_build.log',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(r.reason.includes('/tmp'));
+      assert.ok(/external-directory|permission|stall/i.test(r.reason));
+    }
+  });
+});
+
+test('subagents project: denied readiness write does not leave a fallback path claim', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/unknown/src/theme.ts',
+      content: 'export const theme = {};\n',
+    }, { session_id: 'architect-child' }, 'kilo'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') assert.ok(r.reason.includes('Architect scope gate'));
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-1', 'claims')), false);
+  });
+});
+
+test('subagents project: claimed senior-architect can write Tailwind globals baseline before PLAN_READY', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'architect-child', 'senior-architect', { parentSessionId: 'orchestrator' }));
+
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'packages/tailwind-config/src/globals.css',
+      content: '@import "tailwindcss";\n:root { color-scheme: light; }\n',
+    }, { session_id: 'architect-child' }, 'kilo'));
+    assert.equal(r.kind, 'noop');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one', 'runs', 'run-1', 'claims')), false);
   });
 });
 
@@ -114,9 +390,10 @@ test('Cursor pending model choice blocks direct scaffold writes until the user r
       performance: { level: 'high', source: 'prompted' },
       team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
     }, (cwd) => {
-      fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-        models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
-      }), 'utf8');
+      const prefsPath = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH as string;
+      const prefs = JSON.parse(fs.readFileSync(prefsPath, 'utf8'));
+      withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+      fs.writeFileSync(prefsPath, JSON.stringify(prefs), 'utf8');
 
       const blocked = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
         file_path: 'README.md',
@@ -205,6 +482,35 @@ test('subagents project: assignment manifest routes writes by scope end-to-end',
   });
 });
 
+test('subagents project: run-state heredocs pass; feature-source heredocs still deny (B1/B5)', () => {
+  withMaterialized({
+    currentRunId: 'run-1',
+    team: { mode: 'subagents', source: 'prompted', approved: true },
+  }, (cwd) => {
+    // reviewer digest heredoc whose BODY cites feature-source paths → allowed
+    const digest = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "mkdir -p .traffic-one/digests/run-1 && cat > .traffic-one/digests/run-1/reviewer.md <<'EOF'\n## Touched\n- apps/web/src/features/catalog.tsx\nEOF",
+    }, { session_id: 'reviewer-session' }));
+    assert.equal(digest.kind, 'noop');
+    // orchestrator fix-cycle note → allowed
+    const fixCycle = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "cat > .traffic-one/fix-cycles/run-1/senior-frontend-fix-1.md <<'EOF'\nfix src/app.ts dead code\nEOF",
+    }, { session_id: 'orchestrator' }));
+    assert.equal(fixCycle.kind, 'noop');
+    // read-only interpreter inspection of feature paths → allowed (was the B5 false-positive)
+    const inspect = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: 'echo "=== keys ===" && python3 -c "import json;print(sorted(json.load(open(\'packages/i18n/src/locales/en/common.json\'))))"',
+    }, { session_id: 'reviewer-session' }));
+    assert.equal(inspect.kind, 'noop');
+    // feature-source heredoc is still an unverifiable shell write → deny
+    const feature = planWriteGate(writeCtx(cwd, 'Bash', 'shell', {
+      command: "cat > apps/web/src/x.ts <<'EOF'\nexport {};\nEOF",
+    }, { session_id: 'orchestrator' }));
+    assert.equal(feature.kind, 'deny');
+    if (feature.kind === 'deny') assert.ok(feature.reason.includes('shell command'));
+  });
+});
+
 test('static layout violation is denied even in a clean main-agent project', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
@@ -215,6 +521,19 @@ test('static layout violation is denied even in a clean main-agent project', () 
   });
 });
 
+test('static asset gate denies SVG text written to a .png path', () => {
+  withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
+    const r = planWriteGate(writeCtx(cwd, 'write', 'file-write', {
+      filePath: 'apps/web/public/og-default.png',
+      content: '<svg xmlns="http://www.w3.org/2000/svg"></svg>',
+    }, {}, 'opencode'));
+    assert.equal(r.kind, 'deny');
+    if (r.kind === 'deny') {
+      assert.ok(/SVG\/XML|bitmap|extension/i.test(r.reason));
+    }
+  });
+});
+
 test('non-file, non-feature shell command in a clean project → noop', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     const r = planWriteGate(writeCtx(cwd, 'Bash', 'shell', { command: 'ls -la' }));
@@ -222,10 +541,10 @@ test('non-file, non-feature shell command in a clean project → noop', () => {
   });
 });
 
-test('continue-without-Traffic-One choice bypasses the plan gate', () => {
+test('pluginUse decline bypasses the plan gate', () => {
   withMaterialized({ team: { mode: 'main-agent', source: 'prompted' } }, (cwd) => {
     fs.rmSync(path.join(cwd, '.traffic-one', 'plan.md'), { force: true });
-    writeAuthChoice('continue-without-traffic-one', cwd);
+    recordPluginUseChoice(cwd, false, 'command');
     const r = planWriteGate(writeCtx(cwd, 'Write', 'file-write', {
       file_path: 'apps/web/src/x.ts', content: 'export const x = 1;',
     }));

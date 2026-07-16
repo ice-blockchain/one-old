@@ -17,6 +17,15 @@ import {
   uninstallWrapper,
   wrapperSource,
 } from '../index';
+import { PRE_TOOL_REMEDIATION, preToolFailureReason } from '../../../hooks/fail-closed';
+
+test('generated wrapper carries the shared fail-closed prose verbatim', () => {
+  const body = wrapperSource('/tmp/plugin', '2026-01-01T00:00:00Z');
+  // The wrapper is dependency-free at runtime, so the shared strings are
+  // interpolated at generation time — this locks them to hooks/fail-closed.ts.
+  assert.ok(body.includes(JSON.stringify(preToolFailureReason('Kilo'))));
+  assert.ok(body.includes(PRE_TOOL_REMEDIATION));
+});
 
 function withHome(fn: (env: NodeJS.ProcessEnv) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-host-'));
@@ -261,7 +270,7 @@ test('wrapper uses Kilo session events as a cwd fallback for sparse hook inputs'
   }
 });
 
-test('wrapper can deny through Kilo permission.ask as a fallback gate', async () => {
+test('wrapper leaves Kilo permission.ask to the host and records a Traffic One warning', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-wrapper-'));
   try {
     const pluginRoot = path.join(base, 'plugin');
@@ -281,15 +290,16 @@ test('wrapper can deny through Kilo permission.ask as a fallback gate', async ()
     const mod = await import(pathToFileURL(wrapperFile).href);
     const hooks = await mod.default.server({ directory: project });
 
-    const output: { status?: string } = { status: 'ask' };
+    const output: { status?: string; metadata?: Record<string, unknown> } = { status: 'ask' };
     await hooks['permission.ask']({ sessionID: 's1', permission: 'bash', patterns: ['npx create-next-app@latest .'] }, output);
-    assert.equal(output.status, 'deny');
+    assert.equal(output.status, 'ask');
+    assert.equal(output.metadata?.trafficOneWarning, 'blocked npx create-next-app@latest .');
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
 
-test('wrapper rejects Kilo permission.asked events through the client API', async () => {
+test('wrapper never programmatically rejects Kilo permission.asked events', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-wrapper-'));
   try {
     const pluginRoot = path.join(base, 'plugin');
@@ -330,20 +340,13 @@ test('wrapper rejects Kilo permission.asked events through the client API', asyn
         },
       },
     });
-    assert.equal(replies.length, 1);
-    assert.deepEqual(replies[0], {
-      requestID: 'per_1',
-      directory: project,
-      workspace: project,
-      reply: 'reject',
-      message: 'blocked by event gate',
-    });
+    assert.equal(replies.length, 0);
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }
 });
 
-test('wrapper rejects Kilo permission events through the legacy client API', async () => {
+test('wrapper does not invoke the legacy Kilo permission rejection API', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-wrapper-'));
   try {
     const pluginRoot = path.join(base, 'plugin');
@@ -381,12 +384,7 @@ test('wrapper rejects Kilo permission events through the legacy client API', asy
         },
       },
     });
-    assert.equal(replies.length, 1);
-    assert.deepEqual(replies[0], {
-      path: { id: 's1', permissionID: 'per_legacy' },
-      query: { directory: project },
-      body: { response: 'reject' },
-    });
+    assert.equal(replies.length, 0);
   } finally {
     fs.rmSync(base, { recursive: true, force: true });
   }

@@ -26,7 +26,7 @@ Skip this skill for single-app repos with no `packages/*` and no `pnpm-workspace
 │  └─ mobile/               # Ionic/Capacitor or RN/Expo shell (when applicable)
 ├─ packages/
 │  ├─ ui/                   # shadcn primitives + shared components
-│  ├─ tailwind-config/      # Tailwind preset (HSL tokens, plugins)
+│  ├─ tailwind-config/      # Tailwind v4 globals (HSL tokens, @theme)
 │  ├─ eslint-config/        # shared ESLint flat config
 │  ├─ tsconfig/             # base + app/library tsconfig.json files
 │  ├─ i18n/                 # shared i18next resources + typed keys

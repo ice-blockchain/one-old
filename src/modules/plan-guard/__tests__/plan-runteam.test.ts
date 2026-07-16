@@ -69,7 +69,15 @@ function seedFallbackClaim(dir: string, target: string, holder: string, createdA
 
 function withDir(fn: (dir: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runteam-'));
-  try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  const prevPrefs = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  try {
+    fn(dir);
+  } finally {
+    if (prevPrefs === undefined) delete process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function gate(dir: string, state: Record<string, unknown>, filePath: string, raw: unknown, overrides: Partial<RunTeamArgs> = {}): string | null {
@@ -111,6 +119,44 @@ test('manifest mode: writing inside another role\'s scope is a scope conflict', 
     assert.ok(reason && reason.includes('assigned scope'));
     assert.ok(reason && reason.includes('src/app/api/route.ts'));
     assert.ok(reason && reason.includes('senior-backend'));
+  });
+});
+
+test('tester overlay: senior-tester may write test files inside implementer scopes (B2)', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-tester', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    // test file inside senior-frontend's scope
+    assert.equal(gate(dir, state, 'src/components/Button.test.tsx', rawFor(THREAD)), null);
+    // test file inside senior-backend's scope
+    assert.equal(gate(dir, state, 'src/app/api/__tests__/route.test.ts', rawFor(THREAD)), null);
+  });
+});
+
+test('tester overlay: non-test feature source is still denied for senior-tester', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-tester', { parentSessionId: 'orchestrator' }));
+    writeManifest(dir, FE_BE_MANIFEST);
+    const reason = gate(dir, state, 'src/app/api/route.ts', rawFor(THREAD));
+    assert.ok(reason && reason.includes('assigned scope'));
+    // mixed test + source patch is not exempted either (all-or-nothing)
+    const mixed = gate(dir, state, 'src/components/Button.test.tsx', rawFor(THREAD), {
+      featureTargetPaths: ['src/components/Button.test.tsx', 'src/app/api/route.ts'],
+    });
+    assert.ok(mixed && mixed.includes('assigned scope'));
+  });
+});
+
+test('tester overlay: works without an assignments manifest (legacy mode)', () => {
+  withDir((dir) => {
+    const state = baseState();
+    assert.ok(claimThreadRole(dir, state, THREAD, 'senior-tester', { parentSessionId: 'orchestrator' }));
+    // no manifest written — legacy regex-ownership branch previously denied with run-team-wrong-role
+    assert.equal(gate(dir, state, 'src/components/Button.test.tsx', rawFor(THREAD)), null);
+    const reason = gate(dir, state, 'src/app/api/route.ts', rawFor(THREAD));
+    assert.ok(reason && reason.includes('does not own'));
   });
 });
 

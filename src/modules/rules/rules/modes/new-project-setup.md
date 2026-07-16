@@ -8,8 +8,11 @@ Read-on-demand slice of `rules/modes/new-project.md`. Do the steps in order;
 do not skip. The spine carries the step index — this file is the detail.
 
 1. **Workspace skeleton**
-   - `package.json` with `"private": true` and `"packageManager"` pinned to the
-     locally installed pnpm (`pnpm@$(pnpm --version)`). Never probe the npm
+   - First write the root `package.json`, with `"private": true`, a
+     `"packageManager": "pnpm@..."`, and
+     `"workspaces": ["apps/*", "packages/*"]` in that same initial write.
+     Then write `pnpm-workspace.yaml`; this ordering keeps the monorepo gate
+     satisfied throughout scaffold creation. Never probe the npm
      registry (`npm view`, `npm outdated`, …) for this or any scaffold version —
      the stack rules pin every choice; install with their ranges and move on.
    - `pnpm-workspace.yaml` listing `apps/*` and `packages/*`.
@@ -17,6 +20,9 @@ do not skip. The spine carries the step index — this file is the detail.
    - `tsconfig.base.json` with strict settings.
    - `.gitignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`.
    - Initialise git, set Gitflow branches: `main`, `develop`.
+   - Use Write/Edit for every scaffold file; parent directories are created by
+     those tools. Bash is for read-only inspection or verification, never
+     `mkdir`, redirection, heredocs, `tee`, `cp`, `mv`, or scripted writes.
 
 2. **Project memory baseline**
    - Create `.traffic-one/` before feature work and invoke `project-memory`.
@@ -56,8 +62,8 @@ do not skip. The spine carries the step index — this file is the detail.
 
 3. **Shared packages first**
    - `packages/tsconfig` and `packages/eslint-config` — used by everything else.
-   - `packages/tailwind-config` — a shared `globals.css` only (Tailwind v4 is
-     CSS-first; there is no JS preset): `@import "tailwindcss"` plus the shadcn
+   - `packages/tailwind-config` — `packages/tailwind-config/src/globals.css`
+     only (Tailwind v4 is CSS-first; there is no JS preset): `@import "tailwindcss"` plus the shadcn
      theme tokens (light + `.dark`) declared in `@theme`/`:root` blocks. This is
      the only home for design tokens; do **not** create a `packages/design-tokens`.
    - `packages/i18n` — typed i18next/react-i18next resources, provider,

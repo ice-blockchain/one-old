@@ -24,6 +24,7 @@ test('renderAgents (lean) lists active rules/skills + kernel + read-routing + in
   assert.ok(out.includes('## Active Rule Kernel'));
   assert.ok(out.includes('never re-read root `AGENTS.md`'));
   assert.ok(out.includes('AUTO-RUN the senior role team'));
+  assert.ok(out.includes('run maintenance triage before that greenfield team flow'));
   assert.ok(out.includes('never probe package registries'));
   assert.ok(out.includes('per-user local preferences'));
   assert.ok(out.includes('Existing projects skip new-project MVP/mobile prompts'));
@@ -105,57 +106,22 @@ test('renderAgentsWithLocalContext renders identical AGENTS/CLAUDE local bodies 
   }
 });
 
-test('Active State carries team mode, OpenCode flag, and the role→model line-up', () => {
-  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
-  const prevHost = process.env.TRAFFIC_ONE_HOST;
-  delete process.env.TRAFFIC_ONE_HOST;
-  process.env.TRAFFIC_ONE_USER_PLAN = 'max';
-  try {
-    const state = {
-      ...STATE,
-      team: { mode: 'subagents', approved: true },
-      performance: { level: 'balanced' },
-      openCode: { enabled: true },
-      toolchain: { opencode: { installedVersion: '1.15.13' } },
-    };
-    const out = renderAgents(state, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
-    assert.ok(out.includes('- Team: subagents (balanced, approved)'));
-    assert.ok(out.includes('- OpenCode delegation: enabled'));
-    assert.ok(out.includes('Role models (pass as `model` when spawning): architect='));
-  } finally {
-    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
-    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
-    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
-    else process.env.TRAFFIC_ONE_HOST = prevHost;
-  }
-});
+test('generated root context is independent of per-user team, performance, plan, and model choices', () => {
+  const options = { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] };
+  const baseline = renderAgents(STATE, ['rules/common/auth-gate.md'], ['project-memory'], options);
+  const personalized = renderAgents({
+    ...STATE,
+    plan: 'max',
+    team: { mode: 'subagents', approved: true, overrides: { 'senior-architect': 'highest' } },
+    performance: { level: 'balanced' },
+    openCode: { enabled: true },
+    toolchain: { opencode: { installedVersion: '1.15.13' } },
+  }, ['rules/common/auth-gate.md'], ['project-memory'], options);
 
-test('Active State on Kilo gives the general-task marker recipe and omits role model ids', () => {
-  const prevHost = process.env.TRAFFIC_ONE_HOST;
-  process.env.TRAFFIC_ONE_HOST = 'kilo';
-  try {
-    const state = {
-      ...STATE,
-      team: { mode: 'subagents', approved: true },
-      performance: { level: 'balanced' },
-      openCode: { enabled: true },
-      toolchain: { opencode: { installedVersion: '1.15.13' } },
-    };
-    const out = renderAgents(state, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
-    assert.ok(out.includes('- Team: subagents (balanced, approved)'));
-    assert.ok(out.includes('- OpenCode delegation: off'));
-    assert.ok(out.includes('Kilo subagents: use `task` with `subagent_type: "general"`'));
-    assert.ok(out.includes('[t1-role: senior-<role>]'));
-    assert.ok(!out.includes('Role models (pass as `model` when spawning):'));
-    assert.ok(!out.includes('opencode/'));
-  } finally {
-    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
-    else process.env.TRAFFIC_ONE_HOST = prevHost;
-  }
-});
-
-test('Active State omits team lines when no local prefs are present', () => {
-  const out = renderAgents(STATE, ['rules/common/auth-gate.md'], ['project-memory'], { leanMode: true, mandatoryRules: ['rules/common/auth-gate.md'] });
-  assert.ok(!out.includes('- Team:'));
-  assert.ok(!out.includes('Role models'));
+  assert.equal(personalized, baseline);
+  assert.doesNotMatch(personalized, /^- Team:/m);
+  assert.doesNotMatch(personalized, /^- Performance:/m);
+  assert.doesNotMatch(personalized, /^- Plan:/m);
+  assert.doesNotMatch(personalized, /Role models \(pass as `model` when spawning\):/);
+  assert.doesNotMatch(personalized, /gpt-5|claude-|composer-|SWE-1/i);
 });

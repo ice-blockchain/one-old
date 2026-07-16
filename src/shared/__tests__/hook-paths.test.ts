@@ -12,6 +12,7 @@ import {
   projectRelativeHookPath,
   resolveProjectRoot,
   stateRequiresNewProjectMonorepo,
+  stripStateDirSuffix,
 } from '../hook-paths';
 
 function writeState(dir: string, json: Record<string, unknown>): void {
@@ -111,6 +112,18 @@ test('findProjectRootForHookFile + projectRelativeHookPath resolve nested .traff
   }
 });
 
+test('projectRelativeHookPath repairs a Kilo macOS absolute path with its slash stripped', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-kilo-rootless-')));
+  try {
+    const target = path.join(root, '.traffic-one', 'runs', 'R', 'assignments.json');
+    const rootless = target.slice(1);
+    assert.equal(projectRelativeHookPath(root, root, rootless), '.traffic-one/runs/R/assignments.json');
+    assert.equal(resolveProjectRoot(root, rootless), root);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('isOnboardedProjectRoot: only a mode-bearing .one.json counts', () => {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-onboarded-')));
   try {
@@ -159,6 +172,60 @@ test('resolveProjectRoot: a stray shallow sub-package state never shadows the re
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test('resolveProjectRoot: a nested onboarded workspace root wins over a farther onboarded workspace ancestor (B10/B11)', () => {
+  const umbrella = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-umbrella-')));
+  try {
+    // Umbrella repo (like ~/Projects/traffic-one): onboarded AND declares workspaces.
+    writePkg(umbrella, { private: true, workspaces: ['one', 'tests/*'] });
+    writeState(umbrella, { mode: 'existing-codebase', onboardingComplete: true });
+    // Nested real project (like tests/claude/3): onboarded AND itself a workspace root.
+    const project = path.join(umbrella, 'tests', 'claude', '3');
+    writePkg(project, { private: true, workspaces: ['apps/*', 'packages/*'] });
+    writeState(project, { mode: 'new-project', onboardingComplete: true });
+    const target = path.join(project, 'apps', 'web', 'src', 'main.ts');
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, 'x', 'utf8');
+
+    // The NEAREST onboarded workspace root wins — digests/plan must land in the
+    // project, never in the umbrella (the tests/claude/3 digests-at-parent bug).
+    assert.equal(resolveProjectRoot(project), project);
+    assert.equal(resolveProjectRoot(project, target), project);
+    assert.equal(resolveProjectRoot(path.join(project, 'apps', 'web'), target), project);
+    // The umbrella itself still resolves to the umbrella.
+    assert.equal(resolveProjectRoot(umbrella, path.join(umbrella, 'README.md')), umbrella);
+  } finally {
+    fs.rmSync(umbrella, { recursive: true, force: true });
+  }
+});
+
+test('resolveProjectRoot: a cwd or file hint inside .traffic-one/** never anchors there (B10)', () => {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-statedrift-')));
+  try {
+    // UN-onboarded project (no state yet): the fallback previously returned the
+    // drifted cwd verbatim, minting a root INSIDE the state tree.
+    const drifted = path.join(dir, '.traffic-one', 'skills', 'senior-eng-orchestrator');
+    fs.mkdirSync(drifted, { recursive: true });
+    assert.equal(resolveProjectRoot(drifted, path.join(dir, 'src', 'a.ts')), dir);
+    assert.equal(resolveProjectRoot(drifted), dir);
+
+    // Onboarded: the climb already recovers, but the stripped anchor keeps the
+    // file-hint path equally safe.
+    writeState(dir, { mode: 'new-project', onboardingComplete: true });
+    assert.equal(resolveProjectRoot(drifted, path.join(dir, 'src', 'a.ts')), dir);
+    assert.equal(resolveProjectRoot(dir, path.join(dir, '.traffic-one', 'digests', 'r1', 'x.md')), dir);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('stripStateDirSuffix truncates at the first .traffic-one segment', () => {
+  const sep = path.sep;
+  assert.equal(stripStateDirSuffix(`${sep}p${sep}proj${sep}.traffic-one${sep}skills${sep}x`), `${sep}p${sep}proj`);
+  assert.equal(stripStateDirSuffix(`${sep}p${sep}proj${sep}.traffic-one`), `${sep}p${sep}proj`);
+  assert.equal(stripStateDirSuffix(`${sep}p${sep}proj${sep}src`), `${sep}p${sep}proj${sep}src`);
+  assert.equal(stripStateDirSuffix(''), '');
 });
 
 test('resolveProjectRoot: an UN-onboarded monorepo anchors at the workspace root, not a sub-package', () => {

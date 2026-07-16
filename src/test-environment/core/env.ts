@@ -25,6 +25,10 @@ export function buildCaseEnv(
     TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(caseFolder, 'state', 'preferences.json'),
     // Never pop the onboarding HTTP wizard during a headless/seeded run.
     TRAFFIC_ONE_ONBOARDING_NO_SPAWN: '1',
+    // Pure-node runs execute inside whichever host launched the maintainer test
+    // process. Pin them to Claude so Codex/Cursor ambient markers cannot seed
+    // preferences under the wrong host. Host-E2E runs overwrite this below.
+    TRAFFIC_ONE_HOST: 'claude',
   };
 
   // Force runtime scripts to resolve to the freshly built dist tree (e2e only;
@@ -36,6 +40,11 @@ export function buildCaseEnv(
     // to a per-case dir so global state never bleeds between cases or pollutes
     // the maintainer's real machine.
     env.XDG_STATE_HOME = path.join(caseFolder, 'xdg-state');
+    // OpenCode/Kilo user-level wrappers, auth/model caches, logs, and databases
+    // must be case-local too. Claude/Codex keep their existing HOME/CODEX_HOME
+    // auth paths because these XDG variables do not redirect them on macOS.
+    env.XDG_CONFIG_HOME = path.join(caseFolder, 'xdg-config');
+    env.XDG_DATA_HOME = path.join(caseFolder, 'xdg-data');
   }
 
   if (config.auth === 'on') {

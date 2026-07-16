@@ -8,7 +8,9 @@ import * as path from 'path';
 
 import { LEGACY_STATE_FILE, STATE_FILE } from '../config/paths';
 import type { ToolClass, ToolInput } from '../core/types';
+import { onboardingWaitScriptPath } from './onboarding-server/wait-command';
 import { legacyStatePath, statePath } from './state';
+import { resolveTrafficOneEnv } from './state/traffic-one-paths';
 
 type Rec = Record<string, unknown>;
 
@@ -171,34 +173,176 @@ export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boo
   if (ti && ('content' in ti || 'new_string' in ti || 'old_string' in ti || 'edits' in ti)) return true;
   if (!isShellToolName(name)) return false;
   const command = commandFromToolInput(toolInput);
-  // Output redirection (truncate `>` or append `>>`) is an unconditional write.
-  if (/>{1,2}/.test(command)) return true;
+  // Output redirection (truncate `>` or append `>>`) is an unconditional write —
+  // but fd-to-fd (`2>&1`) and discard (`2>/dev/null`) redirects are routine on
+  // read-only orientation commands (`ls -la … 2>/dev/null`) and are not writes.
+  if (/(?:^|[\s;&|\w])(?:>{1,2}|&>)\s*(?!&?\d(?:\b|$))(?!\/dev\/null(?:\b|$))/.test(command)) return true;
   // Command substitution can hide a mutating command from the top-level regex.
   if (/`|\$\(/.test(command)) return true;
   return MUTATING_SHELL_COMMAND.test(command) || MUTATING_FIND_COMMAND.test(command) || INTERPRETER_EVAL.test(command);
 }
 
-// The blocking "wait for setup" command (node …/onboarding-wait.cjs <cwd>) the agent
-// runs after opening the wizard. It is read-only, but we allow-list it EXPLICITLY so
-// the onboarding gate lets it through regardless of how shell commands are otherwise
-// classified — while strictly rejecting any shell chaining/redirection/expansion so
-// the allow-list can't smuggle a second command.
-export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): boolean {
-  if (!isShellToolName(toolName)) return false;
-  const command = commandFromToolInput(toolInput).trim();
-  if (!command || command.includes('\n')) return false;
-  let rest = command;
-  const singleQuoted = String.raw`'(?:[^']*)'(?:\\''(?:[^']*)')*`;
-  const unquoted = String.raw`[A-Za-z0-9_./:@%+=,-]+`;
-  const envAssignment = new RegExp(`^(?:TRAFFIC_ONE_[A-Z0-9_]+|HOME|XDG_STATE_HOME)=(?:${singleQuoted}|${unquoted})\\s+`);
-  for (;;) {
-    const match = rest.match(envAssignment);
-    if (!match) break;
-    rest = rest.slice(match[0].length);
+// Parse the deliberately tiny shell grammar emitted by wait-command.ts. Shell
+// control characters are rejected outside quotes; `$`/backticks are rejected in
+// double quotes because the shell would still expand them. Single-quoted values
+// are inert and may contain any project-name character. This is intentionally not
+// a general shell parser.
+function cleanShellWords(command: string): string[] | null {
+  if (!command || /[\r\n]/.test(command)) return null;
+  const words: string[] = [];
+  let word = '';
+  let started = false;
+  let quote: 'single' | 'double' | null = null;
+  for (let i = 0; i < command.length; i += 1) {
+    const ch = command[i] as string;
+    if (quote === 'single') {
+      if (ch === "'") quote = null;
+      else word += ch;
+      continue;
+    }
+    if (quote === 'double') {
+      if (ch === '"') {
+        quote = null;
+      } else if (ch === '\\') {
+        i += 1;
+        if (i >= command.length) return null;
+        const escaped = command[i] as string;
+        if (escaped !== '"' && escaped !== '\\') return null;
+        word += escaped;
+      } else {
+        if (ch === '$' || ch === '`') return null;
+        word += ch;
+      }
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (started) {
+        words.push(word);
+        word = '';
+        started = false;
+      }
+      continue;
+    }
+    if (ch === "'") {
+      quote = 'single';
+      started = true;
+      continue;
+    }
+    if (ch === '"') {
+      quote = 'double';
+      started = true;
+      continue;
+    }
+    if (ch === '\\') {
+      i += 1;
+      if (i >= command.length) return null;
+      word += command[i] as string;
+      started = true;
+      continue;
+    }
+    if (/[;&|`$<>(){}#*?\[\]~]/.test(ch)) return null;
+    word += ch;
+    started = true;
   }
-  if (/^(?:TRAFFIC_ONE_[A-Z0-9_]+|HOME|XDG_STATE_HOME)=/.test(command) && rest === command) return false;
-  if (/[;&|`$<>(){}]/.test(rest)) return false;
-  return /(^|\s)node(\s|$)/.test(rest) && rest.includes('onboarding-wait.cjs');
+  if (quote) return null;
+  if (started) words.push(word);
+  return words;
+}
+
+interface OnboardingRunnerInvocation {
+  bootstrap: boolean;
+  // The per-project "don't use / reconsider Traffic One" choice commands share
+  // the wait runner and its allow-list (same script, leading mode flags — one,
+  // or `--use --bootstrap-only` for the yes path's exit-fast first half).
+  decline: boolean;
+  reconsider: boolean;
+}
+
+function onboardingRunnerInvocation(toolName: unknown, toolInput: unknown): OnboardingRunnerInvocation | null {
+  if (!isShellToolName(toolName)) return null;
+  const words = cleanShellWords(commandFromToolInput(toolInput).trim());
+  if (!words) return null;
+  const envAssignments = new Map<string, string>();
+  while (/^(?:HOME|XDG_STATE_HOME)=/.test(words[0] || '')) {
+    const assignment = words.shift() as string;
+    const equals = assignment.indexOf('=');
+    const name = assignment.slice(0, equals);
+    if (envAssignments.has(name)) return null;
+    envAssignments.set(name, assignment.slice(equals + 1));
+  }
+  if (words[0] !== 'node' || words[1] !== onboardingWaitScriptPath()) return null;
+
+  const args = words.slice(2);
+  let bootstrap = args[0] === '--bootstrap-only';
+  const decline = args[0] === '--decline';
+  const reconsider = args[0] === '--reconsider';
+  // `--use` records the yes-choice then behaves exactly like the plain waiter,
+  // so it keeps the wait-only flags available (unlike the exit-fast modes).
+  const use = args[0] === '--use';
+  if (bootstrap || decline || reconsider || use) args.shift();
+  // `--use --bootstrap-only` is the ask-first yes path's fast first half —
+  // record the choice, print the setup link, exit. Grammar-wise it is a
+  // bootstrap invocation (exit-fast, so the wait-only flags stay rejected).
+  if (use && args[0] === '--bootstrap-only') {
+    bootstrap = true;
+    args.shift();
+  }
+  const cwd = args.shift() || '';
+  if (!cwd || !path.isAbsolute(cwd)) return null;
+
+  const seen = new Set<string>();
+  let host = '';
+  while (args.length > 0) {
+    const arg = args.shift() as string;
+    if (/^--host=(?:claude|codex|cursor|opencode|copilot|windsurf|kilo)$/.test(arg)) {
+      if (seen.has('host')) return null;
+      seen.add('host');
+      host = arg.slice('--host='.length);
+      continue;
+    }
+    // The ask-first yes commands carry the user's original request so the runner
+    // can seed `originalPrompt` AFTER recording the yes (nothing is written
+    // pre-decision). The value is an inert quoted word by construction; it is
+    // only meaningful (and only accepted) on a `--use` invocation.
+    if (arg.startsWith('--seed-prompt=')) {
+      if (!use || seen.has('seed-prompt')) return null;
+      seen.add('seed-prompt');
+      continue;
+    }
+    if (arg === '--quiet-url') {
+      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
+      seen.add(arg);
+      continue;
+    }
+    if (arg === '--timeout-ms' || arg === '--interval-ms') {
+      if (bootstrap || decline || reconsider || seen.has(arg)) return null;
+      const value = args.shift() || '';
+      if (!/^[1-9]\d*$/.test(value)) return null;
+      seen.add(arg);
+      continue;
+    }
+    return null;
+  }
+  if (envAssignments.size > 0) {
+    if (host !== 'opencode') return null;
+    const expected = resolveTrafficOneEnv(cwd, 'opencode');
+    for (const [name, value] of envAssignments) {
+      const expectedValue = name === 'HOME' ? (expected.HOME || '') : (expected.XDG_STATE_HOME || '');
+      if (value !== expectedValue) return null;
+    }
+  }
+  return { bootstrap, decline, reconsider };
+}
+
+// The blocking "wait for setup" command is allow-listed only when it invokes
+// this installed plugin's exact shipped runner with the known argv grammar.
+// A filename substring or an arbitrary Node script is never sufficient.
+export function isOnboardingWaitCommand(toolName: unknown, toolInput: unknown): boolean {
+  return onboardingRunnerInvocation(toolName, toolInput) !== null;
+}
+
+export function isOnboardingBootstrapCommand(toolName: unknown, toolInput: unknown): boolean {
+  return onboardingRunnerInvocation(toolName, toolInput)?.bootstrap === true;
 }
 
 // The pre-spawn model-gate command (node …/model-gate.cjs <cwd>) the Cursor orchestrator runs
@@ -210,6 +354,11 @@ export function isModelGateCommand(toolName: unknown, toolInput: unknown): boole
   if (!command || command.includes('\n')) return false;
   if (/[;&|`$<>(){}]/.test(command)) return false;
   return /(^|\s)node(\s|$)/.test(command) && command.includes('model-gate.cjs');
+}
+
+export function isModelCaptureCommand(toolName: unknown, toolInput: unknown): boolean {
+  if (!isModelGateCommand(toolName, toolInput)) return false;
+  return /(?:^|\s)--capture-models(?:\s|$)/.test(commandFromToolInput(toolInput));
 }
 
 export function isReadOnlyOrientationToolUse(toolName: unknown, toolInput: unknown): boolean {

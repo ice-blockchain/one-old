@@ -41,8 +41,8 @@ Analyzes your codebase and generates a cohesive design system:
 8. Create or update Storybook/preview states when the repo supports them
 ```
 
-Output should fit the repo: shadcn HSL CSS variable updates, Tailwind preset
-extensions, a concise design brief, and component previews/stories.
+Output should fit the repo: shadcn HSL CSS variable updates, Tailwind globals
+updates, a concise design brief, and component previews/stories.
 
 ### Mode 2: Visual Audit
 

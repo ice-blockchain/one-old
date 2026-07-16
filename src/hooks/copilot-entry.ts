@@ -5,15 +5,15 @@
 import { dispatch } from '../core/dispatch';
 import { collectHandlers, defaultModulesDir, loadModules } from '../core/registry';
 import { detectCopilotWireSurface, makeCopilotAdapter } from '../adapters/copilot';
-import { authRequiredMessage } from '../shared/auth';
+import { authFallbackMessage, hookFallbackStandsDown } from './auth-fallback';
+import { copilotPreToolDeny } from './fail-closed';
 
 export interface HookOutput { stdout: string; exitCode: number; }
 
 const COPILOT_NOOP_CLI = '';
 const COPILOT_NOOP_VSCODE = '{}';
 
-function sessionStartFallback(env: NodeJS.ProcessEnv, surface: ReturnType<typeof detectCopilotWireSurface>): string {
-  const msg = authRequiredMessage(env);
+function sessionStartFallback(msg: string, surface: ReturnType<typeof detectCopilotWireSurface>): string {
   if (surface === 'cli') {
     return JSON.stringify({ additionalContext: msg });
   }
@@ -38,15 +38,20 @@ export async function runCopilotHook(
   let parsedRaw: unknown = {};
   try { parsedRaw = JSON.parse(stdin); } catch { /* empty stdin */ }
   const surface = detectCopilotWireSurface(env, parsedRaw);
-  const adapter = makeCopilotAdapter(surface);
   const noop = surface === 'vscode' ? COPILOT_NOOP_VSCODE : COPILOT_NOOP_CLI;
   try {
-    const handlers = collectHandlers(loadModules(defaultModulesDir()));
+    const adapter = makeCopilotAdapter(surface);
+    const handlers = collectHandlers(loadModules(defaultModulesDir(), { strict: true }));
     const stdout = await dispatch(adapter, handlers, { stdin, argv: [subcommand] });
     return { stdout: stdout || noop, exitCode: 0 };
   } catch {
+    if (hookFallbackStandsDown(stdin, env)) return { stdout: noop, exitCode: 0 };
     if (subcommand === 'session-start') {
-      return { stdout: sessionStartFallback(env, surface), exitCode: 0 };
+      const message = authFallbackMessage(stdin, env);
+      return { stdout: message ? sessionStartFallback(message, surface) : noop, exitCode: 0 };
+    }
+    if (subcommand === 'before-tool-use') {
+      return { stdout: copilotPreToolDeny(surface), exitCode: 0 };
     }
     return { stdout: noop, exitCode: 0 };
   }

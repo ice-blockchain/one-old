@@ -5,7 +5,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import { normalizeState, readState, requireAddon, statePath, writeState } from '../normalize';
-import { readEffectiveState, writeGlobalCodeGraphProvider } from '../local-prefs';
+import { mergeProjectHostPrefs, readEffectiveState, writeGlobalCodeGraphProvider } from '../local-prefs';
 import { nextLocalPreferenceStep } from '../../onboarding/local-prefs';
 
 // Isolate BOTH the per-project prefs file and one.json (the machine-wide store that
@@ -14,8 +14,12 @@ function withPrefs<T>(fn: (dir: string) => T): T {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-state-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
   process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     return fn(dir);
   } finally {
@@ -23,6 +27,10 @@ function withPrefs<T>(fn: (dir: string) => T): T {
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
     else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -53,6 +61,11 @@ test('currentRunId is normalized to the digit string gates expect', () => {
 
 test('writeState keeps local prefs out of .one.json; readEffectiveState merges them back', () => {
   withPrefs((dir) => {
+    mergeProjectHostPrefs(dir, 'codex', {
+      performance: { level: 'high', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
+    });
     writeState(dir, {
       stack: 'default', mode: 'new-project',
       codeGraphProvider: 'gitnexus',
@@ -94,11 +107,20 @@ test('per-user prefs are isolated; codeGraphProvider is shared machine-wide', ()
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-state-'));
   const prev = process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevState = process.env.TRAFFIC_ONE_STATE_PATH;
+  const prevHost = process.env.TRAFFIC_ONE_HOST;
+  const prevPlan = process.env.TRAFFIC_ONE_USER_PLAN;
   const userAPrefs = path.join(dir, 'user-a-preferences.json');
   const userBPrefs = path.join(dir, 'user-b-preferences.json');
   process.env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  process.env.TRAFFIC_ONE_HOST = 'codex';
+  process.env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = userAPrefs;
+    mergeProjectHostPrefs(dir, 'codex', {
+      performance: { level: 'high', source: 'prompted' },
+      team: { mode: 'subagents', source: 'prompted', approved: true },
+      configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
+    });
     writeState(dir, {
       stack: 'default',
       mode: 'new-project',
@@ -150,6 +172,10 @@ test('per-user prefs are isolated; codeGraphProvider is shared machine-wide', ()
     else process.env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prev;
     if (prevState === undefined) delete process.env.TRAFFIC_ONE_STATE_PATH;
     else process.env.TRAFFIC_ONE_STATE_PATH = prevState;
+    if (prevHost === undefined) delete process.env.TRAFFIC_ONE_HOST;
+    else process.env.TRAFFIC_ONE_HOST = prevHost;
+    if (prevPlan === undefined) delete process.env.TRAFFIC_ONE_USER_PLAN;
+    else process.env.TRAFFIC_ONE_USER_PLAN = prevPlan;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

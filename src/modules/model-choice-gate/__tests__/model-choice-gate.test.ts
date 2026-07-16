@@ -5,23 +5,35 @@ import * as os from 'os';
 import * as path from 'path';
 
 import { modelChoiceGate } from '../index';
-import { writeModelChoice } from '../../agent-model/model-choice';
+import { markModelChoicePrompted, writeModelChoice } from '../../agent-model/model-choice';
 import type { Ctx, HookInput, ToolClass } from '../../../core/types';
+import {
+  claimCursorSpawnObservation,
+  claimThreadRole,
+  recordCursorSpawnObservation,
+  updateCursorSpawnObservation,
+} from '../../../shared/state';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function withProject(fn: (cwd: string, runId: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-gate-')));
   const env = process.env;
   const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
   const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   const runId = '1780000000000';
   try {
     fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      performance: { level: 'high', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+        'pro',
+      );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project',
       stack: 'default',
@@ -31,13 +43,11 @@ function withProject(fn: (cwd: string, runId: string) => void): void {
       materializedStack: 'default|react-vite|supabase|none',
       currentRunId: runId,
     }), 'utf8');
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
-    }), 'utf8');
     fn(dir, runId);
   } finally {
     if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
     if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -83,5 +93,83 @@ test('modelChoiceGate: recorded fallback clears the gate', () => {
     writeModelChoice(cwd, runId, 'use-fallback');
     const write = modelChoiceGate(ctx(cwd, 'Write', 'file-write', { file_path: 'README.md', content: '# x\n' }));
     assert.equal(write.kind, 'noop');
+  });
+});
+
+// The api-limit pause shape (tests/cursor/13): NO captured-model gap — pending
+// is armed by the prompted marker after a role's runtime failure. Uses its own
+// harness without a captured-models record so cursorUnavailablePicks is empty.
+function withApiLimitPause(fn: (cwd: string, runId: string, state: Record<string, unknown>) => void): void {
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-model-choice-scope-')));
+  const env = process.env;
+  const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const prevPlan = env.TRAFFIC_ONE_USER_PLAN;
+  const prevState = env.TRAFFIC_ONE_STATE_PATH;
+  env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
+  env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  const runId = '1780000000000';
+  try {
+    fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(hostScopedPerformancePrefs(
+      { level: 'high', source: 'prompted' },
+      { mode: 'subagents', source: 'prompted', approved: true },
+      'pro',
+    )), 'utf8');
+    const state = {
+      mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
+      onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
+      currentRunId: runId,
+    };
+    fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify(state), 'utf8');
+    markModelChoicePrompted(dir, runId);
+    // The failed role's observation (backend hit an API usage limit)
+    assert.ok(recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'orchestrator', toolCallId: 'tc-backend-1', role: 'senior-backend',
+      requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 1000,
+    }));
+    assert.ok(claimCursorSpawnObservation(dir, runId, 'tc-backend-1', 'child-backend-1', 1001));
+    assert.ok(updateCursorSpawnObservation(dir, runId, 'child-backend-1', {
+      outcome: 'api-limit', error: 'API usage limit reached',
+    }));
+    fn(dir, runId, state);
+  } finally {
+    if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+    if (prevPlan === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = prevPlan;
+    if (prevState === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevState;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+test('modelChoiceGate: api-limit pause allows healthy claimed sibling roles (A2)', () => {
+  withApiLimitPause((cwd, runId, state) => {
+    // healthy in-flight frontend keeps working
+    assert.ok(claimThreadRole(cwd, state, 'fe-session', 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    const healthy = modelChoiceGate(ctx(cwd, 'Write', 'file-write',
+      { file_path: 'apps/web/src/x.ts', content: 'export {};\n' }, 'fe-session'));
+    assert.equal(healthy.kind, 'noop', 'healthy sibling role must not be paused by another role\'s api-limit');
+
+    // the failed role itself stays paused
+    assert.ok(claimThreadRole(cwd, state, 'be-session', 'senior-backend', { parentSessionId: 'orchestrator' }));
+    const failed = modelChoiceGate(ctx(cwd, 'Write', 'file-write',
+      { file_path: 'supabase/migrations/x.sql', content: 'select 1;\n' }, 'be-session'));
+    assert.equal(failed.kind, 'deny');
+
+    // unresolved identity (the orchestrator) fails closed — no new spawns/writes
+    const orchestrator = modelChoiceGate(ctx(cwd, 'Write', 'file-write',
+      { file_path: 'README.md', content: '# x\n' }, 'orchestrator-session'));
+    assert.equal(orchestrator.kind, 'deny');
+  });
+});
+
+test('modelChoiceGate: unavailable captured picks stay run-level for every role', () => {
+  withProject((cwd, runId) => {
+    // withProject arms pending via a captured-model gap → account-wide pause
+    const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
+    assert.ok(claimThreadRole(cwd, state, 'fe-session', 'senior-frontend', { parentSessionId: 'orchestrator' }));
+    const first = modelChoiceGate(ctx(cwd, 'Write', 'file-write',
+      { file_path: 'apps/web/src/x.ts', content: 'export {};\n' }, 'fe-session'));
+    assert.equal(first.kind, 'deny', 'captured-pick unavailability pauses every role (account-wide toggle)');
   });
 });

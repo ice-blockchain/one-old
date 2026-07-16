@@ -1,35 +1,39 @@
 // src/modules/session/prompt-submit.ts
-// UserPromptSubmit handler: drives the auth gate / auth-choice flow on every
+// UserPromptSubmit handler: respects the durable plugin-use choice on every
 // prompt, records/clears the team-mode-change approval, and — once a project is a
 // Traffic One project but onboarding is incomplete — points the user at the local
 // setup wizard (the wizard owns the questions now; this only surfaces its URL and
 // converges materialization). A deterministic coding-intent heuristic suppresses
 // premature activation on a brand-new project when the prompt is clearly not a
-// coding/implementation request. Auth flow ported 1:1 from runUserPromptSubmit.
+// coding/implementation request. API-key intake belongs to the wizard.
 
 import { context, noop } from '../../core/result';
 import type { Ctx, HookResult } from '../../core/types';
-import { isPluginAuthoringRoot } from '../../shared/authoring-root';
+import { isNonProjectRoot } from '../../shared/authoring-root';
 import { detectMode, isLikelyCodingPrompt, promptHasStackSignal } from '../../shared/detection';
+import { seedOriginalPrompt } from '../../shared/onboarding/seed-prompt';
 import { resolveProjectRoot } from '../../shared/hook-paths';
 import { materializeProjectIfNeeded } from '../../shared/materialize';
 import { maybeFlipToMaintenance } from '../materialize/build-complete';
-import { ensureOnboardingServer, formatWizardBanner } from '../../shared/onboarding-server/ensure';
-import { computeOnboarding } from '../../shared/onboarding-server/flow';
+import { prepareOnboardingServer } from '../../shared/onboarding-server/bootstrap';
+import { onboardingDeclineCommand, onboardingReconsiderCommand, usePluginQuestion } from '../../shared/onboarding-server/wait-command';
+import { pluginUseDeclined } from '../../shared/state/plugin-use';
+import { formatWizardBanner } from '../../shared/onboarding-server/ensure';
+import { computeOnboarding, usePluginQuestionPending } from '../../shared/onboarding-server/flow';
 import { isForeignOnboardingThread } from '../../shared/onboarding-server/onboarding-session';
-import { onboardingWaitCommand } from '../../shared/onboarding-server/wait-command';
+import { windsurfSetupReason, windsurfSetupRepeatReason } from '../../shared/onboarding-server/windsurf-setup';
 import { serverRecordExists } from '../../shared/onboarding-server/registry';
-import { projectContextOriginalPrompt } from '../../shared/onboarding/project-context';
 import { updateTeamModeChangeApprovalFromPrompt } from '../../shared/onboarding/team-mode-approval';
 import { pluginRoot } from '../../shared/paths';
 import { promptTextFromSubmit } from '../../shared/prompt-input';
 import { makeSkillBlock } from '../../shared/skill-block';
-import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath, writeState } from '../../shared/state';
+import { hookSessionIdentity, isSubagentThread, legacyStatePath, normalizeState, readEffectiveState, readState, statePath } from '../../shared/state';
+import { initializeTrafficOneEnv } from '../../shared/state/runtime-env';
 import { obj } from '../../shared/obj';
-import { firstEmitThisSession } from '../../shared/once';
+import { firstEmitThisSession, stampEmitMarker } from '../../shared/once';
 import { maintenanceTriageDirective } from './triage-directive';
 import { buildOpenCodePlanBatchPendingDirective } from '../../shared/opencode-plan-directive';
-import { modelChoiceReplyPending, parseModelChoice, writeModelChoice } from '../agent-model/model-choice';
+import { recordPendingModelChoiceReply } from '../agent-model/choice-reply';
 import { runSessionStartAuthed } from './session-start';
 import { ensureOpenCodeDelegationReady } from './session-start-lib';
 import * as fs from 'fs';
@@ -37,8 +41,8 @@ import * as fs from 'fs';
 type Rec = Record<string, unknown>;
 
 const skillBlock = makeSkillBlock(pluginRoot);
-const block = (name: string, vars: Record<string, string | number | null | undefined> = {}): string =>
-  skillBlock('onboarding-gate', name, vars);
+const block = (name: string, vars: Record<string, string | number | null | undefined> = {}, fallback = ''): string =>
+  skillBlock('onboarding-gate', name, vars, fallback);
 
 function opencodeSetupDirective(url: string, waitCommand: string, hostLabel = 'OpenCode'): string {
   return [
@@ -50,45 +54,38 @@ function opencodeSetupDirective(url: string, waitCommand: string, hostLabel = 'O
   ].join('\n\n');
 }
 
-// Persist the user's first request into the new-project state so the wizard can
-// tailor its questions AND derive the right stack (without it, an empty prompt
-// derives to `minimal`). Idempotent: only on a new project, and never overwrites
-// an existing prompt — the FIRST coding prompt is the project description.
-function seedOriginalPrompt(cwd: string, prompt: string): void {
-  const text = (prompt || '').trim();
-  if (!text) return;
-  // `originalPrompt` is the project DESCRIPTION — the wizard derives the stack from it and the
-  // maintenance-triage continuation routes on it. A control / non-coding command ("stop all",
-  // "cancel", "pause", a greeting) is NOT a description; seeding it pollutes both. Only seed a
-  // prompt that looks like build/coding work — the SAME predicates the activation gate uses, so
-  // anything that could legitimately be the first build prompt still seeds. This also stops a
-  // later control command from becoming `originalPrompt` when the first build prompt wasn't
-  // captured (e.g. state was reset mid-session).
-  if (!isLikelyCodingPrompt(text) && !promptHasStackSignal(text)) return;
-  const state = readState(cwd);
-  // Seed for EVERY mode (was new-project-only): the onboarding-wait runner reads
-  // `originalPrompt` after SETUP_COMPLETE to emit the maintenance-triage routing
-  // for the continued request — existing codebases are exactly where that
-  // continuation lands in maintenance phase. Never overwrite an existing seed.
-  if (typeof state.originalPrompt === 'string' && state.originalPrompt.trim()) return;
-  if (projectContextOriginalPrompt(state)) return;
-  try {
-    writeState(cwd, { ...state, originalPrompt: text });
-  } catch {
-    // best-effort; the wizard still runs, just without prompt-tailored defaults
-  }
-}
+// `originalPrompt` seeding lives in shared/onboarding/seed-prompt (also used by
+// the onboarding-wait runner's `--use --seed-prompt=…` yes path). While the
+// ask-first question is pending it is NEVER called — nothing may be written
+// before the user's recorded yes; the prompt rides the yes command instead.
 
 // Post-build maintenance triage lives in ./triage-directive (shared with the
 // onboarding-wait runner, which emits it for the SETUP-COMPLETE continuation —
 // that request never reaches UserPromptSubmit).
 
 export function runUserPromptSubmit(ctx: Ctx): HookResult {
-  if (isPluginAuthoringRoot(ctx.cwd)) return noop();
+  if (isNonProjectRoot(ctx.cwd)) return noop();
   const cwd = resolveProjectRoot(ctx.cwd, undefined, { ceiling: ctx.input.workspaceRoot });
+  initializeTrafficOneEnv(cwd, ctx.host);
 
   const raw = ctx.input.raw;
   const promptText = ctx.input.prompt || promptTextFromSubmit(raw);
+
+  // Declined project: Traffic One stays silent on every prompt. The ONE signal
+  // that re-opens the conversation is the user explicitly naming Traffic One —
+  // then the agent is told how to re-enable it (which re-runs onboarding and,
+  // in ask-first mode, the use-plugin question).
+  if (pluginUseDeclined(cwd)) {
+    if (/\btraffic[\s_-]?one\b/i.test(promptText)) {
+      return context(
+        'traffic-one — this project has Traffic One DISABLED by the user\'s own earlier choice. '
+        + 'If the user is now asking to use/enable Traffic One here, run this command, then follow its output:\n'
+        + `${onboardingReconsiderCommand(cwd, ctx.host)}\n`
+        + 'If the user is asking something else, continue without Traffic One and do not mention it.',
+      );
+    }
+    return noop();
+  }
 
   // ── Auth gate ──
   // Auth intake now lives in the wizard's api-key page (never in a prompt message,
@@ -101,18 +98,12 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // When picked tier models aren't offered (or the spawn gate surfaced a degradation choice),
   // the user's reply lands here. Honor it before any other handling. Fail closed: nothing
   // records `use-fallback` except this explicit chat reply (or a future host modal).
+  // NOTE: pending may only be armed by the failure reconcile at priority 35 on this same
+  // event — the agent-model.model-choice-reply sweep (priority 45) re-runs this recorder
+  // after the reconcile so the FIRST reply is never dropped.
   {
-    const choiceState = readEffectiveState(cwd);
-    const choiceRunId = typeof choiceState.currentRunId === 'string' && choiceState.currentRunId.trim()
-      ? choiceState.currentRunId.trim() : '';
-    if (choiceRunId && modelChoiceReplyPending(cwd, choiceState as Record<string, unknown>)) {
-      const modelChoice = parseModelChoice(promptText);
-      if (modelChoice) {
-        writeModelChoice(cwd, choiceRunId, modelChoice);
-        const recordedBlock = modelChoice === 'enable-retry' ? 'model-choice-recorded-enable' : 'model-choice-recorded-fallback';
-        return context(skillBlock('agent-model', recordedBlock, {}), { systemMessage: 'traffic-one: model choice recorded' });
-      }
-    }
+    const recorded = recordPendingModelChoiceReply(cwd, promptText);
+    if (recorded) return recorded;
   }
 
   const uninitialized = !fs.existsSync(statePath(cwd)) && !fs.existsSync(legacyStatePath(cwd));
@@ -143,7 +134,10 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
   // api-key page first while unauthenticated).
   if (uninitialized) {
     const bootstrapped = runSessionStartAuthed(ctx);
-    seedOriginalPrompt(cwd, promptText);
+    // Ask-first pending: write NOTHING before the user's answer — the prompt
+    // rides the yes command (--seed-prompt) inside the question the authed body
+    // just emitted, and the runner seeds it after recording the yes.
+    if (!usePluginQuestionPending(cwd)) seedOriginalPrompt(cwd, promptText);
     return bootstrapped;
   }
   const state = readEffectiveState(cwd);
@@ -176,13 +170,38 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
       const id = hookSessionIdentity(raw);
       if (id.sessionId && isForeignOnboardingThread(cwd, id.sessionId)) return noop();
     }
+    // Ask-first: relay the host-chat question instead of launching the wizard —
+    // no server, no URL, and no writes (seeding included) until the user answers
+    // yes. The prompt rides the yes command so the runner seeds it post-yes.
+    if (usePluginQuestionPending(cwd)) {
+      return context(`[ACTIVE STACK: ${stack}]\n\n${usePluginQuestion(cwd, ctx.host, promptText)}`, {
+        systemMessage: 'traffic-one [asking whether to use Traffic One]',
+      });
+    }
     seedOriginalPrompt(cwd, promptText);
-    const server = ensureOnboardingServer(cwd, { host: ctx.host });
-    const waitCommand = onboardingWaitCommand(cwd, ctx.host);
+    const prepared = prepareOnboardingServer(cwd, ctx.host);
+    if (prepared.kind !== 'ready') {
+      return context(`[ACTIVE STACK: ${stack}]\n\n${prepared.reason}`, {
+        systemMessage: prepared.kind === 'bootstrap-required'
+          ? 'traffic-one [setup permission required]'
+          : 'traffic-one [setup launcher failed]',
+      });
+    }
+    const { server, waitCommand } = prepared;
     if (ctx.host === 'opencode' || ctx.host === 'kilo') {
       const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]');
       return context(`[ACTIVE STACK: ${stack}]\n\n${opencodeSetupDirective(server.dashboardUrl, waitCommand, ctx.host === 'kilo' ? 'Kilo' : 'OpenCode')}`, {
         systemMessage,
+      });
+    }
+    if (ctx.host === 'windsurf') {
+      const first = firstEmitThisSession(cwd, 'onboarding-deny', hookSessionIdentity(raw).sessionId);
+      const vars = { URL: server.dashboardUrl, WAIT_CMD: waitCommand };
+      const directive = first
+        ? block('windsurf-server-deny-reason', vars, windsurfSetupReason(server.dashboardUrl, waitCommand))
+        : block('windsurf-server-deny-reason-repeat', vars, windsurfSetupRepeatReason(server.dashboardUrl, waitCommand));
+      return context(directive, {
+        systemMessage: formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]'),
       });
     }
     // Full walkthrough once per session (shared marker with the PreToolUse gate);
@@ -196,8 +215,9 @@ export function runUserPromptSubmit(ctx: Ctx): HookResult {
     // (systemMessage → user_message on Cursor), so the user always gets a working link
     // on the first prompt regardless of the agent. Host-gated: Claude opens the wizard
     // in its preview pane and Codex via its own recipe, so they keep the plain banner.
+    stampEmitMarker(cwd, 'wizard-url-shown');
     const systemMessage = formatWizardBanner(ctx.host, server.dashboardUrl, 'traffic-one [setup required]');
-    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.dashboardUrl, WAIT_CMD: waitCommand })}`, {
+    return context(`[ACTIVE STACK: ${stack}]\n\n${block(wizardBlock, { URL: server.dashboardUrl, WAIT_CMD: waitCommand, DECLINE_CMD: onboardingDeclineCommand(cwd, ctx.host) })}`, {
       systemMessage,
     });
   }

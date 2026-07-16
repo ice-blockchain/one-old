@@ -1,41 +1,32 @@
 ---
+description: "Always apply before Traffic One onboarding, materialization, reporting, agent orchestration, or implementation work."
 # Always loaded
 ---
 
 # Traffic One Authentication Gate
 
-Traffic One auth must be verified by hooks and the local auth client before any
-Traffic One onboarding, materialization, reporting, project setup, agent
-orchestration, or feature implementation work.
+The durable per-project `pluginUse` choice is evaluated first, before onboarding
+or authentication. If the user declines Traffic One, every Traffic One hook
+stands down for that project until the user explicitly enables it again. This is
+the only "continue without Traffic One" mechanism.
 
-The first Traffic One action in a fresh install is a host modal selector with
-two choices: Authenticate Traffic One (Recommended) or Continue without Traffic
-One. If the user chooses Authenticate Traffic One, ask for the API key using a
-secure host input/modal and stop; the hook runs the auth client internally,
-stores the API key in the OS credential manager when available, and verifies
-status.
-Do not ask the user to run shell commands. Do not call the exposed `mcp-auth`
-MCP tools (`mcp__mcp_auth__auth_status`, `mcp__mcp_auth__refresh`,
-`mcp__mcp_auth__authenticate`, or `mcp__mcp_auth__logout`) for routine Traffic
-One auth checks. `auth_status` and `refresh` must happen through the hook/auth
-client path so they remain silent. `logout` removes the local session token.
-When a stored session expires, the auth client may call `refresh` internally
-with the OS credential manager key. If refresh fails or no credential is
-available, keep Traffic One gated and ask the user to authenticate again.
+After an opt-in, authentication belongs exclusively to the local setup wizard.
+When canonical auth is missing or invalid, the wizard opens directly on its API
+key step and Traffic One mutation remains gated. Do not ask for the key in chat,
+show a host auth modal, pass it through a shell command, or edit auth state
+manually.
 
-Do not place API keys, session tokens, or copied bearer tokens in project files,
-`.traffic-one/`, `.traffic-one/.one.json`, prompts, docs, commits, or generated
-artifacts. The auth client stores only a short-lived session token, metadata,
-and a credential-manager reference in user-level state
-(`$TRAFFIC_ONE_AUTH_STATE_PATH`, `$XDG_STATE_HOME/traffic-one/auth.json`, or
-`~/.traffic-one/auth.json`); it must not store the raw API key in `auth.json`.
+The wizard validates the submitted key with an authenticated MCP `tools/list`
+request. A rejected or unreachable validation writes nothing. A successful
+validation stores the sole auth record in the top-level `auth` section of the
+user-level `one.json` (`$TRAFFIC_ONE_STATE_PATH`,
+`$XDG_STATE_HOME/traffic-one/one.json`, or `~/.traffic-one/one.json`). The file
+must remain mode `0600` and must never be copied into the project, docs, prompts,
+commits, or generated artifacts.
 
-The hook auth client calls remote `auth_status` at every new session start and
-again at most once per day during ongoing sessions. When auth is missing,
-expired, or rejected remotely, show the modal selector and keep Traffic One
-inactive. If the user chooses Continue without Traffic One, remember that choice
-for the project/session and do not repeat the auth prompt while it remains
-active. Valid auth is the first gate-clear condition in
-`rules/common/setup-gate.md`; until it holds, Traffic One work stays gated.
-Continue the user's request without Traffic One features when the request is
-actionable outside Traffic One. Some hosts have rule-level enforcement only.
+The stored API key is also sent as the Bearer token for the background report.
+If reporting returns 401 or 403, delete only `one.json.auth`, preserve all other
+settings, and reopen the wizard on the API-key step.
+
+Valid canonical auth is the first gate-clear condition in
+`rules/common/setup-gate.md`. Some hosts have rule-level enforcement only.

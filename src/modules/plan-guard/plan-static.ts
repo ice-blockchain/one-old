@@ -6,6 +6,7 @@
 // so a missing block never disables a check.
 
 import type { SkillBlockFn } from '../../core/types';
+import { isTestScopePath } from '../../shared/feature-source';
 
 type Vars = Record<string, string | number | null | undefined>;
 type Block = (name: string, fallback: string, vars?: Vars) => string;
@@ -19,6 +20,11 @@ const WS_CTOR = 'new ' + 'WebSocket(';
 export function planStaticViolations(filePath: string, content: string, isNative: boolean, block: Block): string[] {
   const violations: string[] = [];
   const INLINE_STYLE = 'style={' + '{';
+
+  if (/\.(png|jpe?g|webp|avif)$/i.test(filePath) && /^\s*(?:<\?xml\b|<svg\b)/i.test(content)) {
+    violations.push(block('asset-extension-mismatch',
+      'Asset gate: do not write SVG/XML text into a bitmap image path such as `.png`, `.jpg`, `.webp`, or `.avif`. Save SVG content with a `.svg` extension, or generate/provide a real bitmap asset for bitmap extensions.'));
+  }
 
   if (/(apps\/[^/]+\/)?src\/pages\/.*\.(service|store|hook|query|slice|api)\.(ts|tsx)$/.test(filePath)) {
     violations.push(block('pages-service-files',
@@ -89,7 +95,11 @@ export function planStaticViolations(filePath: string, content: string, isNative
     }
   }
 
-  if ((filePath.endsWith('.ts') || filePath.endsWith('.tsx')) && /:\s*any\b/.test(content)) {
+  // Test files are exempt from the no-any rule (B12): coarse typing of mocks,
+  // fixtures, and harness plumbing is idiomatic in tests and blocking it stalls
+  // the tester role over style, not correctness.
+  if ((filePath.endsWith('.ts') || filePath.endsWith('.tsx')) && /:\s*any\b/.test(content)
+    && !isTestScopePath(filePath)) {
     violations.push(block('no-any',
       'Avoid the any type — use unknown and narrow types, or define a discriminated union.'));
   }

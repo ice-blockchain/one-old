@@ -16,8 +16,8 @@ import {
 } from '../lib';
 import {
   analyzeCodexSessionFile,
+  probeCanonicalAuth,
   probeCodexHooks,
-  probeMcpAuth,
   probeProject,
   probeSessionDiagnostics,
   resolveCodexSession,
@@ -140,32 +140,41 @@ test('probeCodexHooks parses plugin + hook trust from config.toml', () => {
   }
 });
 
-test('probeMcpAuth reads the .mcp.json under the plugin root', () => {
-  const root = tmp('root');
-  const savedRoot = process.env.TRAFFIC_ONE_PLUGIN_ROOT;
-  process.env.TRAFFIC_ONE_PLUGIN_ROOT = root;
+test('probeCanonicalAuth reports path, validity, and update time without exposing the key', () => {
+  const root = tmp('auth');
+  const file = path.join(root, 'one.json');
+  const env = { TRAFFIC_ONE_STATE_PATH: file } as NodeJS.ProcessEnv;
   try {
-    assert.equal(probeMcpAuth().configExists, false);
-    fs.writeFileSync(path.join(root, '.mcp.json'), JSON.stringify({ mcpServers: { 'mcp-auth': { type: 'http', url: 'https://x' } } }), 'utf8');
-    const probe = probeMcpAuth();
-    assert.equal(probe.configExists, true);
-    assert.equal(probe.configured, true);
-    assert.equal(probe.type, 'http');
-    assert.equal(probe.url, 'https://x');
+    assert.deepEqual(probeCanonicalAuth(env), { filePath: file, present: false, valid: false, updatedAt: null });
+    fs.writeFileSync(file, JSON.stringify({
+      schemaVersion: 3,
+      auth: {
+        version: 1,
+        authenticated: true,
+        apiKey: 'sk-must-never-appear-in-probe',
+        updatedAt: '2026-07-15T00:00:00Z',
+      },
+      hosts: {},
+    }), 'utf8');
+    const probe = probeCanonicalAuth(env);
+    assert.deepEqual(probe, {
+      filePath: file,
+      present: true,
+      valid: true,
+      updatedAt: '2026-07-15T00:00:00Z',
+    });
+    assert.equal(JSON.stringify(probe).includes('sk-must-never-appear-in-probe'), false);
   } finally {
-    if (savedRoot === undefined) delete process.env.TRAFFIC_ONE_PLUGIN_ROOT; else process.env.TRAFFIC_ONE_PLUGIN_ROOT = savedRoot;
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
 
-test('analyzeCodexSessionFile counts tools + detects mutate-before-auth-gate', () => {
+test('analyzeCodexSessionFile counts tools and detects injected instructions', () => {
   const dir = tmp('codexsess');
-  const savedAuth = process.env.TRAFFIC_ONE_AUTH_STATE_PATH;
-  process.env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'auth.json'); // absent → present:false
   try {
     const file = path.join(dir, 'rollout-sess1.jsonl');
     fs.writeFileSync(file, [
-      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess1', cwd: '/proj', base_instructions: { text: 'Traffic One Codex Instructions\nAuthenticate with the `mcp-auth` server' } } }),
+      JSON.stringify({ type: 'session_meta', timestamp: '2026-01-01T00:00:00Z', payload: { id: 'sess1', cwd: '/proj', base_instructions: { text: 'Traffic One Codex Instructions\nUse the canonical API-key wizard' } } }),
       JSON.stringify({ type: 'response_item', timestamp: '2026-01-01T00:01:00Z', payload: { type: 'function_call', name: 'exec_command', arguments: JSON.stringify({ cmd: 'npm install x' }) } }),
     ].join('\n'), 'utf8');
     const d = analyzeCodexSessionFile(file);
@@ -175,10 +184,7 @@ test('analyzeCodexSessionFile counts tools + detects mutate-before-auth-gate', (
     assert.equal(d?.toolCallCount, 1);
     assert.equal(d?.mutatingToolCallCount, 1);
     assert.equal(d?.trafficOneInstructionInjected, true);
-    assert.equal(d?.mutatingToolBeforeAuthGate, true); // no auth gate line precedes the mutate
-    assert.equal(d?.authState?.present, false);
   } finally {
-    if (savedAuth === undefined) delete process.env.TRAFFIC_ONE_AUTH_STATE_PATH; else process.env.TRAFFIC_ONE_AUTH_STATE_PATH = savedAuth;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

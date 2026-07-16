@@ -6,13 +6,23 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { STATE_FILE } from '../config/paths';
-import { hasPluginAuthoringMarkers } from './authoring-root';
+import { STATE_DIR, STATE_FILE } from '../config/paths';
+import { hasPluginAuthoringMarkers, isMachineConfigRoot } from './authoring-root';
 import { readJson } from './fsjson';
 import { isNativeState } from './state';
 import { hasStateFile } from './tool-classify';
 
 type Rec = Record<string, unknown>;
+
+// Kilo's OpenCode-compatible hook bridge can drop the leading slash from an
+// absolute macOS path. Restore it only when the resulting path is inside this
+// hook's cwd, so an ordinary relative `Users/...` target is never reinterpreted.
+function normalizeHookTargetPath(cwd: string, filePath: unknown): string {
+  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  if (!normalized || path.isAbsolute(normalized)) return normalized;
+  const rootlessAbsolute = path.resolve(path.sep, normalized);
+  return isPathWithin(rootlessAbsolute, path.resolve(cwd)) ? rootlessAbsolute : normalized;
+}
 
 export function stateRequiresNewProjectMonorepo(state: Rec): boolean {
   if (!state || state.mode !== 'new-project' || isNativeState(state)) return false;
@@ -23,7 +33,7 @@ export function stateRequiresNewProjectMonorepo(state: Rec): boolean {
 // Walk up from the tool's target file to the nearest dir (within cwd) that has a
 // .traffic-one state file — that's the project root for monorepo sub-apps.
 export function findProjectRootForHookFile(cwd: string, filePath: unknown): string {
-  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalized = normalizeHookTargetPath(cwd, filePath);
   if (!normalized) return cwd;
   const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
   const cwdAbs = path.resolve(cwd);
@@ -32,8 +42,9 @@ export function findProjectRootForHookFile(cwd: string, filePath: unknown): stri
   const within = (dir: string): boolean => isPathWithin(dir, cwdAbs);
   let current = path.dirname(absPath);
   while (within(current)) {
-    // The plugin's own repo is never a project root, even with a stray state file.
-    if (hasStateFile(current) && !hasPluginAuthoringMarkers(current)) return current;
+    // The plugin's own repo and machine-config space (incl. exact system-temp
+    // roots) are never project roots, even with a stray state file.
+    if (hasStateFile(current) && !hasPluginAuthoringMarkers(current) && !isMachineConfigRoot(current)) return current;
     if (current === cwdAbs) break;
     current = path.dirname(current);
   }
@@ -60,6 +71,20 @@ export function isPathWithin(dir: string, root: string): boolean {
   return d === r || d.startsWith(r + path.sep);
 }
 
+// A hook can run with a cwd (or target file) that has DRIFTED inside the
+// project's own state tree — e.g. an agent that `cd`'d into
+// `.traffic-one/skills/<name>` to read a skill and stayed there. Resolution
+// must never anchor inside `.traffic-one/**`: truncate at the first state-dir
+// segment so the walk starts from the enclosing project instead.
+export function stripStateDirSuffix(dir: string): string {
+  if (!dir) return dir;
+  const resolved = path.resolve(dir);
+  const segments = resolved.split(path.sep);
+  const idx = segments.indexOf(STATE_DIR);
+  if (idx <= 0) return resolved;
+  return segments.slice(0, idx).join(path.sep) || resolved;
+}
+
 function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null {
   // The home dir is machine-wide config space (`~/.traffic-one`), never a project
   // root. Stop the walk there (and never above it): a stray mode-bearing
@@ -72,6 +97,10 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null
   let current = path.resolve(startDir);
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
     if (home && current === home) break; // reached the home dir — don't treat it (or above) as a root
+    // Machine-config space (incl. exact system-temp roots like /private/tmp) is
+    // never a project root and nothing above it is this project — stop, so a
+    // stray .traffic-one minted into a temp root can never be adopted.
+    if (isMachineConfigRoot(current)) break;
     // Never resolve above the host's authoritative workspace root (Cursor's
     // workspace_roots): a dir OUTSIDE the opened workspace is not this project, even
     // with a stray onboarded .one.json. Without this an out-of-tree tool path (or a
@@ -81,6 +110,11 @@ function nearestOnboardedRoot(startDir: string, ceiling?: string): string | null
     // a project — skip it and keep walking so an enclosing real workspace (if
     // any) still resolves. The repo can therefore never be adopted as a project.
     if (isOnboardedProjectRoot(current) && !hasPluginAuthoringMarkers(current)) {
+      // An onboarded root that is ITSELF a workspace root is the monorepo root —
+      // the NEAREST such root wins, even when a farther ancestor also declares
+      // workspaces (a project nested inside an unrelated umbrella repo must not
+      // resolve to the umbrella — the tests/claude/3 digests-at-parent incident).
+      if (dirDeclaresWorkspace(current)) return current;
       // …and a mode-bearing .one.json BELOW a workspace root is a leak, not a
       // project root: a monorepo has ONE root (the workspace), so a stray
       // packages/*/.traffic-one (the packages/ui incident) must not shadow it.
@@ -119,6 +153,7 @@ function nearestWorkspaceRoot(startDir: string, ceiling?: string): string | null
   let current = path.resolve(startDir);
   for (let i = 0; i < MAX_ROOT_WALK; i += 1) {
     if (home && current === home) break;
+    if (isMachineConfigRoot(current)) break; // temp/config roots never anchor a workspace
     if (ceil && !isPathWithin(current, ceil)) break; // never anchor above the host workspace root
     if (dirDeclaresWorkspace(current) && !hasPluginAuthoringMarkers(current)) return current;
     const parent = path.dirname(current);
@@ -162,34 +197,37 @@ export function isUnclaimedWorkspaceSubPackage(cwd: string): boolean {
 // monorepo sub-package climb is unchanged.
 export function resolveProjectRoot(cwd: string, filePath?: unknown, opts: { ceiling?: string } = {}): string {
   const ceiling = opts.ceiling ? path.resolve(opts.ceiling) : '';
-  const normalized = String(filePath ?? '').replace(/\\/g, '/').replace(/^\.\//, '');
+  // Relative targets still resolve against the REAL cwd; only the walk anchors
+  // are lifted out of a drifted `.traffic-one/**` cwd (see stripStateDirSuffix).
+  const cwdStart = stripStateDirSuffix(cwd);
+  const normalized = normalizeHookTargetPath(cwd, filePath);
   const fileAbs = normalized
     ? (path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized))
     : '';
-  let fileStart = fileAbs ? path.dirname(fileAbs) : '';
+  let fileStart = fileAbs ? stripStateDirSuffix(path.dirname(fileAbs)) : '';
   // A target file OUTSIDE the authoritative workspace root is out-of-tree — never
   // let it re-root resolution to an ancestor. Drop the file hint and resolve from
   // cwd within the workspace.
   if (ceiling && fileStart && !isPathWithin(fileStart, ceiling)) fileStart = '';
-  const onboarded = (fileStart && nearestOnboardedRoot(fileStart, ceiling)) || nearestOnboardedRoot(cwd, ceiling);
+  const onboarded = (fileStart && nearestOnboardedRoot(fileStart, ceiling)) || nearestOnboardedRoot(cwdStart, ceiling);
   if (onboarded) return onboarded;
-  const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling)) || nearestWorkspaceRoot(cwd, ceiling);
+  const workspace = (fileStart && nearestWorkspaceRoot(fileStart, ceiling)) || nearestWorkspaceRoot(cwdStart, ceiling);
   if (workspace) return workspace;
   // Cursor can run a subagent shell with cwd under its internal metadata tree
   // (for example ~/.cursor/.../terminals), outside workspace_roots. The ceiling
   // bounded walks above correctly refuse to climb from that cwd, but falling back
   // to cwd would make Traffic One think this out-of-tree dir is a fresh project.
-  if (ceiling && !isPathWithin(path.resolve(cwd), ceiling)) {
+  if (ceiling && !isPathWithin(path.resolve(cwdStart), ceiling)) {
     if (isOnboardedProjectRoot(ceiling)) return ceiling;
     const workspaceAtCeiling = nearestWorkspaceRoot(ceiling, ceiling);
     if (workspaceAtCeiling) return workspaceAtCeiling;
     return ceiling;
   }
-  return findProjectRootForHookFile(cwd, filePath);
+  return findProjectRootForHookFile(cwdStart, fileAbs || filePath);
 }
 
 export function projectRelativeHookPath(cwd: string, projectRoot: string, filePath: unknown): string {
-  const normalized = String(filePath || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  const normalized = normalizeHookTargetPath(cwd, filePath);
   if (!normalized) return '';
   const absPath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
   const relative = path.relative(projectRoot, absPath).replace(/\\/g, '/');

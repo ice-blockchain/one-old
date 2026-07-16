@@ -4,15 +4,14 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { SHIMS, writeShims } from '../build-runtime';
+import { SHIMS, buildRuntime, writeShims } from '../build-runtime';
 
 test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', () => {
-  // The hook configs invoke hook-runtime.cjs / cursor-hook-runtime.cjs; the
-  // session module spawns traffic-one-auth.cjs; skills + the post-build hint +
-  // the deploy gate reference the runner CLIs.
+  // Hook configs invoke the host runtimes; skills, post-build hints, and deploy
+  // gates reference the remaining runner CLIs.
   for (const name of [
-    'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'kilo-hook-runtime.cjs', 'windsurf-hook-runtime.cjs',
-    'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'traffic-one-auth.cjs', 'doctor.cjs',
+    'hook-runtime.cjs', 'cursor-hook-runtime.cjs', 'opencode-hook-runtime.cjs', 'kilo-hook-runtime.cjs', 'windsurf-hook-runtime.cjs', 'devin-hook-runtime.cjs',
+    'opencode-host.cjs', 'kilo-host.cjs', 'windsurf-host.cjs', 'model-status.cjs', 'doctor.cjs',
     'security-check-runner.cjs', 'token-report.cjs', 'one-mcp-report.cjs', 'traffic-one-cleanup.cjs',
     'gitnexus-runner.cjs', 'graphify-runner.cjs',
   ]) {
@@ -25,8 +24,9 @@ test('SHIMS maps every legacy CLI path the host configs/skills/spawns invoke', (
   assert.equal(SHIMS['kilo-hook-runtime.cjs'], './hooks/kilo-entry.js');
   assert.equal(SHIMS['kilo-host.cjs'], './runners/kilo-host/index.js');
   assert.equal(SHIMS['windsurf-hook-runtime.cjs'], './hooks/windsurf-entry.js');
+  assert.equal(SHIMS['devin-hook-runtime.cjs'], './hooks/devin-entry.js');
   assert.equal(SHIMS['windsurf-host.cjs'], './runners/windsurf-host/index.js');
-  assert.equal(SHIMS['traffic-one-auth.cjs'], './runners/auth/index.js');
+  assert.equal(SHIMS['model-status.cjs'], './runners/model-status/index.js');
 });
 
 test('writeShims emits a require+main forwarder for each legacy path', () => {
@@ -41,6 +41,24 @@ test('writeShims emits a require+main forwarder for each legacy path', () => {
       assert.ok(body.includes("typeof code === 'number'"), `${name} should preserve async numeric exit codes`);
       assert.ok(body.startsWith("'use strict';"), `${name} should be a CJS module`);
     }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('buildRuntime replaces the output tree so deleted source artifacts cannot linger', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-runtime-clean-'));
+  const outDir = path.join(dir, 'scripts');
+  try {
+    fs.mkdirSync(path.join(outDir, 'retired'), { recursive: true });
+    const stale = path.join(outDir, 'retired', 'orphan.js');
+    fs.writeFileSync(stale, 'stale', 'utf8');
+
+    buildRuntime(outDir);
+
+    assert.equal(fs.existsSync(stale), false);
+    assert.equal(fs.existsSync(path.join(outDir, 'hooks', 'claude-entry.js')), true);
+    assert.equal(fs.existsSync(path.join(outDir, 'hook-runtime.cjs')), true);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

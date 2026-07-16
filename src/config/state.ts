@@ -100,6 +100,23 @@ export const KNOWN_ADDONS = new Set([
 // Subagent freshness windows.
 export const SUBAGENT_STALE_MS = 30 * 60 * 1000;
 export const PENDING_AGENT_CLAIM_STALE_MS = 5 * 60 * 1000;
+// How long the reuse gate waits for a Cursor subagent to expose its Task `resume`
+// UUID (harvested from the transcript cache) before presuming it DEAD. A healthy
+// Cursor subagent surfaces one within seconds; a null resume id past this window
+// means the agent died before producing one (API/usage limit, crash) and it will
+// NEVER arrive — so the gate must retire it and allow the role's retry instead of
+// deadlocking forever on `agent-reuse-await-cursor-id`. Only applies on Cursor,
+// which emits no post-spawn stop event to signal the death.
+//
+// Two windows, because a bare timer can false-positive on a slow-but-live agent
+// (retiring one spawns a DUPLICATE — the exact thing the reuse gate exists to
+// prevent). The short grace applies only when the death is CORROBORATED (the
+// retry prompt names a failure/limit, or the role already has an exhausted-model
+// ledger entry). A signal-less retry ("continue the work") waits for the hard
+// window before the agent is presumed dead — slower to unstick, but never
+// duplicates a live agent on a timer alone.
+export const CURSOR_RESUME_ID_GRACE_MS = 90 * 1000;
+export const CURSOR_RESUME_ID_HARD_MS = 270 * 1000;
 
 export const VALID_AGENT_ROLES = new Set([
   'senior-architect',

@@ -84,12 +84,15 @@ or update the project memory baseline from `project-memory` and the docs
 selected by `auto-documentation-generator` before reporting `PLAN_READY`. For
 `mode: existing-codebase` or `existing-with-supabase`, reconcile project memory
 and docs before normal feature work: create missing canonical files and update
-existing files in place. Run `mkdir -p .traffic-one` via Bash before the first
-write.
+existing files in place. Use the role-scoped Write/Edit tools for every file
+creation and edit; they create parent directories. Bash is read-only inspection
+or verification only: never use `mkdir`, redirection, `cat <<`, `tee`, `cp`,
+`mv`, or a script to create or modify project files. In a team run those shell
+writes are deliberately blocked because ownership cannot be verified.
 
 ### Required workspace scaffold (stack=default OR frontend=react-vite)
 
-Before emitting `PLAN_READY` you MUST write these files. They are **baseline**, not speculative architecture — the `least amount of architecture` rule does NOT permit skipping them, because every downstream skill (`create-component`, `create-page`, `i18n-text`, `frontend-design`, `seo`, the shared Tailwind preset) assumes `packages/*` exists. A flat `apps/web/` without `packages/*` is a broken Traffic One scaffold even for v1.
+Before emitting `PLAN_READY` you MUST write these files. They are **baseline**, not speculative architecture — the `least amount of architecture` rule does NOT permit skipping them, because every downstream skill (`create-component`, `create-page`, `i18n-text`, `frontend-design`, `seo`, the shared Tailwind CSS package) assumes `packages/*` exists. A flat `apps/web/` without `packages/*` is a broken Traffic One scaffold even for v1.
 
 Minimum required files (consult `monorepo-architecture` skill for exact content):
 
@@ -102,13 +105,31 @@ package.json                          # root: private, packageManager, engines, 
 apps/<name>/package.json              # workspace consumer
 packages/ui/package.json              # @app/ui — shadcn primitives
 packages/ui/src/index.ts              # empty barrel
-packages/tailwind-config/package.json # @app/tailwind-config — shared preset
-packages/tailwind-config/index.ts     # exports preset
+packages/tailwind-config/package.json # @app/tailwind-config — shared Tailwind CSS
+packages/tailwind-config/src/globals.css # Tailwind v4 CSS-first globals/design tokens
 packages/i18n/package.json            # @app/i18n — shared i18next resources
 packages/i18n/src/index.ts            # empty barrel
 ```
 
-Empty `src/index.ts` barrels are allowed (skeleton is the architect's job; filling them is the frontend role's job). Do not write feature code in these packages — only the skeleton.
+Write the root `package.json` first, before `tsconfig`, Vite, or package files.
+Its first version must already declare the workspace, so it passes the
+new-project gate even before `pnpm-workspace.yaml` exists:
+
+```json
+{
+  "name": "<project-slug>",
+  "version": "0.0.0",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "workspaces": ["apps/*", "packages/*"],
+  "scripts": {}
+}
+```
+
+Then write `pnpm-workspace.yaml`, `turbo.json`, `tsconfig.base.json`, and the
+remaining skeleton with Write/Edit. Do not create a flat root Vite layout.
+
+Empty `src/index.ts` barrels and the shared Tailwind globals baseline are allowed (skeleton is the architect's job; filling packages is the frontend role's job). Do not write feature code in these packages — only the skeleton.
 
 ### Required project-memory baseline (mode: new-project)
 
@@ -148,7 +169,7 @@ Reference the Traffic One stack id from `.traffic-one/.one.json`. Note any devia
 
 ## Module map
 List every package / app / service. One line each: name, responsibility, public API surface.
-For `stack: default` or `frontend: react-vite`, the Module map MUST list `apps/<name>` AND the shared `packages/*` workspaces (minimum: `packages/ui`, `packages/tailwind-config`, `packages/i18n`). The "least architecture" principle does NOT permit collapsing this to `apps/web` only or "the smallest tree" — Traffic One downstream skills depend on these packages existing as workspace entries (shadcn primitives, Tailwind preset, i18n resources). Listing them in the plan and scaffolding empty barrels is required baseline, not speculative architecture. Flat `src/` layouts and "apps/web only" layouts are both rejected on this stack.
+For `stack: default` or `frontend: react-vite`, the Module map MUST list `apps/<name>` AND the shared `packages/*` workspaces (minimum: `packages/ui`, `packages/tailwind-config`, `packages/i18n`). The "least architecture" principle does NOT permit collapsing this to `apps/web` only or "the smallest tree" — Traffic One downstream skills depend on these packages existing as workspace entries (shadcn primitives, Tailwind globals, i18n resources). Listing them in the plan and scaffolding empty barrels plus `packages/tailwind-config/src/globals.css` is required baseline, not speculative architecture. Flat `src/` layouts and "apps/web only" layouts are both rejected on this stack.
 
 ## Public contracts
 TypeScript types, OpenAPI fragments, or zod schema sketches for the inter-module boundaries.
@@ -164,7 +185,7 @@ The 3 things most likely to derail the build. One mitigation each.
 What we are NOT building in v1. Concrete features the user might assume but won't get yet.
 
 ## OpenCode delegation queue
-Include this section ONLY when the current host is NOT OpenCode or Kilo and effective OpenCode delegation is active (`openCode.enabled` plus an installed CLI). If the current host is OpenCode or Kilo, omit this entire section and do not write `<!-- opencode-delegate:start -->` markers: OpenCode/Kilo cannot delegate to OpenCode from inside a peer self host, and implementer work runs directly on the current host. When this section is allowed, bounded, low-risk units are delegated to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's paid-host token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode-delegation.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Use stable `id` values; when two units overlap files/areas, the later one must declare a pipe-delimited `depends: <earlier-id>` field. Do not hide `depends_on:` or `depends:` inside the task text; the plan gate rejects that because the runner cannot order prose-only dependencies. **On non-OpenCode/Kilo hosts with active delegation, a greenfield plan with an EMPTY queue is almost always a mistake** — every new build has fixtures, source catalogs, helper stubs, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). Leave the block empty only when active delegation is false or the work genuinely has no bounded units.
+Include this section ONLY when the current host is NOT OpenCode or Kilo and effective OpenCode delegation is active (`openCode.enabled` plus an installed CLI). If the current host is OpenCode or Kilo, omit this entire section and do not write `<!-- opencode-delegate:start -->` markers: OpenCode/Kilo cannot delegate to OpenCode from inside a peer self host, and implementer work runs directly on the current host. When this section is allowed, bounded, low-risk units are delegated to OpenCode BEFORE the implementers (via `opencode-runner.cjs --from-plan`), saving the user's paid-host token budget. The canonical catalog of queueable unit kinds is the plugin config (`config/opencode-delegation.ts` → `OPENCODE_DELEGATE_UNIT_KINDS`): fixtures/seed data, pure helpers, i18n source catalogs + draft translations, test scaffolding, QA-report sweeps, reviewer-input audit sweeps, docs drafts (secret-free), Storybook story stubs, mechanical refactors/codemods. NEVER queue what `OPENCODE_NEVER_DELEGATE` lists: architecture, public contracts, security/auth/RLS, data-model, migrations, cross-file-invariant work, deploys/credentials — those stay on the senior subagents. One self-contained unit per line (the run sees ONLY this text — include the exact files + acceptance criteria). Use stable `id` values; when two units overlap files/areas, the later one must declare a pipe-delimited `depends: <earlier-id>` field. Do not hide `depends_on:` or `depends:` inside the task text; the plan gate rejects that because the runner cannot order prose-only dependencies. **On non-OpenCode/Kilo hosts with active delegation, a plan with an EMPTY queue is almost always a mistake** — this applies both to new-project scaffolds AND to the complex existing-codebase/maintenance builds you were spawned for (e.g. a large revamp): both have fixtures, source catalogs, helper stubs, SEO/token files, and story/test scaffolding worth ~3–6 free units (a measured run with an empty queue pushed all of it onto paid workers). The batch runs off THIS run's fresh queue (it is tied to the `runs/<run-id>/assignments.json` you write), so a stale block from a previous build is never re-run — small maintenance fixes that never reach you are delegated per-unit via `opencode_delegate`, not this queue. Leave the block empty only when active delegation is false or the work genuinely has no bounded units.
 
 If a unit's task or acceptance mentions tests, testability, Vitest, Playwright, specs, or config/dependency changes, its `files:` allowlist must include the exact test/spec/config/package files it is allowed to touch. Otherwise remove that acceptance from the OpenCode unit and leave verification/config work to the paid implementer/reviewer. Do not queue a helper as "unit-testable" while allowing only the helper source file; OpenCode will naturally add tests/config and the runner will reject the diff.
 
@@ -229,7 +250,7 @@ Derive the partition from REAL paths, never guessed directory names:
 Guarantees you must uphold (the gate trusts the manifest):
 - **Disjoint** — no path belongs to two roles' scopes. Use `exclude` to split a shared subtree (e.g. backend owns `src/app/api/`, frontend owns the rest of `src/app/`).
 - **Covers the work surface** — every module an implementer will build falls in exactly one role's scope. Anything left uncovered is governed by a first-writer fallback lock — a safety net, not the plan.
-- **Scaffold barrels transfer to implementers** — empty package barrels the architect creates are baseline scaffold only. Assign `packages/ui/src/index.ts`, `packages/i18n/src/index.ts`, `packages/types/src/index.ts`, and similar shared exports to the role expected to fill/export them; do not exclude a barrel from a role while also asking that role to author the package contracts.
+- **Scaffold barrels transfer to implementers** — empty package barrels and Tailwind globals the architect creates are baseline scaffold only. Assign `packages/ui/src/index.ts`, `packages/i18n/src/index.ts`, `packages/tailwind-config/**`, `packages/types/src/index.ts`, and similar shared exports to the role expected to fill/export them; do not exclude a baseline file from a role while also asking that role to author the package contracts.
 - **Real paths only** — every `include`/`exclude` is a directory that exists or that this run creates.
 - **Lockfiles are side-effects, not owned source** — `pnpm-lock.yaml` /
   `package-lock.json` / `yarn.lock` / `bun.lock*` are written by installs, not
@@ -252,8 +273,8 @@ Format and content rules: `rules/common/agent-handoff-digests.md`. Keep it ≤2 
 
 ## Hard rules
 
-- You do **not** write feature source files (no `apps/*/src/**`, `packages/*/src/**` other than empty package skeletons that are part of scaffolding the workspace itself).
-- On `stack: default` or `frontend: react-vite`, the "Required workspace scaffold" subsection of "What you write" is non-negotiable: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls pnpm-workspace.yaml turbo.json packages/ui/package.json packages/tailwind-config/package.json packages/i18n/package.json` — if any is missing, the run is incomplete. The "least amount of architecture" principle (above) does not override this — workspace skeleton is baseline, not speculative.
+- You do **not** write feature source files (no `apps/*/src/**`, `packages/*/src/**` other than empty package skeletons and `packages/tailwind-config/src/globals.css` that are part of scaffolding the workspace itself).
+- On `stack: default` or `frontend: react-vite`, the "Required workspace scaffold" subsection of "What you write" is non-negotiable: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls pnpm-workspace.yaml turbo.json packages/ui/package.json packages/ui/src/index.ts packages/tailwind-config/package.json packages/tailwind-config/src/globals.css packages/i18n/package.json packages/i18n/src/index.ts` — if any is missing, the run is incomplete. The "least amount of architecture" principle (above) does not override this — workspace skeleton is baseline, not speculative.
 - On `mode: new-project`, the "Required project-memory baseline" subsection of "What you write" is non-negotiable the SAME way: every file listed there must exist on disk before `PLAN_READY`. Verify with `ls .traffic-one/{product,stack,coding,security,known-issues,api,database,deployment,environment-setup,agent-log}.md .traffic-one/.agentignore .traffic-one/schema.sql .traffic-one/decisions/*.md` — if any is missing, the run is incomplete; write it (real content, not an empty stub) before `PLAN_READY`. This is where `auto-documentation-generator` being "mandatory" is enforced: you do NOT skip it, and you do NOT delegate the `.traffic-one/` baseline to OpenCode (`OPENCODE_NEVER_DELEGATE`) — the `docs` delegate may only touch root human docs (`README`/`CONTRIBUTING`/`CHANGELOG`).
 - You do not skip the plan to "save time". The plan-gate hook will deny feature writes until `.traffic-one/plan.md` exists.
 - Before `PLAN_READY` you MUST write `.traffic-one/runs/<run-id>/assignments.json` with a disjoint scope for `senior-frontend` and `senior-backend`, derived from real paths (see "Assignments manifest"). Write it only after scaffold/memory/plan/ADRs are complete, then verify it exists and parses. If the surface can't be partitioned disjointly, report the blocker instead of `PLAN_READY`.

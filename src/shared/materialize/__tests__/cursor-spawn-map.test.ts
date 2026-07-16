@@ -11,19 +11,29 @@ import {
   resolveCursorTierSlug,
   syncCursorSpawnAgentFiles,
 } from '../cursor-spawn-map';
+import { captureCursorModels } from '../cursor-models';
 import { readEffectiveState } from '../../state';
 
 function withProj(fn: (dir: string) => void): void {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 't1-spawnmap-')));
   const env = process.env;
   const pp = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+  const sp = env.TRAFFIC_ONE_STATE_PATH;
   const pl = env.TRAFFIC_ONE_USER_PLAN;
+  const ph = env.TRAFFIC_ONE_HOST;
   env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'prefs.json');
+  env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
+  env.TRAFFIC_ONE_HOST = 'cursor';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
   fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-    performance: { level: 'high', source: 'prompted' },
-    team: { mode: 'subagents', source: 'prompted', approved: true },
+    hosts: {
+      cursor: {
+        performance: { level: 'high', source: 'prompted' },
+        team: { mode: 'subagents', source: 'prompted', approved: true },
+        configuredFor: { plan: 'pro', modelsUpdatedAt: '2026-07-12' },
+      },
+    },
   }), 'utf8');
   fs.writeFileSync(path.join(dir, '.traffic-one', '.one.json'), JSON.stringify({
     mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
@@ -31,18 +41,21 @@ function withProj(fn: (dir: string) => void): void {
   }), 'utf8');
   try { fn(dir); } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
+    if (sp === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = sp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    if (ph === undefined) delete env.TRAFFIC_ONE_HOST; else env.TRAFFIC_ONE_HOST = ph;
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
 
 test('resolveCursorTierSlug maps family anchor to captured build slug', () => {
   withProj((dir) => {
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
-      plan: 'pro',
-      capturedAt: new Date().toISOString(),
-    }), 'utf8');
+    assert.equal(captureCursorModels(
+      dir,
+      ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
+      'pro',
+      new Date().toISOString(),
+    ), true);
     assert.equal(resolveCursorTierSlug(dir, 'claude-opus-4-8', 'pro'), 'claude-opus-4-8-thinking-medium');
   });
 });
@@ -53,13 +66,14 @@ test('isBareCursorTierFamily distinguishes family anchor from build slug', () =>
   assert.equal(isBareCursorTierFamily('composer-2.5', 'composer-2.5'), true);
 });
 
-test('buildCursorSpawnModelMap + syncCursorSpawnAgentFiles pin exact slugs in agent files', () => {
+test('buildCursorSpawnModelMap resolves exact slugs without persisting them in agent files', () => {
   withProj((dir) => {
-    fs.writeFileSync(path.join(dir, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
-      plan: 'pro',
-      capturedAt: new Date().toISOString(),
-    }), 'utf8');
+    assert.equal(captureCursorModels(
+      dir,
+      ['claude-opus-4-8-thinking-medium', 'composer-2.5-fast'],
+      'pro',
+      new Date().toISOString(),
+    ), true);
     const state = readEffectiveState(dir) as Record<string, unknown>;
     const map = buildCursorSpawnModelMap(dir, state);
     assert.equal(map['senior-architect'], 'claude-opus-4-8-thinking-medium');
@@ -67,7 +81,6 @@ test('buildCursorSpawnModelMap + syncCursorSpawnAgentFiles pin exact slugs in ag
 
     syncCursorSpawnAgentFiles(dir, state);
     const architect = fs.readFileSync(path.join(dir, '.cursor', 'agents', 'senior-architect.md'), 'utf8');
-    assert.match(architect, /^model: claude-opus-4-8-thinking-medium$/m);
-    assert.doesNotMatch(architect, /^model: claude-opus-4-8$/m);
+    assert.doesNotMatch(architect, /^model:/m);
   });
 });

@@ -63,6 +63,11 @@ test('native rules: NativeWind className + native primitives', () => {
 
 test('any-type and WebSocket-location checks fire on .ts/.tsx', () => {
   assert.ok(check('apps/web/src/x.ts', `const v${ANY} = 1;`).includes('no-any'));
+  // Test files are exempt from the no-any rule (B12) — mocks/fixtures typing is
+  // idiomatic there and the tester role must not stall on it.
+  assert.equal(check('apps/web/src/services/courses.test.ts', `const v${ANY} = 1;`).includes('no-any'), false);
+  assert.equal(check('tests/i18n-integration.test.ts', `const v${ANY} = 1;`).includes('no-any'), false);
+  assert.equal(check('packages/ui/src/__tests__/btn.ts', `const v${ANY} = 1;`).includes('no-any'), false);
   assert.ok(check('apps/web/src/x.ts', `const s = ${WS};`).includes('websocket-location'));
   // allowed WS locations are exempt
   assert.equal(check('packages/ws-client/src/x.ts', `const s = ${WS};`).includes('websocket-location'), false);

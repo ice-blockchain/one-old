@@ -3,32 +3,50 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { spawn } from 'child_process';
 
 import {
   anyRunProducedImplementerOutput,
   anyRunReachedTerminalVerdict,
+  claimCursorFollowupsBatch,
   claimThreadRole,
+  claimCursorSpawnObservation,
   continuationAgentId,
+  consumeCursorSpawnObservation,
+  cursorParentObservationSnapshot,
+  cursorSpawnObservationForChild,
+  cursorTranscriptCandidateTimeMs,
   ensureCurrentRunId,
   ensureRunAgentClaim,
   ensureRunLedger,
   hasActiveRunClaims,
   hasRunAgentState,
   inferRoleFromTranscript,
+  listCursorSpawnObservations,
+  listCursorSubagentTranscriptCandidates,
+  markCursorSpawnObservationFollowupEmitted,
+  markCursorSpawnObservationRetryHandled,
   markRunAgentReplaced,
   pruneExpiredPendingClaims,
   readRunAgentRegistry,
   readRunAssignments,
   readRunAssignmentsResilient,
   refreshCursorRunAgentFromTranscriptCache,
+  recordCursorSpawnObservation,
   recordRunAgent,
   resolveRunAgentContext,
   runHasOrchestratedArtifacts,
   runIdNow,
   runReachedTerminalVerdict,
   runSettledForRotation,
+  suppressCursorFollowupsBatch,
   transcriptThreadId,
+  tryFallbackClaim,
+  updateCursorSpawnObservation,
+  validateCodexLiveRunAgent,
+  type CursorSpawnObservation,
 } from '../run-agent';
+import { resetAuthoringRootCache } from '../../authoring-root';
 import { stackFingerprint } from '../materialization';
 
 function writeDigest(dir: string, runId: string, name: string, verdict: string): void {
@@ -349,6 +367,20 @@ test('ensureRunAgentClaim rejects unknown roles', () => {
   });
 });
 
+test('native Devin foreground child resolves the sole anonymous pending role', () => {
+  withPrefs((dir) => {
+    const state = materializedState();
+    const claim = ensureRunAgentClaim(dir, state, 'senior-architect', {}, { toolName: 'run_subagent', agentType: 'subagent_general' });
+    assert.ok(claim);
+    const current = { ...state, currentRunId: claim!.runId };
+    const raw = { hook_event_name: 'PreToolUse', tool_name: 'write', tool_input: { file_path: path.join(dir, 'package.json') } };
+    assert.equal(resolveRunAgentContext(dir, current, raw, { claimPending: true }), null);
+    const resolved = resolveRunAgentContext(dir, current, raw, { claimPending: true, allowSoleAnonymousPending: true });
+    assert.equal(resolved?.role, 'senior-architect');
+    assert.equal(resolved?.source, 'sole-foreground-pending');
+  });
+});
+
 test('pruneExpiredPendingClaims removes stale pending claims and keeps fresh ones', () => {
   withPrefs((dir) => {
     const runId = 'run-prune';
@@ -438,6 +470,225 @@ test('claimThreadRole rejects unknown roles and empty thread ids', () => {
 // A real Codex spawn prompt names the ASSIGNED role AND cross-references others
 // ("avoid backend-owned paths", "senior-backend owns the API") — the inference must
 // pick the assigned one, anchored on "You are …", not bail on the multiple tokens.
+const CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE = path.join(
+  process.cwd(),
+  'src/shared/state/__tests__/fixtures/codex-collaboration-v2-architect.jsonl',
+);
+
+function codexCollaborationV2FixtureRecords(): Record<string, unknown>[] {
+  return fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+function writeTranscriptRecords(dir: string, name: string, records: unknown[]): string {
+  const file = path.join(dir, name);
+  fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+  return file;
+}
+
+const CODEX_V2_CHILD_THREAD = '019f69fe-e335-7de0-be43-1ee45e3535c4';
+const CODEX_V2_PARENT_THREAD = '019f69fb-334a-7351-8e94-66c97c3fa908';
+const CODEX_V2_MODEL = 'gpt-5.6-sol';
+
+function writeCodexV2FixtureTranscript(dir: string): string {
+  const file = path.join(dir, `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`);
+  fs.writeFileSync(file, fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'), 'utf8');
+  return file;
+}
+
+function legacyRegistryEntry(
+  agentId: string,
+  parentSessionId: string = CODEX_V2_PARENT_THREAD,
+  model: string = CODEX_V2_MODEL,
+  recordedAt: string = new Date().toISOString(),
+): Record<string, unknown> {
+  return {
+    agentId,
+    resumeId: agentId,
+    toolCallId: null,
+    model,
+    agentType: null,
+    parentSessionId,
+    recordedAt,
+    tasks: 1,
+    replaced: false,
+  };
+}
+
+function writeLegacyCodexClaimAndRegistry(
+  dir: string,
+  state: Record<string, unknown>,
+  runId: string,
+  role: string,
+  additionalAgents: Record<string, unknown> = {},
+): { runDir: string; claimFile: string; registryFile: string } {
+  const runDirectory = path.join(dir, '.traffic-one', 'runs', runId);
+  const claimFile = path.join(runDirectory, `${CODEX_V2_CHILD_THREAD}.json`);
+  const registryFile = path.join(runDirectory, 'agents.json');
+  const now = new Date().toISOString();
+  fs.mkdirSync(runDirectory, { recursive: true });
+  fs.writeFileSync(claimFile, JSON.stringify({
+    version: 1,
+    runId,
+    claimId: `${role}-1-${CODEX_V2_CHILD_THREAD.slice(-8)}`,
+    role,
+    spawnIndex: 1,
+    status: 'claimed',
+    sessionId: CODEX_V2_CHILD_THREAD,
+    parentSessionId: CODEX_V2_PARENT_THREAD,
+    createdAt: now,
+    claimedAt: now,
+    stackFingerprint: stackFingerprint(state),
+    model: CODEX_V2_MODEL,
+  }), 'utf8');
+  fs.writeFileSync(registryFile, JSON.stringify({
+    version: 1,
+    agents: {
+      [role]: legacyRegistryEntry(CODEX_V2_CHILD_THREAD),
+      ...additionalAgents,
+    },
+    history: [],
+  }), 'utf8');
+  return { runDir: runDirectory, claimFile, registryFile };
+}
+
+function fallbackTestContext(runId: string, role: string, sessionId: string): {
+  source: string;
+  runId: string;
+  role: string;
+  spawnIndex: number;
+  sessionId: string;
+  claimId: string;
+} {
+  return {
+    source: 'test',
+    runId,
+    role,
+    spawnIndex: 1,
+    sessionId,
+    claimId: `${role}-test-${sessionId.slice(-8)}`,
+  };
+}
+
+type RebindCrashPhase = 'prepared' | 'claim-first' | 'registry-first' | 'committed' | 'after-cleanup';
+
+function writeRebindCrashFixture(
+  dir: string,
+  runId: string,
+  phase: RebindCrashPhase,
+): {
+  state: Record<string, unknown>;
+  files: { runDir: string; claimFile: string; registryFile: string };
+  journalFile: string;
+  targetClaimId: string;
+  otherThread: string;
+} {
+  const state = { ...materializedState(), currentRunId: runId };
+  const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+  const sourceClaim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')) as Record<string, unknown>;
+  const sourceRegistry = JSON.parse(fs.readFileSync(files.registryFile, 'utf8')) as Record<string, unknown>;
+  const pending = ensureRunAgentClaim(
+    dir,
+    state,
+    'senior-architect',
+    { session_id: CODEX_V2_PARENT_THREAD },
+    { toolName: 'spawn_agent', model: CODEX_V2_MODEL, roleSource: 'spawn-task-name' },
+  );
+  assert.ok(pending);
+  const now = new Date().toISOString();
+  const targetClaim = {
+    ...sourceClaim,
+    claimId: pending!.claimId,
+    role: 'senior-architect',
+    spawnIndex: pending!.spawnIndex,
+    roleSource: 'codex-session-meta-agent-path',
+    transcriptPath: null,
+    correctedAt: now,
+    correctedFromRole: 'senior-frontend',
+  };
+  const sourceAgents = (sourceRegistry.agents || {}) as Record<string, unknown>;
+  const targetEntry = {
+    ...((sourceAgents['senior-frontend'] || {}) as Record<string, unknown>),
+    agentId: CODEX_V2_CHILD_THREAD,
+    roleSource: 'codex-session-meta-agent-path',
+    transcriptPath: null,
+  };
+  const targetRegistry = {
+    ...sourceRegistry,
+    agents: { 'senior-architect': targetEntry },
+  };
+  const journalFile = path.join(
+    files.runDir,
+    'transactions',
+    `rebind-${CODEX_V2_CHILD_THREAD}.json`,
+  );
+  fs.mkdirSync(path.dirname(journalFile), { recursive: true });
+  fs.writeFileSync(journalFile, JSON.stringify({
+    version: 1,
+    kind: 'authoritative-role-rebind',
+    runId,
+    threadId: CODEX_V2_CHILD_THREAD,
+    oldRole: 'senior-frontend',
+    targetRole: 'senior-architect',
+    sourceClaimId: sourceClaim.claimId,
+    sourceClaimWasPresent: true,
+    targetClaimId: pending!.claimId,
+    targetClaim,
+    registryEntry: targetEntry,
+    pendingClaimIds: [pending!.claimId, sourceClaim.claimId],
+    createdAt: now,
+  }), 'utf8');
+
+  if (phase === 'claim-first' || phase === 'committed' || phase === 'after-cleanup') {
+    fs.writeFileSync(files.claimFile, JSON.stringify(targetClaim), 'utf8');
+  }
+  if (phase === 'registry-first' || phase === 'committed' || phase === 'after-cleanup') {
+    fs.writeFileSync(files.registryFile, JSON.stringify(targetRegistry), 'utf8');
+  }
+
+  const otherThread = '019f69ff-0000-7000-8000-000000000088';
+  assert.equal(
+    tryFallbackClaim(dir, fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD), 'package.json').blocked,
+    false,
+  );
+  assert.equal(
+    tryFallbackClaim(dir, fallbackTestContext(runId, 'senior-backend', otherThread), 'services/api/src/other.ts').blocked,
+    false,
+  );
+  if (phase === 'after-cleanup') {
+    fs.rmSync(path.join(files.runDir, 'claims', 'package.json.json'), { force: true });
+    const pendingDir = path.join(files.runDir, 'pending');
+    for (const name of fs.readdirSync(pendingDir)) {
+      const file = path.join(pendingDir, name);
+      const claim = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
+      if (claim.claimId === pending!.claimId) fs.rmSync(file, { force: true });
+    }
+  }
+  return {
+    state,
+    files,
+    journalFile,
+    targetClaimId: String(pending!.claimId),
+    otherThread,
+  };
+}
+
+function withIsolatedCodexSessions<T>(dir: string, fn: (sessionDir: string) => T): T {
+  const previousCodexHome = process.env.CODEX_HOME;
+  const codexHome = path.join(dir, 'codex-home');
+  process.env.CODEX_HOME = codexHome;
+  const sessionDir = path.join(codexHome, 'sessions', '2026', '07', '16');
+  fs.mkdirSync(sessionDir, { recursive: true });
+  try {
+    return fn(sessionDir);
+  } finally {
+    if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
+    else process.env.CODEX_HOME = previousCodexHome;
+  }
+}
+
 function writeChildTranscript(dir: string, threadId: string, body: string): string {
   const file = path.join(dir, `rollout-2026-05-29T16-44-54-${threadId}.jsonl`);
   fs.writeFileSync(file, `${JSON.stringify({
@@ -446,6 +697,1048 @@ function writeChildTranscript(dir: string, threadId: string, body: string): stri
   })}\n`, 'utf8');
   return file;
 }
+
+test('inferRoleFromTranscript trusts Codex collaboration-v2 session_meta over encrypted and non-user markers', () => {
+  assert.equal(
+    inferRoleFromTranscript(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE),
+    'senior-architect',
+    'line-0 agent_path is authoritative even when later opaque/tool/assistant/unknown records mention frontend',
+  );
+});
+
+test('inferRoleFromTranscript ignores encrypted Codex task content', () => {
+  withPrefs((dir) => {
+    const records = codexCollaborationV2FixtureRecords();
+    const encryptedOnly = writeTranscriptRecords(dir, 'codex-encrypted-only.jsonl', [records[1]]);
+    assert.equal(inferRoleFromTranscript(encryptedOnly), null, 'encrypted_content is opaque, never role evidence');
+  });
+});
+
+test('inferRoleFromTranscript ignores tool, assistant, and unknown marker records', () => {
+  withPrefs((dir) => {
+    const records = codexCollaborationV2FixtureRecords();
+    const nonUserOnly = writeTranscriptRecords(dir, 'codex-non-user-only.jsonl', records.slice(2));
+    assert.equal(
+      inferRoleFromTranscript(nonUserOnly),
+      null,
+      'tool output, assistant text, and unknown records cannot authenticate a role',
+    );
+  });
+});
+
+test('inferRoleFromTranscript retains a marker anywhere in a recognized user record', () => {
+  withPrefs((dir) => {
+    const records = codexCollaborationV2FixtureRecords();
+    const recognizedUser = {
+      timestamp: '2026-07-16T08:20:00.500Z',
+      type: 'response_item',
+      payload: {
+        type: 'message',
+        role: 'user',
+        content: [{
+          type: 'input_text',
+          text: 'Resume the bounded review.\nContext before the marker.\n[t1-role: senior-reviewer]\nContinue read-only.',
+        }],
+      },
+    };
+    const file = writeTranscriptRecords(dir, 'codex-recognized-user-marker.jsonl', [
+      records[1],
+      records[2],
+      recognizedUser,
+      records[3],
+      records[4],
+    ]);
+    assert.equal(
+      inferRoleFromTranscript(file),
+      'senior-reviewer',
+      'recognized user markers remain valid regardless of record or text position',
+    );
+  });
+});
+
+test('inferRoleFromTranscript fails closed when valid structured Codex roles conflict', () => {
+  withPrefs((dir) => {
+    const records = codexCollaborationV2FixtureRecords();
+    const conflictingMeta = JSON.parse(JSON.stringify(records[0])) as {
+      payload: {
+        source: { subagent: { thread_spawn: { agent_path: string } } };
+      };
+    };
+    conflictingMeta.payload.source.subagent.thread_spawn.agent_path = '/root/senior_frontend';
+    const file = writeTranscriptRecords(dir, 'codex-conflicting-session-meta.jsonl', [
+      conflictingMeta,
+      ...records.slice(1),
+    ]);
+    assert.equal(
+      inferRoleFromTranscript(file),
+      null,
+      'two different valid line-0 roles are corruption, not a precedence choice',
+    );
+  });
+});
+
+test('current Codex roleless session_meta does not fall through to a later readable user marker', () => {
+  withPrefs((dir) => {
+    const childId = '019f69ff-0000-7000-8000-000000000011';
+    const file = writeTranscriptRecords(dir, `rollout-roleless-${childId}.jsonl`, [
+      {
+        type: 'session_meta',
+        payload: {
+          id: childId,
+          parent_thread_id: CODEX_V2_PARENT_THREAD,
+          thread_source: 'subagent',
+          agent_type: 'default',
+          source: { subagent: { thread_spawn: { parent_thread_id: CODEX_V2_PARENT_THREAD } } },
+        },
+      },
+      {
+        type: 'response_item',
+        payload: {
+          type: 'message',
+          role: 'user',
+          content: [{ type: 'input_text', text: 'Inherited context [t1-role: senior-frontend]' }],
+        },
+      },
+    ]);
+    assert.equal(inferRoleFromTranscript(file), null);
+  });
+});
+
+test('authoritative Codex metadata repairs a poisoned claim and registry and releases only its holder locks', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-authoritative-rebind';
+    const state = { ...materializedState(), currentRunId: runId };
+    const transcript = writeCodexV2FixtureTranscript(dir);
+    const unrelatedBackend = '019f69ff-0000-7000-8000-000000000010';
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend', {
+      'senior-backend': legacyRegistryEntry(unrelatedBackend),
+    });
+    const originalCreatedAt = JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).createdAt;
+    const architectPending = ensureRunAgentClaim(
+      dir,
+      state,
+      'senior-architect',
+      { session_id: CODEX_V2_PARENT_THREAD },
+      { toolName: 'spawn_agent', model: CODEX_V2_MODEL, roleSource: 'spawn-task-name' },
+    );
+    const unrelatedPending = ensureRunAgentClaim(
+      dir,
+      state,
+      'senior-tester',
+      { session_id: CODEX_V2_PARENT_THREAD },
+      { toolName: 'spawn_agent', model: 'gpt-5.6-spark', roleSource: 'spawn-task-name' },
+    );
+    assert.ok(architectPending);
+    assert.ok(unrelatedPending);
+    const ownContext = fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD);
+    const otherThread = '019f69ff-0000-7000-8000-000000000001';
+    const otherContext = fallbackTestContext(runId, 'senior-backend', otherThread);
+
+    assert.equal(tryFallbackClaim(dir, ownContext, 'package.json').blocked, false);
+    assert.equal(tryFallbackClaim(dir, ownContext, 'packages/contracts/src/index.ts').blocked, false);
+    assert.equal(tryFallbackClaim(dir, otherContext, 'services/api/src/a.ts').blocked, false);
+    const claimsDir = path.join(files.runDir, 'claims');
+    fs.writeFileSync(path.join(claimsDir, 'same-holder-other-run.json'), JSON.stringify({
+      version: 1,
+      runId: 'another-run',
+      path: 'apps/web/src/other-run.ts',
+      holder: CODEX_V2_CHILD_THREAD,
+      role: 'senior-frontend',
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+    fs.writeFileSync(path.join(claimsDir, 'legacy-role-only.json'), JSON.stringify({
+      version: 1,
+      runId,
+      path: 'packages/contracts/src/legacy.ts',
+      role: 'senior-frontend',
+      createdAt: new Date().toISOString(),
+    }), 'utf8');
+    fs.writeFileSync(path.join(claimsDir, 'malformed.json'), '{not-json', 'utf8');
+
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolved?.role, 'senior-architect');
+    assert.equal(resolved?.source, 'authoritative-role-rebind');
+
+    const correctedClaim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8'));
+    assert.equal(correctedClaim.role, 'senior-architect');
+    assert.equal(correctedClaim.claimId, architectPending?.claimId, 'strict same-parent/model pending identity is reused');
+    assert.equal(correctedClaim.spawnIndex, architectPending?.spawnIndex);
+    assert.equal(correctedClaim.correctedFromRole, 'senior-frontend');
+    assert.equal(correctedClaim.createdAt, originalCreatedAt, 'correction does not refresh the original claim age');
+    assert.equal(typeof correctedClaim.correctedAt, 'string');
+    assert.equal(correctedClaim.roleEvidenceVersion, undefined);
+    assert.equal(correctedClaim.correctedFromSpawnIndex, undefined);
+    assert.equal(correctedClaim.correctedFromClaimId, undefined);
+    assert.match(correctedClaim.roleSource, /^codex-session-meta-/);
+    const registry = readRunAgentRegistry(dir, runId);
+    assert.equal(registry['senior-frontend'], undefined);
+    assert.equal(registry['senior-architect']?.agentId, CODEX_V2_CHILD_THREAD);
+    assert.equal(registry['senior-backend']?.agentId, unrelatedBackend, 'unrelated live agents are preserved');
+    const registryRaw = JSON.parse(fs.readFileSync(files.registryFile, 'utf8'));
+    assert.equal(registryRaw.history.at(-1)?.replacementReason, 'authoritative-role-rebind');
+    const pendingAfter = fs.readdirSync(path.join(files.runDir, 'pending'))
+      .map((name) => JSON.parse(fs.readFileSync(path.join(files.runDir, 'pending', name), 'utf8')));
+    assert.equal(pendingAfter.some((claim) => claim.claimId === architectPending?.claimId), false);
+    assert.equal(pendingAfter.some((claim) => claim.claimId === unrelatedPending?.claimId), true);
+
+    const remainingFiles = fs.readdirSync(claimsDir).sort();
+    const remainingClaims = remainingFiles.flatMap((name) => {
+      try {
+        const value = JSON.parse(fs.readFileSync(path.join(claimsDir, name), 'utf8'));
+        return value && typeof value === 'object' ? [value as Record<string, unknown>] : [];
+      } catch {
+        return [];
+      }
+    });
+    assert.equal(
+      remainingClaims.some((claim) => claim.runId === runId && claim.holder === CODEX_V2_CHILD_THREAD),
+      false,
+      'every exact run+holder path lock is released',
+    );
+    assert.equal(remainingClaims.some((claim) => claim.holder === otherThread), true, 'unrelated holder remains');
+    assert.equal(
+      remainingClaims.some((claim) => claim.runId === 'another-run' && claim.holder === CODEX_V2_CHILD_THREAD),
+      true,
+      'same holder in another run remains',
+    );
+    assert.equal(remainingFiles.includes('malformed.json'), true, 'malformed lock remains untouched');
+    assert.equal(remainingFiles.includes('legacy-role-only.json'), true, 'legacy role-only lock remains untouched');
+  });
+});
+
+test('authoritative rebind journal rolls forward every crash phase before exact-claim reuse', () => {
+  const phases: RebindCrashPhase[] = ['prepared', 'claim-first', 'registry-first', 'committed', 'after-cleanup'];
+  for (const phase of phases) {
+    withPrefs((dir) => {
+      const fixture = writeRebindCrashFixture(dir, `run-rebind-crash-${phase}`, phase);
+      if (phase === 'prepared') {
+        const legacyClaim = JSON.parse(fs.readFileSync(fixture.files.claimFile, 'utf8')) as Record<string, unknown>;
+        delete legacyClaim.sessionId;
+        fs.writeFileSync(fixture.files.claimFile, JSON.stringify(legacyClaim), 'utf8');
+      }
+      const resolved = resolveRunAgentContext(dir, fixture.state, {
+        agent_id: CODEX_V2_CHILD_THREAD,
+        parent_session_id: CODEX_V2_PARENT_THREAD,
+        subagent_type: 'senior-architect',
+      }, { claimPending: false });
+      assert.equal(resolved?.role, 'senior-architect', `${phase}: exact reuse waits for roll-forward cleanup`);
+      assert.equal(resolved?.sessionId, CODEX_V2_CHILD_THREAD);
+      assert.equal(fs.existsSync(fixture.journalFile), false, `${phase}: completed journal is removed`);
+
+      const claim = JSON.parse(fs.readFileSync(fixture.files.claimFile, 'utf8')) as Record<string, unknown>;
+      assert.equal(claim.role, 'senior-architect');
+      assert.equal(claim.claimId, fixture.targetClaimId, `${phase}: target pending identity wins`);
+      const registry = readRunAgentRegistry(dir, String(fixture.state.currentRunId));
+      assert.equal(registry['senior-frontend'], undefined);
+      assert.equal(registry['senior-architect']?.agentId, CODEX_V2_CHILD_THREAD);
+
+      const remaining = fs.readdirSync(path.join(fixture.files.runDir, 'claims'))
+        .map((name) => JSON.parse(fs.readFileSync(path.join(fixture.files.runDir, 'claims', name), 'utf8')));
+      assert.equal(
+        remaining.some((entry) => entry.runId === fixture.state.currentRunId && entry.holder === CODEX_V2_CHILD_THREAD),
+        false,
+        `${phase}: only the corrected child's exact-holder locks are cleared`,
+      );
+      assert.equal(remaining.some((entry) => entry.holder === fixture.otherThread), true, `${phase}: other holder remains`);
+      const pendingDir = path.join(fixture.files.runDir, 'pending');
+      const pendingAfter = fs.existsSync(pendingDir)
+        ? fs.readdirSync(pendingDir).map((name) => JSON.parse(fs.readFileSync(path.join(pendingDir, name), 'utf8')))
+        : [];
+      assert.equal(pendingAfter.some((entry) => entry.claimId === fixture.targetClaimId), false);
+    });
+  }
+});
+
+test('same-role Codex metadata annotates the claim without releasing fallback locks', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-same-role';
+    const state = { ...materializedState(), currentRunId: runId };
+    const transcript = writeCodexV2FixtureTranscript(dir);
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-architect');
+    const context = fallbackTestContext(runId, 'senior-architect', CODEX_V2_CHILD_THREAD);
+    assert.equal(tryFallbackClaim(dir, context, 'packages/contracts/src/index.ts').blocked, false);
+    const claimsDir = path.join(files.runDir, 'claims');
+    const before = fs.readdirSync(claimsDir).sort();
+
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolved?.role, 'senior-architect');
+    assert.deepEqual(fs.readdirSync(claimsDir).sort(), before, 'no ownership change means no path-lock cleanup');
+    const claim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8'));
+    assert.match(claim.roleSource, /^codex-session-meta-/);
+  });
+});
+
+test('weaker task or prompt evidence cannot downgrade or rebind structured claim provenance', () => {
+  withPrefs((dir) => {
+    const runId = 'run-role-source-precedence';
+    const state = { ...materializedState(), currentRunId: runId };
+    const childId = '019f69ff-0000-7000-8000-000000000012';
+    assert.ok(claimThreadRole(dir, state, childId, 'senior-architect', {
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      recordAgent: false,
+      evidence: {
+        role: 'senior-architect',
+        source: 'codex-session-meta-agent-path',
+        authority: 'authoritative',
+      },
+    }));
+
+    assert.ok(claimThreadRole(dir, state, childId, 'senior-architect', {
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      recordAgent: false,
+      evidence: { role: 'senior-architect', source: 'spawn-task-name', authority: 'authoritative' },
+    }));
+    assert.equal(claimThreadRole(dir, state, childId, 'senior-frontend', {
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      recordAgent: false,
+      evidence: { role: 'senior-frontend', source: 'spawn-task-name', authority: 'authoritative' },
+    }), null, 'task_name cannot correct a conflicting tier-1 claim');
+
+    const claim = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, `${childId}.json`),
+      'utf8',
+    ));
+    assert.equal(claim.role, 'senior-architect');
+    assert.equal(claim.roleSource, 'codex-session-meta-agent-path');
+
+    recordRunAgent(dir, runId, 'senior-architect', {
+      agentId: childId,
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      roleSource: 'codex-session-meta-agent-path',
+    });
+    recordRunAgent(dir, runId, 'senior-architect', {
+      agentId: childId,
+      parentSessionId: CODEX_V2_PARENT_THREAD,
+      roleSource: 'spawn-task-name',
+    });
+    assert.equal(readRunAgentRegistry(dir, runId)['senior-architect']?.roleSource, 'codex-session-meta-agent-path');
+  });
+});
+
+test('profile and agent-name host identity stay in the strongest persisted tier', () => {
+  withPrefs((dir) => {
+    const runId = 'run-host-source-precedence';
+    const state = { ...materializedState(), currentRunId: runId };
+    for (const [index, source] of ['host-profile', 'host-agent-name'].entries()) {
+      const childId = `019f69ff-0000-7000-8000-00000000002${index}`;
+      assert.ok(claimThreadRole(dir, state, childId, 'senior-architect', {
+        recordAgent: false,
+        evidence: { role: 'senior-architect', source, authority: 'authoritative' },
+      }));
+
+      assert.ok(claimThreadRole(dir, state, childId, 'senior-architect', {
+        recordAgent: false,
+        evidence: { role: 'senior-architect', source: 'spawn-task-name', authority: 'authoritative' },
+      }));
+      assert.equal(claimThreadRole(dir, state, childId, 'senior-frontend', {
+        recordAgent: false,
+        evidence: { role: 'senior-frontend', source: 'spawn-task-name', authority: 'authoritative' },
+      }), null);
+
+      const claim = JSON.parse(fs.readFileSync(
+        path.join(dir, '.traffic-one', 'runs', runId, `${childId}.json`),
+        'utf8',
+      ));
+      assert.equal(claim.role, 'senior-architect');
+      assert.equal(claim.roleSource, source);
+
+      recordRunAgent(dir, runId, 'senior-architect', { agentId: childId, roleSource: source });
+      recordRunAgent(dir, runId, 'senior-architect', { agentId: childId, roleSource: 'spawn-task-name' });
+      assert.equal(readRunAgentRegistry(dir, runId)['senior-architect']?.roleSource, source);
+    }
+  });
+});
+
+test('same-tier authoritative role conflicts fail closed while stronger evidence repairs weaker claims', () => {
+  withPrefs((dir) => {
+    const runId = 'run-role-source-conflict';
+    const state = { ...materializedState(), currentRunId: runId };
+    const hostChild = '019f69ff-0000-7000-8000-000000000030';
+    assert.ok(claimThreadRole(dir, state, hostChild, 'senior-architect', {
+      recordAgent: false,
+      evidence: { role: 'senior-architect', source: 'host-agent-type', authority: 'authoritative' },
+    }));
+    assert.equal(claimThreadRole(dir, state, hostChild, 'senior-frontend', {
+      recordAgent: false,
+      evidence: { role: 'senior-frontend', source: 'codex-session-meta-agent-path', authority: 'authoritative' },
+    }), null, 'equal-strength host/session evidence cannot rebind an existing claim');
+
+    const taskChild = '019f69ff-0000-7000-8000-000000000031';
+    assert.ok(claimThreadRole(dir, state, taskChild, 'senior-architect', {
+      recordAgent: false,
+      evidence: { role: 'senior-architect', source: 'spawn-task-name', authority: 'authoritative' },
+    }));
+    assert.equal(claimThreadRole(dir, state, taskChild, 'senior-frontend', {
+      recordAgent: false,
+      evidence: { role: 'senior-frontend', source: 'spawn-task-name', authority: 'authoritative' },
+    }), null, 'equal-strength task names cannot rebind an existing claim');
+
+    const legacyChild = '019f69ff-0000-7000-8000-000000000032';
+    assert.ok(claimThreadRole(dir, state, legacyChild, 'senior-architect', {
+      recordAgent: false,
+      evidence: { role: 'senior-architect', source: 'spawn-role-marker', authority: 'explicit' },
+    }));
+    const repaired = claimThreadRole(dir, state, legacyChild, 'senior-frontend', {
+      recordAgent: false,
+      evidence: { role: 'senior-frontend', source: 'spawn-task-name', authority: 'authoritative' },
+    });
+    assert.equal(repaired?.role, 'senior-frontend', 'a stronger exact task name repairs weaker legacy evidence');
+
+    const hostClaim = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, `${hostChild}.json`),
+      'utf8',
+    ));
+    const taskClaim = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, `${taskChild}.json`),
+      'utf8',
+    ));
+    assert.equal(hostClaim.role, 'senior-architect');
+    assert.equal(hostClaim.roleSource, 'host-agent-type');
+    assert.equal(taskClaim.role, 'senior-architect');
+    assert.equal(taskClaim.roleSource, 'spawn-task-name');
+  });
+});
+
+test('authoritative Codex rebind fails closed when the target role registry slot is occupied', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-target-collision';
+    const state = { ...materializedState(), currentRunId: runId };
+    const transcript = writeCodexV2FixtureTranscript(dir);
+    const existingArchitect = '019f69ff-0000-7000-8000-000000000002';
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend', {
+      'senior-architect': legacyRegistryEntry(existingArchitect),
+    });
+    const context = fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD);
+    assert.equal(tryFallbackClaim(dir, context, 'apps/web/src/collision.ts').blocked, false);
+    const claimsDir = path.join(files.runDir, 'claims');
+    const locksBefore = fs.readdirSync(claimsDir).sort();
+
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolved, null);
+    assert.equal(JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role, 'senior-frontend');
+    const registry = readRunAgentRegistry(dir, runId);
+    assert.equal(registry['senior-frontend']?.agentId, CODEX_V2_CHILD_THREAD);
+    assert.equal(registry['senior-architect']?.agentId, existingArchitect);
+    assert.deepEqual(fs.readdirSync(claimsDir).sort(), locksBefore, 'failed correction cannot release ownership locks');
+    const rawRegistry = JSON.parse(fs.readFileSync(files.registryFile, 'utf8'));
+    assert.equal(rawRegistry.conflicts.at(-1)?.reason, 'authoritative-role-rebind-target-occupied');
+  });
+});
+
+test('fallback writers fail open on a fresh claims-lock timeout without mutating ownership', () => {
+  withPrefs((dir) => {
+    const runId = 'run-fallback-lock-timeout';
+    const runDirectory = path.join(dir, '.traffic-one', 'runs', runId);
+    const lockDir = path.join(runDirectory, '.claims.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    const started = Date.now();
+    const result = tryFallbackClaim(
+      dir,
+      fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD),
+      'apps/web/src/timeout.ts',
+    );
+    const elapsed = Date.now() - started;
+    assert.deepEqual(result, { blocked: false }, 'writer stays fail-open when the serialization lock is unavailable');
+    assert.ok(elapsed >= 1_800 && elapsed < 4_000, `expected a bounded ~2s wait, got ${elapsed}ms`);
+    assert.equal(fs.existsSync(path.join(runDirectory, 'claims', 'apps_web_src_timeout.ts.json')), false);
+    assert.equal(fs.existsSync(lockDir), true, 'a fresh lock owned by another process is never stolen');
+  });
+});
+
+test('fallback claims serialize racing first writers so exactly one owns the path', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-fallback-concurrent-'));
+  const runId = 'run-fallback-concurrent';
+  const runDirectory = path.join(dir, '.traffic-one', 'runs', runId);
+  const lockDir = path.join(runDirectory, '.claims.lock');
+  const source = [
+    "const { tryFallbackClaim } = require('./src/shared/state/run-agent.ts');",
+    "const [cwd, runId, holder] = process.argv.slice(1);",
+    "const ctx = { source: 'child', runId, role: 'senior-frontend', spawnIndex: 1, sessionId: holder, claimId: holder };",
+    "process.stdout.write(JSON.stringify(tryFallbackClaim(cwd, ctx, 'apps/web/src/race.ts')));",
+  ].join('\n');
+  try {
+    resetAuthoringRootCache();
+    fs.mkdirSync(lockDir, { recursive: true });
+    const runChild = (holder: string): Promise<{ blocked: boolean; holder?: string }> => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', '-e', source, dir, runId, holder], {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
+      let stdout = '';
+      child.stdout?.setEncoding('utf8');
+      child.stdout?.on('data', (chunk) => { stdout += chunk; });
+      child.once('error', reject);
+      child.once('exit', (code) => {
+        if (code !== 0) reject(new Error(`fallback claimant exited ${code}`));
+        else resolve(JSON.parse(stdout) as { blocked: boolean; holder?: string });
+      });
+    });
+    const racers = [runChild('thread-a'), runChild('thread-b')];
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    const results = await Promise.all(racers);
+    assert.equal(results.filter((result) => result.blocked === false).length, 1);
+    assert.equal(results.filter((result) => result.blocked === true).length, 1);
+    const claim = JSON.parse(fs.readFileSync(
+      path.join(runDirectory, 'claims', 'apps_web_src_race.ts.json'),
+      'utf8',
+    ));
+    assert.ok(claim.holder === 'thread-a' || claim.holder === 'thread-b');
+    assert.equal(results.find((result) => result.blocked)?.holder, claim.holder);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    resetAuthoringRootCache();
+  }
+});
+
+test('authoritative correction denies and preserves locks when claims cleanup cannot acquire its lock', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-claims-lock-timeout';
+    const state = { ...materializedState(), currentRunId: runId };
+    const transcript = writeCodexV2FixtureTranscript(dir);
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const context = fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD);
+    assert.equal(tryFallbackClaim(dir, context, 'apps/web/src/held.ts').blocked, false);
+    const claimsBefore = fs.readdirSync(path.join(files.runDir, 'claims')).sort();
+    const claimsLock = path.join(files.runDir, '.claims.lock');
+    fs.mkdirSync(claimsLock);
+
+    const started = Date.now();
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    const elapsed = Date.now() - started;
+    assert.equal(resolved, null);
+    assert.ok(elapsed >= 1_800 && elapsed < 4_000, `expected a bounded ~2s wait, got ${elapsed}ms`);
+    assert.equal(JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role, 'senior-frontend');
+    assert.deepEqual(fs.readdirSync(path.join(files.runDir, 'claims')).sort(), claimsBefore);
+    assert.equal(readRunAgentRegistry(dir, runId)['senior-frontend']?.agentId, CODEX_V2_CHILD_THREAD);
+    assert.equal(readRunAgentRegistry(dir, runId)['senior-architect'], undefined);
+  });
+});
+
+test('authoritative correction retains its journal and retries an unsafe exact-holder cleanup', (t) => {
+  if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) {
+    t.skip('directory-mode cleanup failure requires a non-root POSIX process');
+    return;
+  }
+  withPrefs((dir) => {
+    const runId = 'run-codex-cleanup-retry';
+    const state = { ...materializedState(), currentRunId: runId };
+    const transcript = writeCodexV2FixtureTranscript(dir);
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const pending = ensureRunAgentClaim(
+      dir,
+      state,
+      'senior-architect',
+      { session_id: CODEX_V2_PARENT_THREAD },
+      { toolName: 'spawn_agent', model: CODEX_V2_MODEL, roleSource: 'spawn-task-name' },
+    );
+    assert.ok(pending);
+    const otherThread = '019f69ff-0000-7000-8000-000000000089';
+    assert.equal(
+      tryFallbackClaim(
+        dir,
+        fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD),
+        'packages/contracts/src/retry.ts',
+      ).blocked,
+      false,
+    );
+    assert.equal(
+      tryFallbackClaim(
+        dir,
+        fallbackTestContext(runId, 'senior-backend', otherThread),
+        'services/api/src/retry.ts',
+      ).blocked,
+      false,
+    );
+    const claimsDir = path.join(files.runDir, 'claims');
+    const originalMode = fs.statSync(claimsDir).mode & 0o777;
+    let first: ReturnType<typeof resolveRunAgentContext> = null;
+    fs.chmodSync(claimsDir, 0o555);
+    try {
+      first = resolveRunAgentContext(dir, state, {
+        session_id: CODEX_V2_PARENT_THREAD,
+        transcript_path: transcript,
+        model: CODEX_V2_MODEL,
+      }, { claimPending: true });
+    } finally {
+      fs.chmodSync(claimsDir, originalMode);
+    }
+    assert.equal(first, null, 'unsafe cleanup never returns the corrected context');
+    const journalFile = path.join(
+      files.runDir,
+      'transactions',
+      `rebind-${CODEX_V2_CHILD_THREAD}.json`,
+    );
+    assert.equal(fs.existsSync(journalFile), true, 'the durable retry record remains');
+    assert.equal(JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role, 'senior-architect');
+    assert.equal(readRunAgentRegistry(dir, runId)['senior-architect']?.agentId, CODEX_V2_CHILD_THREAD);
+
+    const retried = resolveRunAgentContext(dir, state, {
+      agent_id: CODEX_V2_CHILD_THREAD,
+      parent_session_id: CODEX_V2_PARENT_THREAD,
+      subagent_type: 'senior-architect',
+    }, { claimPending: false });
+    assert.equal(retried?.role, 'senior-architect');
+    assert.equal(fs.existsSync(journalFile), false);
+    const remaining = fs.readdirSync(claimsDir)
+      .map((name) => JSON.parse(fs.readFileSync(path.join(claimsDir, name), 'utf8')));
+    assert.equal(remaining.some((entry) => entry.holder === CODEX_V2_CHILD_THREAD), false);
+    assert.equal(remaining.some((entry) => entry.holder === otherThread), true, 'retry stays exact-holder only');
+  });
+});
+
+test('authoritative correction denies before cleanup when the registry lock times out', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-registry-lock-timeout';
+    const state = { ...materializedState(), currentRunId: runId };
+    const transcript = writeCodexV2FixtureTranscript(dir);
+    const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+    const context = fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD);
+    assert.equal(tryFallbackClaim(dir, context, 'apps/web/src/registry-held.ts').blocked, false);
+    const claimsBefore = fs.readdirSync(path.join(files.runDir, 'claims')).sort();
+    const registryLock = path.join(files.runDir, '.agents.lock');
+    fs.mkdirSync(registryLock);
+
+    const started = Date.now();
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: transcript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    const elapsed = Date.now() - started;
+    assert.equal(resolved, null);
+    assert.ok(elapsed >= 1_800 && elapsed < 4_000, `expected a bounded ~2s wait, got ${elapsed}ms`);
+    assert.deepEqual(fs.readdirSync(path.join(files.runDir, 'claims')).sort(), claimsBefore);
+    assert.equal(JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role, 'senior-frontend');
+  });
+});
+
+test('a roleless child cannot consume either of two same-parent same-model pending roles', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-roleless-ambiguous';
+    const state = { ...materializedState(), currentRunId: runId };
+    const childId = '019f69ff-0000-7000-8000-000000000003';
+    const rolelessTranscript = writeTranscriptRecords(
+      dir,
+      `rollout-2026-07-16T11-30-00-${childId}.jsonl`,
+      [{
+        type: 'session_meta',
+        payload: {
+          id: childId,
+          session_id: CODEX_V2_PARENT_THREAD,
+          parent_thread_id: CODEX_V2_PARENT_THREAD,
+          thread_source: 'subagent',
+          agent_path: null,
+          source: { subagent: { thread_spawn: { parent_thread_id: CODEX_V2_PARENT_THREAD, agent_path: null } } },
+        },
+      }],
+    );
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: CODEX_V2_PARENT_THREAD }, {
+      toolName: 'spawn_agent', model: CODEX_V2_MODEL,
+    }));
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: CODEX_V2_PARENT_THREAD }, {
+      toolName: 'spawn_agent', model: CODEX_V2_MODEL,
+    }));
+    const pendingDir = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    const before = fs.readdirSync(pendingDir).sort();
+
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      parent_session_id: CODEX_V2_PARENT_THREAD,
+      thread_source: 'subagent',
+      transcript_path: rolelessTranscript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolved, null);
+    assert.deepEqual(fs.readdirSync(pendingDir).sort(), before, 'ambiguous pending rows are not consumed');
+    assert.equal(
+      fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, `${childId}.json`)),
+      false,
+      'no claimed child row is invented from timestamp ordering',
+    );
+  });
+});
+
+test('a roleless child may consume one uniquely correlated parent-and-model pending bucket', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-roleless-unique';
+    const state = { ...materializedState(), currentRunId: runId };
+    const childId = '019f69ff-0000-7000-8000-000000000004';
+    const rolelessTranscript = writeTranscriptRecords(
+      dir,
+      `rollout-2026-07-16T11-31-00-${childId}.jsonl`,
+      [{
+        type: 'session_meta',
+        payload: {
+          id: childId,
+          parent_thread_id: CODEX_V2_PARENT_THREAD,
+          thread_source: 'subagent',
+          source: { subagent: { thread_spawn: { parent_thread_id: CODEX_V2_PARENT_THREAD } } },
+        },
+      }],
+    );
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: CODEX_V2_PARENT_THREAD }, {
+      toolName: 'spawn_agent', model: CODEX_V2_MODEL,
+    }));
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: CODEX_V2_PARENT_THREAD }, {
+      toolName: 'spawn_agent', model: 'gpt-5.6-terra',
+    }));
+
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      parent_session_id: CODEX_V2_PARENT_THREAD,
+      thread_source: 'subagent',
+      transcript_path: rolelessTranscript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolved?.role, 'senior-frontend');
+    assert.equal(resolved?.sessionId, childId);
+    const pending = fs.readdirSync(path.join(dir, '.traffic-one', 'runs', runId, 'pending'));
+    assert.equal(pending.length, 1, 'the differently-modeled backend pending row remains untouched');
+  });
+});
+
+test('a roleless child with parent and model evidence never weakens an empty exact intersection', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-roleless-no-weaken';
+    const state = { ...materializedState(), currentRunId: runId };
+    const childId = '019f69ff-0000-7000-8000-000000000013';
+    const otherParent = '019f69fb-334a-7351-8e94-66c97c3fa999';
+    const rolelessTranscript = writeTranscriptRecords(
+      dir,
+      `rollout-2026-07-16T11-32-00-${childId}.jsonl`,
+      [{
+        type: 'session_meta',
+        payload: {
+          id: childId,
+          parent_thread_id: CODEX_V2_PARENT_THREAD,
+          thread_source: 'subagent',
+          source: { subagent: { thread_spawn: { parent_thread_id: CODEX_V2_PARENT_THREAD } } },
+        },
+      }],
+    );
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-frontend', { session_id: CODEX_V2_PARENT_THREAD }, {
+      toolName: 'spawn_agent', model: 'model-for-parent-only',
+    }));
+    assert.ok(ensureRunAgentClaim(dir, state, 'senior-backend', { session_id: otherParent }, {
+      toolName: 'spawn_agent', model: CODEX_V2_MODEL,
+    }));
+    const pendingDir = path.join(dir, '.traffic-one', 'runs', runId, 'pending');
+    const before = fs.readdirSync(pendingDir).sort();
+
+    const resolved = resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: rolelessTranscript,
+      model: CODEX_V2_MODEL,
+    }, { claimPending: true });
+    assert.equal(resolved, null);
+    assert.deepEqual(fs.readdirSync(pendingDir).sort(), before);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, `${childId}.json`)), false);
+  });
+});
+
+test('first-write self-heal rejects session_meta whose child or parent identity mismatches the hook', () => {
+  withPrefs((dir) => {
+    const runId = 'run-codex-meta-identity-mismatch';
+    const state = { ...materializedState(), currentRunId: runId };
+    const hookChild = '019f69ff-0000-7000-8000-000000000014';
+    const metadataChild = '019f69ff-0000-7000-8000-000000000015';
+    const transcript = writeTranscriptRecords(
+      dir,
+      `rollout-2026-07-16T11-33-00-${hookChild}.jsonl`,
+      [{
+        type: 'session_meta',
+        payload: {
+          id: metadataChild,
+          parent_thread_id: CODEX_V2_PARENT_THREAD,
+          thread_source: 'subagent',
+          agent_path: '/root/senior_architect',
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: CODEX_V2_PARENT_THREAD,
+                agent_path: '/root/senior_architect',
+              },
+            },
+          },
+        },
+      }],
+    );
+    assert.equal(resolveRunAgentContext(dir, state, {
+      session_id: CODEX_V2_PARENT_THREAD,
+      transcript_path: transcript,
+    }), null);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one', 'runs', runId, `${hookChild}.json`)), false);
+  });
+});
+
+test('bounded Codex legacy-registry validation verifies a matching line-zero transcript', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      const boundedTranscript = path.join(
+        sessionDir,
+        `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`,
+      );
+      fs.writeFileSync(boundedTranscript, fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'), 'utf8');
+
+      const matchRun = 'run-codex-legacy-match';
+      const matchState = { ...materializedState(), currentRunId: matchRun };
+      recordRunAgent(dir, matchRun, 'senior-architect', {
+        agentId: CODEX_V2_CHILD_THREAD,
+        parentSessionId: null,
+        model: CODEX_V2_MODEL,
+      });
+      const matchEntry = readRunAgentRegistry(dir, matchRun)['senior-architect'];
+      assert.ok(matchEntry);
+      const match = validateCodexLiveRunAgent(dir, matchState, {}, matchRun, 'senior-architect', matchEntry!);
+      assert.equal(match.status, 'verified-match');
+      assert.equal(readRunAgentRegistry(dir, matchRun)['senior-architect']?.transcriptPath, boundedTranscript);
+      assert.equal(
+        readRunAgentRegistry(dir, matchRun)['senior-architect']?.parentSessionId,
+        CODEX_V2_PARENT_THREAD,
+        'verified metadata backfills a missing legacy parent binding',
+      );
+    });
+  });
+});
+
+test('dead-child reuse validation rebinds the poisoned row before continuation and frees the requested role', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      const boundedTranscript = path.join(
+        sessionDir,
+        `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`,
+      );
+      fs.writeFileSync(boundedTranscript, fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'), 'utf8');
+      const runId = 'run-codex-dead-child-rebind';
+      const state = { ...materializedState(), currentRunId: runId };
+      const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+      const ownContext = fallbackTestContext(runId, 'senior-frontend', CODEX_V2_CHILD_THREAD);
+      assert.equal(tryFallbackClaim(dir, ownContext, 'packages/contracts/src/dead-child.ts').blocked, false);
+
+      // A crashed hook may leave either lock directory behind. Both locks are
+      // bounded and stale-reclaimable before the authoritative transaction.
+      const staleAt = new Date(Date.now() - 30_000);
+      const agentLock = path.join(files.runDir, '.agents.lock');
+      const claimsLock = path.join(files.runDir, '.claims.lock');
+      fs.mkdirSync(agentLock);
+      fs.mkdirSync(claimsLock);
+      fs.utimesSync(agentLock, staleAt, staleAt);
+      fs.utimesSync(claimsLock, staleAt, staleAt);
+
+      const poisoned = readRunAgentRegistry(dir, runId)['senior-frontend'];
+      assert.ok(poisoned);
+      const validation = validateCodexLiveRunAgent(
+        dir, state, {}, runId, 'senior-frontend', poisoned!,
+      );
+      assert.equal(validation.status, 'rebound');
+      const registry = readRunAgentRegistry(dir, runId);
+      assert.equal(registry['senior-frontend'], undefined, 'the requested frontend slot is free for a fresh spawn');
+      assert.equal(registry['senior-architect']?.agentId, CODEX_V2_CHILD_THREAD);
+      const correctedClaim = JSON.parse(fs.readFileSync(files.claimFile, 'utf8'));
+      assert.equal(correctedClaim.role, 'senior-architect');
+      assert.match(correctedClaim.claimId, /^senior-architect-/);
+      assert.equal(typeof correctedClaim.spawnIndex, 'number');
+      assert.equal(
+        fs.readdirSync(path.join(files.runDir, 'claims')).length,
+        0,
+        'the dead corrected child cannot leave a 30-minute path lock behind',
+      );
+      assert.equal(fs.existsSync(agentLock), false);
+      assert.equal(fs.existsSync(claimsLock), false);
+    });
+  });
+});
+
+test('Codex reuse validation converges claim-first and registry-first interrupted rebind states', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      const boundedTranscript = path.join(
+        sessionDir,
+        `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`,
+      );
+      fs.writeFileSync(boundedTranscript, fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'), 'utf8');
+
+      const claimFirstRun = 'run-codex-split-claim-first';
+      const claimFirstState = { ...materializedState(), currentRunId: claimFirstRun };
+      const claimFirst = writeLegacyCodexClaimAndRegistry(dir, claimFirstState, claimFirstRun, 'senior-frontend');
+      const targetClaim = JSON.parse(fs.readFileSync(claimFirst.claimFile, 'utf8'));
+      targetClaim.role = 'senior-architect';
+      targetClaim.claimId = `senior-architect-1-${CODEX_V2_CHILD_THREAD.slice(-8)}`;
+      targetClaim.roleSource = 'codex-session-meta-agent-path';
+      targetClaim.correctedAt = new Date().toISOString();
+      targetClaim.correctedFromRole = 'senior-frontend';
+      fs.writeFileSync(claimFirst.claimFile, JSON.stringify(targetClaim), 'utf8');
+      const oldRow = readRunAgentRegistry(dir, claimFirstRun)['senior-frontend'];
+      assert.ok(oldRow);
+      assert.equal(
+        validateCodexLiveRunAgent(dir, claimFirstState, {}, claimFirstRun, 'senior-frontend', oldRow!).status,
+        'rebound',
+      );
+      assert.equal(readRunAgentRegistry(dir, claimFirstRun)['senior-frontend'], undefined);
+      assert.equal(readRunAgentRegistry(dir, claimFirstRun)['senior-architect']?.agentId, CODEX_V2_CHILD_THREAD);
+
+      const registryFirstRun = 'run-codex-split-registry-first';
+      const registryFirstState = { ...materializedState(), currentRunId: registryFirstRun };
+      const registryFirst = writeLegacyCodexClaimAndRegistry(dir, registryFirstState, registryFirstRun, 'senior-frontend');
+      const registry = JSON.parse(fs.readFileSync(registryFirst.registryFile, 'utf8'));
+      registry.agents['senior-architect'] = registry.agents['senior-frontend'];
+      delete registry.agents['senior-frontend'];
+      fs.writeFileSync(registryFirst.registryFile, JSON.stringify(registry), 'utf8');
+      const targetRow = readRunAgentRegistry(dir, registryFirstRun)['senior-architect'];
+      assert.ok(targetRow);
+      const validation = validateCodexLiveRunAgent(
+        dir, registryFirstState, {}, registryFirstRun, 'senior-architect', targetRow!,
+      );
+      assert.equal(validation.status, 'verified-match');
+      assert.equal(JSON.parse(fs.readFileSync(registryFirst.claimFile, 'utf8')).role, 'senior-architect');
+      assert.equal(readRunAgentRegistry(dir, registryFirstRun)['senior-architect']?.agentId, CODEX_V2_CHILD_THREAD);
+    });
+  });
+});
+
+test('dead-child authoritative rebind CAS cannot alter a newer requested-role row', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      const boundedTranscript = path.join(
+        sessionDir,
+        `rollout-2026-07-16T11-15-39-${CODEX_V2_CHILD_THREAD}.jsonl`,
+      );
+      fs.writeFileSync(boundedTranscript, fs.readFileSync(CODEX_COLLABORATION_V2_ARCHITECT_FIXTURE, 'utf8'), 'utf8');
+      const runId = 'run-codex-dead-child-cas';
+      const state = { ...materializedState(), currentRunId: runId };
+      const files = writeLegacyCodexClaimAndRegistry(dir, state, runId, 'senior-frontend');
+      const inspected = readRunAgentRegistry(dir, runId)['senior-frontend'];
+      assert.ok(inspected);
+      const newerThread = '019f69ff-0000-7000-8000-000000000099';
+      recordRunAgent(dir, runId, 'senior-frontend', {
+        agentId: newerThread,
+        parentSessionId: CODEX_V2_PARENT_THREAD,
+        model: CODEX_V2_MODEL,
+        roleSource: 'spawn-task-name',
+      });
+
+      const validation = validateCodexLiveRunAgent(
+        dir, state, {}, runId, 'senior-frontend', inspected!,
+      );
+      assert.equal(validation.status, 'conflict');
+      assert.equal(readRunAgentRegistry(dir, runId)['senior-frontend']?.agentId, newerThread);
+      assert.equal(readRunAgentRegistry(dir, runId)['senior-architect'], undefined);
+      assert.equal(JSON.parse(fs.readFileSync(files.claimFile, 'utf8')).role, 'senior-frontend');
+    });
+  });
+});
+
+test('bounded Codex legacy-registry validation classifies conflicting structured roles as conflict', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, (sessionDir) => {
+      const conflictRun = 'run-codex-legacy-conflict';
+      const conflictId = '019f69fe-e335-7de0-be43-1ee45e3535d5';
+      const conflictMeta = JSON.parse(JSON.stringify(codexCollaborationV2FixtureRecords()[0])) as {
+        payload: {
+          id: string;
+          agent_path: string;
+          source: { subagent: { thread_spawn: { agent_path: string } } };
+        };
+      };
+      conflictMeta.payload.id = conflictId;
+      conflictMeta.payload.agent_path = '/root/senior_frontend';
+      conflictMeta.payload.source.subagent.thread_spawn.agent_path = '/root/senior_architect';
+      writeTranscriptRecords(
+        sessionDir,
+        `rollout-2026-07-16T11-15-40-${conflictId}.jsonl`,
+        [conflictMeta],
+      );
+      const conflictState = { ...materializedState(), currentRunId: conflictRun };
+      recordRunAgent(dir, conflictRun, 'senior-frontend', {
+        agentId: conflictId,
+        parentSessionId: CODEX_V2_PARENT_THREAD,
+        model: CODEX_V2_MODEL,
+      });
+      const conflictEntry = readRunAgentRegistry(dir, conflictRun)['senior-frontend'];
+      assert.ok(conflictEntry);
+      const conflict = validateCodexLiveRunAgent(dir, conflictState, {}, conflictRun, 'senior-frontend', conflictEntry!);
+      assert.equal(conflict.status, 'conflict');
+      if (conflict.status === 'conflict') assert.equal(conflict.reason, 'codex-session-meta-role-conflict');
+    });
+  });
+});
+
+test('bounded Codex legacy-registry validation keeps a fresh missing transcript unverified', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, () => {
+      const unverifiedRun = 'run-codex-legacy-unverified';
+      const missingId = '019f69fe-e335-7de0-be43-1ee45e3535e6';
+      const unverifiedState = { ...materializedState(), currentRunId: unverifiedRun };
+      recordRunAgent(dir, unverifiedRun, 'senior-backend', {
+        agentId: missingId,
+        parentSessionId: CODEX_V2_PARENT_THREAD,
+        model: CODEX_V2_MODEL,
+        roleSource: 'spawn-task-name',
+      });
+      const unverifiedEntry = readRunAgentRegistry(dir, unverifiedRun)['senior-backend'];
+      assert.ok(unverifiedEntry);
+      const unverified = validateCodexLiveRunAgent(
+        dir, unverifiedState, {}, unverifiedRun, 'senior-backend', unverifiedEntry!,
+      );
+      assert.equal(unverified.status, 'unverified');
+      if (unverified.status === 'unverified') {
+        assert.equal(unverified.reason, 'codex-session-meta-missing-or-mismatched');
+      }
+    });
+  });
+});
+
+test('bounded Codex legacy-registry validation retires a stale missing transcript', () => {
+  withPrefs((dir) => {
+    withIsolatedCodexSessions(dir, () => {
+      const staleRun = 'run-codex-legacy-stale';
+      const staleRunDir = path.join(dir, '.traffic-one', 'runs', staleRun);
+      const staleId = '019f69fe-e335-7de0-be43-1ee45e3535f7';
+      fs.mkdirSync(staleRunDir, { recursive: true });
+      fs.writeFileSync(path.join(staleRunDir, 'agents.json'), JSON.stringify({
+        version: 1,
+        agents: {
+          'senior-tester': legacyRegistryEntry(
+            staleId,
+            CODEX_V2_PARENT_THREAD,
+            CODEX_V2_MODEL,
+            new Date(Date.now() - 31 * 60 * 1000).toISOString(),
+          ),
+        },
+        history: [],
+      }), 'utf8');
+      const staleEntry = readRunAgentRegistry(dir, staleRun)['senior-tester'];
+      assert.ok(staleEntry);
+      const stale = validateCodexLiveRunAgent(
+        dir,
+        { ...materializedState(), currentRunId: staleRun },
+        {},
+        staleRun,
+        'senior-tester',
+        staleEntry!,
+      );
+      assert.equal(stale.status, 'stale-retired');
+      assert.equal(readRunAgentRegistry(dir, staleRun)['senior-tester']?.replaced, true);
+    });
+  });
+});
 
 test('inferRoleFromTranscript reads the assigned role despite cross-referenced roles', () => {
   withPrefs((dir) => {
@@ -558,10 +1851,11 @@ test('inferRoleFromTranscript parses the CURSOR {role, message} transcript shape
     }) + '\n', 'utf8');
     assert.equal(inferRoleFromTranscript(f2), 'senior-frontend');
 
-    // Last-resort raw marker scan: marker present but in an unrecognized line shape.
+    // Unknown line shapes are not authenticated user input. A raw marker scan here
+    // lets tool output or transcript drift impersonate a role.
     const f3 = path.join(dir, 'rollout-cursor-odd.jsonl');
     fs.writeFileSync(f3, JSON.stringify({ kind: 'thread_item', data: { text: 'spawn [t1-role: senior-tester] user' } }) + '\n', 'utf8');
-    assert.equal(inferRoleFromTranscript(f3), 'senior-tester');
+    assert.equal(inferRoleFromTranscript(f3), null);
   });
 });
 
@@ -578,6 +1872,682 @@ function writeCursorSubagentTranscript(cursorProjectsRoot: string, projectRoot: 
   }) + '\n', 'utf8');
   return file;
 }
+
+test('Cursor transcript listing returns only child JSONL files and prefers birthtime over mtime', () => {
+  withPrefs((dir) => {
+    const previous = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const cursorRoot = path.join(dir, 'cursor-projects');
+    process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = cursorRoot;
+    try {
+      const parentId = '9c5e9932-478d-4f21-b31e-c7f64f46156b';
+      const firstId = '62c7127d-eb00-4294-b552-3c5f24207fcf';
+      const secondId = '4a2ece8c-ea15-458b-92b4-45d33849804f';
+      const first = writeCursorSubagentTranscript(cursorRoot, dir, parentId, firstId, '[t1-role: senior-architect]');
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+      const second = writeCursorSubagentTranscript(cursorRoot, dir, parentId, secondId, '[t1-role: senior-backend]');
+
+      // Deliberately make mtime point in the opposite direction from creation.
+      // Cursor appends to long-running transcripts, so this is the incident shape
+      // where mtime is not a reliable start-time correlation anchor.
+      const now = Date.now();
+      fs.utimesSync(first, new Date(now), new Date(now + 120_000));
+      fs.utimesSync(second, new Date(now), new Date(now - 120_000));
+      const parentTranscript = path.join(cursorRoot, cursorProjectKey(dir), 'agent-transcripts', parentId, `${parentId}.jsonl`);
+      fs.writeFileSync(parentTranscript, `${JSON.stringify({ type: 'turn_ended', status: 'error', error: 'User aborted request' })}\n`, 'utf8');
+
+      const candidates = listCursorSubagentTranscriptCandidates(dir, { workspace_roots: [dir] }, parentId);
+      assert.equal(candidates.length, 2);
+      assert.deepEqual(new Set(candidates.map((item) => item.childTranscriptId)), new Set([firstId, secondId]));
+      assert.ok(candidates.every((item) => item.filePath.includes(`${path.sep}subagents${path.sep}`)));
+      assert.ok(candidates.every((item) => Number.isFinite(item.birthtimeMs) && Number.isFinite(item.mtimeMs)));
+      assert.ok(!candidates.some((item) => item.filePath === parentTranscript), 'the parent transcript is never scanned');
+      assert.equal(cursorTranscriptCandidateTimeMs({
+        filePath: '/x', parentSessionId: parentId, childTranscriptId: firstId, birthtimeMs: 100, mtimeMs: 900,
+      }), 100, 'birthtime wins even when mtime is newer');
+      assert.equal(cursorTranscriptCandidateTimeMs({
+        filePath: '/x', parentSessionId: parentId, childTranscriptId: firstId, birthtimeMs: 0, mtimeMs: 900,
+      }), 900, 'mtime remains the fallback when birthtime is unavailable');
+
+      const preferredTimes = candidates.map(cursorTranscriptCandidateTimeMs);
+      assert.ok(preferredTimes[0]! >= preferredTimes[1]!, 'the exported list is ordered by the preferred timestamp');
+      const otherParent = listCursorSubagentTranscriptCandidates(dir, { workspace_roots: [dir] }, 'different-parent');
+      assert.deepEqual(otherParent, []);
+    } finally {
+      if (previous === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = previous;
+    }
+  });
+});
+
+function recordFinalizedCursorFailure(
+  cwd: string,
+  runId: string,
+  input: {
+    parentSessionId: string;
+    role: string;
+    toolCallId: string;
+    childTranscriptId: string;
+    startedAtMs: number;
+    directive: string;
+    prescribedModel?: string | null;
+  },
+): void {
+  assert.ok(recordCursorSpawnObservation(cwd, runId, {
+    parentSessionId: input.parentSessionId,
+    toolCallId: input.toolCallId,
+    role: input.role,
+    requestedModel: 'gpt-5.6-terra-medium',
+    tier: 'balanced',
+    expectedModel: 'gpt-5.6-terra',
+    startedAtMs: input.startedAtMs,
+  }));
+  assert.ok(claimCursorSpawnObservation(
+    cwd,
+    runId,
+    input.toolCallId,
+    input.childTranscriptId,
+    input.startedAtMs + 1,
+  ));
+  assert.ok(updateCursorSpawnObservation(cwd, runId, input.childTranscriptId, {
+    outcome: 'api-limit',
+    error: 'API usage limit reached',
+    directive: input.directive,
+    prescribedModel: input.prescribedModel === undefined
+      ? 'claude-sonnet-5-thinking-high'
+      : input.prescribedModel,
+  }, input.startedAtMs + 2));
+  assert.ok(consumeCursorSpawnObservation(cwd, runId, input.childTranscriptId, input.startedAtMs + 3));
+}
+
+function cursorFollowupClaim(
+  cwd: string,
+  runId: string,
+  observation: CursorSpawnObservation,
+  latest: CursorSpawnObservation = observation,
+  expectedParentFingerprint?: string,
+) {
+  assert.ok(observation.childTranscriptId);
+  assert.ok(observation.directive);
+  const fingerprint = expectedParentFingerprint
+    || cursorParentObservationSnapshot(cwd, runId, observation.parentSessionId)?.fingerprint;
+  assert.ok(fingerprint);
+  return {
+    parentSessionId: observation.parentSessionId,
+    expectedParentFingerprint: fingerprint!,
+    role: observation.role,
+    childTranscriptId: observation.childTranscriptId!,
+    toolCallId: observation.toolCallId,
+    expectedLatestToolCallId: latest.toolCallId,
+    expectedLatestStartedAtMs: latest.startedAtMs,
+    directive: observation.directive!,
+    prescribedModel: observation.prescribedModel,
+  };
+}
+
+test('Cursor spawn observations enforce one-to-one transcript claims and monotonic action markers', () => {
+  withPrefs((dir) => {
+    const runId = 'run-cursor-observations';
+    const first = recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-1',
+      toolCallId: 'tool_architect',
+      role: 'senior-architect',
+      requestedModel: 'gpt-5.6-terra-medium',
+      tier: 'highest',
+      expectedModel: 'claude-fable-5',
+      startedAtMs: 1_000,
+    });
+    assert.ok(first);
+    assert.equal(first!.childTranscriptId, null);
+    assert.equal(first!.outcome, null);
+    assert.equal(first!.followupEmitted, false);
+    assert.equal(first!.followupSuppressed, false);
+    assert.equal(first!.followupSuppressedAtMs, null);
+    assert.equal(first!.followupSuppressionReason, null);
+    assert.equal(first!.retryHandled, false);
+
+    // Spawn anchors are immutable/idempotent by tool-call id.
+    const duplicate = recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'different-parent',
+      toolCallId: 'tool_architect',
+      role: 'senior-backend',
+      requestedModel: 'composer-2.5-fast',
+      tier: 'cheapest',
+      expectedModel: 'composer-2.5',
+      startedAtMs: 9_000,
+    });
+    assert.equal(duplicate?.role, 'senior-architect');
+    assert.equal(duplicate?.startedAtMs, 1_000);
+
+    recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-1',
+      toolCallId: 'tool_backend',
+      role: 'senior-backend',
+      requestedModel: 'gpt-5.6-terra-medium',
+      tier: 'balanced',
+      expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 2_000,
+    });
+    const childId = '62c7127d-eb00-4294-b552-3c5f24207fcf';
+    assert.equal(claimCursorSpawnObservation(dir, runId, 'tool_architect', childId, 3_000)?.childTranscriptId, childId);
+    assert.equal(claimCursorSpawnObservation(dir, runId, 'tool_architect', childId, 3_100)?.claimedAtMs, 3_000, 'same claim is idempotent');
+    assert.equal(claimCursorSpawnObservation(dir, runId, 'tool_backend', childId), null, 'one transcript cannot claim two spawns');
+    assert.equal(claimCursorSpawnObservation(dir, runId, 'tool_architect', 'another-child'), null, 'one spawn cannot claim two transcripts');
+
+    const updated = updateCursorSpawnObservation(dir, runId, childId, {
+      outcome: 'api-limit',
+      error: 'API usage limit reached. Switched to composer-2.5.',
+      directive: 'retry same role on the prescribed model',
+      prescribedModel: 'gpt-5.6-sol-medium',
+    }, 4_000);
+    assert.equal(updated?.outcome, 'api-limit');
+    assert.equal(updated?.prescribedModel, 'gpt-5.6-sol-medium');
+    assert.match(updated?.error || '', /Switched to composer/);
+    assert.equal(cursorSpawnObservationForChild(dir, runId, childId)?.directive, 'retry same role on the prescribed model');
+
+    assert.equal(markCursorSpawnObservationFollowupEmitted(dir, runId, childId, 5_000)?.followupEmitted, true);
+    assert.equal(markCursorSpawnObservationFollowupEmitted(dir, runId, childId, 5_100), null, 'only one hook owns follow-up emission');
+    assert.equal(markCursorSpawnObservationRetryHandled(dir, runId, childId, 6_000)?.retryHandled, true);
+    assert.equal(markCursorSpawnObservationRetryHandled(dir, runId, childId, 6_100), null, 'only one hook owns retry settlement');
+    assert.equal(consumeCursorSpawnObservation(dir, runId, childId, 7_000)?.consumedAtMs, 7_000);
+    assert.equal(consumeCursorSpawnObservation(dir, runId, childId, 8_000)?.consumedAtMs, 7_000, 'consumption is idempotent');
+  });
+});
+
+test('Cursor followup suppression is monotonic, scoped, and bounded by the abort observation time', () => {
+  withPrefs((dir) => {
+    const runId = 'run-cursor-suppression';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-a', role: 'senior-architect', toolCallId: 'tool_a_arch',
+      childTranscriptId: 'child-a-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-a', role: 'senior-backend', toolCallId: 'tool_a_back',
+      childTranscriptId: 'child-a-back', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    assert.ok(recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-a', role: 'senior-tester', toolCallId: 'tool_a_unterminated',
+      requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 2_800,
+    }));
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-a', role: 'senior-reviewer', toolCallId: 'tool_a_future',
+      childTranscriptId: 'child-a-future', startedAtMs: 4_000, directive: 'retry future reviewer',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-b', role: 'senior-backend', toolCallId: 'tool_b_back',
+      childTranscriptId: 'child-b-back', startedAtMs: 2_500, directive: 'retry other parent',
+    });
+
+    const first = suppressCursorFollowupsBatch(dir, runId, {
+      scope: 'parent',
+      parentSessionId: 'parent-a',
+      observedAtMs: 3_000,
+      reason: 'stop-user-abort',
+    });
+    assert.deepEqual(first.map((item) => item.toolCallId).sort(),
+      ['tool_a_arch', 'tool_a_back', 'tool_a_unterminated']);
+
+    let observations = listCursorSpawnObservations(dir, runId);
+    for (const toolCallId of ['tool_a_arch', 'tool_a_back', 'tool_a_unterminated']) {
+      const observation = observations.find((item) => item.toolCallId === toolCallId)!;
+      assert.equal(observation.followupSuppressed, true);
+      assert.equal(observation.followupSuppressedAtMs, 3_000);
+      assert.equal(observation.followupSuppressionReason, 'stop-user-abort');
+      if (observation.childTranscriptId) {
+        assert.equal(markCursorSpawnObservationFollowupEmitted(
+          dir,
+          runId,
+          observation.childTranscriptId,
+        ), null, 'the legacy single-row CAS cannot reopen a suppressed continuation');
+      }
+    }
+    assert.equal(observations.find((item) => item.toolCallId === 'tool_a_future')?.followupSuppressed, false,
+      'a parent abort never suppresses a start created after its observedAt watermark');
+    assert.equal(observations.find((item) => item.toolCallId === 'tool_b_back')?.followupSuppressed, false,
+      'parent abort suppression never crosses parent sessions');
+
+    const later = suppressCursorFollowupsBatch(dir, runId, {
+      scope: 'parent',
+      parentSessionId: 'parent-a',
+      observedAtMs: 5_000,
+      reason: 'parent-transcript-user-abort',
+    });
+    assert.deepEqual(later.map((item) => item.toolCallId), ['tool_a_future'],
+      'a later signal changes only newly-covered rows, never the first reason on old rows');
+    observations = listCursorSpawnObservations(dir, runId);
+    assert.equal(observations.find((item) => item.toolCallId === 'tool_a_arch')?.followupSuppressionReason, 'stop-user-abort');
+    assert.equal(observations.find((item) => item.toolCallId === 'tool_a_future')?.followupSuppressionReason,
+      'parent-transcript-user-abort');
+
+    const childOnly = suppressCursorFollowupsBatch(dir, runId, {
+      scope: 'child',
+      parentSessionId: 'parent-b',
+      toolCallId: 'tool_b_back',
+      observedAtMs: 6_000,
+      reason: 'subagent-stop-user-abort',
+    });
+    assert.deepEqual(childOnly.map((item) => item.toolCallId), ['tool_b_back']);
+    assert.equal(suppressCursorFollowupsBatch(dir, runId, {
+      scope: 'child',
+      parentSessionId: 'wrong-parent',
+      toolCallId: 'tool_b_back',
+      observedAtMs: 7_000,
+      reason: 'subagent-stop-user-abort',
+    }).length, 0, 'child suppression validates the optional parent identity');
+    const raw = JSON.parse(fs.readFileSync(
+      path.join(dir, '.traffic-one', 'runs', runId, 'cursor-spawns.json'),
+      'utf8',
+    ));
+    assert.equal(raw.version, 1, 'additive suppression state does not bump the observation store version');
+  });
+});
+
+test('Cursor followup claims are all-or-nothing and validate the stable finalized head fingerprint', () => {
+  withPrefs((dir) => {
+    const runId = 'run-cursor-followup-batch';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-batch', role: 'senior-architect', toolCallId: 'tool_arch',
+      childTranscriptId: 'child-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-batch', role: 'senior-backend', toolCallId: 'tool_back',
+      childTranscriptId: 'child-back', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    const initial = listCursorSpawnObservations(dir, runId);
+    const architect = initial.find((item) => item.toolCallId === 'tool_arch')!;
+    const backend = initial.find((item) => item.toolCallId === 'tool_back')!;
+    const claimed = claimCursorFollowupsBatch(
+      dir,
+      runId,
+      [cursorFollowupClaim(dir, runId, architect), cursorFollowupClaim(dir, runId, backend)],
+      8_000,
+    );
+    assert.deepEqual(claimed.map((item) => item.role).sort(), ['senior-architect', 'senior-backend']);
+    assert.ok(claimed.every((item) => item.followupEmitted && item.updatedAtMs === 8_000));
+    assert.deepEqual(claimCursorFollowupsBatch(
+      dir,
+      runId,
+      [cursorFollowupClaim(dir, runId, architect), cursorFollowupClaim(dir, runId, backend)],
+      9_000,
+    ), [], 'a duplicate Stop/subagentStop batch loses every row');
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-cursor-followup-stale-batch';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-stale', role: 'senior-architect', toolCallId: 'tool_arch_old',
+      childTranscriptId: 'child-arch-old', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-stale', role: 'senior-backend', toolCallId: 'tool_back_old',
+      childTranscriptId: 'child-back-old', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    const selected = listCursorSpawnObservations(dir, runId);
+    const architect = selected.find((item) => item.toolCallId === 'tool_arch_old')!;
+    const backend = selected.find((item) => item.toolCallId === 'tool_back_old')!;
+
+    assert.ok(recordCursorSpawnObservation(dir, runId, {
+      parentSessionId: 'parent-stale',
+      toolCallId: 'tool_back_new_start',
+      role: 'senior-backend',
+      requestedModel: 'claude-sonnet-5-thinking-high',
+      tier: 'balanced',
+      expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 3_000,
+    }));
+    assert.deepEqual(claimCursorFollowupsBatch(
+      dir,
+      runId,
+      [cursorFollowupClaim(dir, runId, architect), cursorFollowupClaim(dir, runId, backend)],
+      8_000,
+    ), [], 'a newer start invalidates the complete selection snapshot');
+    assert.ok(listCursorSpawnObservations(dir, runId)
+      .filter((item) => item.toolCallId === 'tool_arch_old' || item.toolCallId === 'tool_back_old')
+      .every((item) => !item.followupEmitted), 'a stale second row cannot partially claim the first row');
+
+    const latestBackend = listCursorSpawnObservations(dir, runId)
+      .find((item) => item.toolCallId === 'tool_back_new_start')!;
+    assert.equal(claimCursorFollowupsBatch(dir, runId, [
+      cursorFollowupClaim(dir, runId, architect),
+      cursorFollowupClaim(dir, runId, backend, latestBackend),
+    ], 9_000).length, 2, 'an expired/newer blocker may be fingerprinted without becoming the finalized target');
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-cursor-followup-finalized-head';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-head', role: 'senior-architect', toolCallId: 'tool_arch_first',
+      childTranscriptId: 'child-arch-first', startedAtMs: 1_000, directive: 'retry first failure',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-head', role: 'senior-architect', toolCallId: 'tool_arch_latest',
+      childTranscriptId: 'child-arch-latest', startedAtMs: 2_000, directive: 'retry latest failure',
+    });
+    const observations = listCursorSpawnObservations(dir, runId);
+    const first = observations.find((item) => item.toolCallId === 'tool_arch_first')!;
+    const latest = observations.find((item) => item.toolCallId === 'tool_arch_latest')!;
+    assert.deepEqual(claimCursorFollowupsBatch(
+      dir,
+      runId,
+      [cursorFollowupClaim(dir, runId, first, latest)],
+      8_000,
+    ), [], 'an older finalized failure can never resurface beneath a newer finalized head');
+    assert.equal(claimCursorFollowupsBatch(
+      dir,
+      runId,
+      [cursorFollowupClaim(dir, runId, latest)],
+      9_000,
+    ).length, 1);
+  });
+});
+
+test('Cursor parent fingerprint rejects new-role and newly-finalized sibling races without partial claims', () => {
+  withPrefs((dir) => {
+    const runId = 'run-cursor-parent-new-role';
+    const parentSessionId = 'parent-new-role';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-architect', toolCallId: 'tool_new_role_arch',
+      childTranscriptId: 'child-new-role-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-backend', toolCallId: 'tool_new_role_back',
+      childTranscriptId: 'child-new-role-back', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    const snapshot = cursorParentObservationSnapshot(dir, runId, parentSessionId)!;
+    const requests = snapshot.observations.map((observation) => (
+      cursorFollowupClaim(dir, runId, observation, observation, snapshot.fingerprint)
+    ));
+
+    assert.ok(recordCursorSpawnObservation(dir, runId, {
+      parentSessionId,
+      role: 'senior-tester',
+      toolCallId: 'tool_new_role_tester',
+      requestedModel: 'gpt-5.5-medium',
+      tier: 'balanced',
+      expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 3_000,
+    }));
+    assert.deepEqual(claimCursorFollowupsBatch(dir, runId, requests, 8_000), []);
+    assert.ok(listCursorSpawnObservations(dir, runId)
+      .filter((observation) => requests.some((request) => request.toolCallId === observation.toolCallId))
+      .every((observation) => !observation.followupEmitted));
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-cursor-parent-finalize';
+    const parentSessionId = 'parent-finalize';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-architect', toolCallId: 'tool_finalize_arch',
+      childTranscriptId: 'child-finalize-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    assert.ok(recordCursorSpawnObservation(dir, runId, {
+      parentSessionId,
+      role: 'senior-backend',
+      toolCallId: 'tool_finalize_back',
+      requestedModel: 'gpt-5.6-terra-medium',
+      tier: 'balanced',
+      expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 2_000,
+    }));
+    const snapshot = cursorParentObservationSnapshot(dir, runId, parentSessionId)!;
+    const architect = snapshot.observations.find((observation) => observation.role === 'senior-architect')!;
+    const request = cursorFollowupClaim(dir, runId, architect, architect, snapshot.fingerprint);
+
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-backend', toolCallId: 'tool_finalize_back',
+      childTranscriptId: 'child-finalize-back', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    assert.deepEqual(claimCursorFollowupsBatch(dir, runId, [request], 8_000), []);
+    assert.equal(listCursorSpawnObservations(dir, runId)
+      .find((observation) => observation.toolCallId === architect.toolCallId)?.followupEmitted, false);
+  });
+});
+
+test('Cursor parent fingerprint rejects sibling suppression and retry settlement races', () => {
+  withPrefs((dir) => {
+    const runId = 'run-cursor-parent-suppression';
+    const parentSessionId = 'parent-suppression';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-architect', toolCallId: 'tool_suppress_arch',
+      childTranscriptId: 'child-suppress-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    assert.ok(recordCursorSpawnObservation(dir, runId, {
+      parentSessionId,
+      role: 'senior-backend',
+      toolCallId: 'tool_suppress_back',
+      requestedModel: 'gpt-5.6-terra-medium',
+      tier: 'balanced',
+      expectedModel: 'gpt-5.6-terra',
+      startedAtMs: 2_000,
+    }));
+    const snapshot = cursorParentObservationSnapshot(dir, runId, parentSessionId)!;
+    const architect = snapshot.observations.find((observation) => observation.role === 'senior-architect')!;
+    const request = cursorFollowupClaim(dir, runId, architect, architect, snapshot.fingerprint);
+
+    assert.equal(suppressCursorFollowupsBatch(dir, runId, {
+      scope: 'child',
+      parentSessionId,
+      toolCallId: 'tool_suppress_back',
+      observedAtMs: 3_000,
+      reason: 'subagent-stop-user-abort',
+    }).length, 1);
+    assert.deepEqual(claimCursorFollowupsBatch(dir, runId, [request], 8_000), []);
+    assert.equal(listCursorSpawnObservations(dir, runId)
+      .find((observation) => observation.toolCallId === architect.toolCallId)?.followupEmitted, false);
+  });
+
+  withPrefs((dir) => {
+    const runId = 'run-cursor-parent-retry-handled';
+    const parentSessionId = 'parent-retry-handled';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-architect', toolCallId: 'tool_handled_arch',
+      childTranscriptId: 'child-handled-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId, role: 'senior-backend', toolCallId: 'tool_handled_back',
+      childTranscriptId: 'child-handled-back', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    const snapshot = cursorParentObservationSnapshot(dir, runId, parentSessionId)!;
+    const architect = snapshot.observations.find((observation) => observation.role === 'senior-architect')!;
+    const request = cursorFollowupClaim(dir, runId, architect, architect, snapshot.fingerprint);
+
+    assert.ok(markCursorSpawnObservationRetryHandled(dir, runId, 'child-handled-back', 3_000));
+    assert.deepEqual(claimCursorFollowupsBatch(dir, runId, [request], 8_000), []);
+    assert.equal(listCursorSpawnObservations(dir, runId)
+      .find((observation) => observation.toolCallId === architect.toolCallId)?.followupEmitted, false);
+  });
+});
+
+test('the single-row followup CAS refuses a retry that already started', () => {
+  withPrefs((dir) => {
+    const runId = 'run-cursor-followup-handled';
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-handled', role: 'senior-architect', toolCallId: 'tool_handled',
+      childTranscriptId: 'child-handled', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    assert.ok(markCursorSpawnObservationRetryHandled(dir, runId, 'child-handled', 4_000));
+    assert.equal(markCursorSpawnObservationFollowupEmitted(dir, runId, 'child-handled', 5_000), null);
+    const observation = listCursorSpawnObservations(dir, runId)[0]!;
+    assert.equal(observation.retryHandled, true);
+    assert.equal(observation.followupEmitted, false);
+  });
+});
+
+test('Cursor spawn observation storage is bounded and reads pre-versioned state', () => {
+  withPrefs((dir) => {
+    const legacyRun = 'run-cursor-legacy';
+    const legacyFile = path.join(dir, '.traffic-one', 'runs', legacyRun, 'cursor-spawns.json');
+    fs.mkdirSync(path.dirname(legacyFile), { recursive: true });
+    fs.writeFileSync(legacyFile, `${JSON.stringify({
+      spawns: [{
+        parent_session_id: 'parent-legacy',
+        tool_call_id: 'tool_legacy',
+        role: 'senior-reviewer',
+        model: 'claude-sonnet-5',
+        tier: 'balanced',
+        expected: 'gpt-5.6-terra',
+        startedAt: '2026-07-15T09:00:00.000Z',
+        child_transcript_id: 'legacy-child',
+        outcome: 'generic',
+      }],
+    }, null, 2)}\n`, 'utf8');
+    const legacy = listCursorSpawnObservations(dir, legacyRun);
+    assert.equal(legacy.length, 1);
+    assert.equal(legacy[0]?.requestedModel, 'claude-sonnet-5');
+    assert.equal(legacy[0]?.expectedModel, 'gpt-5.6-terra');
+    assert.equal(legacy[0]?.childTranscriptId, 'legacy-child');
+    assert.equal(legacy[0]?.followupEmitted, false);
+    assert.equal(legacy[0]?.followupSuppressed, false);
+    assert.equal(legacy[0]?.followupSuppressedAtMs, null);
+    assert.equal(legacy[0]?.followupSuppressionReason, null);
+
+    const runId = 'run-cursor-bounded';
+    for (let index = 0; index < 132; index += 1) {
+      const recorded = recordCursorSpawnObservation(dir, runId, {
+        parentSessionId: 'parent-bounded',
+        toolCallId: `tool_${index}`,
+        role: 'senior-tester',
+        requestedModel: 'composer-2.5-fast',
+        tier: 'cheapest',
+        expectedModel: 'composer-2.5',
+        startedAtMs: index + 1,
+      });
+      assert.ok(recorded);
+    }
+    const bounded = listCursorSpawnObservations(dir, runId);
+    assert.equal(bounded.length, 128);
+    assert.equal(bounded[0]?.toolCallId, 'tool_4');
+    assert.equal(bounded.at(-1)?.toolCallId, 'tool_131');
+    const raw = JSON.parse(fs.readFileSync(path.join(dir, '.traffic-one', 'runs', runId, 'cursor-spawns.json'), 'utf8'));
+    assert.equal(raw.version, 1);
+    assert.equal(raw.observations.length, 128);
+  });
+});
+
+test('Cursor spawn observations preserve concurrent subagentStart records', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-spawn-concurrent-'));
+  const source = [
+    "const { recordCursorSpawnObservation } = require('./src/shared/state/run-agent.ts');",
+    "const [cwd, role, toolCallId, startedAtMs] = process.argv.slice(1);",
+    "recordCursorSpawnObservation(cwd, 'run-concurrent', { parentSessionId: 'parent-1', toolCallId, role, requestedModel: 'gpt-5.6-terra-medium', tier: 'balanced', expectedModel: 'gpt-5.6-terra', startedAtMs: Number(startedAtMs) });",
+  ].join('\n');
+  try {
+    const lockDir = path.join(dir, '.traffic-one', 'runs', 'run-concurrent', '.cursor-spawns.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    let exited = 0;
+    const children = ['senior-architect', 'senior-backend'].map((role, index) => new Promise<void>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        '--import', 'tsx', '-e', source, dir, role, `tool_${index}`, String(index + 1),
+      ], { cwd: process.cwd(), stdio: 'ignore' });
+      child.once('error', reject);
+      child.once('exit', (code) => {
+        exited += 1;
+        if (code === 0) resolve();
+        else reject(new Error(`Cursor spawn recorder child exited ${code}`));
+      });
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(exited, 0, 'both hook processes wait for the observation lock');
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    await Promise.all(children);
+    assert.deepEqual(
+      listCursorSpawnObservations(dir, 'run-concurrent').map((item) => item.role).sort(),
+      ['senior-architect', 'senior-backend'],
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('concurrent Cursor lifecycle processes cannot split one parent followup batch', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-followup-concurrent-'));
+  const runId = 'run-followup-concurrent';
+  const source = [
+    "const { claimCursorFollowupsBatch } = require('./src/shared/state/run-agent.ts');",
+    'const [cwd, runId, encoded] = process.argv.slice(1);',
+    "const requests = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));",
+    'const claimed = claimCursorFollowupsBatch(cwd, runId, requests, 10000);',
+    'process.stdout.write(JSON.stringify(claimed.map((item) => item.role).sort()));',
+  ].join('\n');
+  try {
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-concurrent', role: 'senior-architect', toolCallId: 'tool_concurrent_arch',
+      childTranscriptId: 'child-concurrent-arch', startedAtMs: 1_000, directive: 'retry architect',
+    });
+    recordFinalizedCursorFailure(dir, runId, {
+      parentSessionId: 'parent-concurrent', role: 'senior-backend', toolCallId: 'tool_concurrent-back',
+      childTranscriptId: 'child-concurrent-back', startedAtMs: 2_000, directive: 'retry backend',
+    });
+    const observations = listCursorSpawnObservations(dir, runId);
+    const requests = observations.map((observation) => cursorFollowupClaim(dir, runId, observation));
+    const encoded = Buffer.from(JSON.stringify(requests), 'utf8').toString('base64url');
+    const lockDir = path.join(dir, '.traffic-one', 'runs', runId, '.cursor-spawns.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+
+    let exited = 0;
+    const children = [0, 1].map(() => new Promise<string>((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        '--import', 'tsx', '-e', source, dir, runId, encoded,
+      ], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'ignore'] });
+      let stdout = '';
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', (chunk: string) => { stdout += chunk; });
+      child.once('error', reject);
+      child.once('exit', (code) => {
+        exited += 1;
+        if (code === 0) resolve(stdout);
+        else reject(new Error(`Cursor followup claimant child exited ${code}`));
+      });
+    }));
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(exited, 0, 'both lifecycle hooks wait on the shared observation lock');
+    fs.rmSync(lockDir, { recursive: true, force: true });
+
+    const outputs = (await Promise.all(children)).map((output) => JSON.parse(output) as string[]);
+    assert.deepEqual(outputs.map((roles) => roles.length).sort((a, b) => a - b), [0, 2]);
+    assert.deepEqual(outputs.find((roles) => roles.length === 2), ['senior-architect', 'senior-backend']);
+    assert.ok(listCursorSpawnObservations(dir, runId).every((observation) => observation.followupEmitted));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('Cursor spawn observation mutators and transcript scanner stand down in the plugin authoring root', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-cursor-authoring-'));
+  const previous = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+  try {
+    fs.mkdirSync(path.join(dir, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'src', 'gen', 'index.ts'), 'export {};\n', 'utf8');
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    resetAuthoringRootCache();
+    process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = path.join(dir, 'cursor-projects');
+
+    assert.equal(recordCursorSpawnObservation(dir, 'run-authoring', {
+      parentSessionId: 'parent', toolCallId: 'tool_1', role: 'senior-frontend',
+      requestedModel: 'composer-2.5-fast', tier: 'cheapest', expectedModel: 'composer-2.5', startedAtMs: 1,
+    }), null);
+    assert.deepEqual(listCursorSpawnObservations(dir, 'run-authoring'), []);
+    assert.equal(claimCursorSpawnObservation(dir, 'run-authoring', 'tool_1', 'child-1'), null);
+    assert.equal(updateCursorSpawnObservation(dir, 'run-authoring', 'child-1', { outcome: 'generic' }), null);
+    assert.equal(consumeCursorSpawnObservation(dir, 'run-authoring', 'child-1'), null);
+    assert.deepEqual(claimCursorFollowupsBatch(dir, 'run-authoring', [{
+      parentSessionId: 'parent', role: 'senior-frontend', childTranscriptId: 'child-1',
+      toolCallId: 'tool_1', expectedLatestToolCallId: 'tool_1', expectedLatestStartedAtMs: 1,
+      expectedParentFingerprint: '0'.repeat(64),
+      directive: 'retry', prescribedModel: 'composer-2.5-fast',
+    }]), []);
+    assert.deepEqual(suppressCursorFollowupsBatch(dir, 'run-authoring', {
+      scope: 'parent', parentSessionId: 'parent', observedAtMs: 2, reason: 'stop-user-abort',
+    }), []);
+    assert.deepEqual(listCursorSubagentTranscriptCandidates(dir, { workspace_roots: [dir] }, 'parent'), []);
+    assert.equal(fs.existsSync(path.join(dir, '.traffic-one')), false);
+  } finally {
+    if (previous === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = previous;
+    resetAuthoringRootCache();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('resolveRunAgentContext binds Cursor child writes from the local subagent transcript cache', () => {
   withPrefs((dir) => {
@@ -738,6 +2708,69 @@ test('refreshCursorRunAgentFromTranscriptCache upgrades read-only Cursor agents 
   });
 });
 
+test('refreshCursorRunAgentFromTranscriptCache never binds an old role transcript to a newer tool start', () => {
+  withPrefs((dir) => {
+    const prevCursorProjects = process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+    const prevCursorPluginRoot = process.env.CURSOR_PLUGIN_ROOT;
+    const cursorRoot = path.join(dir, 'cursor-projects');
+    process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = cursorRoot;
+    process.env.CURSOR_PLUGIN_ROOT = path.join(dir, 'cursor-plugin');
+    try {
+      const runId = 'run-cursor-stale-transcript';
+      const parentId = '4b872ad4-f47c-4ae7-8061-2fc720265e93';
+      const oldToolId = 'tool_5a61f21d-aeed-40a7-bf5e-8b5a527a196f';
+      const oldChildId = 'd76eae91-6e60-4c38-8315-6483360d0fe7';
+      const legacyChildId = '56936be6-c586-4aef-8f47-a6b38ce165a1';
+      const newToolId = 'tool_c5fa21a6-bc99-4554-97bf-158a52e3fa11';
+      const state = { ...materializedState(), currentRunId: runId };
+
+      recordFinalizedCursorFailure(dir, runId, {
+        parentSessionId: parentId,
+        role: 'senior-reviewer',
+        toolCallId: oldToolId,
+        childTranscriptId: oldChildId,
+        startedAtMs: 1_000,
+        directive: 'generic recovery for old reviewer',
+      });
+      writeCursorSubagentTranscript(cursorRoot, dir, parentId, oldChildId,
+        '[t1-role: senior-reviewer]\nOld consumed reviewer transcript.');
+      writeCursorSubagentTranscript(cursorRoot, dir, parentId, legacyChildId,
+        '[t1-role: senior-reviewer]\nOld unclaimed legacy reviewer transcript.');
+
+      const newStartedAtMs = Date.now() + 10_000;
+      assert.ok(recordCursorSpawnObservation(dir, runId, {
+        parentSessionId: parentId,
+        role: 'senior-reviewer',
+        toolCallId: newToolId,
+        requestedModel: 'gpt-5.6-terra-medium',
+        tier: 'balanced',
+        expectedModel: 'gpt-5.6-terra',
+        startedAtMs: newStartedAtMs,
+      }));
+      recordRunAgent(dir, runId, 'senior-reviewer', {
+        agentId: newToolId,
+        toolCallId: newToolId,
+        parentSessionId: parentId,
+      });
+
+      assert.equal(refreshCursorRunAgentFromTranscriptCache(dir, state, {
+        session_id: parentId,
+        workspace_roots: [dir],
+      }, runId, 'senior-reviewer', parentId), null);
+      const current = readRunAgentRegistry(dir, runId)['senior-reviewer'];
+      assert.equal(current?.agentId, newToolId);
+      assert.equal(current?.toolCallId, newToolId);
+      assert.equal(current?.resumeId, null);
+      assert.equal(continuationAgentId(current!, 'cursor'), '');
+    } finally {
+      if (prevCursorProjects === undefined) delete process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR;
+      else process.env.TRAFFIC_ONE_CURSOR_PROJECTS_DIR = prevCursorProjects;
+      if (prevCursorPluginRoot === undefined) delete process.env.CURSOR_PLUGIN_ROOT;
+      else process.env.CURSOR_PLUGIN_ROOT = prevCursorPluginRoot;
+    }
+  });
+});
+
 test('recordRunAgent: Cursor tool_* id is stored separately from Task resume UUID', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-resume-id-'));
   try {
@@ -799,6 +2832,43 @@ test('recordRunAgent preserves replacement history while keeping the live role s
     assert.equal(raw.history[0].oldAgentId, 'agent-old');
     assert.equal(raw.history[0].newAgentId, 'agent-new');
     assert.equal(raw.history[0].replacementReason, 'explicit-replace-agent-marker');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('recordRunAgent preserves every role across concurrent hook processes', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-agent-concurrent-'));
+  const roles = ['senior-frontend', 'senior-backend'];
+  const source = [
+    "const { recordRunAgent } = require('./src/shared/state/run-agent.ts');",
+    "const [cwd, role, agentId] = process.argv.slice(1);",
+    "recordRunAgent(cwd, 'run-concurrent', role, { agentId, parentSessionId: 'parent-1' });",
+  ].join('\n');
+  try {
+    const lockDir = path.join(dir, '.traffic-one', 'runs', 'run-concurrent', '.agents.lock');
+    fs.mkdirSync(lockDir, { recursive: true });
+    let exited = 0;
+    const children = roles.map((role, index) => {
+      return new Promise<void>((resolve, reject) => {
+        const child = spawn(process.execPath, ['--import', 'tsx', '-e', source, dir, role, `agent-${index}`], {
+          cwd: process.cwd(),
+          stdio: 'ignore',
+        });
+        child.once('error', reject);
+        child.once('exit', (code) => {
+          exited += 1;
+          if (code === 0) resolve();
+          else reject(new Error(`recorder child exited ${code}`));
+        });
+      });
+    });
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.equal(exited, 0, 'both hook processes must wait for the bounded registry lock');
+    fs.rmSync(lockDir, { recursive: true, force: true });
+    await Promise.all(children);
+    const registry = readRunAgentRegistry(dir, 'run-concurrent');
+    assert.deepEqual(Object.keys(registry).sort(), [...roles].sort());
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

@@ -16,6 +16,12 @@ function cursorGlobalStorage(home: string): string {
   return path.join(home, '.config', 'Cursor', 'User', 'globalStorage');
 }
 
+function windsurfGlobalStorage(home: string): string {
+  if (process.platform === 'darwin') return path.join(home, 'Library', 'Application Support', 'Devin', 'User', 'globalStorage');
+  if (process.platform === 'win32') return path.join(home, 'AppData', 'Roaming', 'Devin', 'User', 'globalStorage');
+  return path.join(home, '.config', 'Devin', 'User', 'globalStorage');
+}
+
 // Build a minimal Cursor state.vscdb fixture with whatever SQLite is available —
 // node:sqlite is cross-OS (incl. Windows); the sqlite3 CLI is the macOS/Linux fallback.
 function writeCursorMembershipDb(db: string, membership: string): boolean {
@@ -29,6 +35,25 @@ function writeCursorMembershipDb(db: string, membership: string): boolean {
   } catch { /* fall through to CLI */ }
   try {
     return spawnSync('sqlite3', [db, `CREATE TABLE ItemTable(key TEXT PRIMARY KEY, value BLOB); INSERT INTO ItemTable VALUES('cursorAuth/stripeMembershipType','${membership}');`]).status === 0;
+  } catch { return false; }
+}
+
+function writeWindsurfPlanDb(db: string, planName: string): boolean {
+  fs.mkdirSync(path.dirname(db), { recursive: true });
+  const key = 'windsurf.reactSettings.cachedPlanInfoData:user-test';
+  const value = JSON.stringify({ planName, isFreeOrTrial: planName.toLowerCase() === 'free' });
+  try {
+    const sqlite = require('node:sqlite') as { DatabaseSync: new (f: string) => { exec(s: string): void; prepare(s: string): { run(...a: unknown[]): unknown }; close(): void } };
+    const h = new sqlite.DatabaseSync(db);
+    h.exec('CREATE TABLE IF NOT EXISTS ItemTable(key TEXT PRIMARY KEY, value BLOB)');
+    h.prepare('INSERT OR REPLACE INTO ItemTable(key, value) VALUES(?, ?)').run(key, value);
+    h.close();
+    return true;
+  } catch { /* fall through to CLI */ }
+  try {
+    const escapedKey = key.replace(/'/g, "''");
+    const escapedValue = value.replace(/'/g, "''");
+    return spawnSync('sqlite3', [db, `CREATE TABLE ItemTable(key TEXT PRIMARY KEY, value BLOB); INSERT INTO ItemTable VALUES('${escapedKey}','${escapedValue}');`]).status === 0;
   } catch { return false; }
 }
 
@@ -124,7 +149,7 @@ test('detectHostPlan claude: personal Max account — plan only in organizationT
   assert.equal(detectHostPlan('claude', env({ HOME: hPro })), 'pro');
 });
 
-test('detectHostPlan claude: missing/garbage file → default (free)', () => {
+test('detectHostPlan claude: missing/garbage file → conservative default (free — assume no paid seat)', () => {
   assert.equal(detectHostPlan('claude', env({ HOME: tmpHome() })), 'free');
 });
 
@@ -135,11 +160,11 @@ test('detectHostPlan codex: decodes chatgpt_plan_type from the id_token JWT', ()
   assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
 });
 
-test('detectHostPlan codex: prolite (ChatGPT Go / Pro-Lite) maps to plus', () => {
+test('detectHostPlan codex: prolite (Pro-Lite, badged "Pro" in the app) maps to pro', () => {
   const home = tmpHome();
   const token = jwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'prolite' } });
   fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
-  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'plus');
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
 });
 
 test('detectHostPlan codex: malformed token / no file → default free', () => {
@@ -147,6 +172,43 @@ test('detectHostPlan codex: malformed token / no file → default free', () => {
   fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: 'not-a-jwt' } }), 'utf8');
   assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'free');
   assert.equal(detectHostPlan('codex', env({ CODEX_HOME: tmpHome() })), 'free');
+});
+
+function writeCodexRollout(home: string, day: string, name: string, planType: string | null): void {
+  const dir = path.join(home, 'sessions', '2026', '07', day);
+  fs.mkdirSync(dir, { recursive: true });
+  const lines = [
+    JSON.stringify({ type: 'session_meta', payload: { id: name } }),
+    ...(planType
+      ? [JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', rate_limit_snapshot: { credits: null, plan_type: planType, rate_limit_reached_type: null } } })]
+      : []),
+  ];
+  fs.writeFileSync(path.join(dir, `rollout-2026-07-${day}T${name}.jsonl`), `${lines.join('\n')}\n`, 'utf8');
+}
+
+test('detectHostPlan codex: server-reported plan_type from session telemetry beats the stale JWT claim', () => {
+  const home = tmpHome();
+  // The JWT is only re-minted at `codex login` and lags a plan change for weeks;
+  // the session rollouts carry the server-reported CURRENT plan on every run.
+  const token = jwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'prolite' } });
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
+  writeCodexRollout(home, '12', '09-00-00-aaa', 'plus'); // older day
+  writeCodexRollout(home, '13', '10-00-00-bbb', 'pro'); // newest day, newest file
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
+});
+
+test('detectHostPlan codex: newest rollout without a plan_type falls through to the next file, then the JWT', () => {
+  const home = tmpHome();
+  const token = jwt({ 'https://api.openai.com/auth': { chatgpt_plan_type: 'plus' } });
+  fs.writeFileSync(path.join(home, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
+  writeCodexRollout(home, '13', '11-00-00-ccc', null); // newest file carries no snapshot
+  writeCodexRollout(home, '13', '10-00-00-bbb', 'pro');
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: home })), 'pro');
+
+  // No rollouts at all → the JWT claim remains the fallback.
+  const jwtOnly = tmpHome();
+  fs.writeFileSync(path.join(jwtOnly, 'auth.json'), JSON.stringify({ tokens: { id_token: token } }), 'utf8');
+  assert.equal(detectHostPlan('codex', env({ CODEX_HOME: jwtOnly })), 'plus');
 });
 
 test('detectHostPlan cursor: reads cursorAuth/stripeMembershipType from state.vscdb (cross-OS)', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {
@@ -170,6 +232,23 @@ test('detectHostPlan windsurf: no local plan source → default Free, never Clau
   assert.equal(detectHostPlan('windsurf', env({ HOME: home })), 'free');
 });
 
+test('detectHostPlan windsurf: reads cached Devin Plan Info from state.vscdb', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {
+  const home = tmpHome();
+  const dir = windsurfGlobalStorage(home);
+  const db = path.join(dir, 'state.vscdb');
+  assert.ok(writeWindsurfPlanDb(db, 'Max'), 'could not create fixture state.vscdb');
+  assert.equal(detectHostPlan('windsurf', env({ HOME: home })), 'max');
+});
+
+test('detectHostPlan windsurf: cache notices the cached Plan Info appearing after a Free fallback', { skip: !(hasSqlite3 || hasNodeSqlite) }, () => {
+  const home = tmpHome();
+  const e = env({ HOME: home });
+  assert.equal(detectHostPlan('windsurf', e), 'free');
+  const db = path.join(windsurfGlobalStorage(home), 'state.vscdb');
+  assert.ok(writeWindsurfPlanDb(db, 'Pro'), 'could not create fixture state.vscdb');
+  assert.equal(detectHostPlan('windsurf', e), 'pro');
+});
+
 test('detectHostPlan kilo: no local plan source → default Free, never Claude fallback', () => {
   const home = tmpHome();
   fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({
@@ -186,6 +265,16 @@ test('detectHostPlan opencode: auth.json provider key → plus (opencode-go) / f
   assert.equal(detectHostPlan('opencode', env({ HOME: go })), 'plus');
   // no auth file (a fresh home) → the free zero-auth gateway
   assert.equal(detectHostPlan('opencode', env({ HOME: tmpHome() })), 'free');
+});
+
+test('detectHostPlan opencode: honors XDG_DATA_HOME and does not reuse a different auth location cache entry', () => {
+  const home = tmpHome();
+  const dataHome = path.join(tmpHome(), 'data');
+  const dir = path.join(dataHome, 'opencode');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({ 'opencode-go': { type: 'api', key: 'x' } }), 'utf8');
+  assert.equal(detectHostPlan('opencode', env({ HOME: home, XDG_DATA_HOME: dataHome })), 'plus');
+  assert.equal(detectHostPlan('opencode', env({ HOME: home, XDG_DATA_HOME: path.join(tmpHome(), 'empty') })), 'free');
 });
 
 test('detectHostPlan copilot: product-label settings strings resolve to Pro', () => {

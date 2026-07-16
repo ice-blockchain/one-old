@@ -17,6 +17,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 
+import { isNonProjectRoot } from '../authoring-root';
+
 export const ONBOARDING_MAIN_SESSIONS_REL = path.join('.traffic-one', '.onboarding-main-sessions.json');
 
 // Recorded main sessions older than this are ignored. This store exists ONLY to recognize a
@@ -51,7 +53,7 @@ function readStore(cwd: string): Record<string, number> {
 // Record `sessionId` as a known MAIN (orchestrator) session for this project. Called from the
 // SubagentStart handler with the parent/orchestrator session id (the spawner). No-op on empty id.
 export function recordMainOnboardingSession(cwd: string, sessionId: string, nowMs: number = Date.now()): void {
-  if (!sessionId) return;
+  if (!sessionId || isNonProjectRoot(cwd)) return;
   try {
     const sessions = readStore(cwd);
     sessions[sessionId] = nowMs;
@@ -73,7 +75,7 @@ export function recordMainOnboardingSession(cwd: string, sessionId: string, nowM
 // this session is not among them. When no main is recorded yet, returns false (never hide the
 // real wizard before we know who the orchestrator is).
 export function isForeignOnboardingThread(cwd: string, sessionId: string, nowMs: number = Date.now()): boolean {
-  if (!sessionId) return false;
+  if (!sessionId || isNonProjectRoot(cwd)) return false;
   const sessions = readStore(cwd);
   const fresh = Object.entries(sessions).filter(([, t]) => nowMs - t <= ONBOARDING_MAIN_TTL_MS);
   if (fresh.length === 0) return false; // no known orchestrator yet → don't suppress anyone

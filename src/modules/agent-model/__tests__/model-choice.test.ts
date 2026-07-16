@@ -5,9 +5,11 @@ import * as os from 'os';
 import * as path from 'path';
 
 import {
+  clearModelGatePrompted,
   clearModelChoice,
   markModelAdvisoryShown,
   markModelChoicePrompted,
+  markModelGatePrompted,
   modelAdvisoryShown,
   modelChoicePrompted,
   modelChoiceReplyPending,
@@ -15,6 +17,8 @@ import {
   readModelChoice,
   writeModelChoice,
 } from '../model-choice';
+import { resetAuthoringRootCache } from '../../../shared/authoring-root';
+import { hostScopedPerformancePrefs, withCursorAvailableModels } from '../../../test-support/host-prefs';
 
 function tmp(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'mc-'));
@@ -102,13 +106,13 @@ test('modelChoiceReplyPending: true when unavailable picks exist and no choice; 
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      performance: { level: 'high', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    }), 'utf8');
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+        'pro',
+      );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     const state: Record<string, unknown> = {
       mode: 'new-project', currentRunId: 'run-pending', performance: { level: 'high' },
       team: { mode: 'subagents', approved: true, overrides: { 'senior-architect': 'balanced' } },
@@ -132,16 +136,16 @@ test('modelChoiceReplyPending: unavailable picks mint currentRunId instead of fa
   env.TRAFFIC_ONE_USER_PLAN = 'pro';
   try {
     fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
-    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify({
-      performance: { level: 'high', source: 'prompted' },
-      team: { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
-    }), 'utf8');
+    const prefs = hostScopedPerformancePrefs(
+        { level: 'high', source: 'prompted' },
+        { mode: 'subagents', source: 'prompted', approved: true, overrides: { 'senior-architect': 'balanced' } },
+        'pro',
+      );
+    withCursorAvailableModels(prefs, ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'], 'pro');
+    fs.writeFileSync(env.TRAFFIC_ONE_PROJECT_PREFS_PATH, JSON.stringify(prefs), 'utf8');
     fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({
       mode: 'new-project', stack: 'default', frontend: 'react-vite', backend: 'supabase',
       onboardingComplete: true, materializedStack: 'default|react-vite|supabase|none',
-    }), 'utf8');
-    fs.writeFileSync(path.join(cwd, '.traffic-one', 'cursor-models.json'), JSON.stringify({
-      models: ['claude-opus-4-8-thinking-high', 'gpt-5.5-medium', 'composer-2.5-fast'],
     }), 'utf8');
     const state: Record<string, unknown> = {
       mode: 'new-project', performance: { level: 'high' },
@@ -154,6 +158,29 @@ test('modelChoiceReplyPending: unavailable picks mint currentRunId instead of fa
   } finally {
     if (pp === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = pp;
     if (pl === undefined) delete env.TRAFFIC_ONE_USER_PLAN; else env.TRAFFIC_ONE_USER_PLAN = pl;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('model-choice mutators stand down in plugin authoring roots', () => {
+  const cwd = tmp();
+  resetAuthoringRootCache();
+  try {
+    fs.mkdirSync(path.join(cwd, 'src', 'gen'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'src', 'gen', 'index.ts'), '// generator', 'utf8');
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 'traffic-one' }), 'utf8');
+    resetAuthoringRootCache();
+
+    assert.equal(writeModelChoice(cwd, 'run-stand-down', 'use-fallback'), false);
+    markModelChoicePrompted(cwd, 'run-stand-down');
+    markModelAdvisoryShown(cwd, 'run-stand-down');
+    markModelGatePrompted(cwd, 'run-stand-down');
+    clearModelChoice(cwd, 'run-stand-down');
+    clearModelGatePrompted(cwd, 'run-stand-down');
+    assert.equal(modelChoiceReplyPending(cwd, { currentRunId: 'run-stand-down' }), false);
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false, 'no project state is created in the source repo');
+  } finally {
+    resetAuthoringRootCache();
     fs.rmSync(cwd, { recursive: true, force: true });
   }
 });

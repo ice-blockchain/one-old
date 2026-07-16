@@ -3,11 +3,17 @@ import assert from 'node:assert/strict';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as https from 'https';
+import { EventEmitter } from 'events';
+import type { ClientRequest, IncomingMessage } from 'http';
 
 import { prepareReport } from '../prepareReport';
 import { runReport } from '../runReport';
-import { isLocallyAuthenticated, writeSimpleAuth } from '../../../shared/auth';
+import { isLocallyAuthenticated, readSimpleAuth, writeSimpleAuth } from '../../../shared/auth';
+import { readOneSettings, writeOneSection } from '../../../shared/one-settings';
 import { SAVE_MCP_REPORT } from '../../../config/reporting';
+import { recordPluginUseChoice } from '../../../shared/state/plugin-use';
+import { mcpRequest } from '../lib';
 
 const STATUS_REL = path.join('.traffic-one', 'one-mcp-report.json');
 
@@ -21,33 +27,89 @@ function statusStatus(cwd: string): string {
 
 function withProject(fn: (cwd: string) => void): void {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-net-'));
+  const previous = process.env.TRAFFIC_ONE_AUTH;
+  process.env.TRAFFIC_ONE_AUTH = 'off';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  try { fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  try { fn(dir); } finally {
+    if (previous === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+    else process.env.TRAFFIC_ONE_AUTH = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function withProjectAsync(fn: (cwd: string) => Promise<void>): Promise<void> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-net-'));
+  const previous = process.env.TRAFFIC_ONE_AUTH;
+  process.env.TRAFFIC_ONE_AUTH = 'off';
   fs.mkdirSync(path.join(dir, '.traffic-one'), { recursive: true });
-  try { await fn(dir); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  try { await fn(dir); } finally {
+    if (previous === undefined) delete process.env.TRAFFIC_ONE_AUTH;
+    else process.env.TRAFFIC_ONE_AUTH = previous;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 function withFreshAuth(fn: (dir: string) => void): void {
   withProject((dir) => {
     const env = process.env;
-    const prevAuth = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    const prevAuth = env.TRAFFIC_ONE_STATE_PATH;
     const prevEndpoint = env.TRAFFIC_ONE_MCP_KEY_ENDPOINT;
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(dir, 'one.json');
+    const prevPrefs = env.TRAFFIC_ONE_PROJECT_PREFS_PATH;
+    const prevFlag = env.TRAFFIC_ONE_AUTH;
+    env.TRAFFIC_ONE_STATE_PATH = path.join(dir, 'one.json');
     env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = 'http://127.0.0.1:8787/mcp';
-    // The simple web-entered-key boolean model: a flat auth.json beside one.json.
-    fs.writeFileSync(path.join(dir, 'auth.json'), JSON.stringify({
+    env.TRAFFIC_ONE_PROJECT_PREFS_PATH = path.join(dir, 'preferences.json');
+    env.TRAFFIC_ONE_AUTH = '1';
+    // The sole wizard-validated record lives under one.json.auth.
+    writeOneSection('auth', {
       version: 1, authenticated: true, apiKey: 'sk-telemetry-123', updatedAt: '2099-01-01T00:00:00Z',
-    }), 'utf8');
+    }, env);
     try { fn(dir); } finally {
-      if (prevAuth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prevAuth;
+      if (prevAuth === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prevAuth;
       if (prevEndpoint === undefined) delete env.TRAFFIC_ONE_MCP_KEY_ENDPOINT; else env.TRAFFIC_ONE_MCP_KEY_ENDPOINT = prevEndpoint;
+      if (prevPrefs === undefined) delete env.TRAFFIC_ONE_PROJECT_PREFS_PATH; else env.TRAFFIC_ONE_PROJECT_PREFS_PATH = prevPrefs;
+      if (prevFlag === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevFlag;
     }
   });
 }
+
+test('mcpRequest sends canonical one.json.auth as the Bearer credential', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 't1-onemcp-bearer-'));
+  const env = {
+    ...process.env,
+    TRAFFIC_ONE_STATE_PATH: path.join(dir, 'one.json'),
+    TRAFFIC_ONE_AUTH: '1',
+  } as NodeJS.ProcessEnv;
+  let captured: https.RequestOptions = {};
+  const requestImpl = ((
+    options: https.RequestOptions,
+    callback: (response: IncomingMessage) => void,
+  ): ClientRequest => {
+    captured = options;
+    const response = Object.assign(new EventEmitter(), {
+      statusCode: 200,
+      setEncoding: () => response,
+    }) as unknown as IncomingMessage;
+    const request = Object.assign(new EventEmitter(), {
+      end: () => {
+        callback(response);
+        response.emit('data', '{"result":{}}');
+        response.emit('end');
+      },
+      destroy: () => request,
+    }) as unknown as ClientRequest;
+    return request;
+  }) as unknown as typeof https.request;
+
+  try {
+    writeSimpleAuth('sk-canonical-bearer', env);
+    await mcpRequest('https://example.test/mcp', { report_id: 'rep-bearer' }, 100, env, requestImpl);
+    const headers = captured.headers as Record<string, string | number>;
+    assert.equal(headers.authorization, 'Bearer sk-canonical-bearer');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('runReport posts the queued report via an injected transport → status ok', async () => {
   await withProjectAsync(async (cwd) => {
@@ -73,26 +135,75 @@ test('runReport records a failed status when the transport rejects', async () =>
   });
 });
 
-test('runReport: a 401 from the report call clears the local auth flag (enforced)', async () => {
+test('runReport: 401 and 403 always delete only canonical auth and reopen the wizard', async () => {
   await withProjectAsync(async (cwd) => {
     const env = process.env;
-    const saved = { auth: env.TRAFFIC_ONE_AUTH_STATE_PATH, flag: env.TRAFFIC_ONE_AUTH };
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'one.json');
-    env.TRAFFIC_ONE_AUTH = '1'; // enforced → a 401 must invalidate the key
+    const saved = { state: env.TRAFFIC_ONE_STATE_PATH, flag: env.TRAFFIC_ONE_AUTH };
+    const processState = path.join(cwd, 'process-one.json');
+    const customState = path.join(cwd, 'custom-one.json');
+    env.TRAFFIC_ONE_STATE_PATH = processState;
+    env.TRAFFIC_ONE_AUTH = '1';
+    const customEnv = {
+      ...env,
+      TRAFFIC_ONE_STATE_PATH: customState,
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'custom-preferences.json'),
+      TRAFFIC_ONE_AUTH: '1',
+    } as NodeJS.ProcessEnv;
     try {
-      writeSimpleAuth('sk-bad-key'); // entered but (per the 401) invalid
-      assert.equal(isLocallyAuthenticated(), true);
+      writeSimpleAuth('sk-process-store', env);
+      writeOneSection('codeGraphProvider', 'graphify', customEnv);
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
-      fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-401' }), 'utf8');
-      fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-401' }), 'utf8');
-      const transport = async () => { const e = new Error('HTTP 401') as Error & { statusCode?: number }; e.statusCode = 401; throw e; };
-      const r = await runReport(cwd, { transport });
-      assert.equal(r.ok, false);
-      assert.equal(isLocallyAuthenticated(), false); // flipped → wizard re-opens the api-key page next session
+      for (const authFlag of ['1', 'off']) {
+        customEnv.TRAFFIC_ONE_AUTH = authFlag;
+        for (const statusCode of [401, 403]) {
+          const reportId = `rep-${authFlag}-${statusCode}`;
+          writeSimpleAuth(`sk-rejected-${authFlag}-${statusCode}`, customEnv);
+          assert.equal(isLocallyAuthenticated(customEnv), true);
+          fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': reportId }), 'utf8');
+          fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId }), 'utf8');
+          const transport = async () => {
+            const error = new Error(`HTTP ${statusCode}`) as Error & { statusCode?: number };
+            error.statusCode = statusCode;
+            throw error;
+          };
+          const result = await runReport(cwd, { transport, env: customEnv });
+          assert.equal(result.ok, false);
+          assert.equal(isLocallyAuthenticated(customEnv), false, `${statusCode} invalidates auth with TRAFFIC_ONE_AUTH=${authFlag}`);
+          const settings = readOneSettings(customEnv);
+          assert.equal(settings.auth, undefined);
+          assert.equal(settings.codeGraphProvider, 'graphify');
+          assert.equal(readSimpleAuth(env)?.apiKey, 'sk-process-store', 'process.env store remains untouched');
+        }
+      }
     } finally {
-      if (saved.auth === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = saved.auth;
+      if (saved.state === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = saved.state;
       if (saved.flag === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = saved.flag;
     }
+  });
+});
+
+test('runReport fails closed before transport when canonical auth is missing', async () => {
+  await withProjectAsync(async (cwd) => {
+    const env = {
+      ...process.env,
+      TRAFFIC_ONE_AUTH: 'on',
+      TRAFFIC_ONE_STATE_PATH: path.join(cwd, 'one.json'),
+      TRAFFIC_ONE_PROJECT_PREFS_PATH: path.join(cwd, 'preferences.json'),
+    } as NodeJS.ProcessEnv;
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-no-auth' }), 'utf8');
+    fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-no-auth' }), 'utf8');
+    let called = false;
+
+    const result = await runReport(cwd, {
+      env,
+      transport: async () => {
+        called = true;
+        return 'ok';
+      },
+    });
+
+    assert.equal(result.skipped, 'auth-required');
+    assert.equal(called, false);
   });
 });
 
@@ -126,29 +237,49 @@ test('prepareReport skips when disabled / unauthenticated / no codebase, and que
   });
 });
 
+test('prepareReport and runReport stand down when pluginUse is declined', async () => {
+  let pending: Promise<void> | null = null;
+  withFreshAuth((cwd) => {
+    recordPluginUseChoice(cwd, false, 'test');
+    fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
+    assert.equal(prepareReport(cwd, { spawn: false }).reason, 'plugin-use-declined');
+    assert.equal(fs.existsSync(path.join(cwd, '.traffic-one')), false);
+
+    fs.mkdirSync(path.join(cwd, '.traffic-one'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.traffic-one', '.one.json'), JSON.stringify({ 'one-uid': 'rep-declined' }), 'utf8');
+    fs.writeFileSync(path.join(cwd, STATUS_REL), JSON.stringify({ status: 'queued', reportId: 'rep-declined' }), 'utf8');
+    let called = false;
+    pending = runReport(cwd, { transport: async () => { called = true; return 'ok'; } }).then((result) => {
+      assert.equal(result.skipped, 'plugin-use-declined');
+      assert.equal(called, false);
+    });
+  });
+  await pending;
+});
+
 test('prepareReport returns auth-required without an auth state WHEN auth is enforced', () => {
   withProject((cwd) => {
     const env = process.env;
-    const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    const prev = env.TRAFFIC_ONE_STATE_PATH;
     const prevEnforce = env.TRAFFIC_ONE_AUTH;
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
+    env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, 'one.json');
     env.TRAFFIC_ONE_AUTH = 'on'; // enforce → a real token is required
     try {
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
       assert.equal(prepareReport(cwd, { spawn: false }).reason, 'auth-required');
     } finally {
-      if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
+      if (prev === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prev;
       if (prevEnforce === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevEnforce;
     }
   });
 });
 
-test('prepareReport treats auth-not-enforced (AUTH_ENABLED off) as authenticated — bypass for dev/tests', () => {
+test('prepareReport honors an explicit auth-enforcement opt-out for dev/tests', () => {
   withProject((cwd) => {
     const env = process.env;
-    const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
+    const prev = env.TRAFFIC_ONE_STATE_PATH;
     const prevEnforce = env.TRAFFIC_ONE_AUTH;
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
+    env.TRAFFIC_ONE_STATE_PATH = path.join(cwd, 'one.json');
     env.TRAFFIC_ONE_AUTH = 'off'; // not enforced → treated as authenticated
     try {
       fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
@@ -156,35 +287,8 @@ test('prepareReport treats auth-not-enforced (AUTH_ENABLED off) as authenticated
       assert.notEqual(r.reason, 'auth-required'); // bypassed → proceeds to mint
       assert.equal(r.started, true);
     } finally {
-      if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
+      if (prev === undefined) delete env.TRAFFIC_ONE_STATE_PATH; else env.TRAFFIC_ONE_STATE_PATH = prev;
       if (prevEnforce === undefined) delete env.TRAFFIC_ONE_AUTH; else env.TRAFFIC_ONE_AUTH = prevEnforce;
-    }
-  });
-});
-
-test('prepareReport can queue an explicit architect PLAN_READY report without auth', () => {
-  withProject((cwd) => {
-    const env = process.env;
-    const prev = env.TRAFFIC_ONE_AUTH_STATE_PATH;
-    env.TRAFFIC_ONE_AUTH_STATE_PATH = path.join(cwd, 'no-auth.json');
-    try {
-      fs.writeFileSync(path.join(cwd, 'package.json'), '{}', 'utf8');
-      const r = prepareReport(cwd, {
-        spawn: false,
-        trigger: 'architect PLAN_READY',
-        allowUnauthenticated: true,
-      });
-      assert.equal(r.started, true);
-      assert.equal(r.spawned, false);
-      if (SAVE_MCP_REPORT) {
-        const status = JSON.parse(fs.readFileSync(path.join(cwd, STATUS_REL), 'utf8'));
-        assert.equal(status.status, 'queued');
-        assert.equal(status.trigger, 'architect PLAN_READY');
-      }
-      const state = JSON.parse(fs.readFileSync(path.join(cwd, '.traffic-one', '.one.json'), 'utf8'));
-      assert.ok(typeof state['one-uid'] === 'string' && state['one-uid'].length > 0);
-    } finally {
-      if (prev === undefined) delete env.TRAFFIC_ONE_AUTH_STATE_PATH; else env.TRAFFIC_ONE_AUTH_STATE_PATH = prev;
     }
   });
 });

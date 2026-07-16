@@ -7,10 +7,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
-import { authStatePath, readAuthState } from '../../shared/auth';
 import { STACK_IDS } from '../../config/stacks';
 import { exec } from '../../shared/exec';
-import { pluginRoot } from '../../shared/paths';
 import { teamModeForLevel } from '../../shared/performance';
 import {
   codeGraphProviderFromValue,
@@ -105,10 +103,6 @@ export function trustedProjectForCwd(cwd: string, sections: Record<string, Rec>)
   return best;
 }
 
-export function mcpConfigPath(): string {
-  return path.join(pluginRoot(), '.mcp.json');
-}
-
 export function codexSessionsDir(env: NodeJS.ProcessEnv = process.env): string {
   const codexHome = env.CODEX_HOME || (env.HOME ? path.join(env.HOME, '.codex') : path.join(os.homedir(), '.codex'));
   return path.join(codexHome, 'sessions');
@@ -173,32 +167,6 @@ export function commandLooksMutating(name: string, rawArgs: unknown): boolean {
   const args = safeJsonParse(typeof rawArgs === 'string' ? rawArgs : '', {}) ?? {};
   const command = typeof args.cmd === 'string' ? args.cmd : String(rawArgs || '');
   return /\b(apply_patch|npm\s+install|pnpm\s+(install|add|approve-builds|rebuild)|yarn\s+(install|add)|bun\s+(install|add)|npx\s+create-|mkdir\b|touch\b|rm\b|mv\b|cp\b|rsync\b|git\s+(init|checkout|reset|clean)|tee\b|cat\s*>|>\s*[^&])/.test(command);
-}
-
-export interface AuthProbe {
-  filePath: string;
-  present: boolean;
-  expiresAt: string | null;
-  expiredAtSessionStart: boolean;
-}
-
-export function authProbeForSession(sessionStartedAt: string | null, env: NodeJS.ProcessEnv = process.env): AuthProbe {
-  const filePath = authStatePath(env);
-  const state = readAuthState(env);
-  const startedMs = Date.parse(sessionStartedAt || '');
-  const expiresMs = Date.parse(state && typeof state.expiresAt === 'string' ? state.expiresAt : '');
-  const expiredAtSessionStart = Boolean(
-    state
-    && Number.isFinite(startedMs)
-    && Number.isFinite(expiresMs)
-    && expiresMs <= startedMs,
-  );
-  return {
-    filePath,
-    present: Boolean(state),
-    expiresAt: state && typeof state.expiresAt === 'string' ? state.expiresAt : null,
-    expiredAtSessionStart,
-  };
 }
 
 export function normalizedProjectState(project: Rec): Rec | null {
