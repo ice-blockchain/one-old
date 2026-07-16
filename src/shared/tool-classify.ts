@@ -173,8 +173,10 @@ export function isMutatingPreToolUse(toolName: unknown, toolInput: unknown): boo
   if (ti && ('content' in ti || 'new_string' in ti || 'old_string' in ti || 'edits' in ti)) return true;
   if (!isShellToolName(name)) return false;
   const command = commandFromToolInput(toolInput);
-  // Output redirection (truncate `>` or append `>>`) is an unconditional write.
-  if (/>{1,2}/.test(command)) return true;
+  // Output redirection (truncate `>` or append `>>`) is an unconditional write —
+  // but fd-to-fd (`2>&1`) and discard (`2>/dev/null`) redirects are routine on
+  // read-only orientation commands (`ls -la … 2>/dev/null`) and are not writes.
+  if (/(?:^|[\s;&|\w])(?:>{1,2}|&>)\s*(?!&?\d(?:\b|$))(?!\/dev\/null(?:\b|$))/.test(command)) return true;
   // Command substitution can hide a mutating command from the top-level regex.
   if (/`|\$\(/.test(command)) return true;
   return MUTATING_SHELL_COMMAND.test(command) || MUTATING_FIND_COMMAND.test(command) || INTERPRETER_EVAL.test(command);

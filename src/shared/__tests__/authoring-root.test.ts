@@ -74,6 +74,20 @@ test('end-user projects are never authoring roots — even with Traffic One stat
   });
 });
 
+test('exact system-temp roots are machine-config space; temp SUBDIRS stay eligible (B7)', () => {
+  // A stray .traffic-one minted into /tmp-family roots must never make them
+  // adoptable project roots (the stale-bootstrap incident) — but real/test
+  // projects in a temp SUBDIRECTORY are unaffected.
+  assert.equal(isMachineConfigRoot(os.tmpdir()), true);
+  assert.equal(isMachineConfigRoot('/tmp'), true);
+  if (fs.existsSync('/private/tmp')) assert.equal(isMachineConfigRoot('/private/tmp'), true);
+  if (fs.existsSync('/var/tmp')) assert.equal(isMachineConfigRoot('/var/tmp'), true);
+  withTmp((dir) => {
+    assert.equal(isMachineConfigRoot(dir), false);
+    assert.equal(isMachineConfigRoot(path.join(dir, 'nested')), false);
+  });
+});
+
 test('a stray onboarded state file INSIDE the authoring repo still detects as authoring', () => {
   withTmp((dir) => {
     makeSourceRepo(dir);

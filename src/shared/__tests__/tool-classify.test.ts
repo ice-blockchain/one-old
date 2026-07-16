@@ -126,6 +126,16 @@ test('isMutatingPreToolUse flags writes/edits/mutating shell, allows read-only',
   assert.equal(isMutatingPreToolUse('Bash', { command: `python -c "open('x','w').write('y')"` }), true);
   assert.equal(isMutatingPreToolUse('Bash', { command: `node -e "require('fs').writeFileSync('x','y')"` }), true);
 
+  // fd-to-fd and discard redirects are NOT writes (B6): `ls -la … 2>/dev/null`
+  // is routine read-only orientation and was falsely denied during onboarding.
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'ls -la /p 2>/dev/null' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'cat f 2>&1' }), false);
+  assert.equal(isMutatingPreToolUse('Bash', {
+    command: 'ls -la /p 2>/dev/null; echo "---"; ls -la /p/.traffic-one 2>/dev/null | head -40',
+  }), false);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'ls > out.txt' }), true);
+  assert.equal(isMutatingPreToolUse('Bash', { command: 'make build 2>/dev/null > log.txt' }), true);
+
   // Read-only diagnostics MUST still pass (the WebStorm-style investigation case).
   assert.equal(isMutatingPreToolUse('Bash', { command: 'cat /var/log/app.log' }), false);
   assert.equal(isMutatingPreToolUse('Bash', { command: 'grep -r error src' }), false);

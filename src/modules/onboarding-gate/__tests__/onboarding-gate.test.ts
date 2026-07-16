@@ -403,6 +403,11 @@ test('incomplete new project: first gated call denies with the recipe, then orie
     if (first.kind === 'deny') assert.ok(first.reason.includes(DASH_URL), 'first deny carries the dashboard setup URL');
     // Recipe delivered → subsequent read-only orientation flows.
     assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', { command: 'ls -la' })).kind, 'noop');
+    // fd/discard redirects on a compound orientation command are not writes (B6):
+    // this exact shape was denied as "setup still pending" in tests/claude/3.
+    assert.equal(onboardingGate(ctx(cwd, 'Bash', 'shell', {
+      command: `ls -la ${cwd} 2>/dev/null; echo "---"; ls -la ${cwd}/.traffic-one 2>/dev/null | head -40`,
+    })).kind, 'noop');
     // A mutating write still denies after the one-time recipe (short repeat block, still URL-bearing).
     const write = onboardingGate(ctx(cwd, 'Write', 'file-write', { file_path: 'src/app.ts', content: 'export const x = 1;' }));
     assert.equal(write.kind, 'deny');

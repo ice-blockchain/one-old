@@ -138,8 +138,22 @@ export function isMachineConfigRoot(p: string): boolean {
   if (home && resolved === home) return true;
   const envHome = process.env.HOME ? realResolve(process.env.HOME) : '';
   if (envHome && resolved === envHome) return true;
+  // System temp ROOTS are shared scratch space, never a project root themselves:
+  // a stray `.traffic-one` minted into a /tmp-family dir (a scratch write with a
+  // temp cwd) must not make every later temp-path hook adopt e.g. /private/tmp
+  // as an onboarded project (the stale-bootstrap incident: reads of harness
+  // task-output files re-served the use-plugin question from that root).
+  // EXACT roots only — a real (or test) project in a temp SUBDIRECTORY stays
+  // fully eligible.
+  for (const tmp of [safeTmpDir(), '/tmp', '/private/tmp', '/var/tmp']) {
+    if (tmp && resolved === realResolve(tmp)) return true;
+  }
   const globalDir = realResolve(globalTrafficOneDir());
   return resolved === globalDir || resolved.startsWith(globalDir + path.sep);
+}
+
+function safeTmpDir(): string {
+  try { return os.tmpdir(); } catch { return ''; }
 }
 
 // The single stand-down predicate for "never treat this dir as an end-user
